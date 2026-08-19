@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
 import { WireEventBus } from './events.js';
+import { promptPayloadFromWire } from './endpoints.js';
 import {
   StreamProjector,
   projectConversation,
@@ -219,6 +220,16 @@ describe('projection', () => {
     expect(wireMessageId('user', now, 'a')).not.toBe(wireMessageId('user', now, 'b'));
     expect(wireMessageId('user', now, 'a')).toBe(wireMessageId('user', now, 'a'));
   });
+
+  test('projectUserMessage honors a client-provided wireId', () => {
+    const { info } = projectUserMessage(userMessage('hello'), {
+      sessionID: 's1',
+      agent: 'build',
+      model: 'anthropic/claude-x',
+      wireId: 'msg_client_1',
+    });
+    expect(info.id).toBe('msg_client_1');
+  });
 });
 
 describe('WireEventBus', () => {
@@ -317,5 +328,59 @@ describe('paginateProjectedMessages', () => {
     expect(paginateProjectedMessages(ascending)).toEqual({ messages: ascending, cursor: undefined });
     expect(paginateProjectedMessages(ascending, { limit: 0 })).toEqual({ messages: ascending, cursor: undefined });
     expect(paginateProjectedMessages(ascending, { limit: Number.NaN })).toEqual({ messages: ascending, cursor: undefined });
+  });
+});
+
+describe('promptPayloadFromWire', () => {
+  test('parses wire parts into joined text and decoded images', () => {
+    const png = Buffer.from('fake-png').toString('base64');
+    const payload = promptPayloadFromWire({
+      messageID: 'msg_client_1',
+      parts: [
+        { type: 'text', text: '今天天气如何' },
+        { type: 'file', mime: 'image/png', url: `data:image/png;base64,${png}` },
+      ],
+    });
+    expect(payload.text).toBe('今天天气如何');
+    expect(payload.images).toEqual([{ data: png, mimeType: 'image/png' }]);
+    expect(payload.messageID).toBe('msg_client_1');
+  });
+
+  test('joins multiple text parts and appends agent mentions missing from the text', () => {
+    const payload = promptPayloadFromWire({
+      parts: [
+        { type: 'text', text: '@reviewer check the build' },
+        { type: 'agent', name: 'reviewer', source: { value: '@reviewer', start: 0, end: 9 } },
+      ],
+    });
+    // The mention already exists inside the first text part, so it is not duplicated.
+    expect(payload.text).toBe('@reviewer check the build');
+
+    const appended = promptPayloadFromWire({
+      parts: [
+        { type: 'text', text: 'hello' },
+        { type: 'agent', name: 'reviewer' },
+      ],
+    });
+    expect(appended.text).toBe('hello\n\n@reviewer');
+  });
+
+  test('encodes non-base64 data URLs and falls back to the part mime type', () => {
+    const payload = promptPayloadFromWire({
+      parts: [{ type: 'file', url: 'data:text/plain,aGVsbG8=' }],
+    });
+    expect(payload.images).toEqual([{ data: Buffer.from('aGVsbG8=', 'utf8').toString('base64'), mimeType: 'text/plain' }]);
+  });
+
+  test('keeps the legacy prompt.text/files body working', () => {
+    const payload = promptPayloadFromWire({
+      prompt: {
+        text: 'legacy text',
+        files: [{ data: 'AAAA', mime: 'image/png' }, { data: 42 }],
+      },
+    });
+    expect(payload.text).toBe('legacy text');
+    expect(payload.images).toEqual([{ data: 'AAAA', mimeType: 'image/png' }]);
+    expect(payload.messageID).toBeUndefined();
   });
 });

@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat:** fixed user messages disappearing after a reload — the server ignored the message body the UI actually sends, so every sent prompt was persisted with no text (the agent received an empty prompt and replied to nothing). Messages now persist with their text, attachments, and the client's message id for live reconciliation.
 - **Chat:** switching to a previously viewed session now renders its messages from the markdown cache in a single pass instead of parsing every message twice, roughly halving the main-thread freeze when switching chats (and cutting the development-server switch freeze by about half as well).
 - **Chat:** long sessions now load their full history instead of stopping after the newest messages — scrolling up keeps loading older messages.
 - Chat: tool rows show what the agent said it was doing (for example "Verifying pack and committing") instead of a truncated command line.

@@ -545,7 +545,7 @@ export class OmpHostEngine {
   /**
    * Send a user prompt. Returns the wire user message.
    */
-  async prompt({ sessionID, directory, text, model, agent, images, delivery }) {
+  async prompt({ sessionID, directory, text, model, agent, images, delivery, messageID }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = (await this.#materialize(sessionID, directoryKey));
@@ -574,7 +574,7 @@ export class OmpHostEngine {
       this.registry.update(directoryKey, sessionID, { agent: agentName });
       const rebuilt = await this.#materialize(sessionID, directoryKey);
       if (!rebuilt) return null;
-      return this.prompt({ sessionID, directory: directoryKey, text, model, agent: agentName, images, delivery });
+      return this.prompt({ sessionID, directory: directoryKey, text, model, agent: agentName, images, delivery, messageID });
     }
 
     const content = [];
@@ -596,6 +596,7 @@ export class OmpHostEngine {
         sessionID,
         agent: agentName,
         model: session.model,
+        ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {}),
       },
     );
     hostSession.lastUserWireId = wire.info.id;

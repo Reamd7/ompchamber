@@ -54,8 +54,17 @@ sync engine, and web server call; everything else answers 404.
   `before` id returns an empty page so clients stop instead of looping. The
   shared UI's session-message loader drives its "load older" flow entirely
   from this contract.
- - Sessions are persisted by omp's `SessionManager` under the cwd-derived
-   session directory; OpenChamber metadata lives only in the sidecar registry.
+- Prompt bodies follow the wire contract's `parts` array
+  (`SessionPromptAsyncData`): text parts join into the prompt text, `file`
+  parts decode from `data:` URLs into image inputs, agent mentions append
+  when absent from the text, and `messageID` is echoed as the projected user
+  message id so the client's optimistic message reconciles in place during
+  the live turn. The legacy `{ prompt: { text, files } }` body is still
+  accepted by the synchronous `/message` route for the gitApi consumer.
+  Dropping `parts` persisted user messages with no parts, which the UI hides
+  after reload.
+- Sessions are persisted by omp's `SessionManager` under the cwd-derived
+  session directory; OpenChamber metadata lives only in the sidecar registry.
 
 ## Launch resolution (see `../opencode/omp-host-launch.js`)
 

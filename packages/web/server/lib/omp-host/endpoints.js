@@ -32,6 +32,51 @@ const readJsonBody = async (request) => {
   }
 };
 
+/**
+ * Parse a prompt request body into the engine's prompt inputs.
+ *
+ * The wire contract sends `{ parts: [text|file|agent|subtask], messageID }`
+ * (see SessionPromptAsyncData in the vendored types). The legacy
+ * `{ prompt: { text, files } }` shape is still accepted for the synchronous
+ * `/message` consumer. Dropping `parts` here persisted every user message
+ * with an empty part list, which the UI hides after a reload.
+ */
+export const promptPayloadFromWire = (body) => {
+  const messageID = typeof body?.messageID === 'string' && body.messageID ? body.messageID : undefined;
+  const parts = Array.isArray(body?.parts) ? body.parts : [];
+  if (parts.length === 0) {
+    return {
+      text: body?.prompt?.text ?? '',
+      images: (body?.prompt?.files ?? [])
+        .filter((file) => typeof file?.data === 'string')
+        .map((file) => ({ data: file.data, mimeType: file.mime })),
+      messageID,
+    };
+  }
+  const texts = [];
+  const images = [];
+  for (const part of parts) {
+    if (part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
+      texts.push(part.text);
+    } else if (part.type === 'file' && typeof part.url === 'string' && part.url.startsWith('data:')) {
+      const comma = part.url.indexOf(',');
+      const meta = part.url.slice(5, comma === -1 ? part.url.length : comma);
+      const payload = part.url.slice(comma === -1 ? part.url.length : comma + 1);
+      const isBase64 = /;base64$/i.test(meta);
+      images.push({
+        data: isBase64 ? payload : Buffer.from(payload, 'utf8').toString('base64'),
+        mimeType: meta.split(';')[0] || part.mime || 'application/octet-stream',
+      });
+    } else if (part.type === 'agent' && typeof part.name === 'string' && part.name) {
+      const mention = part.source?.value ?? `@${part.name}`;
+      if (!texts.some((text) => text.includes(mention))) texts.push(mention);
+    } else if (part.type === 'subtask' && typeof part.prompt === 'string' && part.prompt) {
+      texts.push(part.prompt);
+    }
+  }
+  return { text: texts.join('\n\n'), images, messageID };
+};
+
 const directoryFromRequest = ({ url, headers }) => {
   const fromQuery = url.searchParams.get('directory') ?? url.searchParams.get('location[directory]');
   const fromHeader = headers.get('x-opencode-directory');
@@ -194,15 +239,15 @@ export const registerEndpoints = (route, engine, { version }) => {
     // Synchronous prompt variant (only consumer: gitApi small-model requests).
     const body = await readJsonBody(request);
     const directory = body.directory ?? projectDirectory(ctx);
+    const payload = promptPayloadFromWire(body);
     const wire = await engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
-      text: body.prompt?.text ?? '',
+      text: payload.text,
       model: body.model,
       agent: body.agent,
-      images: body.prompt?.files
-        ?.filter((f) => typeof f?.data === 'string')
-        .map((f) => ({ data: f.data, mimeType: f.mime })),
+      images: payload.images,
+      messageID: payload.messageID,
     });
     if (!wire) return notFound('session not found');
     const messages = await engine.getMessages({ sessionID: ctx.params.sessionID, directory });
@@ -211,15 +256,15 @@ export const registerEndpoints = (route, engine, { version }) => {
   route('POST', '/session/{sessionID}/prompt_async', async (request, ctx) => {
     const body = await readJsonBody(request);
     const directory = body.directory ?? projectDirectory(ctx);
+    const payload = promptPayloadFromWire(body);
     const wire = await engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
-      text: body.prompt?.text ?? '',
+      text: payload.text,
       model: body.model,
       agent: body.agent,
-      images: body.prompt?.files
-        ?.filter((f) => typeof f?.data === 'string')
-        .map((f) => ({ data: f.data, mimeType: f.mime })),
+      images: payload.images,
+      messageID: payload.messageID,
       delivery: body.delivery,
     });
     if (!wire) return notFound('session not found');
