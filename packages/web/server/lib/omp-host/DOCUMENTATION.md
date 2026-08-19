@@ -85,6 +85,21 @@ sync engine, and web server call; everything else answers 404.
   rule came from).
 - Sessions are persisted by omp's `SessionManager` under the cwd-derived
   session directory; OpenChamber metadata lives only in the sidecar registry.
+- SDK usage follows the TUI's semantics wherever both exist; when omp-host
+  behavior diverges from the TUI, the TUI is wrong-by-default and the change
+  needs an explicit reason. Currently aligned: submission dispatch always
+  passes a `streamingBehavior` (wire `delivery: "queue"` → `followUp`,
+  everything else → `steer`, the TUI's Enter-while-streaming semantic) so a
+  live turn steers or queues the prompt instead of rejecting it with
+  `AgentBusyError`; routing through `prompt()` rather than `steer()` also
+  keeps `/`-extension commands working mid-turn. Session construction never
+  pins a fallback model — with no persisted selector the SDK resolves the
+  settings default (`defaultModel`/`defaultProvider`) exactly like the TUI
+  (pinning `getAvailable()[0]` once overrode the user's default with the
+  alphabetically-first model). Each embedded session passes its own private
+  `AgentRegistry` because the SDK's global registry admits a single "Main"
+  agent per process generation while omp-host keeps several top-level
+  sessions live concurrently.
 
 ## Launch resolution (see `../opencode/omp-host-launch.js`)
 

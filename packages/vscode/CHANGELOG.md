@@ -2,6 +2,7 @@
 
 - Chat: fixed user messages disappearing after a reload — prompts are now persisted with their text and attachments instead of an empty body.
 - Chat: sessions started from the app generate titles again, following the TUI's semantics (attempted during the first turn, retried on later messages).
+- Chat: sending while the agent is already working now steers the running turn (or queues when requested) instead of failing, and new sessions use the configured default model from agent settings.
 - Chat: fixed sent messages and replies sometimes rendering twice after a re-fetch or reload.
 - Chat: switching to a previously viewed session now renders its messages from the markdown cache in a single pass instead of parsing every message twice, reducing the main-thread freeze when switching chats.
 - Chat: long sessions now load their full history instead of stopping after the newest messages.

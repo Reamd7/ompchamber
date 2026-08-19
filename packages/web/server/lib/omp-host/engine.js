@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
+  AgentRegistry,
   ModelRegistry,
   SessionManager,
   createAgentSession,
@@ -439,9 +440,14 @@ export class OmpHostEngine {
     if (!file) return null;
     const manager = await SessionManager.open(file.path, this.#sessionDirFor(directoryKey));
     const meta = this.registry.get(directoryKey, sessionId);
+    // Model comes from the session's persisted selector when set; otherwise
+    // createAgentSession resolves the settings default (defaultModel /
+    // defaultProvider) exactly like the TUI. Pinning getAvailable()[0] here
+    // used to override the user's configured default with whichever model
+    // happened to sort first.
     const model = this.#resolveModel(
       meta?.model ? splitModelSelector(meta.model) : undefined,
-    ) ?? this.modelRegistry.getAvailable()[0];
+    );
     const customAgent = meta?.agent && meta.agent !== 'build' && meta.agent !== 'plan'
       ? this.customAgents.get(meta.agent)
       : null;
@@ -450,6 +456,10 @@ export class OmpHostEngine {
       sessionManager: manager,
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
+      // One registry per session: the SDK's global registry admits a single
+      // "Main" agent per process generation, and omp-host embeds several
+      // concurrent top-level sessions.
+      agentRegistry: new AgentRegistry(),
       ...(model ? { model } : {}),
       ...(meta?.agent === 'plan' ? { planYolo: { autoApproveOnResolve: true } } : {}),
       ...(customAgent
@@ -677,20 +687,19 @@ export class OmpHostEngine {
     // Title generation mirrors the TUI: attempted at submission time on every
     // user message, while the turn runs. pi skips internally once the session
     // is named and retries later messages when an attempt failed or the input
-    // was too low-signal to title. The previous `!meta?.timeCreated` guard
-    // here never fired for web-created sessions because createSession already
-    // writes timeCreated at creation, so those sessions never even attempted
-    // to generate a title.
+    // was too low-signal to title.
     session.maybeStartTitleGeneration(text);
 
     const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : text ?? '';
     const imageContents = content.filter((block) => block.type === 'image');
-    const useSteer = delivery === 'steer' && session.isStreaming;
-    if (useSteer) {
-      await session.steer(textOnly, imageContents);
-    } else {
-      await session.prompt(textOnly, { images: imageContents });
-    }
+    // Dispatch mirrors the TUI input loop: every submission carries a
+    // streaming behavior so a live turn never rejects the prompt. steer
+    // injects into the running turn (the TUI's Enter-while-streaming);
+    // delivery "queue" waits for the next turn. The behavior is a no-op
+    // when idle, and routing through prompt() rather than steer() keeps
+    // "/" extension commands working mid-turn (steer() rejects them).
+    const streamingBehavior = delivery === 'queue' ? 'followUp' : 'steer';
+    await session.prompt(textOnly, { images: imageContents, streamingBehavior });
     return wire;
   }
 
