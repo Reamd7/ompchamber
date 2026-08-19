@@ -21,8 +21,10 @@ export const parseServeCliOptions = ({
   const envTunnelHostname = env.OPENCHAMBER_TUNNEL_HOSTNAME || undefined;
   const envApiOnly = env.OPENCHAMBER_API_ONLY === '1' || env.OPENCHAMBER_API_ONLY === 'true';
 
+  const envPortRaw = typeof env.OPENCHAMBER_PORT === 'string' ? env.OPENCHAMBER_PORT.trim() : '';
+  const envPort = Number.isFinite(parseInt(envPortRaw, 10)) ? parseInt(envPortRaw, 10) : undefined;
   const options = {
-    port: defaultPort,
+    port: envPort ?? defaultPort,
     host: undefined,
     uiPassword: envPassword,
     tryCfTunnel: envCfTunnel,
