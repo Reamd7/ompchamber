@@ -36,15 +36,26 @@ sync engine, and web server call; everything else answers 404.
 
 ## Invariants
 
-- Deterministic ids: wire message ids are `msg_<role><base36 timestamp><digest>`
-  derived from omp message identity — never from persistence entry ids.
+- Deterministic ids: wire message ids are `msg_<role letter><base36 timestamp><digest>`
+  (`a` assistant, `u` user, `c` custom transcript notes) derived from omp
+  message identity — never from persistence entry ids. Transcript
+  `custom_message` entries (advisor nudges, todo reminders, late diagnostics)
+  project as assistant-side notes prefixed `[omp:<type>]` with
+  `synthetic: true` parts; entries marked `display: false` are dropped.
 - Failure honesty: unimplemented OpenCode features return explicit 501s
   (session sharing, provider OAuth via API, MCP OAuth bridging, session
   shell), not empty successes.
 - Every emitted event carries the session's directory so `/event?directory=`
   scoping and the web server's hub routing stay correct.
-- Sessions are persisted by omp's `SessionManager` under the cwd-derived
-  session directory; OpenChamber metadata lives only in the sidecar registry.
+- Message history paging follows the OpenCode cursor contract:
+  `GET /session/:id/message` caps the newest tail at `limit`, treats `before`
+  as an exclusive message-id boundary, and answers with an `x-next-cursor`
+  header (oldest id of the page) only while older messages remain. An unknown
+  `before` id returns an empty page so clients stop instead of looping. The
+  shared UI's session-message loader drives its "load older" flow entirely
+  from this contract.
+ - Sessions are persisted by omp's `SessionManager` under the cwd-derived
+   session directory; OpenChamber metadata lives only in the sidecar registry.
 
 ## Launch resolution (see `../opencode/omp-host-launch.js`)
 

@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat:** long sessions now load their full history instead of stopping after the newest messages — scrolling up keeps loading older messages.
+- Chat: tool rows show what the agent said it was doing (for example "Verifying pack and committing") instead of a truncated command line.
+- Chat: harness-injected transcript notes (advisor nudges, late diagnostics, todo reminders) from omp sessions now appear in history instead of being dropped.
 - **Settings/Integrations:** a new Integrations settings page lists Claude Code, Command Code, and Cursor plugins with install, update, setup, and remove actions, plus Discord and Telegram Coming soon placeholders.
 - **Engine:** sessions now run on Oh My Pi (omp) instead of OpenCode. The bundled desktop engine ships with OpenChamber, so the OpenCode CLI no longer needs to be installed; in development a Bun runtime launches it.
 - **Engine:** features that depended on OpenCode's cloud or CLI are gone: public session sharing, in-app engine upgrades, API-key entry through provider settings, and the system-prompt optimizer toggle in Settings → Behavior no longer apply.

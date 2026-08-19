@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Chat: long sessions now load their full history instead of stopping after the newest messages.
+- Chat: tool rows show the agent's stated intent instead of a truncated command line.
+- Chat: harness-injected transcript notes (advisor nudges, late diagnostics) from omp sessions now appear in history instead of being dropped.
 - Engine: the extension's managed coding sessions now run on Oh My Pi (omp) instead of the OpenCode CLI, so the OpenCode CLI no longer needs to be installed; the engine starts from the OpenChamber workspace checkout with a Bun runtime.
 - Chat: new chats no longer start against a deleted last worktree directory; they fall back to the active project instead of saving the first message and never starting.
 - Chat: opening a busy subagent in the context panel now shows its history instead of only the working-status line (thanks to @makeittech).

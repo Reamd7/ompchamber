@@ -38,8 +38,33 @@ export const splitModelSelector = (modelId) => {
   };
 };
 
-export const wireMessageId = (role, timestamp, seedText) =>
-  `msg_${role === 'assistant' ? 'a' : 'u'}${toBase36(timestamp)}${contentDigest(seedText)}`;
+export const wireMessageId = (role, timestamp, seedText) => {
+  const roleChar = role === 'assistant' ? 'a' : role === 'custom' ? 'c' : 'u';
+  return `msg_${roleChar}${toBase36(timestamp)}${contentDigest(seedText)}`;
+};
+
+/**
+ * Page a chronologically ascending wire-message list by the OpenCode
+ * message-history contract: `limit` caps the newest tail, `before` is an
+ * exclusive message-id boundary, and the returned cursor is the oldest id of
+ * the page when older messages remain. An unknown `before` id yields an empty
+ * page so clients stop paging instead of looping over stale cursors.
+ */
+export const paginateProjectedMessages = (messages, { limit, before } = {}) => {
+  let windowed = messages;
+  if (before) {
+    const boundary = messages.findIndex((message) => message?.info?.id === before);
+    windowed = boundary === -1 ? [] : messages.slice(0, boundary);
+  }
+  const pageLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0
+    ? Math.floor(limit)
+    : undefined;
+  if (pageLimit === undefined || windowed.length <= pageLimit) {
+    return { messages: windowed, cursor: undefined };
+  }
+  const page = windowed.slice(-pageLimit);
+  return { messages: page, cursor: page[0]?.info?.id };
+};
 
 export const projectUsage = (usage) => {
   const u = usage ?? {};
@@ -124,6 +149,46 @@ export const projectUserMessage = (message, { sessionID, agent, model, wireId })
 };
 
 /**
+ * Project one omp transcript `custom_message` (advisor nudges, todo reminders,
+ * late LSP diagnostics, ...) into a labeled assistant-side wire message so the
+ * note stays visible in history without fragmenting the user's turns. The
+ * `[omp:<type>]` prefix marks the text as harness-injected rather than model
+ * output. Entries the engine marked `display: false`, and empty ones, are
+ * dropped.
+ */
+export const projectCustomMessage = (message, { sessionID, agent, parentID }) => {
+  const text = textOfContent(message.content);
+  const label = message.customType ? `[omp:${message.customType}] ` : '[omp] ';
+  const wrapped = text.match(/^<([a-zA-Z-]+)[^>]*>\s*([\s\S]*?)\s*<\/\1>\s*$/);
+  const body = wrapped ? wrapped[2] : text;
+  const id = wireMessageId('custom', message.timestamp, label + body);
+  return {
+    info: {
+      id,
+      sessionID,
+      role: 'assistant',
+      // The turn model only renders assistant messages whose parentID resolves
+      // to a user message, so notes ride the turn they were injected into.
+      ...(parentID ? { parentID } : {}),
+      time: { created: message.timestamp, completed: message.timestamp },
+      agent: agent ?? 'build',
+      model: { providerID: '', modelID: '' },
+    },
+    parts: [
+      {
+        id: partId(id, 0),
+        sessionID,
+        messageID: id,
+        type: 'text',
+        text: label + body,
+        synthetic: true,
+        time: { start: message.timestamp },
+      },
+    ],
+  };
+};
+
+/**
  * Project one omp AssistantMessage (with its paired ToolResultMessages) into
  * wire `{ info, parts }`. Tool results are matched by toolCallId; unpaired
  * calls are rendered in their last observed state.
@@ -172,6 +237,12 @@ export const projectAssistantMessage = (
     } else if (block.type === 'toolCall') {
       const result = toolResults.get(block.id);
       const input = safeJson(block.arguments);
+      // The model states its reason for each call in `intent`; it is the
+      // human-readable heading for the tool row (the raw name/command stays
+      // available through state fallbacks).
+      const intent = typeof block.intent === 'string' && block.intent.trim()
+        ? block.intent.trim()
+        : null;
       const base = {
         id: partId(id, seq++),
         sessionID,
@@ -190,8 +261,8 @@ export const projectAssistantMessage = (
               ? { error: 'Aborted', time: { start: message.timestamp, end: message.timestamp } }
               : {
                   output: '',
-                  title: block.name,
-                  metadata: {},
+                  title: intent ?? block.name,
+                  metadata: intent ? { intent } : {},
                   time: { start: message.timestamp, end: message.timestamp },
                 }),
           },
@@ -213,8 +284,8 @@ export const projectAssistantMessage = (
             status: 'completed',
             input,
             output: textOfContent(result.content),
-            title: block.name,
-            metadata: {},
+            title: intent ?? block.name,
+            metadata: intent ? { intent } : {},
             time: { start: message.timestamp, end: result.timestamp ?? message.timestamp },
           },
         });
@@ -283,6 +354,11 @@ export const projectConversation = (messages, options) => {
     } else if (message.role === 'assistant') {
       flushAssistant();
       pendingAssistant = message;
+    } else if (message.role === 'custom') {
+      if (message.display === false) continue;
+      if (!textOfContent(message.content).trim()) continue;
+      flushAssistant();
+      out.push(projectCustomMessage(message, { ...options, parentID: lastUserWireId || undefined }));
     } else if (message.role === 'toolResult') {
       if (!pendingAssistant) continue;
       pendingResults.set(message.toolCallId, message);

@@ -24,6 +24,7 @@ import {
   projectConversation,
   projectUserMessage,
   splitModelSelector,
+  paginateProjectedMessages,
 } from './projection.js';
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -332,19 +333,32 @@ export class OmpHostEngine {
   }
 
   /** Cold message projection from the persisted transcript. */
-  async getMessages({ sessionID, directory, limit }) {
+  async getMessages({ sessionID, directory }) {
+    return this.#projectedMessages(sessionID, directory);
+  }
+
+  /**
+   * Paged cold projection for the message-history route: applies the
+   * limit/before window over the full projection and reports the
+   * next-older cursor (see paginateProjectedMessages).
+   */
+  async getMessagesPage({ sessionID, directory, limit, before }) {
+    const projected = await this.#projectedMessages(sessionID, directory);
+    if (!projected) return null;
+    return paginateProjectedMessages(projected, { limit, before });
+  }
+
+  async #projectedMessages(sessionID, directory) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const live = this.sessions.get(sessionID);
     if (live?.agentSession) {
-      const messages = live.agentSession.messages;
       const meta = this.registry.get(directoryKey, sessionID);
-      const projected = projectConversation(messages, {
+      return projectConversation(live.agentSession.messages, {
         sessionID,
         directory: directoryKey,
         agent: meta?.agent ?? 'build',
       });
-      return typeof limit === 'number' ? projected.slice(-limit) : projected;
     }
     const file = await this.#findSessionFile(sessionID, directoryKey);
     if (!file) return null;
@@ -352,12 +366,11 @@ export class OmpHostEngine {
     try {
       const context = manager.buildSessionContext({ transcript: true });
       const meta = this.registry.get(directoryKey, sessionID);
-      const projected = projectConversation(context.messages ?? [], {
+      return projectConversation(context.messages ?? [], {
         sessionID,
         directory: directoryKey,
         agent: meta?.agent ?? 'build',
       });
-      return typeof limit === 'number' ? projected.slice(-limit) : projected;
     } finally {
       await manager.close();
     }

@@ -489,6 +489,12 @@ const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDi
     const metadata = stateWithData.metadata;
     const input = stateWithData.input;
 
+    // The model's stated reason for the call — the heading the transcript
+    // exporter shows. Prefer it over derived labels (paths, command lines).
+    if (typeof metadata?.intent === 'string' && metadata.intent.trim()) {
+        return metadata.intent.trim().substring(0, 120);
+    }
+
     const filePathLabel = getToolDescriptionPath(part, state, currentDirectory);
     if (filePathLabel) {
         return filePathLabel;

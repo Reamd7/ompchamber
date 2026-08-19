@@ -177,13 +177,18 @@ export const registerEndpoints = (route, engine, { version }) => {
   });
   route('GET', '/session/{sessionID}/message', async (request, ctx) => {
     const directory = projectDirectory(ctx);
-    const limitParam = ctx.url.searchParams.get('limit');
-    const messages = await engine.getMessages({
+    const limitParam = Number(ctx.url.searchParams.get('limit'));
+    const before = ctx.url.searchParams.get('before') ?? undefined;
+    const page = await engine.getMessagesPage({
       sessionID: ctx.params.sessionID,
       directory,
-      limit: limitParam ? Number(limitParam) : undefined,
+      limit: Number.isFinite(limitParam) ? limitParam : undefined,
+      before,
     });
-    return messages ? json(messages) : notFound('session not found');
+    if (!page) return notFound('session not found');
+    return page.cursor
+      ? json(page.messages, { headers: { 'x-next-cursor': page.cursor } })
+      : json(page.messages);
   });
   route('POST', '/session/{sessionID}/message', async (request, ctx) => {
     // Synchronous prompt variant (only consumer: gitApi small-model requests).

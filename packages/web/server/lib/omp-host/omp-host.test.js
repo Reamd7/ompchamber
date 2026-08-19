@@ -10,6 +10,7 @@ import {
   projectUserMessage,
   wireMessageId,
   splitModelSelector,
+  paginateProjectedMessages,
 } from './projection.js';
 
 const now = 1_700_000_000_000;
@@ -119,6 +120,63 @@ describe('projection', () => {
     expect(a.map((m) => m.info.id)).toEqual(b.map((m) => m.info.id));
   });
 
+  test('custom transcript messages project as labeled assistant notes', () => {
+    const messages = [
+      userMessage('go'),
+      assistantMessage([{ type: 'text', text: 'working' }]),
+      {
+        role: 'custom',
+        customType: 'advisor',
+        content: '<advisory severity="concern">weigh it</advisory>',
+        display: true,
+        timestamp: now + 30,
+      },
+      assistantMessage([{ type: 'text', text: 'done' }], { timestamp: now + 40 }),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    expect(projected.map((m) => m.info.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
+    const note = projected[2];
+    expect(note.parts[0].text).toBe('[omp:advisor] weigh it');
+    expect(note.parts[0].synthetic).toBe(true);
+    expect(note.info.id.startsWith('msg_c')).toBe(true);
+    // deterministic across re-projections (cold reread + live merge)
+    const again = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    expect(again[2].info.id).toBe(note.info.id);
+    // notes ride the turn they were injected into
+    expect(note.info.parentID).toBe(projected[0].info.id);
+  });
+
+  test('custom transcript messages with display false or empty content are dropped', () => {
+    const messages = [
+      userMessage('go'),
+      { role: 'custom', customType: 'advisor', content: 'hidden note', display: false, timestamp: now + 30 },
+      { role: 'custom', customType: 'todo-error-reminder', content: '   ', display: true, timestamp: now + 31 },
+      assistantMessage([{ type: 'text', text: 'reply' }]),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    expect(projected.map((m) => m.info.role)).toEqual(['user', 'assistant']);
+  });
+
+  test('tool calls carry the model intent as their heading', () => {
+    const messages = [
+      userMessage('go'),
+      assistantMessage([
+        { type: 'toolCall', id: 'c9', name: 'bash', arguments: { command: 'git commit -m x' }, intent: 'Verifying pack and committing' },
+      ]),
+      toolResult('c9', 'done'),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    const toolPart = projected[1].parts.find((p) => p.type === 'tool');
+    expect(toolPart.state.title).toBe('Verifying pack and committing');
+    expect(toolPart.state.metadata).toEqual({ intent: 'Verifying pack and committing' });
+    // calls without intent keep the tool name
+    const plain = projectConversation(
+      [userMessage('go'), assistantMessage([{ type: 'toolCall', id: 'c8', name: 'read', arguments: { path: '/x' } }]), toolResult('c8', 'data')],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    expect(plain[1].parts.find((p) => p.type === 'tool').state.title).toBe('read');
+  });
+
   test('streaming projector emits matching part ids for the final projection', () => {
     const emitted = [];
     const projector = new StreamProjector({
@@ -221,5 +279,43 @@ describe('SessionMetaRegistry', () => {
     expect(moved.title).toBe('moved one');
     expect(registry.get('/from', 's1')).toBeNull();
     expect(registry.get('/to', 's1').title).toBe('moved one');
+  });
+});
+
+describe('paginateProjectedMessages', () => {
+  const ids = (page) => page.messages.map((message) => message.info.id);
+  const ascending = ['m1', 'm2', 'm3', 'm4', 'm5'].map((id) => ({ info: { id } }));
+
+  test('caps the newest tail and reports the oldest page id while older messages remain', () => {
+    const page = paginateProjectedMessages(ascending, { limit: 2 });
+    expect(ids(page)).toEqual(['m4', 'm5']);
+    expect(page.cursor).toBe('m4');
+  });
+
+  test('returns the whole window without a cursor when it fits the limit', () => {
+    const page = paginateProjectedMessages(ascending, { limit: 5 });
+    expect(ids(page)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+    expect(page.cursor).toBeUndefined();
+  });
+
+  test('treats before as an exclusive boundary and chains cursors', () => {
+    const page = paginateProjectedMessages(ascending, { limit: 2, before: 'm4' });
+    expect(ids(page)).toEqual(['m2', 'm3']);
+    expect(page.cursor).toBe('m2');
+    const last = paginateProjectedMessages(ascending, { limit: 2, before: page.cursor });
+    expect(ids(last)).toEqual(['m1']);
+    expect(last.cursor).toBeUndefined();
+  });
+
+  test('unknown before id yields an empty page so clients stop paging', () => {
+    const page = paginateProjectedMessages(ascending, { limit: 2, before: 'gone' });
+    expect(page.messages).toEqual([]);
+    expect(page.cursor).toBeUndefined();
+  });
+
+  test('missing or invalid limit returns every message without a cursor', () => {
+    expect(paginateProjectedMessages(ascending)).toEqual({ messages: ascending, cursor: undefined });
+    expect(paginateProjectedMessages(ascending, { limit: 0 })).toEqual({ messages: ascending, cursor: undefined });
+    expect(paginateProjectedMessages(ascending, { limit: Number.NaN })).toEqual({ messages: ascending, cursor: undefined });
   });
 });
