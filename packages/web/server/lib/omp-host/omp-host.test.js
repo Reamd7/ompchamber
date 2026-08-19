@@ -230,6 +230,24 @@ describe('projection', () => {
     });
     expect(info.id).toBe('msg_client_1');
   });
+
+  test('projectConversation honors wireIdFor to keep echoed ids stable', () => {
+    const messages = [userMessage('hello'), assistantMessage([{ type: 'text', text: 'hi there' }])];
+    const projected = projectConversation(messages, {
+      sessionID: 's1',
+      directory: '/repo',
+      agent: 'build',
+      wireIdFor: () => 'msg_client_echo',
+    });
+    expect(projected[0].info.id).toBe('msg_client_echo');
+    expect(projected[0].parts.every((p) => p.messageID === 'msg_client_echo')).toBe(true);
+    // The assistant message still derives its own id and links to the user wire id.
+    expect(projected[1].info.parentID?.id ?? projected[1].info.parentID).toBe('msg_client_echo');
+    // Without a resolver the deterministic id is used.
+    const plain = projectConversation(messages, { sessionID: 's1', directory: '/repo', agent: 'build' });
+    expect(plain[0].info.id).not.toBe('msg_client_echo');
+    expect(plain[0].info.id).toBe(wireMessageId('user', now, 'hello'));
+  });
 });
 
 describe('WireEventBus', () => {

@@ -38,9 +38,20 @@ sync engine, and web server call; everything else answers 404.
 
 - Deterministic ids: wire message ids are `msg_<role letter><base36 timestamp><digest>`
   (`a` assistant, `u` user, `c` custom transcript notes) derived from omp
-  message identity — never from persistence entry ids. Transcript
-  `custom_message` entries (advisor nudges, todo reminders, late diagnostics)
-  project as assistant-side notes prefixed `[omp:<type>]` with
+  message identity — never from persistence entry ids. Live streaming and
+  cold re-projection must agree for the same message: streaming derives an
+  assistant id at `message_start` (empty content, start timestamp) while the
+  persisted message finalizes both, and prompted user messages must echo the
+  client's `messageID` for optimistic reconciliation. The engine bridges
+  these through an in-memory `wireIdOverrides` map (cold id → live/echo id,
+  captured from the user `message_start` and assistant `message_end` events)
+  that cold projections resolve via `wireIdFor`; without it every re-fetch
+  projected a second, different id for the same message and the UI rendered
+  the prompt or reply twice. Overrides live only for the engine process
+  lifetime — an engine restart forces a reconnect whose authoritative refetch
+  replaces client state wholesale, so stale live ids cannot linger.
+  Transcript `custom_message` entries (advisor nudges, todo reminders, late
+  diagnostics) project as assistant-side notes prefixed `[omp:<type>]` with
   `synthetic: true` parts; entries marked `display: false` are dropped.
 - Failure honesty: unimplemented OpenCode features return explicit 501s
   (session sharing, provider OAuth via API, MCP OAuth bridging, session

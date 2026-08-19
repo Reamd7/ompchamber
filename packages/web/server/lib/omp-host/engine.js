@@ -23,6 +23,7 @@ import {
   StreamProjector,
   projectConversation,
   projectUserMessage,
+  wireMessageId,
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.js';
@@ -46,7 +47,20 @@ export class OmpHostEngine {
     this.bus = new WireEventBus();
     /** @type {Map<string, HostSession>} */
     this.sessions = new Map();
-    /** @type {Map<string, { agent: string, prompt: string, tools?: string[] }>} */
+    /**
+     * Canonical-read wire id -> client messageID echoed at prompt time.
+     *
+     * The wire contract requires the server to echo the client's messageID so
+     * the optimistic UI message reconciles in place, but pi's persisted
+     * UserMessage carries no id field to store it in. This map bridges the two:
+     * prompt() records the pending client id, the user message_start event
+     * captures pi's canonical message identity, and cold projections resolve
+     * the same wire id both live and on re-fetch. Without it a re-fetch during
+     * or after the turn projected a second, different id for the same message
+     * and the UI rendered the user's prompt twice.
+     * @type {Map<string, string>}
+     */
+    this.wireIdOverrides = new Map();
     this.customAgents = new Map();
     this.bootError = null;
     this.bootPromise = null;
@@ -347,10 +361,10 @@ export class OmpHostEngine {
     if (!projected) return null;
     return paginateProjectedMessages(projected, { limit, before });
   }
-
   async #projectedMessages(sessionID, directory) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
+    const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
     const live = this.sessions.get(sessionID);
     if (live?.agentSession) {
       const meta = this.registry.get(directoryKey, sessionID);
@@ -358,6 +372,7 @@ export class OmpHostEngine {
         sessionID,
         directory: directoryKey,
         agent: meta?.agent ?? 'build',
+        wireIdFor,
       });
     }
     const file = await this.#findSessionFile(sessionID, directoryKey);
@@ -370,10 +385,41 @@ export class OmpHostEngine {
         sessionID,
         directory: directoryKey,
         agent: meta?.agent ?? 'build',
+        wireIdFor,
       });
     } finally {
       await manager.close();
     }
+  }
+
+  #wireIdResolver(directoryKey, sessionID) {
+    if (this.wireIdOverrides.size === 0) return undefined;
+    const prefix = `${directoryKey}\u0000${sessionID}\u0000`;
+    return (message) => {
+      if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
+      const seed = message.role === 'assistant' && !textOfContent(message.content)
+        ? (message.content?.[0]?.name ?? '')
+        : textOfContent(message.content);
+      return this.wireIdOverrides.get(
+        prefix + wireMessageId(message.role, message.timestamp, seed),
+      );
+    };
+  }
+
+  /**
+   * Keep a finished assistant turn's cold-projection id aligned with the id
+   * the streaming projector already emitted. Live streaming derives the wire
+   * id at message_start (empty content, start timestamp); the persisted
+   * message finalizes both, so a re-fetch would otherwise project a second,
+   * different id for the same message and the UI would render it twice.
+   */
+  #bridgeAssistantWireId(hostSession, finalMessage) {
+    const liveId = hostSession.projector?.current?.id;
+    if (!liveId) return;
+    const seed = textOfContent(finalMessage.content) || (finalMessage.content?.[0]?.name ?? '');
+    const coldId = wireMessageId('assistant', finalMessage.timestamp, seed);
+    if (coldId === liveId) return;
+    this.wireIdOverrides.set(`${hostSession.directory}\u0000${hostSession.sessionId}\u0000${coldId}`, liveId);
   }
 
   #resolveModel(selector) {
@@ -422,6 +468,7 @@ export class OmpHostEngine {
       unsubscribe: null,
       projector: null,
       lastTouched: Date.now(),
+      pendingUserWireId: null,
       lastUserWireId: null,
       currentAgent: meta?.agent ?? 'build',
     };
@@ -452,6 +499,19 @@ export class OmpHostEngine {
     if (!session) return;
     switch (event.type) {
       case 'message_start': {
+        if (event.message?.role === 'user') {
+          const pending = hostSession.pendingUserWireId;
+          hostSession.pendingUserWireId = null;
+          if (pending) {
+            const canonicalId = wireMessageId(
+              'user',
+              event.message.timestamp,
+              textOfContent(event.message.content),
+            );
+            this.wireIdOverrides.set(`${directory}\u0000${sessionId}\u0000${canonicalId}`, pending);
+          }
+          return;
+        }
         if (event.message?.role !== 'assistant') return;
         hostSession.projector = new StreamProjector({
           sessionID: sessionId,
@@ -483,6 +543,7 @@ export class OmpHostEngine {
           event.message,
           hostSession.turnToolResults ?? new Map(),
         );
+        this.#bridgeAssistantWireId(hostSession, event.message);
         return;
       }
       case 'tool_execution_start': {
@@ -599,6 +660,7 @@ export class OmpHostEngine {
         ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {}),
       },
     );
+    hostSession.pendingUserWireId = typeof messageID === 'string' && messageID ? messageID : null;
     hostSession.lastUserWireId = wire.info.id;
     this.bus.emit('message.updated', { sessionID, info: wire.info }, directoryKey);
     for (const part of wire.parts) {

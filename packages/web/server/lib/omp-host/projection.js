@@ -336,8 +336,10 @@ export const projectConversation = (messages, options) => {
 
   const flushAssistant = () => {
     if (!pendingAssistant) return;
+    const wireId = options?.wireIdFor?.(pendingAssistant);
     out.push(projectAssistantMessage(pendingAssistant, pendingResults, {
       ...options,
+      ...(wireId ? { wireId } : {}),
       parentID: lastUserWireId,
     }));
     pendingAssistant = null;
@@ -348,7 +350,8 @@ export const projectConversation = (messages, options) => {
     if (!message || typeof message !== 'object') continue;
     if (message.role === 'user') {
       flushAssistant();
-      const projected = projectUserMessage(message, options);
+      const wireId = options?.wireIdFor?.(message);
+      const projected = projectUserMessage(message, wireId ? { ...options, wireId } : options);
       lastUserWireId = projected.info.id;
       out.push(projected);
     } else if (message.role === 'assistant') {
