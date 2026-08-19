@@ -7,7 +7,7 @@ description: Use when creating or modifying OpenChamber shared UI data access, O
 
 ## Core Boundary
 
-- Official OpenCode API calls use `@opencode-ai/sdk/v2` through `opencodeClient`.
+- OpenCode-wire API calls use the OpenChamber-owned wire module (`@/lib/opencode/wire`, vendored types + generated client) through `opencodeClient`; the omp host (`packages/web/server/lib/omp-host`, embedding `@oh-my-pi/pi-coding-agent`) implements that surface server-side.
 - OpenChamber-owned HTTP capabilities use `RuntimeAPIs` where runtime-specific behavior exists, otherwise explicit OpenChamber routes through `runtimeFetch`.
 - Browser/realtime consumers use shared runtime URL/socket helpers.
 - Shared UI never hardcodes localhost, ports, API origins, credentials, or one runtime's transport assumptions.
