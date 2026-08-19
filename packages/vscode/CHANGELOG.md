@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - Chat: fixed user messages disappearing after a reload — prompts are now persisted with their text and attachments instead of an empty body.
+- Chat: sessions started from the app generate titles again, following the TUI's semantics (attempted during the first turn, retried on later messages).
 - Chat: switching to a previously viewed session now renders its messages from the markdown cache in a single pass instead of parsing every message twice, reducing the main-thread freeze when switching chats.
 - Chat: long sessions now load their full history instead of stopping after the newest messages.
 - Chat: tool rows show the agent's stated intent instead of a truncated command line.

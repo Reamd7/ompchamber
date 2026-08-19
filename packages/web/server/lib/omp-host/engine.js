@@ -609,6 +609,18 @@ export class OmpHostEngine {
       );
     }
 
+    if (!meta?.timeCreated) {
+      this.registry.update(directoryKey, sessionID, { timeCreated: wire.info.time.created });
+    }
+    // Title generation mirrors the TUI: attempted at submission time on every
+    // user message, while the turn runs. pi skips internally once the session
+    // is named and retries later messages when an attempt failed or the input
+    // was too low-signal to title. The previous `!meta?.timeCreated` guard
+    // here never fired for web-created sessions because createSession already
+    // writes timeCreated at creation, so those sessions never even attempted
+    // to generate a title.
+    session.maybeStartTitleGeneration(text);
+
     const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : text ?? '';
     const imageContents = content.filter((block) => block.type === 'image');
     const useSteer = delivery === 'steer' && session.isStreaming;
@@ -616,10 +628,6 @@ export class OmpHostEngine {
       await session.steer(textOnly, imageContents);
     } else {
       await session.prompt(textOnly, { images: imageContents });
-    }
-    if (!meta?.timeCreated) {
-      this.registry.update(directoryKey, sessionID, { timeCreated: wire.info.time.created });
-      session.maybeStartTitleGeneration(text);
     }
     return wire;
   }

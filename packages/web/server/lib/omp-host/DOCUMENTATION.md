@@ -63,6 +63,15 @@ sync engine, and web server call; everything else answers 404.
   accepted by the synchronous `/message` route for the gitApi consumer.
   Dropping `parts` persisted user messages with no parts, which the UI hides
   after reload.
+- Session titles follow the TUI's semantics: every user prompt attempts
+  `maybeStartTitleGeneration` at submission time while the turn runs, and pi
+  itself skips the call once the session is named or retries on later
+  messages after a failed/low-signal attempt. Generated names flow back
+  through `onSessionNameChanged` into the sidecar registry and a
+  `session.updated` event. Never gate this on registry bookkeeping like
+  `timeCreated` — `createSession` writes it at creation, so web-created
+  sessions would never attempt a title (that is exactly the regression this
+  rule came from).
 - Sessions are persisted by omp's `SessionManager` under the cwd-derived
   session directory; OpenChamber metadata lives only in the sidecar registry.
 
