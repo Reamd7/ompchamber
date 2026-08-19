@@ -47,7 +47,7 @@ test('production does not probe HMR endpoints', () => {
   });
 });
 
-test('keeps Chromium connection limits for the Vite HMR module graph', () => {
+test('keeps Chromium connection limits for the dev server HMR module graph', () => {
   assert.equal(shouldIgnoreLoopbackConnectionLimit({ development: true, packagedUi: false }), false);
   assert.equal(shouldIgnoreLoopbackConnectionLimit({ development: true, packagedUi: true }), true);
   assert.equal(shouldIgnoreLoopbackConnectionLimit({ development: false, packagedUi: false }), true);

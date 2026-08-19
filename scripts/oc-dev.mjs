@@ -454,10 +454,9 @@ async function startMobileDev(options) {
   if (mode === 'android-local') extraArgs = ['--forwardPorts', `${hmrPort}:${hmrPort}`];
 
   log.step(`Starting mobile UI dev server on ${hmrBindHost}:${hmrPort}`);
-  const devServer = spawn('bun', ['x', 'vite', '--config', 'local-dev-mobile-vite.config.mjs', '--host', hmrBindHost, '--port', hmrPort, '--strictPort'], {
+  const devServer = spawn('bun', ['x', 'rsbuild', 'dev', '--config', 'local-dev-mobile-rsbuild.config.mjs', '--host', hmrBindHost, '--port', hmrPort, '--strict-port'], {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: { ...process.env, OPENCHAMBER_DISABLE_PWA_DEV: '1' },
   });
 
   const stopDevServer = () => {

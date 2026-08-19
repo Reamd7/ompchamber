@@ -5,7 +5,7 @@ webview/**
 .gitignore
 tsconfig.json
 tsconfig.webview.json
-vite.config.ts
+rsbuild.config.ts
 *.map
 **/*.ts
 !dist/**

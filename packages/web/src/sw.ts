@@ -1,16 +1,11 @@
 /// <reference lib="webworker" />
 
-// NOTE: keep the Workbox injection point so vite-plugin-pwa can build.
-// We intentionally do not use Workbox runtime helpers here: iOS Safari can be
-// fragile with more complex SW bundles. For push notifications we only need a
-// minimal SW.
+// A minimal push-notification service worker. We intentionally do not use
+// Workbox runtime helpers or precaching: iOS Safari can be fragile with more
+// complex SW bundles, and push notifications only need this minimal surface.
 
-declare const self: ServiceWorkerGlobalScope & {
-  __WB_MANIFEST: Array<string | { url: string; revision?: string }>;
-};
+declare const self: ServiceWorkerGlobalScope;
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const __precacheManifest = self.__WB_MANIFEST;
 
 type PushPayload = {
   title?: string;

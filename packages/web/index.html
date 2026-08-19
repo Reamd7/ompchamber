@@ -419,7 +419,8 @@
     <meta name="theme-color" content="#151313" />
     <meta name="theme-color" content="#151313" media="(prefers-color-scheme: dark)" />
 
-    <!-- iOS Safari PWA styling -->
+    <!-- PWA standalone styling (modern + iOS Safari) -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="OpenChamber" />
@@ -638,6 +639,6 @@
       }
     </script>
 
-    <script type="module" src="/src/main.tsx"></script>
+  <!-- Rsbuild injects the entry script tags during the build. -->
   </body>
 </html>

@@ -2,7 +2,7 @@
  * Regression coverage for https://github.com/openchamber/openchamber/issues/2815
  *
  * A full ContextPanel mount is not available in bun test because its import
- * graph includes a Vite worker URL. This test follows the source-level guard
+ * graph includes a bundled worker URL. This test follows the source-level guard
  * pattern in contextPanelEscapeClosesTerminal.test.ts and uses the real store.
  */
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';

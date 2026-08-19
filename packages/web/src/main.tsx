@@ -1,5 +1,5 @@
 import { createConfiguredWebAPIs, getDesktopRelayRestoreReady } from './runtimeConfig';
-import { registerSW } from 'virtual:pwa-register';
+import { Workbox } from 'workbox-window';
 
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
 import { resolveHostedSurface, type HostedSurface } from '@openchamber/ui/lib/runtimeSurface';
@@ -65,10 +65,12 @@ const runWhenDocumentCanRegisterServiceWorker = (task: () => void): void => {
 const registerPwaServiceWorker = (): void => {
   runWhenDocumentCanRegisterServiceWorker(() => {
     try {
-      registerSW({
-        onRegisterError(error: unknown) {
-          console.warn('[PWA] service worker registration skipped:', error);
-        },
+      // workbox-window is what vite-plugin-pwa's registerSW wrapped; using it
+      // directly keeps the autoUpdate registration semantics without the
+      // virtual module.
+      const wb = new Workbox(`${import.meta.env.BASE_URL}sw.js`);
+      wb.register().catch((error: unknown) => {
+        console.warn('[PWA] service worker registration skipped:', error);
       });
     } catch (error) {
       console.warn('[PWA] service worker registration skipped:', error);
@@ -103,8 +105,10 @@ const start = async (): Promise<void> => {
 
 void start();
 
-if (import.meta.hot) {
-  import.meta.hot.on('openchamber:theme-updated', (theme: unknown) => {
+// Built-in theme JSON edits arrive as a custom rsbuild HMR event pushed by
+// the dev server plugin; forward them to the theme system without a reload.
+if (import.meta.webpackHot) {
+  import.meta.webpackHot.on('openchamber:theme-updated', (theme: unknown) => {
     window.dispatchEvent(new CustomEvent('openchamber:theme-hmr', { detail: theme }));
   });
 }

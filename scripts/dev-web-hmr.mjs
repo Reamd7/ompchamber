@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,33 +97,22 @@ function getLanAddresses() {
   return addresses;
 }
 
-function clearViteCache() {
-  const cacheDirs = [
-    path.join(webRoot, 'node_modules/.vite'),
-    path.join(webRoot, 'node_modules/.vite-temp'),
-  ];
+// Rsbuild has no dependency pre-bundling cache to clear (native ESM deps are
+// compiled per-module), so there is no equivalent of Vite's --force reset.
 
-  for (const cacheDir of cacheDirs) {
-    if (!existsSync(cacheDir)) continue;
-    rmSync(cacheDir, { recursive: true, force: true });
-  }
-}
-
-clearViteCache();
+const devServer = run(
+  'rsbuild',
+  'bun',
+  ['x', 'rsbuild', 'dev', '--host', hmrHost, '--port', uiPort, '--strict-port'],
+  {
+    OPENCHAMBER_PORT: backendPort,
+  },
+  { cwd: webRoot },
+);
 
 const api = run('api', 'bun', ['run', '--cwd', 'packages/web', 'dev:server:watch'], {
   OPENCHAMBER_PORT: backendPort,
 });
-const vite = run(
-  'vite',
-  'bun',
-  ['x', 'vite', '--force', '--host', hmrHost, '--port', uiPort, '--strictPort'],
-  {
-    OPENCHAMBER_PORT: backendPort,
-    OPENCHAMBER_DISABLE_PWA_DEV: '1',
-  },
-  { cwd: webRoot },
-);
 
 console.log(`[dev:web:hmr] UI with HMR: http://127.0.0.1:${uiPort}`);
 if (hmrHost === '0.0.0.0' || hmrHost === '::') {
@@ -145,7 +133,7 @@ let shuttingDown = false;
 async function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  await Promise.all([stopChildTree(api), stopChildTree(vite)]);
+  await Promise.all([stopChildTree(api), stopChildTree(devServer)]);
   process.exit(exitCode);
 }
 
@@ -164,7 +152,7 @@ function onChildExit(label) {
 }
 
 api.on('exit', onChildExit('api'));
-vite.on('exit', onChildExit('vite'));
+devServer.on('exit', onChildExit('rsbuild'));
 
 process.on('SIGINT', () => {
   shutdown(130).catch(() => process.exit(130));

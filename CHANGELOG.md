@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - Settings: the session retention action you pick is now saved instead of being dropped (thanks to @Gautam0507).
 - Browser: typing a comment on a page no longer triggers app shortcuts.
 - Skills Catalog: the source is now named ClawHub instead of "ClawdHub" (thanks to @makeittech).
+- Internal: the web UI build tooling now uses Rsbuild instead of Vite; behavior, dev ports, and the `VITE_OPENCODE_URL` build variable are unchanged.
 
 ## [1.18.4] - 2026-08-14
 

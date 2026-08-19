@@ -333,9 +333,10 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       };
 
       const tryLoadDevBundle = () => {
-        const viteClientUrl = baseUrl + '/@vite/client';
-        const reactRefreshUrl = baseUrl + '/@react-refresh';
-        const devEntryUrl = baseUrl + '/main.tsx';
+        // The rsbuild dev server serves the compiled webview entry at a
+        // stable unhashed path (rsbuild.config.ts pins output.filename to
+        // assets/[name].js), with the HMR client bundled into it.
+        const devEntryUrl = baseUrl + '/assets/index.js';
         const hostLabel = (() => {
           try {
             return new URL(baseUrl).host;
@@ -348,17 +349,6 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
         setStatus(devMessages.startingDevServer(hostLabel));
 
         Promise.resolve()
-          .then(() => import(viteClientUrl))
-          .then(() => import(reactRefreshUrl))
-          .then((mod) => {
-            const runtime = mod && mod.default ? mod.default : null;
-            if (runtime && typeof runtime.injectIntoGlobalHook === 'function') {
-              runtime.injectIntoGlobalHook(window);
-              window.$RefreshReg$ = () => {};
-              window.$RefreshSig$ = () => (type) => type;
-              window.__vite_plugin_react_preamble_installed__ = true;
-            }
-          })
           .then(() => import(devEntryUrl))
           .then(() => waitForRootMount(4000))
           .then((mounted) => {
@@ -375,6 +365,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
             }, retryDelayMs);
           });
       };
+
 
       tryLoadDevBundle();
     }

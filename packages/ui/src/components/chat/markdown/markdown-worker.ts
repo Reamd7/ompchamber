@@ -1,4 +1,6 @@
-import MarkdownShikiWorkerUrl from './markdown-shiki.worker.ts?worker&url';
+// The worker is bundled as its own ES module chunk (rspack's standard
+// `new Worker(new URL(...))` handling), matching the previous ?worker&url
+// import.
 import type { MarkdownTokenRun, MarkdownWorkerRequest, MarkdownWorkerResponse } from './markdown-worker-protocol';
 
 // Main-thread client for the markdown Shiki worker. Moves syntax tokenization
@@ -28,7 +30,7 @@ const getWorker = (): Worker | undefined => {
   if (worker) return worker;
   if (typeof window === 'undefined' || typeof Worker === 'undefined') return undefined;
   try {
-    worker = new Worker(MarkdownShikiWorkerUrl, { type: 'module' });
+    worker = new Worker(new URL('./markdown-shiki.worker.ts', import.meta.url), { type: 'module' });
   } catch (err) {
     console.error('Failed to create Shiki worker:', err);
     return undefined;

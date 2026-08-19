@@ -65,7 +65,7 @@ bun install
 bun run vscode:dev
 ```
 
-`bun run vscode:dev` now starts watchers + opens an Extension Development Host automatically. Webview UI changes use Vite HMR automatically.
+`bun run vscode:dev` now starts watchers + opens an Extension Development Host automatically. Webview UI changes use Rsbuild HMR automatically.
 
 Optional overrides:
 

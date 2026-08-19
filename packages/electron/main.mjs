@@ -89,10 +89,10 @@ if (isDev) {
 }
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
-// Lift Chromium's per-host cap only for bundled UI. Applying this to Vite HMR
-// lets the renderer request most of the module graph at once, overwhelming the
-// dev server's transform pipeline and leaving the HTML splash visible for up
-// to a minute before React mounts.
+// Lift Chromium's per-host cap only for bundled UI. Applying this to the dev
+// server HMR lets the renderer request most of the module graph at once,
+// overwhelming it and leaving the HTML splash visible for up to a minute
+// before React mounts.
 if (shouldIgnoreLoopbackConnectionLimit({
   development: isDev,
   packagedUi: process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1',
@@ -2557,9 +2557,10 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
       if (url.protocol === 'devtools:') return true;
       if (url.protocol === `${UI_PROTOCOL}:`) return true;
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-      // In development the renderer is served by Vite while state.localOrigin
-      // remains the separate local API server. Permit same-origin reloads from
-      // the renderer itself so Vite full-reload fallbacks stay in Electron.
+      // In development the renderer is served by the Rsbuild dev server
+      // while state.localOrigin remains the separate local API server.
+      // Permit same-origin reloads from the renderer itself so dev-server
+      // full-reload fallbacks stay in Electron.
       try {
         if (new URL(browserWindow.webContents.getURL()).origin === url.origin) return true;
       } catch {
@@ -4956,8 +4957,9 @@ const isLocalSender = (webContents) => {
     if (!raw) return false;
     const url = new URL(raw);
     if (url.protocol === `${UI_PROTOCOL}:` && url.hostname === 'app') return true;
-    // Electron dev renders from Vite while the local API is served on a
-    // separate port. This exact loopback HMR origin is trusted only in dev.
+    // Electron dev renders from the Rsbuild dev server while the local API is
+    // served on a separate port. This exact loopback HMR origin is trusted
+    // only in dev.
     if (isDev && url.origin === `http://127.0.0.1:${process.env.OPENCHAMBER_HMR_UI_PORT || '5173'}`) return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
     if (state.localOrigin) {

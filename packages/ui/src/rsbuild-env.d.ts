@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+/// <reference types="@rsbuild/core/types" />
 
 interface Window {
     __opencodeDebug?: {
@@ -7,7 +7,7 @@ interface Window {
         truncateMessages: (messages: unknown[]) => unknown[];
         getAppStatus: () => Promise<unknown>;
         checkLastMessage: () => boolean;
-        findEmptyMessages: () => unknown[];
+        findEmptyMessages: (message: unknown[]) => unknown[];
         showRetryHelp: () => void;
         getStreamingState: () => unknown;
         analyzeMessageCompletionConsistency: (options?: unknown) => unknown;

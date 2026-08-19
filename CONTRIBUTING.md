@@ -18,7 +18,7 @@ Run commands from the project root unless a section says otherwise.
 |--------|-------------|-------|
 | `bun run dev` | Default web HMR dev flow. | auto-selected dev ports |
 | `bun run dev:web:full` | Build watcher + Express server. No HMR — manual refresh after changes. | `3001` (server + static) |
-| `bun run dev:web:hmr` | Vite dev server + Express API. **Open the Vite URL for HMR**, not the backend. | `5180` (Vite HMR), `3902` (API) |
+| `bun run dev:web:hmr` | Rsbuild dev server + Express API. **Open the Rsbuild URL for HMR**, not the backend. | `5180` (Rsbuild HMR), `3902` (API) |
 | `bun run start:web` | Start the packaged web server. | `3000` by default |
 
 Both are configurable via env vars: `OPENCHAMBER_PORT`, `OPENCHAMBER_HMR_UI_PORT`, `OPENCHAMBER_HMR_API_PORT`.
@@ -243,7 +243,7 @@ conversation remains chronological. Previous review comments are not rewritten.
 ```
 packages/
   ui/        Shared React components, hooks, stores, and theme system
-  web/       Web server (Express) + frontend (Vite) + CLI
+  web/       Web server (Express) + frontend (Rsbuild) + CLI
   electron/  Electron desktop shell
   vscode/    VS Code extension (extension host + webview)
 ```

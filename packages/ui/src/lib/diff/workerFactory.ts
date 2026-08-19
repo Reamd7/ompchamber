@@ -1,5 +1,3 @@
-import WorkerUrl from '@pierre/diffs/worker/worker.js?worker&url';
-
 export function workerFactory(): Worker {
-  return new Worker(WorkerUrl, { type: 'module' });
+  return new Worker(new URL('./pierre-diff.worker.ts', import.meta.url), { type: 'module' });
 }

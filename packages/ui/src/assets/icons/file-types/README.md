@@ -7,7 +7,7 @@ This directory keeps the source file-type SVG icons and the generated sprite use
 - The UI resolves an icon id in `packages/ui/src/lib/fileTypeIcons.ts`.
 - Valid icon ids are loaded from `packages/ui/src/lib/fileTypeIconIds.ts`.
 - `packages/ui/src/components/icons/FileTypeIcon.tsx` renders the icon with `<use href="...#icon-id" />` from `sprite.svg`.
-- Vite handles `sprite.svg` as a normal asset URL automatically.
+- The bundler (Rsbuild) handles `sprite.svg` as a normal asset URL automatically.
 
 The sprite generator rewrites internal SVG ids per icon (gradients, clip paths, filters) so ids do not collide after packing all icons into one file.
 

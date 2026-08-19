@@ -206,7 +206,7 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
 
     // Custom themes first so they can override built-ins with the same id.
     customThemes.forEach(add);
-    // Vite publishes valid built-in JSON edits through this development-only
+    // The dev server publishes valid built-in JSON edits through this development-only
     // runtime channel, avoiding a full page reload for theme work.
     developmentThemes.forEach(add);
     themes.forEach(add);

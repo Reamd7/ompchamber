@@ -92,7 +92,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@remixicon/react": "^4.7.0",
-    "@vitejs/plugin-react": "^5.0.0",
+    "@rsbuild/core": "^2.1.13",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "cors": "^2.8.5",
@@ -106,7 +106,6 @@
     "tsx": "^4.20.6",
     "tw-animate-css": "^1.3.8",
     "typescript": "~5.9.0",
-    "typescript-eslint": "^8.39.1",
-    "vite": "^7.1.2"
+    "typescript-eslint": "^8.39.1"
   }
 }
