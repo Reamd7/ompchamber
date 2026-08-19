@@ -1,3 +1,4 @@
+import '@/lib/devConsoleTasks';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@/styles/fonts';

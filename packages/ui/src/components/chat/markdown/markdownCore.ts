@@ -571,3 +571,32 @@ export const renderMarkdownBlocks = async (
     }),
   );
 };
+
+/**
+ * Synchronous cache probe for already-rendered markdown. Returns the same
+ * blocks `renderMarkdownBlocks` would produce when every block is cached,
+ * or null when any block needs the async pipeline (marked, Shiki, sanitize).
+ * Lets a remounting message render its final DOM in one pass instead of the
+ * sync-fallback parse followed by the async re-parse + morph.
+ */
+export const readCachedMarkdownBlocks = (
+  text: string,
+  streaming: boolean,
+  cacheKey: string,
+  imageMode: MarkdownImageMode = 'inline',
+): RenderedBlock[] | null => {
+  if (!text) return [];
+  const blocks = streamBlocks(text, streaming);
+  const rendered: RenderedBlock[] = [];
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    const contentHash = hash(block.raw);
+    const id = `${contentHash}:${block.mode}:${block.highlight ? 1 : 0}:${imageMode}`;
+    const key = `${cacheKey}:${index}:${block.mode}:${imageMode}`;
+    const cached = htmlCache.get(key);
+    if (!cached || cached.hash !== contentHash) return null;
+    touch(key, cached);
+    rendered.push({ id, html: cached.html });
+  }
+  return rendered;
+};

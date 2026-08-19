@@ -10,9 +10,8 @@ or extending these scripts. The methodology rules they enforce come from
 | Command | Answers |
 |---|---|
 | `bun run profile:idle` | What the app does while nobody interacts with it. |
-| `bun run profile:session` | What receiving and rendering a live assistant response costs. |
-| `bun run profile:animation` | What a CSS animation costs, isolated from the app. |
 | `bun run profile:browser` | A manually driven capture, for interactions that cannot be scripted. |
+| `bun run profile:switch` | What switching between two sessions in the sidebar costs: wall time to a stable message list, long-task distribution, main-thread blockage, and CPU self time. |
 
 All of them measure a real browser over CDP. Pass `--help` to any of them for
 the full option list.
@@ -94,7 +93,7 @@ Measured on this repository's fixture, at any element count from 1 to 32:
 | `opacity`, `filter` | 0 | 0 |
 | `rotate` (the individual property) | 60 | 0 |
 | `background-position` | 60 | 0 |
-| `border-color` | 60 | 0 |
+
 | `box-shadow` | 60 | 0 |
 | `width` | 60 | 60 |
 
@@ -106,6 +105,23 @@ top. Note that `rotate: 360deg` is *not* equivalent to
 Add a variant to `animation-fixture.html` to measure a property or technique
 that is not listed.
 
+## profile:switch
+
+Opens the app, clicks one sidebar session, then ping-pongs between two sessions
+the configured number of times. The click is the only stimulus; each switch is
+recorded from click to a stable message list. Reports wall time, the long-task
+distribution inside each switch window, total main-thread blockage, and a CPU
+sampling profile with self time per function. The run fails loudly when no
+switch stabilized instead of reporting a clean zero.
+
+```bash
+bun run profile:switch -- --url http://127.0.0.1:4599 --to <session id or title substring> [--from <id|title>] [--repeat 4]
+```
+
+`--from` defaults to the first other visible session row. Revisit performance
+(warm markdown block cache) is covered by the even-numbered ping-pong rounds.
+
+
 ## Reading The Results
 
 Every run writes a JSON summary next to any raw capture, so results can be
@@ -113,6 +129,7 @@ compared later without re-running:
 
 - `profile:idle` → `idle-summary.json`, `cpu-profile.cpuprofile`
 - `profile:session` → `session-summary.json`, `cpu-profile.cpuprofile`
+- `profile:switch` → `switch-summary.json`, `cpu-profile.cpuprofile`
 
 `--baseline <directory>` prints a per-metric delta table against a previous run
 of the same command. `--budget-*` options make the command exit non-zero, so the

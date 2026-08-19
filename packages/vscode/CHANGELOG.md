@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- Chat: switching to a previously viewed session now renders its messages from the markdown cache in a single pass instead of parsing every message twice, reducing the main-thread freeze when switching chats.
 - Chat: long sessions now load their full history instead of stopping after the newest messages.
 - Chat: tool rows show the agent's stated intent instead of a truncated command line.
 - Chat: harness-injected transcript notes (advisor nudges, late diagnostics) from omp sessions now appear in history instead of being dropped.

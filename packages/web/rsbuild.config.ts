@@ -164,16 +164,36 @@ export default defineConfig(({ command }) => ({
       };
       return templates[entryName];
     },
-    ...(enableReactScan && {
-      tags: [
-        {
-          tag: 'script',
-          attrs: { crossorigin: 'anonymous', src: '//unpkg.com/react-scan/dist/auto.global.js' },
-          head: true,
-          append: false,
-        },
-      ],
-    }),
+    tags: [
+      ...(command === 'dev'
+        ? [
+            {
+              tag: 'script',
+              // React 19.2 dev builds wrap every render/effect in a
+              // console.createTask task; with DevTools attached that wrapper
+              // dominated chat-switch main-thread time (8.2s task, multi-second
+              // self time). react-dom captures the method when its vendor chunk
+              // evaluates — before any app module — so the patch must run in
+              // the document head. localStorage `oc-dev-console-tasks=1`
+              // restores it.
+              children:
+                "try{if(localStorage.getItem('oc-dev-console-tasks')!=='1'&&'createTask' in console){Object.defineProperty(console,'createTask',{value:undefined,configurable:true})}}catch(e){}",
+              head: true,
+              append: false,
+            },
+          ]
+        : []),
+      ...(enableReactScan
+        ? [
+            {
+              tag: 'script',
+              attrs: { crossorigin: 'anonymous', src: '//unpkg.com/react-scan/dist/auto.global.js' },
+              head: true,
+              append: false,
+            },
+          ]
+        : []),
+    ],
   },
   server: {
     port: 5173,

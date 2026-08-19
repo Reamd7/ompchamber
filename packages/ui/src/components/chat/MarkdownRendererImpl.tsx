@@ -19,7 +19,7 @@ import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime } from '@/l
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import { ensureOutsideFileGrantForDesktop } from '@/lib/outsideFileGrants';
 import { getDirectoryForFilePath, isFilePathWithinDirectory, toAbsoluteFilePath } from '@/lib/path-utils';
-import { renderMarkdownBlocks, renderMarkdownSync, type MarkdownImageMode } from './markdown/markdownCore';
+import { readCachedMarkdownBlocks, renderMarkdownBlocks, renderMarkdownSync, type MarkdownImageMode } from './markdown/markdownCore';
 import { ensureMarkdownShikiTheme } from './markdown/markdownTheme';
 import { getMarkdownSyntaxVars } from './markdown/markdownSyntaxVars';
 import {
@@ -878,6 +878,29 @@ const useMorphdomMarkdown = ({
     const target = container?.querySelector<HTMLElement>('[data-markdown-content]') ?? container;
     if (!target) return;
     if (text && target.childNodes.length === 0) {
+      // Cache fast path: when this exact content was rendered before (e.g.
+      // switching back to a session), mount the final per-block DOM directly
+      // and stamp `data-md-id` so the async pass finds nothing left to
+      // re-parse or morph. One native HTML parse per block instead of the
+      // sync-fallback parse plus async re-parse + morphdom walk.
+      const cachedBlocks = streaming
+        ? null
+        : readCachedMarkdownBlocks(text, streaming, cacheKey, imageMode);
+      if (cachedBlocks && cachedBlocks.length > 0) {
+        for (const block of cachedBlocks) {
+          const el = document.createElement('div');
+          el.setAttribute('data-md-block', '');
+          el.style.display = 'contents';
+          el.innerHTML = block.html;
+          el.setAttribute('data-md-id', block.id);
+          decorateMarkdown(el, ctx);
+          target.appendChild(el);
+        }
+        if (shouldRefreshMermaidViewers(target)) {
+          refreshMermaidViewers();
+        }
+        return;
+      }
       const block = document.createElement('div');
       block.setAttribute('data-md-block', '');
       // `display:contents` keeps margin-collapsing/spacing identical to a flat

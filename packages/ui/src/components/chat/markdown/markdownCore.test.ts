@@ -16,6 +16,8 @@ import { escapeRawMarkdownHtml, isLocalFileUrl, MARKDOWN_FORBIDDEN_TAGS } from '
 const {
   __markdownImageCandidateCacheForTests,
   extractMarkdownImageCandidates,
+  readCachedMarkdownBlocks,
+  renderMarkdownBlocks,
   renderMarkdownSync,
 } = await import('./markdownCore');
 const { resolveMarkdownImageSource } = await import('./markdownImageAssets');
@@ -185,5 +187,25 @@ describe('Markdown images', () => {
 
     expect(html).toContain('<img src="https://example.test/image.png"');
     expect(html).not.toContain('data-openchamber-markdown-image');
+  });
+});
+
+describe('cached markdown blocks', () => {
+  test('returns null before the async pipeline has rendered the content', async () => {
+    const text = 'first **visit** with a code block:\n\n```js\nconst a = 1;\n```';
+    expect(readCachedMarkdownBlocks(text, false, 'markdown-part-1', 'label')).toBeNull();
+  });
+
+  test('returns the identical blocks after renderMarkdownBlocks has populated the cache', async () => {
+    const text = 'second **visit** with a code block:\n\n```js\nconst b = 2;\n```';
+    const rendered = await renderMarkdownBlocks(text, false, 'markdown-part-2', 'label');
+    const peeked = readCachedMarkdownBlocks(text, false, 'markdown-part-2', 'label');
+    expect(peeked).not.toBeNull();
+    expect(peeked).toEqual(rendered);
+  });
+
+  test('returns null again once the content changed under the same cache key', async () => {
+    await renderMarkdownBlocks('original body', false, 'markdown-part-3', 'label');
+    expect(readCachedMarkdownBlocks('edited body', false, 'markdown-part-3', 'label')).toBeNull();
   });
 });
