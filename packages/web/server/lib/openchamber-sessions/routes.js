@@ -1,5 +1,5 @@
 import express from 'express';
-import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createLocalEngineClient } from '../opencode/local-engine-client.js';
 import { createWorktree, getWorktreeBootstrapStatus } from '../git/index.js';
 import { expandSnippets } from '../opencode/snippets.js';
 import { expandCommandGoalObjective, parseScheduledCommandPrompt } from '../scheduled-tasks/runtime.js';
@@ -609,7 +609,7 @@ export const createOpenChamberSessionService = (dependencies) => {
 
     const baseUrl = buildOpenCodeUrl('/', '').replace(/\/$/, '');
     const authHeaders = getOpenCodeAuthHeaders();
-    const client = createOpencodeClient({ baseUrl, headers: authHeaders });
+    const client = createLocalEngineClient({ baseUrl, headers: authHeaders });
     const sessionID = await createSession({
       client,
       baseUrl,
@@ -706,7 +706,7 @@ export const createOpenChamberSessionService = (dependencies) => {
 
       const baseUrl = buildOpenCodeUrl('/', '').replace(/\/$/, '');
       const authHeaders = getOpenCodeAuthHeaders();
-      const client = createOpencodeClient({ baseUrl, headers: authHeaders });
+      const client = createLocalEngineClient({ baseUrl, headers: authHeaders });
       if (action === 'fork') {
         targetSession = await forkSession({
           client,

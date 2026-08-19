@@ -1,4 +1,4 @@
-import type { Message, Part } from "@opencode-ai/sdk/v2";
+import type { Message, Part } from '@/lib/opencode/wire'
 
 type TokenBreakdown = {
     input?: number;

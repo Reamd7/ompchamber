@@ -29,7 +29,7 @@ read. Skill loading is a required part of the task, not optional guidance.
 - `packages/mobile`: Capacitor iOS/Android shell; bundles the mobile web surface and connects to an existing OpenChamber server.
 - `packages/docs`: product documentation; not a Bun workspace.
 
-Shared UI calls official OpenCode APIs through `@opencode-ai/sdk/v2`. OpenChamber-owned capabilities use `RuntimeAPIs`, `runtimeFetch`, and shared browser/realtime transport helpers. Server-side upstream integrations may use their owning runtime modules.
+Shared UI consumes the OpenCode-compatible wire contract owned by OpenChamber (`packages/ui/src/lib/opencode/wire`, vendored client + types) through `opencodeClient`. The engine implementing that contract is the omp host (`packages/web/server/lib/omp-host`), which embeds `@oh-my-pi/pi-coding-agent`. OpenChamber-owned capabilities use `RuntimeAPIs`, `runtimeFetch`, and shared browser/realtime transport helpers. Server-side upstream integrations may use their owning runtime modules.
 
 Electron starts the OpenChamber backend in-process, never as a sidecar. Development may load loopback/HMR UI; packaged builds load staged assets through `openchamber-ui://` while the loopback server remains the API backend. Keep domain backends in web/runtime modules unless behavior is inherently native.
 

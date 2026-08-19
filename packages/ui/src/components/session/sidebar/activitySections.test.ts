@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/wire'
 import { deriveRecentSessions } from './activitySections';
 
 const NOW = 200_000_000;

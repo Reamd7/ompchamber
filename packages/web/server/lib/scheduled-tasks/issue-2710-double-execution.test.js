@@ -16,7 +16,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const sdk = vi.hoisted(() => ({
   sessionCreates: [],
-  createOpencodeClient: () => ({
+  createLocalEngineClient: () => ({
     session: {
       create: async () => {
         sdk.sessionCreates.push(Date.now());
@@ -27,8 +27,8 @@ const sdk = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@opencode-ai/sdk/v2', () => ({
-  createOpencodeClient: sdk.createOpencodeClient,
+vi.mock('../opencode/local-engine-client.js', () => ({
+  createLocalEngineClient: sdk.createLocalEngineClient,
 }));
 
 import { createScheduledTasksRuntime } from './runtime.js';

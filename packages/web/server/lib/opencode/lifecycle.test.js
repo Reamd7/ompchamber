@@ -365,8 +365,9 @@ describe('OpenCode lifecycle', () => {
     const server = await runtime.startOpenCode();
     const [binary, args, options] = spawnMock.mock.calls[0];
 
-    expect(binary).toBe('opencode');
-    expect(args).toEqual(['serve', '--hostname', '127.0.0.1', '--port', '45678']);
+    expect(binary).toBe('bun');
+    expect(args[0]).toContain('omp-host');
+    expect(args.slice(1)).toEqual(['serve', '--hostname', '127.0.0.1', '--port', '45678']);
     expect(options.env.PATH).toBe('/home/user/.bun/bin:/usr/local/bin:/usr/bin');
     expect(options.env.SHELL_ONLY).toBe('yes');
     expect(options.env.OPENCODE_SERVER_PASSWORD).toBe('password');
@@ -391,8 +392,9 @@ describe('OpenCode lifecycle', () => {
     const server = await runtime.startOpenCode();
     const [binary, args] = spawnMock.mock.calls[0];
 
-    expect(binary).toBe('opencode');
-    expect(args).toEqual(['serve', '--hostname', '0.0.0.0', '--port', '45678']);
+    expect(binary).toBe('bun');
+    expect(args[0]).toContain('omp-host');
+    expect(args.slice(1)).toEqual(['serve', '--hostname', '0.0.0.0', '--port', '45678']);
 
     await server.close();
     expect(server.signalCode).toBe('SIGTERM');
@@ -569,7 +571,7 @@ describe('OpenCode lifecycle', () => {
 
     const runtime = createRuntime();
 
-    await expect(runtime.startOpenCode()).rejects.toThrow('OpenCode process exited before serving with signal SIGTERM. Binary used: opencode. No stdout/stderr captured');
+    await expect(runtime.startOpenCode()).rejects.toThrow('OpenCode process exited before serving with signal SIGTERM. Binary used: bun. No stdout/stderr captured');
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 

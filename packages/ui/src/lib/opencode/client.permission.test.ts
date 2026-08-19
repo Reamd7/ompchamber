@@ -70,7 +70,7 @@ const createOpencodeClientMock = mock(() => ({
 
 (mock as unknown as { restore?: () => void }).restore?.();
 
-mock.module('@opencode-ai/sdk/v2', () => ({
+mock.module('@/lib/opencode/wire', () => ({
   createOpencodeClient: createOpencodeClientMock,
 }));
 

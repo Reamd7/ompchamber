@@ -352,124 +352,34 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const resolveOpencodeCliPath = () => {
-    const explicit = [
-      process.env.OPENCODE_BINARY,
-      process.env.OPENCODE_PATH,
-      process.env.OPENCHAMBER_OPENCODE_PATH,
-      process.env.OPENCHAMBER_OPENCODE_BIN,
-    ]
+    // Resolves the RUNTIME that launches the managed omp host (Bun), not an
+    // opencode CLI. Kept under its historical name because the resolution
+    // snapshot, PATH augmentation, and settings plumbing all flow through it.
+    const explicit = [process.env.OPENCHAMBER_OMP_HOST_RUNTIME, process.env.OPENCODE_BINARY]
       .map(stripWrappingQuotes)
       .filter(Boolean);
 
     for (const candidate of explicit) {
-      if (isExecutable(candidate) && !isWindowsOpenCodeDesktopAppPath(candidate)) {
-        clearWslOpencodeResolution();
+      if (isExecutable(candidate)) {
         state.resolvedOpencodeBinarySource = 'env';
         return candidate;
       }
     }
 
-    const bundled = bundledOpenCodeCliFallback();
-    if (bundled) return bundled;
-
-    const resolvedFromPath = searchPathFor('opencode');
+    const resolvedFromPath = searchPathFor('bun');
     if (resolvedFromPath) {
-      clearWslOpencodeResolution();
       state.resolvedOpencodeBinarySource = 'path';
       return resolvedFromPath;
     }
 
     const home = resolveHomeDir();
-    const unixFallbacks = [
-      path.join(home, '.opencode', 'bin', 'opencode'),
-      path.join(home, '.bun', 'bin', 'opencode'),
-      path.join(home, '.local', 'bin', 'opencode'),
-      path.join(home, 'bin', 'opencode'),
-      '/opt/homebrew/bin/opencode',
-      '/usr/local/bin/opencode',
-      '/home/linuxbrew/.linuxbrew/bin/opencode',
-      '/usr/bin/opencode',
-      '/bin/opencode',
-    ];
-
-    const winFallbacks = (() => {
-      const userProfile = process.env.USERPROFILE || home;
-      const appData = process.env.APPDATA || '';
-      const localAppData = process.env.LOCALAPPDATA || '';
-      const programData = process.env.ProgramData || 'C:\\ProgramData';
-
-      const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
-
-      return [
-        path.join(userProfile, '.opencode', 'bin', 'opencode.exe'),
-        path.join(userProfile, '.opencode', 'bin', 'opencode.cmd'),
-        path.join(appData, 'npm', 'opencode.cmd'),
-        // System-wide Node installer keeps the global npm prefix here
-        // (npm i -g opencode-ai → opencode.cmd shim).
-        path.join(programFiles, 'nodejs', 'opencode.cmd'),
-        path.join(userProfile, 'scoop', 'shims', 'opencode.exe'),
-        path.join(userProfile, 'scoop', 'shims', 'opencode.cmd'),
-        path.join(programData, 'chocolatey', 'bin', 'opencode.exe'),
-        path.join(programData, 'chocolatey', 'bin', 'opencode.cmd'),
-        path.join(userProfile, '.bun', 'bin', 'opencode.exe'),
-        path.join(userProfile, '.bun', 'bin', 'opencode.cmd'),
-      ].filter(Boolean);
-    })();
-
-    const fallbacks = process.platform === 'win32' ? winFallbacks : unixFallbacks;
+    const fallbacks = process.platform === 'win32'
+      ? [path.join(home, '.bun', 'bin', 'bun.exe')]
+      : [path.join(home, '.bun', 'bin', 'bun'), '/opt/homebrew/bin/bun', '/usr/local/bin/bun'];
     for (const candidate of fallbacks) {
       if (isExecutable(candidate)) {
-        clearWslOpencodeResolution();
         state.resolvedOpencodeBinarySource = 'fallback';
         return candidate;
-      }
-    }
-
-    if (process.platform === 'win32') {
-      try {
-        const result = runSpawnSync('where', ['opencode'], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-        });
-        if (result.status === 0) {
-          const lines = (result.stdout || '')
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean);
-          const found = lines.find((line) => isExecutable(line) && !isWindowsOpenCodeDesktopAppPath(line));
-          if (found) {
-            clearWslOpencodeResolution();
-            state.resolvedOpencodeBinarySource = 'where';
-            return found;
-          }
-        }
-      } catch {
-      }
-      // Do not auto-detect OpenCode from WSL. OpenCode sessions are keyed by
-      // server-visible directories, and mixing Windows paths with WSL paths
-      // creates duplicate/missing project state in the desktop app.
-      return null;
-    }
-
-    const shells = [process.env.SHELL, '/bin/zsh', '/bin/bash', '/bin/sh'].filter(Boolean);
-    for (const shell of shells) {
-      if (!isExecutable(shell)) continue;
-      try {
-        const result = runSpawnSync(shell, ['-lic', 'command -v opencode'], {
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true,
-        });
-        if (result.status === 0) {
-          const found = (result.stdout || '').trim().split(/\s+/).pop() || '';
-          if (found && isExecutable(found)) {
-            clearWslOpencodeResolution();
-            state.resolvedOpencodeBinarySource = 'shell';
-            return found;
-          }
-        }
-      } catch {
       }
     }
 
@@ -988,7 +898,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
     try {
       const stat = fs.statSync(trimmed);
       if (stat.isDirectory()) {
-        const bin = process.platform === 'win32' ? 'opencode.exe' : 'opencode';
+        const bin = process.platform === 'win32' ? 'bun.exe' : 'bun';
         return path.join(trimmed, bin);
       }
     } catch {
@@ -1043,11 +953,13 @@ export const createOpenCodeEnvRuntime = (deps) => {
 
       if (normalized && isExecutable(normalized) && !isKnownOpenCodeDesktopAppPath(normalized)) {
         clearWslOpencodeResolution();
+        // The setting now names the runtime that launches the managed omp
+        // host (Bun); OPENCODE_BINARY stays in sync for child-env snapshots.
+        process.env.OPENCHAMBER_OMP_HOST_RUNTIME = normalized;
         process.env.OPENCODE_BINARY = normalized;
         prependToPath(path.dirname(normalized));
         state.resolvedOpencodeBinary = normalized;
         state.resolvedOpencodeBinarySource = 'settings';
-        ensureOpencodeShimRuntime(normalized);
         return normalized;
       }
 
@@ -1082,7 +994,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
       state.resolvedOpencodeBinarySource = state.resolvedOpencodeBinarySource || 'env';
       prependToPath(path.dirname(existing));
       ensureOpencodeShimRuntime(existing);
-      return state.resolvedOpencodeBinary;
+      return existing;
     }
 
     const resolved = resolveOpencodeCliPath();
@@ -1099,7 +1011,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
       ensureOpencodeShimRuntime(resolved);
       state.resolvedOpencodeBinary = resolved;
       state.resolvedOpencodeBinarySource = state.resolvedOpencodeBinarySource || 'unknown';
-      console.log(`Resolved opencode CLI: ${resolved}`);
+      console.log(`Resolved omp host runtime: ${resolved}`);
       return resolved;
     }
 
@@ -1131,16 +1043,9 @@ export const createOpenCodeEnvRuntime = (deps) => {
       if (typeof candidate !== 'string') {
         return '';
       }
-      const trimmed = candidate.trim();
-      if (!trimmed) {
-        return '';
-      }
-      const ext = path.extname(trimmed).toLowerCase();
-      if (ext === '.cmd' || ext === '.bat' || ext === '.com') {
-        const exeCandidate = trimmed.slice(0, -ext.length) + '.exe';
-        if (isExecutable(exeCandidate)) {
-          return exeCandidate;
-        }
+      const trimmed = stripWrappingQuotes(candidate);
+      if (trimmed && isExecutable(trimmed)) {
+        return trimmed;
       }
       return trimmed;
     };

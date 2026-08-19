@@ -1,4 +1,4 @@
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/wire'
 import type { SessionNode } from './types';
 
 export type CollapsedActivityState = 'active' | 'unread' | null;

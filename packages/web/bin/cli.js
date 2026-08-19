@@ -146,29 +146,31 @@ function getPreferredServerRuntime() {
 }
 
 async function checkOpenCodeCLI(onNotice) {
-  if (process.env.OPENCODE_BINARY) {
-    const override = resolveExplicitBinary(process.env.OPENCODE_BINARY);
+  // The managed engine is the OpenChamber omp host, launched under Bun. The
+  // old opencode CLI lookup is gone; what matters now is that a Bun runtime
+  // can launch the host (see server/lib/opencode/omp-host-launch.js).
+  if (process.env.OPENCHAMBER_OMP_HOST_RUNTIME) {
+    const override = resolveExplicitBinary(process.env.OPENCHAMBER_OMP_HOST_RUNTIME);
     if (override) {
-      process.env.OPENCODE_BINARY = override;
+      process.env.OPENCHAMBER_OMP_HOST_RUNTIME = override;
       return override;
     }
-    const message = `OPENCODE_BINARY="${process.env.OPENCODE_BINARY}" is not an executable file. Falling back to PATH lookup.`;
+    const message = `OPENCHAMBER_OMP_HOST_RUNTIME="${process.env.OPENCHAMBER_OMP_HOST_RUNTIME}" is not an executable file. Falling back to PATH lookup.`;
     if (typeof onNotice === 'function') {
-      onNotice({ level: 'warning', code: 'OPENCODE_BINARY_INVALID', message });
+      onNotice({ level: 'warning', code: 'OMP_HOST_RUNTIME_INVALID', message });
     } else {
       console.warn(`Warning: ${message}`);
     }
   }
 
-  const resolvedFromPath = searchPathFor('opencode');
+  const resolvedFromPath = searchPathFor('bun');
   if (resolvedFromPath) {
-    process.env.OPENCODE_BINARY = resolvedFromPath;
     return resolvedFromPath;
   }
 
   throw new Error(
-    `Unable to locate the opencode CLI on PATH (${process.env.PATH || '<empty>'}). ` +
-    'Ensure the CLI is installed and reachable, or set OPENCODE_BINARY to its full path.'
+    'Unable to locate a Bun runtime on PATH to launch the omp host engine. ' +
+    'Install Bun (https://bun.sh) or set OPENCHAMBER_OMP_HOST_RUNTIME to the bun binary.'
   );
 }
 

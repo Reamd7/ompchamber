@@ -3,6 +3,7 @@ import net from 'node:net';
 import { stripAppImageArgv0Leak } from '../inherited-env.js';
 import { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses } from './managed-process-registry.js';
 import { applyProviderEnvAliases } from './provider-env-aliases.js';
+import { resolveOmpHostLaunchSpec } from './omp-host-launch.js';
 import { recordStartupPerformance } from './startup-performance.js';
 
 const parsePositiveInt = (value, fallback) => {
@@ -252,26 +253,14 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   const createManagedOpenCodeServerProcess = async ({ hostname, port, timeout, cwd, env: processEnv, shellEnvKeysCount = 0 }) => {
-    let binary = (process.env.OPENCODE_BINARY || 'opencode').trim() || 'opencode';
+    // The managed engine is the OpenChamber omp host (Bun + @oh-my-pi/
+    // pi-coding-agent), launched with the same `serve --hostname --port`
+    // shape `opencode serve` used, including the readiness stdout line.
+    const launch = resolveOmpHostLaunchSpec({ hostname, port });
+    const binary = launch.binary;
+    const args = launch.args;
     const sourceBinary = binary;
-    let args = ['serve', '--hostname', hostname, '--port', String(port)];
-    let launchWrapperType = null;
-
-    if (process.platform === 'win32' && state.useWslForOpencode) {
-      throw new Error('Launching OpenCode through WSL is no longer supported. Install OpenCode natively on Windows and configure opencode.cmd or opencode.exe.');
-    }
-
-    if (process.platform === 'win32' && !state.useWslForOpencode) {
-      const launchSpec = resolveManagedOpenCodeLaunchSpec(binary);
-      if (launchSpec?.binary) {
-        if (launchSpec.wrapperType) {
-          console.log(`Launching OpenCode via ${launchSpec.wrapperType}: ${launchSpec.binary}`);
-        }
-        launchWrapperType = launchSpec.wrapperType || null;
-        binary = launchSpec.binary;
-        args = [...(Array.isArray(launchSpec.args) ? launchSpec.args : []), ...args];
-      }
-    }
+    const launchWrapperType = null;
 
     const pathValue = typeof processEnv?.PATH === 'string' ? processEnv.PATH : '';
     const pathEntryCount = pathValue ? pathValue.split(process.platform === 'win32' ? ';' : ':').filter(Boolean).length : 0;
@@ -284,11 +273,12 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       hostname,
       port,
       wrapperType: launchWrapperType,
+      runtimeSource: launch.source,
       pathEntryCount,
       hasShellEnv: shellEnvKeysCount > 0,
       shellEnvKeysCount,
     };
-    console.log('[OpenCode] Launching managed server', state.lastOpenCodeLaunchDiagnostics);
+    console.log('[omp-host] Launching managed engine', state.lastOpenCodeLaunchDiagnostics);
 
     const child = spawn(binary, args, {
       cwd,

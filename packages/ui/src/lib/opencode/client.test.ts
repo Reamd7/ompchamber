@@ -24,7 +24,7 @@ const pathGetMock = mock(async () => {
   return next ?? { data: { directory: '/workspace/project' } };
 });
 
-mock.module('@opencode-ai/sdk/v2', () => ({
+mock.module('@/lib/opencode/wire', () => ({
   createOpencodeClient: mock(() => ({
     config: {
       get: mock(() => {

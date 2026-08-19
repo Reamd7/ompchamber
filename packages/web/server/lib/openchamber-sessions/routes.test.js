@@ -71,8 +71,8 @@ globalThis.__openchamberGetWorktreeBootstrapStatusMock = getWorktreeBootstrapSta
 
 let registerOpenChamberSessionRoutes;
 
-vi.mock('@opencode-ai/sdk/v2', () => ({
-  createOpencodeClient: () => ({
+vi.mock('../opencode/local-engine-client.js', () => ({
+  createLocalEngineClient: () => ({
     session: {
       create: sessionCreateMock,
       fork: sessionForkMock,

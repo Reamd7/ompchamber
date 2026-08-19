@@ -1,4 +1,4 @@
-import type { PermissionConfig } from '@opencode-ai/sdk/v2';
+import type { PermissionConfig } from '@/lib/opencode/wire'
 
 /**
  * Editor model for an agent's OWN `permission` map (the source config), with

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/wire'
 import {
   compareSessionsByLifecycleOrder,
   observeSessionActivityEvent,

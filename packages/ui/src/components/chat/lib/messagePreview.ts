@@ -1,4 +1,4 @@
-import type { Part } from '@opencode-ai/sdk/v2';
+import type { Part } from '@/lib/opencode/wire'
 
 export function getFullText(parts: Part[]): string {
     return parts

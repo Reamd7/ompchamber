@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { OpencodeClient } from '@/lib/opencode/wire'
 
 import { listGlobalSessionPages, splitGlobalSessionsByArchived } from './globalSessions'
 

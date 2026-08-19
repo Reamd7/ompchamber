@@ -70,3 +70,6 @@ workspaces/
 .worktrees/
 test-results/
 artifacts/
+
+# Python venv (uv)
+.venv/

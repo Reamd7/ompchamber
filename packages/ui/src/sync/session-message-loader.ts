@@ -1,4 +1,4 @@
-import type { Message, OpencodeClient, Part } from "@opencode-ai/sdk/v2/client"
+import type { Message, OpencodeClient, Part } from '@/lib/opencode/wire'
 import type { ChildStoreManager, DirectoryStore } from "./child-store"
 import { retry } from "./retry"
 import { mergeOptimisticPage, type OptimisticItem } from "./optimistic"

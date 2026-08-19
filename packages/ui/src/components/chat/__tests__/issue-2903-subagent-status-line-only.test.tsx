@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { Message, Part } from '@opencode-ai/sdk/v2/client';
+import type { Message, Part } from '@/lib/opencode/wire'
 
 mock.module('sonner', () => ({
   toast: { dismiss: () => undefined, error: () => undefined, info: () => undefined, success: () => undefined },

@@ -100,7 +100,7 @@ async function serveCommand(options) {
       }
     }
 
-    const opencodeBinary = await checkOpenCodeCLI(emitNotice);
+    const ompHostRuntime = await checkOpenCodeCLI(emitNotice);
     const preferredRuntime = getPreferredServerRuntime();
     const runtimeBin = preferredRuntime === 'bun' ? bunBin : process.execPath;
 
@@ -155,8 +155,8 @@ async function serveCommand(options) {
       }
 
       // Propagate resolved values into env before importing the server module.
-      if (opencodeBinary) {
-        process.env.OPENCODE_BINARY = opencodeBinary;
+      if (ompHostRuntime) {
+        process.env.OPENCHAMBER_OMP_HOST_RUNTIME = ompHostRuntime;
       }
       if (effectiveUiPassword) {
         process.env.OPENCHAMBER_UI_PASSWORD = effectiveUiPassword;
@@ -284,7 +284,7 @@ async function serveCommand(options) {
         ...process.env,
         OPENCHAMBER_PORT: String(targetPort),
         OPENCHAMBER_RUNTIME: 'web',
-        OPENCODE_BINARY: opencodeBinary,
+        OPENCHAMBER_OMP_HOST_RUNTIME: ompHostRuntime,
         OPENCHAMBER_HOST: effectiveHost,
         ...(effectiveUiPassword ? { OPENCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
         ...(options.apiOnly === true ? { OPENCHAMBER_API_ONLY: 'true' } : {}),

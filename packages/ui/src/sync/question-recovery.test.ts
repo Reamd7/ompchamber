@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part } from "@opencode-ai/sdk/v2/client"
+import type { Message, Part } from '@/lib/opencode/wire'
 import { hasActiveQuestionToolInCurrentTurn, recoverPendingQuestionWithRetry } from "./question-recovery"
 
 const message = (role: "user" | "assistant", parts: Part[] = []) => ({

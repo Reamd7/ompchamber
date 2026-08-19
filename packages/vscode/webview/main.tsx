@@ -15,7 +15,7 @@ import { getBootstrapMessages, readStoredLocaleForBootstrap } from '@openchamber
 import type { VSCodeActiveEditorFile } from '@/sync/input-store';
 import { usePermissionStore } from '@openchamber/ui/stores/permissionStore';
 import { processVSCodePermissionAutoAccept } from '@openchamber/ui/sync/vscode-permission-auto-accept';
-import type { PermissionRequest } from '@opencode-ai/sdk/v2/client';
+import type { PermissionRequest } from '@openchamber/ui/lib/opencode/wire';
 import { focusChatInput } from '@openchamber/ui/components/chat/composer/editor/dom';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected';

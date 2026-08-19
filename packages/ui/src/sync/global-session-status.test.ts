@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test"
-import type { Event } from "@opencode-ai/sdk/v2/client"
+import type { Event } from '@/lib/opencode/wire'
 import {
   applyGlobalSessionStatusEvent,
   applyGlobalSessionStatusSnapshot,

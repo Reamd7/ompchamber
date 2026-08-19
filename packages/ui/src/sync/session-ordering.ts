@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/wire'
 import { isSessionPinned } from '@/stores/useSessionPinnedStore';
 import { normalizePath } from '@/lib/pathNormalization';
 

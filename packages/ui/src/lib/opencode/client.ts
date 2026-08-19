@@ -1,5 +1,5 @@
-import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk/v2";
-import type { PermissionV2Request, PermissionV2Effect, PermissionV2Source } from "@opencode-ai/sdk/v2/client";
+import { createOpencodeClient, OpencodeClient } from '@/lib/opencode/wire'
+import type { PermissionV2Request, PermissionV2Effect, PermissionV2Source } from '@/lib/opencode/wire'
 import type { FilesAPI } from "../api/types";
 import { getDesktopHomeDirectory } from "../desktop";
 import type {
@@ -11,7 +11,7 @@ import type {
   Agent,
   TextPartInput,
   FilePartInput,
-} from "@opencode-ai/sdk/v2";
+} from '@/lib/opencode/wire'
 import { isAmbiguousTransportFailure, markAmbiguousTransportFailure } from "@/lib/relay/transport-error";
 import { FilesystemError, parseFilesystemErrorReason } from "@/lib/api/files-errors";
 import type { PermissionRequest } from "@/types/permission";

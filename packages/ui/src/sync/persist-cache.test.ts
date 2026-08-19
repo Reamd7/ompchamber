@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import type { Session } from "@opencode-ai/sdk/v2/client"
+import type { Session } from '@/lib/opencode/wire'
 import { switchRuntimeEndpoint } from "@/lib/runtime-switch"
 import { persistSessions, readDirCache } from "./persist-cache"
 import { getSyncPerformanceDiagnostics, setSyncPerformanceDiagnosticsEnabled } from "./performance-diagnostics"

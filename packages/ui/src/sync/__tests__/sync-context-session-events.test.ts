@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test"
-import type { Event, Session } from "@opencode-ai/sdk/v2/client"
+import type { Event, Session } from '@/lib/opencode/wire'
 
 let currentSessions: Session[] = []
 const upsertedSessions: Session[] = []

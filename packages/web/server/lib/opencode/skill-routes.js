@@ -1,4 +1,4 @@
-import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createLocalEngineClient } from './local-engine-client.js';
 import { buildDeferredRestartResponse } from './config-mutation-response.js';
 
 /**
@@ -133,7 +133,7 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
 
     try {
-      const client = createOpencodeClient({
+      const client = createLocalEngineClient({
         baseUrl: buildOpenCodeUrl('/', '').replace(/\/$/, ''),
         directory: workingDirectory || undefined,
         headers: getOpenCodeAuthHeaders(),

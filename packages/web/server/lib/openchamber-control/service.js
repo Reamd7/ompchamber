@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { createLocalEngineClient } from '../opencode/local-engine-client.js';
 import { OpenChamberControlError, asControlError } from './error.js';
 import { OPENCHAMBER_ALL_ACTIONS } from './actions.js';
 import { writeScreenshot } from './screenshots.js';
@@ -144,7 +144,7 @@ export const createOpenChamberControlService = (dependencies) => {
     sessionService,
     scheduledTaskService,
     browserControl = null,
-    createClient = createOpencodeClient,
+    createClient = createLocalEngineClient,
     sleep = (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
     now = Date.now,
   } = dependencies;

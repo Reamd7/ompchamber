@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { create, type StoreApi } from "zustand"
-import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
+import type { SessionStatus } from '@/lib/opencode/wire'
 
 import { INITIAL_STATE, type State } from "../types"
 import type { DirectoryStore } from "../child-store"

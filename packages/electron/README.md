@@ -108,20 +108,16 @@ On Windows and Linux, the General setting persisted as `desktopMinimizeToTrayEna
 
 The macOS menu bar item is enabled by default and can be disabled in General settings. The setting applies after restart; while disabled, Desktop does not create the native tray controller or start the renderer subscriptions, polling, quota refresh, or IPC updates that feed it.
 
-## Bundled OpenCode CLI
+## Bundled omp host engine
 
-Packaged Desktop builds include the official OpenCode CLI that matches the pinned `@opencode-ai/sdk` version in the root `package.json`. `prepare:opencode-cli` downloads the platform-specific release artifact, caches it under `packages/electron/.cache/opencode-cli`, stages `opencode` or `opencode.exe` into `resources/opencode-cli`, and verifies `opencode --version` before packaging. Re-running the step is fast when the staged binary already matches the pinned version.
+Packaged Desktop builds include a self-contained omp host binary compiled from `packages/web/server/lib/omp-host` (embedding `@oh-my-pi/pi-coding-agent`, the engine behind the OpenCode-compatible API surface). `prepare:omp-host` compiles it with `bun build --compile`, stages `omp-host`/`omp-host.exe` into `resources/omp-host`, and `verify:omp-host` boots it and checks `/global/health` before packaging. The engine updates with the app itself; there is no in-app engine upgrade.
 
-Managed local Desktop startup prefers OpenCode binaries in this order:
+Managed local Desktop startup resolves the engine in this order:
 
-1. `settings.opencodeBinary`.
-2. Environment overrides: `OPENCODE_BINARY`, `OPENCODE_PATH`, `OPENCHAMBER_OPENCODE_PATH`, or `OPENCHAMBER_OPENCODE_BIN`.
-3. The bundled Desktop CLI in `process.resourcesPath/opencode-cli`.
-4. System installs discovered from PATH.
-5. Known npm/Bun/Homebrew/Scoop/Chocolatey and other standard install locations.
-6. Platform discovery through `where opencode` on Windows or a login shell on macOS/Linux.
+1. An explicit compiled host binary: `OPENCHAMBER_OMP_HOST_BINARY`, or the bundled binary in `process.resourcesPath/omp-host`.
+2. A Bun runtime launching the host from source: `OPENCHAMBER_OMP_HOST_RUNTIME` (or `settings.opencodeBinary`, which now names the Bun runtime), then PATH.
 
-Use an explicit override when testing a different OpenCode CLI build or when a user needs to point Desktop at a custom binary. The configured path must point to the standalone CLI, not the OpenCode Desktop app executable.
+Use an explicit override when testing a different engine build.
 
 ## Common Env Vars
 
@@ -133,11 +129,10 @@ Use an explicit override when testing a different OpenCode CLI build or when a u
 | `OPENCHAMBER_HMR_UI_PORT` | Preferred Vite UI port for desktop dev, default `5173` |
 | `OPENCHAMBER_HMR_API_PORT` | Preferred API port for desktop dev, default `3901` |
 | `OPENCHAMBER_RUNTIME=desktop` | Set by Electron before starting the web server |
-| `OPENCHAMBER_OPENCODE_CLI_VERSION` | Optional packaging override for the bundled OpenCode CLI version; defaults to the pinned root `@opencode-ai/sdk` version |
 | `OPENCHAMBER_TARGET_ARCH` | Explicit desktop package architecture (`x64` or `arm64`); Linux requires it to match the native host |
 | `OPENCHAMBER_DESKTOP_NOTIFY=true` | Enables desktop notification flow in the web server |
 | `OPENCHAMBER_SKIP_API_COMPRESSION=true` | Defaulted by Desktop to reduce local CPU overhead |
-| `OPENCHAMBER_STARTUP_PERF=1` | Enables privacy-safe startup phase timings in Desktop/server logs; disabled by default |
+| `OPENCHAMBER_OMP_HOST_BINARY` / `OPENCHAMBER_OMP_HOST_RUNTIME` | Overrides for the packaged engine: a compiled host binary, or the Bun runtime used to launch the host from source |
 | `OPENCODE_HOST` / `OPENCODE_PORT` / `OPENCODE_SKIP_START` | Connect Desktop to an external OpenCode server instead of starting one locally |
 
 ## Native Features Owned Here

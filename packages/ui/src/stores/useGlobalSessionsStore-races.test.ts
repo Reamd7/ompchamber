@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import type { OpencodeClient, Session } from "@opencode-ai/sdk/v2"
+import type { OpencodeClient, Session } from '@/lib/opencode/wire'
 
 import { opencodeClient } from "@/lib/opencode/client"
 import { useGlobalSessionsStore } from "./useGlobalSessionsStore"

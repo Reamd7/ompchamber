@@ -1,4 +1,4 @@
-import type { Session } from '@opencode-ai/sdk/v2';
+import type { Session } from '@/lib/opencode/wire'
 
 export type SessionMetadataRecord = Record<string, unknown>;
 

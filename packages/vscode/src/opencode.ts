@@ -658,14 +658,28 @@ async function waitForReady(
 
   return { ok: false, elapsedMs: Date.now() - start, attempts, version: null };
 }
-
+function resolveOmpHostEntry(): string {
+  // src/<this file> → packages/vscode/src → packages/vscode → packages/web/...
+  const candidate = path.resolve(__dirname, '..', '..', 'web', 'server', 'lib', 'omp-host', 'host.js');
+  if (fs.existsSync(candidate)) return candidate;
+  throw new Error(
+    'The OpenChamber omp host entry was not found next to the extension ' +
+    `(${candidate}). The omp engine requires the OpenChamber workspace checkout.`
+  );
+}
 async function spawnManagedOpenCodeServer(
   workingDirectory: string,
   port: number,
   timeoutMs: number
 ): Promise<{ url: string; close: () => void }> {
-  const binary = stripWrappingQuotes(process.env.OPENCODE_BINARY || 'opencode') || 'opencode';
-  const launch = resolveWindowsLaunchSpec(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)]);
+  // The managed engine is the OpenChamber omp host (Bun + @oh-my-pi/
+  // pi-coding-agent) with the same serve CLI shape and readiness line. The
+  // host entry ships with the workspace checkout; a packaged extension
+  // without it fails fast with an actionable message.
+  const hostEntry = resolveOmpHostEntry();
+  const runtime =
+    stripWrappingQuotes(process.env.OPENCHAMBER_OMP_HOST_RUNTIME || process.env.OPENCODE_BINARY || '') || 'bun';
+  const launch = resolveWindowsLaunchSpec(runtime, [hostEntry, 'serve', '--hostname', '127.0.0.1', '--port', String(port)]);
   const child = spawn(launch.binary, launch.args, {
     cwd: workingDirectory,
     env: applyProviderEnvAliases({ ...process.env }),
@@ -710,10 +724,7 @@ async function spawnManagedOpenCodeServer(
 
     const onExit = (code: number | null) => {
       cleanup();
-      const appBundleHint = isMacOpenCodeAppBundlePath(binary)
-        ? ' The configured binary appears to point at the macOS desktop app bundle; OpenChamber needs the standalone opencode CLI.'
-        : '';
-      reject(new Error(`OpenCode process exited before serving with code ${code}. Binary used: ${binary}.${appBundleHint} Output: ${output}`));
+      reject(new Error(`omp host process exited before serving with code ${code}. Runtime used: ${runtime}. Output: ${output}`));
     };
 
     const onError = (error: Error) => {
@@ -738,7 +749,7 @@ async function spawnManagedOpenCodeServer(
   });
 
   // Record this child so a future run can reap it if we crash before teardown.
-  registerManagedProcess({ pid: child.pid, ownerPid: process.pid, port, binary, runtime: 'vscode' });
+  registerManagedProcess({ pid: child.pid, ownerPid: process.pid, port, binary: runtime, runtime: 'vscode' });
 
   return {
     url,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import type { Message, Part } from '@opencode-ai/sdk/v2/client'
+import type { Message, Part } from '@/lib/opencode/wire'
 
 import { shouldFetchSessionForRenderableSync, hasUserMessage } from './use-sync'
 import { mergeOptimisticPage } from './optimistic'
