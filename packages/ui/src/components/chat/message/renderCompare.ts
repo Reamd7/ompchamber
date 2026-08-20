@@ -332,9 +332,13 @@ export const areRelevantTurnGroupingContextsEqual = (
     return false;
   }
 
-  if ((ownerRelevant || segmentsRelevant || left.isLastAssistantInTurn || right.isLastAssistantInTurn) && !areTurnChangedFilesEqual(left.changedFiles, right.changedFiles)) {
+  if ((ownerRelevant || segmentsRelevant || left.isFirstAssistantInTurn || right.isFirstAssistantInTurn) && left.cacheMiss?.reprocessedTokens !== right.cacheMiss?.reprocessedTokens) {
     return false;
   }
+
+   if ((ownerRelevant || segmentsRelevant || left.isLastAssistantInTurn || right.isLastAssistantInTurn) && !areTurnChangedFilesEqual(left.changedFiles, right.changedFiles)) {
+     return false;
+   }
 
   return true;
 };

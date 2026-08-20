@@ -41,6 +41,7 @@
     "test": "node scripts/run-isolated-tests.mjs scripts && bun run --cwd packages/ui test && bun run --cwd packages/vscode test && bun run --cwd packages/electron test && bun run --cwd packages/web test",
     "clean": "bun run --filter '*' clean",
     "changelog-card": "node scripts/changelog-card/generate.mjs",
+    "check:events": "node scripts/check-event-coverage.mjs",
     "postinstall": "node ./fix-deprecation.js && patch-package && node ./packages/electron/scripts/ensure-electron.mjs --best-effort",
     "dev:web": "bun run --cwd packages/web build:watch",
     "dev:web:server": "bun run --cwd packages/web dev:server:watch",

@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from "@/components/icon/icons";
 import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
-import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
+import { useIsVSCodeRuntime, useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { isDesktopShell } from '@/lib/desktop';
 import { getAgentColor } from '@/lib/agentColors';
 import { useDeviceInfo } from '@/lib/device';
@@ -45,6 +45,11 @@ import {
     shouldPreserveManualModelOverride,
 } from '@/lib/messages/userModelChoice';
 import { getSyncParts } from '@/sync/sync-refs';
+import { OmpModeOptionList, OmpModeSelector, useOmpModeTransition, type OmpModeOption } from './OmpModeSelector';
+import { OmpRoleSlots, type OmpRoleSlotsLabels } from './OmpRoleSlots';
+import { useOmpModelRoles, type OmpRoleSlot } from '@/hooks/useOmpModelRoles';
+import { useOmpSessionMode } from '@/hooks/useOmpSessionMode';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 
 type IconComponent = IconName;
 
@@ -645,6 +650,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const latestLoadedUserChoiceRestoreRef = React.useRef<string | null>(null);
 
     const currentSessionDirectory = currentSessionId ? getDirectoryForSession(currentSessionId) : undefined;
+
+    // omp role/mode surfaces (spec 01 §5.5, 02 §5.4, 08 §5.1-5.2). Capability
+    // gated; every degraded state (probe unresolved, feature off, fetch
+    // failed) renders the legacy controls unchanged.
+    const { ompModes } = useRuntimeAPIs();
+    const effectiveDirectory = useEffectiveDirectory();
+    const ompPickerDirectory = currentSessionDirectory ?? effectiveDirectory ?? null;
+    const ompModelRoles = useOmpModelRoles(ompPickerDirectory);
+    const ompSessionMode = useOmpSessionMode(ompPickerDirectory, currentSessionId, ompModelRoles.modesEnabled);
+    const [ompModeMenuOpen, setOmpModeMenuOpen] = React.useState(false);
     const hasRenderableCurrentSessionSnapshot = useSessionRenderable(
         currentSessionId ?? '',
         currentSessionDirectory ?? undefined,
@@ -787,6 +802,75 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return 'applied';
     }, [addRecentModel, commitVariantSelectionForModel, resolveLiveAgentName, tryApplyModelSelection]);
 
+    const ompRoleSlotsLabels = React.useMemo<OmpRoleSlotsLabels>(() => ({
+        sectionTitle: t('chat.modelControls.roles.sectionTitle'),
+        notConfigured: t('chat.modelControls.roles.notConfigured'),
+        configure: t('chat.modelControls.roles.configure'),
+        formatThinking: (level: string) => t('chat.modelControls.roles.thinking', { level }),
+    }), [t]);
+
+    const openRolesSettings = React.useCallback(() => {
+        setSettingsPage('providers');
+        setSettingsDialogOpen(true);
+        setAgentMenuOpen(false);
+        closeMobilePanel();
+    }, [setSettingsPage, setSettingsDialogOpen, setAgentMenuOpen, closeMobilePanel]);
+
+    // Picking a role applies its resolved model through the existing model
+    // selection path — the session's model then updates through the wire
+    // prompt path; no new server write exists for this.
+    const handleRoleSelect = React.useCallback((slot: OmpRoleSlot) => {
+        if (!slot.model) return;
+        const result = applyModelSelectionWithVariant(slot.model.provider, slot.model.id, undefined);
+        if (result !== 'applied') {
+            console.error('[ModelControls] Role model not available for selection:', { role: slot.id, model: slot.model });
+            return;
+        }
+        setAgentMenuOpen(false);
+        closeMobilePanel();
+    }, [applyModelSelectionWithVariant, setAgentMenuOpen, closeMobilePanel]);
+
+    const ompModeOptions = React.useMemo<OmpModeOption[]>(() => [
+        { value: 'none', label: t('chat.modeSelector.label.default') },
+        { value: 'plan', label: t('chat.modeSelector.label.plan') },
+        { value: 'goal', label: t('chat.modeSelector.label.goal') },
+        { value: 'vibe', label: t('chat.modeSelector.label.vibe') },
+    ], [t]);
+
+    const ompLabelForMode = React.useCallback((mode: string): string => {
+        switch (mode) {
+            case 'none': return t('chat.modeSelector.label.default');
+            case 'plan': return t('chat.modeSelector.label.plan');
+            case 'plan_paused': return t('chat.modeSelector.label.planPaused');
+            case 'goal': return t('chat.modeSelector.label.goal');
+            case 'goal_paused': return t('chat.modeSelector.label.goalPaused');
+            case 'vibe': return t('chat.modeSelector.label.vibe');
+            case 'loop': return t('chat.modeSelector.label.loop');
+            default: return mode;
+        }
+    }, [t]);
+
+    const ompModeSelectorLabels = React.useMemo(() => ({
+        ariaLabel: t('chat.modeSelector.ariaLabel'),
+        title: t('chat.modeSelector.title'),
+        requiresSession: t('chat.modeSelector.requiresSession'),
+        changeFailed: t('chat.modeSelector.changeFailed'),
+        formatConflict: (modeLabel: string) => t('chat.modeSelector.conflict', { mode: modeLabel }),
+    }), [t]);
+
+    const ompModeTransition = useOmpModeTransition({
+        mode: ompSessionMode,
+        sessionID: currentSessionId ?? null,
+        directory: ompPickerDirectory,
+        setMode: ompModes.setMode,
+        labelForMode: ompLabelForMode,
+        labels: ompModeSelectorLabels,
+        onSettled: () => {
+            setOmpModeMenuOpen(false);
+            closeMobilePanel();
+        },
+    });
+
     React.useEffect(() => {
         if (!currentSessionId) {
             latestLoadedUserChoiceRestoreRef.current = null;
@@ -829,8 +913,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (latestLoadedUserChoice.agent && currentAgentName !== latestLoadedUserChoice.agent) {
-            setAgent(latestLoadedUserChoice.agent);
+        // Under the omp concept system the wire agent field is a server-side
+        // projection default ('build'), not a user selection — restoring it
+        // would resurrect the legacy agent param on the next send.
+        const restoreAgent = !ompModelRoles.modesEnabled && latestLoadedUserChoice.agent;
+        if (restoreAgent && currentAgentName !== restoreAgent) {
+            setAgent(restoreAgent);
         }
 
         const historicalVariant = latestLoadedUserChoice.variant
@@ -841,13 +929,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             latestLoadedUserChoice.providerID,
             latestLoadedUserChoice.modelID,
             historicalVariant,
-            latestLoadedUserChoice.agent || currentAgentName || undefined,
+            (ompModelRoles.modesEnabled ? undefined : (latestLoadedUserChoice.agent || currentAgentName || undefined)),
         );
         if (applyResult !== 'applied') {
             return;
         }
 
-        if (latestLoadedUserChoice.agent) {
+        if (!ompModelRoles.modesEnabled && latestLoadedUserChoice.agent) {
             saveSessionAgentSelection(currentSessionId, latestLoadedUserChoice.agent);
             saveAgentModelVariantForSession(
                 currentSessionId,
@@ -862,6 +950,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     }, [
         currentSessionId,
+        ompModelRoles.modesEnabled,
         currentAgentName,
         contextHydrated,
         providers,
@@ -1825,6 +1914,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         </div>
                     </div>
 
+                    {ompModelRoles.modelRolesEnabled && !mobileModelQuery ? (
+                        <OmpRoleSlots
+                            roles={ompModelRoles.roles}
+                            selectedModel={currentProviderId && currentModelId ? { provider: currentProviderId, id: currentModelId } : null}
+                            onSelect={handleRoleSelect}
+                            onConfigure={openRolesSettings}
+                            labels={ompRoleSlotsLabels}
+                        />
+                    ) : null}
+
                     {!hasResults && (
                         <div className="px-3 py-8 text-center typography-meta text-muted-foreground">
                             {t('chat.modelControls.noProvidersOrModelsFound')}
@@ -2013,7 +2112,30 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const renderMobileAgentPanel = () => {
         if (!isCompact) return null;
- 
+
+        if (ompModelRoles.modesEnabled) {
+            return (
+                <MobileOverlayPanel
+                    open={activeMobilePanel === 'agent'}
+                    onClose={closeMobilePanel}
+                    title={ompModeSelectorLabels.title}
+                    contentMaxHeightClassName="max-h-[min(52dvh,360px)]"
+                >
+                    <OmpModeOptionList
+                        mode={ompSessionMode}
+                        pending={ompModeTransition.pending}
+                        busy={ompModeTransition.busy}
+                        sessionID={currentSessionId ?? null}
+                        options={ompModeOptions}
+                        labels={ompModeSelectorLabels}
+                        onSelect={(value) => {
+                            void ompModeTransition.selectMode(value);
+                        }}
+                    />
+                </MobileOverlayPanel>
+            );
+        }
+
         return (
             <MobileOverlayPanel
                 open={activeMobilePanel === 'agent'}
@@ -2333,6 +2455,15 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     <span className="font-medium text-foreground">{t('chat.modelControls.addNewProvider')}</span>
                                 </button>
                             </div>
+                            {ompModelRoles.modelRolesEnabled ? (
+                                <OmpRoleSlots
+                                    roles={ompModelRoles.roles}
+                                    selectedModel={currentProviderId && currentModelId ? { provider: currentProviderId, id: currentModelId } : null}
+                                    onSelect={handleRoleSelect}
+                                    onConfigure={openRolesSettings}
+                                    labels={ompRoleSlotsLabels}
+                                />
+                            ) : null}
                             <ModelPickerList
                                 providers={providers as ModelPickerProvider[]}
                                 favoriteModels={favoriteModelsList}
@@ -2837,6 +2968,62 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         );
     };
 
+    // The omp mode selector replaces the legacy build/plan agent chip when
+    // the modes + model-roles capabilities are on (master D3 row 1).
+    const renderModeSelector = () => {
+        if (!isCompact) {
+            return (
+                <OmpModeSelector
+                    open={ompModeMenuOpen}
+                    onOpenChange={setOmpModeMenuOpen}
+                    mode={ompSessionMode}
+                    pending={ompModeTransition.pending}
+                    busy={ompModeTransition.busy}
+                    sessionID={currentSessionId ?? null}
+                    options={ompModeOptions}
+                    labelForMode={ompLabelForMode}
+                    labels={ompModeSelectorLabels}
+                    onSelect={(value) => {
+                        void ompModeTransition.selectMode(value);
+                    }}
+                    sizeVariant={{
+                        icon: controlIconSize,
+                        text: controlTextSize,
+                        height: buttonHeight,
+                    }}
+                />
+            );
+        }
+
+        return (
+            <button
+                type="button"
+                onClick={isReady ? () => setActiveMobilePanel('agent') : undefined}
+                disabled={!isReady}
+                aria-label={ompModeSelectorLabels.ariaLabel}
+                className={cn(
+                    'model-controls__mode-trigger flex items-center gap-1.5 transition-colors min-w-0 focus:outline-none',
+                    buttonHeight,
+                    isReady ? 'cursor-pointer hover:bg-transparent hover:opacity-70' : 'opacity-60 cursor-not-allowed',
+                )}
+            >
+                {isReady ? (
+                    <>
+                        <Icon name="target" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
+                        <span className={cn('model-controls__mode-label font-medium truncate min-w-0', controlTextSize)}>
+                            {ompLabelForMode(ompModeTransition.pending ?? ompSessionMode ?? 'none')}
+                        </span>
+                    </>
+                ) : (
+                    <span className={cn('model-controls__mode-label font-medium truncate min-w-0 text-muted-foreground', controlTextSize)}>
+                        {readinessLabel}
+                    </span>
+                )}
+            </button>
+        );
+    };
+
+
     const inlineClassName = cn(
         '@container/model-controls flex items-center min-w-0',
         // Only force full-width + truncation behaviors on true mobile layouts.
@@ -2857,7 +3044,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 >
                     {renderVariantSelector()}
                     {renderModelSelector()}
-                    {renderAgentSelector()}
+                    {ompModelRoles.modesEnabled ? renderModeSelector() : renderAgentSelector()}
                 </div>
             </div>
 

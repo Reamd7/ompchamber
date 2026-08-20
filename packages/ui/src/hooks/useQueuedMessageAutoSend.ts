@@ -1,15 +1,16 @@
 import React from 'react';
-import { getMessageQueueKey, parseMessageQueueKey, useMessageQueueStore, type MessageQueueTarget, type QueuedMessage } from '@/stores/messageQueueStore';
-import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useSelectionStore } from '@/sync/selection-store';
-import { useConfigStore } from '@/stores/useConfigStore';
-import { useContextStore } from '@/stores/contextStore';
-import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
-import { parseAgentMentions } from '@/lib/messages/agentMentions';
+import { isOmpCompactionActive } from '@/sync/useOmpSessionStore';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { getDirectoryState } from '@/sync/sync-refs';
 import { useDirectorySync } from '@/sync/sync-context';
 import { getRuntimeKey } from '@/lib/runtime-switch';
-import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useContextStore } from '@/stores/contextStore';
+import { useSelectionStore } from '@/sync/selection-store';
+import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
+import { getMessageQueueKey, parseMessageQueueKey, useMessageQueueStore, type MessageQueueTarget, type QueuedMessage } from '@/stores/messageQueueStore';
+import { parseAgentMentions } from '@/lib/messages/agentMentions';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
@@ -190,6 +191,12 @@ export const resolveQueuedSessionStatusType = (
   directory: string,
 ): SessionStatusType => {
   const state = getDirectoryState(directory);
+  // Compaction holds the queue gate shut (spec 05 §5.5): a session in an
+  // active compaction is treated as busy so the idle edge cannot dispatch
+  // into it; flush timing is compaction-ended + idle.
+  if (isOmpCompactionActive(directory, sessionId)) {
+    return 'busy';
+  }
   const statusType = state?.session_status?.[sessionId]?.type;
   if (statusType === 'busy' || statusType === 'retry') {
     return statusType;

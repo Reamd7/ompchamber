@@ -57,6 +57,15 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     createdOptions.push(options);
     return { session: sessionFor(options.sessionManager?.getSessionId?.() ?? 's1') };
   },
+  Settings: class {
+    static async init() {
+      return {
+        getCwd: () => 'C:/stub-boot',
+        cloneForCwd: async () => ({ getCwd: () => 'C:/stub-boot' }),
+      };
+    }
+  },
+  VERSION: 'test',
   discoverAuthStorage: () => ({}),
   BUILTIN_TOOLS: [],
 }));
@@ -106,5 +115,44 @@ describe('OmpHostEngine prompt dispatch', () => {
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'defaults' });
     const options = createdOptions.at(-1);
     expect(options.model).toBeUndefined();
+  });
+
+  test('materialize injects the keyed Settings instance, lease-driven hasUI, session-pinned local options', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'wiring' });
+    const options = createdOptions.at(-1);
+    // Settings injection (06 §5.1 / master R6): the boot instance is handed
+    // to the SDK instead of the process singleton.
+    expect(options.settings).toBe(await engine.settingsStore.settingsFor('/repo'));
+    // R13: hasUI comes from the dialog lease snapshot — no lease → false
+    // (fail-closed), never from the capability.
+    expect(options.hasUI).toBe(false);
+    // R7/R8: local:// resolution is session-pinned with zero global mutation.
+    expect(options.localProtocolOptions).toBeTruthy();
+    expect(typeof options.localProtocolOptions).toBe('object');
+    // Retained for the agent-runs aggregator (04 §5.5).
+    expect(engine.sessions.get('s1').agentRegistry).toBe(options.agentRegistry);
+    // A lease flip drives hasUI on the next materialization.
+    engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's2', clientId: 'c1' });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'with lease' });
+    expect(createdOptions.at(-1).hasUI).toBe(true);
+  });
+
+  test('plan sessions receive the SDK PlanYolo shape {target, thinkingLevel?}', async () => {
+    // P0 defect a regression guard: the old `{autoApproveOnResolve}` literal
+    // was an unknown field — silent read-only plan mode + xd://propose
+    // TypeError (spec 02 §4). With a persisted model the correct shape is
+    // passed; without one planYolo is omitted entirely (never the bad shape).
+    const engine = new OmpHostEngine({ agentDir });
+    engine.registry.update('/repo', 's1', { agent: 'plan', model: 'p1/zzz-first' });
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'plan it' });
+    const withModel = createdOptions.at(-1);
+    expect(withModel.planYolo).toEqual({ target: { provider: 'p1', id: 'zzz-first' } });
+
+    engine.registry.update('/repo', 's2', { agent: 'plan' });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'plan without model' });
+    const withoutModel = createdOptions.at(-1);
+    expect(withoutModel.planYolo).toBeUndefined();
+    expect(JSON.stringify(withoutModel)).not.toContain('autoApproveOnResolve');
   });
 });

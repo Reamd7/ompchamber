@@ -23,7 +23,7 @@ function isSyncDebugEnabled(): boolean {
   }
   return _enabled
 }
-type SyncDebugCategory = "pipeline" | "reducer" | "dispatch" | "recovery"
+type SyncDebugCategory = "pipeline" | "reducer" | "dispatch" | "recovery" | "omp"
 
 function log(cat: SyncDebugCategory, ...args: unknown[]): void {
   if (!isSyncDebugEnabled()) return
@@ -79,5 +79,31 @@ export const syncDebug = {
     /** A scoped session snapshot fetch is starting because live state looked incomplete. */
     materializing: (details: { reason: string; directory: string; sessionID: string; messageID?: string; partID?: string }) =>
       log("recovery", "materializing session", details),
+  },
+
+  omp: {
+    /** Pipeline did not start: capabilities missing/feature off (wire-only degradation). */
+    dormant: (reason: string) =>
+      log("omp", "pipeline DORMANT (wire-only)", reason),
+
+    /** Pipeline started after capability negotiation. */
+    started: (eventSchema: string) =>
+      log("omp", "pipeline started", { eventSchema }),
+
+    /** Unknown omp event type ignored (minor-version addition, spec 05 §5.2.3). */
+    unknownEvent: (type: string, id: number) =>
+      log("omp", "unknown event type IGNORED", { type, id }),
+
+    /** Event failed its payload schema — consumed without state change. */
+    droppedEvent: (type: string, id: number) =>
+      log("omp", "event DROPPED (payload shape)", { type, id }),
+
+    /** omp.custom.appended with display:false — no card on any path (T3). */
+    customHidden: (wireMessageID: string, customType: string) =>
+      log("omp", "custom.appended hidden (display:false)", { wireMessageID, customType }),
+
+    /** Resync control frame: authoritative GET per scope is running. */
+    resync: (scopes: string[], lastEventId: number | null) =>
+      log("omp", "stream resync", { scopes, lastEventId }),
   },
 } as const

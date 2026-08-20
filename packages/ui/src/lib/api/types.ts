@@ -1,5 +1,12 @@
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { DraftStarterRef } from '@/lib/draftStarters';
+import type {
+  OmpCapabilitiesAPI,
+  OmpEventsAPI,
+  OmpModelsAPI,
+  OmpModesAPI,
+  OmpSessionAPI,
+} from './omp';
 
 type RuntimePlatform = 'web' | 'desktop' | 'vscode';
 
@@ -1234,6 +1241,13 @@ export interface RuntimeAPIs {
   push?: PushAPI;
   diagnostics?: DiagnosticsAPI;
   clientAuth?: ClientAuthAPI;
+  // omp parity surface (spec docs/omp-parity/05 §5.2.2): one shared
+  // runtimeFetch-backed implementation for every runtime.
+  ompEvents: OmpEventsAPI;
+  ompCapabilities: OmpCapabilitiesAPI;
+  ompSession: OmpSessionAPI;
+  ompModels: OmpModelsAPI;
+  ompModes: OmpModesAPI;
   tools: ToolsAPI;
   editor?: EditorAPI;
   vscode?: VSCodeAPI;

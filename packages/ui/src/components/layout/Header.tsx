@@ -474,7 +474,6 @@ type HeaderSessionSnapshot = {
   directory: string | null;
   created: number | null;
   slug: string | null;
-  shareUrl: string | null;
   parentId: string | null;
 };
 
@@ -517,7 +516,6 @@ export const Header: React.FC<HeaderProps> = ({
         directory: record.directory ?? null,
         created: session.time?.created ?? null,
         slug: record.slug ?? null,
-        shareUrl: session.share?.url ?? null,
         parentId: session.parentID ?? null,
       };
     },
@@ -1097,8 +1095,6 @@ export const Header: React.FC<HeaderProps> = ({
   const headerDirectoryStore = useDirectoryStore(openDirectory || undefined, { bootstrap: false });
   const sync = useSync();
   const updateSessionTitle = useSessionUIStore((state) => state.updateSessionTitle);
-  const shareSession = useSessionUIStore((state) => state.shareSession);
-  const unshareSession = useSessionUIStore((state) => state.unshareSession);
   const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
   const deleteSessions = useSessionUIStore((state) => state.deleteSessions);
   const [isRenamingHeaderSession, setIsRenamingHeaderSession] = React.useState(false);
@@ -1151,39 +1147,6 @@ export const Header: React.FC<HeaderProps> = ({
         : 'sessions.sidebar.session.copyId.error'));
     }).catch(() => toast.error(t('sessions.sidebar.session.copyId.error')));
   }, [currentSessionId, t]);
-
-  const shareCurrentSession = React.useCallback(async () => {
-    if (!currentSessionId) return;
-    const result = await shareSession(currentSessionId);
-    if (result?.share?.url) {
-      const copied = await copyTextToClipboard(result.share.url);
-      toast[copied.ok ? 'success' : 'warning'](t('sessions.sidebar.session.share.successTitle'), {
-        description: t(copied.ok
-          ? 'sessions.sidebar.session.share.successDescription'
-          : 'sessions.sidebar.session.share.copyUrlError'),
-      });
-      return;
-    }
-    toast.error(t('sessions.sidebar.session.share.error'));
-  }, [currentSessionId, shareSession, t]);
-
-  const copyCurrentSessionShareUrl = React.useCallback(() => {
-    const shareUrl = currentSession?.shareUrl;
-    if (!shareUrl) return;
-    void copyTextToClipboard(shareUrl).then((result) => {
-      toast[result.ok ? 'success' : 'error'](t(result.ok
-        ? 'sessions.sidebar.session.menu.copied'
-        : 'sessions.sidebar.session.share.copyUrlError'));
-    }).catch(() => toast.error(t('sessions.sidebar.session.share.copyUrlError')));
-  }, [currentSession?.shareUrl, t]);
-
-  const unshareCurrentSession = React.useCallback(async () => {
-    if (!currentSessionId) return;
-    const result = await unshareSession(currentSessionId);
-    toast[result ? 'success' : 'error'](t(result
-      ? 'sessions.sidebar.session.unshare.success'
-      : 'sessions.sidebar.session.unshare.error'));
-  }, [currentSessionId, t, unshareSession]);
 
   const exportCurrentSession = React.useCallback(async () => {
     if (!currentSessionId || !openDirectory) {
@@ -2044,14 +2007,6 @@ export const Header: React.FC<HeaderProps> = ({
                     <DropdownMenuItem onClick={() => { pendingHeaderRenameRef.current = true; }}><Icon name="pencil-ai" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.rename')}</DropdownMenuItem>
                     <DropdownMenuItem onClick={copyCurrentSessionId}><Icon name="file-copy" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.copyId')}</DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    {currentSession?.shareUrl ? (
-                      <>
-                        <DropdownMenuItem onClick={copyCurrentSessionShareUrl}><Icon name="file-copy" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.copyLink')}</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => void unshareCurrentSession()}><Icon name="link-unlink-m" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.unshare')}</DropdownMenuItem>
-                      </>
-                    ) : (
-                      <DropdownMenuItem onClick={() => void shareCurrentSession()}><Icon name="share-2" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.share')}</DropdownMenuItem>
-                    )}
                     <DropdownMenuItem onClick={() => void exportCurrentSession()}><Icon name="download" className="mr-2 size-4" />{t('sessions.sidebar.session.menu.exportMarkdown')}</DropdownMenuItem>
                     {!isVSCode && currentSession && !currentSession.parentId ? (
                       <Tooltip>

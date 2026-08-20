@@ -490,7 +490,6 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
 
     if (
       normalizedPayload.type === "session.idle"
-      || normalizedPayload.type === "session.error"
       || normalizedPayload.type === "session.created"
       || normalizedPayload.type === "session.deleted"
     ) {

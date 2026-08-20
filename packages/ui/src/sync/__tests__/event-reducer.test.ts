@@ -240,19 +240,6 @@ describe("applyDirectoryEvent", () => {
     expect(draft.session_status.ses_1).toBe(statusRef)
   })
 
-  test("skips duplicate session error idle-state events", () => {
-    const draft = state()
-    const event = {
-      type: "session.error",
-      properties: { sessionID: "ses_1" },
-    } as Event
-
-    expect(applyDirectoryEvent(draft, event)).toBe(true)
-    const statusRef = draft.session_status.ses_1
-
-    expect(applyDirectoryEvent(draft, event)).toBe(false)
-    expect(draft.session_status.ses_1).toBe(statusRef)
-  })
 
   test("detects retry status metadata changes", () => {
     const draft = state({

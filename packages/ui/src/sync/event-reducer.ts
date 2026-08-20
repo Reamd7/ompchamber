@@ -341,15 +341,6 @@ export function applyDirectoryEvent(
       return true
     }
 
-    case "session.error": {
-      const props = event.properties as { sessionID: string }
-      const status = { type: "idle" } as const
-      if (areSessionStatusesEqual(draft.session_status[props.sessionID], status)) {
-        return false
-      }
-      draft.session_status[props.sessionID] = status
-      return true
-    }
 
     case "message.updated": {
       const info = (event.properties as { info: Message }).info

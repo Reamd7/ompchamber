@@ -6,6 +6,9 @@ import path from 'path';
 import {
   buildDeferredRestartResponse,
 } from './config-mutation-response.js';
+// NOTE: the omp SDK cannot be imported here — this server runs under Node
+// and the SDK is Bun/TS-only (pi-natives fails to load). The omp-host owns
+// SDK-side resolution; `resolveAgentDir` below fetches it once and caches.
 import { getClaudeCliAuthStatus } from './claude-cli-auth.js';
 
 export const registerOpenCodeRoutes = (app, dependencies) => {
@@ -617,19 +620,65 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
     }
   });
 
-  // Behavior / Global AGENTS.md endpoints
-  const AGENTS_MD_PATH = path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md');
+  // Behavior / Global AGENTS.md endpoints.
+  //
+  // The edit target is the omp-native user-level file (spec 07 §5.13): the
+  // highest-priority (100) context provider loads `getAgentDir()/AGENTS.md`,
+  // resolved server-side because the agent dir is profile-scoped
+  // (~/.omp/agent, or ~/.omp/profiles/<name>/agent while a profile is
+  // active). The legacy OpenCode-compat file (~/.config/opencode/AGENTS.md,
+  // priority 55) is still read by the engine's discovery provider, so it is
+  // reported read-only for the UI notice; when the native file exists it
+  const legacyAgentsMdPath = () => path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md');
+  let cachedAgentDir = null;
+  const resolveAgentDir = async () => {
+    if (cachedAgentDir) return cachedAgentDir;
+    try {
+      const base = buildOpenCodeUrl('/agent-dir');
+      const res = await fetch(base, { headers: getOpenCodeAuthHeaders() ?? {} });
+      if (res.ok) {
+        const body = await res.json();
+        if (typeof body?.agentDir === 'string' && body.agentDir) {
+          cachedAgentDir = body.agentDir;
+          return cachedAgentDir;
+        }
+      }
+    } catch {
+      // omp-host not reachable yet: fall through to the static default.
+    }
+    cachedAgentDir = path.join(os.homedir(), '.omp', 'agent');
+    return cachedAgentDir;
+  };
+  const agentsMdPath = async () => path.join(await resolveAgentDir(), 'AGENTS.md');
   const MAX_BEHAVIOR_PROMPT_SIZE = 1024 * 1024; // 1 MB
 
   app.get('/api/behavior/agents-md', async (_req, res) => {
     try {
+      const targetPath = await agentsMdPath();
+      let content = '';
+      let exists = false;
       try {
-        await fs.promises.access(AGENTS_MD_PATH);
+        content = await fs.promises.readFile(targetPath, 'utf8');
+        exists = true;
       } catch {
-        return res.json({ content: '', exists: false });
+        // Missing native file is a valid state (empty editor), not an error.
       }
-      const content = await fs.promises.readFile(AGENTS_MD_PATH, 'utf8');
-      return res.json({ content, exists: true });
+
+      const legacyPath = legacyAgentsMdPath();
+      let legacyHasContent = false;
+      try {
+        const legacyContent = await fs.promises.readFile(legacyPath, 'utf8');
+        legacyHasContent = legacyContent.trim().length > 0;
+      } catch {
+        // No legacy file: nothing to notice.
+      }
+
+      return res.json({
+        content,
+        exists,
+        path: targetPath,
+        legacy: { path: legacyPath, hasContent: legacyHasContent },
+      });
     } catch (error) {
       console.error('Failed to read AGENTS.md:', error);
       return res.status(500).json({ error: 'Failed to read AGENTS.md' });
@@ -644,15 +693,16 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
         return res.status(413).json({ error: `Content exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
       }
 
+      const targetPath = await agentsMdPath();
       // Ensure parent directory exists
-      const parentDir = path.dirname(AGENTS_MD_PATH);
+      const parentDir = path.dirname(targetPath);
       try {
         await fs.promises.access(parentDir);
       } catch {
         await fs.promises.mkdir(parentDir, { recursive: true });
       }
 
-      await fs.promises.writeFile(AGENTS_MD_PATH, content, 'utf8');
+      await fs.promises.writeFile(targetPath, content, 'utf8');
 
       return res.json(buildDeferredRestartResponse(
         'AGENTS.md saved. Restart OpenCode to apply.',

@@ -34,8 +34,6 @@ type Args = {
   setSessionSwitcherOpen: (open: boolean) => void;
   setCurrentSession: (sessionId: string | null, directoryHint?: string | null) => void;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
-  shareSession: (id: string) => Promise<Session | null>;
-  unshareSession: (id: string) => Promise<Session | null>;
   deleteSession: (id: string) => Promise<boolean>;
   deleteSessions: (ids: string[]) => Promise<{ deletedIds: string[]; failedIds: string[] }>;
   archiveSession: (id: string) => Promise<boolean>;
@@ -53,16 +51,6 @@ type Args = {
 
 export const useSessionActions = (args: Args) => {
   const { t } = useI18n();
-  const [copiedSessionId, setCopiedSessionId] = React.useState<string | null>(null);
-  const copyTimeout = React.useRef<number | null>(null);
-
-  React.useEffect(() => {
-    return () => {
-      if (copyTimeout.current) {
-        clearTimeout(copyTimeout.current);
-      }
-    };
-  }, []);
 
   const handleSessionSelect = React.useCallback(
     (sessionId: string, sessionDirectory?: string | null) => {
@@ -118,42 +106,6 @@ export const useSessionActions = (args: Args) => {
     args.setEditTitle('');
   }, [args]);
 
-  const copyShareUrl = React.useCallback(async (url: string, sessionId: string): Promise<boolean> => {
-    try {
-      const result = await copyTextToClipboard(url);
-      if (!result.ok) return false;
-      setCopiedSessionId(sessionId);
-      if (copyTimeout.current) clearTimeout(copyTimeout.current);
-      copyTimeout.current = window.setTimeout(() => {
-        setCopiedSessionId(null);
-        copyTimeout.current = null;
-      }, 2000);
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
-
-  const handleShareSession = React.useCallback(async (session: Session) => {
-    const result = await args.shareSession(session.id);
-    if (!result?.share?.url) {
-      toast.error(t('sessions.sidebar.session.share.error'));
-      return;
-    }
-    const copied = await copyShareUrl(result.share.url, session.id);
-    toast[copied ? 'success' : 'warning'](t('sessions.sidebar.session.share.successTitle'), {
-      description: t(copied
-        ? 'sessions.sidebar.session.share.successDescription'
-        : 'sessions.sidebar.session.share.copyUrlError'),
-    });
-  }, [args, copyShareUrl, t]);
-
-  const handleCopyShareUrl = React.useCallback((url: string, sessionId: string) => {
-    void copyShareUrl(url, sessionId).then((copied) => {
-      if (!copied) toast.error(t('sessions.sidebar.session.share.copyUrlError'));
-    });
-  }, [copyShareUrl, t]);
-
   const handleCopySessionId = React.useCallback((sessionId: string) => {
     void copyTextToClipboard(sessionId)
       .then((result) => {
@@ -165,15 +117,6 @@ export const useSessionActions = (args: Args) => {
       })
       .catch(() => toast.error(t('sessions.sidebar.session.copyId.error')));
   }, [t]);
-
-  const handleUnshareSession = React.useCallback(async (sessionId: string) => {
-    const result = await args.unshareSession(sessionId);
-    if (result) {
-      toast.success(t('sessions.sidebar.session.unshare.success'));
-    } else {
-      toast.error(t('sessions.sidebar.session.unshare.error'));
-    }
-  }, [args, t]);
 
   const collectDescendants = React.useCallback((sessionId: string): Session[] => {
     const collected: Session[] = [];
@@ -300,15 +243,11 @@ export const useSessionActions = (args: Args) => {
   );
 
   return {
-    copiedSessionId,
     handleSessionSelect,
     handleSessionDoubleClick,
     handleSaveEdit,
     handleCancelEdit,
-    handleShareSession,
-    handleCopyShareUrl,
     handleCopySessionId,
-    handleUnshareSession,
     handleDeleteSession,
     handleRestoreSession,
     confirmDeleteSession,

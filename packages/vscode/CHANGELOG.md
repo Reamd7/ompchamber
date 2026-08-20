@@ -1,4 +1,6 @@
 ## [Unreleased]
+- Engine: the extension now consumes omp's own product surface — model roles replace the single default-model pick, per-turn token usage, cache-miss markers, compaction dividers, and retry banners match the terminal client, and engine approval/ask dialogs reach the webview through a presence-based bridge. The event stream for this runs over a new streaming endpoint that the extension's bridge now proxies correctly (it previously would have buffered it forever).
+- Chat: retried turns mark the superseded attempt with a badge and recovery notes instead of leaving an unmarked ghost, and engine notices appear as toasts.
 
 - Chat: fixed user messages disappearing after a reload — prompts are now persisted with their text and attachments instead of an empty body.
 - Chat: sessions started from the app generate titles again, following the TUI's semantics (attempted during the first turn, retried on later messages).

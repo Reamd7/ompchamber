@@ -16,23 +16,57 @@ The wire contract itself is owned by OpenChamber and lives in
 route table implemented here is exactly the subset of that contract the UI,
 sync engine, and web server call; everything else answers 404.
 
-## Modules
-
 - `host.js` — entrypoint, route dispatch, Basic auth, SSE writer, shutdown.
 - `engine.js` — `OmpHostEngine`: model/auth boot, session materialization
   (cold reads via `SessionManager` transcript projection, live turns via
-  `createAgentSession` + event pump), custom-agent storage, session
-  operations (create/list/update/delete/fork/revert/unrevert/summarize/abort/
-  move), idle-session sweeping.
-- `projection.js` — pure omp→wire translation. Deterministic message/part ids
-  derived from omp message identity so live streaming and cold re-projection
-  agree (the UI message loader merges both).
-- `events.js` — wire event bus: monotonic ids, 2048-event replay ring for
-  Last-Event-ID resume, per-directory scoping for `/event`.
-- `registry.js` — per-project sidecar metadata omp does not persist
-  (archived time, parentID, title overrides, model/agent selection, revert
-  pointers, custom agents), written atomically.
-- `endpoints.js` — route handlers.
+  `createAgentSession` + event pump), session operations, idle sweeping.
+  Materialization injects the per-directory keyed `Settings` instance
+  (`options.settings`, spec 06 §5.1/master R6), the lease-driven `hasUI`
+  snapshot (R13), and session-pinned `localProtocolOptions` (R7/R8), and
+  retains the private `AgentRegistry` + `CreateAgentSessionResult` handle
+  for the agent-runs aggregator and `setToolUIContext`.
+- `projection.js` — pure omp→wire translation with deterministic ids;
+  projects dividers (`compactionSummary`/`branchSummary`), execution roles
+  (`bashExecution`/`pythonExecution`), `fileMention`, and streaming partial
+  tool output (`toolPartial`, never terminal).
+- `events.js` — `RingEventBus` (durable/volatile replay split) with the wire
+  `WireEventBus` on top, plus `OmpEventBus`: the single omp-native channel
+  (envelope `{id,type,directory,sessionID?,schemaVersion,createdAt,payload}`,
+  process-global monotonic ids, 512-durable ring, gap/restart detection
+  feeding `omp.stream.resync`).
+- `registry.js` — per-project sidecar metadata, written atomically.
+- `endpoints.js` — wire route handlers + the `/omp/*` parity group:
+  capabilities, the omp SSE channel, transcript structured reads
+  (custom-messages/telemetry/entries), `GET /agent-dir` (the Node web server
+  cannot import this SDK — it resolves the profile-scoped omp agent dir
+  here), and mounts for the domain modules below.
+- `omp-parity.js` — `ompFeatures()` capability table (the server-adjudicated
+  switchboard, master R2) + registry access.
+- `domain-models.js` (specs 01/06) — per-directory keyed Settings store
+  (`cloneForCwd` derivation, boot instance as global-write executor),
+  `/omp/models` role payload, `/omp/settings` proxy with credential
+  sanitization (R9) and modelRoles-only project writes (R6), legacy
+  defaultModel detect/import.
+- `domain-dialogs.js` (spec 03) — `UiLeaseTable` (per-session UI attachment
+  leases: the ONLY `hasUI` authority, R13), `PendingDialogRegistry`
+  (atomic respond/abort, presented-ack `T_answer` + `T_present` TTLs, orphan
+  settle on lease loss, R11 shutdown settle-all), the WebUIContext bridge,
+  and the always-allow write-first transaction.
+- `domain-modes.js` (spec 02) — mode tracker (mode_change persistence +
+  cold recovery), plan review bridge (`setPlanProposalHandler`), persona
+  resolution, agent-definitions/personas CRUD, `planOptionsFor` (the
+  `PlanYolo {target,thinkingLevel?}` shape — the old
+  `{autoApproveOnResolve}` literal was the P0 defect).
+- `domain-uri.js` (spec 04) — local:// bridge (session-pinned, zero global
+  mutation), URI token service (no absolute sourcePath echo, R7), session
+  tree, `AgentRunsAggregator` (250ms coalesced `omp.agents.updated`),
+  parked/historical split, jobs 501 steady state (R12).
+- `event-dispositions.json` / `omp-event-registry.json` /
+  `omp-bootstrap-matrix.json` — machine-checked contracts.
+  `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)
+  enforces: SDK union == manifest keys, engine switch covers every member,
+  omp names registered, durable events' snapshot endpoints covered by the
+  bootstrap matrix, and no parallel `openchamber:omp` channels (R1).
 
 ## Invariants
 
@@ -111,6 +145,18 @@ sync engine, and web server call; everything else answers 404.
 
 ## Known engine gaps (explicit, not silent)
 
-Permission/question protocols answer authoritatively empty until the omp
-approval/ask bridge lands; providers expose `ModelRegistry.getAvailable()`
-models only; `PUT /auth` defers to omp's credential store.
+Permission/question protocols answer authoritatively empty until their UI
+ consumers switch to the dialogs bridge (07's observation window); providers
+ expose `ModelRegistry.getAvailable()` models only; `PUT /auth` defers to
+ omp's credential store; jobs answer a structured 501 with `ownerSessionID`
+ until the SDK exposes manager injection (R12); the queue ack protocol stays
+ off until the SDK grows stable enqueue ids (R14); MCP stays read-only
+ (R15); agent:// history:// artifact:// host-side resolution stays
+ capability-off until upstream per-resolve artifactsDirs (R7).
+
+## Test topology
+
+`bun test server/lib/omp-host/` (Bun) owns this module — the tests mock the
+SDK by specifier including its deep `config/...` paths, and the real SDK
+graph executes Bun globals at module top level, so vitest (Node) excludes
+this directory and the web package's `test` script chains both runners.

@@ -64,7 +64,9 @@ const getGlobalSessionSnapshot = (sessionId: string): Session | null => {
 }
 
 export const applySessionEventToGlobalSessions = (payload: Event): void => {
-  if (payload.type === "session.idle" || payload.type === "session.error") {
+  // Terminal settle: session.idle is the flush authority (spec 05 §5.11 —
+  // omp-host never produces wire session.error).
+  if (payload.type === "session.idle") {
     const sessionID = (payload as { properties?: { sessionID?: unknown } }).properties?.sessionID
     if (typeof sessionID === "string") flushPendingGlobalSessionUpdate(sessionID)
     return

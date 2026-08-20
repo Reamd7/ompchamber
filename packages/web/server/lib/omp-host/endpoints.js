@@ -8,9 +8,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { BUILTIN_TOOLS } from '@oh-my-pi/pi-coding-agent';
+import { BUILTIN_TOOLS, getAgentDir } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.js';
+import { buildCapabilities, ompFeatures } from './omp-parity.js';
+import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models.js';
+import { registerModesDomainRoutes } from './domain-modes.js';
 
+
+/**
+ * Resolve the wire config's default-model pointer from modelRoles.default
+ * through the keyed Settings instance (spec 01 §5.3/GAP-03). Falls back to
+ * omitting the key when no role default resolves — never pins the
+ * alphabetically-first provider model.
+ */
+export const defaultModelPointer = async (engine) => {
+  try {
+    const store = await engine.settingsStoreReady();
+    if (!store) return {};
+    const settings = await store.settingsFor(process.cwd());
+    const roleDefault = buildModelsPayload(settings).roles?.default;
+    if (roleDefault?.provider && roleDefault?.id) {
+      return { model: `${roleDefault.provider}/${roleDefault.id}` };
+    }
+  } catch {
+    // Settings unavailable: omit the pointer rather than pin a wrong model.
+  }
+  return {};
+};
 const execFileAsync = promisify(execFile);
 
 const json = (data, init) => Response.json(data, init);
@@ -136,13 +160,11 @@ export const registerEndpoints = (route, engine, { version }) => {
     await engine.ready();
     return {
       version,
-      // omp keeps its own model/provider config (~/.omp/agent/config.yml); the
-      // wire config exposes the model default when one resolves.
-      ...(engine.availableModels()[0]
-        ? {
-            model: `${engine.availableModels()[0].provider}/${engine.availableModels()[0].id}`,
-          }
-        : {}),
+      // omp keeps its own model/provider config (~/.omp/agent/config.yml);
+      // the default-model pointer resolves modelRoles.default through the
+      // keyed Settings instance (spec 01 §5.3/GAP-03) instead of pinning
+      // whichever provider model sorts first.
+      ...(await defaultModelPointer(engine)),
       agents: [...engine.customAgents.values()],
       provider: await providersPayload(),
       // OpenCode-specific keys with no omp equivalent are absent; PATCH /config
@@ -548,6 +570,132 @@ export const registerEndpoints = (route, engine, { version }) => {
     if (!sessionID || !destination) return badRequest('sessionID and destination.directory are required');
     const moved = await engine.moveSession({ sessionID, destination });
     return json(moved ?? {});
+  });
+  // ---- domain modules (specs 01/02/03/04/06; public /api/omp/*) ----
+  const ompPublish = (type, payload, scope) => engine.ompBus.publish(type, payload, scope);
+  registerModelSettingsRoutes(route, {
+    store: {
+      settingsFor: async (directory) => {
+        const store = await engine.settingsStoreReady();
+        return store.settingsFor(directory);
+      },
+      getRevision: () => engine.settingsStore?.getRevision?.() ?? 0,
+      bumpRevision: () => engine.settingsStore?.bumpRevision?.() ?? 0,
+      chainWrites: (targetKey, task) => {
+        const store = engine.settingsStore;
+        return store ? store.chainWrites(targetKey, task) : Promise.resolve();
+      },
+      get boot() {
+        return engine.settingsStore?.boot;
+      },
+      get bootDirectory() {
+        return engine.settingsStore?.bootDirectory;
+      },
+    },
+    publish: ompPublish,
+  });
+  engine.dialogs.mount(route);
+  registerModesDomainRoutes(route, engine.modesDomain, { features: ompFeatures() });
+  engine.uriDomain.mount(route);
+
+  // ---- omp parity foundation (spec docs/omp-parity; public paths
+  // /api/omp/* — the web proxy strips the /api prefix, master D6-R3/R4) ----
+  // Profile-scoped omp agent dir (spec 07 §5.13). The web server cannot
+  // import the SDK (it runs under Node; the SDK is Bun/TS-only), so this is
+  // the authoritative resolution point.
+  route('GET', '/agent-dir', async () => json({ agentDir: getAgentDir() }));
+  route('GET', '/omp/capabilities', async () => json(buildCapabilities()));
+
+  route('GET', '/omp/sessions/{id}/custom-messages', async (request, ctx) => {
+    const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
+    if (!directory) return badRequest('directory is required');
+    const messages = await engine.getCustomMessages({
+      sessionID: ctx.params.id,
+      directory,
+    });
+    return messages ? json(messages) : notFound('session not found');
+  });
+
+  route('GET', '/omp/sessions/{id}/telemetry', async (request, ctx) => {
+    const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
+    if (!directory) return badRequest('directory is required');
+    const telemetry = await engine.getTelemetry({ sessionID: ctx.params.id, directory });
+    return telemetry ? json(telemetry) : notFound('session not found');
+  });
+
+  route('GET', '/omp/sessions/{id}/entries', async (request, ctx) => {
+    const url = new URL(request.url);
+    const directory = directoryFromRequest({ url, headers: request.headers });
+    if (!directory) return badRequest('directory is required');
+    const kinds = url.searchParams.get('kinds') ?? '';
+    const entries = await engine.getEntries({
+      sessionID: ctx.params.id,
+      directory,
+      kinds,
+    });
+    return entries ? json(entries) : notFound('session not found');
+  });
+
+  route('GET', '/omp/events', async (request) => {
+    // Single omp-native event channel (05 §5.2.1, master R1). Same frame
+    // format as the wire SSE; Last-Event-ID resumes durable entries only,
+    // with an omp.stream.resync control frame first when the ring can't
+    // bridge the gap (断流不是空状态, master D2).
+    const url = new URL(request.url);
+    const rawDirectory = url.searchParams.get('directory');
+    const directory = rawDirectory ? normalizeDirectoryKey(rawDirectory) : null;
+    const lastEventId = Number(request.headers.get('last-event-id') ?? 0) || 0;
+    let closed = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        const send = (text) => {
+          if (closed) return;
+          try {
+            controller.enqueue(encoder.encode(text));
+          } catch {
+            closed = true;
+          }
+        };
+        send(':ok\n\n');
+        const bus = engine.ompBus;
+        const state = bus.replayState(lastEventId);
+        if (state.status !== 'ok') {
+          const resyncId = bus.nextEventId;
+          const envelope = {
+            id: resyncId,
+            type: 'omp.stream.resync',
+            directory: directory ?? '',
+            schemaVersion: bus.schemaVersion,
+            createdAt: Date.now(),
+            payload: {
+              scope: ['sessions', 'modes', 'model', 'dialogs', 'settings', 'agents', 'jobs', 'queue', 'tree', 'transcript'],
+              lastEventId,
+            },
+          };
+          send(`event: omp.stream.resync\ndata: ${JSON.stringify(envelope)}\n\n`);
+        }
+        const unsubscribe = bus.subscribeSince(
+          lastEventId,
+          (entry) => {
+            send(`id: ${entry.eventId}\nevent: ${entry.envelope.type}\ndata: ${JSON.stringify(entry.envelope)}\n\n`);
+          },
+          directory ? { directory } : {},
+        );
+        const heartbeat = setInterval(() => send(':heartbeat\n\n'), 15000);
+        request.signal.addEventListener('abort', () => {
+          closed = true;
+          clearInterval(heartbeat);
+          unsubscribe();
+          try {
+            controller.close();
+          } catch {
+            // Already closed.
+          }
+        });
+      },
+    });
+    return new Response(stream, sseResponseInit());
   });
 
   // ---- SSE ----

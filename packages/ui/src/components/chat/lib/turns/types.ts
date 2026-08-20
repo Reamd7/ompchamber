@@ -77,6 +77,8 @@ export interface TurnRecord {
     hasReasoning: boolean;
     diffStats?: TurnDiffStats;
     changedFiles?: TurnChangedFile[];
+    /** Prompt-cache invalidation detected against the previous turn (05 §5.9). */
+    cacheMiss?: { reprocessedTokens: number };
     stream: TurnStreamState;
     startedAt?: number;
     completedAt?: number;
@@ -124,6 +126,8 @@ export interface TurnGroupingContext {
     hasReasoning: boolean;
     diffStats?: TurnDiffStats;
     changedFiles?: TurnChangedFile[];
+    /** Prompt-cache invalidation for this turn; divider anchors on the first assistant message. */
+    cacheMiss?: { reprocessedTokens: number };
     userMessageCreatedAt?: number;
     userMessageVariant?: string;
     isWorking: boolean;

@@ -865,7 +865,15 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     }, []);
 
     React.useEffect(() => {
-        if (autoOpenDraft && !currentSessionId && !draftOpen) {
+        // Race guard for cold deep links: this effect can fire with a stale
+        // closure (currentSessionId from an earlier render) right after the
+        // router applied ?session=… — re-opening a draft would blank the
+        // transcript until the user clicks away. Decide against LIVE store
+        // state, and never auto-open while the URL still names a session.
+        const live = useSessionUIStore.getState();
+        const urlNamesSession = typeof window !== 'undefined'
+            && Boolean(new URLSearchParams(window.location.search).get('session'));
+        if (autoOpenDraft && !live.currentSessionId && !live.newSessionDraft.open && !urlNamesSession) {
             // Programmatic fallback, not user navigation — must not clear the
             // persisted last-session pointer the cold-launch restore reads.
             openNewSessionDraft({ automatic: true });

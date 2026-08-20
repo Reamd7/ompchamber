@@ -59,8 +59,6 @@ import {
   unarchiveSession as unarchiveSessionAction,
   unarchiveSessions as unarchiveSessionsAction,
   updateSessionTitle as updateSessionTitleAction,
-  shareSession as shareSessionAction,
-  unshareSession as unshareSessionAction,
   optimisticSend,
   refetchSessionMessages,
   revertToMessage as revertToMessageAction,
@@ -354,8 +352,6 @@ export type SessionUIState = {
   unarchiveSession: (id: string) => Promise<boolean>
   unarchiveSessions: (ids: string[], options?: UnarchiveSessionsOptions) => Promise<{ restoredIds: string[]; failedIds: string[] }>
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>
-  shareSession: (sessionId: string) => Promise<Session | null>
-  unshareSession: (sessionId: string) => Promise<Session | null>
   revertToMessage: (sessionId: string, messageId: string, options?: { skipRedoPush?: boolean }) => Promise<void>
   forkFromMessage: (sessionId: string, messageId: string) => Promise<void>
   handleSlashUndo: (sessionId: string) => Promise<void>
@@ -1557,14 +1553,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // ---------------------------------------------------------------------------
   updateSessionTitle: async (sessionId, title) => {
     await updateSessionTitleAction(sessionId, title)
-  },
-
-  shareSession: async (sessionId) => {
-    return shareSessionAction(sessionId)
-  },
-
-  unshareSession: async (sessionId) => {
-    return unshareSessionAction(sessionId)
   },
 
   // ---------------------------------------------------------------------------

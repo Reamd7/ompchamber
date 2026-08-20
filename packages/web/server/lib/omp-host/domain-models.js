@@ -1,0 +1,668 @@
+// omp-parity domain module: model selection + model roles (spec 01) and the
+// settings proxy (spec 06) — server side, self-contained.
+//
+// Owns (per chapter specs and master rulings):
+// - Per-directory keyed Settings instances (06 §5.1 REVISED R2, master R6):
+//   a boot instance is the single global-write executor AND the keyed
+//   instance for the boot directory; every other directory gets a
+//   cloneForCwd-derived instance that shares the boot storage handle and
+//   configPath but loads that directory's `.omp/config.yml` project layer.
+//   Sessions in a directory consume exactly this instance via
+//   `createAgentSession({ settings })` (sdk.ts:1273-1275 injection point).
+//   `reloadForCwd` is never referenced (R6).
+// - GET /omp/models payload (01 §5.3(1)): roles snapshot + cycleOrder +
+//   enabledModels + fallbackChains + legacyDefaults (R12 read-only detect).
+// - GET/PUT /omp/settings (06 §5.2/§5.3): schema-driven settings proxy.
+//   GET returns directory-scoped effective settings with every credential
+//   key (isCredential, incl. ui.secret — schema:5628-5631) reduced to
+//   `{ configured }`; values AND defaults never echo (R9). PUT validates
+//   against SETTINGS_SCHEMA, routes global writes to the boot instance and
+//   project writes ONLY within the modelRoles subtree to the directory's
+//   keyed instance (R6), flushes, bumps revision, and broadcasts
+//   `omp.settings.updated` (registered in omp-event-registry.json; the
+//   publish callback is wired by the coordinator to ompBus).
+// - defaultModel legacy migration (01 §5.8, R12): read-only detect of the
+//   OpenChamber defaultModel + explicit import that writes
+//   modelRoles.default only when unset (never overwrites).
+//
+// Integration contract for the coordinator (this module never touches
+// engine.js / endpoints.js / omp-parity.js):
+// - flip `modelRoles.v1`, `settings.v1`, `settings.projectScopes.v1` in
+//   omp-parity.js `ompFeatures()` when mounting these routes
+//   (see CAPABILITY_KEYS below);
+// - engine boot: `settingsStore = await createSettingsStore({ cwd, agentDir })`
+//   (or pass an existing boot Settings instance), then inject
+//   `settings: await settingsStore.settingsFor(directoryKey)` into
+//   `createAgentSession` options inside `#materialize` (engine.js:440-484);
+// - route mounting: `registerModelSettingsRoutes(route, { store, publish })`
+//   on the omp-host route table (public paths /api/omp/models,
+//   /api/omp/settings — the web proxy strips /api).
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Settings, VERSION } from '@oh-my-pi/pi-coding-agent';
+import {
+  SETTINGS_SCHEMA,
+  SETTING_TABS,
+  TAB_METADATA,
+  TAB_GROUPS,
+  getDefault,
+  getEnumValues,
+  getType,
+  getUi,
+  isCredential,
+} from '@oh-my-pi/pi-coding-agent/config/settings';
+import { getKnownRoleIds, getRoleInfo } from '@oh-my-pi/pi-coding-agent/config/model-roles';
+import { parseModelString } from '@oh-my-pi/pi-coding-agent/config/model-resolver';
+import { getRetryFallbackChains } from '@oh-my-pi/pi-coding-agent/session/retry-fallback-chains';
+import { normalizeDirectoryKey } from './registry.js';
+
+/** omp-parity.js feature keys this surface reports (coordinator flips them). */
+export const CAPABILITY_KEYS = {
+  models: 'modelRoles.v1',
+  settings: 'settings.v1',
+  settingsProjectScopes: 'settings.projectScopes.v1',
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings store: per-directory keyed instances (06 §5.1 REVISED R2, R6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the per-directory keyed Settings topology.
+ *
+ * @param {Settings | { cwd?: string, agentDir?: string }} bootSettingsIsh
+ *   Either a live boot `Settings` instance (used as-is: it doubles as the
+ *   global-write executor and the boot directory's keyed instance), or
+ *   SettingsOptions routed through `Settings.init` (the process singleton
+ *   path — spec 06 §5.1.1: the boot directory is bound once and never
+ *   re-scoped).
+ * @returns {Promise<{
+ *   boot: Settings,
+ *   bootDirectory: string,
+ *   settingsFor(directoryKey?: string): Promise<Settings>,
+ *   getRevision(): number,
+ *   bumpRevision(): number,
+ *   disposeAll(): Promise<void>,
+ * }>}
+ */
+export const createSettingsStore = async (bootSettingsIsh) => {
+  const boot = typeof bootSettingsIsh?.cloneForCwd === 'function'
+    ? bootSettingsIsh
+    : await Settings.init(bootSettingsIsh ?? {});
+  const bootDirectory = normalizeDirectoryKey(boot.getCwd());
+  /** @type {Map<string, Settings>} */
+  const byDirectory = new Map();
+  /** @type {Map<string, Promise<Settings>>} */
+  const deriving = new Map();
+  let ownsBoot = boot !== bootSettingsIsh;
+  let revision = 0;
+  /** Per-target write chains (06 §5.3.7: per-directory promise chaining). */
+  const writeChains = new Map();
+
+  const settingsFor = async (directoryKey) => {
+    const key = directoryKey ? normalizeDirectoryKey(directoryKey) : bootDirectory;
+    if (key === bootDirectory) return boot;
+    const cached = byDirectory.get(key);
+    if (cached) return cached;
+    let pending = deriving.get(key);
+    if (!pending) {
+      // cloneForCwd (settings.ts:607-625): shares the boot storage handle and
+      // configPath, re-loads this directory's project layer, does not run the
+      // full #load (no agent.db / migrations / marker files), and does not
+      // mutate the boot instance.
+      pending = boot.cloneForCwd(key).then((clone) => {
+        if (!byDirectory.has(key)) byDirectory.set(key, clone);
+        return byDirectory.get(key);
+      });
+      pending.finally(() => deriving.delete(key)).catch(() => {});
+      deriving.set(key, pending);
+    }
+    return pending;
+  };
+
+  return {
+    boot,
+    bootDirectory,
+    settingsFor,
+
+    getRevision: () => revision,
+    bumpRevision: () => {
+      revision += 1;
+      return revision;
+    },
+
+    /** Serialize writes per target instance key (boot vs directory). */
+    chainWrites(targetKey, task) {
+      const previous = writeChains.get(targetKey) ?? Promise.resolve();
+      const next = previous.then(task, task);
+      writeChains.set(targetKey, next.catch(() => {}));
+      return next;
+    },
+
+    /**
+     * Teardown: flush + disarm every derived clone so no armed debounce
+     * timer races a successor's file locks (Settings.cancelPendingSaves
+     * contract). A caller-provided boot instance is flushed but left armed —
+     * its owner decides its lifetime. Repeated settingsFor calls after
+     * disposeAll re-derive fresh instances that reload the project layer
+     * from disk.
+     */
+    disposeAll: async () => {
+      const clones = [...byDirectory.values()];
+      byDirectory.clear();
+      deriving.clear();
+      writeChains.clear();
+      const disarm = [];
+      for (const clone of clones) {
+        try {
+          await clone.flush();
+        } catch {
+          // best-effort teardown
+        }
+        clone.cancelPendingSaves();
+        disarm.push(clone);
+      }
+      if (ownsBoot) {
+        try {
+          await boot.flush();
+        } catch {
+          // best-effort teardown
+        }
+        boot.cancelPendingSaves();
+        ownsBoot = false;
+      }
+      return disarm;
+    },
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Role value parsing (SDK model-selector format "provider/id[:thinking]")
+// ─────────────────────────────────────────────────────────────────────────────
+
+const parseRoleModelValue = (value) => {
+  if (typeof value !== 'string' || value === '') return null;
+  // Multi-model role values (comma-joined by the SDK's loader) report the
+  // primary selector; the full configured string is echoed as `configured`.
+  const primary = value.split(',')[0];
+  const parsed = parseModelString(primary);
+  if (!parsed) return null;
+  return parsed;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /omp/models payload (01 §5.3(1))
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Model + roles snapshot for a directory's keyed Settings instance.
+ *
+ * Per-role entries are `{ provider, id }`-shaped objects (assignment
+ * contract) carrying the configured string, its explicit thinking selector,
+ * and the persisted source layer; unconfigured roles map to `null`.
+ * `resolved`-style full model resolution against the registry belongs to the
+ * engine's `roleSnapshot` (01 §5.3(1) — needs availableModels); this payload
+ * is the settings-side truth.
+ *
+ * @param {Settings} settings
+ * @param {{ legacyDefaults?: { defaultModel: string, defaultProvider?: string } | null }} [options]
+ */
+export const buildModelsPayload = (settings, { legacyDefaults = null } = {}) => {
+  const roles = {};
+  const roleMeta = {};
+  for (const role of getKnownRoleIds(settings)) {
+    const configured = settings.getModelRole(role) ?? null;
+    const parsed = configured ? parseRoleModelValue(configured) : null;
+    roles[role] = configured
+      ? {
+          configured,
+          provider: parsed?.provider ?? null,
+          id: parsed?.id ?? null,
+          ...(parsed?.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
+          source: settings.getModelRoleSource(role),
+        }
+      : null;
+    const info = getRoleInfo(role, settings);
+    roleMeta[role] = {
+      ...(info.tag ? { tag: info.tag } : {}),
+      name: info.name,
+      ...(info.color ? { color: info.color } : {}),
+      ...(info.hidden ? { hidden: true } : {}),
+    };
+  }
+  return {
+    schemaVersion: VERSION,
+    directory: settings.getCwd(),
+    roles,
+    roleMeta,
+    cycleOrder: settings.get('cycleOrder'),
+    enabledModels: settings.get('enabledModels'),
+    fallbackChains: getRetryFallbackChains(settings),
+    modelRoleStorage: settings.get('modelRoleStorage'),
+    defaultThinkingLevel: settings.get('defaultThinkingLevel'),
+    legacyDefaults,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Legacy defaultModel migration (01 §5.8, master R12)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const openchamberSettingsPath = () =>
+  path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+
+/**
+ * Read-only detect of the OpenChamber legacy `defaultModel`
+ * (`~/.config/openchamber/settings.json`, same path the web server reads).
+ * Never writes any omp configuration. Only a non-empty value containing "/"
+ * is reported (mirroring settings-normalization-runtime.js:177 which keeps
+ * project defaultModel only when parseable).
+ *
+ * @param {{ settingsPath?: string }} [options]
+ * @returns {{ defaultModel: string, defaultProvider?: string } | null}
+ */
+export const detectLegacyDefaultModel = ({ settingsPath } = {}) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(settingsPath ?? openchamberSettingsPath(), 'utf8'));
+  } catch {
+    return null;
+  }
+  const raw = typeof parsed?.defaultModel === 'string' ? parsed.defaultModel.trim() : '';
+  if (!raw || !raw.includes('/')) return null;
+  const model = parseRoleModelValue(raw);
+  return {
+    defaultModel: raw,
+    ...(model?.provider ? { defaultProvider: model.provider } : {}),
+  };
+};
+
+/**
+ * Explicit R12 import: write `modelRoles.default` ONLY when unset
+ * (never overwrites — the caller maps `role-already-configured` to 409).
+ * Honors the instance's `modelRoleStorage` ('project' → project layer on
+ * this instance's cwd, else the global layer); the caller must pass the boot
+ * instance for global imports / the directory's keyed instance for project
+ * imports. Flushes before returning. The audit record is returned for the
+ * coordinator to persist into OC settings.json (omp-host never writes that
+ * file itself).
+ *
+ * @param {Settings} settings
+ * @param {string} selector "provider/model" (optionally ":thinking")
+ * @returns {Promise<
+ *   | { imported: true, role: 'default', value: string, scope: 'global' | 'project', audit: { originalValue: string, importedRole: 'default', scope: string, at: string } }
+ *   | { imported: false, reason: 'role-already-configured' | 'invalid-selector', existing?: string }
+ * >}
+ */
+export const importLegacyDefaultModel = async (settings, selector) => {
+  if (settings.getModelRole('default')) {
+    return { imported: false, reason: 'role-already-configured', existing: settings.getModelRole('default') };
+  }
+  const parsed = parseRoleModelValue(selector);
+  if (!parsed || !parsed.provider || !parsed.id) {
+    return { imported: false, reason: 'invalid-selector' };
+  }
+  const scope = settings.get('modelRoleStorage') === 'project' ? 'project' : 'global';
+  if (scope === 'project') {
+    settings.setProjectModelRole('default', selector);
+  } else {
+    settings.setModelRole('default', selector);
+  }
+  await settings.flush();
+  return {
+    imported: true,
+    role: 'default',
+    value: selector,
+    scope,
+    audit: {
+      originalValue: selector,
+      importedRole: 'default',
+      scope,
+      at: new Date().toISOString(),
+    },
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings GET payload (06 §5.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Terminal-rendering surfaces never editable from the web (06 §5.6). */
+const EXCLUDED_TABS = new Set(['appearance']);
+const EXCLUDED_PREFIXES = ['tui.', 'terminal.', 'statusLine.', 'display.'];
+const EXCLUDED_PREFIX_ALLOWLIST = new Set(['display.collapseCompacted']);
+
+/**
+ * Server-side mirror of the TUI CONDITIONS table (modes/components/
+ * settings-defs.ts:96-147) — every entry is a pure Settings read. Unknown
+ * condition names evaluate visible (spec 06 §5.2: 求值失败 → 显示但不隐藏).
+ * `hasImageProtocol` is a terminal capability the web never has.
+ */
+const CONDITION_EVALUATORS = {
+  hasImageProtocol: () => false,
+  advisorEnabled: (s) => s.get('advisor.enabled') === true,
+  hindsightActive: (s) => s.get('memory.backend') === 'hindsight',
+  mnemopiActive: (s) => s.get('memory.backend') === 'mnemopi',
+  autolearnActive: (s) => s.get('autolearn.enabled') === true,
+  autoThinkingActive: (s) => s.get('defaultThinkingLevel') === 'auto',
+  usageAwareFallbackEnabled: (s) => s.get('retry.usageAwareFallback') === true,
+  planModeEnabled: (s) => Boolean(s.get('plan.enabled')),
+};
+
+const uiProjection = (ui) => {
+  if (!ui) return undefined;
+  const out = {};
+  for (const field of ['tab', 'group', 'label', 'description', 'condition', 'secret', 'ordered']) {
+    if (ui[field] !== undefined) out[field] = ui[field];
+  }
+  if (ui.options !== undefined) {
+    // TUI resolves `options: "runtime"` through its theme registry; the web
+    // cannot (06 §5.2) — flag it instead of guessing.
+    out.options = ui.options === 'runtime' ? 'runtime-unresolved' : ui.options;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+};
+
+const exclusionFor = (keyPath) => {
+  const ui = getUi(keyPath);
+  // Most specific marker first: the hasImageProtocol condition is a terminal
+  // capability the web never has (06 §5.2 → excluded:"terminal-capability").
+  if (ui?.condition === 'hasImageProtocol') return 'terminal-capability';
+  if (ui?.tab && EXCLUDED_TABS.has(ui.tab)) return 'terminal-only';
+  if (EXCLUDED_PREFIXES.some((prefix) => keyPath.startsWith(prefix)) && !EXCLUDED_PREFIX_ALLOWLIST.has(keyPath)) {
+    return 'terminal-only';
+  }
+  return null;
+};
+
+const jsonValue = (value) => (value === undefined ? null : value);
+
+/**
+ * Schema-driven settings snapshot for one directory (the same keyed instance
+ * that directory's sessions consume). Credential keys (isCredential, incl.
+ * ui.secret) never echo value or default (R9) — only `configured`.
+ *
+ * @param {Settings} settings
+ * @param {{ revision?: number, keys?: string[] | null }} [options]
+ */
+export const buildSettingsPayload = (settings, { revision = 0, keys = null } = {}) => {
+  const wanted = keys && keys.length > 0 ? new Set(keys) : null;
+  const entries = {};
+  for (const keyPath of Object.keys(SETTINGS_SCHEMA)) {
+    if (wanted && !wanted.has(keyPath)) continue;
+    if (keyPath === 'modelRoles') continue; // special record view below
+    const credential = isCredential(keyPath);
+    const excluded = exclusionFor(keyPath);
+    const ui = getUi(keyPath);
+    let hidden = false;
+    if (ui?.condition && !excluded) {
+      const evaluate = CONDITION_EVALUATORS[ui.condition];
+      hidden = evaluate ? !evaluate(settings) : false;
+    }
+    entries[keyPath] = {
+      type: getType(keyPath),
+      ...(getEnumValues(keyPath) ? { values: [...getEnumValues(keyPath)] } : {}),
+      default: credential ? null : jsonValue(getDefault(keyPath)),
+      value: credential ? null : jsonValue(settings.get(keyPath)),
+      configured: settings.isConfigured(keyPath),
+      scope: 'global',
+      editable: !excluded && !hidden,
+      ...(credential ? { credential: true, writeOnly: true } : {}),
+      ...(uiProjection(ui) ? { ui: uiProjection(ui) } : {}),
+      ...(excluded ? { excluded } : {}),
+      ...(hidden ? { hidden: true } : {}),
+    };
+  }
+  if (!wanted || wanted.has('modelRoles')) {
+    const roles = {};
+    for (const role of getKnownRoleIds(settings)) {
+      roles[role] = {
+        value: settings.getModelRole(role) ?? null,
+        source: settings.getModelRoleSource(role),
+        editable: true,
+      };
+    }
+    entries.modelRoles = {
+      type: 'record',
+      default: {},
+      value: { ...settings.getModelRoles() },
+      roles,
+      modelRoleStorage: settings.get('modelRoleStorage'),
+      scope: 'global+project',
+    };
+  }
+  return {
+    schemaVersion: VERSION,
+    directory: settings.getCwd(),
+    agentDir: settings.getAgentDir(),
+    globalConfigPath: path.join(settings.getAgentDir(), 'config.yml'),
+    projectConfigPath: path.join(settings.getCwd(), '.omp', 'config.yml'),
+    revision,
+    tabs: SETTING_TABS.map((id) => ({
+      id,
+      label: TAB_METADATA[id].label,
+      groups: [...TAB_GROUPS[id]],
+    })),
+    keys: entries,
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /omp/settings (06 §5.3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODEL_ROLES_PREFIX = 'modelRoles.';
+
+const isModelRoleKey = (key) =>
+  typeof key === 'string' && key.startsWith(MODEL_ROLES_PREFIX) && key.length > MODEL_ROLES_PREFIX.length;
+
+const validModelRoleName = (role) => role.length > 0 && !role.includes('.');
+
+const validateSettingValue = (keyPath, value) => {
+  if (value === null) return null; // null always means "clear"
+  if (isCredential(keyPath)) {
+    return typeof value === 'string' ? null : 'invalid-type';
+  }
+  const type = getType(keyPath);
+  switch (type) {
+    case 'enum': {
+      const values = getEnumValues(keyPath);
+      return values && !values.includes(value) ? 'invalid-value' : null;
+    }
+    case 'boolean':
+      return typeof value === 'boolean' ? null : 'invalid-type';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value) ? null : 'invalid-type';
+    case 'string':
+      return typeof value === 'string' ? null : 'invalid-type';
+    case 'array':
+      return Array.isArray(value) ? null : 'invalid-type';
+    case 'record':
+      return typeof value === 'object' && value !== null && !Array.isArray(value) ? null : 'invalid-type';
+    default:
+      return null;
+  }
+};
+
+const quarantinePathFromError = (error) => {
+  const match = /moved to (\S+)/.exec(String(error?.message ?? error ?? ''));
+  return match ? match[1] : null;
+};
+
+/**
+ * Apply a PUT /omp/settings request.
+ *
+ * Validation (rule 1): every key must exist in SETTINGS_SCHEMA (special
+ * `modelRoles.<role>` syntax for per-role writes; the bare `modelRoles`
+ * record is rejected — the SDK merges roles per-key, whole-record writes
+ * would clobber sibling roles). Rejected entries carry key + reason only,
+ * never the submitted value (R9).
+ *
+ * Write routing (rule 2, R6): `scope:"global"` always executes on the boot
+ * instance — the single global-write executor — regardless of `directory`;
+ * `scope:"project"` accepts ONLY `modelRoles.<role>` keys (the omp project
+ * layer authoritatively carries just the modelRoles subtree) and executes on
+ * that directory's keyed instance (`null` clears via clearProjectModelRole).
+ *
+ * @param {ReturnType<typeof createSettingsStore>} store
+ * @param {{ directory?: string, scope?: string, changes?: Record<string, unknown> }} input
+ * @param {{ publish?: (type: string, payload: Record<string, unknown>, scope: { directory: string, durable?: boolean }) => void }} [hooks]
+ * @returns {Promise<{ status: number, body: Record<string, unknown> }>}
+ */
+export const applySettingsChanges = async (store, input, { publish } = {}) => {
+  const scope = input?.scope ?? 'global';
+  if (scope !== 'global' && scope !== 'project') {
+    return { status: 400, body: { error: 'invalid-scope' } };
+  }
+  const changes = input?.changes;
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
+    return { status: 400, body: { error: 'invalid-body' } };
+  }
+
+  const rejected = [];
+  const plan = [];
+  for (const [key, value] of Object.entries(changes)) {
+    if (key === 'modelRoles') {
+      rejected.push({ key, reason: 'record-write-unsupported' });
+      continue;
+    }
+    if (isModelRoleKey(key)) {
+      const role = key.slice(MODEL_ROLES_PREFIX.length);
+      if (!validModelRoleName(role)) {
+        rejected.push({ key, reason: 'invalid-role' });
+      } else if (value !== null && typeof value !== 'string') {
+        rejected.push({ key, reason: 'invalid-type' });
+      } else if (value === '') {
+        rejected.push({ key, reason: 'invalid-value' });
+      } else {
+        plan.push({ kind: 'role', key, role, value });
+      }
+      continue;
+    }
+    if (!(key in SETTINGS_SCHEMA)) {
+      rejected.push({ key, reason: 'unknown' });
+      continue;
+    }
+    if (exclusionFor(key)) {
+      rejected.push({ key, reason: 'not-editable' });
+      continue;
+    }
+    if (scope === 'project') {
+      rejected.push({ key, reason: 'project-scope-model-roles-only' });
+      continue;
+    }
+    const reason = validateSettingValue(key, value);
+    if (reason) {
+      rejected.push({ key, reason });
+      continue;
+    }
+    // TUI text-editor convention (settings-selector): an empty string on a
+    // credential key clears it; null clears any key.
+    const clearing = value === null || (value === '' && isCredential(key));
+    plan.push({ kind: 'setting', key, value: clearing ? undefined : value, clearing });
+  }
+  if (rejected.length > 0) {
+    return { status: 400, body: { error: 'validation', rejected } };
+  }
+
+  const directoryKey = input?.directory
+    ? normalizeDirectoryKey(input.directory)
+    : store.bootDirectory;
+  const target = scope === 'project' ? await store.settingsFor(directoryKey) : store.boot;
+
+  if (plan.length === 0) {
+    // No-op PUT (e.g. `{}` changes): idempotent success, no revision bump,
+    // no keys-empty event.
+    return { status: 200, body: { revision: store.getRevision(), applied: {}, persisted: true, quarantined: null } };
+  }
+
+  try {
+    // All global writes execute on the boot instance — serialize them on one
+    // chain; project writes serialize per directory.
+    const applied = await store.chainWrites(scope === 'global' ? 'global' : `project:${directoryKey}`, async () => {
+      const appliedNow = {};
+      for (const item of plan) {
+        if (item.kind === 'role') {
+          if (scope === 'project') {
+            if (item.value === null) target.clearProjectModelRole(item.role);
+            else target.setProjectModelRole(item.role, item.value);
+          } else {
+            target.setModelRole(item.role, item.value === null || item.value === '' ? undefined : item.value);
+          }
+          appliedNow[item.key] = target.getModelRole(item.role) ?? null;
+        } else {
+          target.set(item.key, item.value);
+          if (isCredential(item.key)) {
+            appliedNow[item.key] = { configured: target.isConfigured(item.key) };
+          } else {
+            appliedNow[item.key] = jsonValue(target.get(item.key));
+          }
+        }
+      }
+      await target.flush();
+      return appliedNow;
+    });
+
+    const revision = store.bumpRevision();
+    // Spec 05 §5.0.2 envelope normalization: directory lives on the envelope,
+    // not the payload (redundant copies are dropped).
+    publish?.('omp.settings.updated', {
+      revision,
+      keys: Object.keys(applied),
+      origin: 'web',
+    }, { directory: directoryKey, durable: true });
+    return { status: 200, body: { revision, applied, persisted: true, quarantined: null } };
+  } catch (error) {
+    const quarantinedTo = quarantinePathFromError(error);
+    if (quarantinedTo) {
+      return { status: 409, body: { error: 'config-quarantined', quarantinedTo } };
+    }
+    // R9: key names only, never submitted values.
+    return { status: 500, body: { error: 'settings-write-failed', keys: plan.map((item) => item.key) } };
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Route mounting (omp-host route table; public paths are /api/omp/... —
+// the web proxy strips /api)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const directoryFromRequest = (request) => {
+  const raw = new URL(request.url).searchParams.get('directory');
+  return raw ? normalizeDirectoryKey(raw) : null;
+};
+
+/**
+ * Mount GET /omp/models, GET /omp/settings, PUT /omp/settings on the
+ * omp-host route table (same `route(method, pattern, handler)` mechanism as
+ * registerEndpoints; Basic auth is enforced by host.js outside these
+ * handlers). `publish` is wired by the coordinator to
+ * `ompBus.publish` (durable omp.settings.updated, spec 06 §5.4).
+ */
+export const registerModelSettingsRoutes = (route, { store, publish, legacySettingsPath } = {}) => {
+  route('GET', '/omp/models', async (request) => {
+    const settings = await store.settingsFor(directoryFromRequest(request));
+    const legacyDefaults = detectLegacyDefaultModel(
+      legacySettingsPath ? { settingsPath: legacySettingsPath } : {},
+    );
+    return Response.json(buildModelsPayload(settings, { legacyDefaults }));
+  });
+
+  route('GET', '/omp/settings', async (request) => {
+    const url = new URL(request.url);
+    const keysParam = url.searchParams.get('keys');
+    const settings = await store.settingsFor(directoryFromRequest(request));
+    return Response.json(buildSettingsPayload(settings, {
+      revision: store.getRevision(),
+      keys: keysParam ? keysParam.split(',').map((k) => k.trim()).filter(Boolean) : null,
+    }));
+  });
+
+  route('PUT', '/omp/settings', async (request) => {
+    const body = await request.json().catch(() => ({}));
+    const { status, body: payload } = await applySettingsChanges(store, body, { publish });
+    return Response.json(payload, { status });
+  });
+};

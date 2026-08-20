@@ -2,6 +2,12 @@ import { isHiddenUserMessage } from '../../message/hiddenUserMessage';
 import { projectTurnActivity } from './projectTurnActivity';
 import { projectTurnIndexes } from './projectTurnIndexes';
 import { projectTurnChangedFiles, projectTurnDiffStats, projectTurnSummary } from './projectTurnSummary';
+import {
+    detectCacheInvalidation,
+    tokensFromWireInfo,
+    turnUsageHasActivity,
+    type TurnUsageTokens,
+} from '../../message/turnUsage';
 import type {
     ChatMessageEntry,
     TurnMessageRecord,
@@ -186,6 +192,41 @@ const hydrateStableTurnRecords = (
     return nextTurns;
 };
 
+/**
+ * Annotate each turn with the prompt-cache invalidation detected between
+ * adjacent assistant turns (spec 05 §5.9): the marker belongs to the turn
+ * whose first billed request read nothing back from a demonstrably warm
+ * predecessor (the previous turn's last billed usage — the TUI's
+ * `lastAssistantUsage` chain at turn granularity). Copy-on-write keeps
+ * hydration-stable record identities whenever the recomputed value is
+ * unchanged.
+ */
+const annotateTurnCacheMiss = (turns: TurnRecord[]): TurnRecord[] => {
+    let lastBilled: TurnUsageTokens | undefined;
+    let changed = false;
+    const nextTurns = turns.map((turn) => {
+        const prevBilled = lastBilled;
+        let firstBilled: TurnUsageTokens | undefined;
+        for (const message of turn.assistantMessages) {
+            const tokens = tokensFromWireInfo(message.info);
+            if (!tokens || !turnUsageHasActivity(tokens)) {
+                continue;
+            }
+            if (!firstBilled) {
+                firstBilled = tokens;
+            }
+            lastBilled = tokens;
+        }
+        const desired = firstBilled ? detectCacheInvalidation(prevBilled, firstBilled) : undefined;
+        if (turn.cacheMiss?.reprocessedTokens === desired?.reprocessedTokens) {
+            return turn;
+        }
+        changed = true;
+        return { ...turn, cacheMiss: desired };
+    });
+    return changed ? nextTurns : turns;
+};
+
 export const projectTurnRecords = (
     messages: ChatMessageEntry[],
     options?: Partial<ProjectTurnRecordsOptions>,
@@ -268,10 +309,22 @@ export const projectTurnRecords = (
     });
 
     const stableTurns = hydrateStableTurnRecords(turns, effectiveOptions);
-    const projection = projectTurnIndexes(stableTurns);
+    const annotatedTurns = annotateTurnCacheMiss(stableTurns);
+    const projection = projectTurnIndexes(annotatedTurns);
     const ungroupedMessageIds = new Set<string>();
     messages.forEach((message) => {
-        if (resolveMessageRole(message) === 'assistant') {
+        const role = resolveMessageRole(message);
+        // T2 transcript dividers (spec 05 §5.5) are history data, not turn
+        // content: after a compaction folds every user turn into the summary
+        // there is no parent to anchor on, so dividers render through the
+        // standalone ungrouped channel instead of vanishing.
+        const isDivider = ['compactionSummary', 'branchSummary'].includes(
+            String((message.info as { metadata?: { ompRole?: unknown } }).metadata?.ompRole ?? ''),
+        );
+        if (role === 'assistant') {
+            if (isDivider && !groupedMessageIds.has(message.info.id)) {
+                ungroupedMessageIds.add(message.info.id);
+            }
             return;
         }
         if (!groupedMessageIds.has(message.info.id)) {

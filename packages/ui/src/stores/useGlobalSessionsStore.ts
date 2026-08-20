@@ -118,13 +118,7 @@ export const mergeSessionDirectoryMetadata = (incoming: Session, existing?: Sess
 export const mergeLiveSessionWithGlobalSession = (
   liveSession: Session,
   globalSession: Session,
-): Session => {
-  const merged = mergeSessionDirectoryMetadata(liveSession, globalSession);
-  if (merged.share !== globalSession.share) {
-    return { ...merged, share: globalSession.share };
-  }
-  return merged;
-};
+): Session => mergeSessionDirectoryMetadata(liveSession, globalSession);
 
 const buildSessionsByDirectory = (sessions: Session[]): Map<string, Session[]> => {
   const next = new Map<string, Session[]>();
@@ -150,7 +144,6 @@ const getSessionSignature = (session: Session): string => {
     session.time?.created ?? 0,
     session.time?.updated ?? 0,
     session.time?.archived ?? 0,
-    session.share?.url ?? '',
     JSON.stringify((session as Session & { metadata?: unknown }).metadata ?? null),
     resolveGlobalSessionDirectory(session) ?? '',
   ].join(':');
@@ -165,7 +158,6 @@ export const getSessionStructuralSignature = (session: Session): string => {
     record.slug ?? '',
     session.time?.created ?? 0,
     session.time?.archived ?? 0,
-    session.share?.url ?? '',
     JSON.stringify((session as Session & { metadata?: unknown }).metadata ?? null),
     resolveGlobalSessionDirectory(session) ?? '',
   ].join(':');

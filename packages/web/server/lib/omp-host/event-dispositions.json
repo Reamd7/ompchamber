@@ -1,0 +1,141 @@
+{
+  "$comment": "SDK AgentSessionEvent union disposition manifest (spec 05 §5.1.1, master D6). Keys MUST equal the locked SDK union members; scripts/check-event-coverage.mjs enforces set equality against the installed SDK .d.ts and that engine.js covers every member with an explicit case.",
+  "agent_start": {
+    "track": "wire-existing",
+    "note": "session.status busy"
+  },
+  "agent_end": {
+    "track": "dual",
+    "note": "session.updated + idle; isTerminal===false branch keeps busy and emits omp.session.settled",
+    "ompEvents": [
+      "omp.session.settled"
+    ]
+  },
+  "turn_start": {
+    "track": "ignore",
+    "note": "message/tool events carry the surface; turn boundary is a TUI-internal concept with no web consumer"
+  },
+  "turn_end": {
+    "track": "ignore",
+    "note": "same as turn_start; message_end/tool_execution_end already settle content"
+  },
+  "message_start": {
+    "track": "wire-existing",
+    "note": "user echo-id capture / StreamProjector startAssistant"
+  },
+  "message_update": {
+    "track": "wire-existing",
+    "note": "text/thinking deltas + toolcall_end"
+  },
+  "message_end": {
+    "track": "dual",
+    "note": "finishAssistant + omp.usage.turn producer",
+    "ompEvents": [
+      "omp.usage.turn"
+    ]
+  },
+  "tool_execution_start": {
+    "track": "wire-existing",
+    "note": "toolStarted"
+  },
+  "tool_execution_update": {
+    "track": "wire-new",
+    "note": "partial results: message.part.updated running-state append (05 §5.6)"
+  },
+  "tool_execution_end": {
+    "track": "wire-existing",
+    "note": "toolFinished"
+  },
+  "auto_compaction_start": {
+    "track": "omp",
+    "note": "omp.compaction.started volatile loader",
+    "ompEvents": [
+      "omp.compaction.started"
+    ]
+  },
+  "auto_compaction_end": {
+    "track": "dual",
+    "note": "omp.compaction.ended + tail-sync wire message projection for compactionSummary entries",
+    "ompEvents": [
+      "omp.compaction.ended"
+    ]
+  },
+  "auto_retry_start": {
+    "track": "dual",
+    "note": "wire session.status{retry} + omp.retry.started superseded overlay; message.part.removed stays P2-gated (master R14)",
+    "ompEvents": [
+      "omp.retry.started"
+    ]
+  },
+  "auto_retry_end": {
+    "track": "dual",
+    "note": "wire session.status{busy} keep-alive + omp.retry.ended durable recovery notes",
+    "ompEvents": [
+      "omp.retry.ended"
+    ]
+  },
+  "retry_fallback_applied": {
+    "track": "omp",
+    "note": "omp.fallback.applied; wire truth lands via the SDK-guaranteed follow-up model_changed",
+    "ompEvents": [
+      "omp.fallback.applied"
+    ]
+  },
+  "retry_fallback_succeeded": {
+    "track": "omp",
+    "note": "omp.fallback.succeeded; registry untouched",
+    "ompEvents": [
+      "omp.fallback.succeeded"
+    ]
+  },
+  "model_changed": {
+    "track": "dual",
+    "note": "registry model sync + wire session.updated + omp.model.changed",
+    "ompEvents": [
+      "omp.model.changed"
+    ]
+  },
+  "ttsr_triggered": {
+    "track": "omp",
+    "note": "omp.ttsr.triggered volatile (rendering P2)",
+    "ompEvents": [
+      "omp.ttsr.triggered"
+    ]
+  },
+  "todo_reminder": {
+    "track": "wire-existing",
+    "note": "todo.updated"
+  },
+  "todo_auto_clear": {
+    "track": "wire-new",
+    "note": "todo.updated {todos:[]} (ACP parity)"
+  },
+  "irc_message": {
+    "track": "dual",
+    "note": "wire message projection (deterministic id) + omp.custom.appended structured payload",
+    "ompEvents": [
+      "omp.custom.appended"
+    ]
+  },
+  "notice": {
+    "track": "omp",
+    "note": "omp.notice.raised {level,message,source?}; error level keeps console.error",
+    "ompEvents": [
+      "omp.notice.raised"
+    ]
+  },
+  "thinking_level_changed": {
+    "track": "omp",
+    "note": "omp.thinking.changed durable (rendering P2)",
+    "ompEvents": [
+      "omp.thinking.changed"
+    ]
+  },
+  "goal_updated": {
+    "track": "omp",
+    "note": "omp.goal.updated durable (rendering P2)",
+    "ompEvents": [
+      "omp.goal.updated"
+    ]
+  }
+}

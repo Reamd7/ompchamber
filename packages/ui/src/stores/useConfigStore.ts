@@ -22,6 +22,7 @@ import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
 import { getSyncConfig, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
 import { getRuntimeKey } from "@/lib/runtime-switch";
+import { isOmpModelRolesEnabled } from "@/lib/omp/capabilityGate";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
@@ -327,25 +328,30 @@ const resolveDefaultAgentModelSelection = ({
     };
 
     // --- Agent cascade ---
-    const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
+    // Under the omp model-roles capability there is no default agent: the
+    // build/plan dichotomy is retired (master D3 row 1) and sessions run
+    // standard, so the cascade must not synthesize one. Probe unresolved →
+    // legacy behavior.
+    const ompModelRoles = isOmpModelRolesEnabled();
 
     let resolvedAgent: Agent | undefined;
-    if (settingsDefaultAgent) {
-        resolvedAgent = agents.find((agent) => agent.name === settingsDefaultAgent);
-    }
-    if (!resolvedAgent && opencodeDefaultAgent) {
-        const candidate = agents.find((agent) => agent.name === opencodeDefaultAgent);
-        // OpenCode requires the default agent to be a visible primary agent.
-        if (candidate && isPrimaryMode(candidate.mode) && candidate.hidden !== true) {
-            resolvedAgent = candidate;
+    if (!ompModelRoles) {
+        const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
+        if (settingsDefaultAgent) {
+            resolvedAgent = agents.find((agent) => agent.name === settingsDefaultAgent);
+        }
+        if (!resolvedAgent && opencodeDefaultAgent) {
+            const candidate = agents.find((agent) => agent.name === opencodeDefaultAgent);
+            // OpenCode requires the default agent to be a visible primary agent.
+            if (candidate && isPrimaryMode(candidate.mode) && candidate.hidden !== true) {
+                resolvedAgent = candidate;
+            }
+        }
+        if (!resolvedAgent) {
+            resolvedAgent = primaryAgents.find((agent) => agent.name === "build") || primaryAgents[0] || agents[0];
         }
     }
-    if (!resolvedAgent) {
-        resolvedAgent = primaryAgents.find((agent) => agent.name === "build") || primaryAgents[0] || agents[0];
-    }
-    if (!resolvedAgent) {
-        return { agentName: undefined };
-    }
+
 
     // --- Model cascade ---
     let providerId: string | undefined;
@@ -362,9 +368,8 @@ const resolveDefaultAgentModelSelection = ({
             variant = resolveVariant(providerId, modelId, projectDefaultModel ? undefined : settingsDefaultVariant);
         }
     }
-
     if (!providerId
-        && resolvedAgent.model?.providerID
+        && resolvedAgent?.model?.providerID
         && resolvedAgent.model?.modelID
         && hasProviderModel(providers, resolvedAgent.model.providerID, resolvedAgent.model.modelID)) {
         providerId = resolvedAgent.model.providerID;
@@ -395,7 +400,7 @@ const resolveDefaultAgentModelSelection = ({
         }
     }
 
-    return { agentName: resolvedAgent.name, providerId, modelId, variant };
+    return { agentName: resolvedAgent?.name, providerId, modelId, variant };
 };
 
 const resolveGitGenerationModelSelection = ({
@@ -2211,7 +2216,10 @@ export const useConfigStore = create<ConfigStore>()(
                                 opencodeDefaultAgent,
                                 opencodeDefaultModel,
                             });
-                            const resolvedAgentName = resolvedDefault.agentName ?? safeAgents[0].name;
+                            // Model-roles gate: no default agent is synthesized, and the
+                            // fallback below must not resurrect the build/plan dichotomy.
+                            const resolvedAgentName = resolvedDefault.agentName
+                                ?? (isOmpModelRolesEnabled() ? undefined : safeAgents[0].name);
                             const resolvedProviderId = resolvedDefault.providerId;
                             const resolvedModelId = resolvedDefault.modelId;
                             const resolvedVariant = resolvedDefault.variant;
@@ -2590,7 +2598,9 @@ export const useConfigStore = create<ConfigStore>()(
                         opencodeDefaultModel,
                     });
 
-                    if (!resolvedAgentName) {
+                    // No agent under the model-roles gate is expected — the
+                    // model defaults still apply; only a total miss aborts.
+                    if (!resolvedAgentName && !(resolvedProviderId && resolvedModelId)) {
                         return;
                     }
 
@@ -2706,7 +2716,7 @@ export const useConfigStore = create<ConfigStore>()(
                             opencodeDefaultModel,
                         });
 
-                        if (!resolved.agentName) {
+                        if (!resolved.agentName && !resolved.providerId) {
                             if (!defaultsChanged) {
                                 return state;
                             }

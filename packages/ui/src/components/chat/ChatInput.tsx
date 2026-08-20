@@ -44,6 +44,7 @@ import type { SnippetAutocompleteHandle } from './SnippetAutocomplete';
 import { cn } from "@/lib/utils";
 import { ModelControls } from './ModelControls';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
+import { useOmpFeatureFlags, resolveSendAgent } from '@/hooks/useOmpModelRoles';
 import { StatusRow } from './StatusRow';
 import { PendingChangesBar } from './PendingChangesBar';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
@@ -355,6 +356,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         : undefined;
     const currentVariant = useConfigStore((state) => state.currentVariant);
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
+    const ompFeatureFlags = useOmpFeatureFlags();
     const setAgent = useConfigStore((state) => state.setAgent);
     const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
     const agents = getVisibleAgents();
@@ -905,7 +907,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             sendConfig: currentProviderId && currentModelId ? {
                 providerID: currentProviderId,
                 modelID: currentModelId,
-                agent: currentAgentName ?? undefined,
+                agent: resolveSendAgent(currentAgentName, ompFeatureFlags.modelRoles),
                 variant: currentVariant ?? undefined,
             } : undefined,
         });
@@ -997,7 +999,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const capturedSendConfig = queuedOnly ? queuedMessagesToSend[0]?.sendConfig : undefined;
         const providerIdToSend = capturedSendConfig?.providerID ?? currentProviderId;
         const modelIdToSend = capturedSendConfig?.modelID ?? currentModelId;
-        const agentNameToSend = capturedSendConfig?.agent ?? currentAgentName;
+        // Under model roles the wire agent field is not sent — new sessions
+        // default to standard; explicit @agent mentions ride agentMentions.
+        const agentNameToSend = resolveSendAgent(
+            capturedSendConfig?.agent ?? currentAgentName,
+            ompFeatureFlags.modelRoles,
+        );
         const variantToSend = capturedSendConfig?.variant ?? currentVariant;
 
         if (!providerIdToSend || !modelIdToSend) {
@@ -1631,6 +1638,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     }, [abortCurrentOperation, clearAbortPrompt, currentSessionId, startAbortIndicator]);
 
     const handleCycleAgent = React.useCallback((direction: 1 | -1 = 1) => {
+        // Under the omp concept system there is no build/plan agent cycle —
+        // the mode selector owns that surface.
+        if (ompFeatureFlags.modes) return;
         const nextAgentName = getCycledPrimaryAgentName(agents, currentAgentName, direction);
         if (!nextAgentName) return;
 
@@ -1639,7 +1649,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         if (currentSessionId) {
             saveSessionAgentSelection(currentSessionId, nextAgentName);
         }
-    }, [agents, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection]);
+    }, [agents, currentAgentName, currentSessionId, setAgent, saveSessionAgentSelection, ompFeatureFlags.modes]);
+
 
     // Height the dictation transcript needs (null when idle). Its overlay sits
     // absolutely over the composer, so the composer must be able to grow for

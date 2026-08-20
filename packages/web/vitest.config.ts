@@ -26,5 +26,14 @@ export default defineConfig({
     // suite fail differently on every run.
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // omp-host tests are bun:test-native: they mock the omp SDK by specifier
+    // (including its deep config/... paths) and the real SDK graph executes
+    // Bun globals at module top level, which cannot load under Node/vitest.
+    // They run via the package's `test` script (`bun test server/lib/omp-host`).
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'server/lib/omp-host/**',
+    ],
   },
 });

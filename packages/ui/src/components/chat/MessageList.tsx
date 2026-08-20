@@ -661,10 +661,11 @@ const TurnBlock = React.memo(({
             hasReasoning: turn.hasReasoning,
             diffStats: turn.diffStats,
             changedFiles: turn.changedFiles,
+            cacheMiss: turn.cacheMiss,
             userMessageCreatedAt: typeof userCreatedAt === 'number' ? userCreatedAt : undefined,
             userMessageVariant,
         };
-    }, [turn.changedFiles, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
+    }, [turn.cacheMiss, turn.changedFiles, turn.diffStats, turn.hasReasoning, turn.hasTools, turn.headerMessageId, turn.summaryText, turn.turnId, turn.userMessage.info, visibleActivityParts, visibleActivitySegments]);
 
     const renderMessage = React.useCallback(
         (message: ChatMessageEntry) => {
@@ -714,6 +715,7 @@ const TurnBlock = React.memo(({
                         headerMessageId: turnGroupingContextBase.headerMessageId,
                         diffStats: turnGroupingContextBase.diffStats,
                         changedFiles: turnGroupingContextBase.changedFiles,
+                        cacheMiss: turnGroupingContextBase.cacheMiss,
                         userMessageCreatedAt: turnGroupingContextBase.userMessageCreatedAt,
                         userMessageVariant: turnGroupingContextBase.userMessageVariant,
                         isGroupExpanded: turnUiState.isExpanded,

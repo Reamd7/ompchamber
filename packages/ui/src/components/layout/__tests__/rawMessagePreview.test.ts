@@ -102,9 +102,19 @@ describe('formatMessagePreviewTime', () => {
     expect(/AM|PM/i.test(result)).toBe(false);
   });
 
-  test('12h mode includes AM or PM marker', () => {
+  test('12h mode renders the system hour12 form and differs from 24h', () => {
+    // Locale-independent: hour12 rendering differs from 24h on every locale
+    // (AM/PM in en, 上午/下午 in zh — both are day-period markers).
     const result = formatMessagePreviewTime(ts, '12h');
-    expect(/AM|PM/i.test(result)).toBe(true);
+    const expected = new Date(ts).toLocaleString(undefined, {
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+    expect(result).toBe(expected);
+    expect(result).not.toBe(formatMessagePreviewTime(ts, '24h'));
   });
 
   test('auto mode is non-empty', () => {

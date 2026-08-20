@@ -6,6 +6,12 @@ import type { StoreApi } from "zustand"
 import { useStore } from "zustand"
 import type { OpencodeClient } from '@/lib/opencode/wire'
 import { createEventPipeline } from "./event-pipeline"
+import { createOmpEventPipeline } from "./omp-event-pipeline"
+import { useOmpSessionStore } from "./useOmpSessionStore"
+import { showOmpNoticeToast } from "./omp-notice-toast"
+import type { OmpEventEffect } from "./omp-event-reducer"
+import { OMP_ENDPOINTS } from "@/lib/api/omp"
+import { runtimeFetch } from "@/lib/runtime-fetch"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
 import { reduceGlobalEvent, applyGlobalProject, applyDirectoryEvent, type SessionMaterializationReason } from "./event-reducer"
@@ -1136,6 +1142,7 @@ const updateRoutingIndexFromEvent = (
       const deletedSessionID = (payload.properties as { sessionID?: string }).sessionID
       if (deletedSessionID) {
         removeIndexedSession(routingIndex, deletedSessionID)
+        useOmpSessionStore.getState().clearSession(getRuntimeKey(), directory, deletedSessionID)
       }
       return
     }
@@ -1600,10 +1607,13 @@ export function handleEvent(
     }
   }
 
-  // Notification dispatch for session turn-complete and error events.
+  // Notification dispatch for session turn-complete events.
   // These are NOT handled by the event reducer — only the notification store.
-  if (payload.type === "session.idle" || payload.type === "session.error") {
-    const props = payload.properties as { sessionID?: string; error?: { message?: string; code?: string } }
+  // Error visibility: message error parts + omp.notice.raised toasts (pipeline)
+  // + terminal agent_end notification authority (spec 05 §5.11; wire
+  // session.error is zero-produce and no longer consumed here).
+  if (payload.type === "session.idle") {
+    const props = payload.properties as { sessionID?: string }
     const sessionID = props.sessionID
     // Skip subtask sessions — only top-level sessions generate notifications
     const storeState = getDirectoryEventState(store, batch)
@@ -1616,9 +1626,7 @@ export function handleEvent(
         session: sessionID,
         time: Date.now(),
         viewed: isViewedInCurrentSession(resolvedDirectory, sessionID),
-        ...(payload.type === "session.error"
-          ? { type: "error" as const, error: props.error }
-          : { type: "turn-complete" as const }),
+        type: "turn-complete" as const,
       })
     }
   }
@@ -1629,6 +1637,11 @@ export function handleEvent(
   // no ToolPart component is mounted.
   if (payload.type === "session.idle") {
     const idleSessionId = getSessionIdFromPayload(payload)
+    if (idleSessionId) {
+      // Authoritative wire terminal state clears omp volatile markers
+      // (loaders/awaiting-async are not replayed after a gap).
+      useOmpSessionStore.getState().settleSession(getRuntimeKey(), resolvedDirectory, idleSessionId)
+    }
     if (idleSessionId && resolvedDirectory && resolvedDirectory !== "global") {
       const sessionState = getDirectoryEventState(store, batch)
       const idleSession = sessionState.session.find((s) => s.id === idleSessionId)
@@ -1676,7 +1689,6 @@ export function handleEvent(
       break
     case "session.status":
     case "session.idle":
-    case "session.error":
       cloneField("session_status", (value) => ({ ...(value ?? {}) }))
       break
     case "todo.updated":
@@ -1794,7 +1806,7 @@ export function handleEvent(
     }
   }
 
-  if (payload.type === "session.idle" || payload.type === "session.error") {
+  if (payload.type === "session.idle") {
     const sessionID = getSessionIdFromPayload(payload) ?? undefined
     const state = getDirectoryEventState(store, batch)
     const messageID = sessionID ? getStaleRunningToolMessageID(state, sessionID) : undefined
@@ -1804,7 +1816,7 @@ export function handleEvent(
         messageID,
       })
     }
-    // The reducer already wrote the idle/error status into `draft`; mark the
+    // The reducer already wrote the idle status into `draft`; mark the
     // orphaned tools using the batched state and publish through the batch.
     if (sessionID) {
       const interrupted = interruptedTurnToolParts(state, sessionID)
@@ -2129,6 +2141,7 @@ export function SyncProvider(props: {
       },
       onDispose: (directory) => {
         messageLoader.invalidateDirectory(directory)
+        useOmpSessionStore.getState().clearDirectory(getRuntimeKey(), directory)
         lastStatusPollAtByDirectoryRef.current.delete(directory)
         lastFullResyncAtByDirectoryRef.current.delete(directory)
         lastChildDiscoveryAtByDirectoryRef.current.delete(directory)
@@ -2250,6 +2263,67 @@ export function SyncProvider(props: {
       pipeline.cleanup()
     }
   }, [props.sdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
+
+  // omp event pipeline — capability-gated (spec 05 §5.2.2/§5.2.3). Mounts the
+  // same way the wire /event pipeline does: created once per mount/runtime,
+  // abort+cleanup on unmount. A missing/gated-off capability answer leaves it
+  // dormant (wire-only degradation, no error surfaced).
+  useEffect(() => {
+    const apis = getRegisteredRuntimeAPIs()
+    if (!apis?.ompEvents || !apis.ompCapabilities) return
+
+    const ompStore = useOmpSessionStore.getState()
+    ompStore.clearAll(runtimeKey)
+
+    const executeEffects = (directory: string, effects: OmpEventEffect[]): void => {
+      for (const effect of effects) {
+        if (effect.kind === "notice") {
+          showOmpNoticeToast(effect)
+        } else if (effect.kind === "settings-revision") {
+          // Revision jumped past the last applied one: authoritative GET
+          // (compare-then-fetch, spec 05 §5.2.4 settings row). The settings
+          // surface lands with chapter 06; 404/501 skip silently.
+          void runtimeFetch(OMP_ENDPOINTS.settings, {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            query: { directory },
+          }).then((response) => {
+            if (!response.ok) return
+            // Parsed by the chapter-06 surface when it lands; consumed here
+            // only to drain the body.
+            void response.json().catch(() => undefined)
+          }).catch(() => undefined)
+        }
+      }
+    }
+
+    const pipeline = createOmpEventPipeline({
+      ompCapabilities: apis.ompCapabilities,
+      ompEvents: apis.ompEvents,
+      directory: null,
+      onEvent: (envelope) => {
+        const effects = useOmpSessionStore
+          .getState()
+          .applyEvent(runtimeKey, envelope.directory, envelope)
+        if (effects.length > 0) {
+          executeEffects(envelope.directory, effects)
+        }
+      },
+      resync: {
+        listDirectories: () => [...childStores.children.keys()],
+        listSessions: (directory) => {
+          const store = childStores.getChild(directory)
+          return store ? store.getState().session.map((session) => session.id) : []
+        },
+        refetchWire: (directory) => {
+          triggerDirectoryResync(directory, "stream-reconnect")
+        },
+      },
+    })
+    return () => {
+      pipeline.cleanup()
+    }
+  }, [runtimeKey, childStores, triggerDirectoryResync])
 
   useEffect(() => {
     let stopped = false

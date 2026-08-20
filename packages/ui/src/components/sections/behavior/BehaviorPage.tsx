@@ -30,7 +30,42 @@ import {
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
 
-const AGENTS_MD_PATH = '~/.config/opencode/AGENTS.md';
+/**
+ * Server-resolved AGENTS.md surface (07 §5.13): the edit target is the
+ * omp-native user-level file — the server resolves the profile-scoped agent
+ * dir, so the UI never hardcodes it. The legacy OpenCode-compat file is
+ * reported read-only for the notice below.
+ */
+type AgentsMdInfo = {
+  content: string;
+  path: string | null;
+  exists: boolean;
+  legacy: { path: string | null; hasContent: boolean };
+};
+
+const EMPTY_AGENTS_MD_INFO: AgentsMdInfo = {
+  content: '',
+  path: null,
+  exists: false,
+  legacy: { path: null, hasContent: false },
+};
+const parseAgentsMdInfo = (payload: unknown): AgentsMdInfo => {
+  if (typeof payload !== 'object' || payload === null) return EMPTY_AGENTS_MD_INFO;
+  const record = payload as Record<string, unknown>;
+  const legacy = typeof record.legacy === 'object' && record.legacy !== null
+    ? record.legacy as Record<string, unknown>
+    : null;
+  return {
+    content: typeof record.content === 'string' ? record.content : '',
+    path: typeof record.path === 'string' && record.path.length > 0 ? record.path : null,
+    exists: record.exists === true,
+    legacy: {
+      path: typeof legacy?.path === 'string' && legacy.path.length > 0 ? legacy.path : null,
+      hasContent: legacy?.hasContent === true,
+    },
+  };
+};
+
 
 const readApiError = async (response: Response, fallback: string) => {
   const data = await response.json().catch(() => null) as { error?: unknown } | null;
@@ -112,6 +147,7 @@ export const BehaviorPage: React.FC = () => {
   const [isSaving, setIsSaving] = React.useState(false);
   const [isApplyingPromptOptimization, setIsApplyingPromptOptimization] = React.useState(false);
   const [initialPrompt, setInitialPrompt] = React.useState('');
+  const [agentsMdInfo, setAgentsMdInfo] = React.useState<AgentsMdInfo>(EMPTY_AGENTS_MD_INFO);
   const [initialOptimizeSystemPrompt, setInitialOptimizeSystemPrompt] = React.useState(false);
   const lastSavedResponseStyleRef = React.useRef<{
     enabled: boolean;
@@ -154,10 +190,11 @@ export const BehaviorPage: React.FC = () => {
           }
         }
 
-        if (!nextSettings.prompt.trim() && agentsMdRes.ok) {
-          const agentsData = await agentsMdRes.json();
-          if (typeof agentsData.content === 'string') {
-            nextSettings = { ...nextSettings, prompt: agentsData.content };
+        if (agentsMdRes.ok) {
+          const info = parseAgentsMdInfo(await agentsMdRes.json());
+          setAgentsMdInfo(info);
+          if (!nextSettings.prompt.trim() && info.content.length > 0) {
+            nextSettings = { ...nextSettings, prompt: info.content };
           }
         }
 
@@ -326,8 +363,20 @@ export const BehaviorPage: React.FC = () => {
               {t('settings.behavior.page.warning.title')}
             </p>
             <p>
-              {t('settings.behavior.page.warning.description', { path: AGENTS_MD_PATH })}
+              {t('settings.behavior.page.warning.description')}
             </p>
+            {agentsMdInfo.path ? (
+              <p className="font-mono typography-meta text-muted-foreground break-all">
+                {agentsMdInfo.path}
+              </p>
+            ) : null}
+            {agentsMdInfo.legacy.hasContent && agentsMdInfo.legacy.path ? (
+              <p className="typography-meta text-muted-foreground">
+                {agentsMdInfo.exists
+                  ? t('settings.behavior.page.legacyNotice.shadowed', { path: agentsMdInfo.legacy.path })
+                  : t('settings.behavior.page.legacyNotice.active', { path: agentsMdInfo.legacy.path })}
+              </p>
+            ) : null}
           </div>
         )}
         settingsItem="behavior.system-prompt"

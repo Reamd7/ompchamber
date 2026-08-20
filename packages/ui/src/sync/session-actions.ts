@@ -1204,29 +1204,6 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
   mirrorSessionIntoLiveStores(session, sessionDirectory)
 }
 
-export async function shareSession(sessionId: string): Promise<Session | null> {
-  const sessionDirectory = getSessionDirectory(sessionId)
-  const result = await sdk().session.share({ sessionID: sessionId, directory: sessionDirectory })
-  const session = stripSessionDiffSnapshots(assertSdkData(result, "session.share"))
-  useGlobalSessionsStore.getState().upsertSession(session)
-  updateLiveSession(session, sessionDirectory)
-  return session
-}
-
-export async function unshareSession(sessionId: string): Promise<Session | null> {
-  const sessionDirectory = getSessionDirectory(sessionId)
-  const result = await sdk().session.unshare({ sessionID: sessionId, directory: sessionDirectory })
-  // A successful unshare is authoritative even when the upstream response
-  // echoes the pre-mutation session with its old share URL. Normalize that
-  // stale field at the action boundary before publishing to either store.
-  const session = {
-    ...stripSessionDiffSnapshots(assertSdkData(result, "session.unshare")),
-    share: undefined,
-  }
-  useGlobalSessionsStore.getState().upsertSession(session)
-  updateLiveSession(session, sessionDirectory)
-  return session
-}
 
 // ---------------------------------------------------------------------------
 // Optimistic message send — insert user message before API call, rollback on error

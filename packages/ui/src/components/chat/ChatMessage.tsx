@@ -34,10 +34,13 @@ import type { ReviewTransferDirection } from '@/lib/reviewFlow';
 import { toast } from 'sonner';
 import { useI18n } from '@/lib/i18n';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useOmpRetryNote, useOmpRetrySupersession } from '@/sync/useOmpSessionStore';
 import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
 import { setContextObligatoryMessage } from '@/sync/session-actions';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { focusChatInput } from './composer/editor/dom';
+import { OmpCustomMessage, parseOmpCustomMessage } from './message/OmpCustomMessage';
+import { CacheMissDivider, TurnUsageRow } from './message/TurnUsageRow';
 
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
@@ -199,9 +202,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [message.info.id]);
 
 
+     const messageRole = React.useMemo(() => deriveMessageRole(message.info), [message.info]);
+     const isUser = messageRole.isUser;
 
-    const messageRole = React.useMemo(() => deriveMessageRole(message.info), [message.info]);
-    const isUser = messageRole.isUser;
+    // Retry supersession overlay (spec 05 §5.3.2 P1): pure presentation keyed
+    // by supersededMessageID from the omp event stream — zero wire mutation.
+    // Hooks are unconditional (Rules of Hooks); the user-message guard is on
+    // the consumed values.
+    const supersededByRetryFlag = useOmpRetrySupersession(message.info.id);
+    const retryRecoveryNoteValue = useOmpRetryNote(message.info.id);
+    const supersededByRetry = !isUser && supersededByRetryFlag;
+    const retryRecoveryNote = !isUser ? retryRecoveryNoteValue : undefined;
     const useExternalUserActionsRow = isUser && (isMobile || !stickyUserHeader);
     const showStickyInlineHoverRow = isUser && !isMobile && stickyUserHeader && !useExternalUserActionsRow;
 
@@ -445,6 +456,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 includeReasoning: showReasoningTraces,
             }),
         [normalizedParts, showReasoningTraces]
+    );
+
+    // Tiered omp custom/divider message (spec 05 §5.8): T1 cards and T2
+    // dividers replace the default body; T4 (unknown types) returns null and
+    // keeps the plain-text look.
+    const ompCustomMessage = React.useMemo(
+        () => (!isUser ? parseOmpCustomMessage(message.info, visibleParts) : null),
+        [isUser, message.info, visibleParts]
     );
 
     const displayParts = React.useMemo(() => {
@@ -1017,6 +1036,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         return null;
     }
 
+    // T3 custom types are display:false entries the projection should have
+    // dropped; if one slips through, render nothing rather than re-showing it.
+    if (ompCustomMessage?.tier === 'T3') {
+        return null;
+    }
+
     const assistantTopPaddingClass = !isUser && shouldShowHeader && !previousIsHiddenUserMessage
         ? (stickyUserHeader ? (isMobile ? 'pt-4' : 'pt-6') : 'pt-0')
         : 'pt-0';
@@ -1132,6 +1157,27 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                         )
                     ) : (
                         <div className="relative">
+                            {turnGroupingContext?.cacheMiss && turnGroupingContext.isFirstAssistantInTurn ? (
+                                <CacheMissDivider reprocessedTokens={turnGroupingContext.cacheMiss.reprocessedTokens} />
+                            ) : null}
+                            {supersededByRetry ? (
+                                <div
+                                    className="flex max-w-full items-center gap-1.5 pb-1.5 text-xs text-muted-foreground/80"
+                                    data-retry-superseded={message.info.id}
+                                >
+                                    <span aria-hidden="true">↻</span>
+                                    <span className="shrink-0">{t('chat.retry.supersededBadge')}</span>
+                                    {retryRecoveryNote ? (
+                                        <span className="truncate opacity-80" title={retryRecoveryNote}>
+                                            · {retryRecoveryNote}
+                                        </span>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                            <div className={supersededByRetry ? 'opacity-55 transition-opacity' : undefined}>
+                            {ompCustomMessage ? (
+                                <OmpCustomMessage data={ompCustomMessage} />
+                            ) : (
                             <MessageBody
                                 sessionId={message.info.sessionID}
                                 messageId={message.info.id}
@@ -1172,7 +1218,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 footerVariant={headerVariant}
                                 isDarkTheme={isDarkTheme}
                             />
+                            )}
+                            </div>
 
+                            {!ompCustomMessage && isLastAssistantInTurn && isMessageCompleted ? (
+                                <TurnUsageRow
+                                    sessionId={message.info.sessionID}
+                                    messageId={message.info.id}
+                                    wireInfo={message.info}
+                                />
+                            ) : null}
                         </div>
                     )}
                 </div>

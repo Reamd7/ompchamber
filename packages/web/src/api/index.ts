@@ -16,6 +16,7 @@ import { createWebToolsAPI } from './tools';
 import { createWebPushAPI } from './push';
 import { createWebGitHubAPI } from './github';
 import { createWebClientAuthAPI } from './clientAuth';
+import { createOmpCapabilitiesAPI, createOmpEventsAPI, createOmpModesAPI, createOmpModelsAPI, createOmpSessionAPI } from '@openchamber/ui/lib/api/omp';
 
 export interface WebAPIsOptions {
   urls?: RuntimeUrlResolver;
@@ -46,7 +47,12 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
   notifications: createWebNotificationsAPI(),
   github: createWebGitHubAPI({ urls: activeUrls }),
   push: createWebPushAPI(),
+  ompEvents: createOmpEventsAPI(),
+  ompCapabilities: createOmpCapabilitiesAPI(),
+  ompSession: createOmpSessionAPI(),
   clientAuth: createWebClientAuthAPI(),
+  ompModels: createOmpModelsAPI(),
+  ompModes: createOmpModesAPI(),
   tools: createWebToolsAPI(),
   };
 };

@@ -15,19 +15,27 @@ import {
   AgentRegistry,
   ModelRegistry,
   SessionManager,
+  BUILTIN_TOOLS,
   createAgentSession,
   discoverAuthStorage,
 } from '@oh-my-pi/pi-coding-agent';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
-import { WireEventBus } from './events.js';
+import { WireEventBus, OmpEventBus } from './events.js';
 import {
   StreamProjector,
   projectConversation,
+  projectCustomMessage,
+  projectDividerMessage,
   projectUserMessage,
   wireMessageId,
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.js';
+import { createSettingsStore } from './domain-models.js';
+import { createDomainDialogs } from './domain-dialogs.js';
+import { createModesDomain, mapBackedStore } from './domain-modes.js';
+import { ompFeatures } from './omp-parity.js';
+import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_LIVE_SESSIONS = 12;
@@ -46,6 +54,8 @@ export class OmpHostEngine {
     this.modelRegistry = null;
     this.registry = new SessionMetaRegistry({ agentDir });
     this.bus = new WireEventBus();
+    /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
+    this.ompBus = new OmpEventBus();
     /** @type {Map<string, HostSession>} */
     this.sessions = new Map();
     /**
@@ -63,6 +73,72 @@ export class OmpHostEngine {
      */
     this.wireIdOverrides = new Map();
     this.customAgents = new Map();
+    /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
+    this.personas = new Map();
+    /** Per-directory keyed Settings store (spec 06 §5.1, master R6). */
+    this.settingsStore = null;
+    // Approval/ask dialog domain (spec 03, master R10/R11/R13). Lease-driven
+    // hasUI: unattended sessions never hold a lease → SDK fail-closed.
+    this.dialogs = createDomainDialogs({
+      onSessionUiAttached: ({ directory, sessionId }) => this.#attachDialogUi(directory, sessionId),
+      onSessionUiDetached: ({ directory, sessionId }) => this.#detachDialogUi(directory, sessionId),
+      onDiagnostic: (note) => console.warn('[omp-host] dialog lifecycle:', note),
+    });
+    // Modes/plan/goal/personas/agent-definitions domain (spec 02).
+    this.modesDomain = createModesDomain({
+      publishFor: (sessionId, directoryKey) => (type, payload, options = {}) =>
+        this.ompBus.publish(type, payload, {
+          directory: directoryKey,
+          sessionID: sessionId,
+          durable: options.durable !== false,
+        }),
+      appendFor: (sessionId, directoryKey) => (mode, data) => {
+        const hostSession = this.sessions.get(sessionId);
+        const manager = hostSession?.agentSession?.sessionManager;
+        if (!manager?.appendModeChange) return undefined;
+        const entryId = manager.appendModeChange(mode, data);
+        this.#syncPlanProposalHandler(hostSession, mode);
+        return entryId;
+      },
+      sessionContextFor: (sessionId, directoryKey) => {
+        const hostSession = this.sessions.get(sessionId);
+        try {
+          return hostSession?.agentSession?.sessionManager?.buildSessionContext?.();
+        } catch {
+          return undefined;
+        }
+      },
+      agentDefinitionStore: mapBackedStore(this.customAgents, () => this.saveCustomAgents()),
+      personasStore: mapBackedStore(this.personas, () => this.savePersonas()),
+      allowedTools: new Set(Object.keys(BUILTIN_TOOLS ?? {})),
+      settingsProjectScopes: true,
+    });
+    // URI bridge / session tree / agent-runs / jobs (spec 04). The factory
+    // is synchronous and every engine dependency is a lazy closure, so it is
+    // created here (not in async #boot) and mounted synchronously by
+    // endpoints.js at route-registration time.
+    this.uriDomain = createUriDomain({
+      features: () => ompFeatures(),
+      localOptionsFor: (sessionId, directoryKey) =>
+        createLocalProtocolOptions(sessionId, directoryKey, this.#sessionDirFor(directoryKey)),
+      sessionTreeData: async (directory) => this.listSessions({ directory }),
+      entryTreeFor: async (sessionID, directory) => {
+        const file = await this.#findSessionFile(sessionID, normalizeDirectoryKey(directory));
+        if (!file) return null;
+        const manager = await SessionManager.open(file.path);
+        return { manager };
+      },
+      agentsSnapshot: () =>
+        [...this.sessions.values()]
+          .filter((hostSession) => hostSession.agentRegistry && hostSession.agentSession)
+          .map((hostSession) => ({
+            sessionID: hostSession.sessionId,
+            directory: hostSession.directory,
+            registry: hostSession.agentRegistry,
+          })),
+      publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
+      liveSessionIds: () => [...this.sessions.keys()],
+    });
     this.bootError = null;
     this.bootPromise = null;
     this.sweeper = setInterval(() => this.#sweepIdleSessions(), 60_000);
@@ -76,6 +152,23 @@ export class OmpHostEngine {
       this.modelRegistry = new ModelRegistry(this.authStorage);
       await this.modelRegistry.refresh();
       this.#loadCustomAgents();
+      this.#loadPersonas();
+      // Per-directory keyed Settings store (spec 06 §5.1, master R6). The
+      // boot instance doubles as the global-write executor; sessions inject
+      // their directory's instance via options.settings (sdk.ts:1273-1275).
+      if (!this.settingsStore) {
+        try {
+          this.settingsStore = await createSettingsStore({
+            cwd: process.cwd(),
+            agentDir: this.registry.agentDir,
+          });
+        } catch (error) {
+          // Degrade to no-injection (pre-R6 behavior) instead of bricking
+          // every session; the settings endpoints surface the error.
+          console.warn('[omp-host] settings store unavailable:', error?.message ?? error);
+          this.settingsStore = null;
+        }
+      }
     })();
     try {
       await this.bootPromise;
@@ -86,6 +179,72 @@ export class OmpHostEngine {
     }
     return this.bootPromise;
   }
+
+  /** Lease attach/detach → SDK tool UI context (R13: lease is hasUI authority). */
+  #attachDialogUi(directory, sessionId) {
+    const hostSession = this.sessions.get(sessionId);
+    if (!hostSession?.sdkResult?.setToolUIContext || !hostSession.agentSession) return;
+    hostSession.sdkResult.setToolUIContext(
+      this.dialogs.uiContextFor(directory, sessionId),
+      true,
+    );
+  }
+
+  #detachDialogUi(directory, sessionId) {
+    const hostSession = this.sessions.get(sessionId);
+    if (!hostSession?.sdkResult?.setToolUIContext || !hostSession.agentSession) return;
+    try {
+      hostSession.sdkResult.setToolUIContext(undefined, false);
+    } catch {
+      // Session may already be disposed.
+    }
+  }
+
+  /**
+   * Plan mode ↔ xd://propose bridge (spec 02 §5.5): entering plan attaches
+   * the review bridge; any other mode clears the handler.
+   */
+  #syncPlanProposalHandler(hostSession, mode) {
+    if (!hostSession?.agentSession?.setPlanProposalHandler) return;
+    if (mode === 'plan') {
+      const bridge = this.modesDomain.bridgeFor(hostSession.sessionId, hostSession.directory);
+      hostSession.agentSession.setPlanProposalHandler(bridge.hookFor(hostSession.agentSession));
+      hostSession.planHandlerAttached = true;
+    } else if (hostSession.planHandlerAttached) {
+      hostSession.agentSession.setPlanProposalHandler(null);
+      hostSession.planHandlerAttached = false;
+    }
+  }
+
+  #personasConfigPath() {
+    return path.join(this.registry.registryRoot, 'openchamber-personas.json');
+  }
+
+  #loadPersonas() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.#personasConfigPath(), 'utf8'));
+      for (const persona of Array.isArray(parsed?.personas) ? parsed.personas : []) {
+        if (persona && typeof persona.name === 'string') this.personas.set(persona.name, persona);
+      }
+    } catch {
+      // No personas yet.
+    }
+  }
+
+  savePersonas() {
+    fs.mkdirSync(this.registry.registryRoot, { recursive: true });
+    fs.writeFileSync(
+      this.#personasConfigPath(),
+      JSON.stringify({ personas: [...this.personas.values()] }, null, 2),
+    );
+  }
+
+  /** Public settings-store accessor for endpoint handlers. */
+  async settingsStoreReady() {
+    await this.#boot();
+    return this.settingsStore;
+  }
+
   #metaConfigPath() {
     return path.join(this.registry.registryRoot, 'openchamber-agents.json');
   }
@@ -136,11 +295,16 @@ export class OmpHostEngine {
     if (!session.agentSession) return;
     session.unsubscribe?.();
     session.unsubscribe = null;
+    // Domain release: modes tracker + pending dialogs for this session (R11).
+    this.modesDomain?.release?.(session.sessionId, session.directory);
+    this.dialogs?.registry?.abortForSession?.({
+      directory: session.directory,
+      sessionId: session.sessionId,
+    }, 'session disposed');
     const agentSession = session.agentSession;
     session.agentSession = null;
     void agentSession.dispose().catch(() => {});
   }
-
   #sessionDirFor(cwd) {
     return SessionManager.getDefaultSessionDir(cwd, this.registry.agentDir);
   }
@@ -366,9 +530,44 @@ export class OmpHostEngine {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
+    const meta = this.registry.get(directoryKey, sessionID);
     const live = this.sessions.get(sessionID);
-    if (live?.agentSession) {
-      const meta = this.registry.get(directoryKey, sessionID);
+    const liveCount = live?.agentSession?.messages?.length ?? -1;
+
+    // File transcript (transcript: true) is the display truth: it keeps the
+    // full history including pre-compaction user turns and divider entries.
+    // A live session's runtime context is post-compaction (users folded into
+    // the summary), which used to blank the UI — so read the live list only
+    // when it is at least as complete as the file.
+    const file = await this.#findSessionFile(sessionID, directoryKey);
+    if (file) {
+      const manager = await SessionManager.open(file.path);
+      try {
+        const context = manager.buildSessionContext({ transcript: true });
+        const fileMessages = context.messages ?? [];
+        if (liveCount < 0 || liveCount >= fileMessages.length) {
+          if (liveCount >= 0 && liveCount >= fileMessages.length) {
+            return projectConversation(live.agentSession.messages, {
+              sessionID,
+              directory: directoryKey,
+              agent: meta?.agent ?? 'build',
+              wireIdFor,
+            });
+          }
+        }
+        if (fileMessages.length > 0 || liveCount < 0) {
+          return projectConversation(fileMessages, {
+            sessionID,
+            directory: directoryKey,
+            agent: meta?.agent ?? 'build',
+            wireIdFor,
+          });
+        }
+      } finally {
+        await manager.close().catch(() => {});
+      }
+    }
+    if (liveCount >= 0) {
       return projectConversation(live.agentSession.messages, {
         sessionID,
         directory: directoryKey,
@@ -376,21 +575,7 @@ export class OmpHostEngine {
         wireIdFor,
       });
     }
-    const file = await this.#findSessionFile(sessionID, directoryKey);
-    if (!file) return null;
-    const manager = await SessionManager.open(file.path);
-    try {
-      const context = manager.buildSessionContext({ transcript: true });
-      const meta = this.registry.get(directoryKey, sessionID);
-      return projectConversation(context.messages ?? [], {
-        sessionID,
-        directory: directoryKey,
-        agent: meta?.agent ?? 'build',
-        wireIdFor,
-      });
-    } finally {
-      await manager.close();
-    }
+    return null;
   }
 
   #wireIdResolver(directoryKey, sessionID) {
@@ -451,17 +636,40 @@ export class OmpHostEngine {
     const customAgent = meta?.agent && meta.agent !== 'build' && meta.agent !== 'plan'
       ? this.customAgents.get(meta.agent)
       : null;
-    const { session } = await createAgentSession({
+    const agentRegistry = new AgentRegistry();
+    const { session, setToolUIContext } = await createAgentSession({
       cwd: directoryKey,
       sessionManager: manager,
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
+      // Per-directory keyed Settings injection (spec 06 §5.1, master R6):
+      // the session consumes this directory's global+project layering.
+      // Absent store (degraded boot) falls back to the SDK singleton.
+      ...(this.settingsStore
+        ? { settings: await this.settingsStore.settingsFor(directoryKey) }
+        : {}),
       // One registry per session: the SDK's global registry admits a single
       // "Main" agent per process generation, and omp-host embeds several
-      // concurrent top-level sessions.
-      agentRegistry: new AgentRegistry(),
+      // concurrent top-level sessions. The instance is retained on the
+      // host session for the agent-runs aggregator (spec 04 §5.5).
+      agentRegistry,
+      // R13: hasUI authority is the per-session UI lease, never the
+      // capability. No lease at creation → fail-closed for approval tools.
+      hasUI: this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI,
+      // R7/R8: local:// resolution stays session-pinned; zero global mutation.
+      localProtocolOptions: createLocalProtocolOptions(
+        sessionId,
+        directoryKey,
+        this.#sessionDirFor(directoryKey),
+      ),
       ...(model ? { model } : {}),
-      ...(meta?.agent === 'plan' ? { planYolo: { autoApproveOnResolve: true } } : {}),
+      // P0 defect fix (02 §4/spec): SDK PlanYolo is `{target: Model,
+      // thinkingLevel?}` — the old `{autoApproveOnResolve}` shape was an
+      // unknown field, silently degrading plan sessions to read-only and
+      // throwing on the xd://propose approval path. With no pinned model we
+      // omit planYolo (plain plan mode, fail-closed) rather than guessing a
+      // target.
+      ...(meta?.agent === 'plan' && model ? { planYolo: { target: model } } : {}),
       ...(customAgent
         ? {
             systemPrompt: customAgent.prompt,
@@ -481,6 +689,21 @@ export class OmpHostEngine {
       pendingUserWireId: null,
       lastUserWireId: null,
       currentAgent: meta?.agent ?? 'build',
+      // Transcript roles without dedicated SDK events (custom/dividers) are
+      // tail-synced at agent_end / compaction_end; this set remembers what
+      // was already emitted so syncs are idempotent (spec 05 §5.5).
+      syncedEntryKeys: existing?.syncedEntryKeys ?? new Set(),
+      // Wire id of the most recently settled assistant message — feeds
+      // omp.retry.started.supersededMessageID (spec 05 §5.3.2).
+      lastAssistantWireId: null,
+      // agent_end {isTerminal:false} keeps the session busy until a later
+      // terminal settle (spec 05 §5.7); status snapshots must not downgrade.
+      awaitingAsyncSince: null,
+      // Retained for the agent-runs aggregator (spec 04 §5.5).
+      agentRegistry,
+      // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
+      sdkResult: { setToolUIContext },
+      planHandlerAttached: false,
     };
     hostSession.agentSession = session;
     hostSession.lastTouched = Date.now();
@@ -491,6 +714,13 @@ export class OmpHostEngine {
         console.error('[omp-host] event projection error:', error);
       }
     });
+    // Modes tracker for this session (cold-recovery + mode_change appends).
+    this.modesDomain?.trackerFor(sessionId, directoryKey);
+    // If a UI lease already exists for this session, attach the tool UI
+    // context immediately (R13 creation-time hasUI was true).
+    if (this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI) {
+      this.#attachDialogUi(directoryKey, sessionId);
+    }
     session.sessionManager?.onSessionNameChanged?.(() => {
       const info = this.#wireSessionFromLive(hostSession);
       this.registry.update(directoryKey, sessionId, {
@@ -503,6 +733,106 @@ export class OmpHostEngine {
     return hostSession;
   }
 
+  /**
+   * omp-native publish helper (spec 05 §5.2.1 envelope; master D6-R1 single
+   * channel). Payload never carries directory/sessionID.
+   */
+  #ompPublish(hostSession, type, payload, { durable } = {}) {
+    return this.ompBus.publish(type, payload, {
+      directory: hostSession.directory,
+      sessionID: hostSession.sessionId,
+      durable: Boolean(durable),
+    });
+  }
+
+  /**
+   * Project + emit one live custom/hook message on both tracks (spec 05
+   * §5.1 row 9). Returns the projected wire message id. `display:false`
+   * messages emit only the omp event (UI won't build a card; cold projection
+   * drops them too — double guard, 05 §5.8.2 T3).
+   */
+  #emitCustomLive(hostSession, message) {
+    const { sessionId, directory } = hostSession;
+    const projected = projectCustomMessage(message, {
+      sessionID: sessionId,
+      agent: hostSession.currentAgent,
+      parentID: hostSession.lastUserWireId || undefined,
+    });
+    const text = textOfContent(message.content);
+    if (message.display !== false) {
+      this.bus.emit('message.updated', { sessionID: sessionId, info: projected.info }, directory);
+      for (const part of projected.parts) {
+        this.bus.emit('message.part.updated', { sessionID: sessionId, part, time: Date.now() }, directory);
+      }
+    }
+    this.#ompPublish(hostSession, 'omp.custom.appended', {
+      message: {
+        wireMessageID: projected.info.id,
+        customType: message.customType ?? '',
+        attribution: message.attribution,
+        timestamp: message.timestamp,
+        text,
+        ...(message.details !== undefined ? { details: message.details } : {}),
+        display: message.display !== false,
+      },
+    }, { durable: true });
+    hostSession.syncedEntryKeys?.add(`${message.role}:${message.customType ?? ''}:${message.timestamp}`);
+    return projected.info.id;
+  }
+
+  /**
+   * Tail-sync: project transcript roles that have no dedicated SDK event
+   * (custom injected out-of-band, compaction/branch dividers) so they appear
+   * live without a refetch (spec 05 §5.5). Idempotent per (role,type,ts).
+   * @returns {{ projected: Array<{wireId: string, role: string}>, lastCompactionId: string | null }}
+   */
+  #tailSyncTranscript(hostSession) {
+    const session = hostSession.agentSession;
+    const out = { projected: [], lastCompactionId: null };
+    if (!session?.messages) return out;
+    const messages = session.messages;
+    const pending = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const message = messages[i];
+      if (!message || typeof message !== 'object') continue;
+      const role = message.role;
+      if (role !== 'custom' && role !== 'hookMessage' && role !== 'compactionSummary' && role !== 'branchSummary') continue;
+      const key = `${role}:${message.customType ?? ''}:${message.timestamp}`;
+      if (hostSession.syncedEntryKeys?.has(key)) break;
+      pending.push(message);
+    }
+    pending.reverse();
+    for (const message of pending) {
+      const key = `${message.role}:${message.customType ?? ''}:${message.timestamp}`;
+      hostSession.syncedEntryKeys?.add(key);
+      if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
+        const projected = projectDividerMessage(message, {
+          sessionID: hostSession.sessionId,
+          agent: hostSession.currentAgent,
+          parentID: hostSession.lastUserWireId || undefined,
+        });
+        this.bus.emit('message.updated', { sessionID: hostSession.sessionId, info: projected.info }, hostSession.directory);
+        for (const part of projected.parts) {
+          this.bus.emit('message.part.updated', { sessionID: hostSession.sessionId, part, time: Date.now() }, hostSession.directory);
+        }
+        out.projected.push({ wireId: projected.info.id, role: message.role });
+        if (message.role === 'compactionSummary') out.lastCompactionId = projected.info.id;
+      } else {
+        if (message.display === false || !textOfContent(message.content).trim()) continue;
+        const wireId = this.#emitCustomLive(hostSession, message);
+        out.projected.push({ wireId, role: message.role });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Full disposition of the SDK AgentSessionEvent union (spec 05 §5.1/§5.1.1,
+   * master D2/D6): every one of the 24 members has an explicit case — wire
+   * track, omp track, dual, or a justified intentional-ignore. The trailing
+   * default is defense-in-depth only; scripts/check-event-coverage.mjs is
+   * the real CI guard against unregistered SDK additions.
+   */
   #handleEngineEvent(hostSession, event) {
     const { sessionId, directory } = hostSession;
     const session = hostSession.agentSession;
@@ -549,15 +879,39 @@ export class OmpHostEngine {
       }
       case 'message_end': {
         if (event.message?.role !== 'assistant' || !hostSession.projector) return;
-        hostSession.projector.finishAssistant(
+        const finished = hostSession.projector.finishAssistant(
           event.message,
           hostSession.turnToolResults ?? new Map(),
         );
         this.#bridgeAssistantWireId(hostSession, event.message);
+        if (finished?.id) {
+          hostSession.lastAssistantWireId = finished.id;
+          const usage = event.message.usage ?? {};
+          this.#ompPublish(hostSession, 'omp.usage.turn', {
+            messageID: finished.id,
+            usage,
+            ...(event.message.ttft !== undefined ? { ttftMs: event.message.ttft } : {}),
+            ...(event.message.duration !== undefined ? { durationMs: event.message.duration } : {}),
+            timestamp: event.message.timestamp ?? Date.now(),
+          }, { durable: true });
+        }
         return;
       }
       case 'tool_execution_start': {
-        hostSession.projector?.toolStarted(event.toolCallId, event.toolName, event.args);
+        hostSession.projector?.toolStarted(event.toolCallId, event.toolName, event.args, {
+          ...(event.intent ? { title: event.intent } : {}),
+        });
+        return;
+      }
+      case 'tool_execution_update': {
+        // Partial results (05 §5.6): running-state append; never terminal —
+        // tool_execution_end owns completion.
+        hostSession.projector?.toolPartial(event.toolCallId, {
+          text: typeof event.partialResult === 'string'
+            ? event.partialResult
+            : event.partialResult?.text ?? event.partialResult?.output,
+          asyncState: event.partialResult?.details?.async?.state,
+        });
         return;
       }
       case 'tool_execution_end': {
@@ -574,24 +928,44 @@ export class OmpHostEngine {
         hostSession.turnToolResults = results;
         return;
       }
+      case 'turn_start':
+        // Intentional ignore: message_*/tool_execution_* carry the surface;
+        // turn boundaries are a TUI-internal concept (05 §5.1.1).
+        return;
+      case 'turn_end':
+        // Intentional ignore: same reasoning as turn_start.
+        return;
       case 'agent_start': {
         hostSession.turnToolResults = new Map();
+        hostSession.awaitingAsyncSince = null;
         this.bus.emit('session.status', { sessionID: sessionId, status: { type: 'busy' } }, directory);
         return;
       }
       case 'agent_end': {
         const projector = hostSession.projector;
         if (projector?.current) {
-          projector.finishAssistant(
+          const finished = projector.finishAssistant(
             session.getLastAssistantMessage() ?? { content: [], timestamp: Date.now(), usage: {}, model: '' },
             hostSession.turnToolResults ?? new Map(),
           );
+          if (finished?.id) hostSession.lastAssistantWireId = finished.id;
         }
         hostSession.projector = null;
         hostSession.turnToolResults = null;
         this.registry.update(directory, sessionId, { timeUpdated: Date.now() });
         const info = this.#wireSessionFromLive(hostSession);
         this.bus.emit('session.updated', { sessionID: sessionId, info }, directory);
+        this.#tailSyncTranscript(hostSession);
+        if (event.isTerminal === false) {
+          // Async delivery will resume the session (05 §5.7): scheduling
+          // pause, not completion — keep busy so the queue gate stays
+          // closed and notifications stay suppressed.
+          hostSession.awaitingAsyncSince = Date.now();
+          this.bus.emit('session.status', { sessionID: sessionId, status: { type: 'busy' } }, directory);
+          this.#ompPublish(hostSession, 'omp.session.settled', { isTerminal: false }, { durable: false });
+          return;
+        }
+        hostSession.awaitingAsyncSince = null;
         this.bus.emit('session.idle', { sessionID: sessionId }, directory);
         return;
       }
@@ -604,18 +978,293 @@ export class OmpHostEngine {
         this.bus.emit('todo.updated', { sessionID: sessionId, todos }, directory);
         return;
       }
-      case 'notice': {
-        if (event.level === 'error') console.error('[omp-host]', event.message);
+      case 'todo_auto_clear': {
+        this.bus.emit('todo.updated', { sessionID: sessionId, todos: [] }, directory);
         return;
       }
-      default:
+      case 'notice': {
+        if (event.level === 'error') console.error('[omp-host]', event.message);
+        this.#ompPublish(hostSession, 'omp.notice.raised', {
+          level: event.level,
+          message: event.message,
+          ...(event.source ? { source: event.source } : {}),
+        }, { durable: false });
         return;
+      }
+      case 'auto_compaction_start': {
+        this.#ompPublish(hostSession, 'omp.compaction.started', {
+          reason: event.reason,
+          action: event.action,
+        }, { durable: false });
+        return;
+      }
+      case 'auto_compaction_end': {
+        const sync = this.#tailSyncTranscript(hostSession);
+        this.#ompPublish(hostSession, 'omp.compaction.ended', {
+          action: event.action,
+          aborted: Boolean(event.aborted),
+          willRetry: Boolean(event.willRetry),
+          ...(event.skipped !== undefined ? { skipped: event.skipped } : {}),
+          ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+          ...(event.result?.tokensBefore !== undefined ? { tokensBefore: event.result.tokensBefore } : {}),
+          ...(sync.lastCompactionId ? { wireMessageID: sync.lastCompactionId } : {}),
+        }, { durable: false });
+        return;
+      }
+      case 'auto_retry_start': {
+        // P1 (05 §5.3.2): status + superseded overlay only. Zero wire
+        // mutation — message.part.removed stays P2-gated (master R14).
+        this.bus.emit('session.status', {
+          sessionID: sessionId,
+          status: {
+            type: 'retry',
+            attempt: event.attempt,
+            message: event.errorMessage,
+            next: Date.now() + event.delayMs,
+          },
+        }, directory);
+        this.#ompPublish(hostSession, 'omp.retry.started', {
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          delayMs: event.delayMs,
+          errorMessage: event.errorMessage,
+          ...(hostSession.lastAssistantWireId ? { supersededMessageID: hostSession.lastAssistantWireId } : {}),
+        }, { durable: false });
+        return;
+      }
+      case 'auto_retry_end': {
+        this.bus.emit('session.status', { sessionID: sessionId, status: { type: 'busy' } }, directory);
+        this.#ompPublish(hostSession, 'omp.retry.ended', {
+          success: Boolean(event.success),
+          attempt: event.attempt,
+          ...(event.finalError ? { finalError: event.finalError } : {}),
+          retryErrors: (event.retryErrors ?? []).map((update) => ({
+            messageID: update.persistenceKey ?? update.entryId,
+            note: update.note,
+            retryRecovery: update.retryRecovery,
+          })),
+        }, { durable: true });
+        return;
+      }
+      case 'retry_fallback_applied': {
+        // Registry truth sync only; the SDK guarantees a follow-up
+        // model_changed which emits the wire session.updated (05 §5.4).
+        this.registry.update(directory, sessionId, { model: event.to });
+        this.#ompPublish(hostSession, 'omp.fallback.applied', {
+          from: event.from,
+          to: event.to,
+          role: event.role,
+        }, { durable: true });
+        return;
+      }
+      case 'retry_fallback_succeeded': {
+        // Success happened on the fallback model; no registry writeback.
+        this.#ompPublish(hostSession, 'omp.fallback.succeeded', {
+          model: event.model,
+          role: event.role,
+        }, { durable: true });
+        return;
+      }
+      case 'model_changed': {
+        const selector = modelSelector(session.model);
+        this.registry.update(directory, sessionId, { ...(selector ? { model: selector } : {}) });
+        const info = this.#wireSessionFromLive(hostSession);
+        this.bus.emit('session.updated', { sessionID: sessionId, info }, directory);
+        this.#ompPublish(hostSession, 'omp.model.changed', {
+          model: session.model
+            ? { provider: session.model.provider, id: session.model.id }
+            : null,
+          ...(session.thinkingLevel !== undefined ? { thinkingLevel: session.thinkingLevel } : {}),
+        }, { durable: true });
+        return;
+      }
+      case 'ttsr_triggered': {
+        this.#ompPublish(hostSession, 'omp.ttsr.triggered', {
+          rules: (event.rules ?? []).map((rule) => ({ name: rule.name })),
+        }, { durable: false });
+        return;
+      }
+      case 'irc_message': {
+        this.#emitCustomLive(hostSession, event.message);
+        return;
+      }
+      case 'thinking_level_changed': {
+        this.#ompPublish(hostSession, 'omp.thinking.changed', {
+          thinkingLevel: event.thinkingLevel ?? null,
+          ...(event.configured !== undefined ? { configured: event.configured } : {}),
+          ...(event.resolved !== undefined ? { resolved: event.resolved } : {}),
+        }, { durable: true });
+        return;
+      }
+      case 'goal_updated': {
+        this.modesDomain?.trackerFor(sessionId, directory)?.applyGoalUpdate?.(event.goal, event.state);
+        this.#ompPublish(hostSession, 'omp.goal.updated', {
+          goal: event.goal ?? null,
+          ...(event.state !== undefined ? { state: event.state } : {}),
+        }, { durable: true });
+        return;
+      }
+      default: {
+        // Defense-in-depth only (05 §5.1): the manifest + CI guard own the
+        // real coverage check. Never silently swallow an unknown member.
+        console.error(`[omp-host] unhandled AgentSessionEvent type: ${event?.type}`);
+        this.unknownEventCounts = this.unknownEventCounts ?? new Map();
+        this.unknownEventCounts.set(event?.type, (this.unknownEventCounts.get(event?.type) ?? 0) + 1);
+        return;
+      }
     }
   }
 
+  async getSessionStatuses({ directory }) {
+    await this.#boot();
+    const AWAITING_ASYNC_TIMEOUT_MS = 10 * 60 * 1000;
+    const now = Date.now();
+    const statuses = {};
+    for (const [id, live] of this.sessions) {
+      if (live.directory !== normalizeDirectoryKey(directory)) continue;
+      const stale =
+        live.awaitingAsyncSince !== null &&
+        now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
+      if (stale) live.awaitingAsyncSince = null;
+      statuses[id] =
+        live.agentSession?.isStreaming || live.awaitingAsyncSince !== null
+          ? { type: 'busy' }
+          : { type: 'idle' };
+    }
+    return statuses;
+  }
+
+  /** Structured customType inventory for the omp transcript read (05 §5.2.1). */
+  async getCustomMessages({ sessionID, directory }) {
+    const context = await this.#transcriptContext(sessionID, directory);
+    if (!context) return null;
+    const out = [];
+    for (const message of context.messages ?? []) {
+      if (!message || typeof message !== 'object') continue;
+      if (message.role !== 'custom' && message.role !== 'hookMessage') continue;
+      if (message.display === false) continue;
+      const projected = projectCustomMessage(message, { sessionID });
+      out.push({
+        wireMessageID: projected.info.id,
+        customType: message.customType ?? '',
+        timestamp: message.timestamp,
+        attribution: message.attribution,
+        text: textOfContent(message.content),
+        ...(message.details !== undefined ? { details: message.details } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** Per-turn telemetry (05 §5.9): usage/ttft/duration per assistant message. */
+  async getTelemetry({ sessionID, directory }) {
+    const context = await this.#transcriptContext(sessionID, directory);
+    if (!context) return null;
+    const directoryKey = normalizeDirectoryKey(directory);
+    const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
+    const out = [];
+    for (const message of context.messages ?? []) {
+      if (!message || message.role !== 'assistant') continue;
+      const seed = textOfContent(message.content) || (message.content?.[0]?.name ?? '');
+      const baseId = wireMessageId('assistant', message.timestamp, seed);
+      const overridden = wireIdFor?.(message);
+      const usage = message.usage ?? {};
+      out.push({
+        messageID: overridden ?? baseId,
+        timestamp: message.timestamp,
+        input: usage.input ?? 0,
+        output: usage.output ?? 0,
+        cacheRead: usage.cacheRead ?? 0,
+        cacheWrite: usage.cacheWrite ?? 0,
+        ...(usage.reasoning !== undefined ? { reasoningTokens: usage.reasoning } : {}),
+        totalTokens:
+          (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
+        ...(message.ttft !== undefined ? { ttftMs: message.ttft } : {}),
+        ...(message.duration !== undefined ? { durationMs: message.duration } : {}),
+      });
+    }
+    return out;
+  }
+
   /**
-   * Send a user prompt. Returns the wire user message.
+   * Structured session entries (05 §5.2.1): compaction dividers, branch
+   * summaries, model/mode changes, ttsr injections, retry recovery notes.
    */
+  async getEntries({ sessionID, directory, kinds }) {
+    await this.#boot();
+    const directoryKey = normalizeDirectoryKey(directory);
+    const file = await this.#findSessionFile(sessionID, directoryKey);
+    if (!file) return null;
+    const wanted = new Set(
+      String(kinds ?? '')
+        .split(',')
+        .map((kind) => kind.trim())
+        .filter(Boolean),
+    );
+    const out = [];
+    const manager = await SessionManager.open(file.path);
+    try {
+      for (const entry of manager.getEntries() ?? []) {
+        const kind =
+          entry.type === 'compaction' ? 'compaction'
+          : entry.type === 'branch_summary' ? 'branch_summary'
+          : entry.type === 'model_change' ? 'model_change'
+          : entry.type === 'mode_change' ? 'mode_change'
+          : entry.type === 'ttsr_injection' ? 'ttsr_injection'
+          : null;
+        if (!kind || (wanted.size > 0 && !wanted.has(kind))) continue;
+        out.push({
+          kind,
+          id: entry.id,
+          timestamp: Date.parse(entry.timestamp ?? '') || undefined,
+          ...(kind === 'compaction'
+            ? {
+                summary: entry.summary,
+                tokensBefore: entry.tokensBefore,
+                ...(entry.warning ? { warning: entry.warning } : {}),
+              }
+            : {}),
+          ...(kind === 'branch_summary' ? { fromId: entry.fromId, summary: entry.summary } : {}),
+          ...(kind === 'model_change' ? { model: entry.model, ...(entry.role ? { role: entry.role } : {}) } : {}),
+          ...(kind === 'mode_change' ? { mode: entry.mode, ...(entry.data ? { data: entry.data } : {}) } : {}),
+          ...(kind === 'ttsr_injection' ? { rules: entry.rules } : {}),
+        });
+      }
+    } finally {
+      await manager.close();
+    }
+    if (wanted.size === 0 || wanted.has('retry_recovery')) {
+      const context = await this.#transcriptContext(sessionID, directory);
+      const directoryKeyNow = normalizeDirectoryKey(directory);
+      const wireIdFor = this.#wireIdResolver(directoryKeyNow, sessionID);
+      for (const message of context?.messages ?? []) {
+        if (!message || message.role !== 'assistant' || !message.retryRecovery) continue;
+        const seed = textOfContent(message.content) || (message.content?.[0]?.name ?? '');
+        const baseId = wireMessageId('assistant', message.timestamp, seed);
+        out.push({
+          kind: 'retry_recovery',
+          messageID: wireIdFor?.(message) ?? baseId,
+          timestamp: message.timestamp,
+          retryRecovery: message.retryRecovery,
+        });
+      }
+    }
+    return out;
+  }
+
+  async #transcriptContext(sessionID, directory) {
+    await this.#boot();
+    const directoryKey = normalizeDirectoryKey(directory);
+    const file = await this.#findSessionFile(sessionID, directoryKey);
+    if (!file) return null;
+    const manager = await SessionManager.open(file.path);
+    try {
+      return manager.buildSessionContext({ transcript: true });
+    } finally {
+      await manager.close();
+    }
+  }
+
   async prompt({ sessionID, directory, text, model, agent, images, delivery, messageID }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -687,8 +1336,12 @@ export class OmpHostEngine {
     // Title generation mirrors the TUI: attempted at submission time on every
     // user message, while the turn runs. pi skips internally once the session
     // is named and retries later messages when an attempt failed or the input
-    // was too low-signal to title.
-    session.maybeStartTitleGeneration(text);
+    // was too low-signal to title. Slash commands never title in the TUI
+    // (commands are host-level there); guard them here too — an unguarded
+    // "/compact" once titled the session with the entire compaction summary.
+    if (!text.trimStart().startsWith('/')) {
+      session.maybeStartTitleGeneration(text);
+    }
 
     const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : text ?? '';
     const imageContents = content.filter((block) => block.type === 'image');
@@ -802,22 +1455,24 @@ export class OmpHostEngine {
     }));
   }
 
-  async getSessionStatuses({ directory }) {
-    await this.#boot();
-    const statuses = {};
-    for (const [id, live] of this.sessions) {
-      if (live.directory !== normalizeDirectoryKey(directory)) continue;
-      statuses[id] = live.agentSession?.isStreaming ? { type: 'busy' } : { type: 'idle' };
-    }
-    return statuses;
-  }
 
   async shutdown() {
     clearInterval(this.sweeper);
+    try {
+      await this.dialogs?.dispose?.('omp-host shutdown');
+    } catch {
+      // Settle-all is best-effort at shutdown.
+    }
     for (const session of this.sessions.values()) {
       this.#disposeSession(session);
     }
     this.sessions.clear();
+    this.uriDomain?.dispose?.();
+    try {
+      await this.settingsStore?.disposeAll?.();
+    } catch {
+      // Flush is best-effort at shutdown.
+    }
   }
 
   availableModels() {

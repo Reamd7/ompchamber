@@ -221,4 +221,19 @@ describe('projectTurnRecords', () => {
         const finalActivity = turn?.activityParts.find((activity) => activity.messageId === 'a2');
         expect(finalActivity).toBe(undefined);
     });
+
+    test('routes parentless T2 dividers to the ungrouped channel after compaction (05 §5.5)', () => {
+        // Post-compaction transcript: users folded into the summary, the
+        // divider arrives with no parent to anchor on.
+        const divider = createMessageEntry({ id: 'd1', role: 'assistant', createdAt: 1 });
+        (divider.info as { metadata?: Record<string, unknown> }).metadata = { ompRole: 'compactionSummary' };
+        const reply = createMessageEntry({ id: 'a1', role: 'assistant', parentID: 'gone', createdAt: 2 });
+
+        const projection = projectTurnRecords([divider, reply]);
+
+        expect(projection.turns).toHaveLength(0);
+        expect(projection.ungroupedMessageIds.has('d1')).toBe(true);
+        // Plain unparented assistants still vanish (turn-anchored by design).
+        expect(projection.ungroupedMessageIds.has('a1')).toBe(false);
+    });
 });

@@ -45,7 +45,6 @@ const buildAutoDeleteCandidates = ({
       if (!session?.id) return false;
       if (protectedIds.has(session.id)) return false;
       if (session.id === currentSessionId) return false;
-      if (session.share) return false;
       const lastActivity = getSessionLastActivity(session);
       if (!lastActivity) return false;
       return lastActivity < cutoffTime;

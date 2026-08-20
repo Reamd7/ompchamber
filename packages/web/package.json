@@ -19,12 +19,13 @@
     "build:watch": "rsbuild build --watch",
     "type-check": "tsc --noEmit",
     "lint": "eslint \"./src/**/*.{ts,tsx}\" --config ../../eslint.config.js",
-    "test": "vitest run",
+    "test": "vitest run && bun test server/lib/omp-host/",
     "start": "node bin/cli.js serve"
   },
   "dependencies": {
     "@clack/prompts": "^1.1.0",
-    "@octokit/rest": "^22.0.1",    "@simplewebauthn/server": "13.3.1",
+    "@octokit/rest": "^22.0.1",
+    "@simplewebauthn/server": "13.3.1",
     "@oh-my-pi/pi-coding-agent": "^17.3.7",
     "adm-zip": "^0.6.0",
     "bun-pty": "^0.4.5",

@@ -357,7 +357,7 @@ const buildProxiedResponse = (
   return new Response(body, { status: proxied.status, headers: proxied.headers });
 };
 
-const isSseApiPath = (pathname: string) => pathname === '/api/event' || pathname === '/api/global/event';
+const isSseApiPath = (pathname: string) => pathname === '/api/event' || pathname === '/api/global/event' || pathname === '/api/omp/events';
 const isSessionMessageApiPath = (pathname: string) => /^\/api\/session\/[^/]+\/message$/.test(pathname);
 const isApiPath = (pathname: string) => pathname === '/api' || pathname.startsWith('/api/');
 const isLocalRuntimePath = (pathname: string) => isApiPath(pathname) || pathname === '/auth/session';

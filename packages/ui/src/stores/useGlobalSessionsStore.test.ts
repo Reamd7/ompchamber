@@ -13,11 +13,10 @@ type SessionExtra = Partial<Session> & {
   project?: { worktree?: string | null } | null;
 };
 
-const buildSession = (shareUrl: string, extra: SessionExtra = {}): Session => ({
+const buildSession = (title: string, extra: SessionExtra = {}): Session => ({
   id: 'ses_1',
-  title: 'Shared session',
+  title,
   time: { created: 1, updated: 2 },
-  share: { url: shareUrl },
   ...extra,
 } as Session);
 
@@ -32,31 +31,28 @@ describe('useGlobalSessionsStore', () => {
     });
   });
 
-  test('updates an existing session when the share URL changes', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a'));
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/b'));
+  test('replaces an existing session when a newer upsert arrives', () => {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('First title'));
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Second title'));
 
-    expect(useGlobalSessionsStore.getState().activeSessions[0]?.share?.url).toBe('https://share.example/b');
+    expect(useGlobalSessionsStore.getState().activeSessions[0]?.title).toBe('Second title');
   });
+  test('publishes a fresh session list when an upsert changes a session', () => {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('First title'));
+    const firstSessions = useGlobalSessionsStore.getState().activeSessions;
 
-  test('publishes an updated session when sharing is removed', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a'));
-    const sharedSessions = useGlobalSessionsStore.getState().activeSessions;
-
-    useGlobalSessionsStore.getState().upsertSession({
-      ...buildSession('https://share.example/a'),
-      share: undefined,
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Renamed', {
       time: { created: 1, updated: 3 },
-    });
+    }));
 
-    const unsharedSessions = useGlobalSessionsStore.getState().activeSessions;
-    expect(unsharedSessions).not.toBe(sharedSessions);
-    expect(unsharedSessions[0]?.share).toBe(undefined);
+    const nextSessions = useGlobalSessionsStore.getState().activeSessions;
+    expect(nextSessions).not.toBe(firstSessions);
+    expect(nextSessions[0]?.title).toBe('Renamed');
   });
 
   test('preserves directory metadata when a live update omits it', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', { directory: '/repo/app' }));
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/b', {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session a', { directory: '/repo/app' }));
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session b', {
       time: { created: 1, updated: 3 },
     }));
 
@@ -66,8 +62,8 @@ describe('useGlobalSessionsStore', () => {
   });
 
   test('preserves raw directory metadata when a live update only has project worktree', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', { directory: '/repo/app' }));
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/b', {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session a', { directory: '/repo/app' }));
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session b', {
       project: { worktree: '/repo/app' },
       time: { created: 1, updated: 3 },
     }));
@@ -78,8 +74,8 @@ describe('useGlobalSessionsStore', () => {
   });
 
   test('trusts explicit incoming raw directory metadata', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', { directory: '/repo/app' }));
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/b', {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session a', { directory: '/repo/app' }));
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session b', {
       directory: '/repo/app-worktree',
       time: { created: 1, updated: 3 },
     }));
@@ -90,8 +86,8 @@ describe('useGlobalSessionsStore', () => {
   });
 
   test('preserves directory metadata when moving a session to archived', () => {
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/a', { directory: '/repo/app' }));
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/b', {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session a', { directory: '/repo/app' }));
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Session b', {
       time: { created: 1, updated: 3, archived: 4 },
     }));
 
@@ -100,15 +96,15 @@ describe('useGlobalSessionsStore', () => {
   });
 
   test('preserves the opposite session-list reference during an upsert', () => {
-    const active = buildSession('https://share.example/active');
-    const archived = buildSession('https://share.example/archived', {
+    const active = buildSession('Active session');
+    const archived = buildSession('Archived session', {
       id: 'ses_archived',
       time: { created: 1, updated: 2, archived: 3 },
     });
     useGlobalSessionsStore.getState().applySnapshot([active], [archived]);
 
     const archivedSessions = useGlobalSessionsStore.getState().archivedSessions;
-    useGlobalSessionsStore.getState().upsertSession(buildSession('https://share.example/active-updated', {
+    useGlobalSessionsStore.getState().upsertSession(buildSession('Active updated', {
       time: { created: 1, updated: 3 },
     }));
     expect(useGlobalSessionsStore.getState().archivedSessions).toBe(archivedSessions);
@@ -128,8 +124,8 @@ describe('useGlobalSessionsStore', () => {
     });
 
     useGlobalSessionsStore.getState().upsertSessions([
-      buildSession('https://share.example/a'),
-      buildSession('https://share.example/b', { id: 'ses_2' }),
+      buildSession('Session a'),
+      buildSession('Session b', { id: 'ses_2' }),
     ]);
 
     unsubscribe();
@@ -139,26 +135,26 @@ describe('useGlobalSessionsStore', () => {
 });
 
 describe('mergeLiveSessionWithGlobalSession', () => {
-  test('preserves global share over live share', () => {
-    const live = buildSession('https://live.example/s', { time: { created: 1, updated: 5 } });
-    const global = buildSession('https://global.example/s', { time: { created: 1, updated: 3 } });
+  test('keeps live recency while merging directory metadata', () => {
+    const live = buildSession('Live title', { time: { created: 1, updated: 5 } });
+    const global = buildSession('Global title', { time: { created: 1, updated: 3 } });
 
     const merged = mergeLiveSessionWithGlobalSession(live, global);
-    expect(merged.share?.url).toBe('https://global.example/s');
+    expect(merged.title).toBe('Live title');
     expect(merged.time?.updated).toBe(5);
   });
 
   test('preserves directory from global when live omits it', () => {
-    const live = buildSession('https://live.example/s', { time: { created: 1, updated: 5 } });
-    const global = buildSession('https://global.example/s', { directory: '/repo/app' });
+    const live = buildSession('Live session', { time: { created: 1, updated: 5 } });
+    const global = buildSession('Global session', { directory: '/repo/app' });
 
     const merged = mergeLiveSessionWithGlobalSession(live, global);
     expect(resolveGlobalSessionDirectory(merged)).toBe('/repo/app');
   });
 
   test('live directory takes precedence over global when present', () => {
-    const live = buildSession('https://live.example/s', { directory: '/repo/worktree' });
-    const global = buildSession('https://global.example/s', { directory: '/repo/app' });
+    const live = buildSession('Live session', { directory: '/repo/worktree' });
+    const global = buildSession('Global session', { directory: '/repo/app' });
 
     const merged = mergeLiveSessionWithGlobalSession(live, global);
     expect(resolveGlobalSessionDirectory(merged)).toBe('/repo/worktree');
@@ -167,11 +163,11 @@ describe('mergeLiveSessionWithGlobalSession', () => {
 
 describe('isGlobalSessionRecencyOnlyUpdate', () => {
   test('accepts an updated timestamp while preserving omitted directory metadata', () => {
-    const existing = buildSession('https://share.example/s', {
+    const existing = buildSession('Session', {
       directory: '/repo/app',
       time: { created: 1, updated: 2 },
     });
-    const incoming = buildSession('https://share.example/s', {
+    const incoming = buildSession('Session', {
       time: { created: 1, updated: 3 },
     });
 
@@ -179,12 +175,12 @@ describe('isGlobalSessionRecencyOnlyUpdate', () => {
   });
 
   test('rejects title and archive changes as structural updates', () => {
-    const existing = buildSession('https://share.example/s', { time: { created: 1, updated: 2 } });
-    const renamed = buildSession('https://share.example/s', {
+    const existing = buildSession('Session', { time: { created: 1, updated: 2 } });
+    const renamed = buildSession('Session', {
       title: 'Renamed',
       time: { created: 1, updated: 3 },
     });
-    const archived = buildSession('https://share.example/s', {
+    const archived = buildSession('Session', {
       time: { created: 1, updated: 3, archived: 4 },
     });
 
@@ -193,17 +189,17 @@ describe('isGlobalSessionRecencyOnlyUpdate', () => {
   });
 
   test('rejects parent and slug changes as structural updates', () => {
-    const existing = buildSession('https://share.example/s', {
+    const existing = buildSession('Session', {
       parentID: 'parent-a',
       slug: 'slug-a',
       time: { created: 1, updated: 2 },
     });
-    const reparented = buildSession('https://share.example/s', {
+    const reparented = buildSession('Session', {
       parentID: 'parent-b',
       slug: 'slug-a',
       time: { created: 1, updated: 3 },
     });
-    const reslugged = buildSession('https://share.example/s', {
+    const reslugged = buildSession('Session', {
       parentID: 'parent-a',
       slug: 'slug-b',
       time: { created: 1, updated: 3 },

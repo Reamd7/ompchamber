@@ -189,6 +189,123 @@ export const projectCustomMessage = (message, { sessionID, agent, parentID }) =>
 };
 
 /**
+ * Project a transcript divider role (compactionSummary / branchSummary) into
+ * a synthetic assistant-side wire message (spec 05 §5.5, GAP-E04 P1).
+ * Rendered as a collapsible slim divider; the `[omp:<role>]` prefix is the
+ * UI's tier-classification contract (05 §5.8.1).
+ */
+export const projectDividerMessage = (message, { sessionID, agent, parentID }) => {
+  const summary = String(message.summary ?? '');
+  const role = message.role === 'branchSummary' ? 'branchSummary' : 'compactionSummary';
+  const label = `[omp:${role}] `;
+  const id = wireMessageId('custom', message.timestamp, label + summary);
+  return {
+    info: {
+      id,
+      sessionID,
+      role: 'assistant',
+      ...(parentID ? { parentID } : {}),
+      time: { created: message.timestamp, completed: message.timestamp },
+      agent: agent ?? 'build',
+      model: { providerID: '', modelID: '' },
+      metadata: {
+        ompRole: role,
+        ...(role === 'compactionSummary'
+          ? {
+              tokensBefore: message.tokensBefore,
+              ...(message.warning ? { warning: message.warning } : {}),
+            }
+          : { fromId: message.fromId }),
+      },
+    },
+    parts: [
+      {
+        id: partId(id, 0),
+        sessionID,
+        messageID: id,
+        type: 'text',
+        text: label + summary,
+        synthetic: true,
+        time: { start: message.timestamp },
+      },
+    ],
+  };
+};
+
+/**
+ * Project a `!`/`$` shell-kernel execution role into a user-side synthetic
+ * message (spec 05 §5.10, GAP-E14). Standalone segment (parentID='') so
+ * turn pairing never anchors on it; the `[omp:bash]`/`[omp:python]` prefix
+ * routes the UI to the execution-card renderer (shellAction classification).
+ */
+export const projectExecutionMessage = (message, { sessionID, agent }) => {
+  const kind = message.role === 'pythonExecution' ? 'python' : 'bash';
+  const command = kind === 'python' ? (message.code ?? '') : (message.command ?? '');
+  const label = `[omp:${kind}] `;
+  const output = String(message.output ?? '');
+  const cancelled = message.cancelled ? ' (cancelled)' : '';
+  const exit = message.exitCode !== undefined ? ` [exit ${message.exitCode}]` : '';
+  const id = wireMessageId('custom', message.timestamp, label + command + output + exit + cancelled);
+  return {
+    info: {
+      id,
+      sessionID,
+      role: 'user',
+      time: { created: message.timestamp },
+      agent: agent ?? 'build',
+      model: { providerID: '', modelID: '' },
+      metadata: { ompRole: kind, command, exitCode: message.exitCode, cancelled: Boolean(message.cancelled) },
+    },
+    parts: [
+      {
+        id: partId(id, 0),
+        sessionID,
+        messageID: id,
+        type: 'text',
+        text: `${label}$ ${command}${exit}${cancelled}${output ? `\n${output}` : ''}`,
+        synthetic: true,
+        time: { start: message.timestamp },
+      },
+    ],
+  };
+};
+
+/**
+ * Project a fileMention role into a user-side synthetic message — one
+ * `└ Read <path> (N lines)` line per file (TUI messages.ts:294-302).
+ */
+export const projectFileMentionMessage = (message, { sessionID, agent }) => {
+  const files = Array.isArray(message.files) ? message.files : [];
+  const lines = files
+    .map((file) => `└ Read ${file.path ?? '(unknown)'}${file.lineCount !== undefined ? ` (${file.lineCount} lines)` : ''}`)
+    .join('\n');
+  const label = '[omp:file-mention] ';
+  const id = wireMessageId('custom', message.timestamp, label + lines);
+  return {
+    info: {
+      id,
+      sessionID,
+      role: 'user',
+      time: { created: message.timestamp },
+      agent: agent ?? 'build',
+      model: { providerID: '', modelID: '' },
+      metadata: { ompRole: 'file-mention', files: files.map((file) => ({ path: file.path, lines: file.lineCount })) },
+    },
+    parts: [
+      {
+        id: partId(id, 0),
+        sessionID,
+        messageID: id,
+        type: 'text',
+        text: label + lines,
+        synthetic: true,
+        time: { start: message.timestamp },
+      },
+    ],
+  };
+};
+
+/**
  * Project one omp AssistantMessage (with its paired ToolResultMessages) into
  * wire `{ info, parts }`. Tool results are matched by toolCallId; unpaired
  * calls are rendered in their last observed state.
@@ -357,11 +474,19 @@ export const projectConversation = (messages, options) => {
     } else if (message.role === 'assistant') {
       flushAssistant();
       pendingAssistant = message;
-    } else if (message.role === 'custom') {
+    } else if (message.role === 'custom' || message.role === 'hookMessage') {
       if (message.display === false) continue;
       if (!textOfContent(message.content).trim()) continue;
       flushAssistant();
       out.push(projectCustomMessage(message, { ...options, parentID: lastUserWireId || undefined }));
+    } else if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
+      flushAssistant();
+      out.push(projectDividerMessage(message, { ...options, parentID: lastUserWireId || undefined }));
+    } else if (message.role === 'bashExecution' || message.role === 'pythonExecution') {
+      // Standalone user-side segment: never anchors turn pairing (05 §5.10).
+      out.push(projectExecutionMessage(message, options));
+    } else if (message.role === 'fileMention') {
+      out.push(projectFileMentionMessage(message, options));
     } else if (message.role === 'toolResult') {
       if (!pendingAssistant) continue;
       pendingResults.set(message.toolCallId, message);
@@ -392,6 +517,8 @@ export class StreamProjector {
     this.toolNames = new Map();
     this.toolInputs = new Map();
     this.toolStartTimes = new Map();
+    this.toolPartialText = new Map();
+    this.toolPartialMeta = new Map();
     this.parentID = '';
   }
 
@@ -430,9 +557,10 @@ export class StreamProjector {
     this.reasoningPartId = null;
     this.reasoningLength = 0;
     this.toolPartIds = new Map();
-    this.toolNames = new Map();
     this.toolInputs = new Map();
     this.toolStartTimes = new Map();
+    this.toolPartialText = new Map();
+    this.toolPartialMeta = new Map();
     this.emit('message.updated', { sessionID: this.sessionID, info: this.current }, this.directory);
     const stepStartId = this.#newPartId();
     this.#emitPartUpdated({ id: stepStartId, sessionID: this.sessionID, messageID: this.current.id, type: 'step-start' });
@@ -511,6 +639,8 @@ export class StreamProjector {
     this.toolPartIds.set(callID, id);
     this.toolNames.set(callID, toolName);
     this.toolInputs.set(callID, input ?? {});
+    this.toolPartialText.delete(callID);
+    this.toolPartialMeta.delete(callID);
     this.toolStartTimes.set(callID, Date.now());
     this.#emitPartUpdated({
       id,
@@ -524,6 +654,44 @@ export class StreamProjector {
         input: input ?? {},
         ...(title ? { title } : {}),
         time: { start: Date.now() },
+      },
+    });
+  }
+
+  /**
+   * tool_execution_update: append partial output to a running tool part
+   * (spec 05 §5.6). Never sets a terminal state — tool_execution_end owns
+   * completion (TUI parity: partial async snapshots are only terminal for
+   * parked background blocks, which the engine cannot reliably replicate, so
+   * it stays conservative).
+   */
+  toolPartial(callID, { text, asyncState } = {}) {
+    if (!this.current) return;
+    const id = this.toolPartIds.get(callID);
+    if (!id) return;
+    const toolName = this.toolNames.get(callID) ?? '';
+    const startedAt = this.toolStartTimes.get(callID) ?? Date.now();
+    if (typeof text === 'string' && text.length > 0) {
+      const acc = this.toolPartialText.get(callID) ?? '';
+      this.toolPartialText.set(callID, acc + text);
+    }
+    const output = this.toolPartialText.get(callID) ?? '';
+    const priorMeta = this.toolPartialMeta.get(callID);
+    const metadata = asyncState ? { ...(priorMeta ?? {}), asyncState } : priorMeta;
+    if (asyncState) this.toolPartialMeta.set(callID, metadata);
+    this.#emitPartUpdated({
+      id,
+      sessionID: this.sessionID,
+      messageID: this.current.id,
+      type: 'tool',
+      callID,
+      tool: toolName,
+      state: {
+        status: 'running',
+        input: this.toolInputs.get(callID) ?? {},
+        ...(output ? { output } : {}),
+        ...(metadata ? { metadata } : {}),
+        time: { start: startedAt },
       },
     });
   }

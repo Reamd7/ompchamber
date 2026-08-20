@@ -1,0 +1,31 @@
+{
+  "$comment": "omp-native event registry — code mirror of spec 05 §5.0.3 (single authority, master D6-R1). Every `omp.<domain>.<event>` name in the repo must exist here (scripts/check-event-coverage.mjs). durable entries' snapshotEndpoints MUST be covered by omp-bootstrap-matrix.json.",
+  "eventSchema": "1.0",
+  "events": {
+    "omp.model.changed": { "durable": true, "scope": "session", "snapshotEndpoints": ["wire:/session/{id}", "/api/omp/models"], "since": "1.0" },
+    "omp.thinking.changed": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/models"], "since": "1.0" },
+    "omp.fallback.applied": { "durable": true, "scope": "session", "snapshotEndpoints": ["wire:/session/{id}"], "since": "1.0" },
+    "omp.fallback.succeeded": { "durable": true, "scope": "session", "snapshotEndpoints": ["wire:/session/{id}"], "since": "1.0" },
+    "omp.mode.changed": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/mode"], "since": "1.0" },
+    "omp.goal.updated": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/mode"], "since": "1.0" },
+    "omp.plan.review_requested": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/plan"], "since": "1.0" },
+    "omp.plan.updated": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/plan"], "since": "1.0" },
+    "omp.dialog.requested": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/dialogs"], "since": "1.0" },
+    "omp.dialog.settled": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/dialogs"], "since": "1.0" },
+    "omp.agents.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/agent-runs"], "since": "1.0" },
+    "omp.jobs.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/jobs"], "since": "1.0", "gated": "jobs.v1" },
+    "omp.tree.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/sessions/{id}/tree"], "since": "1.0" },
+    "omp.compaction.started": { "durable": false, "scope": "session", "snapshotEndpoints": [], "since": "1.0" },
+    "omp.compaction.ended": { "durable": false, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/entries"], "since": "1.0" },
+    "omp.retry.started": { "durable": false, "scope": "session", "snapshotEndpoints": ["wire:/session/status"], "since": "1.0" },
+    "omp.retry.ended": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/entries"], "since": "1.0" },
+    "omp.ttsr.triggered": { "durable": false, "scope": "session", "snapshotEndpoints": [], "since": "1.0" },
+    "omp.custom.appended": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/custom-messages"], "since": "1.0" },
+    "omp.notice.raised": { "durable": false, "scope": "directory", "snapshotEndpoints": [], "since": "1.0" },
+    "omp.session.settled": { "durable": false, "scope": "session", "snapshotEndpoints": ["wire:/session/status"], "since": "1.0" },
+    "omp.usage.turn": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/telemetry"], "since": "1.0" },
+    "omp.settings.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/settings"], "since": "1.0" },
+    "omp.queue.changed": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/queue"], "since": "1.0", "gated": "queue.v1" },
+    "omp.stream.resync": { "durable": false, "scope": "directory", "snapshotEndpoints": [], "since": "1.0", "control": true }
+  }
+}

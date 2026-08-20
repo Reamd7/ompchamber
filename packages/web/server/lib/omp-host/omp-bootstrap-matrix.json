@@ -1,0 +1,63 @@
+{
+  "$comment": "Canonical bootstrap / resync order (spec 05 §5.2.4). Machine mirror: every durable omp-event-registry.json entry's snapshotEndpoints must be covered by this list (CI rule 3e). Ordering is significant — later steps depend on earlier ones.",
+  "steps": [
+    {
+      "order": 1,
+      "domain": "capabilities",
+      "endpoints": [
+        "/api/omp/capabilities"
+      ]
+    },
+    {
+      "order": 2,
+      "domain": "session-snapshot",
+      "endpoints": [
+        "wire:/session",
+        "wire:/session/{id}"
+      ]
+    },
+    {
+      "order": 3,
+      "domain": "modes-model",
+      "endpoints": [
+        "/api/omp/sessions/{id}/mode",
+        "/api/omp/models",
+        "/api/omp/sessions/{id}/plan"
+      ]
+    },
+    {
+      "order": 4,
+      "domain": "dialogs",
+      "endpoints": [
+        "/api/omp/dialogs"
+      ]
+    },
+    {
+      "order": 5,
+      "domain": "settings",
+      "endpoints": [
+        "/api/omp/settings"
+      ]
+    },
+    {
+      "order": 6,
+      "domain": "agents-jobs-queue-tree",
+      "endpoints": [
+        "/api/omp/agent-runs",
+        "/api/omp/jobs",
+        "/api/omp/sessions/{id}/queue",
+        "/api/omp/sessions/{id}/tree"
+      ]
+    },
+    {
+      "order": 7,
+      "domain": "transcript",
+      "endpoints": [
+        "wire:/session/{id}/message",
+        "/api/omp/sessions/{id}/custom-messages",
+        "/api/omp/sessions/{id}/telemetry",
+        "/api/omp/sessions/{id}/entries"
+      ]
+    }
+  ]
+}
