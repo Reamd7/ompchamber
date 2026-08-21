@@ -87,8 +87,7 @@ OpenChamber 现状 = **OpenCode 产品骨架 + omp 引擎**,概念层三类错�
 | 06 | F 设置体系 | `06-settings.md` | 414 行/GAP×10+ | 设置面代理 omp schema(~/.omp/agent/config.yml),清平行宇宙 |
 | 07 | G OpenCode 残留清除 | `07-opencode-residue-removal.md` | 449 行/GAP×13 | 13 项残留的删除清单、顺序 DAG、回滚 |
 | 08 | H 原创面保留与适配 | `08-chamber-original-surfaces.md` | 423 行/GAP×13 | WorkStatusPanel/multirun/projects 等的输入迁移与所有权地图 |
-
-各章完成于 2026-08-19,全部经源码 spot-verify(合计 750+ 处 file:line 证据)。写作中的新发现已回写本文件第 7 节。
+| 09 | I 扩展宿主面 | `09-extension-host-surfaces.md` | 2026-08-21 立项/GAP×8 | 镜像 RpcExtensionUIRequest 的 chrome 投影(widget/status/title/editorText/open_url);TUI 组件面按 R-E3 三级机制保留未来渲染路径;custom 条目指向 05 E11 |
 
 ## 5. 章节模板(强制)
 
@@ -160,6 +159,7 @@ OpenChamber 现状 = **OpenCode 产品骨架 + omp 引擎**,概念层三类错�
 | 4(agent 与模式面) | 02 章:**B02 persona 选择器**(替换 agent 下拉)、B03 UI 半边(useAgentsStore 切 /api/omp/agent-definitions)、B04(统一写 .omp/agents + 存量导入)、B05(chips 表单);B07 plan 评审 overlay;B08 goal 面板/图标;08 GAP-02/GAP-03(persona 分型、scheduled 字段迁移);**06 F9(三端停读 planModeExperimentalEnabled,与 B07 同列车:overlay 上线即 flag 停读+PlanView 切 mode store)** | persona 默认「标准」;agent CRUD 生效(新建即出现);overlay 四选一逐字对齐 TUI;goal 状态图标+显式操作;flag 三端不再请求 |
 | 5(会话树与命令管线) | 04 GAP-01/02 UI 半边(local:// 链接提升+InternalUriViewer)、GAP-04(TreeDialog 消费 {leafId,nodes})、GAP-05(navigate/两阶段 ask)、GAP-06(/undo /redo 重定基);08 GAP-04(subagents 节切 agent-runs)、GAP-05(goal row 换源)、GAP-08(slash 三层管线+/api/omp/commands+/debug→/troubleshoot) | 树选分支重拉时间线;/undo=叶回退+composer 预填;subagents 显示 parked;命令碰撞消解有提示 |
 | 6(P3 删除列车,前置=观察门通过) | 03 章 C1/C2/C6/C11 + 07 章同批残留(permission/question 全链、permissionAutoAccept 体系、wire 死类型消费引用);**失败处置 = capabilities 摘键回滚、旧链保留可复活,删除与切换不同发布** | legacy 命中=0 持续;删除后 275+218 测试与守卫全绿;dead-code 报告干净 |
+| 7(09 章扩展宿主面;批次 6 前后均可,无依赖边) | GAP-E06 验证 + E01/E02(widget/status 投影,真实扩展点亮)+ E08 可观测;E03/E04 预填/title/open_url 随车;`extensionChrome.v1` 门控 | zhipu 配额条在 composer 上方自亮自刷新、`/zhipu-usage off` 消失;tps 状态段出现;check:events +1 全绿;capability off 无 chrome 面 |
 
 ### 8.3 自动化测试门(每批完成定义 = 本节门全绿 + live 证据回写 99)
 
