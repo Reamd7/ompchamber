@@ -10,16 +10,15 @@
  *    (gate reads false, no roles surface) — picker unchanged;
  *  - mode transitions POST the session-mode endpoint with the exact
  *    path/body/query and surface 409 mode-conflict distinctly;
- *  - the outgoing agent field is suppressed under model roles, and the
- *    composer/config-store wiring follows the gate (source contracts).
+ *  - the outgoing agent field is suppressed under model roles (and rides
+ *    the personas wire field under personas.v1);
+ *  - the composer's capability-gated surface swap is asserted from rendered
+ *    markup in ompComposerSurfaces.test.tsx (behavioral replacement for the
+ *    retired issue-2903 source assertions).
  */
 
 import { describe, expect, mock, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Module mocks — installed before importing the modules under test.
@@ -250,60 +249,21 @@ describe('capability gate reads', () => {
 // Outgoing agent field under model roles
 // ---------------------------------------------------------------------------
 
-describe('resolveSendAgent (wire agent field under model roles)', () => {
+describe('resolveSendAgent (wire agent field under model roles / personas)', () => {
   test('model roles on → no agent field; off → legacy value passes through', () => {
     expect(resolveSendAgent('build', true)).toBe(undefined);
     expect(resolveSendAgent('build', false)).toBe('build');
     expect(resolveSendAgent('', false)).toBe(undefined);
     expect(resolveSendAgent(undefined, false)).toBe(undefined);
   });
-});
 
-// ---------------------------------------------------------------------------
-// Wiring source contracts (repo precedent: issue-2903 source assertions)
-// ---------------------------------------------------------------------------
-
-describe('composer wiring follows the gate', () => {
-  test('ChatInput gates every send path and disables the agent cycle under modes', () => {
-    const source = readFileSync(join(__dirname, '..', 'ChatInput.tsx'), 'utf8');
-    expect(source).toContain('resolveSendAgent(');
-    expect(source).toContain('ompFeatureFlags.modelRoles');
-    expect(source).toContain('if (ompFeatureFlags.modes) return;');
-  });
-
-  test('useConfigStore cascade drops the build fallback under the gate; ModelControls swaps surfaces', () => {
-    // The cascade moved to its own module (useConfigStore.cascade.ts) when it
-    // gained the omp roles.default input (06 F2 / 01 GAP-01).
-    const cascade = readFileSync(join(__dirname, '..', '..', '..', 'stores', 'useConfigStore.cascade.ts'), 'utf8');
-    expect(cascade).toContain('const ompModelRoles = isOmpModelRolesEnabled();');
-    expect(cascade.includes('let resolvedAgent: Agent | undefined;')).toBe(true);
-    expect(cascade.includes('if (!ompModelRoles) {')).toBe(true);
-
-    const controls = readFileSync(join(__dirname, '..', 'ModelControls.tsx'), 'utf8');
-    // Capability on → mode selector replaces the agent chip; off → unchanged.
-    expect(controls).toContain('ompModelRoles.personasEnabled ? renderPersonaSelector() : renderAgentSelector()');
-    // Role slots render only from an authoritative snapshot.
-    expect(controls).toContain('{ompModelRoles.modelRolesEnabled ? (');
-    // The agent restore path does not resurrect the server-stamped 'build'.
-    expect(controls).toContain('!ompModelRoles.modesEnabled && latestLoadedUserChoice.agent');
-  });
-
-  test('GAP-06 thinking slot replaces variants; GAP-05 row role-assign; GAP-10 enabledModels filter', () => {
-    const controls = readFileSync(join(__dirname, '..', 'ModelControls.tsx'), 'utf8');
-    // GAP-06: under roles the variant trigger becomes a thinking-level slot
-    // fed by the session model badge + models snapshot.
-    expect(controls).toContain("if (ompModelRoles.modelRolesEnabled) {");
-    expect(controls).toContain("['inherit', 'off', 'auto', ...entry.thinking.supported]");
-    expect(controls).toContain('handleOmpThinkingSelect(level)');
-    // GAP-05 tail: per-row role assignment commits through the settings face.
-    expect(controls).toContain('handleAssignRole(entry, slot)');
-    expect(controls).toContain("value: `${entry.providerID}/${entry.modelID}`");
-    // GAP-10: enabledModels patterns restrict both pickers; the excluded
-    // current model renders a warning row.
-    expect(controls).toContain('ompFilteredProviders as ModelPickerProvider[]');
-    expect(controls).toContain('ompCurrentModelExcluded ? (');
-
-    const matcher = readFileSync(join(__dirname, '..', '..', '..', 'lib', 'omp', 'enabledModels.ts'), 'utf8');
-    expect(matcher).toContain('export const createEnabledModelsMatcher');
+  test('personas.v1 → the agent field becomes the explicit persona carrier (02 §5.1 D-B2)', () => {
+    // A selected persona rides the next prompt; "Standard" sends the engine's
+    // 'build' sentinel so a persisted persona is explicitly cleared; no
+    // selection omits the field and the engine keeps its persisted persona.
+    expect(resolveSendAgent('reviewer', true, true)).toBe('reviewer');
+    expect(resolveSendAgent('build', true, true)).toBe('build');
+    expect(resolveSendAgent('', true, true)).toBe(undefined);
+    expect(resolveSendAgent(undefined, true, true)).toBe(undefined);
   });
 });

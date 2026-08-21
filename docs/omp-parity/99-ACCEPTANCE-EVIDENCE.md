@@ -230,4 +230,4 @@
 
 - 批次 1-5 交付内容与 §8.2 各批行逐项对齐(见 §6.1-6.7);deviation 留档:①批次 4 B04「存量导入」无服务端导入端点 → UI 不渲染(契约规定);②批次 4 08 GAP-03 scheduled persona 字段渲染但不发送(引擎 prompt 契约无 persona 通路);③批次 5 04 GAP-05 navigate 无服务端端点 → 并入 GAP-04 选择语义;④批次 4 B08 goal 无写端点 → 指示器只读(ModesFaces/TreeCommands 双向确认)。
 - §8.3 固定命令门:五包 type-check 0 错、UI 隔离套件 293/293、omp-host 237/237、check:events OK、dead-code 检视(仅既有 file-local interface 噪声+1 重复导出)。计时类测试均注入 clock/advance,无真实定时器依赖。
-- 已知违规留档:ompRoleModeSurfaces.test.tsx 沿用了既有 readFileSync 源文本断言模式并有小幅扩展——总纲 §8.3 明言该脆模式「不推广」;今晚未重写为行为测试(批次 6 前置改造项,登记为技术债)。
+- 技术债已偿还(2026-08-21):ompRoleModeSurfaces.test.tsx 的 readFileSync 源文本断言全部移除——表面切换/思考槽契约改由 **ompComposerSurfaces.test.tsx**(renderToStaticMarkup 行为测,mock `useOmpModelRoles` 权威态缝 + zustand v5 SSR 初态语义下的 session/readiness 缝)承载;级联断言删除(useConfigStore.cascade.test.ts 4 项行为测已在);enabledModels 存在性断言删除(自有测试文件);resolveSendAgent 补 personas.v1 三参矩阵。批次 6 前置改造项清零。门:UI 隔离套件 **294/294**(+1 文件)、tsc 0 错、dead-code 仅既有噪声。

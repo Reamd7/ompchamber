@@ -1,6 +1,6 @@
 # OpenChamber ↔ omp 产品对齐总纲领(Master Spec)
 
-状态:实施中——第一批已验收(服务端六域模块+事件脊柱+流内渲染+输入面芯片,证据见 99);**第二批「UI 消费面」未开工**,进度基线与批次计划见 §8
+状态:批次 1–5 已落地并验收(服务端六域 + UI 消费面:审批/ask 弹窗、role 闭环、设置页、agent 与模式面、会话树与命令管线;证据见 99 §6);**批次 6(P3 删除列车)前置观察门计时中(起点 2026-08-20,≥14 天)**;用户口径进度见 PROGRESS-2026-08-21.md,批次计划见 §8
 日期基线:2026-08-19(omp SDK = `@oh-my-pi/pi-coding-agent` 当前安装版;TUI 源 = `C:/Users/reamd/Documents/experiment_area/oh-my-pi`)
 裁决原则:**凡 OpenChamber 与 omp TUI 产品逻辑分歧,以 TUI 为准。OpenCode 概念仅在与 omp 语义重合时保留。**
 
