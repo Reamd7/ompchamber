@@ -231,3 +231,29 @@
 - 批次 1-5 交付内容与 §8.2 各批行逐项对齐(见 §6.1-6.7);deviation 留档:①批次 4 B04「存量导入」无服务端导入端点 → UI 不渲染(契约规定);②批次 4 08 GAP-03 scheduled persona 字段渲染但不发送(引擎 prompt 契约无 persona 通路);③批次 5 04 GAP-05 navigate 无服务端端点 → 并入 GAP-04 选择语义;④批次 4 B08 goal 无写端点 → 指示器只读(ModesFaces/TreeCommands 双向确认)。
 - §8.3 固定命令门:五包 type-check 0 错、UI 隔离套件 293/293、omp-host 237/237、check:events OK、dead-code 检视(仅既有 file-local interface 噪声+1 重复导出)。计时类测试均注入 clock/advance,无真实定时器依赖。
 - 技术债已偿还(2026-08-21):ompRoleModeSurfaces.test.tsx 的 readFileSync 源文本断言全部移除——表面切换/思考槽契约改由 **ompComposerSurfaces.test.tsx**(renderToStaticMarkup 行为测,mock `useOmpModelRoles` 权威态缝 + zustand v5 SSR 初态语义下的 session/readiness 缝)承载;级联断言删除(useConfigStore.cascade.test.ts 4 项行为测已在);enabledModels 存在性断言删除(自有测试文件);resolveSendAgent 补 personas.v1 三参矩阵。批次 6 前置改造项清零。门:UI 隔离套件 **294/294**(+1 文件)、tsc 0 错、dead-code 仅既有噪声。
+
+### 6.10 批次 7:扩展宿主面 09 章 E01/E02/E08(2026-08-21 晚,用户真实扩展驱动)
+
+**交付**(spec 09 §5;R-E1 镜像 RpcExtensionUIRequest / R-E2 被动面不租约门控 / R-E3 可观测丢弃):
+
+| 项 | 落点 | 证据 |
+|---|---|---|
+| E01 widget 投影(host) | 新 `domain-chrome.js`(表 + `omp.chrome.updated` volatile 事件 + `GET /api/omp/chrome` 501/400/200 契约;目录键 normalizeDirectoryKey 归一,对齐 domain-dialogs 先例);dialog bridge 的 `setWidget/setStatus` 由 no-op 改为委托,R-E3 工厂载荷/终端面按方法计数入快照 `dropped` | domain-chrome.test 16 测(含 bridge 集成:无 chrome 时保持 no-op) |
+| E01 UI | reducer `chrome` 切片 + `omp.chrome.updated` case(set/clear/幂等 no-op/畸形丢弃);`reconcileChromeSnapshot` 权威对账(内容级相等则引用稳定);resync 矩阵新增 `chrome` scope(次序 dialogs→chrome→settings);`OmpExtensionWidgetBar`(verbatim 行、placement 过滤、updatedAt 稳定排序、空态渲染 null——数据在场即能力门)挂接 ChatContainer 全部 5 个 composer 位点 | reducer 3 测 + WidgetBar 4 测 + store 3 测 + pipeline 次序断言更新 |
+| E02 status 投影 | host 表同车(status set/clear);UI store/reducer 同切片;StatusRow 消费面未接(见 deviation ①) | domain-chrome.test status 组 |
+| capability | `extensionChrome.v1: true` 注册;`omp.chrome.updated` 入事件注册表(check:events 25→**26**)+ crossChapterEvents 生产者登记 | check:events OK |
+| i18n | `chat.extensionWidgets.ariaLabel` ×11(真实翻译;fr 撇号转义;es/pt-BR/uk 双引号风格) | grep 11/11 |
+
+**live 验收(用户真实扩展 `~/.omp/agent/extensions/zhipu-usage.ts`,635 行)**:
+
+- 托管栈(3903 web → 引擎子进程):建会话 → `POST /api/omp/dialogs/lease` → 14s 后 `GET /api/omp/chrome` 返回 **revision 1,zhipu_usage widget 5 行真数据**(GLM Coding Plan · Max / MCP 1mo 0% / Token 5h 64% / 24h 4,041 次 1.5B token / 重置倒计时)——与 TUI renderWidget 逐字一致
+- 诊断期独立引擎(直连 host.js)交叉证实扩展生命周期:lease → initializeExtensions → `session_start` → sandbox notify + autoresearch clear + zhipu setWidget(rows:5, aboveEditor)
+
+**验收中修复的两个真实缺陷**:
+
+1. **lease 先于惰性物化**(engine.js #attachDialogUi):UI 租约挂接时 `sessions.get()` 尚无会话 → 扩展 UI 初始化被静默丢弃(web 引擎子进程日志被 lifecycle.js 丢弃故不可见;独立引擎复现)。修复:attach 视为会话访问,缺失时先 `#materialize`
+2. **目录键未归一**:web 代理 realpath 把查询目录规范化为反斜杠形式,扩展上下文携正斜杠键 → 快照永远 miss。修复:domain-chrome 全入口 `normalizeDirectoryKey`(domain-dialogs 同款契约)
+
+**门**:UI 隔离套件 **296/296**(+2 文件)、omp-host **253/253**(+1 文件)、五包 tsc 0 错、check:events OK(26 事件)、dead-code 仅既有噪声。
+
+**deviation 留档**:①E02 StatusRow 消费面未接(host 侧就绪,UI 段渲染留待 E01 真机反馈后同车);②无头浏览器 open 持续超时(SSE 长连),WidgetBar 视觉确认待真机——组件级 4 测背书,与 §6.7 待真机口径一致;③E03/E04(setEditorText/title/open_url)按批次表随车项未做(09 章批次 7 行的"随车"为可选,主项 E01/E02/E08 已闭)。

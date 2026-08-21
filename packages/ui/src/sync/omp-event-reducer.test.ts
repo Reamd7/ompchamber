@@ -286,9 +286,45 @@ describe('applyOmpEvent — dialogs (spec 03 §5.6.3)', () => {
     if (effect?.kind !== 'dialog-requested' || effect.dialog.kind !== 'ask') {
       throw new Error('expected parsed ask dialog effect');
     }
+
     expect(effect.dialog.ask.questions[0]).toEqual({
       id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B', description: 'second' }],
       multi: true, recommended: 'A',
     });
+  });
+});
+
+describe('applyOmpEvent — extension chrome (spec 09 §5.0)', () => {
+  test('widget set stores lines+placement; clear removes; identical set is a no-op', () => {
+    const draft = state();
+    const set = (id: number, payload: Record<string, unknown>) =>
+      applyOmpEvent(draft, envelope({ id, type: 'omp.chrome.updated', sessionID: 'ses_1', payload }));
+    expect(set(1, { kind: 'widget', key: 'zhipu', lines: ['GLM Max', '16%'], placement: 'aboveEditor' }).changed).toBe(true);
+    expect(draft.chrome.widgets.zhipu).toEqual({
+      key: 'zhipu', lines: ['GLM Max', '16%'], placement: 'aboveEditor', sessionId: 'ses_1', updatedAt: 1000,
+    });
+    // Identical content re-set: no change, but id gate still consumes.
+    expect(set(2, { kind: 'widget', key: 'zhipu', lines: ['GLM Max', '16%'], placement: 'aboveEditor' }).changed).toBe(false);
+    expect(set(3, { kind: 'widget', key: 'zhipu' }).changed).toBe(true);
+    expect(draft.chrome.widgets.zhipu).toBe(undefined);
+    // Clearing an absent widget: no change.
+    expect(set(4, { kind: 'widget', key: 'zhipu' }).changed).toBe(false);
+  });
+
+  test('widget without placement defaults to aboveEditor on read; status set/clear mirrors', () => {
+    const draft = state();
+    applyOmpEvent(draft, envelope({ id: 1, type: 'omp.chrome.updated', sessionID: 's', payload: { kind: 'widget', key: 'k', lines: ['x'] } }));
+    expect(draft.chrome.widgets.k?.placement).toBe(undefined);
+    applyOmpEvent(draft, envelope({ id: 2, type: 'omp.chrome.updated', sessionID: 's', payload: { kind: 'status', key: 'tps', text: '38 tok/s' } }));
+    expect(draft.chrome.status.tps?.text).toBe('38 tok/s');
+    applyOmpEvent(draft, envelope({ id: 3, type: 'omp.chrome.updated', sessionID: 's', payload: { kind: 'status', key: 'tps' } }));
+    expect(draft.chrome.status.tps).toBe(undefined);
+  });
+
+  test('malformed payloads are dropped without touching state', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({ id: 1, type: 'omp.chrome.updated', payload: { kind: 'widget' } }));
+    expect(outcome.changed).toBe(false);
+    expect(draft.chrome.widgets).toEqual({});
   });
 });

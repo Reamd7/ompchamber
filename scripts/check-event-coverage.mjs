@@ -163,9 +163,10 @@ for (const [member, entry] of Object.entries(manifest)) {
   }
 }
 // Producers for registry names live either in the manifest (05-domain) or in
-// a owning chapter's domain module (02/03/04/06/08 — landed progressively).
+// a owning chapter's domain module (02/03/04/06/08/09 — landed progressively).
 const crossChapterEvents = new Set([
   'omp.mode.changed', 'omp.goal.updated', 'omp.plan.review_requested', 'omp.plan.updated',
+  'omp.chrome.updated',
   'omp.dialog.requested', 'omp.dialog.settled',
   'omp.agents.updated', 'omp.jobs.updated', 'omp.tree.updated',
   'omp.settings.updated', 'omp.queue.changed',

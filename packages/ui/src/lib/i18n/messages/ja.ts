@@ -2353,6 +2353,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modeSelector.changeFailed': 'セッションモードを変更できませんでした。',
 'chat.modeSelector.conflict': '先に{mode}モードを終了してください。',
   'chat.personaSelector.ariaLabel': 'セッションペルソナ',
+  'chat.extensionWidgets.ariaLabel': '拡張ウィジェット',
   'chat.personaSelector.title': 'ペルソナ',
   'chat.personaSelector.standard': '標準',
   'chat.personaSelector.sectionTitle': 'セッションペルソナ',

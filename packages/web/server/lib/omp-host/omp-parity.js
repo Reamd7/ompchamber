@@ -47,6 +47,9 @@ export const ompFeatures = () => ({
   'agentRuns.v1': true,
   // 08: omp slash-command discovery for the three-layer pipeline (§5.4).
   'commands.v1': true,
+  // 09: extension chrome projection — widget/status strings via the dialog
+  // bridge, mirroring RpcExtensionUIRequest (chapter 09 §5.0).
+  'extensionChrome.v1': true,
   // jobs: SDK AsyncJobManager only attaches to the first top-level session;
   // capability stays false until upstream injection (master R12).
   'jobs.v1': false,

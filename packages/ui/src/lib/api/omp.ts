@@ -98,6 +98,7 @@ export const OMP_ENDPOINTS = {
   sessionPlanReview: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/plan/review`,
   models: '/api/omp/models',
   dialogs: '/api/omp/dialogs',
+  chrome: '/api/omp/chrome',
   dialogsLease: '/api/omp/dialogs/lease',
   dialogsLeaseRelease: '/api/omp/dialogs/lease/release',
   dialogRespond: (dialogID: string) => `/api/omp/dialogs/${encodeURIComponent(dialogID)}/respond`,
@@ -1594,6 +1595,55 @@ export const parseOmpDialogsSnapshotPayload = (value: unknown): OmpPendingDialog
     if (dialog !== null) dialogs.push(dialog);
   }
   return dialogs;
+};
+
+const ChromeSnapshotSchema = z.object({
+  revision: z.number(),
+  widgets: z.array(z.unknown()),
+  status: z.array(z.unknown()),
+  dropped: z.record(z.string(), z.number()).optional(),
+});
+
+const ChromeWidgetSchema = z.object({
+  key: z.string().min(1),
+  lines: z.array(z.string()),
+  placement: z.enum(['aboveEditor', 'belowEditor']).optional(),
+  sessionId: z.string(),
+  updatedAt: z.number(),
+});
+
+const ChromeStatusSchema = z.object({
+  key: z.string().min(1),
+  text: z.string(),
+  sessionId: z.string(),
+  updatedAt: z.number(),
+});
+
+export interface OmpChromeSnapshot {
+  widgets: Array<{ key: string; lines: string[]; placement?: 'aboveEditor' | 'belowEditor'; sessionId: string; updatedAt: number }>;
+  status: Array<{ key: string; text: string; sessionId: string; updatedAt: number }>;
+}
+
+/**
+ * Parses a `GET /api/omp/chrome` payload into trusted chrome records
+ * (spec 09 §5.0). Unparseable entries are dropped; null means the whole
+ * payload was malformed — callers treat that as fetch failure, never as an
+ * authoritative empty success (D2).
+ */
+export const parseOmpChromeSnapshotPayload = (value: unknown): OmpChromeSnapshot | null => {
+  const parsed = ChromeSnapshotSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const widgets: OmpChromeSnapshot['widgets'] = [];
+  for (const item of parsed.data.widgets) {
+    const widget = ChromeWidgetSchema.safeParse(item);
+    if (widget.success) widgets.push(widget.data);
+  }
+  const status: OmpChromeSnapshot['status'] = [];
+  for (const item of parsed.data.status) {
+    const row = ChromeStatusSchema.safeParse(item);
+    if (row.success) status.push(row.data);
+  }
+  return { widgets, status };
 };
 
 /** RespondResult union (server RESPOND_KINDS is the authority). */

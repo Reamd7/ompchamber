@@ -2181,6 +2181,7 @@ export const dict = {
 'chat.modeSelector.changeFailed': 'Sitzungsmodus konnte nicht geändert werden.',
 'chat.modeSelector.conflict': 'Beende zuerst den {mode}-Modus.',
   'chat.personaSelector.ariaLabel': 'Sitzungs-Persona',
+  'chat.extensionWidgets.ariaLabel': 'Erweiterungs-Widgets',
   'chat.personaSelector.title': 'Persona',
   'chat.personaSelector.standard': 'Standard',
   'chat.personaSelector.sectionTitle': 'Sitzungs-Persona',

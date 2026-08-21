@@ -2324,6 +2324,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modeSelector.changeFailed': '無法變更工作階段模式。',
 'chat.modeSelector.conflict': '請先結束 {mode} 模式。',
   'chat.personaSelector.ariaLabel': '工作階段化身',
+  'chat.extensionWidgets.ariaLabel': '擴充小工具列',
   'chat.personaSelector.title': '化身',
   'chat.personaSelector.standard': '標準',
   'chat.personaSelector.sectionTitle': '工作階段化身',

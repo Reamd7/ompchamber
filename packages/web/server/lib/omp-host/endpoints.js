@@ -14,6 +14,7 @@ import { buildCapabilities, featureUnavailable, ompFeatures } from './omp-parity
 import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models.js';
 import { registerModesDomainRoutes } from './domain-modes.js';
 import { registerCommandsDomainRoutes } from './domain-commands.js';
+import { registerChromeDomainRoutes } from './domain-chrome.js';
 
 
 /**
@@ -602,6 +603,7 @@ export const registerEndpoints = (route, engine, { version }) => {
   registerModesDomainRoutes(route, engine.modesDomain, { features: ompFeatures() });
   engine.uriDomain.mount(route);
   registerCommandsDomainRoutes(route, { features: ompFeatures() });
+  registerChromeDomainRoutes(route, { chrome: engine.chrome, features: ompFeatures() });
 
   // ---- omp parity foundation (spec docs/omp-parity; public paths
   // /api/omp/* — the web proxy strips the /api prefix, master D6-R3/R4) ----

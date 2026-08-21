@@ -4,6 +4,7 @@ import type { PermissionRequest } from '@/types/permission';
 import type { QuestionRequest } from '@/types/question';
 
 import { ChatInput } from './ChatInput';
+import { OmpExtensionWidgetBar } from './OmpExtensionWidgetBar';
 import { DraftPresetChips } from './DraftPresetChips';
 import { useInputStore } from '@/sync/input-store';
 import { useUIStore } from '@/stores/useUIStore';
@@ -1138,7 +1139,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 									: 'flex-1 items-center justify-center bg-background px-0 pb-[6vh]'
 						)}
 					>
-                          {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                          {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
+{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
 					</div>
 					{workStatusOverlayMountable ? (
 						<WorkStatusPanel
@@ -1191,7 +1193,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         </div>
                     </div>
                     <div className="relative z-10 bg-background">
-                        {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                        {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
+{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
                     </div>
                 </div>,
             );
@@ -1236,7 +1239,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     </div>
                 </div>
                 <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
-                    {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                    {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
+{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
                 </div>
             </div>,
         );
@@ -1262,7 +1266,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     ) : null}
                 </div>
                 <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
-                    {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                    {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
+{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
                 </div>
             </div>,
         );
@@ -1320,7 +1325,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         onClick={navigation.resumeToLatest}
                     />
                 )}
-                {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
+{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
             </div>
 
             {/* Inside the chat column, not beside it: as a row sibling it took

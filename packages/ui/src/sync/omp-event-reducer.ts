@@ -158,6 +158,19 @@ const QueueChangedPayload = z.object({
   version: z.number(),
 });
 
+/** omp.chrome.updated (spec 09 §5.0) — RpcExtensionUIRequest mirror. */
+const ChromeUpdatedPayload = z.union([
+  z.object({
+    kind: z.literal('widget'),
+    key: nonEmptyString,
+    lines: z.array(z.string()),
+    placement: z.enum(['aboveEditor', 'belowEditor']).optional(),
+  }),
+  z.object({ kind: z.literal('widget'), key: nonEmptyString }),
+  z.object({ kind: z.literal('status'), key: nonEmptyString, text: z.string() }),
+  z.object({ kind: z.literal('status'), key: nonEmptyString }),
+]);
+
 // ---------------------------------------------------------------------------
 // Per-directory omp state (the slice owned by useOmpSessionStore)
 // ---------------------------------------------------------------------------
@@ -266,6 +279,27 @@ export interface OmpDomainTracking {
   queueVersionBySession: Record<string, number>;
 }
 
+export interface OmpChromeWidget {
+  key: string;
+  lines: string[];
+  placement?: string;
+  sessionId: string;
+  updatedAt: number;
+}
+
+export interface OmpChromeStatus {
+  key: string;
+  text: string;
+  sessionId: string;
+  updatedAt: number;
+}
+
+export interface OmpChromeState {
+  widgets: Record<string, OmpChromeWidget>;
+  status: Record<string, OmpChromeStatus>;
+}
+
+
 export interface OmpDirectoryState {
   /** Highest omp envelope id consumed for this directory (global monotonic). */
   lastAppliedEventId: number;
@@ -286,6 +320,8 @@ export interface OmpDirectoryState {
   awaitingAsync: Record<string, { since: number }>;
   ttsr: Record<string, OmpTtsrWarning>;
   telemetry: Record<string, OmpTelemetryTurn[]>;
+  /** Extension chrome surface (spec 09 §5): widgets above/below the composer + status rows. */
+  chrome: OmpChromeState;
   /** Domain-level lastEventId tracking for surfaces that land later. */
   domains: OmpDomainTracking;
 }
@@ -306,6 +342,7 @@ export const createEmptyOmpDirectoryState = (): OmpDirectoryState => ({
   awaitingAsync: {},
   ttsr: {},
   telemetry: {},
+  chrome: { widgets: {}, status: {} },
   domains: {
     lastEventId: 0,
     queueVersionBySession: {},
@@ -757,6 +794,50 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (dialog === null) return drop(envelope);
       draft.domains.lastEventId = envelope.id;
       effects.push({ kind: 'dialog-requested', dialog });
+      return { changed: true, effects };
+    }
+
+    case 'omp.chrome.updated': {
+      const payload = ChromeUpdatedPayload.safeParse(envelope.payload);
+      if (!payload.success) return drop(envelope);
+      const data = payload.data;
+      const sessionId = sessionID ?? '';
+      const updatedAt = envelope.createdAt ?? 0;
+      if (data.kind === 'widget') {
+        if (!('lines' in data)) {
+          if (!(data.key in draft.chrome.widgets)) return NO_CHANGE;
+          delete draft.chrome.widgets[data.key];
+        } else {
+          const lines = data.lines;
+          const placement = 'placement' in data ? data.placement : undefined;
+          const existing = draft.chrome.widgets[data.key];
+          if (
+            existing
+            && existing.sessionId === sessionId
+            && existing.lines.join('\n') === lines.join('\n')
+            && (existing.placement ?? '') === (placement ?? '')
+          ) return NO_CHANGE;
+          draft.chrome.widgets[data.key] = {
+            key: data.key,
+            lines,
+            ...(placement !== undefined ? { placement } : {}),
+            sessionId,
+            updatedAt,
+          };
+        }
+      } else {
+        if (!('text' in data)) {
+          if (!(data.key in draft.chrome.status)) return NO_CHANGE;
+          delete draft.chrome.status[data.key];
+        } else {
+          const existing = draft.chrome.status[data.key];
+          if (existing && existing.sessionId === sessionId && existing.text === data.text) {
+            return NO_CHANGE;
+          }
+          draft.chrome.status[data.key] = { key: data.key, text: data.text, sessionId, updatedAt };
+        }
+      }
+      draft.domains.lastEventId = envelope.id;
       return { changed: true, effects };
     }
 

@@ -651,6 +651,7 @@ export const createDialogBridge = ({
   sessionId,
   approvalContext = null,
   onNotify = null,
+  chrome = null,
 }) => {
   const register = (kind, payload) => {
     if (!leases.has(directory, sessionId)) {
@@ -772,17 +773,20 @@ export const createDialogBridge = ({
     editor: (title, prefill, dialogOptions) => inputLike('editor', title, prefill, dialogOptions),
     notify: (message, type) =>
       onNotify?.({ message, type: type ?? 'info', directory, sessionId }),
-    // Terminal-only surface: explicit no-ops (spec 03 §5.1 触点 4).
+    // Terminal-only surface (spec 03 §5.1 触点 4) — string-payload chrome
+    // delegates to the extension chrome table when provided (spec 09 §5,
+    // mirroring RpcExtensionUIRequest); TUI-bound members stay no-ops but
+    // count as observable drops (09 R-E3).
     onTerminalInput: () => () => {},
-    setStatus: () => {},
-    setWorkingMessage: () => {},
-    setWidget: () => {},
-    setFooter: () => {},
-    setHeader: () => {},
-    setTitle: () => {},
-    custom: async () => undefined,
-    setEditorText: () => {},
-    pasteToEditor: () => {},
+    setStatus: (key, text) => chrome?.setStatus(key, text),
+    setWorkingMessage: () => chrome?.noteDropped('setWorkingMessage'),
+    setWidget: (key, content, options) => chrome?.setWidget(key, content, options),
+    setFooter: () => chrome?.noteDropped('setFooter.factory'),
+    setHeader: () => chrome?.noteDropped('setHeader.factory'),
+    setTitle: () => chrome?.noteDropped('setTitle'),
+    custom: async () => chrome?.noteDropped('custom.factory'),
+    setEditorText: () => chrome?.noteDropped('setEditorText'),
+    pasteToEditor: (text) => chrome?.noteDropped('pasteToEditor'),
     getEditorText: () => '',
     addAutocompleteProvider: () => {},
     setEditorComponent: () => {},

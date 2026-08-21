@@ -2320,6 +2320,7 @@ export const dict: Record<I18nKey, string> = {
 "chat.modeSelector.changeFailed": "Não foi possível alterar o modo da sessão.",
 "chat.modeSelector.conflict": "Saia primeiro do modo {mode}.",
   "chat.personaSelector.ariaLabel": "Persona da sessão",
+  "chat.extensionWidgets.ariaLabel": "Widgets de extensões",
   "chat.personaSelector.title": "Persona",
   "chat.personaSelector.standard": "Padrão",
   "chat.personaSelector.sectionTitle": "Persona da sessão",

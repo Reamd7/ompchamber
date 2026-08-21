@@ -2354,6 +2354,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modeSelector.changeFailed': '세션 모드를 변경하지 못했습니다.',
 'chat.modeSelector.conflict': '먼저 {mode} 모드를 종료하세요.',
   'chat.personaSelector.ariaLabel': '세션 페르소나',
+  'chat.extensionWidgets.ariaLabel': '확장 위젯',
   'chat.personaSelector.title': '페르소나',
   'chat.personaSelector.standard': '표준',
   'chat.personaSelector.sectionTitle': '세션 페르소나',

@@ -2347,6 +2347,7 @@ export const dict = {
   'chat.modeSelector.changeFailed': 'Could not change the session mode.',
   'chat.modeSelector.conflict': 'Exit {mode} mode first.',
   'chat.personaSelector.ariaLabel': 'Session persona',
+  'chat.extensionWidgets.ariaLabel': 'Extension widgets',
   'chat.personaSelector.title': 'Persona',
   'chat.personaSelector.standard': 'Standard',
   'chat.personaSelector.sectionTitle': 'Session persona',

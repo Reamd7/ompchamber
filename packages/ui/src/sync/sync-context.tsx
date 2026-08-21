@@ -12,7 +12,7 @@ import { useOmpDialogStore } from "./useOmpDialogStore"
 import { ompDialogController } from "./omp-dialog-controller"
 import { showOmpNoticeToast } from "./omp-notice-toast"
 import type { OmpEventEffect } from "./omp-event-reducer"
-import { OMP_ENDPOINTS, parseOmpDialogsSnapshotPayload } from "@/lib/api/omp"
+import { OMP_ENDPOINTS, parseOmpChromeSnapshotPayload, parseOmpDialogsSnapshotPayload } from "@/lib/api/omp"
 import { formatMessage, useI18nStore } from "@/lib/i18n/store"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { isVSCodeRuntime } from "@/lib/desktop"
@@ -2366,6 +2366,14 @@ export function SyncProvider(props: {
           const dialogs = parseOmpDialogsSnapshotPayload(result.data)
           if (dialogs === null) return
           useOmpDialogStore.getState().reconcileSnapshot(runtimeKey, directory, dialogs)
+        },
+        consumeChrome: (directory, result) => {
+          // Spec 09 §5.0: same contract as dialogs — unavailable = surface
+          // off (R2 skip); failure keeps prior widgets (D2) — never a clear.
+          if (!result.ok) return
+          const chrome = parseOmpChromeSnapshotPayload(result.data)
+          if (chrome === null) return
+          useOmpSessionStore.getState().reconcileChromeSnapshot(runtimeKey, directory, chrome)
         },
       },
     })

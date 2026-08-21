@@ -25,7 +25,7 @@
 
 import { create } from 'zustand';
 import { applyOmpEvent, createEmptyOmpDirectoryState, type OmpDirectoryState, type OmpEventEffect, type OmpSessionLoaders } from './omp-event-reducer';
-import type { OmpEventEnvelope } from '@/lib/api/omp';
+import type { OmpChromeSnapshot, OmpEventEnvelope } from '@/lib/api/omp';
 
 /** Volatile TTLs — missed terminal frames must not pin state forever. */
 export const OMP_COMPACTION_LOADER_TTL_MS = 10 * 60 * 1000;
@@ -59,6 +59,17 @@ interface OmpSessionStoreActions {
   clearSession: (runtimeKey: string, directory: string, sessionID: string) => void;
   /** Directory store disposed/evicted — drop the slice. */
   clearDirectory: (runtimeKey: string, directory: string) => void;
+  /**
+   * Authoritative chrome snapshot reconcile (spec 09 §5.0, resync matrix):
+   * a complete parsed snapshot replaces the chrome slice for its directory
+   * (first-load replacement is the snapshot contract; D2 lives in the
+   * caller — failure never reaches here).
+   */
+  reconcileChromeSnapshot: (
+    runtimeKey: string,
+    directory: string,
+    snapshot: OmpChromeSnapshot,
+  ) => void;
   /** Pipeline (re)mount — adopt the runtime identity and drop stale slices. */
   clearAll: (runtimeKey: string) => void;
 }
@@ -104,6 +115,22 @@ const sweepVolatile = (state: OmpDirectoryState, now: number): boolean => {
 
 /** Exposed for deterministic TTL tests; production reaches it via the coalesced sweeper. */
 export const sweepOmpVolatile = (state: OmpDirectoryState, now: number): boolean => sweepVolatile(state, now);
+const EMPTY_CHROME: OmpDirectoryState['chrome'] = { widgets: {}, status: {} };
+
+const chromeEntriesEqual = (
+  a: Record<string, unknown>,
+  b: Record<string, unknown>,
+): boolean => {
+  const aKeys = Object.keys(a);
+  if (aKeys.length !== Object.keys(b).length) return false;
+  for (const key of aKeys) {
+    if (!(key in b)) return false;
+    // Records are tiny (string rows + scalars); field-wise JSON keeps the
+    // no-op check exact without building a deep-equal utility.
+    if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  }
+  return true;
+};
 
 export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
   // One deferred sweeper pass per TTL window while events keep arriving;
@@ -161,6 +188,10 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
           awaitingAsync: { ...existing.awaitingAsync },
           ttsr: { ...existing.ttsr },
           telemetry: { ...existing.telemetry },
+          chrome: {
+            widgets: { ...existing.chrome.widgets },
+            status: { ...existing.chrome.status },
+          },
           domains: {
             ...existing.domains,
             queueVersionBySession: { ...existing.domains.queueVersionBySession },
@@ -283,6 +314,39 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
       });
     },
 
+    reconcileChromeSnapshot(runtimeKey, directory, snapshot) {
+      if (runtimeKey !== get().runtimeKey) return;
+      set((state) => {
+        const existing = state.directories[directory];
+        if (!existing) return state;
+        const widgets: OmpDirectoryState['chrome']['widgets'] = {};
+        for (const widget of snapshot.widgets) {
+          widgets[widget.key] = {
+            key: widget.key,
+            lines: widget.lines,
+            ...(widget.placement !== undefined ? { placement: widget.placement } : {}),
+            sessionId: widget.sessionId,
+            updatedAt: widget.updatedAt,
+          };
+        }
+        const status: OmpDirectoryState['chrome']['status'] = {};
+        for (const row of snapshot.status) {
+          status[row.key] = { ...row };
+        }
+        const nextChrome = { widgets, status };
+        if (
+          chromeEntriesEqual(existing.chrome.widgets, widgets)
+          && chromeEntriesEqual(existing.chrome.status, status)
+        ) return state;
+        return {
+          directories: {
+            ...state.directories,
+            [directory]: { ...existing, chrome: nextChrome },
+          },
+        };
+      });
+    },
+
     clearAll(runtimeKey) {
       set({ directories: {}, runtimeKey });
     },
@@ -295,6 +359,11 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
 
 export const getOmpDirectoryState = (directory: string): OmpDirectoryState | null =>
   useOmpSessionStore.getState().directories[directory] ?? null;
+
+/** Extension chrome slice (spec 09 §5): stable empty constant keeps the
+ *  selector reference-stable for empty directories. */
+export const useOmpChromeState = (directory: string): OmpDirectoryState['chrome'] =>
+  useOmpSessionStore((state) => state.directories[directory]?.chrome ?? EMPTY_CHROME);
 
 /** Queue gate integration (spec 05 §5.5): compaction keeps the session busy. */
 export const isOmpCompactionActive = (directory: string, sessionID: string): boolean => {

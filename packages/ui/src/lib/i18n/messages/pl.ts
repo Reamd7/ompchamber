@@ -1321,6 +1321,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modeSelector.changeFailed': 'Nie udało się zmienić trybu sesji.',
 'chat.modeSelector.conflict': 'Najpierw zakończ tryb {mode}.',
   'chat.personaSelector.ariaLabel': 'Persona sesji',
+  'chat.extensionWidgets.ariaLabel': 'Widżety rozszerzeń',
   'chat.personaSelector.title': 'Persona',
   'chat.personaSelector.standard': 'Standardowa',
   'chat.personaSelector.sectionTitle': 'Persona sesji',

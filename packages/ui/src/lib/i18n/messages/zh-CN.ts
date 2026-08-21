@@ -2320,6 +2320,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modeSelector.changeFailed': '无法更改会话模式。',
 'chat.modeSelector.conflict': '请先退出 {mode} 模式。',
   'chat.personaSelector.ariaLabel': '会话化身',
+  'chat.extensionWidgets.ariaLabel': '扩展小组件栏',
   'chat.personaSelector.title': '化身',
   'chat.personaSelector.standard': '标准',
   'chat.personaSelector.sectionTitle': '会话化身',

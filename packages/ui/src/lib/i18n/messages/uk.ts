@@ -2320,6 +2320,7 @@ export const dict: Record<I18nKey, string> = {
 "chat.modeSelector.changeFailed": "Не вдалося змінити режим сеансу.",
 "chat.modeSelector.conflict": "Спочатку завершіть режим {mode}.",
   "chat.personaSelector.ariaLabel": "Персона сесії",
+  "chat.extensionWidgets.ariaLabel": "Віджети розширень",
   "chat.personaSelector.title": "Персона",
   "chat.personaSelector.standard": "Стандартна",
   "chat.personaSelector.sectionTitle": "Персона сесії",

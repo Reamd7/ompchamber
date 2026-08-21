@@ -174,13 +174,14 @@ describe('runOmpResync', () => {
       },
     };
     await runOmpResync([], context);
-    // Canonical order: sessions(wire) → modes → model → dialogs → settings → agents → jobs → queue → tree → transcript(wire)
+    // Canonical order: sessions(wire) → modes → model → dialogs → chrome → settings → agents → jobs → queue → tree → transcript(wire)
     expect(requests).toEqual([
       'wire:/repo',
       '/api/omp/sessions/ses_1/mode?/repo',
       '/api/omp/sessions/ses_2/mode?/repo',
       '/api/omp/models?/repo',
       '/api/omp/dialogs?/repo',
+      '/api/omp/chrome?/repo',
       '/api/omp/settings?/repo',
       '/api/omp/agent-runs?/repo',
       '/api/omp/jobs?/repo',

@@ -25,6 +25,7 @@ export type OmpResyncScope =
   | 'modes'
   | 'model'
   | 'dialogs'
+  | 'chrome'
   | 'settings'
   | 'agents'
   | 'jobs'
@@ -37,6 +38,7 @@ const FULL_ORDER: readonly OmpResyncScope[] = [
   'modes',
   'model',
   'dialogs',
+  'chrome',
   'settings',
   'agents',
   'jobs',
@@ -69,6 +71,13 @@ export interface OmpResyncContext {
    * prior state (D2) — the consumer decides, the matrix only delivers.
    */
   consumeDialogs?: (directory: string, result: OmpFetchJsonResult<unknown>) => void;
+
+  /**
+   * Extension chrome consumer (spec 09 §5.0): receives the authoritative
+   * snapshot per directory. Same contract as consumeDialogs — `unavailable`
+   * skips (R2), failure keeps prior widgets (D2), never a clear.
+   */
+  consumeChrome?: (directory: string, result: OmpFetchJsonResult<unknown>) => void;
   /**
    * Test seam over runtimeFetch for omp GETs. Production default resolves
    * `{ok:false, unavailable:true}` for 404/501 and `{ok:false,
@@ -165,6 +174,14 @@ export async function runOmpResync(
           context.consumeDialogs(directory, result);
         } else {
           fetches.push({ path: OMP_ENDPOINTS.dialogs, query: { directory } });
+        }
+      } else if (scope === 'chrome') {
+        if (context.consumeChrome !== undefined) {
+          const result = await fetchOmpJson(OMP_ENDPOINTS.chrome, { directory });
+          if (aborted()) return;
+          context.consumeChrome(directory, result);
+        } else {
+          fetches.push({ path: OMP_ENDPOINTS.chrome, query: { directory } });
         }
       } else if (scope === 'settings') {
         fetches.push({ path: OMP_ENDPOINTS.settings, query: { directory } });

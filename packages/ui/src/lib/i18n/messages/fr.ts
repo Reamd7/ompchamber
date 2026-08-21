@@ -2059,6 +2059,7 @@ export const dict = {
 'chat.modeSelector.changeFailed': 'Impossible de changer le mode de la session.',
 'chat.modeSelector.conflict': 'Quittez d’abord le mode {mode}.',
   'chat.personaSelector.ariaLabel': 'Persona de la session',
+  'chat.extensionWidgets.ariaLabel': 'Widgets d\'extension',
   'chat.personaSelector.title': 'Persona',
   'chat.personaSelector.standard': 'Standard',
   'chat.personaSelector.sectionTitle': 'Persona de la session',

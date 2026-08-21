@@ -35,6 +35,7 @@ import {
 } from './projection.js';
 import { createSettingsStore } from './domain-models.js';
 import { createDomainDialogs } from './domain-dialogs.js';
+import { createDomainChrome } from './domain-chrome.js';
 import { createModesDomain, mapBackedStore } from './domain-modes.js';
 import { ompFeatures } from './omp-parity.js';
 import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
@@ -136,6 +137,13 @@ export class OmpHostEngine {
         }
       },
     });
+    // Extension chrome table (spec 09 §5): string-payload widget/status
+    // projection mirroring RpcExtensionUIRequest. Volatile events; the
+    // snapshot GET is the reconnect authority (D2).
+    this.chrome = createDomainChrome({
+      publishFor: (directory, payload) =>
+        this.ompBus.publish('omp.chrome.updated', payload, { directory, durable: false }),
+    });
     // URI bridge / session tree / agent-runs / jobs (spec 04). The factory
     // is synchronous and every engine dependency is a lazy closure, so it is
     // created here (not in async #boot) and mounted synchronously by
@@ -204,8 +212,11 @@ export class OmpHostEngine {
   }
 
   async #setDialogUiContext(hostSession, directory, sessionId, hasUI) {
-    if (!hostSession?.sdkResult?.setToolUIContext || !hostSession.agentSession) return;
-    const uiContext = hasUI ? this.dialogs.uiContextFor(directory, sessionId) : undefined;
+    const uiContext = hasUI
+      ? this.dialogs.uiContextFor(directory, sessionId, {
+          chrome: this.chrome.bridgeHandlersFor(directory, sessionId),
+        })
+      : undefined;
     if (hasUI && !hostSession.extensionUiInitialized) {
       if (!hostSession.extensionUiPromise) {
         hostSession.extensionUiPromise = initializeExtensions(hostSession.agentSession, {
@@ -229,9 +240,18 @@ export class OmpHostEngine {
     hostSession.sdkResult.setToolUIContext(uiContext, hasUI);
   }
 
-  /** Lease attach/detach → SDK tool UI context (R13: lease is hasUI authority). */
+  /**
+   * Lease attach/detach → SDK tool UI context (R13: lease is hasUI
+   * authority). A UI lease IS a session access: a client viewing the session
+   * implies the engine should hold it live, so an attach that races ahead of
+   * lazy materialization pulls the session in instead of dropping the
+   * extension UI initialization on the floor.
+   */
   async #attachDialogUi(directory, sessionId) {
-    await this.#setDialogUiContext(this.sessions.get(sessionId), directory, sessionId, true);
+    const hostSession = this.sessions.get(sessionId)
+      ?? await this.#materialize(sessionId, directory);
+    if (!hostSession) return;
+    await this.#setDialogUiContext(hostSession, directory, sessionId, true);
   }
 
   #detachDialogUi(directory, sessionId) {

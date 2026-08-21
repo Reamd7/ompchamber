@@ -26,6 +26,7 @@
     "omp.usage.turn": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/telemetry"], "since": "1.0" },
     "omp.settings.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/settings"], "since": "1.0" },
     "omp.queue.changed": { "durable": true, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/queue"], "since": "1.0", "gated": "queue.v1" },
+    "omp.chrome.updated": { "durable": false, "scope": "directory", "snapshotEndpoints": ["/api/omp/chrome"], "since": "1.0", "gated": "extensionChrome.v1" },
     "omp.stream.resync": { "durable": false, "scope": "directory", "snapshotEndpoints": [], "since": "1.0", "control": true }
   }
 }
