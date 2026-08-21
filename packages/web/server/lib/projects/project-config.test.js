@@ -145,6 +145,62 @@ describe('project-config runtime', () => {
     }
   });
 
+  it('persists modelRole default tasks without explicit identifiers', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'model_role_default';
+      await runtime.upsertScheduledTask(projectID, {
+        name: 'follows-default-role',
+        enabled: true,
+        schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+        execution: { prompt: 'run', modelRole: 'default' },
+      });
+
+      const tasks = await runtime.listScheduledTasks(projectID);
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].execution.modelRole).toBe('default');
+      expect(tasks[0].execution.providerID).toBeUndefined();
+      expect(tasks[0].execution.modelID).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('rejects identifier-free execution without modelRole default', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'model_role_missing';
+      await expect(
+        runtime.upsertScheduledTask(projectID, {
+          name: 'no-model',
+          enabled: true,
+          schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+          execution: { prompt: 'run' },
+        }),
+      ).rejects.toThrow('execution.providerID is required');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('rejects half-pinned models (provider without model)', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'model_role_half';
+      await expect(
+        runtime.upsertScheduledTask(projectID, {
+          name: 'half-model',
+          enabled: true,
+          schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+          execution: { prompt: 'run', providerID: 'openai' },
+        }),
+      ).rejects.toThrow('execution.modelID is required');
+    } finally {
+      await cleanup();
+    }
+  });
+
+
   it('accepts one-time schedule with date and time', async () => {
     const { runtime, cleanup } = await createRuntime();
     try {

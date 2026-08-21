@@ -23,6 +23,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import type { ScheduledTask } from '@/lib/scheduledTasksApi';
 import { useI18n } from '@/lib/i18n';
+import { resolveOmpDefaults } from '@/lib/omp-defaults';
 import { isValidCronExpression, getNextRuns, CRON_EXAMPLES } from '@/lib/cron';
 import { canonicalizeTimezone } from '@/lib/timezones';
 
@@ -558,8 +559,8 @@ const toDraft = (
     },
     execution: {
       prompt: task.execution.prompt,
-      providerID: task.execution.providerID,
-      modelID: task.execution.modelID,
+      providerID: task.execution.providerID ?? '',
+      modelID: task.execution.modelID ?? '',
       variant: task.execution.variant || '',
       agent: task.execution.agent || '',
       goalEnabled: task.execution.goalEnabled === true,
@@ -572,16 +573,23 @@ const toDraft = (
   };
 };
 
-const validateDraft = (draft: ScheduledTaskDraft, t: ReturnType<typeof useI18n>['t']): string | null => {
+const validateDraft = (
+  draft: ScheduledTaskDraft,
+  t: ReturnType<typeof useI18n>['t'],
+  options?: { modelRolesEnabled?: boolean },
+): string | null => {
   if (!draft.name.trim()) {
     return t('sessions.scheduledTasks.editor.validation.taskNameRequired');
   }
-  if (!draft.execution.prompt.trim()) {
-    return t('sessions.scheduledTasks.editor.validation.promptRequired');
-  }
-  if (!draft.execution.providerID.trim() || !draft.execution.modelID.trim()) {
+  if (
+    !options?.modelRolesEnabled
+    && (!draft.execution.providerID.trim() || !draft.execution.modelID.trim())
+  ) {
+    // Legacy contract requires an explicit model; under model roles an empty
+    // selection means "follow the engine's default role".
     return t('sessions.scheduledTasks.editor.validation.modelRequired');
   }
+
 
   if (draft.schedule.kind === 'once') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.schedule.onceDate)) {
@@ -726,11 +734,14 @@ const CronScheduleSection: React.FC<{
 export function ScheduledTaskEditorDialog(props: {
   open: boolean;
   task: ScheduledTask | null;
+  projectDirectory?: string | null;
   onOpenChange: (open: boolean) => void;
   onSave: (draft: Partial<ScheduledTask>) => Promise<void>;
 }) {
-  const { open, task, onOpenChange, onSave } = props;
+  const { open, task, projectDirectory = null, onOpenChange, onSave } = props;
   const { t, locale } = useI18n();
+  const [modelRolesEnabled, setModelRolesEnabled] = React.useState(false);
+
   const loadProviders = useConfigStore((state) => state.loadProviders);
   const loadAgents = useConfigStore((state) => state.loadAgents);
   const providers = useConfigStore((state) => state.providers);
@@ -807,22 +818,48 @@ export function ScheduledTaskEditorDialog(props: {
     if (!open) {
       return;
     }
-    setDraft(
-      toDraft(task, {
-        providerID: currentProviderID,
-        modelID: currentModelID,
-        variant: currentVariant,
-        agent: currentAgentName,
-      })
-    );
-    const sourceDate = parseISODateToLocal(task?.schedule?.date || '') || new Date();
-    setCalendarMonth(new Date(sourceDate.getFullYear(), sourceDate.getMonth(), 1));
-    setIsDatePickerOpen(false);
-    setShowCommandAutocomplete(false);
-    setShowFileMention(false);
-    setCommandQuery('');
-    setMentionQuery('');
-  }, [open, task, currentProviderID, currentModelID, currentVariant, currentAgentName]);
+    let cancelled = false;
+    void (async () => {
+      const omp = await resolveOmpDefaults(projectDirectory);
+      if (cancelled) return;
+      setModelRolesEnabled(omp.modelRolesEnabled);
+      setDraft(
+        toDraft(task, {
+          providerID: omp.modelRolesEnabled
+            ? (omp.model?.providerID ?? '')
+            : currentProviderID,
+          modelID: omp.modelRolesEnabled
+            ? (omp.model?.modelID ?? '')
+            : currentModelID,
+          variant: omp.modelRolesEnabled ? '' : currentVariant,
+          agent: currentAgentName,
+        })
+      );
+      const sourceDate = parseISODateToLocal(task?.schedule?.date || '') || new Date();
+      setCalendarMonth(new Date(sourceDate.getFullYear(), sourceDate.getMonth(), 1));
+      setIsDatePickerOpen(false);
+      setShowCommandAutocomplete(false);
+      setShowFileMention(false);
+      setCommandQuery('');
+      setMentionQuery('');
+    })().catch(() => {
+      // resolveOmpDefaults degrades to legacy on failure; a hard failure here
+      // falls back to the legacy seeding below without blocking the editor.
+      if (cancelled) return;
+      setModelRolesEnabled(false);
+      setDraft(
+        toDraft(task, {
+          providerID: currentProviderID,
+          modelID: currentModelID,
+          variant: currentVariant,
+          agent: currentAgentName,
+        })
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, task, projectDirectory, currentProviderID, currentModelID, currentVariant, currentAgentName]);
 
   React.useEffect(() => {
     if (!isDatePickerOpen) {
@@ -1140,8 +1177,9 @@ export function ScheduledTaskEditorDialog(props: {
     }
   }, [showCommandAutocomplete, showFileMention, showSnippetAutocomplete]);
 
+
   const handleSubmit = React.useCallback(async () => {
-    const validationError = validateDraft(draft, t);
+    const validationError = validateDraft(draft, t, { modelRolesEnabled });
     if (validationError) {
       toast.error(validationError);
       return;
@@ -1168,8 +1206,12 @@ export function ScheduledTaskEditorDialog(props: {
       },
       execution: {
         prompt: draft.execution.prompt,
-        providerID: draft.execution.providerID,
-        modelID: draft.execution.modelID,
+        ...(draft.execution.providerID.trim() && draft.execution.modelID.trim()
+          ? {
+              providerID: draft.execution.providerID.trim(),
+              modelID: draft.execution.modelID.trim(),
+            }
+          : { modelRole: 'default' }),
         ...(draft.execution.variant.trim() ? { variant: draft.execution.variant.trim() } : {}),
         ...(draft.execution.agent.trim() ? { agent: draft.execution.agent.trim() } : {}),
         ...(draft.execution.permissionAutoAccept ? { permissionAutoAccept: true } : {}),
@@ -1190,7 +1232,7 @@ export function ScheduledTaskEditorDialog(props: {
     } finally {
       setSaving(false);
     }
-  }, [draft, onOpenChange, onSave, t]);
+  }, [draft, modelRolesEnabled, onOpenChange, onSave, t]);
 
   const descriptionId = React.useId();
   const hasOpenFloatingMenu = React.useCallback(() => {

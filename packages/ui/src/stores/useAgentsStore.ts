@@ -10,6 +10,9 @@ import {
   updateConfigUpdateMessage,
 } from "@/lib/configUpdate";
 import { noteDeferredRestartFromPayload } from "@/lib/opencode/deferredRestart";
+import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry";
+import { isOmpAgentDefinitionsEnabled, primeOmpCapabilityGate } from "@/lib/omp/capabilityGate";
+import type { OmpAgentDefinitionRecord, OmpCrudDeleteResult, OmpCrudMutationResult } from "@/lib/api/omp";
 import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
 import { useConfigStore } from "@/stores/useConfigStore";
 import { invalidateCommandsLoadCache, useCommandsStore } from "@/stores/useCommandsStore";
@@ -111,10 +114,55 @@ export interface AgentConfig {
   prompt?: string | null;
   mode?: "primary" | "subagent" | "all";
   permission?: PermissionConfig | null;
+  /** omp agent-definition tool whitelist (spec 02 §5.2); empty = all tools. */
+  tools?: string[];
 
   disable?: boolean;
   scope?: AgentScope;
 }
+
+/**
+ * omp agent-definitions mode (spec 02 §5.2): when the capability settles on,
+ * list/CRUD read/write `/api/omp/agent-definitions` instead of the OpenCode
+ * config-entity routes. The probe runs once per runtime; until it settles
+ * every access degrades to the legacy path (capability reads false).
+ */
+const ompDefinitionsEnabled = async (): Promise<boolean> => {
+  try {
+    await primeOmpCapabilityGate();
+  } catch {
+    // A failed probe reads as "off" — the legacy path stays authoritative.
+  }
+  return isOmpAgentDefinitionsEnabled();
+};
+
+/**
+ * omp definition record → sidebar/picker Agent row. The omp contract has no
+ * primary/permission/sampling fields (02 §5.3); `tools` and the storage
+ * scope ride the wire-extras extension.
+ */
+const ompDefinitionToAgent = (record: OmpAgentDefinitionRecord): AgentWithExtras => ({
+  name: record.name,
+  description: record.description || undefined,
+  prompt: record.prompt,
+  mode: record.mode === 'all' ? 'all' : 'subagent',
+  ...(record.tools.length > 0 ? { tools: record.tools } : {}),
+  ...(record.scope ? { scope: (record.scope === 'project' ? 'project' : 'user') as AgentScope } : {}),
+  ...(record.disabled !== undefined ? { disabled: record.disabled } : {}),
+  ...(record.modelOverride !== undefined ? { modelOverride: record.modelOverride } : {}),
+  ...(record.prewalkOverride !== undefined ? { prewalkOverride: record.prewalkOverride } : {}),
+  ...(record.advisorOverride !== undefined ? { advisorOverride: record.advisorOverride } : {}),
+}) as unknown as AgentWithExtras;
+/** omp mutation rejection → AgentMutationResult (reason preserved for toasts). */
+const ompRejection = (
+  result: OmpCrudMutationResult<unknown> | OmpCrudDeleteResult | undefined,
+): AgentMutationResult => {
+  console.error('[AgentsStore] omp agent-definitions mutation rejected:', result);
+  if (result && !result.ok && 'kind' in result && result.kind === 'rejected') {
+    return result.reason !== undefined ? { ok: false, reason: result.reason } : { ok: false };
+  }
+  return { ok: false };
+};
 
 /**
  * Result of an agent config mutation.
@@ -128,6 +176,8 @@ export interface AgentMutationResult {
   ok: boolean;
   requiresManualRestart?: boolean;
   restartDeferred?: boolean;
+  /** omp domain rejection code (agent-definition-exists, invalid-prompt, not-found, …) when known. */
+  reason?: string;
 }
 
 // Extended Agent type for API properties not in SDK types
@@ -138,8 +188,14 @@ export type AgentWithExtras = Agent & {
   scope?: AgentScope;
   /** Subfolder name parsed from file path, e.g. "business", "development" */
   group?: string;
+  /** omp agent-definition tool whitelist (spec 02 §5.2); undefined = all tools. */
+  tools?: string[];
+  /** omp task.* override projection (spec 02 §5.2; effective value). */
+  disabled?: boolean;
+  modelOverride?: string;
+  prewalkOverride?: string;
+  advisorOverride?: string;
 };
-
 /** Parse the subfolder group name from an agent file path.
  *  e.g. "~/.config/opencode/agents/business/ceo.md" → "business"
  *  e.g. "~/.config/opencode/agents/ceo.md"          → undefined
@@ -252,6 +308,8 @@ export interface AgentDraft {
   mode?: "primary" | "subagent" | "all";
   permission?: PermissionConfig;
   disable?: boolean;
+  /** omp agent-definition tool whitelist (spec 02 §5.2); empty = all tools. */
+  tools?: string[];
 }
 
 interface AgentsStore {
@@ -316,6 +374,25 @@ export const useAgentsStore = create<AgentsStore>()(
             set({ isLoading: true });
             const previousAgents = get().agents;
             const previousSignature = buildAgentsSignature(previousAgents);
+
+            // omp mode (02 §5.2): authoritative list comes from the
+            // agent-definitions resource. A failed fetch keeps the previous
+            // state — it is never treated as authoritative empty success.
+            if (await ompDefinitionsEnabled()) {
+              const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.list();
+              if (!result || !result.ok) {
+                set({ isLoading: false });
+                return false;
+              }
+              const ompAgents = result.data.map(ompDefinitionToAgent);
+              if (previousSignature !== buildAgentsSignature(ompAgents)) {
+                set({ agents: ompAgents, isLoading: false });
+              } else {
+                set({ isLoading: false });
+              }
+              agentsLastLoadedAt.set(cacheKey, Date.now());
+              return true;
+            }
 
             for (let attempt = 0; attempt < 3; attempt++) {
               try {
@@ -396,6 +473,28 @@ export const useAgentsStore = create<AgentsStore>()(
         },
 
         createAgent: async (config: AgentConfig) => {
+          // omp mode (02 §5.2): create writes the agent-definitions resource;
+          // unified storage happens server-side, the UI never writes files.
+          if (await ompDefinitionsEnabled()) {
+            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.create({
+              name: config.name,
+              prompt: (config.prompt ?? '').trim(),
+              ...(config.description ? { description: config.description } : {}),
+              ...(config.mode === 'all' || config.mode === 'subagent' ? { mode: config.mode } : {}),
+              ...(config.tools && config.tools.length > 0 ? { tools: config.tools } : {}),
+              ...(config.scope ? { scope: config.scope === 'project' ? 'project' : 'global' } : {}),
+            });
+            if (result?.ok) {
+              invalidateAgentsLoadCache(getConfigDirectory());
+              upsertOptimisticAgentLocal(set, get, config.name, config);
+              const loaded = await get().loadAgents();
+              if (loaded) {
+                emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
+              }
+              return { ok: true };
+            }
+            return ompRejection(result);
+          }
           try {
             console.log('[AgentsStore] Creating agent:', config.name);
 
@@ -472,6 +571,28 @@ export const useAgentsStore = create<AgentsStore>()(
         },
 
         updateAgent: async (name: string, config: Partial<AgentConfig>) => {
+          // omp mode (02 §5.2): update patches the agent-definitions resource.
+          if (await ompDefinitionsEnabled()) {
+            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.update(name, {
+              definition: {
+                ...(config.prompt != null && config.prompt.trim() ? { prompt: config.prompt } : {}),
+                ...(config.description !== undefined ? { description: config.description } : {}),
+                ...(config.mode === 'all' || config.mode === 'subagent' ? { mode: config.mode } : {}),
+                ...(config.tools !== undefined ? { tools: config.tools } : {}),
+              },
+              ...(config.scope ? { scope: config.scope === 'project' ? 'project' : 'global' } : {}),
+            });
+            if (result?.ok) {
+              invalidateAgentsLoadCache(getConfigDirectory());
+              upsertOptimisticAgentLocal(set, get, name, config);
+              const loaded = await get().loadAgents();
+              if (loaded) {
+                emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
+              }
+              return { ok: true };
+            }
+            return ompRejection(result);
+          }
           try {
             const agentConfig: Record<string, unknown> = {};
 
@@ -542,6 +663,24 @@ export const useAgentsStore = create<AgentsStore>()(
         },
 
         deleteAgent: async (name: string, scope?: AgentScope) => {
+          // omp mode (02 §5.2): delete removes the agent-definitions record.
+          // The resource is not scope-split server-side, so `scope` is unused.
+          if (await ompDefinitionsEnabled()) {
+            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.remove(name);
+            if (result?.ok) {
+              invalidateAgentsLoadCache(getConfigDirectory());
+              if (get().selectedAgentName === name) {
+                set({ selectedAgentName: null });
+              }
+              set({ agents: get().agents.filter((agent) => agent.name !== name) });
+              emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
+              return { ok: true };
+            }
+            if (result && !result.ok && 'kind' in result && result.kind === 'not-found') {
+              return { ok: false, reason: 'not-found' };
+            }
+            return ompRejection(result);
+          }
           try {
             const configDirectory = getConfigDirectory();
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';

@@ -467,13 +467,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
-    id: 'sessions.opencode-update-notifications',
-    page: 'general',
-    titleKey: 'settings.openchamber.opencodeCli.field.showUpdateNotifications',
-    keywords: ['opencode', 'cli', 'updates'],
-    isAvailable: (ctx) => !ctx.isVSCode && !ctx.isWindowsArm64,
-  },
-  {
     id: 'sessions.agent-control-tool',
     page: 'general',
     titleKey: 'settings.openchamber.tools.field.agentControlTool',
@@ -959,6 +952,19 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'integrations',
     titleKey: 'settings.integrations.thirdParty.title',
     keywords: ['plugin', 'provider', 'oauth', 'install', 'update', 'remove'],
+  },
+  {
+    id: 'engine.model-roles',
+    page: 'engine',
+    titleKey: 'settings.omp.roles.title',
+    descriptionKey: 'settings.page.engine.description',
+    keywords: ['model roles', 'default model', 'default role', 'thinking level', 'role storage', 'omp', 'engine'],
+  },
+  {
+    id: 'engine.approvals',
+    page: 'engine',
+    titleKey: 'settings.omp.approvals.title',
+    keywords: ['approval', 'approval mode', 'tool approval', 'always ask', 'yolo', 'ask tool', 'omp', 'engine'],
   },
   {
     id: 'integrations.third-party.opencode-claude',

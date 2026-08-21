@@ -93,11 +93,26 @@ export const OMP_ENDPOINTS = {
   sessionMode: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/mode`,
   sessionQueue: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/queue`,
   sessionTree: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/tree`,
+  sessionModel: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/model`,
+  sessionPlan: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/plan`,
+  sessionPlanReview: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/plan/review`,
   models: '/api/omp/models',
   dialogs: '/api/omp/dialogs',
+  dialogsLease: '/api/omp/dialogs/lease',
+  dialogsLeaseRelease: '/api/omp/dialogs/lease/release',
+  dialogRespond: (dialogID: string) => `/api/omp/dialogs/${encodeURIComponent(dialogID)}/respond`,
+  dialogPresented: (dialogID: string) => `/api/omp/dialogs/${encodeURIComponent(dialogID)}/presented`,
+  dialogAbort: (dialogID: string) => `/api/omp/dialogs/${encodeURIComponent(dialogID)}/abort`,
   settings: '/api/omp/settings',
+  agentDefinitions: '/api/omp/agent-definitions',
+  agentDefinition: (name: string) => `/api/omp/agent-definitions/${encodeURIComponent(name)}`,
+  personas: '/api/omp/personas',
+  persona: (name: string) => `/api/omp/personas/${encodeURIComponent(name)}`,
   agentRuns: '/api/omp/agent-runs',
   jobs: '/api/omp/jobs',
+  commands: '/api/omp/commands',
+  uriResolve: '/api/omp/uri/resolve',
+  uriOpen: '/api/omp/uri/open',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -309,9 +324,25 @@ const RoleMetaSchema = z.object({
   hidden: z.literal(true).optional(),
 });
 
+const ModelThinkingSchema = z.object({
+  supported: z.array(z.string()).default([]),
+  defaultLevel: z.string().nullable().default(null),
+});
+
+const ModelEntrySchema = z.object({
+  provider: z.string(),
+  id: z.string(),
+  name: z.string().optional(),
+  reasoning: z.boolean().default(false),
+  contextWindow: z.number().optional(),
+  maxTokens: z.number().optional(),
+  thinking: ModelThinkingSchema.default({ supported: [], defaultLevel: null }),
+});
+
 const ModelsSnapshotSchema = z.object({
   schemaVersion: z.string(),
   directory: z.string(),
+  models: z.array(ModelEntrySchema).default([]),
   roles: z.record(z.string(), z.union([RoleEntrySchema, z.null()])),
   roleMeta: z.record(z.string(), RoleMetaSchema),
   cycleOrder: z.array(z.string()),
@@ -325,9 +356,9 @@ const ModelsSnapshotSchema = z.object({
   }).nullable().default(null),
 });
 
-/** Per-role assignment from GET /api/omp/models; `null` = role not configured. */
-export type OmpModelRoleEntry = z.infer<typeof RoleEntrySchema>;
 export type OmpModelRoleMeta = z.infer<typeof RoleMetaSchema>;
+/** Registry model projection from GET /api/omp/models (identity + thinking). */
+export type OmpModelEntry = z.infer<typeof ModelEntrySchema>;
 /** GET /api/omp/models?directory=… payload (settings-side role truth). */
 export type OmpModelsSnapshot = z.infer<typeof ModelsSnapshotSchema>;
 
@@ -336,9 +367,25 @@ const parseModelsSnapshot = (value: unknown): OmpModelsSnapshot | null => {
   return parsed.success ? parsed.data : null;
 };
 
+/** Per-role assignment from GET /api/omp/models; `null` = role not configured. */
+export type OmpModelRoleEntry = z.infer<typeof RoleEntrySchema>;
+
+export type OmpSetSessionModelResult =
+  | { ok: true; model: string }
+  | { ok: false; unavailable: boolean; error?: string };
+
 export interface OmpModelsAPI {
   /** Roles snapshot for a directory's keyed Settings instance. */
   getModels(options: { directory: string }): Promise<OmpFetchJsonResult<OmpModelsSnapshot>>;
+  /** Session-only model switch; prompts remain model-free under modelRoles.v1.
+   * `thinkingLevel` applies an in-session thinking change (GAP-06); when the
+   * model matches the session's current model the engine only calls
+   * setThinkingLevel. */
+  setSessionModel(
+    sessionID: string,
+    model: { providerID: string; modelID: string },
+    options: { directory: string; thinkingLevel?: string },
+  ): Promise<OmpSetSessionModelResult>;
 }
 
 export const createOmpModelsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpModelsAPI => {
@@ -349,6 +396,28 @@ export const createOmpModelsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpModel
         query: { directory: options.directory },
       });
     },
+    async setSessionModel(sessionID, model, options) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.sessionModel(sessionID), {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          query: { directory: options.directory },
+          body: JSON.stringify({ model, ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}) }),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      let payload: unknown = null;
+      try { payload = await response.json(); } catch { /* status is enough */ }
+      if (!response.ok) {
+        const parsed = z.object({ error: z.string().optional() }).safeParse(payload);
+        return { ok: false, unavailable: false, ...(parsed.success && parsed.data.error ? { error: parsed.data.error } : {}) };
+      }
+      const parsed = z.object({ ok: z.literal(true), model: z.string().min(1) }).safeParse(payload);
+      return parsed.success ? parsed.data : { ok: false, unavailable: false };
+    },
   };
 };
 
@@ -358,6 +427,44 @@ const ModeConflictSchema = z.object({ conflict: z.string() });
 
 /** GET/POST /api/omp/sessions/{id}/mode snapshot (02 §5.4; `mode` is the only guaranteed field). */
 export type OmpModeSnapshot = z.infer<typeof ModeSnapshotSchema>;
+
+/** PlanApprovalDetails as the engine's preparePlanForReview shapes it (SDK plan-mode/approved-plan.ts). */
+const PlanReviewDetailsSchema = z.object({
+  planFilePath: z.string().min(1),
+  title: z.string(),
+  planExists: z.boolean(),
+});
+
+/** GET /api/omp/sessions/{id}/plan payload (02 §5.5 step 7). */
+const PlanSnapshotSchema = z.looseObject({
+  planFilePath: z.string().min(1),
+  review: PlanReviewDetailsSchema.optional(),
+});
+
+export type OmpPlanReviewDetails = z.infer<typeof PlanReviewDetailsSchema>;
+export type OmpPlanSnapshot = z.infer<typeof PlanSnapshotSchema>;
+
+/** Review choices (domain-modes PLAN_REVIEW_CHOICES; TUI overlay options 3979-3982). */
+export const OMP_PLAN_REVIEW_CHOICES = ['approve-execute', 'approve-compact', 'approve-keep', 'refine'] as const;
+export type OmpPlanReviewChoice = (typeof OMP_PLAN_REVIEW_CHOICES)[number];
+
+/** POST /api/omp/sessions/{id}/plan/review body (02 §5.5 step 5). */
+export interface OmpPlanReviewInput {
+  choice: OmpPlanReviewChoice;
+  /** Refine loop: annotation feedback text re-prompting the planning turn. */
+  feedback?: string;
+  /** In-overlay edited plan full text (approve paths). */
+  editedContent?: string;
+  /** Tier-slider role selection (01 chapter cycleOrder roles). */
+  executionRole?: string;
+}
+
+export type OmpSubmitPlanReviewResult =
+  | { ok: true; dispatched: boolean; mode: string }
+  /** 404/501: plan surface not offered (feature off / old engine / inactive plan). */
+  | { ok: false; unavailable: true }
+  /** Transport failure, malformed payload, or a rejected decision (invalid-choice, …). */
+  | { ok: false; unavailable: false; reason?: string };
 
 export type OmpSetModeResult =
   | { ok: true; snapshot: OmpModeSnapshot }
@@ -373,6 +480,18 @@ export interface OmpModesAPI {
    * so callers can tell the user which mode must be exited first.
    */
   setMode(sessionID: string, mode: string, options: { directory: string }): Promise<OmpSetModeResult>;
+  /**
+   * GET /api/omp/sessions/{id}/plan (02 §5.5 step 7): the reviewed plan file
+   * path plus the pending review, when plan mode or a review is active.
+   * `unavailable` also covers the inactive 404 — there is nothing to review.
+   */
+  getPlan(sessionID: string, options: { directory: string }): Promise<OmpFetchJsonResult<OmpPlanSnapshot>>;
+  /**
+   * POST /api/omp/sessions/{id}/plan/review (02 §5.5 step 5): settle the
+   * pending proposal. `refine` keeps the turn planning (`dispatched: false`)
+   * and re-prompts with the feedback text.
+   */
+  submitPlanReview(sessionID: string, input: OmpPlanReviewInput & { directory: string }): Promise<OmpSubmitPlanReviewResult>;
 }
 
 const parseModeSnapshot = (value: unknown): OmpModeSnapshot | null => {
@@ -449,6 +568,568 @@ export const createOmpModesAPI = (apiOptions: OmpJsonApiOptions = {}): OmpModesA
       }
       const parsed = parseModeSnapshot(value);
       return parsed === null ? { ok: false, unavailable: false } : { ok: true, snapshot: parsed };
+    },
+
+    async getPlan(sessionID, options) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.sessionPlan(sessionID), {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          query: { directory: options.directory },
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) {
+        return { ok: false, unavailable: true };
+      }
+      if (!response.ok) {
+        return { ok: false, unavailable: false };
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      const parsed = PlanSnapshotSchema.safeParse(value);
+      return parsed.success ? { ok: true, data: parsed.data } : { ok: false, unavailable: false };
+    },
+
+    async submitPlanReview(sessionID, input) {
+      const { directory, choice, feedback, editedContent, executionRole } = input;
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.sessionPlanReview(sessionID), {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          query: { directory },
+          body: JSON.stringify({
+            choice,
+            ...(feedback !== undefined ? { feedback } : {}),
+            ...(editedContent !== undefined ? { editedContent } : {}),
+            ...(executionRole !== undefined ? { executionRole } : {}),
+          }),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) {
+        return { ok: false, unavailable: true };
+      }
+      if (!response.ok) {
+        let reason: string | undefined;
+        try {
+          const parsed = z.object({ error: z.string().optional() }).safeParse(await response.json());
+          if (parsed.success && parsed.data.error) reason = parsed.data.error;
+        } catch {
+          // status is enough; the domain body is best-effort
+        }
+        return { ok: false, unavailable: false, ...(reason !== undefined ? { reason } : {}) };
+      }
+      const parsed = z.object({ dispatched: z.boolean(), mode: z.string() }).safeParse(await response.json().catch(() => null));
+      return parsed.success
+        ? { ok: true, dispatched: parsed.data.dispatched, mode: parsed.data.mode }
+        : { ok: false, unavailable: false };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Agent definitions + personas (spec 02 §5.2/§5.2a — worker-definition CRUD
+// and the OC-original persona resource; server gates each group by
+// agentDefinitions.v1 / personas.v1).
+// ---------------------------------------------------------------------------
+
+const AgentDefinitionRecordSchema = z.looseObject({
+  name: z.string().min(1),
+  /** Definition body — the worker's system prompt (markdown). */
+  prompt: z.string(),
+  tools: z.array(z.string()).default([]),
+  description: z.string().optional(),
+  /** omp worker modes; 'primary' is the deleted build/plan concept (02 §5.3). */
+  mode: z.string().optional(),
+  /** Storage layer of the definition ('global' | 'project'). */
+  scope: z.string().optional(),
+});
+
+const AgentDefinitionsListSchema = z.object({ agents: z.array(AgentDefinitionRecordSchema) });
+
+/** GET /api/omp/agent-definitions record (scoped sidecar contract, domain-modes.js). */
+export type OmpAgentDefinitionRecord = z.infer<typeof AgentDefinitionRecordSchema>;
+
+/** POST/PUT definition body (server contract: name, prompt, tools?, description?, mode?). */
+export interface OmpAgentDefinitionInput {
+  name: string;
+  prompt: string;
+  description?: string;
+  tools?: string[];
+  mode?: 'subagent' | 'all';
+}
+
+const PersonaSchema = z.looseObject({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  systemPrompt: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+});
+
+const PersonasListSchema = z.object({ personas: z.array(PersonaSchema) });
+
+/** GET /api/omp/personas record (OmpPersona, spec 02 §5.2a — no model binding). */
+export type OmpPersona = z.infer<typeof PersonaSchema>;
+
+/** POST/PUT persona body (rename rides `name` in the update body). */
+export interface OmpPersonaInput {
+  name?: string;
+  description?: string;
+  systemPrompt?: string;
+  tools?: string[];
+}
+
+/** Shared error body of the definitions/personas domains (ModeDomainError). */
+const CrudErrorSchema = z.object({
+  error: z.string().optional(),
+  message: z.string().optional(),
+  name: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+});
+
+export type OmpCrudMutationResult<T> =
+  | { ok: true; record: T }
+  /** 501, or a 404 without a domain body (old engine without the surface). */
+  | { ok: false; unavailable: true }
+  /**
+   * 400/409 the server explained: `reason` is the domain error code
+   * (invalid-prompt, agent-definition-exists, persona-exists, not-found, …)
+   * and `conflictName` the taken name on a 409 name conflict.
+   */
+  | { ok: false; unavailable: false; kind: 'rejected'; reason?: string; conflictName?: string }
+  /** Transport failure, malformed payload, or any other non-2xx. */
+  | { ok: false; unavailable: false; kind: 'error' };
+
+export type OmpCrudDeleteResult =
+  | { ok: true }
+  | { ok: false; unavailable: true }
+  | { ok: false; unavailable: false; kind: 'not-found' | 'error' };
+
+const parseCrudError = (payload: unknown): { reason?: string; conflictName?: string } | null => {
+  const parsed = CrudErrorSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  return {
+    ...(parsed.data.error !== undefined ? { reason: parsed.data.error } : {}),
+    ...(parsed.data.name !== undefined ? { conflictName: parsed.data.name } : {}),
+  };
+};
+
+const readCrudMutationResponse = async <T>(
+  response: Response,
+  parseRecord: (value: unknown) => T | null,
+): Promise<OmpCrudMutationResult<T>> => {
+  if (response.status === 501) return { ok: false, unavailable: true };
+  let payload: unknown = null;
+  try { payload = await response.json(); } catch { /* status is enough */ }
+  if (response.status === 404) {
+    // Distinguish "record missing" (domain answers {error:'not-found'}) from
+    // an old engine without the surface (no domain body).
+    const error = parseCrudError(payload);
+    return error?.reason === 'not-found'
+      ? { ok: false, unavailable: false, kind: 'rejected', reason: 'not-found' }
+      : { ok: false, unavailable: true };
+  }
+  if (response.status === 400 || response.status === 409) {
+    const error = parseCrudError(payload);
+    return error === null
+      ? { ok: false, unavailable: false, kind: 'rejected' }
+      : { ok: false, unavailable: false, kind: 'rejected', ...error };
+  }
+  if (!response.ok) return { ok: false, unavailable: false, kind: 'error' };
+  const parsed = parseRecord(payload);
+  return parsed === null ? { ok: false, unavailable: false, kind: 'error' } : { ok: true, record: parsed };
+};
+
+const readCrudDeleteResponse = async (response: Response): Promise<OmpCrudDeleteResult> => {
+  if (response.status === 501) return { ok: false, unavailable: true };
+  if (response.ok) return { ok: true };
+  if (response.status === 404) {
+    let payload: unknown = null;
+    try { payload = await response.json(); } catch { /* status is enough */ }
+    return parseCrudError(payload)?.reason === 'not-found'
+      ? { ok: false, unavailable: false, kind: 'not-found' }
+      : { ok: false, unavailable: true };
+  }
+  return { ok: false, unavailable: false, kind: 'error' };
+};
+
+export interface OmpAgentDefinitionsAPI {
+  list(): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord[]>>;
+  get(name: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord>>;
+  create(input: OmpAgentDefinitionInput & { scope?: 'global' | 'project' }): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
+  update(
+    name: string,
+    patch: { definition?: Partial<OmpAgentDefinitionInput>; renameTo?: string; scope?: 'global' | 'project' },
+  ): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
+  remove(name: string): Promise<OmpCrudDeleteResult>;
+}
+
+const parseAgentDefinitionRecord = (value: unknown): OmpAgentDefinitionRecord | null => {
+  const parsed = AgentDefinitionRecordSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export const createOmpAgentDefinitionsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAgentDefinitionsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    list: () => ompFetchJson(
+      fetchImpl,
+      OMP_ENDPOINTS.agentDefinitions,
+      (value) => {
+        const parsed = AgentDefinitionsListSchema.safeParse(value);
+        return parsed.success ? parsed.data.agents : null;
+      },
+    ),
+    get: (name) => ompFetchJson(
+      fetchImpl,
+      OMP_ENDPOINTS.agentDefinition(name),
+      parseAgentDefinitionRecord,
+    ),
+    async create(input) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.agentDefinitions, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(input.scope !== undefined ? { scope: input.scope } : {}),
+            definition: {
+              name: input.name,
+              prompt: input.prompt,
+              ...(input.description !== undefined ? { description: input.description } : {}),
+              ...(input.tools !== undefined ? { tools: input.tools } : {}),
+              ...(input.mode !== undefined ? { mode: input.mode } : {}),
+            },
+          }),
+        });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudMutationResponse(response, parseAgentDefinitionRecord);
+    },
+    async update(name, patch) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.agentDefinition(name), {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...(patch.definition !== undefined
+              ? {
+                  definition: {
+                    ...(patch.definition.name !== undefined ? { name: patch.definition.name } : {}),
+                    ...(patch.definition.prompt !== undefined ? { prompt: patch.definition.prompt } : {}),
+                    ...(patch.definition.description !== undefined ? { description: patch.definition.description } : {}),
+                    ...(patch.definition.tools !== undefined ? { tools: patch.definition.tools } : {}),
+                    ...(patch.definition.mode !== undefined ? { mode: patch.definition.mode } : {}),
+                  },
+                }
+              : {}),
+            ...(patch.renameTo !== undefined ? { renameTo: patch.renameTo } : {}),
+            ...(patch.scope !== undefined ? { scope: patch.scope } : {}),
+          }),
+        });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudMutationResponse(response, parseAgentDefinitionRecord);
+    },
+    async remove(name) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.agentDefinition(name), { method: 'DELETE' });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudDeleteResponse(response);
+    },
+  };
+};
+
+export interface OmpPersonasAPI {
+  list(): Promise<OmpFetchJsonResult<OmpPersona[]>>;
+  get(name: string): Promise<OmpFetchJsonResult<OmpPersona>>;
+  create(persona: OmpPersonaInput & { name: string }): Promise<OmpCrudMutationResult<OmpPersona>>;
+  update(name: string, persona: OmpPersonaInput): Promise<OmpCrudMutationResult<OmpPersona>>;
+  remove(name: string): Promise<OmpCrudDeleteResult>;
+}
+
+const parsePersona = (value: unknown): OmpPersona | null => {
+  const parsed = PersonaSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export const createOmpPersonasAPI = (apiOptions: OmpJsonApiOptions = {}): OmpPersonasAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  const personaBody = (persona: OmpPersonaInput) => ({
+    ...(persona.name !== undefined ? { name: persona.name } : {}),
+    ...(persona.description !== undefined ? { description: persona.description } : {}),
+    ...(persona.systemPrompt !== undefined ? { systemPrompt: persona.systemPrompt } : {}),
+    ...(persona.tools !== undefined ? { tools: persona.tools } : {}),
+  });
+  return {
+    list: () => ompFetchJson(
+      fetchImpl,
+      OMP_ENDPOINTS.personas,
+      (value) => {
+        const parsed = PersonasListSchema.safeParse(value);
+        return parsed.success ? parsed.data.personas : null;
+      },
+    ),
+    get: (name) => ompFetchJson(fetchImpl, OMP_ENDPOINTS.persona(name), parsePersona),
+    async create(persona) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.personas, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ persona: personaBody(persona) }),
+        });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudMutationResponse(response, parsePersona);
+    },
+    async update(name, persona) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.persona(name), {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ persona: personaBody(persona) }),
+        });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudMutationResponse(response, parsePersona);
+    },
+    async remove(name) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.persona(name), { method: 'DELETE' });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      return readCrudDeleteResponse(response);
+    },
+  };
+};
+// ---------------------------------------------------------------------------
+// Settings API — schema-driven engine settings proxy (spec 06 §5.2/§5.3) +
+// model-role assignment writes (spec 01 §5.3(2)/§5.5 GAP-05; role values live
+// under /api/omp/settings `modelRoles.<role>` keys).
+// ---------------------------------------------------------------------------
+
+const SettingUiSchema = z.looseObject({
+  tab: z.string().optional(),
+  group: z.string().optional(),
+  label: z.string().optional(),
+  description: z.string().optional(),
+  condition: z.string().optional(),
+  secret: z.boolean().optional(),
+  ordered: z.boolean().optional(),
+  /** Labeled enum options, or 'runtime-unresolved' when only the TUI can fill them. */
+  options: z.union([
+    z.string(),
+    z.array(z.looseObject({ value: z.string(), label: z.string().optional(), description: z.string().optional() })),
+  ]).optional(),
+});
+
+/**
+ * One SETTINGS_SCHEMA key projection from GET /api/omp/settings (06 §5.2).
+ * Parsed loosely — unknown entry fields are tolerated (schema drift), and
+ * `default`/`value` stay `unknown` because the schema spans scalars, enums,
+ * arrays, and records. Credential entries carry value/default `null` plus a
+ * `configured` boolean (R9: values never echo).
+ */
+const SettingEntrySchema = z.looseObject({
+  type: z.string(),
+  values: z.array(z.string()).nullish(),
+  default: z.unknown().optional(),
+  value: z.unknown().optional(),
+  configured: z.boolean().optional(),
+  scope: z.string().optional(),
+  editable: z.boolean().optional(),
+  credential: z.boolean().optional(),
+  writeOnly: z.boolean().optional(),
+  excluded: z.string().nullish(),
+  hidden: z.boolean().optional(),
+  ui: SettingUiSchema.optional(),
+});
+
+const SettingsTabSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  groups: z.array(z.string()).default([]),
+});
+
+const SettingsSnapshotSchema = z.looseObject({
+  schemaVersion: z.string(),
+  directory: z.string().nullish(),
+  revision: z.number().default(0),
+  tabs: z.array(SettingsTabSchema).default([]),
+  keys: z.record(z.string(), SettingEntrySchema),
+});
+
+export type OmpSettingUi = z.infer<typeof SettingUiSchema>;
+/** GET /api/omp/settings entry (06 §5.2; `modelRoles` arrives as a record view). */
+export type OmpSettingEntry = z.infer<typeof SettingEntrySchema>;
+export type OmpSettingsTab = z.infer<typeof SettingsTabSchema>;
+/** GET /api/omp/settings?directory=… payload — the schema-driven settings face. */
+export type OmpSettingsSnapshot = z.infer<typeof SettingsSnapshotSchema>;
+
+const parseSettingsSnapshot = (value: unknown): OmpSettingsSnapshot | null => {
+  const parsed = SettingsSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+/** PUT /api/omp/settings outcome (06 §5.3); failures are discriminated so the UI can surface rejected keys inline. */
+export type OmpPutSettingsResult =
+  | { ok: true; revision: number; applied: Record<string, unknown> }
+  /** 404/501: settings surface not offered (feature off / old engine). */
+  | { ok: false; unavailable: true }
+  /** 400 validation: per-key rejections carry key + reason only (R9 — never the submitted value). */
+  | { ok: false; unavailable: false; kind: 'rejected'; rejected: Array<{ key: string; reason?: string }> }
+  /** 409: config.yml was quarantined after an invalid-YAML read; the backup path is in the server logs. */
+  | { ok: false; unavailable: false; kind: 'quarantined' }
+  /** Transport failure, malformed payload, or any other non-2xx. */
+  | { ok: false; unavailable: false; kind: 'error' };
+
+export type OmpPutModelRoleResult =
+  | { ok: true; value: string | null }
+  /** 404/501: settings surface not offered (feature off / old engine). */
+  | { ok: false; unavailable: true }
+  | { ok: false; unavailable: false; rejected?: string };
+
+export interface OmpSettingsAPI {
+  /**
+   * Schema-driven settings snapshot for a directory (06 §5.2): entries per
+   * SETTINGS_SCHEMA key (credential values never echo — R9), tab/group
+   * layout projections, and the special `modelRoles` record view.
+   */
+  getSettings(options: {
+    directory: string;
+    /** Optional key filter (`?keys=` csv) — the roles editor uses it for targeted reads. */
+    keys?: string[];
+  }): Promise<OmpFetchJsonResult<OmpSettingsSnapshot>>;
+  /**
+   * Commit setting changes (06 §5.3). `scope` defaults to 'global'; role
+   * writes omit it so the server honors the directory's `modelRoleStorage`.
+   * Rejected keys surface per-key (`kind: 'rejected'`); a quarantined
+   * config.yml surfaces as `kind: 'quarantined'`.
+   */
+  putSettings(options: {
+    directory: string;
+    changes: Record<string, unknown>;
+    scope?: 'global' | 'project';
+  }): Promise<OmpPutSettingsResult>;
+  /**
+   * Assign (`value: 'provider/model[:thinking]'`) or clear (`value: null`) a
+   * model role. `scope` defaults to the directory's `modelRoleStorage`.
+   */
+  putModelRole(options: {
+    directory: string;
+    role: string;
+    value: string | null;
+    scope?: 'global' | 'project';
+  }): Promise<OmpPutModelRoleResult>;
+}
+
+export const createOmpSettingsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpSettingsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    getSettings(options) {
+      return ompFetchJson(fetchImpl, OMP_ENDPOINTS.settings, parseSettingsSnapshot, {
+        query: {
+          directory: options.directory,
+          ...(options.keys && options.keys.length > 0 ? { keys: options.keys.join(',') } : {}),
+        },
+      });
+    },
+
+    async putSettings({ directory, changes, scope }) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.settings, {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          query: { directory },
+          body: JSON.stringify({ changes, ...(scope ? { scope } : {}), directory }),
+        });
+      } catch {
+        return { ok: false, unavailable: false, kind: 'error' };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      let payload: unknown = null;
+      try { payload = await response.json(); } catch { /* status is enough */ }
+      if (response.status === 400) {
+        const parsed = z.object({
+          error: z.string().optional(),
+          rejected: z.array(z.object({ key: z.string(), reason: z.string().optional() })).optional(),
+        }).safeParse(payload);
+        return parsed.success && parsed.data.rejected && parsed.data.rejected.length > 0
+          ? { ok: false, unavailable: false, kind: 'rejected', rejected: parsed.data.rejected }
+          : { ok: false, unavailable: false, kind: 'error' };
+      }
+      if (response.status === 409) {
+        const parsed = z.object({ error: z.string().optional() }).safeParse(payload);
+        return parsed.success && parsed.data.error === 'config-quarantined'
+          ? { ok: false, unavailable: false, kind: 'quarantined' }
+          : { ok: false, unavailable: false, kind: 'error' };
+      }
+      if (!response.ok) return { ok: false, unavailable: false, kind: 'error' };
+      const parsed = z.object({
+        revision: z.number().default(0),
+        applied: z.record(z.string(), z.unknown()).default({}),
+      }).safeParse(payload);
+      return parsed.success
+        ? { ok: true, revision: parsed.data.revision, applied: parsed.data.applied }
+        : { ok: false, unavailable: false, kind: 'error' };
+    },
+    async putModelRole({ directory, role, value, scope }) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.settings, {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          query: { directory },
+          body: JSON.stringify({
+            changes: { [`modelRoles.${role}`]: value },
+            ...(scope ? { scope } : {}),
+            directory,
+          }),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      let payload: unknown = null;
+      try { payload = await response.json(); } catch { /* status is enough */ }
+      if (!response.ok) {
+        const parsed = z.object({
+          rejected: z.array(z.object({ key: z.string(), reason: z.string().optional() })).optional(),
+          error: z.string().optional(),
+        }).safeParse(payload);
+        const rejected = parsed.success
+          ? (parsed.data.rejected?.[0]?.reason ?? parsed.data.error)
+          : undefined;
+        return { ok: false, unavailable: false, ...(rejected ? { rejected } : {}) };
+      }
+      const parsed = z.object({
+        applied: z.record(z.string(), z.union([z.string(), z.null()])).default({}),
+      }).safeParse(payload);
+      if (!parsed.success) return { ok: false, unavailable: false };
+      const applied = parsed.data.applied[`modelRoles.${role}`];
+      return { ok: true, value: typeof applied === 'string' ? applied : null };
     },
   };
 };
@@ -740,6 +1421,701 @@ export const createOmpEventsAPI = (options: OmpEventsApiOptions = {}): OmpEvents
           lifecycle.abort();
         },
       };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Dialogs API (spec 03 §5.2 — approval/ask bridge: lease + respond + snapshot)
+// ---------------------------------------------------------------------------
+
+export const OMP_DIALOG_KINDS = ['approval', 'select', 'confirm', 'input', 'editor', 'ask'] as const;
+export type OmpDialogKind = (typeof OMP_DIALOG_KINDS)[number];
+
+export interface OmpApprovalDialogPayload {
+  prompt: string;
+  approvalMode?: string;
+  toolName?: string;
+  toolCallId?: string;
+  tier?: string;
+  reason?: string;
+}
+
+export interface OmpSelectDialogPayload {
+  title: string;
+  options: string[];
+}
+
+export interface OmpConfirmDialogPayload {
+  title: string;
+  message?: string;
+}
+
+export interface OmpInputDialogPayload {
+  title: string;
+  placeholder?: string;
+}
+
+export interface OmpAskOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface OmpAskQuestion {
+  id: string;
+  question: string;
+  header?: string;
+  options: OmpAskOption[];
+  multi?: boolean;
+  recommended?: string;
+}
+
+export interface OmpAskDialogPayload {
+  questions: OmpAskQuestion[];
+  timeoutMs: number;
+}
+
+/** Public OmpDialog projection (server snapshotDialog; internals never leak). */
+export type OmpPendingDialog = {
+  id: string;
+  sessionId: string;
+  createdAt: number;
+  presentedAt?: number;
+} & (
+  | { kind: 'approval'; approval: OmpApprovalDialogPayload }
+  | { kind: 'select'; select: OmpSelectDialogPayload }
+  | { kind: 'confirm'; confirm: OmpConfirmDialogPayload }
+  | { kind: 'input'; input: OmpInputDialogPayload }
+  | { kind: 'editor'; editor: OmpInputDialogPayload }
+  | { kind: 'ask'; ask: OmpAskDialogPayload }
+);
+
+const DialogBaseSchema = z.object({
+  id: z.string().min(1),
+  sessionId: z.string().min(1),
+  createdAt: z.number(),
+  presentedAt: z.number().optional(),
+  kind: z.enum(OMP_DIALOG_KINDS),
+});
+
+const ApprovalPayloadSchema = z.object({
+  prompt: z.string(),
+  approvalMode: z.string().optional(),
+  toolName: z.string().optional(),
+  toolCallId: z.string().optional(),
+  tier: z.string().optional(),
+  reason: z.string().optional(),
+});
+
+const SelectPayloadSchema = z.object({
+  title: z.string(),
+  options: z.array(z.string()),
+});
+
+const ConfirmPayloadSchema = z.object({
+  title: z.string(),
+  message: z.string().optional(),
+});
+
+const InputPayloadSchema = z.object({
+  title: z.string(),
+  placeholder: z.string().optional(),
+});
+
+const AskPayloadSchema = z.object({
+  questions: z.array(z.object({
+    id: z.string().min(1),
+    question: z.string(),
+    header: z.string().optional(),
+    options: z.array(z.object({
+      label: z.string(),
+      description: z.string().optional(),
+      preview: z.string().optional(),
+    })),
+    multi: z.boolean().optional(),
+    recommended: z.string().optional(),
+  })),
+  timeoutMs: z.number(),
+});
+
+/**
+ * Parses one dialog projection. Kind decides which payload key is required;
+ * a mismatched shape is failure (never a half-dialog), mirroring the
+ * registry's RESPOND_KINDS contract.
+ */
+export const parseOmpPendingDialog = (value: unknown): OmpPendingDialog | null => {
+  const base = DialogBaseSchema.safeParse(value);
+  if (!base.success) return null;
+  const raw = value as Record<string, unknown>;
+  switch (base.data.kind) {
+    case 'approval': {
+      const payload = ApprovalPayloadSchema.safeParse(raw.approval);
+      return payload.success ? { ...base.data, kind: 'approval', approval: payload.data } : null;
+    }
+    case 'select': {
+      const payload = SelectPayloadSchema.safeParse(raw.select);
+      return payload.success ? { ...base.data, kind: 'select', select: payload.data } : null;
+    }
+    case 'confirm': {
+      const payload = ConfirmPayloadSchema.safeParse(raw.confirm);
+      return payload.success ? { ...base.data, kind: 'confirm', confirm: payload.data } : null;
+    }
+    case 'input':
+    case 'editor': {
+      const payload = InputPayloadSchema.safeParse(raw[base.data.kind]);
+      return payload.success
+        ? { ...base.data, kind: base.data.kind, [base.data.kind]: payload.data } as OmpPendingDialog
+        : null;
+    }
+    case 'ask': {
+      const payload = AskPayloadSchema.safeParse(raw.ask);
+      return payload.success ? { ...base.data, kind: 'ask', ask: payload.data } : null;
+    }
+  }
+};
+
+const DialogsSnapshotSchema = z.object({
+  dialogs: z.array(z.unknown()),
+});
+
+/**
+ * Parses a `GET /api/omp/dialogs` payload into trusted dialog records.
+ * Unparseable entries are dropped (the server projection is the authority;
+ * a half-shape is never a dialog) — null means the whole payload was
+ * malformed, which callers treat as fetch failure, never empty success.
+ */
+export const parseOmpDialogsSnapshotPayload = (value: unknown): OmpPendingDialog[] | null => {
+  const parsed = DialogsSnapshotSchema.safeParse(value);
+  if (!parsed.success) return null;
+  const dialogs: OmpPendingDialog[] = [];
+  for (const item of parsed.data.dialogs) {
+    const dialog = parseOmpPendingDialog(item);
+    if (dialog !== null) dialogs.push(dialog);
+  }
+  return dialogs;
+};
+
+/** RespondResult union (server RESPOND_KINDS is the authority). */
+export type OmpDialogRespondResult =
+  | { kind: 'select'; value?: string }
+  | { kind: 'cancel' }
+  | { kind: 'confirm'; value: boolean }
+  | { kind: 'input'; value?: string }
+  | { kind: 'editor'; value?: string }
+  | {
+    kind: 'ask';
+    results: Array<{ id: string; selectedOptions: string[]; customInput?: string; note?: string }>;
+  }
+  | { kind: 'chat' };
+
+export type OmpDialogsSnapshotResult =
+  | { ok: true; dialogs: OmpPendingDialog[] }
+  | { ok: false; unavailable: boolean };
+
+export type OmpDialogMutationResult =
+  | { ok: true; outcome?: string }
+  | { ok: false; unavailable: boolean; status?: number; error?: string; outcome?: string };
+
+export interface OmpLeaseInfo {
+  leaseId: string;
+  expiresAt: number;
+  heartbeatIntervalMs: number;
+}
+
+export type OmpLeaseResult =
+  | { ok: true; lease: OmpLeaseInfo }
+  | { ok: false; unavailable: boolean };
+
+export interface OmpDialogsAPI {
+  getSnapshot(directory: string): Promise<OmpDialogsSnapshotResult>;
+  acquireLease(input: { directory: string; sessionId: string; clientId: string }): Promise<OmpLeaseResult>;
+  releaseLease(input: { directory: string; sessionId: string; clientId: string }): Promise<OmpDialogMutationResult>;
+  presented(directory: string, dialogId: string): Promise<{ ok: true; presentedAt: number } | { ok: false; unavailable: boolean }>;
+  respond(
+    directory: string,
+    dialogId: string,
+    result: OmpDialogRespondResult,
+    clientId?: string,
+  ): Promise<OmpDialogMutationResult>;
+  abort(directory: string, dialogId: string): Promise<OmpDialogMutationResult>;
+}
+
+export const createOmpDialogsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpDialogsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+
+  const post = async (
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<{ response?: Response; unavailable: boolean; status: number; payload: unknown }> => {
+    try {
+      const response = await fetchImpl(path, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.status === 404 || response.status === 501 || response.status === 503) {
+        return { unavailable: true, status: response.status, payload: null };
+      }
+      let payload: unknown = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      return { response, unavailable: false, status: response.status, payload };
+    } catch {
+      return { unavailable: false, status: 0, payload: null };
+    }
+  };
+
+  const mutationError = (status: number, payload: unknown): OmpDialogMutationResult => {
+    const parsed = z.object({ error: z.string().optional(), outcome: z.string().optional() }).safeParse(payload);
+    return {
+      ok: false,
+      unavailable: false,
+      status,
+      ...(parsed.success && parsed.data.error !== undefined ? { error: parsed.data.error } : {}),
+      ...(parsed.success && parsed.data.outcome !== undefined ? { outcome: parsed.data.outcome } : {}),
+    };
+  };
+
+  return {
+    async getSnapshot(directory) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.dialogs, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          query: { directory },
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) {
+        return { ok: false, unavailable: true };
+      }
+      if (!response.ok) {
+        return { ok: false, unavailable: false };
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      const dialogs = parseOmpDialogsSnapshotPayload(value);
+      return dialogs === null ? { ok: false, unavailable: false } : { ok: true, dialogs };
+    },
+
+    async acquireLease(input) {
+      const { unavailable, status, response, payload } = await post(OMP_ENDPOINTS.dialogsLease, { ...input });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return { ok: false, unavailable: false, ...(status ? { status } : {}) } as OmpLeaseResult;
+      const parsed = z.object({
+        leaseId: z.string(),
+        expiresAt: z.number(),
+        heartbeatIntervalMs: z.number(),
+      }).safeParse(payload);
+      if (!parsed.success) return { ok: false, unavailable: false };
+      return { ok: true, lease: parsed.data };
+    },
+
+    async releaseLease(input) {
+      const { unavailable, response, status, payload } = await post(OMP_ENDPOINTS.dialogsLeaseRelease, { ...input });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return mutationError(status, payload);
+      return { ok: true };
+    },
+
+    async presented(directory, dialogId) {
+      const { unavailable, response, status, payload } = await post(OMP_ENDPOINTS.dialogPresented(dialogId), { directory });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return { ok: false, unavailable: false };
+      const parsed = z.object({ presentedAt: z.number() }).safeParse(payload);
+      return parsed.success ? { ok: true, presentedAt: parsed.data.presentedAt } : { ok: false, unavailable: false };
+    },
+
+    async respond(directory, dialogId, result, clientId) {
+      const { unavailable, response, status, payload } = await post(OMP_ENDPOINTS.dialogRespond(dialogId), {
+        directory,
+        ...(clientId !== undefined ? { clientId } : {}),
+        result,
+      });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return mutationError(status, payload);
+      const parsed = z.object({ outcome: z.string().optional() }).loose().safeParse(payload);
+      return { ok: true, ...(parsed.success && parsed.data.outcome !== undefined ? { outcome: parsed.data.outcome } : {}) };
+    },
+
+    async abort(directory, dialogId) {
+      const { unavailable, response, status, payload } = await post(OMP_ENDPOINTS.dialogAbort(dialogId), { directory });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return mutationError(status, payload);
+      return { ok: true };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// URI bridge API — internal-URI resolve + token redemption (spec 04 §5.2.1-
+// §5.2.4; P1 = 'C:\Users\reamd\.omp\agent\sessions\-Documents-experiment_area-openchamber\2026-08-20T03-54-19-322Z_01a01d4e-3339-7000-b114-20d6ff429062\local' read only, session-pinned, sourcePath never returned)
+// ---------------------------------------------------------------------------
+
+/** Opaque resource token minted by resolve (04 §5.2.4; no path inside). */
+export interface OmpUriToken {
+  id: string;
+  expiresAt: number;
+}
+
+/** POST /api/omp/uri/resolve payload — InternalResource minus sourcePath, plus the token. */
+export interface OmpUriResource {
+  url: string;
+  content: string;
+  contentType: string;
+  size?: number;
+  immutable?: boolean;
+  isDirectory?: boolean;
+  notes?: string[];
+  token?: OmpUriToken;
+}
+
+/** POST /api/omp/uri/open payload — token redemption result (same content shape, no token). */
+export interface OmpUriOpenPayload {
+  url: string;
+  content: string;
+  size: number;
+  filename: string;
+  editable: boolean;
+  contentType?: string;
+  immutable?: boolean;
+}
+
+/**
+ * Failure half shared by resolve/open. Only 501 maps to `unavailable: true`
+ * (uri.v1 off / scheme not enabled — the surface is not offered). A 404 here
+ * is a legitimate user-facing resolve failure (traversal, not-found, unknown
+ * session) whose `message` is the handler's own contract text, and a 413
+ * carries the offending `size` — the viewer surfaces both inline.
+ */
+export type OmpUriFailure =
+  | { ok: false; unavailable: true }
+  | { ok: false; unavailable: false; status?: number; error?: string; message?: string; size?: number };
+
+export type OmpUriResolveResult = { ok: true; resource: OmpUriResource } | OmpUriFailure;
+export type OmpUriOpenResult = { ok: true; payload: OmpUriOpenPayload } | OmpUriFailure;
+
+const UriTokenSchema = z.object({ id: z.string().min(1), expiresAt: z.number() });
+
+const UriResourceSchema = z.looseObject({
+  url: z.string().min(1),
+  content: z.string(),
+  contentType: z.string().min(1),
+  size: z.number().optional(),
+  immutable: z.boolean().optional(),
+  isDirectory: z.boolean().optional(),
+  notes: z.array(z.string()).optional(),
+  token: UriTokenSchema.optional(),
+});
+
+const UriOpenSchema = z.looseObject({
+  url: z.string().min(1),
+  content: z.string(),
+  size: z.number(),
+  filename: z.string(),
+  editable: z.boolean(),
+  contentType: z.string().optional(),
+  immutable: z.boolean().optional(),
+});
+
+const UriErrorSchema = z.looseObject({
+  error: z.string().optional(),
+  message: z.string().optional(),
+  size: z.number().optional(),
+});
+
+const uriFailure = (status: number | undefined, payload: unknown): Extract<OmpUriFailure, { unavailable: false }> => {
+  const parsed = UriErrorSchema.safeParse(payload);
+  if (!parsed.success || (parsed.data.error === undefined && parsed.data.message === undefined && parsed.data.size === undefined)) {
+    // status 0 = transport failure (no response); nothing meaningful to attach.
+    return { ok: false, unavailable: false, ...(typeof status === 'number' && status > 0 ? { status } : {}) };
+  }
+  const { error, message, size } = parsed.data;
+  return {
+    ok: false,
+    unavailable: false,
+    ...(typeof status === 'number' && status > 0 ? { status } : {}),
+    ...(error !== undefined ? { error } : {}),
+    ...(message !== undefined ? { message } : {}),
+    ...(typeof size === 'number' ? { size } : {}),
+  };
+};
+
+export interface OmpUriAPI {
+  /**
+   * POST /api/omp/uri/resolve (04 §5.2.1): session-pinned host-side
+   * resolution. `sessionID` + `directory` are required by the endpoint —
+   * the local:// root is private to that session.
+   */
+  resolve(options: {
+    url: string;
+    sessionID: string;
+    directory: string;
+    pathOnly?: boolean;
+  }): Promise<OmpUriResolveResult>;
+  /**
+   * POST /api/omp/uri/open (04 §5.2.4): redeem a resolve-issued resource
+   * token for content. `directory` must match the issuing directory
+   * (server-side defense in depth); expired/exhausted tokens 404.
+   */
+  open(options: { token: string; directory: string }): Promise<OmpUriOpenResult>;
+}
+
+export const createOmpUriAPI = (apiOptions: OmpJsonApiOptions = {}): OmpUriAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+
+  const post = async (
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<{ response?: Response; unavailable: boolean; status: number; payload: unknown }> => {
+    try {
+      const response = await fetchImpl(path, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.status === 501) {
+        return { unavailable: true, status: response.status, payload: null };
+      }
+      let payload: unknown = null;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = null;
+      }
+      return { response, unavailable: false, status: response.status, payload };
+    } catch {
+      return { unavailable: false, status: 0, payload: null };
+    }
+  };
+
+  return {
+    async resolve({ url, sessionID, directory, pathOnly }) {
+      const { response, unavailable, status, payload } = await post(OMP_ENDPOINTS.uriResolve, {
+        u: url,
+        sessionID,
+        directory,
+        ...(pathOnly ? { pathOnly: true } : {}),
+      });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return uriFailure(status, payload);
+      const parsed = UriResourceSchema.safeParse(payload);
+      return parsed.success
+        ? { ok: true, resource: parsed.data }
+        : { ok: false, unavailable: false, status };
+    },
+
+    async open({ token, directory }) {
+      const { response, unavailable, status, payload } = await post(OMP_ENDPOINTS.uriOpen, { token, directory });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (response === undefined || !response.ok) return uriFailure(status, payload);
+      const parsed = UriOpenSchema.safeParse(payload);
+      return parsed.success
+        ? { ok: true, payload: parsed.data }
+        : { ok: false, unavailable: false, status };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Session tree API — fork-lineage snapshot (spec 04 §5.4.1; capability
+// tree.v1). The mounted GET returns the SESSION-level fork tree
+// {leafId, nodes:[{id,parentId,title,time}]}: the ancestor chain of the
+// session plus every descendant fork. Selecting a node re-pulls that
+// session's timeline through the normal session-switch machinery (navigate
+// is not exposed by the tree domain yet — selection semantics fold there).
+// ---------------------------------------------------------------------------
+
+export interface OmpSessionTreeNode {
+  id: string;
+  parentId: string | null;
+  title: string;
+  time: { created: number; updated: number };
+}
+
+/** GET /api/omp/sessions/{id}/tree payload (domain-uri.js buildSessionSubtree). */
+export interface OmpSessionTreeSnapshot {
+  leafId: string | null;
+  nodes: OmpSessionTreeNode[];
+}
+
+const SessionTreeNodeSchema = z.looseObject({
+  id: z.string().min(1),
+  parentId: z.string().nullable(),
+  title: z.string(),
+  time: z.object({ created: z.number(), updated: z.number() }),
+});
+
+const SessionTreeSnapshotSchema = z.object({
+  leafId: z.string().nullable(),
+  nodes: z.array(SessionTreeNodeSchema),
+});
+
+const parseSessionTreeSnapshot = (value: unknown): OmpSessionTreeSnapshot | null => {
+  const parsed = SessionTreeSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export interface OmpTreeAPI {
+  /**
+   * GET /api/omp/sessions/{id}/tree: the fork lineage of one session.
+   * `unavailable` = tree.v1 off / old engine (the tree dialog stays closed).
+   */
+  getSessionTree(sessionID: string, options: { directory: string }): Promise<OmpFetchJsonResult<OmpSessionTreeSnapshot>>;
+}
+
+export const createOmpTreeAPI = (apiOptions: OmpJsonApiOptions = {}): OmpTreeAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    getSessionTree(sessionID, { directory }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.sessionTree(sessionID),
+        parseSessionTreeSnapshot,
+        { query: { directory } },
+      );
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Agent runs API — directory-level subagent snapshot (spec 04 §5.5.1;
+// capability agentRuns.v1). Rows are `sessionID::agentId` keyed projections
+// of every live session's private AgentRegistry (parked/historical included;
+// never any absolute paths).
+// ---------------------------------------------------------------------------
+
+export const OMP_AGENT_RUN_STATUSES = ['running', 'idle', 'parked', 'aborted', 'historical'] as const;
+export type OmpAgentRunStatus = (typeof OMP_AGENT_RUN_STATUSES)[number];
+
+/** GET /api/omp/agent-runs row (domain-uri.js projectAgentRun). */
+export interface OmpAgentRunRecord {
+  key: string;
+  sessionID: string;
+  directory: string;
+  agentId: string;
+  displayName: string;
+  status: OmpAgentRunStatus;
+  createdAt: number;
+  lastActivity: number;
+  activity?: unknown;
+}
+
+export interface OmpAgentRunsSnapshot {
+  agentRuns: OmpAgentRunRecord[];
+  generatedAt: number;
+  revision: number;
+}
+
+const AgentRunRecordSchema = z.looseObject({
+  key: z.string().min(1),
+  sessionID: z.string().min(1),
+  directory: z.string(),
+  agentId: z.string().min(1),
+  displayName: z.string(),
+  status: z.enum(OMP_AGENT_RUN_STATUSES),
+  createdAt: z.number(),
+  lastActivity: z.number(),
+  activity: z.unknown().optional(),
+});
+
+const AgentRunsSnapshotSchema = z.object({
+  agentRuns: z.array(AgentRunRecordSchema),
+  generatedAt: z.number(),
+  revision: z.number(),
+});
+
+const parseAgentRunsSnapshot = (value: unknown): OmpAgentRunsSnapshot | null => {
+  const parsed = AgentRunsSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export interface OmpAgentRunsAPI {
+  /**
+   * GET /api/omp/agent-runs?directory=… — one row per sessionID::agentId.
+   * `unavailable` = agentRuns.v1 off / old engine (legacy child-session list).
+   */
+  list(options: { directory: string }): Promise<OmpFetchJsonResult<OmpAgentRunsSnapshot>>;
+}
+
+export const createOmpAgentRunsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAgentRunsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    list({ directory }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.agentRuns,
+        parseAgentRunsSnapshot,
+        { query: { directory } },
+      );
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Commands API — omp slash-command discovery for the three-layer pipeline
+// (spec 08 §5.4; capability commands.v1). Tier 'client-builtin' rows are the
+// engine's reserved names (client-side semantics); 'engine' rows expand
+// inside a materialized session when sent through the command channel.
+// ---------------------------------------------------------------------------
+
+export const OMP_COMMAND_TIERS = ['client-builtin', 'engine'] as const;
+export type OmpCommandTier = (typeof OMP_COMMAND_TIERS)[number];
+
+export const OMP_COMMAND_SOURCES = ['builtin', 'skill', 'extension', 'custom', 'mcp_prompt', 'file'] as const;
+export type OmpCommandSource = (typeof OMP_COMMAND_SOURCES)[number];
+
+/** GET /api/omp/commands row (domain-commands.js projectOmpCommand). */
+export interface OmpCommandRecord {
+  name: string;
+  description?: string;
+  tier: OmpCommandTier;
+  source: OmpCommandSource;
+  aliases?: string[];
+  argumentHint?: string;
+}
+
+const CommandRecordSchema = z.looseObject({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  tier: z.enum(OMP_COMMAND_TIERS),
+  source: z.enum(OMP_COMMAND_SOURCES),
+  aliases: z.array(z.string()).optional(),
+  argumentHint: z.string().optional(),
+});
+
+export interface OmpCommandsAPI {
+  /**
+   * GET /api/omp/commands?directory=… — the omp command list for that
+   * directory. `unavailable` = commands.v1 off / old engine (callers keep
+   * the legacy skills + OC-commands resolution).
+   */
+  getCommands(options: { directory: string }): Promise<OmpFetchJsonResult<OmpCommandRecord[]>>;
+}
+
+export const createOmpCommandsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpCommandsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    getCommands({ directory }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.commands,
+        parseArrayPayload((value) => {
+          const parsed = CommandRecordSchema.safeParse(value);
+          return parsed.success ? parsed.data : null;
+        }),
+        { query: { directory } },
+      );
     },
   };
 };

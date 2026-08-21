@@ -1,6 +1,11 @@
 ## [Unreleased]
 - Engine: the extension now consumes omp's own product surface — model roles replace the single default-model pick, per-turn token usage, cache-miss markers, compaction dividers, and retry banners match the terminal client, and engine approval/ask dialogs reach the webview through a presence-based bridge. The event stream for this runs over a new streaming endpoint that the extension's bridge now proxies correctly (it previously would have buffered it forever).
 - Chat: retried turns mark the superseded attempt with a badge and recovery notes instead of leaving an unmarked ghost, and engine notices appear as toasts.
+- Chat: the model menu follows omp model roles — role chips with resolved models and thinking levels, "Set as role" on model rows, and a per-session thinking-level selector; model picks are session-scoped and new chats follow the default role.
+- Settings: the Engine Settings page edits the omp engine's own configuration with typed controls, masked credentials, per-key validation, and an Approvals section; the Defaults page becomes a model-roles editor and can import an old default model as the default role (never overwriting an existing one).
+- Chat: `/tree` shows session forks and loads a branch's timeline; `/undo` rewinds before your last message and refills the composer; engine commands list in the slash menu with an override badge, and `/troubleshoot` takes over when the engine owns `/debug`.
+- Chat: `local://` links in transcripts open an in-app viewer instead of rendering as plain text.
+
 
 - Chat: fixed user messages disappearing after a reload — prompts are now persisted with their text and attachments instead of an empty body.
 - Chat: sessions started from the app generate titles again, following the TUI's semantics (attempted during the first turn, retried on later messages).

@@ -18,12 +18,14 @@ import type { AttachedFile, SessionContextUsage, SessionWorktreeAttachment } fro
 import type { WorktreeMetadata } from "@/types/worktree"
 import { opencodeClient } from "@/lib/opencode/client"
 import { runtimeFetch } from "@/lib/runtime-fetch"
+import { resolveOmpDefaults } from "@/lib/omp-defaults"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { useProjectsStore } from "@/stores/useProjectsStore"
 import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from "@/stores/useGlobalSessionsStore"
 import { useDirectoryStore } from "@/stores/useDirectoryStore"
 import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { useCommandsStore } from "@/stores/useCommandsStore"
+import { useOmpCommandsStore } from "@/stores/useOmpCommandsStore"
 import { useSkillsStore } from "@/stores/useSkillsStore"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
 import { markPendingUserSendAnimation } from "@/lib/userSendAnimation"
@@ -84,6 +86,10 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { clearLastActiveSession, persistLastActiveSession, readLastActiveSession } from "./last-session-cache"
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
+import { createOmpDialogsAPI, type OmpDialogsAPI } from "@/lib/api/omp"
+import { isOmpFeatureEnabled, primeOmpCapabilityGate, type OmpCapabilityGateResult } from "@/lib/omp/capabilityGate"
+import { getOmpDialogClientId } from "./omp-dialog-lease"
+
 
 export type { AttachedFile }
 
@@ -115,17 +121,13 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
   return argumentsText ? `${command.template}\n\n${argumentsText}` : command.template
 }
 
-// ---------------------------------------------------------------------------
-// Send routing — shell mode, slash commands, or normal prompt
-// ---------------------------------------------------------------------------
-
 export function routeMessage(params: {
   runtimeKey?: string
   sessionId: string
   directory?: string | null
   content: string
-  providerID: string
-  modelID: string
+  providerID?: string
+  modelID?: string
   agent?: string
   agentMentionName?: string
   variant?: string
@@ -160,9 +162,13 @@ export function routeMessage(params: {
     // hydrated at bootstrap. Consult the live skills store so a skill selected
     // from the slash menu is invoked via session.command (injecting its
     // content) instead of being sent as a literal "/name" message (#1605).
+    // Three-layer pipeline (08 §5.4): engine-tier omp commands (file/custom/
+    // skill rows from GET /api/omp/commands) also route through the command
+    // channel — the engine expands them when the session materializes.
     const isCommand = syncCommands.find((c) => c.name === cmdName)
       || storeCommands.find((c) => c.name === cmdName)
       || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
+      || useOmpCommandsStore.getState().isEngineCommand(cmdName, requestDirectory ?? null)
 
     if (isCommand) {
       return optimisticSend({
@@ -333,8 +339,8 @@ export type SessionUIState = {
   // Actions — SDK-calling operations (read domain data from sync-refs)
   sendMessage: (
     content: string,
-    providerID: string,
-    modelID: string,
+    providerID?: string,
+    modelID?: string,
     agent?: string,
     attachments?: AttachedFile[],
     agentMentionName?: string,
@@ -581,6 +587,38 @@ type MaterializedDraftSession = {
   syntheticParts?: SyntheticContextPart[]
 }
 
+const draftDialogsApi = createOmpDialogsAPI()
+
+type FirstTurnDialogLeaseDeps = {
+  api?: Pick<OmpDialogsAPI, 'acquireLease'>
+  primeCapabilities?: () => Promise<OmpCapabilityGateResult>
+  getClientId?: () => string
+}
+
+/**
+ * A new chat can submit its first turn before OmpDialogLayer commits. When
+ * dialogs.v1 is active, acquire the same per-page holder the mounted layer
+ * will heartbeat before sending. The server acquire is idempotent by
+ * (directory, sessionId, clientId), so the layer safely takes over.
+ */
+export const acquireFirstTurnDialogLease = async (
+  sessionId: string,
+  directory: string | null,
+  deps: FirstTurnDialogLeaseDeps = {},
+): Promise<void> => {
+  if (!directory) return
+  const gate = await (deps.primeCapabilities ?? primeOmpCapabilityGate)()
+  if (gate.capabilities?.features?.['dialogs.v1'] !== true) return
+  const outcome = await (deps.api ?? draftDialogsApi).acquireLease({
+    directory,
+    sessionId,
+    clientId: (deps.getClientId ?? getOmpDialogClientId)(),
+  })
+  if (!outcome.ok && !outcome.unavailable) {
+    throw new Error('Failed to attach the interactive dialog surface for the new session.')
+  }
+}
+
 const resolveProjectRefForWorktreeDirectory = (directory: string | null, projectId?: string | null): { id: string; path: string } | null => {
   const projectsState = useProjectsStore.getState()
   if (projectId) {
@@ -697,8 +735,8 @@ const recoverStaleDraftDirectory = async (openedDraft: NewSessionDraftState): Pr
 }
 
 export async function materializeOpenDraftSession(selection: {
-  providerID: string
-  modelID: string
+  providerID?: string
+  modelID?: string
   agent?: string
   variant?: string
 }, draftOverride?: NewSessionDraftState): Promise<MaterializedDraftSession | null> {
@@ -742,9 +780,11 @@ export async function materializeOpenDraftSession(selection: {
 
   const effectiveDraftAgent = trimmedAgent ?? configState.currentAgentName
 
-  useSelectionStore.getState().saveSessionModelSelection(created.id, selection.providerID, selection.modelID)
+  if (selection.providerID && selection.modelID) {
+    useSelectionStore.getState().saveSessionModelSelection(created.id, selection.providerID, selection.modelID)
+  }
 
-  if (effectiveDraftAgent) {
+  if (effectiveDraftAgent && selection.providerID && selection.modelID) {
     useSelectionStore.getState().saveSessionAgentSelection(created.id, effectiveDraftAgent)
     useSelectionStore.getState().saveAgentModelForSession(created.id, effectiveDraftAgent, selection.providerID, selection.modelID)
     useSelectionStore.getState().saveAgentModelVariantForSession(created.id, effectiveDraftAgent, selection.providerID, selection.modelID, selection.variant)
@@ -1048,9 +1088,13 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // the project's config instead so the default cascade matches app startup, then re-apply it
     // (a fresh draft must start from defaults, not inherit the previous session's selection).
     const configDirectory = normalizePath(selectedProject?.path ?? null) ?? directory
-    void activateConfigForDirectory(configDirectory).then(() => {
+    void activateConfigForDirectory(configDirectory).then(async () => {
+      const ompDefaults = await resolveOmpDefaults(configDirectory)
       useConfigStore.getState().applyDefaultModelAgentSelection({
         projectDefaultModel: selectedProject?.defaultModel,
+        ...(ompDefaults.modelRolesEnabled && ompDefaults.model
+          ? { ompDefaultModel: { providerId: ompDefaults.model.providerID, modelId: ompDefaults.model.modelID } }
+          : {}),
       })
     })
 
@@ -1295,8 +1339,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // a failed metadata patch must not fail the send.
   sendMessage: async (
     content: string,
-    providerID: string,
-    modelID: string,
+    providerID?: string,
+    modelID?: string,
     agent?: string,
     attachments?: AttachedFile[],
     agentMentionName?: string,
@@ -1395,6 +1439,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }))
 
       await applyArmedGoal(createdDraftSession.sessionId, createdDraftSession.directory)
+      await acquireFirstTurnDialogLease(createdDraftSession.sessionId, createdDraftSession.directory)
       await routeMessage({
         sessionId: createdDraftSession.sessionId,
         directory: createdDraftSession.directory,
@@ -1429,11 +1474,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const configAgentName = useConfigStore.getState().currentAgentName
     const effectiveAgent = trimmedAgent || sessionAgentSelection || configAgentName || undefined
 
-    if (targetSessionId) {
+    if (targetSessionId && providerID && modelID) {
       useSelectionStore.getState().saveSessionModelSelection(targetSessionId, providerID, modelID)
     }
 
-    if (targetSessionId && effectiveAgent) {
+    if (targetSessionId && effectiveAgent && providerID && modelID) {
       useSelectionStore.getState().saveSessionAgentSelection(targetSessionId, effectiveAgent)
       useSelectionStore.getState().saveAgentModelForSession(targetSessionId, effectiveAgent, providerID, modelID)
       useSelectionStore.getState().saveAgentModelVariantForSession(targetSessionId, effectiveAgent, providerID, modelID, variant)
@@ -1596,7 +1641,27 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
       : "[No text]"
 
-    // revertToMessage handles the redo stack push internally
+    // omp tree semantics (spec 04 §5.4.5 GAP-06): undo drops the target user
+    // message entirely — the revert marker lands on the message before it
+    // (leaf parent) and the composer is prefilled with that message's text.
+    // The wire revert API is the transport either way (engine revert is
+    // manager.branch, a tree primitive); the first-message edge has no
+    // preceding message to land on, so it keeps the legacy marker.
+    if (isOmpFeatureEnabled("tree.v1")) {
+      const targetIndex = messages.findIndex((m) => m.id === targetMessage.id)
+      const preceding = targetIndex > 0 ? messages[targetIndex - 1] : undefined
+      if (preceding && textPart?.text) {
+        await get().revertToMessage(sessionId, preceding.id)
+        useInputStore.getState().setPendingInputText(String(textPart.text), "replace")
+        const { toast } = await import("sonner")
+        const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
+        const { dictionary } = useI18nStore.getState()
+        toast.success(formatMessage(dictionary, "chat.revert.toast.undoPrefilled"))
+        return
+      }
+    }
+
+    // Legacy marker: the user message stays the last retained message.
     await get().revertToMessage(sessionId, targetMessage.id)
 
     const { toast } = await import("sonner")

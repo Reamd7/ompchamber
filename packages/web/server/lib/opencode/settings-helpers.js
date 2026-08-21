@@ -502,9 +502,6 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.inputSpellcheckEnabled === 'boolean') {
       result.inputSpellcheckEnabled = candidate.inputSpellcheckEnabled;
     }
-    if (typeof candidate.showOpenCodeUpdateNotifications === 'boolean') {
-      result.showOpenCodeUpdateNotifications = candidate.showOpenCodeUpdateNotifications;
-    }
     if (typeof candidate.agentWebToolEnabled === 'boolean') {
       result.agentWebToolEnabled = candidate.agentWebToolEnabled;
     }
@@ -513,10 +510,6 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.optimizeSystemPrompt === 'boolean') {
       result.optimizeSystemPrompt = candidate.optimizeSystemPrompt;
-    }
-    if (typeof candidate.openCodeUpdateToastDismissedVersion === 'string') {
-      const version = candidate.openCodeUpdateToastDismissedVersion.trim();
-      result.openCodeUpdateToastDismissedVersion = version.slice(0, VERSION_STRING_MAX_LENGTH);
     }
     if (typeof candidate.showToolFileIcons === 'boolean') {
       result.showToolFileIcons = candidate.showToolFileIcons;

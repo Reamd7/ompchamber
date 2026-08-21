@@ -20,8 +20,11 @@ export type ScheduledTask = {
   };
   execution: {
     prompt: string;
-    providerID: string;
-    modelID: string;
+    /** Explicit model pin (legacy contract). Absent when modelRole is
+     *  'default' — the task then follows the engine's default model role. */
+    providerID?: string;
+    modelID?: string;
+    modelRole?: 'default';
     variant?: string;
     agent?: string;
     goalEnabled?: boolean;

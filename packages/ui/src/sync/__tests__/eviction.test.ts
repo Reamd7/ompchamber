@@ -1,10 +1,13 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import type { Message, Part, PermissionRequest, QuestionRequest } from '@/lib/opencode/wire'
 import {
   canDisposeDirectory,
+  hasBlockingWorkForDirectory,
   hasPendingBlockingRequests,
   pickDirectoriesToEvict,
 } from "../eviction"
+import { useOmpDialogStore } from "../useOmpDialogStore"
+import type { OmpPendingDialog } from "@/lib/api/omp"
 import { dropSessionCaches, getProtectedSessionCacheIds, pickSessionCacheEvictions } from "../session-cache"
 import { INITIAL_STATE, type DirState, type State } from "../types"
 
@@ -40,6 +43,26 @@ function buildPermission(overrides: Partial<PermissionRequest> = {}): Permission
   } as PermissionRequest
 }
 
+function buildOmpDialog(overrides: Partial<OmpPendingDialog> = {}): OmpPendingDialog {
+  return {
+    id: "dlg_1",
+    sessionId: "ses_1",
+    createdAt: 1000,
+    kind: "approval",
+    approval: { prompt: "Run bash?" },
+    ...overrides,
+  } as OmpPendingDialog
+}
+
+function seedOmpDialogs(directory: string, dialogs: OmpPendingDialog[]): void {
+  useOmpDialogStore.setState((state) => ({
+    directories: {
+      ...state.directories,
+      [directory]: { dialogs: Object.fromEntries(dialogs.map((d) => [d.id, d])), ui: {}, tombstones: {} },
+    },
+  }))
+}
+
 describe("hasPendingBlockingRequests", () => {
   test("returns false on undefined or empty state", () => {
     expect(hasPendingBlockingRequests(undefined)).toBe(false)
@@ -59,6 +82,56 @@ describe("hasPendingBlockingRequests", () => {
   test("treats empty arrays under a session key as no pending work", () => {
     const state = buildState({ question: { ses_a: [] }, permission: { ses_b: [] } })
     expect(hasPendingBlockingRequests(state)).toBe(false)
+  })
+})
+
+describe("hasBlockingWorkForDirectory (omp dialog guard, spec 03 §5.6.4)", () => {
+  beforeEach(() => {
+    useOmpDialogStore.setState({ directories: {} })
+  })
+
+  test("blocks a directory whose only pending work is an omp dialog", () => {
+    seedOmpDialogs("/repo-omp", [buildOmpDialog()])
+    expect(hasBlockingWorkForDirectory("/repo-omp", buildState())).toBe(true)
+    expect(hasBlockingWorkForDirectory("/repo-clean", buildState())).toBe(false)
+  })
+
+  test("does not evict an idle directory that only has a pending omp dialog", () => {
+    seedOmpDialogs("/idle-with-dialog", [buildOmpDialog()])
+    const state = new Map<string, DirState>([
+      ["/idle-with-dialog", { lastAccessAt: 0 }],
+      ["/idle-empty", { lastAccessAt: 0 }],
+    ])
+    const list = pickDirectoriesToEvict({
+      stores: ["/idle-with-dialog", "/idle-empty"],
+      state,
+      pins: new Set(),
+      max: 30,
+      ttl: 1000,
+      now: DAY_MS,
+      hasPendingBlockingRequests: (dir) => hasBlockingWorkForDirectory(dir, undefined),
+    })
+    expect(list).toEqual(["/idle-empty"])
+  })
+
+  test("refuses disposal while an omp dialog is pending", () => {
+    seedOmpDialogs("/repo-omp", [buildOmpDialog()])
+    expect(canDisposeDirectory({
+      directory: "/repo-omp",
+      hasStore: true,
+      pinned: false,
+      booting: false,
+      loadingSessions: false,
+      hasPendingBlockingRequests: hasBlockingWorkForDirectory("/repo-omp", buildState()),
+    })).toBe(false)
+    expect(canDisposeDirectory({
+      directory: "/repo-clean",
+      hasStore: true,
+      pinned: false,
+      booting: false,
+      loadingSessions: false,
+      hasPendingBlockingRequests: hasBlockingWorkForDirectory("/repo-clean", buildState()),
+    })).toBe(true)
   })
 })
 

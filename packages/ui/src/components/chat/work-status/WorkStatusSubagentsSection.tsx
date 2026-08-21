@@ -5,37 +5,79 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import {
+  useOmpAgentRunsForDirectory,
+  useOmpAgentRunsRevision,
+  useOmpAgentRunsStore,
+} from '@/stores/useOmpAgentRunsStore';
+import { useOmpSessionStore } from '@/sync/useOmpSessionStore';
 import { WorkStatusCollapsibleSection, WorkStatusRow, WorkStatusValue } from './WorkStatusPrimitives';
 import { useReportWorkStatusPresence } from './presenceContext';
+import { useOmpPendingDialogSessions } from '@/sync/useOmpDialogStore';
+import type { OmpAgentRunRecord } from '@/lib/api/omp';
 import type { State } from '@/sync/types';
 
 type Props = {
   sessionId: string | null;
   directory: string | null;
 };
-
 const SECTION_ID = 'subagents';
 
 /**
- * Running subagents and, more importantly, their blockers: a permission request
- * raised by a child session has no representation in the transcript, so this
- * panel is the only place it becomes visible.
+ * Running subagents and, more importantly, their blockers: a dialog raised by
+ * a child session has no representation in the transcript, so this panel is
+ * the only place it becomes visible. Pending omp dialogs are the primary
+ * blocker signal (spec 03 §5.6.4); the legacy permission/question records
+ * below stay as a fallback until the P3 protocol removal.
  */
 export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directory }) => {
   const { t } = useI18n();
   const isMobile = useUIStore((state) => state.isMobile);
 
+  // omp agent-runs source (spec 08 GAP-04 → 04 §5.5.1): one row per
+  // sessionID::agentId under agentRuns.v1; legacy child-session rows below
+  // stay the exact pre-capability behavior when the key is off/unsettled.
+  const agentRunsEnabled = useOmpFeatureEnabled('agentRuns.v1');
+  const agentRuns = useOmpAgentRunsForDirectory(directory);
+  const snapshotRevision = useOmpAgentRunsRevision(directory);
+  const loadAgentRuns = useOmpAgentRunsStore((s) => s.load);
+  // The event pipeline's agentsRevision is monotonic per directory; a jump
+  // past our snapshot revision means the snapshot is stale → forced refetch.
+  const eventRevision = useOmpSessionStore(
+    React.useCallback(
+      (state) => (directory ? state.directories[directory]?.domains.agentsRevision : undefined),
+      [directory],
+    ),
+  );
+  React.useEffect(() => {
+    void loadAgentRuns(directory, {
+      force: eventRevision !== undefined && snapshotRevision !== undefined && eventRevision > snapshotRevision,
+    });
+  }, [loadAgentRuns, directory, eventRevision, snapshotRevision]);
+
+  const runs = React.useMemo(
+    () => (agentRunsEnabled && sessionId && agentRuns
+      ? agentRuns.filter((row: OmpAgentRunRecord) => row.sessionID === sessionId && row.agentId !== 'Main')
+      : []),
+    [agentRunsEnabled, agentRuns, sessionId],
+  );
+
   const liveSessions = useAllLiveSessions();
   const statuses = useAllSessionStatuses();
   const children = React.useMemo(
-    () => (sessionId ? liveSessions.filter((candidate) => candidate.parentID === sessionId) : []),
-    [liveSessions, sessionId],
+    () => (sessionId && !agentRunsEnabled ? liveSessions.filter((candidate) => candidate.parentID === sessionId) : []),
+    [liveSessions, sessionId, agentRunsEnabled],
   );
 
   // One subscription covers every child: per-session hooks would multiply
   // store subscriptions by the number of subagents.
   const permissions = useDirectorySync(React.useCallback((state: State) => state.permission, []));
   const questions = useDirectorySync(React.useCallback((state: State) => state.question, []));
+
+  // Authoritative blocker signal (spec 03 §5.6.4): one subscription covers
+  // every child's pending omp dialog count for this directory.
+  const ompDialogCounts = useOmpPendingDialogSessions(directory ?? '');
 
   const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
@@ -68,7 +110,45 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     });
   }, [directory, isMobile, openContextPanelTab, setCurrentSession]);
 
-  useReportWorkStatusPresence('subagents', children.length > 0);
+  useReportWorkStatusPresence('subagents', children.length > 0 || runs.length > 0);
+
+  if (agentRunsEnabled) {
+    if (runs.length === 0) return null;
+    const busyRuns = runs.filter((row) => row.status === 'running').length;
+    return (
+      <WorkStatusCollapsibleSection
+        id={SECTION_ID}
+        title={t('chat.workStatus.section.subagents')}
+        icon="ai-agent"
+        defaultExpanded
+        summary={busyRuns > 0 ? `${busyRuns}/${runs.length}` : runs.length}
+      >
+        <div className="max-h-56 overflow-y-auto">
+          {runs.map((row) => {
+            const label = row.displayName?.trim() || row.agentId;
+            const ompBlocked = (ompDialogCounts.get(row.sessionID) ?? 0) > 0;
+            return (
+              <WorkStatusRow
+                key={row.key}
+                label={label}
+                value={ompBlocked && row.status === 'running' ? (
+                  <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
+                ) : row.status === 'running' ? (
+                  <WorkStatusValue tone="info">{t('chat.workStatus.subagent.working')}</WorkStatusValue>
+                ) : row.status === 'parked' ? (
+                  <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.parked')}</WorkStatusValue>
+                ) : row.status === 'aborted' ? (
+                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.aborted')}</WorkStatusValue>
+                ) : (
+                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.done')}</WorkStatusValue>
+                )}
+              />
+            );
+          })}
+        </div>
+      </WorkStatusCollapsibleSection>
+    );
+  }
 
   if (children.length === 0) return null;
 
@@ -84,6 +164,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     >
       <div className="max-h-56 overflow-y-auto">
         {children.map((child) => {
+          const ompBlocked = (ompDialogCounts.get(child.id) ?? 0) > 0;
           const blocked = (permissions[child.id]?.length ?? 0) > 0;
           const asked = (questions[child.id]?.length ?? 0) > 0;
           const busy = statuses[child.id]?.type === 'busy';
@@ -94,7 +175,9 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
               onClick={directory ? () => openChildSession(child.id, label) : undefined}
               ariaLabel={t('chat.workStatus.action.openSubagent', { name: label })}
               label={label}
-              value={blocked ? (
+              value={ompBlocked ? (
+                <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
+              ) : blocked ? (
                 <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.needsPermission')}</WorkStatusValue>
               ) : asked ? (
                 <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.askedQuestion')}</WorkStatusValue>

@@ -24,7 +24,8 @@
  * land later and subscribe through the store.
  */
 
-import type { OmpEventEnvelope } from '@/lib/api/omp';
+import type { OmpEventEnvelope, OmpPendingDialog } from '@/lib/api/omp';
+import { parseOmpPendingDialog } from '@/lib/api/omp';
 import { z } from 'zod';
 import { syncDebug } from './debug';
 
@@ -111,6 +112,14 @@ const ModeChangedPayload = z.object({
 const GoalUpdatedPayload = z.object({
   goal: z.unknown().optional(),
   state: z.string().optional(),
+});
+
+const PlanReviewRequestedPayload = z.object({
+  details: z.object({
+    planFilePath: nonEmptyString,
+    title: z.string(),
+    planExists: z.boolean(),
+  }).nullable(),
 });
 
 const ThinkingChangedPayload = z.object({
@@ -210,6 +219,16 @@ export interface OmpModeState {
   updatedAt: number;
 }
 
+/** Pending plan review (omp.plan.review_requested) — 02 §5.5 step 3. */
+export interface OmpPlanReviewState {
+  details: {
+    planFilePath: string;
+    title: string;
+    planExists: boolean;
+  };
+  requestedAt: number;
+}
+
 export interface OmpGoalState {
   goal?: unknown;
   state?: string;
@@ -258,6 +277,8 @@ export interface OmpDirectoryState {
   fallback: Record<string, OmpFallbackState>;
   mode: Record<string, OmpModeState>;
   goal: Record<string, OmpGoalState>;
+  /** Pending plan review per session (omp.plan.review_requested, 02 §5.5). */
+  planReview: Record<string, OmpPlanReviewState>;
   thinking: Record<string, OmpThinkingState>;
   /** Terminal retry failure per session (omp.retry.ended success=false). */
   retryTerminal: Record<string, { attempt: number; finalError?: string; at: number }>;
@@ -279,6 +300,7 @@ export const createEmptyOmpDirectoryState = (): OmpDirectoryState => ({
   fallback: {},
   mode: {},
   goal: {},
+  planReview: {},
   thinking: {},
   retryTerminal: {},
   awaitingAsync: {},
@@ -299,7 +321,9 @@ const MAX_TELEMETRY_TURNS_PER_SESSION = 200;
 
 export type OmpEventEffect =
   | { kind: 'notice'; level: 'info' | 'warning' | 'error'; message: string; source?: string }
-  | { kind: 'settings-revision'; revision: number; keys: string[]; origin?: string };
+  | { kind: 'settings-revision'; revision: number; keys: string[]; origin?: string }
+  | { kind: 'dialog-requested'; dialog: OmpPendingDialog }
+  | { kind: 'dialog-settled'; dialogId: string; sessionId: string; outcome: string };
 
 export interface OmpReducerOutcome {
   /** Whether `draft` mutated (store commits only on true). */
@@ -546,16 +570,46 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = ModeChangedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const existing = draft.mode[sessionID];
-      if (existing && existing.mode === payload.data.mode && existing.data === payload.data.data) {
+      const sameMode = existing !== undefined
+        && existing.mode === payload.data.mode
+        && existing.data === payload.data.data;
+      if (sameMode && draft.planReview[sessionID] === undefined) {
         return NO_CHANGE;
       }
-      draft.mode[sessionID] = {
-        mode: payload.data.mode,
-        ...(payload.data.data !== undefined ? { data: payload.data.data } : {}),
-        updatedAt: envelope.createdAt,
+      // Leaving plan mode settles/clears the review bridge (domain-modes
+      // exitMode → bridge.clear) — a pending overlay is no longer actionable.
+      if (payload.data.mode !== 'plan' && payload.data.mode !== 'plan_paused') {
+        delete draft.planReview[sessionID];
+      }
+      if (!sameMode) {
+        draft.mode[sessionID] = {
+          mode: payload.data.mode,
+          ...(payload.data.data !== undefined ? { data: payload.data.data } : {}),
+          updatedAt: envelope.createdAt,
+        };
+      }
+      return { changed: true, effects };
+    }
+
+    case 'omp.plan.review_requested': {
+      if (!sessionID) return drop(envelope);
+      const payload = PlanReviewRequestedPayload.safeParse(envelope.payload);
+      if (!payload.success) return drop(envelope);
+      draft.domains.lastEventId = envelope.id;
+      // A newer proposal supersedes any pending one (bridge SUPERSEDED_RESULT
+      // settles the older propose); details:null carries no review to show.
+      if (payload.data.details === null) {
+        if (draft.planReview[sessionID] === undefined) return NO_CHANGE;
+        delete draft.planReview[sessionID];
+        return { changed: true, effects };
+      }
+      draft.planReview[sessionID] = {
+        details: payload.data.details,
+        requestedAt: envelope.createdAt,
       };
       return { changed: true, effects };
     }
+
 
     case 'omp.goal.updated': {
       if (!sessionID) return drop(envelope);
@@ -697,12 +751,30 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       return { changed: true, effects };
     }
 
+    case 'omp.dialog.requested': {
+      const payloadRaw = envelope.payload as { dialog?: unknown } | null;
+      const dialog = parseOmpPendingDialog(payloadRaw?.dialog);
+      if (dialog === null) return drop(envelope);
+      draft.domains.lastEventId = envelope.id;
+      effects.push({ kind: 'dialog-requested', dialog });
+      return { changed: true, effects };
+    }
+
+    case 'omp.dialog.settled': {
+      const payload = z.object({
+        dialogId: nonEmptyString,
+        sessionId: nonEmptyString,
+        outcome: z.string(),
+      }).safeParse(envelope.payload);
+      if (!payload.success) return drop(envelope);
+      draft.domains.lastEventId = envelope.id;
+      effects.push({ kind: 'dialog-settled', ...payload.data });
+      return { changed: true, effects };
+    }
+
     // Surfaces land later — track the last event id per domain only.
-    case 'omp.dialog.requested':
-    case 'omp.dialog.settled':
     case 'omp.jobs.updated':
     case 'omp.tree.updated':
-    case 'omp.plan.review_requested':
     case 'omp.plan.updated': {
       draft.domains.lastEventId = envelope.id;
       return { changed: true, effects };

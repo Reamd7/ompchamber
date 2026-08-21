@@ -94,6 +94,33 @@ const textOfContent = (content) => {
     .join('');
 };
 
+/** True when a tool result carries structured, non-empty details. */
+const hasDetails = (result) =>
+  result.details !== null &&
+  result.details !== undefined &&
+  typeof result.details === 'object' &&
+  Object.keys(result.details).length > 0;
+
+/**
+ * Normalize a tool_execution_end `result` into the transcript
+ * ToolResultMessage shape. The SDK passes an AgentToolResult
+ * `{content, details}` object; plain strings also occur (older emitters,
+ * tests). Returns the content blocks, their concatenated text, and the
+ * structured details when present.
+ */
+export const normalizeToolExecutionResult = (result) => {
+  if (result !== null && typeof result === 'object') {
+    const content = Array.isArray(result.content) ? result.content : [];
+    return {
+      content,
+      text: textOfContent(content),
+      ...(hasDetails(result) ? { details: result.details } : {}),
+    };
+  }
+  const text = typeof result === 'string' ? result : '';
+  return { content: text ? [{ type: 'text', text }] : [], text };
+};
+
 const imageBlocks = (content) =>
   Array.isArray(content) ? content.filter((block) => block && block.type === 'image') : [];
 
@@ -395,6 +422,9 @@ export const projectAssistantMessage = (
           },
         });
       } else {
+        // Structured tool details (the ask tool's AskToolDetails, spec 03
+        // §5.4.1) ride in metadata.details so tool-specific transcript cards
+        // can render without parsing the output text.
         pushPart({
           ...base,
           state: {
@@ -402,13 +432,16 @@ export const projectAssistantMessage = (
             input,
             output: textOfContent(result.content),
             title: intent ?? block.name,
-            metadata: intent ? { intent } : {},
+            metadata: {
+              ...(intent ? { intent } : {}),
+              ...(hasDetails(result) ? { details: result.details } : {}),
+            },
             time: { start: message.timestamp, end: result.timestamp ?? message.timestamp },
           },
         });
       }
     }
-  }
+}
 
   const completedAt = message.stopReason === 'error' || message.stopReason === 'aborted'
     ? undefined
@@ -696,7 +729,7 @@ export class StreamProjector {
     });
   }
 
-  toolFinished(callID, { output, error } = {}) {
+  toolFinished(callID, { output, error, metadata } = {}) {
     if (!this.current) return;
     const id = this.toolPartIds.get(callID);
     if (!id) return;
@@ -721,7 +754,7 @@ export class StreamProjector {
             input: this.toolInputs.get(callID) ?? {},
             output: output ?? '',
             title: toolName,
-            metadata: {},
+            metadata: metadata ?? {},
             time: { start: startedAt, end: Date.now() },
           },
     });

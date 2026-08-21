@@ -9,6 +9,8 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useContextStore } from '@/stores/contextStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
+import { useOmpSessionModelBadge, useOmpFallbackState } from '@/sync/useOmpSessionStore';
+import { isOmpModelRolesEnabled } from '@/lib/omp/capabilityGate';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
@@ -328,6 +330,20 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const messageProviderID = !isUser ? getMessageInfoProp(message.info, 'providerID') : null;
     const messageModelID = !isUser ? getMessageInfoProp(message.info, 'modelID') : null;
 
+    // GAP-E03 (05 §5.4): under model roles the badge fallback chain is
+    // message.info → omp session-model badge (wire truth from
+    // omp.model.changed); the localStorage selection store no longer feeds
+    // it. Legacy rows keep the original chain.
+    const messageSessionDirectory = useSessionUIStore(
+        React.useCallback(
+            (state) => (sessionId ? state.getDirectoryForSession(sessionId) : null),
+            [sessionId],
+        ),
+    );
+    const ompRolesOn = isOmpModelRolesEnabled();
+    const ompSessionModel = useOmpSessionModelBadge(messageSessionDirectory ?? '', sessionId ?? undefined);
+    const ompFallback = useOmpFallbackState(messageSessionDirectory ?? '', sessionId ?? undefined);
+
     const contextModelSelection = React.useMemo(() => {
         if (isUser || !sessionId) return null;
 
@@ -336,6 +352,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 providerId: previousUserMetadata.providerId,
                 modelId: previousUserMetadata.modelId,
             };
+        }
+
+        if (ompRolesOn) {
+            if (ompSessionModel?.provider && ompSessionModel?.id) {
+                return { providerId: ompSessionModel.provider, modelId: ompSessionModel.id };
+            }
+            return null;
         }
 
         if (agentName) {
@@ -351,7 +374,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
 
         return null;
-    }, [isUser, sessionId, agentName, previousUserMetadata, getAgentModelForSession, getSessionModelSelection]);
+    }, [isUser, sessionId, agentName, previousUserMetadata, getAgentModelForSession, getSessionModelSelection, ompRolesOn, ompSessionModel?.id, ompSessionModel?.provider]);
 
     const providerID = React.useMemo(() => {
         if (isUser) return null;
@@ -407,6 +430,16 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         const timeInfo = message.info.time as { completed?: number } | undefined;
         return typeof timeInfo?.completed === 'number' ? timeInfo.completed : null;
     }, [message.info.time]);
+
+    // GAP-E03: a fallback marker rides the badge of any assistant message
+    // completed after the fallback applied — the model name itself is already
+    // the truth (msg_B.info carries the fallback model).
+    const fallbackMarkerActive = Boolean(
+        !isUser
+        && ompFallback?.active
+        && messageCompletedAt !== null
+        && messageCompletedAt >= ompFallback.updatedAt,
+    );
 
     const messageCreatedAt = React.useMemo(() => {
         const timeInfo = message.info.time as { created?: number } | undefined;
@@ -1214,6 +1247,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 reviewTransferDirection={reviewTransferDirection}
                                 footerProviderID={headerProviderID}
                                 footerModelName={headerModelName}
+                                footerFallbackActive={fallbackMarkerActive}
                                 footerAgentName={headerAgentName}
                                 footerVariant={headerVariant}
                                 isDarkTheme={isDarkTheme}

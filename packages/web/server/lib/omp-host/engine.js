@@ -19,10 +19,12 @@ import {
   createAgentSession,
   discoverAuthStorage,
 } from '@oh-my-pi/pi-coding-agent';
+import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
 import { WireEventBus, OmpEventBus } from './events.js';
 import {
   StreamProjector,
+  normalizeToolExecutionResult,
   projectConversation,
   projectCustomMessage,
   projectDividerMessage,
@@ -80,7 +82,11 @@ export class OmpHostEngine {
     // Approval/ask dialog domain (spec 03, master R10/R11/R13). Lease-driven
     // hasUI: unattended sessions never hold a lease → SDK fail-closed.
     this.dialogs = createDomainDialogs({
-      onSessionUiAttached: ({ directory, sessionId }) => this.#attachDialogUi(directory, sessionId),
+      onSessionUiAttached: ({ directory, sessionId }) => {
+        void this.#attachDialogUi(directory, sessionId).catch((error) => {
+          console.warn('[omp-host] failed to attach dialog UI:', error?.message ?? error);
+        });
+      },
       onSessionUiDetached: ({ directory, sessionId }) => this.#detachDialogUi(directory, sessionId),
       onDiagnostic: (note) => console.warn('[omp-host] dialog lifecycle:', note),
     });
@@ -112,6 +118,23 @@ export class OmpHostEngine {
       personasStore: mapBackedStore(this.personas, () => this.savePersonas()),
       allowedTools: new Set(Object.keys(BUILTIN_TOOLS ?? {})),
       settingsProjectScopes: true,
+      // Effective task.* override read for the definitions projection
+      // (02 §5.2): the keyed Settings merged view per directory.
+      overridesFor: async (directoryKey) => {
+        const store = this.settingsStore;
+        if (!store?.settingsFor) return null;
+        try {
+          const settings = await store.settingsFor(directoryKey);
+          return {
+            disabledAgents: settings.get('task.disabledAgents'),
+            modelOverrides: settings.get('task.agentModelOverrides'),
+            prewalk: settings.get('task.agentPrewalk'),
+            advisor: settings.get('task.agentAdvisor'),
+          };
+        } catch {
+          return null;
+        }
+      },
     });
     // URI bridge / session tree / agent-runs / jobs (spec 04). The factory
     // is synchronous and every engine dependency is a lazy closure, so it is
@@ -180,21 +203,42 @@ export class OmpHostEngine {
     return this.bootPromise;
   }
 
-  /** Lease attach/detach → SDK tool UI context (R13: lease is hasUI authority). */
-  #attachDialogUi(directory, sessionId) {
-    const hostSession = this.sessions.get(sessionId);
+  async #setDialogUiContext(hostSession, directory, sessionId, hasUI) {
     if (!hostSession?.sdkResult?.setToolUIContext || !hostSession.agentSession) return;
-    hostSession.sdkResult.setToolUIContext(
-      this.dialogs.uiContextFor(directory, sessionId),
-      true,
-    );
+    const uiContext = hasUI ? this.dialogs.uiContextFor(directory, sessionId) : undefined;
+    if (hasUI && !hostSession.extensionUiInitialized) {
+      if (!hostSession.extensionUiPromise) {
+        hostSession.extensionUiPromise = initializeExtensions(hostSession.agentSession, {
+          uiContext,
+          mode: 'json',
+          reportSendError: (action, error) => {
+            console.warn(`[omp-host] ${action} failed:`, error?.message ?? error);
+          },
+          reportRuntimeError: (error) => {
+            console.warn('[omp-host] extension runtime error:', error?.error ?? error);
+          },
+          onShutdown: () => {},
+        }).then(() => {
+          hostSession.extensionUiInitialized = true;
+        }).finally(() => {
+          hostSession.extensionUiPromise = null;
+        });
+      }
+      await hostSession.extensionUiPromise;
+    }
+    hostSession.sdkResult.setToolUIContext(uiContext, hasUI);
+  }
+
+  /** Lease attach/detach → SDK tool UI context (R13: lease is hasUI authority). */
+  async #attachDialogUi(directory, sessionId) {
+    await this.#setDialogUiContext(this.sessions.get(sessionId), directory, sessionId, true);
   }
 
   #detachDialogUi(directory, sessionId) {
     const hostSession = this.sessions.get(sessionId);
-    if (!hostSession?.sdkResult?.setToolUIContext || !hostSession.agentSession) return;
+    if (!hostSession) return;
     try {
-      hostSession.sdkResult.setToolUIContext(undefined, false);
+      hostSession.sdkResult?.setToolUIContext?.(undefined, false);
     } catch {
       // Session may already be disposed.
     }
@@ -317,8 +361,15 @@ export class OmpHostEngine {
   /**
    * Wire Session record for an omp SessionInfo + registry metadata.
    */
-  #wireSession(info, directoryKey, meta) {
-    const selector = meta?.model ? splitModelSelector(meta.model) : null;
+  #wireSession(info, directoryKey, meta, live) {
+    // The live session's actual model wins over the sidecar projection — a
+    // roles-resolved session (no registry selector) still reports the model
+    // it is really running (spec 01 §5.5 badge seeding).
+    const selector = meta?.model
+      ? splitModelSelector(meta.model)
+      : live?.agentSession?.model
+        ? { providerID: live.agentSession.model.provider, modelID: live.agentSession.model.id }
+        : null;
     return {
       id: info.id,
       slug: info.id,
@@ -328,7 +379,6 @@ export class OmpHostEngine {
       title: meta?.title ?? info.title ?? 'Untitled',
       ...(meta?.agent ? { agent: meta.agent } : {}),
       ...(selector ? { model: { id: selector.modelID, providerID: selector.providerID } } : {}),
-      version: 'omp',
       ...(meta?.metadata ? { metadata: meta.metadata } : {}),
       time: {
         created: info.created instanceof Date ? info.created.getTime() : Date.parse(info.created) || Date.now(),
@@ -347,7 +397,7 @@ export class OmpHostEngine {
     const seen = new Set();
     for (const info of infos) {
       seen.add(info.id);
-      out.push(this.#wireSession(info, directoryKey, metas.get(info.id)));
+      out.push(this.#wireSession(info, directoryKey, metas.get(info.id), this.sessions.get(info.id)));
     }
     // Registry-only sessions (omp transcript pruned externally) stay listed so
     // deletion/archival bookkeeping keeps working.
@@ -490,10 +540,9 @@ export class OmpHostEngine {
       }
     }
     this.registry.remove(directoryKey, sessionID);
-    this.bus.emit('session.deleted', { sessionID, info: info ?? { id: sessionID } }, directoryKey);
-    return true;
+    this.bus.emit('session.deleted', { sessionID }, directoryKey);
+    return info;
   }
-
   #wireSessionFromLive(live) {
     const meta = this.registry.get(live.directory, live.sessionId);
     const agentSession = live.agentSession;
@@ -508,8 +557,10 @@ export class OmpHostEngine {
       },
       live.directory,
       meta,
+      live,
     );
   }
+
 
   /** Cold message projection from the persisted transcript. */
   async getMessages({ sessionID, directory }) {
@@ -703,6 +754,8 @@ export class OmpHostEngine {
       agentRegistry,
       // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
       sdkResult: { setToolUIContext },
+      extensionUiInitialized: false,
+      extensionUiPromise: null,
       planHandlerAttached: false,
     };
     hostSession.agentSession = session;
@@ -716,10 +769,12 @@ export class OmpHostEngine {
     });
     // Modes tracker for this session (cold-recovery + mode_change appends).
     this.modesDomain?.trackerFor(sessionId, directoryKey);
-    // If a UI lease already exists for this session, attach the tool UI
-    // context immediately (R13 creation-time hasUI was true).
+    // The freshly materialized host session is not published in `sessions`
+    // until all setup below succeeds. Apply and await the lease context
+    // directly; routing through #attachDialogUi would miss it in that short
+    // window and leave extension approvals/headless commands unusable.
     if (this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI) {
-      this.#attachDialogUi(directoryKey, sessionId);
+      await this.#setDialogUiContext(hostSession, directoryKey, sessionId, true);
     }
     session.sessionManager?.onSessionNameChanged?.(() => {
       const info = this.#wireSessionFromLive(hostSession);
@@ -915,13 +970,19 @@ export class OmpHostEngine {
         return;
       }
       case 'tool_execution_end': {
+        // The SDK result is an AgentToolResult {content, details}; normalize
+        // once so the transient part and the final finishAssistant projection
+        // carry the same text output and structured details (spec 03 §5.4.1).
+        const { content, text, details } = normalizeToolExecutionResult(event.result);
         hostSession.projector?.toolFinished(event.toolCallId, {
-          output: typeof event.result === 'string' ? event.result : JSON.stringify(event.result ?? ''),
-          error: event.isError ? String(event.result ?? 'Tool error') : undefined,
+          output: text,
+          error: event.isError ? (text || 'Tool error') : undefined,
+          ...(details ? { metadata: { details } } : {}),
         });
         const results = hostSession.turnToolResults ?? new Map();
         results.set(event.toolCallId, {
-          content: typeof event.result === 'string' ? [{ type: 'text', text: event.result }] : [],
+          content,
+          ...(details ? { details } : {}),
           isError: Boolean(event.isError),
           timestamp: Date.now(),
         });
@@ -1271,6 +1332,7 @@ export class OmpHostEngine {
     const hostSession = (await this.#materialize(sessionID, directoryKey));
     if (!hostSession) return null;
     const session = hostSession.agentSession;
+    if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
     hostSession.lastTouched = Date.now();
 
     // Model switching: resolve and apply when the requested selector differs.
@@ -1354,6 +1416,40 @@ export class OmpHostEngine {
     const streamingBehavior = delivery === 'queue' ? 'followUp' : 'steer';
     await session.prompt(textOnly, { images: imageContents, streamingBehavior });
     return wire;
+  }
+
+  /**
+   * Session-scoped model switch without sending a turn (spec 01 GAP-02/
+   * GAP-04: prompts omit the model; changing it is an explicit setModel).
+   * Same resolution + registry bookkeeping as the prompt-time switch.
+   * GAP-06: when the target model matches the session's current model, this
+   * degrades to a thinking-level-only change (`setThinkingLevel`) — the
+   * in-session thinking slot applies through the same endpoint.
+   */
+  async setSessionModel({ sessionID, directory, model, thinkingLevel }) {
+    await this.#boot();
+    const directoryKey = normalizeDirectoryKey(directory);
+    if (!model || !(model.providerID || model.modelID)) {
+      return { ok: false, error: 'model is required' };
+    }
+    const hostSession = await this.#materialize(sessionID, directoryKey);
+    if (!hostSession) return { ok: false, error: 'session not found' };
+    const session = hostSession.agentSession;
+    hostSession.lastTouched = Date.now();
+    const target = this.#resolveModel(model);
+    if (!target) return { ok: false, error: 'unknown model' };
+    if (modelSelector(target) !== modelSelector(session.model)) {
+      await session.setModel(target).catch((error) => {
+        console.error('[omp-host] model switch failed:', error?.message ?? error);
+      });
+      this.registry.update(directoryKey, sessionID, { model: modelSelector(target) });
+    }
+    if (thinkingLevel !== undefined && typeof session.setThinkingLevel === 'function') {
+      await session.setThinkingLevel(thinkingLevel).catch((error) => {
+        console.error('[omp-host] thinking level switch failed:', error?.message ?? error);
+      });
+    }
+    return { ok: true, model: modelSelector(session.model) ?? modelSelector(target) };
   }
 
   async abort({ sessionID, directory }) {

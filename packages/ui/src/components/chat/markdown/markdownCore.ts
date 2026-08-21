@@ -6,6 +6,7 @@ import { buildAgentMentionUrl, parseAgentHref, parseSkillHref } from '@/lib/mess
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { highlightCodeInWorker } from './markdown-worker';
 import { escapeRawMarkdownHtml, isLocalFileUrl, MARKDOWN_FORBIDDEN_TAGS } from './markdownSecurity';
+import { activeInternalUriSchemeOf, internalUriSchemeOf, withInternalUriSchemes } from './internalUri';
 
 const escapeAttr = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -341,6 +342,16 @@ const createParser = (imageMode: MarkdownImageMode) => new Marked().use({
       if (skillName) {
         return `<a href="${escapeAttr(target)}" data-skill-name="${escapeAttr(skillName)}" class="text-primary hover:underline">${text}</a>`;
       }
+      // Internal URIs (local:// & co) open the omp URI viewer, never a new
+      // tab. Enabled schemes render like file links; every other internal
+      // scheme renders as plain text — a dead anchor is worse than text
+      // (spec 04 §5.2.5, no dead links).
+      const internalScheme = internalUriSchemeOf(target);
+      if (internalScheme !== null) {
+        if (activeInternalUriSchemeOf(target) === null) return text;
+        const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+        return `<a href="${escapeAttr(target)}"${titleAttr} data-openchamber-internal-uri="${escapeAttr(target)}" class="text-primary hover:underline">${text}</a>`;
+      }
       const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
       return `<a href="${escapeAttr(target)}"${titleAttr} class="external-link" target="_blank" rel="noopener noreferrer">${text}</a>`;
     },
@@ -466,7 +477,10 @@ const ensureSanitizeHook = (): void => {
   sanitizeHookInstalled = true;
   DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
     if (!(node instanceof HTMLAnchorElement) || data.attrName !== 'href') return;
-    if (isLocalFileUrl(data.attrValue)) data.forceKeepAttr = true;
+    // Internal URIs survive only under an enabled parse scope — the same
+    // gate the link renderer applied — so capability-off HTML never keeps a
+    // local:// href (DOMPurify's default URI policy strips it).
+    if (isLocalFileUrl(data.attrValue) || activeInternalUriSchemeOf(data.attrValue) !== null) data.forceKeepAttr = true;
   });
   DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     if (!(node instanceof HTMLAnchorElement)) return;
@@ -507,12 +521,19 @@ const touch = (key: string, entry: { hash: string; html: string }): void => {
   if (oldest) htmlCache.delete(oldest);
 };
 
-const parseBlock = async (block: MarkdownBlock, imageMode: MarkdownImageMode): Promise<string> => {
+const parseBlock = async (
+  block: MarkdownBlock,
+  imageMode: MarkdownImageMode,
+  internalUriSchemes: readonly string[] | null,
+): Promise<string> => {
   const parser = imageMode === 'label' ? imageLabelParser : inlineImageParser;
-  const parsed = await Promise.resolve(parser.parse(block.src));
+  // The parse and the sanitize both run inside the scheme scope: the link
+  // renderer decides anchor-vs-plain-text and the DOMPurify href hook decides
+  // keepability from the same enabled set.
+  const parsed = withInternalUriSchemes(internalUriSchemes, () => parser.parse(block.src) as string);
   const withMath = renderMathExpressions(parsed);
   const highlighted = block.highlight ? await highlightCodeBlocks(withMath) : withMath;
-  return sanitize(highlighted);
+  return withInternalUriSchemes(internalUriSchemes, () => sanitize(highlighted));
 };
 
 /**
@@ -524,12 +545,16 @@ const parseBlock = async (block: MarkdownBlock, imageMode: MarkdownImageMode): P
  * is synchronous (marked is not configured `async`), so this never blocks on a
  * worker round-trip.
  */
-export const renderMarkdownSync = (text: string, imageMode: MarkdownImageMode = 'inline'): string => {
+export const renderMarkdownSync = (
+  text: string,
+  imageMode: MarkdownImageMode = 'inline',
+  internalUriSchemes: readonly string[] | null = null,
+): string => {
   if (!text) return '';
   const parser = imageMode === 'label' ? imageLabelParser : inlineImageParser;
-  const parsed = parser.parse(text) as string;
+  const parsed = withInternalUriSchemes(internalUriSchemes, () => parser.parse(text) as string);
   const withMath = renderMathExpressions(parsed);
-  return sanitize(withMath);
+  return withInternalUriSchemes(internalUriSchemes, () => sanitize(withMath));
 };
 
 export type RenderedBlock = {
@@ -551,6 +576,7 @@ export const renderMarkdownBlocks = async (
   streaming: boolean,
   cacheKey: string,
   imageMode: MarkdownImageMode = 'inline',
+  internalUriSchemes: readonly string[] | null = null,
 ): Promise<RenderedBlock[]> => {
   if (!text) return [];
 
@@ -565,7 +591,7 @@ export const renderMarkdownBlocks = async (
         touch(key, cached);
         return { id, html: cached.html };
       }
-      const html = await parseBlock(block, imageMode);
+      const html = await parseBlock(block, imageMode, internalUriSchemes);
       touch(key, { hash: contentHash, html });
       return { id, html };
     }),

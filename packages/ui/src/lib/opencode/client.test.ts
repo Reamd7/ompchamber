@@ -10,12 +10,18 @@ let runtimeKey = 'test-runtime';
 const promptAsyncCalls: unknown[][] = [];
 const promptAsyncResults: Array<unknown> = [];
 const pathGetResults: Array<unknown> = [];
+const commandCalls: unknown[][] = [];
+let modelRolesEnabled = false;
 
 const promptAsyncMock = mock(async (...args: unknown[]) => {
   promptAsyncCalls.push(args);
   const next = promptAsyncResults.shift();
   if (next instanceof Error) throw next;
   return next ?? { response: new Response(null, { status: 200 }) };
+});
+const commandMock = mock(async (...args: unknown[]) => {
+  commandCalls.push(args);
+  return { response: new Response(null, { status: 200 }) };
 });
 
 const pathGetMock = mock(async () => {
@@ -24,6 +30,9 @@ const pathGetMock = mock(async () => {
   return next ?? { data: { directory: '/workspace/project' } };
 });
 
+mock.module('@/lib/omp/capabilityGate', () => ({
+  isOmpModelRolesEnabled: () => modelRolesEnabled,
+}));
 mock.module('@/lib/opencode/wire', () => ({
   createOpencodeClient: mock(() => ({
     config: {
@@ -36,6 +45,7 @@ mock.module('@/lib/opencode/wire', () => ({
     },
     session: {
       promptAsync: promptAsyncMock,
+      command: commandMock,
     },
     path: {
       get: pathGetMock,
@@ -75,6 +85,8 @@ beforeEach(() => {
   promptAsyncCalls.length = 0;
   promptAsyncResults.length = 0;
   pathGetResults.length = 0;
+  commandCalls.length = 0;
+  modelRolesEnabled = false;
 });
 
 describe('opencodeClient directory availability', () => {
@@ -110,6 +122,68 @@ describe('opencodeClient getConfig cache', () => {
     const cached = await opencodeClient.getConfig('/workspace/project');
     expect(cached).toEqual({ model: 'new/model' });
     expect(configCalls).toBe(2);
+  });
+});
+
+describe('opencodeClient omp model-role request matrix', () => {
+  test('legacy row retains model + variant; modelRoles.v1 row omits both', async () => {
+    await opencodeClient.sendMessage({
+      id: 'ses_legacy', providerID: 'legacy-provider', modelID: 'legacy-model', variant: 'high', text: 'legacy',
+    });
+    const legacy = promptAsyncCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(legacy.model).toEqual({ providerID: 'legacy-provider', modelID: 'legacy-model' });
+    expect(legacy.variant).toBe('high');
+
+    modelRolesEnabled = true;
+    await opencodeClient.sendMessage({
+      id: 'ses_roles', providerID: 'display-provider', modelID: 'display-model', variant: 'xhigh', text: 'roles',
+    });
+    const roles = promptAsyncCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(roles.model).toBe(undefined);
+    expect(roles.variant).toBe(undefined);
+    expect(roles.providerID).toBe(undefined);
+    expect(roles.modelID).toBe(undefined);
+    expect(roles.defaultModel).toBe(undefined);
+  });
+
+  test('captures capability before async attachment preparation; next request sees the new row', async () => {
+    modelRolesEnabled = true;
+    const inFlight = opencodeClient.sendMessage({
+      id: 'ses_inflight', providerID: 'display-provider', modelID: 'display-model', variant: 'high', text: 'one',
+      files: [{ type: 'file', mime: 'text/markdown', filename: 'a.md', url: 'data:text/markdown,hello' }],
+    });
+    modelRolesEnabled = false;
+    await inFlight;
+    const captured = promptAsyncCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(captured.model).toBe(undefined);
+    expect(captured.variant).toBe(undefined);
+
+    await opencodeClient.sendMessage({
+      id: 'ses_next', providerID: 'legacy-next', modelID: 'model-next', variant: 'low', text: 'two',
+    });
+    const next = promptAsyncCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(next.model).toEqual({ providerID: 'legacy-next', modelID: 'model-next' });
+    expect(next.variant).toBe('low');
+  });
+
+  test('applies the same request matrix to slash commands', async () => {
+    await opencodeClient.sendCommand({
+      id: 'ses_command_legacy', providerID: 'legacy-provider', modelID: 'legacy-model', variant: 'high', command: 'review',
+    });
+    const legacy = commandCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(legacy.model).toBe('legacy-provider/legacy-model');
+    expect(legacy.variant).toBe('high');
+
+    modelRolesEnabled = true;
+    await opencodeClient.sendCommand({
+      id: 'ses_command_roles', providerID: 'display-provider', modelID: 'display-model', variant: 'xhigh', command: 'review',
+    });
+    const roles = commandCalls.at(-1)?.[0] as Record<string, unknown>;
+    expect(roles.model).toBe(undefined);
+    expect(roles.variant).toBe(undefined);
+    expect(roles.providerID).toBe(undefined);
+    expect(roles.modelID).toBe(undefined);
+    expect(roles.defaultModel).toBe(undefined);
   });
 });
 

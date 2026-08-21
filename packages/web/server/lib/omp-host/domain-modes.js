@@ -259,30 +259,75 @@ const gateProjectScope = (scope, settingsProjectScopes) => {
 };
 
 /**
+ * Effective task.* override values for one directory's sessions (the keyed
+ * Settings merged view — 02 §5.2 read projection). Injected by the engine;
+ * null/throw degrades to override-free definitions.
+ * @typedef {(directory: string | null) => Promise<{
+ *   disabledAgents?: unknown, modelOverrides?: unknown,
+ *   prewalk?: unknown, advisor?: unknown,
+ * } | null>} OverridesFor
+ */
+
+const recordEntryFor = (name, value) =>
+  (value && typeof value === 'object' && !Array.isArray(value) && typeof value[name] === 'string' && value[name]
+    ? value[name]
+    : undefined);
+
+/** Join the settings-level per-agent overrides onto definition records (02 §5.2). */
+const withTaskOverrides = async (records, overridesFor, directory) => {
+  if (typeof overridesFor !== 'function') return records;
+  let values;
+  try {
+    values = await overridesFor(directory);
+  } catch {
+    return records;
+  }
+  if (!values) return records;
+  const disabled = Array.isArray(values.disabledAgents)
+    ? new Set(values.disabledAgents.filter((name) => typeof name === 'string'))
+    : new Set();
+  return records.map((record) => {
+    const modelOverride = recordEntryFor(record.name, values.modelOverrides);
+    const prewalkOverride = recordEntryFor(record.name, values.prewalk);
+    const advisorOverride = recordEntryFor(record.name, values.advisor);
+    return {
+      ...record,
+      disabled: disabled.has(record.name),
+      ...(modelOverride !== undefined ? { modelOverride } : {}),
+      ...(prewalkOverride !== undefined ? { prewalkOverride } : {}),
+      ...(advisorOverride !== undefined ? { advisorOverride } : {}),
+    };
+  });
+};
+
+/**
  * CRUD handlers for /omp/agent-definitions (02 §5.2, scoped to
  * `{ name, prompt, tools[], mode?, scope }` over the sidecar storage).
  *
  * @param {{ store: {load(): object[], save(records: object[]): void},
  *           allowedTools?: Set<string>|Iterable<string>,
- *           settingsProjectScopes?: boolean }} options
+ *           settingsProjectScopes?: boolean,
+ *           overridesFor?: (directory: string | null) => Promise<object | null> }} options
  */
-export function createAgentDefinitionHandlers({ store, allowedTools, settingsProjectScopes = false } = {}) {
+export function createAgentDefinitionHandlers({ store, allowedTools, settingsProjectScopes = false, overridesFor } = {}) {
   if (!store?.load || !store?.save) throw new TypeError('agent-definitions handlers require a store');
   const allow = allowedTools instanceof Set ? allowedTools : new Set(allowedTools ?? Object.keys(BUILTIN_TOOLS ?? {}));
 
   const find = (name) => store.load().find((record) => record.name === name) ?? null;
 
   return {
-    async list() {
-      return json({ agents: store.load() });
+    async list(request, ctx) {
+      return json({ agents: await withTaskOverrides(store.load(), overridesFor, directoryParam(ctx)) });
     },
 
     async get(request, ctx) {
       const record = find(ctx?.params?.name);
-      return record ? json(record) : json({ error: 'not-found' }, { status: 404 });
+      if (!record) return json({ error: 'not-found' }, { status: 404 });
+      const [joined] = await withTaskOverrides([record], overridesFor, directoryParam(ctx));
+      return json(joined);
     },
 
-    async create(request) {
+    async create(request, ctx) {
       const body = await readJsonBody(request);
       const definition = body?.definition ?? body;
       const name = validateName(definition?.name);
@@ -303,7 +348,7 @@ export function createAgentDefinitionHandlers({ store, allowedTools, settingsPro
         scope,
       };
       store.save([...store.load(), record]);
-      return json(record, { status: 201 });
+      return json((await withTaskOverrides([record], overridesFor, directoryParam(ctx)))[0], { status: 201 });
     },
 
     async update(request, ctx) {
@@ -326,7 +371,7 @@ export function createAgentDefinitionHandlers({ store, allowedTools, settingsPro
         scope: nextScope,
       };
       store.save(store.load().map((entry) => (entry.name === name ? record : entry)));
-      return json(record);
+      return json((await withTaskOverrides([record], overridesFor, directoryParam(ctx)))[0]);
     },
 
     async remove(request, ctx) {
@@ -970,6 +1015,7 @@ export function createModesDomain({
   personasStore,
   allowedTools,
   settingsProjectScopes = false,
+  overridesFor,
 } = {}) {
   const trackers = new Map();
   const bridges = new Map();
@@ -1018,7 +1064,7 @@ export function createModesDomain({
   };
 
   const agentDefinitions = agentDefinitionStore
-    ? createAgentDefinitionHandlers({ store: agentDefinitionStore, allowedTools, settingsProjectScopes })
+    ? createAgentDefinitionHandlers({ store: agentDefinitionStore, allowedTools, settingsProjectScopes, overridesFor })
     : null;
   const personas = personasStore
     ? createPersonaHandlers({ store: personasStore, allowedTools })

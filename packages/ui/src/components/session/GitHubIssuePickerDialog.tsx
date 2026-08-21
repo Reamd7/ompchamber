@@ -23,7 +23,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
-import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { resolveOmpDefaults } from '@/lib/omp-defaults';
 import { useDeviceInfo } from '@/lib/device';
 import { createWorktreeSessionForNewBranch } from '@/lib/worktreeSessionCreator';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
@@ -251,26 +251,6 @@ export function GitHubIssuePickerDialog({
     );
   }, []);
 
-  const resolveDefaultModelSelection = React.useCallback((): { providerID: string; modelID: string } | null => {
-    const configState = useConfigStore.getState();
-    const settingsDefaultModel = configState.settingsDefaultModel;
-    if (!settingsDefaultModel) {
-      return null;
-    }
-
-    const parsed = parseModelIdentifier(settingsDefaultModel);
-    if (!parsed) {
-      return null;
-    }
-    const { providerId: providerID, modelId: modelID } = parsed;
-
-    const modelMetadata = configState.getModelMetadata(providerID, modelID);
-    if (!modelMetadata) {
-      return null;
-    }
-
-    return { providerID, modelID };
-  }, []);
 
   const resolveDefaultVariant = React.useCallback((providerID: string, modelID: string): string | undefined => {
     const configState = useConfigStore.getState();
@@ -280,10 +260,12 @@ export function GitHubIssuePickerDialog({
       : undefined;
 
     const provider = configState.providers.find((p) => p.id === providerID);
-    const model = provider?.models.find((m: Record<string, unknown>) => (m as { id?: string }).id === modelID) as
-      | { variants?: Record<string, unknown> }
-      | undefined;
-    const variants = model?.variants;
+    const model = provider?.models.find((m) => {
+      if (!m || typeof m !== 'object' || !('id' in m)) return false;
+      return m.id === modelID;
+    });
+    const rawVariants = model && typeof model === 'object' && 'variants' in model ? model.variants : undefined;
+    const variants = rawVariants && typeof rawVariants === 'object' ? rawVariants : undefined;
     if (!variants) {
       return settingsDefaultVariant || currentVariant || undefined;
     }
@@ -432,17 +414,19 @@ export function GitHubIssuePickerDialog({
 
       const configState = useConfigStore.getState();
       const lastUsedProvider = useSelectionStore.getState().lastUsedProvider;
-
-      const defaultModel = resolveDefaultModelSelection();
-      const providerID = defaultModel?.providerID || configState.currentProviderId || lastUsedProvider?.providerID;
-      const modelID = defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID;
-      const agentName = resolveDefaultAgentName() || configState.currentAgentName || undefined;
-      if (!providerID || !modelID) {
-        toast.error(t('session.githubIssuePicker.error.noModelSelected'));
-        return;
-      }
-
-      const variant = resolveDefaultVariant(providerID, modelID);
+      const omp = await resolveOmpDefaults(projectDirectory);
+      const providerID = omp.modelRolesEnabled
+        ? omp.model?.providerID
+        : (omp.model?.providerID || configState.currentProviderId || lastUsedProvider?.providerID);
+      const modelID = omp.modelRolesEnabled
+        ? omp.model?.modelID
+        : (omp.model?.modelID || configState.currentModelId || lastUsedProvider?.modelID);
+      const variant = providerID && modelID ? resolveDefaultVariant(providerID, modelID) : undefined;
+      // GAP-02 (spec 08): under personas.v1 no legacy default agent is
+      // synthesized — undefined persona (standard session) is the default.
+      const agentName = omp.personasEnabled
+        ? undefined
+        : (resolveDefaultAgentName() || configState.currentAgentName || undefined);
 
       const visiblePromptText = await renderMagicPrompt('github.issue.review.visible', {
         issue_number: String(issue.number),
@@ -495,7 +479,7 @@ export function GitHubIssuePickerDialog({
     } finally {
       setStartingIssueNumber(null);
     }
-  }, [createInWorktree, github, mode, onOpenChange, onSelect, projectDirectory, resolveDefaultAgentName, resolveDefaultModelSelection, resolveDefaultVariant, startingIssueNumber, t]);
+  }, [createInWorktree, github, mode, onOpenChange, onSelect, projectDirectory, resolveDefaultAgentName, resolveDefaultVariant, startingIssueNumber, t]);
 
   const title = mode === 'select' ? t('session.githubIssuePicker.title.select') : t('session.githubIssuePicker.title.createSession');
   const description = mode === 'select'

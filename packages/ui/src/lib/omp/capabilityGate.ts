@@ -68,6 +68,12 @@ export const isOmpModelRolesEnabled = (): boolean => isOmpFeatureEnabled('modelR
 /** Convenience read for the session-modes gate (02 §5.4). */
 export const isOmpModesEnabled = (): boolean => isOmpFeatureEnabled('modes.v1');
 
+/** Convenience read for the agent-definitions CRUD gate (02 §5.2). */
+export const isOmpAgentDefinitionsEnabled = (): boolean => isOmpFeatureEnabled('agentDefinitions.v1');
+
+/** Convenience read for the personas gate (02 §5.2a). */
+export const isOmpPersonasEnabled = (): boolean => isOmpFeatureEnabled('personas.v1');
+
 /** Test seam: clears the per-runtime cache and settled answers. */
 export const __resetOmpCapabilityGateForTests = (): void => {
   probes.clear();

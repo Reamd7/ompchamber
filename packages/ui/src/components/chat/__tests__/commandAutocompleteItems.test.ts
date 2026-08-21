@@ -3,11 +3,13 @@ import { commandMatchesSearch, mergeCommandAutocompleteItems } from '../commandA
 
 interface Item {
   name: string;
-  source: 'openchamber' | 'opencode' | 'skill';
+  source: 'openchamber' | 'opencode' | 'skill' | 'omp';
   description?: string;
   searchAliases?: string[];
   isBuiltIn?: boolean;
   isSkill?: boolean;
+  isOmp?: boolean;
+  ompOverrides?: boolean;
 }
 
 describe('mergeCommandAutocompleteItems', () => {
@@ -153,5 +155,36 @@ describe('mergeCommandAutocompleteItems', () => {
 
   test('handles empty inputs', () => {
     expect(mergeCommandAutocompleteItems([], [], [])).toEqual([]);
+  });
+
+  test('omp layer wins collisions, flags the override, and keeps search aliases', () => {
+    const builtIns: Item[] = [
+      { name: 'compact', source: 'openchamber', description: 'OC compact' },
+    ];
+    const omp: Item[] = [
+      { name: 'compact', source: 'omp', description: 'omp compact', isOmp: true },
+      { name: 'security', source: 'omp', isOmp: true },
+    ];
+
+    const merged = mergeCommandAutocompleteItems(builtIns, [], [], omp);
+
+    const byName = new Map(merged.map((item) => [item.name, item]));
+    expect(byName.get('compact')?.description).toBe('omp compact');
+    expect(byName.get('compact')?.ompOverrides).toBe(true);
+    // The displaced OC entry survives as a search alias, not a duplicate row.
+    expect(byName.get('compact')?.searchAliases).toContain('OC compact');
+    expect(merged.filter((item) => item.name === 'compact')).toHaveLength(1);
+    // Non-colliding omp rows carry no override flag.
+    expect(byName.get('security')?.ompOverrides).toBe(undefined);
+  });
+
+  test('omp rows lead the merged list; three-arg calls stay backward compatible', () => {
+    const merged = mergeCommandAutocompleteItems(
+      [{ name: 'undo', source: 'openchamber' }],
+      [],
+      [],
+      [{ name: 'model', source: 'omp', isOmp: true }],
+    );
+    expect(merged.map((item) => item.name)).toEqual(['model', 'undo']);
   });
 });

@@ -10,7 +10,6 @@ import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobi
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
-import { isWindowsArm64 } from '@/lib/platform';
 import { isVSCodeRuntime } from '@/lib/desktop';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
@@ -717,6 +716,8 @@ interface UIStore {
   walkthroughTocWidth: number;
   gitChangesViewMode: 'flat' | 'tree';
   isTimelineDialogOpen: boolean;
+  /** omp session fork-tree dialog (spec 04 §5.4; /tree command). */
+  isSessionTreeDialogOpen: boolean;
   isPromptNavigatorPanelOpen: boolean;
   isImagePreviewOpen: boolean;
   nativeNotificationsEnabled: boolean;
@@ -746,7 +747,6 @@ interface UIStore {
 
   showTerminalQuickKeysOnDesktop: boolean;
   persistChatDraft: boolean;
-  showOpenCodeUpdateNotifications: boolean;
   agentControlToolEnabled: boolean;
   agentWebToolEnabled: boolean;
   inputSpellcheckEnabled: boolean;
@@ -899,8 +899,9 @@ interface UIStore {
   setDiffWrapLines: (wrap: boolean) => void;
   setWalkthroughTocWidth: (width: number) => void;
   setGitChangesViewMode: (mode: 'flat' | 'tree') => void;
-  setMultiRunLauncherOpen: (open: boolean) => void;
   setTimelineDialogOpen: (open: boolean) => void;
+  setSessionTreeDialogOpen: (open: boolean) => void;
+  setMultiRunLauncherOpen: (open: boolean) => void;
   setPromptNavigatorPanelOpen: (open: boolean) => void;
   togglePromptNavigatorPanel: () => void;
   setImagePreviewOpen: (open: boolean) => void;
@@ -920,7 +921,6 @@ interface UIStore {
   setSummaryLength: (value: number) => void;
   setMaxLastMessageLength: (value: number) => void;
   setPersistChatDraft: (value: boolean) => void;
-  setShowOpenCodeUpdateNotifications: (value: boolean) => void;
   setAgentControlToolEnabled: (value: boolean) => void;
   setAgentWebToolEnabled: (value: boolean) => void;
   setInputSpellcheckEnabled: (value: boolean) => void;
@@ -972,6 +972,7 @@ export const useUIStore = create<UIStore>()(
         contextEditorTreeVisible: true,
         contextEditorTreeWidth: 240,
         notesPanelHeight: 112,
+        gitChangesViewMode: 'flat',
         workStatusExpandedSections: {},
         workStatusScrollTop: 0,
         workStatusPanelEnabled: true,
@@ -1051,8 +1052,8 @@ export const useUIStore = create<UIStore>()(
         diffFileLayout: {},
         diffWrapLines: false,
         walkthroughTocWidth: 224,
-        gitChangesViewMode: 'flat',
         isTimelineDialogOpen: false,
+        isSessionTreeDialogOpen: false,
         isPromptNavigatorPanelOpen: false,
         isImagePreviewOpen: false,
         nativeNotificationsEnabled: false,
@@ -1079,7 +1080,6 @@ export const useUIStore = create<UIStore>()(
 
         showTerminalQuickKeysOnDesktop: false,
         persistChatDraft: true,
-        showOpenCodeUpdateNotifications: !isWindowsArm64(),
         agentControlToolEnabled: true,
         agentWebToolEnabled: true,
         inputSpellcheckEnabled: false,
@@ -2248,6 +2248,10 @@ export const useUIStore = create<UIStore>()(
           set({ isTimelineDialogOpen: open });
         },
 
+        setSessionTreeDialogOpen: (open) => {
+          set({ isSessionTreeDialogOpen: open });
+        },
+
         setPromptNavigatorPanelOpen: (open) => {
           set({ isPromptNavigatorPanelOpen: open });
         },
@@ -2296,9 +2300,6 @@ export const useUIStore = create<UIStore>()(
         setMaxLastMessageLength: (value) => { set({ maxLastMessageLength: value }); },
         setPersistChatDraft: (value) => {
           set({ persistChatDraft: value });
-        },
-        setShowOpenCodeUpdateNotifications: (value) => {
-          set({ showOpenCodeUpdateNotifications: value });
         },
         setAgentControlToolEnabled: (value) => {
           set({ agentControlToolEnabled: value });
@@ -2410,12 +2411,18 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 14,
+        version: 15,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
           }
           const state = persistedState as Record<string, unknown>;
+
+          // v14 -> v15: OpenCode upgrades are owned by the OpenChamber
+          // release; remove the retired notification preference.
+          if (version < 15) {
+            delete state.showOpenCodeUpdateNotifications;
+          }
 
           // v13 -> v14: the separate 'preview' surface merged into 'browser'.
           // Stored preview tabs keep their URL and become browser tabs; their
@@ -2686,7 +2693,6 @@ export const useUIStore = create<UIStore>()(
           summaryLength: state.summaryLength,
           maxLastMessageLength: state.maxLastMessageLength,
           persistChatDraft: state.persistChatDraft,
-          showOpenCodeUpdateNotifications: state.showOpenCodeUpdateNotifications,
           agentControlToolEnabled: state.agentControlToolEnabled,
           agentWebToolEnabled: state.agentWebToolEnabled,
           inputSpellcheckEnabled: state.inputSpellcheckEnabled,

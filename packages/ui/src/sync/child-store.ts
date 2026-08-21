@@ -1,7 +1,7 @@
 import { create, type StoreApi } from "zustand"
 import type { DirState, State } from "./types"
 import { INITIAL_STATE, MAX_DIR_STORES, DIR_IDLE_TTL_MS, EVICTION_GRACE_MS } from "./types"
-import { pickDirectoriesToEvict, canDisposeDirectory, hasPendingBlockingRequests } from "./eviction"
+import { pickDirectoriesToEvict, canDisposeDirectory, hasBlockingWorkForDirectory } from "./eviction"
 import { readDirCache, persistVcs, persistProjectMeta, persistIcon, persistSessions } from "./persist-cache"
 import { normalizePath } from "@/lib/pathNormalization"
 import { startSessionLoadPerformanceEvent } from "./session-load-performance"
@@ -704,7 +704,7 @@ export class ChildStoreManager {
   }
 
   hasPendingBlockingRequestsForDirectory(directory: string): boolean {
-    return hasPendingBlockingRequests(this.children.get(directory)?.getState())
+    return hasBlockingWorkForDirectory(directory, this.children.get(directory)?.getState())
   }
 
   /** Apply a state mutation to a directory's store */

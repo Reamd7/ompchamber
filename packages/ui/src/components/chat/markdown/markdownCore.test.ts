@@ -44,6 +44,44 @@ describe('markdown sanitization', () => {
   });
 });
 
+describe('internal URI links (spec 04 §5.2.5, uri.v1 capability gate)', () => {
+  test('renders an enabled local:// link as a viewer anchor', () => {
+    const html = renderMarkdownSync('see [notes](local://scratch/notes.md)', 'inline', ['local']);
+
+    expect(html).toContain('data-openchamber-internal-uri="local://scratch/notes.md"');
+    expect(html).toContain('href="local://scratch/notes.md"');
+    expect(html).toContain('class="text-primary hover:underline"');
+    expect(html).not.toContain('target="_blank"');
+  });
+
+  test('capability off renders exactly as before: no anchor, no href, plain text', () => {
+    const before = renderMarkdownSync('see [notes](local://scratch/notes.md)');
+    const off = renderMarkdownSync('see [notes](local://scratch/notes.md)', 'inline', null);
+
+    expect(off).toBe(before);
+    expect(off).not.toContain('<a');
+    expect(off).not.toContain('local://scratch/notes.md"');
+    expect(off).toContain('notes');
+  });
+
+  test('internal schemes outside the enabled set stay plain text (no dead links)', () => {
+    const html = renderMarkdownSync('[h](history://Anna) and [l](local://a.md)', 'inline', ['local']);
+
+    expect(html).not.toContain('history');
+    expect(html).toContain('data-openchamber-internal-uri="local://a.md"');
+    // The disabled link degrades to its bare label text — no anchor at all.
+    expect(html.trim()).toBe('<p>h and <a href="local://a.md" data-openchamber-internal-uri="local://a.md" class="text-primary hover:underline">l</a></p>');
+  });
+
+  test('external http links keep their existing external-link anchor', () => {
+    const html = renderMarkdownSync('[site](https://example.test)', 'inline', ['local']);
+
+    expect(html).toContain('class="external-link"');
+    expect(html).toContain('target="_blank"');
+    expect(html).not.toContain('data-openchamber-internal-uri');
+  });
+});
+
 describe('Markdown images', () => {
   test('renders assistant images as icon-ready text without loading the source', () => {
     const html = renderMarkdownSync([

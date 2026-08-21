@@ -12,7 +12,9 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+const realSdk = await import('@oh-my-pi/pi-coding-agent');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
+  ...realSdk,
   BUILTIN_TOOLS: { read: class {}, bash: class {}, write: class {}, task: class {} },
 }));
 

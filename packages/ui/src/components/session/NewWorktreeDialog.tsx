@@ -41,6 +41,7 @@ import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { resolveOmpDefaults } from '@/lib/omp-defaults';
 import { rankBranchesForQuery } from '@/lib/worktrees/branchSearch';
 import {
   LAST_WORKTREE_SOURCE_BRANCH_KEY,
@@ -439,19 +440,20 @@ export function NewWorktreeDialog({
     return visibleAgents.find((agent) => agent.name === 'build')?.name || visibleAgents[0]?.name;
   }, []);
 
-  const resolveDefaultModelSelection = React.useCallback((): { providerID: string; modelID: string } | null => {
+  const resolveDefaultModelSelection = React.useCallback(async (): Promise<{ providerID: string; modelID: string } | null> => {
+    const omp = await resolveOmpDefaults(projectDirectory);
+    if (omp.modelRolesEnabled) return omp.model;
+    // Legacy row (capability off): the OpenChamber settings default stays the
+    // display/dispatch truth until the omp engine is authoritative.
     const configState = useConfigStore.getState();
     const settingsDefaultModel = configState.settingsDefaultModel;
     if (!settingsDefaultModel) return null;
-
     const parsed = parseModelIdentifier(settingsDefaultModel);
     if (!parsed) return null;
-    const { providerId: providerID, modelId: modelID } = parsed;
-
-    const modelMetadata = configState.getModelMetadata(providerID, modelID);
+    const modelMetadata = configState.getModelMetadata(parsed.providerId, parsed.modelId);
     if (!modelMetadata) return null;
-    return { providerID, modelID };
-  }, []);
+    return { providerID: parsed.providerId, modelID: parsed.modelId };
+  }, [projectDirectory]);
 
   const resolveDefaultVariant = React.useCallback((providerID: string, modelID: string): string | undefined => {
     const configState = useConfigStore.getState();
@@ -461,10 +463,12 @@ export function NewWorktreeDialog({
       : undefined;
 
     const provider = configState.providers.find((p) => p.id === providerID);
-    const model = provider?.models.find((m: Record<string, unknown>) => (m as { id?: string }).id === modelID) as
-      | { variants?: Record<string, unknown> }
-      | undefined;
-    const variants = model?.variants;
+    const model = provider?.models.find((m) => {
+      if (!m || typeof m !== 'object' || !('id' in m)) return false;
+      return m.id === modelID;
+    });
+    const rawVariants = model && typeof model === 'object' && 'variants' in model ? model.variants : undefined;
+    const variants = rawVariants && typeof rawVariants === 'object' ? rawVariants : undefined;
     if (!variants) return settingsDefaultVariant || currentVariant || undefined;
     if (settingsDefaultVariant && Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) return settingsDefaultVariant;
     if (currentVariant && Object.prototype.hasOwnProperty.call(variants, currentVariant)) return currentVariant;
@@ -484,17 +488,27 @@ export function NewWorktreeDialog({
 
     const configState = useConfigStore.getState();
     const lastUsedProvider = useSelectionStore.getState().lastUsedProvider;
-    const defaultModel = resolveDefaultModelSelection();
-    const providerID = defaultModel?.providerID || configState.currentProviderId || lastUsedProvider?.providerID;
-    const modelID = defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID;
-    const agentName = resolveDefaultAgentName() || configState.currentAgentName || undefined;
+    const omp = await resolveOmpDefaults(projectDirectory);
+    const defaultModel = await resolveDefaultModelSelection();
+    const providerID = omp.modelRolesEnabled
+      ? defaultModel?.providerID
+      : (defaultModel?.providerID || configState.currentProviderId || lastUsedProvider?.providerID);
+    const modelID = omp.modelRolesEnabled
+      ? defaultModel?.modelID
+      : (defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID);
+    // GAP-02 (spec 08): under personas.v1 no legacy default agent is
+    // synthesized — undefined persona (standard session) is the default.
+    const agentName = omp.personasEnabled
+      ? undefined
+      : (resolveDefaultAgentName() || configState.currentAgentName || undefined);
 
-    if (!providerID || !modelID) {
+    if (!omp.modelRolesEnabled && (!providerID || !modelID)) {
+      // Legacy row requires an explicit model; role mode legally follows the engine.
       toast.error(t('session.newWorktree.error.noModelSelected'));
       return;
     }
 
-    const variant = resolveDefaultVariant(providerID, modelID);
+    const variant = providerID && modelID ? resolveDefaultVariant(providerID, modelID) : undefined;
 
     if (args.issue) {
       if (!github.issueGet || !github.issueComments) {

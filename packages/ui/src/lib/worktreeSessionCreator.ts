@@ -13,6 +13,7 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { checkIsGitRepository, previewGitWorktree } from '@/lib/gitApi';
 import { generateBranchName } from '@/lib/git/branchNameGenerator';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import { resolveOmpDefaults } from '@/lib/omp-defaults';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import { getWorktreeSetupCommands, getWorktreeSetupWaitEnabled } from '@/lib/openchamberConfig';
 import {
@@ -87,7 +88,11 @@ let isCreatingWorktreeSession = false;
 
 
 
-const applyDefaultAgentAndModelSelection = (sessionId: string, configState = useConfigStore.getState()) => {
+const applyDefaultAgentAndModelSelection = (
+  sessionId: string,
+  configState = useConfigStore.getState(),
+  options?: { skipLegacyModelDefaults?: boolean },
+) => {
   try {
     const visibleAgents = configState.getVisibleAgents();
     let agentName: string | undefined;
@@ -111,6 +116,12 @@ const applyDefaultAgentAndModelSelection = (sessionId: string, configState = use
 
     configState.setAgent(agentName);
     useContextStore.getState().saveSessionAgentSelection(sessionId, agentName);
+
+    if (options?.skipLegacyModelDefaults) {
+      // Model roles own default-model resolution; a legacy settings pin would
+      // fight the engine's default role for this session.
+      return;
+    }
 
     const settingsDefaultModel = configState.settingsDefaultModel;
     if (!settingsDefaultModel) {
@@ -161,13 +172,13 @@ const initializeSessionForWorktree = (sessionId: string, metadata: {
   name?: string;
   createdFromBranch?: string;
   kind?: 'pr' | 'standard';
-}) => {
+}, options?: { skipLegacyModelDefaults?: boolean }) => {
   const sessionStore = useSessionUIStore.getState();
   const configState = useConfigStore.getState();
   sessionStore.initializeNewOpenChamberSession(sessionId, configState.agents);
   sessionStore.setSessionDirectory(sessionId, metadata.path);
   sessionStore.setWorktreeMetadata(sessionId, metadata);
-  applyDefaultAgentAndModelSelection(sessionId, configState);
+  applyDefaultAgentAndModelSelection(sessionId, configState, options);
   useDirectoryStore.getState().setDirectory(metadata.path, { showOverlay: false });
 };
 
@@ -389,7 +400,9 @@ export async function createWorktreeSessionForNewBranch(
         throw new Error('Could not create a session for the worktree.');
       }
 
-      initializeSessionForWorktree(session.id, createdMetadata);
+      initializeSessionForWorktree(session.id, createdMetadata, {
+        skipLegacyModelDefaults: (await resolveOmpDefaults(metadata.path)).modelRolesEnabled,
+      });
 
       return { id: session.id, branch: metadata.branch || base, path: metadata.path };
     } catch (error) {

@@ -180,6 +180,53 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
     }
   });
 
+  test('models[] projection carries the baked thinking surface (01 §5.4 GAP-06)', async () => {
+    const env = await makeEnv();
+    const { boot } = env;
+    try {
+      const models = [
+        {
+          provider: 'prov',
+          id: 'm1',
+          name: 'Model One',
+          reasoning: true,
+          contextWindow: 200000,
+          maxTokens: 32000,
+          thinking: { efforts: ['low', 'high'], defaultLevel: 'high' },
+        },
+        { provider: 'prov', id: 'plain' },
+      ];
+      const payload = buildModelsPayload(boot, { models });
+      expect(payload.models).toHaveLength(2);
+      expect(payload.models[0]).toEqual({
+        provider: 'prov',
+        id: 'm1',
+        name: 'Model One',
+        reasoning: true,
+        contextWindow: 200000,
+        maxTokens: 32000,
+        thinking: { supported: ['low', 'high'], defaultLevel: 'high' },
+      });
+      // Non-reasoning models expose an empty effort surface, mirroring
+      // the SDK's getSupportedEfforts.
+      expect(payload.models[1].thinking).toEqual({ supported: [], defaultLevel: null });
+      expect(payload.models[1].reasoning).toBe(false);
+    } finally {
+      await disarm(env);
+    }
+  });
+
+  test('models omitted when the registry is unavailable (roles-only payload)', async () => {
+    const env = await makeEnv();
+    const { boot } = env;
+    try {
+      const payload = buildModelsPayload(boot);
+      expect('models' in payload).toBe(false);
+    } finally {
+      await disarm(env);
+    }
+  });
+
   test('no legacyDefaults leaves the field null', async () => {
     const env = await makeEnv();
     try {

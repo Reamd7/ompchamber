@@ -25,7 +25,9 @@ const makeFakeSession = (id) => ({
   prompt: async () => true,
 });
 
+const realSdk = await import('@oh-my-pi/pi-coding-agent');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
+  ...realSdk,
   AgentRegistry: class {},
   ModelRegistry: class {
     constructor() {}
@@ -50,7 +52,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     const id = options.sessionManager?.getSessionId?.() ?? 's1';
     return { session: makeFakeSession(id) };
   },
-  Settings: class {
+  Settings: class extends realSdk.Settings {
     static async init() {
       return {
         getCwd: () => 'C:/stub-boot',
@@ -284,6 +286,39 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     h.emit({ type: 'tool_execution_end', toolCallId: 'c1', toolName: 'longjob', result: 'done', isError: false });
     const settled = h.wireOf('message.part.updated').map((e) => e.properties.part).filter((p) => p.type === 'tool').at(-1);
     expect(settled.state.status).toBe('completed');
+  });
+
+  test('tool_execution_end normalizes SDK AgentToolResult so ask details reach the transcript', async () => {
+    const h = await harness();
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 30 } });
+    h.emit({ type: 'tool_execution_start', toolCallId: 'a1', toolName: 'ask', args: { questions: [] } });
+    const askDetails = { question: 'Ship it?', options: ['Yes', 'No'], multi: false, selectedOptions: ['Yes'], timedOut: true };
+    h.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'a1',
+      toolName: 'ask',
+      result: { content: [{ type: 'text', text: 'User answers:\nYes' }], details: askDetails },
+      isError: false,
+    });
+    const toolParts = () => h.wireOf('message.part.updated').map((e) => e.properties.part).filter((p) => p.type === 'tool');
+    const transient = toolParts().at(-1);
+    expect(transient.state.status).toBe('completed');
+    expect(transient.state.output).toBe('User answers:\nYes');
+    expect(transient.state.metadata.details).toEqual(askDetails);
+
+    h.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'a1', name: 'ask', arguments: { questions: [] } }],
+        model: 'p1/m1',
+        timestamp: 31,
+        usage: {},
+      },
+    });
+    const final = toolParts().at(-1);
+    expect(final.state.output).toBe('User answers:\nYes');
+    expect(final.state.metadata.details).toEqual(askDetails);
   });
 
   test('turn_start/turn_end are explicit intentional ignores; unknown members fail loudly', async () => {

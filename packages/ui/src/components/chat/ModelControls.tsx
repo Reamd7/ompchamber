@@ -11,6 +11,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { toast } from '@/components/ui';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -30,7 +31,7 @@ import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
-import { useSessionMessages, useSessionRenderable } from '@/sync/sync-context';
+import { useSessionMessages, useSessionRenderable, useSessionWireModel } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useUIStore } from '@/stores/useUIStore';
 import { useModelLists } from '@/hooks/useModelLists';
@@ -46,9 +47,18 @@ import {
 } from '@/lib/messages/userModelChoice';
 import { getSyncParts } from '@/sync/sync-refs';
 import { OmpModeOptionList, OmpModeSelector, useOmpModeTransition, type OmpModeOption } from './OmpModeSelector';
+import { OmpGoalSection } from './OmpGoalIndicator';
+import {
+    OmpPersonaOptionList,
+    OmpPersonaSelector,
+    type OmpPersonaOption,
+} from './OmpPersonaSelector';
 import { OmpRoleSlots, type OmpRoleSlotsLabels } from './OmpRoleSlots';
 import { useOmpModelRoles, type OmpRoleSlot } from '@/hooks/useOmpModelRoles';
+import { useOmpPersonas } from '@/hooks/useOmpPersonas';
 import { useOmpSessionMode } from '@/hooks/useOmpSessionMode';
+import { useOmpSessionModelBadge, useOmpThinkingState } from '@/sync/useOmpSessionStore';
+import { createEnabledModelsMatcher } from '@/lib/omp/enabledModels';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 
 type IconComponent = IconName;
@@ -654,11 +664,56 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // omp role/mode surfaces (spec 01 §5.5, 02 §5.4, 08 §5.1-5.2). Capability
     // gated; every degraded state (probe unresolved, feature off, fetch
     // failed) renders the legacy controls unchanged.
-    const { ompModes } = useRuntimeAPIs();
+    const { ompModes, ompModels, ompSettings } = useRuntimeAPIs();
     const effectiveDirectory = useEffectiveDirectory();
     const ompPickerDirectory = currentSessionDirectory ?? effectiveDirectory ?? null;
     const ompModelRoles = useOmpModelRoles(ompPickerDirectory);
     const ompSessionMode = useOmpSessionMode(ompPickerDirectory, currentSessionId, ompModelRoles.modesEnabled);
+    const ompSessionModelBadge = useOmpSessionModelBadge(ompPickerDirectory ?? '', currentSessionId ?? undefined);
+    const ompThinkingState = useOmpThinkingState(ompPickerDirectory ?? '', currentSessionId ?? undefined);
+    // Wire Session.model seeds the same truth when omp.model.changed has not
+    // fired yet (cold-opened / roles-resolved sessions).
+    const ompWireSessionModel = useSessionWireModel(currentSessionId ?? '', ompPickerDirectory ?? undefined);
+    const ompSessionModel = ompSessionModelBadge?.provider && ompSessionModelBadge?.id
+        ? ompSessionModelBadge
+        : (ompWireSessionModel?.providerID && ompWireSessionModel?.id
+            ? { provider: ompWireSessionModel.providerID, id: ompWireSessionModel.id }
+            : null);
+    // GAP-10: enabledModels patterns restrict the picker under model roles.
+    const ompEnabledModels = React.useMemo(
+        () => (ompModelRoles.modelRolesEnabled
+            ? createEnabledModelsMatcher(ompModelRoles.snapshot?.enabledModels ?? [])
+            : null),
+        [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.enabledModels],
+    );
+    const ompFilteredProviders = React.useMemo(() => {
+        if (!ompEnabledModels) return providers;
+        return providers
+            .map((provider) => ({
+                ...provider,
+                models: (provider.models as ProviderModel[]).filter(
+                    (model) => !model?.id || ompEnabledModels.allows(provider.id, String(model.id)),
+                ),
+            }))
+            .filter((provider) => (provider.models as ProviderModel[]).length > 0);
+    }, [providers, ompEnabledModels]);
+    const ompCurrentModelExcluded = Boolean(
+        ompEnabledModels
+        && currentProviderId
+        && currentModelId
+        && !ompEnabledModels.allows(currentProviderId, currentModelId),
+    );
+    // GAP-06: thinking-level candidates for the session's current model.
+    const ompThinkingOptions = React.useMemo(() => {
+        if (!ompModelRoles.modelRolesEnabled || !ompSessionModel?.provider || !ompSessionModel?.id) {
+            return [];
+        }
+        const entry = ompModelRoles.snapshot?.models.find(
+            (model) => model.provider === ompSessionModel.provider && model.id === ompSessionModel.id,
+        );
+        if (!entry) return [];
+        return ['inherit', 'off', 'auto', ...entry.thinking.supported];
+    }, [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.models, ompSessionModel?.provider, ompSessionModel?.id]);
     const [ompModeMenuOpen, setOmpModeMenuOpen] = React.useState(false);
     const hasRenderableCurrentSessionSnapshot = useSessionRenderable(
         currentSessionId ?? '',
@@ -810,11 +865,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     }), [t]);
 
     const openRolesSettings = React.useCallback(() => {
-        setSettingsPage('providers');
+        // C7: the "configure roles" deep-link lands on the engine settings
+        // page (the roles editor's real home) instead of providers.
+        setSettingsPage('engine');
         setSettingsDialogOpen(true);
         setAgentMenuOpen(false);
         closeMobilePanel();
-    }, [setSettingsPage, setSettingsDialogOpen, setAgentMenuOpen, closeMobilePanel]);
+    }, [closeMobilePanel, setAgentMenuOpen, setSettingsDialogOpen, setSettingsPage]);
 
     // Picking a role applies its resolved model through the existing model
     // selection path — the session's model then updates through the wire
@@ -829,6 +886,50 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         setAgentMenuOpen(false);
         closeMobilePanel();
     }, [applyModelSelectionWithVariant, setAgentMenuOpen, closeMobilePanel]);
+
+    // GAP-06: in-session thinking level change — same endpoint as the model
+    // switch; the engine short-circuits to setThinkingLevel when the model is
+    // unchanged. `inherit` clears the explicit level.
+    const handleOmpThinkingSelect = React.useCallback((level: string) => {
+        if (!currentSessionId || !ompSessionModel?.provider || !ompSessionModel?.id || !ompPickerDirectory) {
+            return;
+        }
+        void ompModels.setSessionModel(
+            currentSessionId,
+            { providerID: ompSessionModel.provider, modelID: ompSessionModel.id },
+            {
+                directory: ompPickerDirectory,
+                ...(level !== 'inherit' ? { thinkingLevel: level } : {}),
+            },
+        ).then((result) => {
+            if (!result.ok && !result.unavailable) {
+                toast.error(t('chat.modelControls.thinkingChangeFailed'));
+            }
+        });
+    }, [currentSessionId, ompModels, ompPickerDirectory, ompSessionModel?.id, ompSessionModel?.provider, t]);
+
+    // GAP-05 tail: assign a picker row's model to a role through the settings
+    // face (PUT /api/omp/settings modelRoles.<role>; scope defaults to the
+    // directory's modelRoleStorage).
+    const handleAssignRole = React.useCallback((entry: ModelPickerEntry, slot: OmpRoleSlot) => {
+        if (!ompPickerDirectory) return;
+        void ompSettings.putModelRole({
+            directory: ompPickerDirectory,
+            role: slot.id,
+            value: `${entry.providerID}/${entry.modelID}`,
+        }).then((result) => {
+            if (result.ok) {
+                toast.success(t('chat.modelControls.setAsRole.applied', { role: slot.name }));
+            } else if (!result.unavailable) {
+                toast.error(t('chat.modelControls.setAsRole.failed'), {
+                    description: result.rejected === 'role-already-configured'
+                        ? t('chat.modelControls.setAsRole.rejected.role-already-configured')
+                        : undefined,
+                });
+            }
+        });
+    }, [ompPickerDirectory, ompSettings, t]);
+
 
     const ompModeOptions = React.useMemo<OmpModeOption[]>(() => [
         { value: 'none', label: t('chat.modeSelector.label.default') },
@@ -870,6 +971,75 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             closeMobilePanel();
         },
     });
+
+    // Persona selector (spec 02 §5.1 D-B2/§5.2a): under personas.v1 the
+    // legacy agent chip becomes a persona picker. Selection is session-level
+    // explicit switching — the chosen persona rides the next prompt's agent
+    // param (resolveSendAgent) and the engine persists it to registry meta.
+    // "Standard" (undefined persona) sends the engine's 'build' sentinel so a
+    // persisted persona is explicitly cleared.
+    const ompPersonasState = useOmpPersonas(ompModelRoles.personasEnabled);
+    const [isPersonaSelectorOpen, setIsPersonaSelectorOpen] = React.useState(false);
+    React.useEffect(() => {
+        if (!isPersonaSelectorOpen) {
+            if (!isCompact) {
+                requestAnimationFrame(focusChatInput);
+            }
+        }
+    }, [isPersonaSelectorOpen, isCompact]);
+    const ompPersonaOptions = React.useMemo<OmpPersonaOption[]>(() => [
+        { value: '', label: t('chat.personaSelector.standard') },
+        ...(ompPersonasState.personas ?? []).map((persona) => ({
+            value: persona.name,
+            label: persona.name,
+            ...(persona.description ? { description: persona.description } : {}),
+        })),
+    ], [ompPersonasState.personas, t]);
+    // The current selection is the persona matching the agent state; any
+    // legacy value that is not a persona (or 'build'/unset) reads as Standard.
+    const ompPersonaSelected = ompPersonasState.personas?.some((persona) => persona.name === uiAgentName)
+        ? (uiAgentName as string)
+        : '';
+    const handlePersonaSelect = React.useCallback((value: string) => {
+        explicitAgentSwitchRef.current = value || 'build';
+        setAgent(value || 'build');
+        if (currentSessionId) {
+            saveSessionAgentSelection(currentSessionId, value || 'build');
+        }
+        setIsPersonaSelectorOpen(false);
+        setAgentMenuOpen(false);
+        closeMobilePanel();
+    }, [closeMobilePanel, currentSessionId, saveSessionAgentSelection, setAgent, setAgentMenuOpen]);
+    const ompPersonaLabels = React.useMemo(() => ({
+        ariaLabel: t('chat.personaSelector.ariaLabel'),
+        title: t('chat.personaSelector.title'),
+        standard: t('chat.personaSelector.standard'),
+    }), [t]);
+    // Persona section inside the mode dropdown when both capabilities are on
+    // (02 §5.1: mode chip stays; persona moves into the mode menu).
+    const ompModePersonaSection = ompModelRoles.personasEnabled && ompPersonasState.personas !== null ? (
+        <div className="border-t border-border/40 pt-1">
+            <div className="typography-ui-header px-3 pt-1 pb-1 font-semibold text-foreground">
+                {t('chat.personaSelector.sectionTitle')}
+            </div>
+            <OmpPersonaOptionList
+                options={ompPersonaOptions}
+                selected={ompPersonaSelected}
+                onSelect={handlePersonaSelect}
+            />
+        </div>
+    ) : null;
+
+    // Goal projection (spec 02 §5.6 P1 / GAP-B08): read-only state inside the
+    // mode menu — objective, status, and used/budget tokens (TUI
+    // renderGoalMode parity). The bridge has no goal write endpoints yet.
+    const ompGoalSection = ompModelRoles.modesEnabled ? (
+        <OmpGoalSection
+            directory={ompPickerDirectory}
+            sessionID={currentSessionId ?? null}
+            modesEnabled={ompModelRoles.modesEnabled}
+        />
+    ) : null;
 
     React.useEffect(() => {
         if (!currentSessionId) {
@@ -1672,7 +1842,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             matchesProvider: boolean;
         }[] = [];
         for (const provider of visibleProviders) {
-            const providerModels = Array.isArray(provider.models) ? provider.models : [];
+            const providerModels = (Array.isArray(provider.models) ? provider.models : []).filter(
+                (model: ProviderModel) => !ompEnabledModels || !model?.id || ompEnabledModels.allows(provider.id, String(model.id)),
+            );
             const matchesProvider = normalizedQuery.length === 0
                 ? true
                 : matchesModelSearch(provider.name, normalizedQuery) || matchesModelSearch(provider.id, normalizedQuery);
@@ -2132,6 +2304,25 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             void ompModeTransition.selectMode(value);
                         }}
                     />
+                    {ompModePersonaSection}
+                    {ompGoalSection}
+                </MobileOverlayPanel>
+            );
+        }
+
+        if (ompModelRoles.personasEnabled) {
+            return (
+                <MobileOverlayPanel
+                    open={activeMobilePanel === 'agent'}
+                    onClose={closeMobilePanel}
+                    title={ompPersonaLabels.title}
+                    contentMaxHeightClassName="max-h-[min(52dvh,360px)]"
+                >
+                    <OmpPersonaOptionList
+                        options={ompPersonaOptions}
+                        selected={ompPersonaSelected}
+                        onSelect={handlePersonaSelect}
+                    />
                 </MobileOverlayPanel>
             );
         }
@@ -2365,10 +2556,53 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         };
 
         const renderThinkingSlot = (entry: ModelPickerEntry, { isHighlighted, isSelected }: { isHighlighted: boolean; isSelected: boolean }) => {
+            if (!isHighlighted && !isSelected) return null;
+
+            // GAP-05 tail: per-row 「设为角色」 — a compact role-assign menu
+            // committing through the settings face. Variants are dead under
+            // model roles, so this replaces the legacy thinking hint there.
+            if (ompModelRoles.modelRolesEnabled) {
+                const roles = ompModelRoles.roles;
+                if (roles.length === 0) return null;
+                return (
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                type="button"
+                                className="typography-micro flex items-center gap-1 rounded-md px-1.5 py-0.5 text-muted-foreground cursor-pointer hover:bg-interactive-hover/50 hover:text-foreground"
+                                onClick={(event) => event.stopPropagation()}
+                                aria-label={t('chat.modelControls.setAsRole.aria')}
+                            >
+                                <Icon name="target" className="size-3 flex-shrink-0" />
+                                <span className="whitespace-nowrap">{t('chat.modelControls.setAsRole')}</span>
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-[min(220px,calc(100vw-2rem))]">
+                            <DropdownMenuLabel className="typography-ui-header font-semibold text-foreground">{t('chat.modelControls.setAsRole')}</DropdownMenuLabel>
+                            {roles.map((slot) => (
+                                <DropdownMenuItem
+                                    key={slot.id}
+                                    className="typography-meta"
+                                    onSelect={() => handleAssignRole(entry, slot)}
+                                >
+                                    <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                                        <span className="typography-meta font-medium text-foreground truncate min-w-0">{slot.name}</span>
+                                        {slot.model
+                                            && slot.model.provider === entry.providerID
+                                            && slot.model.id === entry.modelID
+                                            && <Icon name="check" className="size-4 text-primary flex-shrink-0" />}
+                                    </div>
+                                </DropdownMenuItem>
+                            ))}
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                );
+            }
+
             const hasThinkingVariants = getModelVariantOptions(entry.providerID, entry.modelID).length > 0;
+            if (!hasThinkingVariants) return null;
             const mapKey = buildModelRefKey(entry.providerID, entry.modelID);
             const wasAdjusted = adjustedThinkingModels.has(mapKey);
-            if (!hasThinkingVariants || (!isHighlighted && !isSelected)) return null;
 
             const hasPendingVariant = pendingThinkingVariants.has(mapKey);
             const pendingVariant = pendingThinkingVariants.get(mapKey);
@@ -2464,8 +2698,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     labels={ompRoleSlotsLabels}
                                 />
                             ) : null}
+                            {ompCurrentModelExcluded ? (
+                                <div className="typography-meta flex items-center gap-1.5 border-b border-border/40 px-3 py-1.5 text-[color:var(--status-warning)]">
+                                    <Icon name="alert" className="size-3.5 flex-shrink-0" />
+                                    <span>{t('chat.modelControls.enabledWarning')}</span>
+                                </div>
+                            ) : null}
                             <ModelPickerList
-                                providers={providers as ModelPickerProvider[]}
+                                providers={ompFilteredProviders as ModelPickerProvider[]}
                                 favoriteModels={favoriteModelsList}
                                 recentModels={recentModelsList}
                                 modelsMetadata={useConfigStore.getState().modelsMetadata}
@@ -2690,9 +2930,67 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     };
 
     const renderVariantSelector = () => {
+        // GAP-06: under model roles the variant concept is replaced by the
+        // session thinking level. Options come from the models snapshot for
+        // the session's current model; no options → no slot (legacy slot is
+        // suppressed because variants are dead under roles).
+        if (ompModelRoles.modelRolesEnabled) {
+            if (!isReady || ompThinkingOptions.length === 0 || !currentSessionId) {
+                return null;
+            }
+            const activeLevel = ompThinkingState?.configured ?? ompThinkingState?.thinkingLevel ?? ompSessionModelBadge?.thinkingLevel ?? 'inherit';
+            const isDefault = activeLevel === 'inherit';
+            const colorClass = isDefault ? 'text-muted-foreground' : 'text-[color:var(--status-info)]';
+            const displayLevel = activeLevel.charAt(0).toUpperCase() + activeLevel.slice(1);
+            return (
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <div
+                            className={cn(
+                                'model-controls__variant-trigger flex items-center gap-1.5 transition-colors cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
+                                buttonHeight,
+                            )}
+                        >
+                            <Icon name="brain-ai-3" className={cn(controlIconSize, 'flex-shrink-0', colorClass)} />
+                            <span
+                                className={cn(
+                                    'model-controls__variant-label',
+                                    controlTextSize,
+                                    'font-medium min-w-0 truncate',
+                                    isDesktop ? 'max-w-[180px]' : undefined,
+                                    colorClass,
+                                )}
+                            >
+                                {displayLevel}
+                            </span>
+                        </div>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(200px,calc(100vw-2rem))]">
+                        <DropdownMenuLabel className="typography-ui-header font-semibold text-foreground">{t('chat.modelControls.thinking')}</DropdownMenuLabel>
+                        {ompThinkingOptions.map((level) => {
+                            const selected = (level === 'inherit' ? 'inherit' : level) === activeLevel;
+                            const label = level.charAt(0).toUpperCase() + level.slice(1);
+                            return (
+                                <DropdownMenuItem
+                                    key={level}
+                                    className="typography-meta"
+                                    onSelect={() => handleOmpThinkingSelect(level)}
+                                >
+                                    <div className="flex items-center justify-between gap-2 w-full min-w-0">
+                                        <span className="typography-meta font-medium text-foreground truncate min-w-0">{label}</span>
+                                        {selected && <Icon name="check" className="size-4 text-primary flex-shrink-0" />}
+                                    </div>
+                                </DropdownMenuItem>
+                            );
+                        })}
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            );
+        }
         if (!isReady || !hasVariants) {
             return null;
         }
+
 
         const displayVariant = currentVariant ?? t('chat.modelControls.default');
         const isDefault = !currentVariant;
@@ -2991,6 +3289,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         text: controlTextSize,
                         height: buttonHeight,
                     }}
+                    extraSection={(
+                        <>
+                            {ompModePersonaSection}
+                            {ompGoalSection}
+                        </>
+                    )}
                 />
             );
         }
@@ -3023,6 +3327,56 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         );
     };
 
+    // Persona chip (personas.v1, modes.v1 off): replaces the legacy agent
+    // selector. With modes on the mode chip stays and the persona list
+    // renders inside the mode dropdown instead (ompModePersonaSection).
+    const renderPersonaSelector = () => {
+        if (!isCompact) {
+            return (
+                <OmpPersonaSelector
+                    open={isReady && isPersonaSelectorOpen}
+                    onOpenChange={setIsPersonaSelectorOpen}
+                    options={ompPersonaOptions}
+                    selected={ompPersonaSelected}
+                    labels={ompPersonaLabels}
+                    onSelect={handlePersonaSelect}
+                    sizeVariant={{
+                        icon: controlIconSize,
+                        text: controlTextSize,
+                        height: buttonHeight,
+                    }}
+                />
+            );
+        }
+
+        return (
+            <button
+                type="button"
+                onClick={isReady ? () => setActiveMobilePanel('agent') : undefined}
+                disabled={!isReady}
+                aria-label={ompPersonaLabels.ariaLabel}
+                className={cn(
+                    'model-controls__persona-trigger flex items-center gap-1.5 transition-colors min-w-0 focus:outline-none',
+                    buttonHeight,
+                    isReady ? 'cursor-pointer hover:bg-transparent hover:opacity-70' : 'opacity-60 cursor-not-allowed',
+                )}
+            >
+                {isReady ? (
+                    <>
+                        <Icon name="user-3" className={cn(controlIconSize, 'flex-shrink-0 text-muted-foreground')} />
+                        <span className={cn('model-controls__persona-label font-medium truncate min-w-0', controlTextSize)}>
+                            {ompPersonaOptions.find((option) => option.value === ompPersonaSelected)?.label ?? ompPersonaLabels.standard}
+                        </span>
+                    </>
+                ) : (
+                    <span className={cn('model-controls__persona-label font-medium truncate min-w-0 text-muted-foreground', controlTextSize)}>
+                        {readinessLabel}
+                    </span>
+                )}
+            </button>
+        );
+    };
+
 
     const inlineClassName = cn(
         '@container/model-controls flex items-center min-w-0',
@@ -3044,7 +3398,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 >
                     {renderVariantSelector()}
                     {renderModelSelector()}
-                    {ompModelRoles.modesEnabled ? renderModeSelector() : renderAgentSelector()}
+                    {ompModelRoles.modesEnabled
+                        ? renderModeSelector()
+                        : ompModelRoles.personasEnabled ? renderPersonaSelector() : renderAgentSelector()}
                 </div>
             </div>
 

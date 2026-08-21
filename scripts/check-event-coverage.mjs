@@ -11,11 +11,13 @@
 //      public names, and every listed name exists in omp-event-registry.json.
 //   4. bootstrap matrix — every durable registry entry's snapshotEndpoints
 //      are covered by omp-bootstrap-matrix.json (断流不是空状态, D2).
-//   5. naming discipline — every `omp.<domain>.<event>` literal in packages/
-//      is registered and the `openchamber:omp` prefix never appears in code
-//      (master R1). Docs under docs/omp-parity are scanned too, but lines
-//      that quote deprecated names in historical/normative context
-//      (mapping tables, "废止/归一/禁止" rulings) are exempt.
+//   5. naming discipline — every standalone `omp.<domain>.<event>` literal
+//      in packages/ is registered and the `openchamber:omp` prefix never
+//      appears in code (master R1). Namespaced non-event strings such as
+//      i18n keys `dialogs.omp.ask.title` are intentionally excluded. Docs
+//      under docs/omp-parity are scanned too, but lines that quote deprecated
+//      names in historical/normative context (mapping tables,
+//      "废止/归一/禁止" rulings) are exempt.
 //
 // Usage: node scripts/check-event-coverage.mjs [--sdk-dist <dir>] [--skip-name-scan]
 
@@ -191,7 +193,7 @@ for (const [name, entry] of Object.entries(registry.events)) {
 
 // ---- 5. naming discipline ------------------------------------------------------
 if (!args.includes('--skip-name-scan')) {
-  const nameRe = /\bomp\.[a-z]+\.[a-z_]+\b/g;
+  const nameRe = /(?<![\w.])omp\.[a-z]+\.[a-z_]+\b/g;
   // Docs quote deprecated names in mapping tables and normative rulings
   const historicalLine = /禁止|废止|作废|归一|原草案|映射|→|统一命名|命名规约|沿革|零命中|已裁决|\(0\d v1\)|v1/;
   const scan = (absPath, relLabel, isDoc, isTestFile) => {

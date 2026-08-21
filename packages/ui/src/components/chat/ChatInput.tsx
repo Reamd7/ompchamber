@@ -45,6 +45,8 @@ import { cn } from "@/lib/utils";
 import { ModelControls } from './ModelControls';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { useOmpFeatureFlags, resolveSendAgent } from '@/hooks/useOmpModelRoles';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { useOmpCommandsForDirectory, useOmpCommandsStore } from '@/stores/useOmpCommandsStore';
 import { StatusRow } from './StatusRow';
 import { PendingChangesBar } from './PendingChangesBar';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
@@ -75,7 +77,7 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { togglePermissionAutoAccept } from './permissionAutoAccept';
 import { extractGitChangedFiles } from './changedFiles';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, type I18nKey, type I18nParams } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { fetchResponseStyleInstruction } from '@/lib/responseStyle';
 import { wrapSystemReminder } from '@/lib/systemReminder';
@@ -236,6 +238,24 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     return createChatDraftIdentity(getRuntimeKey(), directory, sessionId);
 };
 
+/**
+ * One-time migration notice when the omp engine reserves /debug (08 §5.4
+ * collision rules): the OpenChamber guided debug command is /troubleshoot
+ * from then on. Persisted per install so the nudge appears exactly once.
+ */
+const DEBUG_RENAME_TOAST_STORAGE_KEY = 'oc-omp-debug-rename-toast-shown';
+const notifyDebugRenamedOnce = (t: (key: I18nKey, params?: I18nParams) => string) => {
+    try {
+        if (window.localStorage.getItem(DEBUG_RENAME_TOAST_STORAGE_KEY) === '1') return;
+        window.localStorage.setItem(DEBUG_RENAME_TOAST_STORAGE_KEY, '1');
+    } catch {
+        // Private mode / storage unavailable: fall back to showing it again
+        // next time rather than blocking the notice entirely.
+    }
+    toast.info(t('chat.chatInput.toast.debugRenamed'));
+};
+
+
 const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom, active = true }) => {
     const { t } = useI18n();
     // Track if we restored a draft on mount (for text selection)
@@ -370,6 +390,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const isExpandedInput = useUIStore((state) => state.isExpandedInput);
     const setExpandedInput = useUIStore((state) => state.setExpandedInput);
     const setTimelineDialogOpen = useUIStore((state) => state.setTimelineDialogOpen);
+    const setSessionTreeDialogOpen = useUIStore((state) => state.setSessionTreeDialogOpen);
     const { git: runtimeGit, vscode: vscodeApi } = useRuntimeAPIs();
     const cycleAgentShortcutOverride = useUIStore((state) => state.shortcutOverrides.cycle_agent);
     const cycleAgentShortcut = React.useMemo(() => (
@@ -549,15 +570,27 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // matching /tokens in the composer, the same way confirmed @files are.
     const availableCommands = useCommandsStore((s) => s.commands);
     const availableSkills = useSkillsStore((s) => s.skills);
+    // omp layer (08 §5.4): discovery rows feed the token highlighter, and the
+    // tree capability adds the /tree local command (TUI parity — the omp
+    // builtin of the same name opens the selector there).
+    const ompTreeEnabled = useOmpFeatureEnabled('tree.v1');
+    const ompCommandRecords = useOmpCommandsForDirectory(currentDirectory ?? null);
+    const ompOwnsDebug = ompCommandRecords?.some((record) => record.name === 'debug') ?? false;
     const knownSlashNames = React.useMemo(() => {
         const names = new Set<string>([
             'init', 'review', 'undo', 'redo', 'timeline', 'compact', 'summary', 'workspace-review', 'plan-feature', 'craft-goal', 'schedule-task', 'catch-up', 'debug', 'weigh', 'explore',
         ]);
         if (!isMobile && !isVSCodeRuntime()) names.add('handoff-review');
+        if (ompTreeEnabled) names.add('tree');
+        if (ompOwnsDebug) names.add('troubleshoot');
         for (const command of availableCommands) names.add(command.name.toLowerCase());
         for (const skill of availableSkills) names.add(skill.name.toLowerCase());
+        for (const record of ompCommandRecords ?? []) {
+            names.add(record.name.toLowerCase());
+            for (const alias of record.aliases ?? []) names.add(alias.toLowerCase());
+        }
         return names;
-    }, [availableCommands, availableSkills, isMobile]);
+    }, [availableCommands, availableSkills, isMobile, ompCommandRecords, ompOwnsDebug, ompTreeEnabled]);
 
     const availableSnippets = useSnippetsStore((s) => s.snippets);
     const knownSnippetTriggers = React.useMemo(() => {
@@ -907,7 +940,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             sendConfig: currentProviderId && currentModelId ? {
                 providerID: currentProviderId,
                 modelID: currentModelId,
-                agent: resolveSendAgent(currentAgentName, ompFeatureFlags.modelRoles),
+                agent: resolveSendAgent(currentAgentName, ompFeatureFlags.modelRoles, ompFeatureFlags.personas),
                 variant: currentVariant ?? undefined,
             } : undefined,
         });
@@ -1001,9 +1034,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         const modelIdToSend = capturedSendConfig?.modelID ?? currentModelId;
         // Under model roles the wire agent field is not sent — new sessions
         // default to standard; explicit @agent mentions ride agentMentions.
+        // Under personas.v1 the field instead carries the explicit persona
+        // selection (or the 'build' standard sentinel when Standard was
+        // chosen explicitly).
         const agentNameToSend = resolveSendAgent(
             capturedSendConfig?.agent ?? currentAgentName,
             ompFeatureFlags.modelRoles,
+            ompFeatureFlags.personas,
         );
         const variantToSend = capturedSendConfig?.variant ?? currentVariant;
 
@@ -1145,6 +1182,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 setTimelineDialogOpen(true);
                 return;
             }
+            if (commandName === 'tree' && currentSessionId && ompTreeEnabled) {
+                setSessionTreeDialogOpen(true);
+                return;
+            }
             if (commandName === 'handoff-review' && currentSessionId && !isMobile && !isVSCodeRuntime()) {
                 setReviewDialogOpen(true);
                 return;
@@ -1160,9 +1201,21 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 return;
             }
 
-            // The rest render a visible prompt plus synthetic instructions and
-            // send them as one message.
-            const command = findMagicPromptCommand(commandName);
+            // Three-layer pipeline (08 §5.4): an engine-expandable omp
+            // command outranks the magic layer. Falling through sends the
+            // text to routeMessage, which routes engine commands through the
+            // command channel. /debug is the one magic name the omp engine
+            // reserves — it surfaces as /troubleshoot when omp owns it.
+            const ompCommands = useOmpCommandsStore.getState();
+            const ompLookupDirectory = currentDirectory ?? null;
+            const ompOwnsName = ompCommands.hasCommand(commandName, ompLookupDirectory);
+            const magicName = commandName === 'troubleshoot' && ompCommands.hasCommand('debug', ompLookupDirectory)
+                ? 'debug'
+                : commandName;
+            if (commandName === 'debug' && ompOwnsName) {
+                notifyDebugRenamedOnce(t);
+            }
+            const command = ompOwnsName ? null : findMagicPromptCommand(magicName);
             const commandIsAvailable = command !== null && canRunCommand(command, {
                 hasSession: Boolean(currentSessionId),
                 hasDraft: newSessionDraftOpen,

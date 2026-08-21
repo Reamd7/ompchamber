@@ -1,5 +1,5 @@
+import { hasOmpPendingDialogs } from "./useOmpDialogStore"
 import type { DisposeCheck, EvictPlan, State } from "./types"
-
 /**
  * Returns true when the directory's child store holds at least one pending
  * blocking request — a question awaiting an answer or a permission awaiting
@@ -21,6 +21,19 @@ export function hasPendingBlockingRequests(state: State | undefined): boolean {
     if (list && list.length > 0) return true
   }
   return false
+}
+
+/**
+ * Directory-keyed guard behind the child-store manager's eviction and
+ * dispose decisions: a directory is un-evictable while either signal of
+ * "the agent is waiting on the user" is live — the legacy permission/
+ * question records (kept until the P3 protocol removal) or a pending omp
+ * dialog in `useOmpDialogStore` (spec 03 §5.6.4). Evicting or disposing
+ * such a directory strands the request with no surface left to answer it.
+ */
+export function hasBlockingWorkForDirectory(directory: string, state: State | undefined): boolean {
+  if (hasPendingBlockingRequests(state)) return true
+  return hasOmpPendingDialogs(directory)
 }
 
 export function pickDirectoriesToEvict(input: EvictPlan) {

@@ -64,6 +64,12 @@ export interface OmpResyncContext {
    */
   refetchWire: (directory: string) => void;
   /**
+   * Dialogs consumer (spec 03 §5.6.2-2): receives the authoritative
+   * snapshot result per directory. `unavailable` skips (R2), failure keeps
+   * prior state (D2) — the consumer decides, the matrix only delivers.
+   */
+  consumeDialogs?: (directory: string, result: OmpFetchJsonResult<unknown>) => void;
+  /**
    * Test seam over runtimeFetch for omp GETs. Production default resolves
    * `{ok:false, unavailable:true}` for 404/501 and `{ok:false,
    * unavailable:false}` for transport failure.
@@ -153,7 +159,13 @@ export async function runOmpResync(
       } else if (scope === 'model') {
         fetches.push({ path: OMP_ENDPOINTS.models, query: { directory } });
       } else if (scope === 'dialogs') {
-        fetches.push({ path: OMP_ENDPOINTS.dialogs, query: { directory } });
+        if (context.consumeDialogs !== undefined) {
+          const result = await fetchOmpJson(OMP_ENDPOINTS.dialogs, { directory });
+          if (aborted()) return;
+          context.consumeDialogs(directory, result);
+        } else {
+          fetches.push({ path: OMP_ENDPOINTS.dialogs, query: { directory } });
+        }
       } else if (scope === 'settings') {
         fetches.push({ path: OMP_ENDPOINTS.settings, query: { directory } });
       } else if (scope === 'agents') {

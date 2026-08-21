@@ -5235,8 +5235,9 @@ const dispatchTrayAction = async (action) => {
     return;
   }
 
-  // Responding to a permission doesn't need to steal focus — just deliver it.
-  if (action.type === 'respond-permission') {
+  // Responding to a permission or an omp dialog doesn't need to steal focus —
+  // just deliver it to the renderer, which owns the respond I/O.
+  if (action.type === 'respond-permission' || action.type === 'respond-omp-dialog') {
     const target = (state.mainWindow && !state.mainWindow.isDestroyed())
       ? state.mainWindow
       : await revealMainWindow();

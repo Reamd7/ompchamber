@@ -16,19 +16,26 @@ import { useDirectoryStore } from "@/stores/useDirectoryStore";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 import { resolveProjectForSessionDirectory } from "@/lib/projectResolution";
 import { streamDebugEnabled } from "@/stores/utils/streamDebug";
-import { parseModelIdentifier } from "@/lib/modelIdentifier";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
 import { getSyncConfig, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
 import { getRuntimeKey } from "@/lib/runtime-switch";
 import { isOmpModelRolesEnabled } from "@/lib/omp/capabilityGate";
+import { resolveOmpDefaults } from "@/lib/omp-defaults";
+import {
+  FALLBACK_MODEL_ID,
+  FALLBACK_PROVIDER_ID,
+  hasProviderModel,
+  parseModelString,
+  resolveDefaultAgentModelSelection,
+  type ProviderModel,
+  type ProviderWithModelList,
+} from "./useConfigStore.cascade";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
 
-const FALLBACK_PROVIDER_ID = "opencode";
-const FALLBACK_MODEL_ID = "big-pickle";
 // Sentinel selectedProviderId used by the providers UI while the "Add provider"
 // form is open. It is intentionally not a real provider id and must not be
 // persisted as a stable provider selection.
@@ -172,14 +179,10 @@ const fetchOpenChamberDefaults = async (): Promise<OpenChamberDefaults> => {
     }
 };
 
-const parseModelString = (modelString: string): { providerId: string; modelId: string } | null => {
-    return parseModelIdentifier(modelString);
-};
 
 const normalizeProviderId = (value: string) => value?.toLowerCase?.() ?? '';
 
-type ProviderModel = Provider["models"][string];
-type ProviderWithModelList = Omit<Provider, "models"> & { models: ProviderModel[] };
+
 
 type GitModelSelection = { providerId: string; modelId: string };
 type ProviderModelSelection = { providerId: string; modelId: string; variant?: string } | null;
@@ -200,17 +203,6 @@ const normalizeOptionalString = (value: unknown): string | undefined => {
     return trimmed.length > 0 ? trimmed : undefined;
 };
 
-const hasProviderModel = (
-    providers: ProviderWithModelList[],
-    providerId: string,
-    modelId: string
-): boolean => {
-    const provider = providers.find((item) => item.id === providerId);
-    if (!provider) {
-        return false;
-    }
-    return provider.models.some((model) => model.id === modelId);
-};
 
 const resolveProviderModelSelection = ({
     providers,
@@ -249,6 +241,12 @@ const resolveProviderModelSelection = ({
         };
     }
 
+    if (isOmpModelRolesEnabled()) {
+        // Model roles: an invalid/absent current selection stays unpinned —
+        // no legacy settings default and no first-provider fallback.
+        return null;
+    }
+
     if (settingsDefaultModel) {
         const parsed = parseModelString(settingsDefaultModel);
         if (parsed && hasProviderModel(providers, parsed.providerId, parsed.modelId)) {
@@ -273,135 +271,6 @@ const resolveProviderModelSelection = ({
     return null;
 };
 
-type DefaultAgentModelSelection = {
-    agentName: string | undefined;
-    providerId?: string;
-    modelId?: string;
-    variant?: string;
-};
-
-// Shared default-selection cascade used both at startup (loadAgents) and when opening a
-// fresh draft (applyDefaultModelAgentSelection), so the two paths stay identical.
-//
-//   Agent: settings.defaultAgent → opencode default_agent → build → first primary → first
-//   Model: project.defaultModel → settings.defaultModel → resolved agent's pinned model+variant → opencode config.model
-//          → opencode/big-pickle → first
-//
-// The opencode default_agent / default model (config fields on the OpenCode server) are honored
-// only when our own settings have no valid default. OpenCode itself resolves a model the same way:
-// an agent's pinned model wins, otherwise the global `model` config applies — so we check the
-// agent's model before opencodeDefaultModel. When the agent supplies the model, its `variant` is
-// carried through too (if the model actually exposes that variant).
-const resolveDefaultAgentModelSelection = ({
-    agents,
-    providers,
-    projectDefaultModel,
-    settingsDefaultAgent,
-    settingsDefaultModel,
-    settingsDefaultVariant,
-    opencodeDefaultAgent,
-    opencodeDefaultModel,
-}: {
-    agents: Agent[];
-    providers: ProviderWithModelList[];
-    projectDefaultModel?: string;
-    settingsDefaultAgent?: string;
-    settingsDefaultModel?: string;
-    settingsDefaultVariant?: string;
-    opencodeDefaultAgent?: string;
-    opencodeDefaultModel?: string;
-}): DefaultAgentModelSelection => {
-    if (agents.length === 0) {
-        return { agentName: undefined };
-    }
-
-    const resolveVariant = (providerId: string, modelId: string, variant?: string): string | undefined => {
-        if (!variant) {
-            return undefined;
-        }
-        const model = providers
-            .find((provider) => provider.id === providerId)
-            ?.models.find((entry) => entry.id === modelId) as { variants?: Record<string, unknown> } | undefined;
-        return model?.variants && Object.prototype.hasOwnProperty.call(model.variants, variant)
-            ? variant
-            : undefined;
-    };
-
-    // --- Agent cascade ---
-    // Under the omp model-roles capability there is no default agent: the
-    // build/plan dichotomy is retired (master D3 row 1) and sessions run
-    // standard, so the cascade must not synthesize one. Probe unresolved →
-    // legacy behavior.
-    const ompModelRoles = isOmpModelRolesEnabled();
-
-    let resolvedAgent: Agent | undefined;
-    if (!ompModelRoles) {
-        const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
-        if (settingsDefaultAgent) {
-            resolvedAgent = agents.find((agent) => agent.name === settingsDefaultAgent);
-        }
-        if (!resolvedAgent && opencodeDefaultAgent) {
-            const candidate = agents.find((agent) => agent.name === opencodeDefaultAgent);
-            // OpenCode requires the default agent to be a visible primary agent.
-            if (candidate && isPrimaryMode(candidate.mode) && candidate.hidden !== true) {
-                resolvedAgent = candidate;
-            }
-        }
-        if (!resolvedAgent) {
-            resolvedAgent = primaryAgents.find((agent) => agent.name === "build") || primaryAgents[0] || agents[0];
-        }
-    }
-
-
-    // --- Model cascade ---
-    let providerId: string | undefined;
-    let modelId: string | undefined;
-    let variant: string | undefined;
-
-    const effectiveDefaultModel = projectDefaultModel || settingsDefaultModel;
-
-    if (effectiveDefaultModel) {
-        const parsed = parseModelString(effectiveDefaultModel);
-        if (parsed && hasProviderModel(providers, parsed.providerId, parsed.modelId)) {
-            providerId = parsed.providerId;
-            modelId = parsed.modelId;
-            variant = resolveVariant(providerId, modelId, projectDefaultModel ? undefined : settingsDefaultVariant);
-        }
-    }
-    if (!providerId
-        && resolvedAgent?.model?.providerID
-        && resolvedAgent.model?.modelID
-        && hasProviderModel(providers, resolvedAgent.model.providerID, resolvedAgent.model.modelID)) {
-        providerId = resolvedAgent.model.providerID;
-        modelId = resolvedAgent.model.modelID;
-        variant = resolveVariant(providerId, modelId, resolvedAgent.variant);
-    }
-
-    // OpenCode's global default model — used when neither our settings nor the agent pin a model.
-    if (!providerId && opencodeDefaultModel) {
-        const parsed = parseModelString(opencodeDefaultModel);
-        if (parsed && hasProviderModel(providers, parsed.providerId, parsed.modelId)) {
-            providerId = parsed.providerId;
-            modelId = parsed.modelId;
-        }
-    }
-
-    if (!providerId) {
-        if (hasProviderModel(providers, FALLBACK_PROVIDER_ID, FALLBACK_MODEL_ID)) {
-            providerId = FALLBACK_PROVIDER_ID;
-            modelId = FALLBACK_MODEL_ID;
-        } else {
-            const firstProvider = providers[0];
-            const firstModel = firstProvider?.models[0];
-            if (firstProvider && firstModel) {
-                providerId = firstProvider.id;
-                modelId = firstModel.id;
-            }
-        }
-    }
-
-    return { agentName: resolvedAgent?.name, providerId, modelId, variant };
-};
 
 const resolveGitGenerationModelSelection = ({
     providers,
@@ -1106,7 +975,7 @@ interface ConfigStore {
     cycleCurrentVariant: () => void;
     getCurrentModelVariants: () => string[];
     setAgent: (agentName: string | undefined) => void;
-    applyDefaultModelAgentSelection: (options?: { projectDefaultModel?: string }) => void;
+    applyDefaultModelAgentSelection: (options?: { projectDefaultModel?: string; ompDefaultModel?: { providerId: string; modelId: string } }) => void;
     applyOpenCodeConfigDefaults: (directory?: string | null, source?: string, config?: Config) => void;
     setSelectedProvider: (providerId: string) => void;
     setSettingsDefaultModel: (model: string | undefined) => void;
@@ -1715,7 +1584,7 @@ export const useConfigStore = create<ConfigStore>()(
                             nextState.providers = previousProviders;
                             nextState.defaultProviders = previousDefaults;
 
-                            if (!state.currentProviderId && !state.currentModelId && state.settingsDefaultModel) {
+                            if (!state.currentProviderId && !state.currentModelId && state.settingsDefaultModel && !isOmpModelRolesEnabled()) {
                                 const parsed = parseModelString(state.settingsDefaultModel);
                                 if (parsed) {
                                     const settingsProvider = previousProviders.find((p) => p.id === parsed.providerId);
@@ -2204,9 +2073,11 @@ export const useConfigStore = create<ConfigStore>()(
                                 }
                             }
 
-                            // Resolve agent + model via the shared cascade:
-                            //   settings.defaultAgent → opencode default_agent → build → first primary → first
-                            //   settings.defaultModel → resolved agent's model+variant → opencode/big-pickle → first
+                            // Resolve agent + model via the shared cascade. Under the
+                            // model-roles capability the omp face (roles.default for
+                            // this directory) is the only default-model input; the
+                            // legacy layers apply only when the capability is off.
+                            const ompDefaults = await resolveOmpDefaults(configDirectory);
                             const resolvedDefault = resolveDefaultAgentModelSelection({
                                 agents: safeAgents,
                                 providers,
@@ -2215,6 +2086,9 @@ export const useConfigStore = create<ConfigStore>()(
                                 settingsDefaultVariant: openChamberDefaults.defaultVariant,
                                 opencodeDefaultAgent,
                                 opencodeDefaultModel,
+                                ...(ompDefaults.modelRolesEnabled && ompDefaults.model
+                                    ? { ompDefaultModel: { providerId: ompDefaults.model.providerID, modelId: ompDefaults.model.modelID } }
+                                    : {}),
                             });
                             // Model-roles gate: no default agent is synthesized, and the
                             // fallback below must not resurrect the build/plan dichotomy.
@@ -2546,8 +2420,9 @@ export const useConfigStore = create<ConfigStore>()(
                             }
                         }
 
-                        // If the agent has no preferred model, use settings default.
-                        if (settingsDefaultModel) {
+                        // If the agent has no preferred model, use settings default
+                        // (legacy row only — model roles own default resolution).
+                        if (settingsDefaultModel && !isOmpModelRolesEnabled()) {
                             const parsed = parseModelString(settingsDefaultModel);
                             if (parsed) {
                                 const settingsProvider = providers.find((p) => p.id === parsed.providerId);
@@ -2596,6 +2471,7 @@ export const useConfigStore = create<ConfigStore>()(
                         settingsDefaultVariant,
                         opencodeDefaultAgent,
                         opencodeDefaultModel,
+                        ...(options?.ompDefaultModel ? { ompDefaultModel: options.ompDefaultModel } : {}),
                     });
 
                     // No agent under the model-roles gate is expected — the

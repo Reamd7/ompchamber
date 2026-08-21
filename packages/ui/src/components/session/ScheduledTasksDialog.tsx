@@ -705,6 +705,7 @@ export function ScheduledTasksDialog() {
       <ScheduledTaskEditorDialog
         open={editorOpen}
         task={editorTask}
+        projectDirectory={selectedProject?.path ?? null}
         onOpenChange={setEditorOpen}
         onSave={handleSaveTask}
       />

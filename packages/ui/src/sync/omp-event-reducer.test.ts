@@ -221,3 +221,74 @@ describe('applyOmpEvent — usage telemetry', () => {
     expect((draft.telemetry.ses_1?.[0]?.usage as { output: number }).output).toBe(12);
   });
 });
+
+describe('applyOmpEvent — dialogs (spec 03 §5.6.3)', () => {
+  const approvalPayload = {
+    dialog: {
+      id: 'dlg_a',
+      sessionId: 'ses_1',
+      createdAt: 100,
+      kind: 'approval',
+      approval: { prompt: 'Allow bash?', toolName: 'bash', tier: 'write' },
+    },
+  };
+
+  test('requested parses the dialog and emits the effect, advancing the id gate', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({ id: 7, type: 'omp.dialog.requested', payload: approvalPayload }));
+    expect(outcome.changed).toBe(true);
+    expect(draft.lastAppliedEventId).toBe(7);
+    expect(draft.domains.lastEventId).toBe(7);
+    expect(outcome.effects).toEqual([{
+      kind: 'dialog-requested',
+      dialog: {
+        id: 'dlg_a', sessionId: 'ses_1', createdAt: 100, kind: 'approval',
+        approval: { prompt: 'Allow bash?', toolName: 'bash', tier: 'write' },
+      },
+    }]);
+  });
+
+  test('requested with a malformed dialog is consumed with no state change', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({ id: 8, type: 'omp.dialog.requested', payload: { dialog: { kind: 'approval' } } }));
+    expect(outcome.effects).toEqual([]);
+    expect(draft.lastAppliedEventId).toBe(8);
+  });
+
+  test('settled emits the settle effect with outcome', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({
+      id: 9, type: 'omp.dialog.settled',
+      payload: { dialogId: 'dlg_a', sessionId: 'ses_1', outcome: 'responded' },
+    }));
+    expect(outcome.effects).toEqual([{ kind: 'dialog-settled', dialogId: 'dlg_a', sessionId: 'ses_1', outcome: 'responded' }]);
+  });
+
+  test('ask payload parses through the effect boundary (multi/recommended preserved)', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({
+      id: 10, type: 'omp.dialog.requested',
+      payload: {
+        dialog: {
+          id: 'dlg_b', sessionId: 'ses_1', createdAt: 200, kind: 'ask',
+          ask: {
+            questions: [{
+              id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B', description: 'second' }],
+              multi: true, recommended: 'A',
+            }],
+            timeoutMs: 0,
+          },
+        },
+      },
+    }));
+    const effect = outcome.effects[0];
+    expect(effect?.kind).toBe('dialog-requested');
+    if (effect?.kind !== 'dialog-requested' || effect.dialog.kind !== 'ask') {
+      throw new Error('expected parsed ask dialog effect');
+    }
+    expect(effect.dialog.ask.questions[0]).toEqual({
+      id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B', description: 'second' }],
+      multi: true, recommended: 'A',
+    });
+  });
+});

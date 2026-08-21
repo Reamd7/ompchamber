@@ -160,6 +160,12 @@ interface OmpModeSelectorProps {
   labels: OmpModeSelectorLabels;
   onSelect: (value: string) => void;
   sizeVariant?: { icon: string; text: string; height: string };
+  /**
+   * Optional extra section rendered below the mode options — used for the
+   * persona list when personas.v1 is also on (02 §5.1 D-B2: the mode chip
+   * stays and persona moves into the mode menu).
+   */
+  extraSection?: React.ReactNode;
 }
 
 /** Desktop inline chip + dropdown; state is owned by the embedder. */
@@ -175,6 +181,7 @@ export const OmpModeSelector: React.FC<OmpModeSelectorProps> = ({
   labels,
   onSelect,
   sizeVariant,
+  extraSection,
 }) => {
   const effective = pending ?? mode ?? 'none';
   const iconClass = sizeVariant?.icon ?? 'size-4';
@@ -211,6 +218,7 @@ export const OmpModeSelector: React.FC<OmpModeSelectorProps> = ({
             labels={labels}
             onSelect={onSelect}
           />
+          {extraSection ?? null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

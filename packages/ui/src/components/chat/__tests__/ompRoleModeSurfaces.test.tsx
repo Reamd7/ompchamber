@@ -112,6 +112,24 @@ describe('createOmpModelsAPI.getModels', () => {
     });
     expect(await malformed.getModels({ directory: '/repo' })).toEqual({ ok: false, unavailable: false });
   });
+
+  test('POSTs an explicit session-only model switch with directory scope', async () => {
+    const calls: Array<{ path: string; method: string; query?: Record<string, string>; body?: string }> = [];
+    const api = createOmpModelsAPI({
+      fetchImpl: (async (path: string, init?: RequestInit & { query?: Record<string, string> }) => {
+        calls.push({ path, method: init?.method ?? 'GET', query: init?.query, body: init?.body as string | undefined });
+        return new Response(JSON.stringify({ ok: true, model: 'prov/next' }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    expect(await api.setSessionModel('ses_1', { providerID: 'prov', modelID: 'next' }, { directory: '/repo' }))
+      .toEqual({ ok: true, model: 'prov/next' });
+    expect(calls).toEqual([{
+      path: '/api/omp/sessions/ses_1/model',
+      method: 'POST',
+      query: { directory: '/repo' },
+      body: JSON.stringify({ model: { providerID: 'prov', modelID: 'next' } }),
+    }]);
+  });
 });
 
 describe('createOmpModesAPI.setMode (POST /api/omp/sessions/{id}/mode)', () => {
@@ -168,12 +186,15 @@ describe('buildRoleSlots', () => {
   test('cycle order first, hidden roles filtered, model + thinking carried', () => {
     const slots = buildRoleSlots(HEALTHY_SNAPSHOT as never);
     expect(slots.map((slot) => slot.id)).toEqual(['smol', 'default', 'slow']);
+    // `source` (global/project) now rides along for the settings roles
+    // editor's source badges (batch 3, spec 06 §5.7).
     expect(slots[0]).toEqual({
       id: 'smol',
       name: 'Fast',
       tag: 'SMOL',
       configured: true,
       model: { provider: 'prov', id: 'fast' },
+      source: 'global',
     });
     expect(slots[1]?.model).toEqual({ provider: 'prov', id: 'main', thinkingLevel: 'high' });
     // 'slow' appears in cycleOrder but has no assignment → unconfigured slot.
@@ -251,17 +272,38 @@ describe('composer wiring follows the gate', () => {
   });
 
   test('useConfigStore cascade drops the build fallback under the gate; ModelControls swaps surfaces', () => {
-    const store = readFileSync(join(__dirname, '..', '..', '..', 'stores', 'useConfigStore.ts'), 'utf8');
-    expect(store).toContain('const ompModelRoles = isOmpModelRolesEnabled();');
-    expect(store.includes('let resolvedAgent: Agent | undefined;')).toBe(true);
-    expect(store.includes('if (!ompModelRoles) {')).toBe(true);
+    // The cascade moved to its own module (useConfigStore.cascade.ts) when it
+    // gained the omp roles.default input (06 F2 / 01 GAP-01).
+    const cascade = readFileSync(join(__dirname, '..', '..', '..', 'stores', 'useConfigStore.cascade.ts'), 'utf8');
+    expect(cascade).toContain('const ompModelRoles = isOmpModelRolesEnabled();');
+    expect(cascade.includes('let resolvedAgent: Agent | undefined;')).toBe(true);
+    expect(cascade.includes('if (!ompModelRoles) {')).toBe(true);
 
     const controls = readFileSync(join(__dirname, '..', 'ModelControls.tsx'), 'utf8');
     // Capability on → mode selector replaces the agent chip; off → unchanged.
-    expect(controls).toContain('{ompModelRoles.modesEnabled ? renderModeSelector() : renderAgentSelector()}');
+    expect(controls).toContain('ompModelRoles.personasEnabled ? renderPersonaSelector() : renderAgentSelector()');
     // Role slots render only from an authoritative snapshot.
     expect(controls).toContain('{ompModelRoles.modelRolesEnabled ? (');
     // The agent restore path does not resurrect the server-stamped 'build'.
     expect(controls).toContain('!ompModelRoles.modesEnabled && latestLoadedUserChoice.agent');
+  });
+
+  test('GAP-06 thinking slot replaces variants; GAP-05 row role-assign; GAP-10 enabledModels filter', () => {
+    const controls = readFileSync(join(__dirname, '..', 'ModelControls.tsx'), 'utf8');
+    // GAP-06: under roles the variant trigger becomes a thinking-level slot
+    // fed by the session model badge + models snapshot.
+    expect(controls).toContain("if (ompModelRoles.modelRolesEnabled) {");
+    expect(controls).toContain("['inherit', 'off', 'auto', ...entry.thinking.supported]");
+    expect(controls).toContain('handleOmpThinkingSelect(level)');
+    // GAP-05 tail: per-row role assignment commits through the settings face.
+    expect(controls).toContain('handleAssignRole(entry, slot)');
+    expect(controls).toContain("value: `${entry.providerID}/${entry.modelID}`");
+    // GAP-10: enabledModels patterns restrict both pickers; the excluded
+    // current model renders a warning row.
+    expect(controls).toContain('ompFilteredProviders as ModelPickerProvider[]');
+    expect(controls).toContain('ompCurrentModelExcluded ? (');
+
+    const matcher = readFileSync(join(__dirname, '..', '..', '..', 'lib', 'omp', 'enabledModels.ts'), 'utf8');
+    expect(matcher).toContain('export const createEnabledModelsMatcher');
   });
 });

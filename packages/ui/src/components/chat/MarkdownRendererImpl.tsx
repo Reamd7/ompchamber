@@ -12,7 +12,9 @@ import type { Theme } from '@/types/theme';
 import type { ToolPopupContent } from './message/types';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { useUIStore } from '@/stores/useUIStore';
-import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { openInternalUriViewer } from '@/stores/useInternalUriViewerStore';
+ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { EditorAPI } from '@/lib/api/types';
 import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
@@ -42,7 +44,8 @@ import {
   parseFileReference,
   type ParsedFileReference,
 } from './fileReferenceParser';
-import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
+import { findInternalUriMatches, URI_V1_ENABLED_SCHEMES, type InternalUriTextMatch } from './markdown/internalUri';
+ import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 
 const useCurrentMermaidTheme = () => {
   const themeSystem = useOptionalThemeSystem();
@@ -147,6 +150,8 @@ const FILE_LINK_SELECTOR = '[data-openchamber-file-link="true"]';
 const BLOCK_PATH_TOKEN_ATTR = 'data-openchamber-block-path-token';
 const BLOCK_PATH_TOKEN_SELECTOR = `[${BLOCK_PATH_TOKEN_ATTR}]`;
 const CODE_BLOCK_PATH_SCANNED_ATTR = 'data-openchamber-block-paths-scanned';
+const INTERNAL_URI_ATTR = 'data-openchamber-internal-uri';
+const INTERNAL_URI_SELECTOR = `[${INTERNAL_URI_ATTR}]`;
 // Matches `path[:line[:col]]` or `path:start-end` inside shell/grep-style
 // output. The regex is defined in `./fileReferenceParser`; the inline-code
 // pipeline reads full text content rather than using this regex.
@@ -256,6 +261,74 @@ const extractPathCandidateFromElement = (element: HTMLElement): string => {
   }
 
   return (element.textContent || '').trim();
+};
+
+// Promotes bare `local://…` text (any enabled internal scheme) into clickable
+// spans carrying INTERNAL_URI_ATTR — the bare-text half of the spec 04 §5.2.5
+// link contract, run inside the same debounced pass as the file-reference
+// annotation. Explicit markdown links are excluded: the marked link renderer
+// already emitted anchors for them. Idempotent: already-promoted spans are
+// skipped, so observer-triggered re-runs settle without further mutation.
+const unwrapInternalUriTokens = (container: HTMLElement): void => {
+  for (const element of Array.from(container.querySelectorAll<HTMLElement>(INTERNAL_URI_SELECTOR))) {
+    const parent = element.parentNode;
+    if (parent === null) continue;
+    parent.replaceChild(document.createTextNode(element.textContent ?? ''), element);
+    parent.normalize();
+  }
+};
+
+const wrapInternalUriTokens = (
+  container: HTMLElement,
+  schemes: readonly string[],
+  linkLimit: number,
+  title: string,
+): void => {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Text) {
+      const value = node.nodeValue ?? '';
+      if (value.indexOf('://') === -1) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (parent === null || parent.closest('a') !== null || parent.closest(INTERNAL_URI_SELECTOR) !== null) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  // Collect first, mutate after — splitting text nodes while walking them
+  // would revisit the fragments.
+  const targets: Array<{ node: Text; matches: InternalUriTextMatch[] }> = [];
+  let promoted = 0;
+  let scanned = 0;
+  for (let node = walker.nextNode(); node !== null && promoted < linkLimit && scanned < MAX_BLOCK_CODE_SCAN_LENGTH; node = walker.nextNode()) {
+    const text = node as Text;
+    const value = text.nodeValue ?? '';
+    scanned += value.length;
+    const matches = findInternalUriMatches(value, schemes);
+    if (matches.length === 0) continue;
+    promoted += matches.length;
+    targets.push({ node: text, matches });
+  }
+
+  for (const { node, matches } of targets) {
+    // Backwards so each split leaves earlier match indices valid inside the
+    // shrinking head node.
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const match = matches[index];
+      if (match === undefined) continue;
+      const after = node.splitText(match.end);
+      const uriNode = node.splitText(match.start);
+      const span = document.createElement('span');
+      span.setAttribute(INTERNAL_URI_ATTR, match.url);
+      span.setAttribute('role', 'button');
+      span.setAttribute('tabindex', '0');
+      span.setAttribute('title', title);
+      span.className = 'text-primary hover:underline';
+      span.appendChild(uriNode);
+      node.parentNode?.insertBefore(span, after);
+    }
+  }
 };
 
 // Walks text nodes inside `<pre><code>` subtrees and wraps any substring that
@@ -426,12 +499,17 @@ const useFileReferenceInteractions = ({
   editor,
   preferRuntimeEditor,
   enabled,
+  internalUriSchemes,
+  internalUriTitle,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   effectiveDirectory: string;
   editor?: EditorAPI;
   preferRuntimeEditor?: boolean;
   enabled: boolean;
+  /** Capability-enabled internal URI schemes (null = feature off; no uplift). */
+  internalUriSchemes: readonly string[] | null;
+  internalUriTitle: string;
 }) => {
   const annotationDebounceRef = React.useRef<number | null>(null);
 
@@ -467,6 +545,7 @@ const useFileReferenceInteractions = ({
         clearFileLinkAttributes(candidate);
       }
       unwrapBlockCodePathTokens(container);
+      unwrapInternalUriTokens(container);
     };
 
     if (!fileReferencesEnabled) {
@@ -495,6 +574,9 @@ const useFileReferenceInteractions = ({
     const annotateFileLinks = () => {
       if (fileReferencesEnabled) {
         wrapBlockCodePathTokens(container);
+        if (internalUriSchemes !== null) {
+          wrapInternalUriTokens(container, internalUriSchemes, fileReferenceLinkLimit, internalUriTitle);
+        }
       }
       const candidates = container.querySelectorAll<HTMLElement>(
         `[data-markdown="inline-code"], a, ${BLOCK_PATH_TOKEN_SELECTOR}`,
@@ -642,7 +724,68 @@ const useFileReferenceInteractions = ({
       container.removeEventListener('click', handleClick);
       container.removeEventListener('keydown', handleKeyDown);
     };
-  }, [containerRef, editor, effectiveDirectory, preferRuntimeEditor, enabled]);
+
+  }, [containerRef, editor, effectiveDirectory, preferRuntimeEditor, enabled, internalUriSchemes, internalUriTitle]);
+};
+
+// Delegated open handler for both internal-URI shapes: explicit markdown
+// anchors (href + data attr, emitted by the marked link renderer) and
+// bare-text promoted spans (data attr only). Nothing fires while the
+// capability is off — no listener is attached at all.
+const useInternalUriInteractions = ({
+  containerRef,
+  enabled,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  enabled: boolean;
+}) => {
+  React.useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const openFromTarget = (target: EventTarget | null, event: Event): void => {
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const holder = target.closest(INTERNAL_URI_SELECTOR);
+      if (!(holder instanceof HTMLElement)) {
+        return;
+      }
+      const url = holder.getAttribute(INTERNAL_URI_ATTR);
+      if (!url) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      openInternalUriViewer(url);
+    };
+
+    const handleClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+        return;
+      }
+      openFromTarget(event.target, event);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      openFromTarget(event.target, event);
+    };
+
+    container.addEventListener('click', handleClick);
+    container.addEventListener('keydown', handleKeyDown);
+    return () => {
+      container.removeEventListener('click', handleClick);
+      container.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [containerRef, enabled]);
 };
 
 const useMermaidInlineInteractions = ({
@@ -830,13 +973,13 @@ const useDecorateContext = (
 };
 
 // Runs the async render pipeline into the container and keeps a stable
-// delegated interaction listener attached.
 const useMorphdomMarkdown = ({
   containerRef,
   text,
   streaming,
   cacheKey,
   imageMode = 'inline',
+  internalUriSchemes = null,
   syntaxVars,
   ctx,
 }: {
@@ -845,6 +988,8 @@ const useMorphdomMarkdown = ({
   streaming: boolean;
   cacheKey: string;
   imageMode?: MarkdownImageMode;
+  /** Capability-enabled internal URI schemes; also part of the caller's cacheKey. */
+  internalUriSchemes?: readonly string[] | null;
   syntaxVars: Record<string, string>;
   ctx: DecorateContext;
 }) => {
@@ -906,7 +1051,7 @@ const useMorphdomMarkdown = ({
       // `display:contents` keeps margin-collapsing/spacing identical to a flat
       // HTML body — the wrapper exists only for per-block reconciliation.
       block.style.display = 'contents';
-      block.innerHTML = renderMarkdownSync(text, imageMode);
+      block.innerHTML = renderMarkdownSync(text, imageMode, internalUriSchemes);
       // Decorate synchronously too: wrap code blocks in their framed card,
       // mark inline code, build table controls, etc. The async pass re-decorates
       // its own DOM before morphing, so without this the first paint shows bare
@@ -918,7 +1063,7 @@ const useMorphdomMarkdown = ({
         refreshMermaidViewers();
       }
     }
-  }, [containerRef, text, imageMode, ctx, refreshMermaidViewers]);
+  }, [containerRef, text, imageMode, internalUriSchemes, ctx, refreshMermaidViewers]);
 
   React.useEffect(() => () => {
     mermaidViewerRef.current?.cleanup();
@@ -931,7 +1076,7 @@ const useMorphdomMarkdown = ({
     const target = container.querySelector<HTMLElement>('[data-markdown-content]') ?? container;
     let active = true;
 
-    void renderMarkdownBlocks(text, streaming, cacheKey, imageMode).then((blocks) => {
+    void renderMarkdownBlocks(text, streaming, cacheKey, imageMode, internalUriSchemes).then((blocks) => {
       if (!active) return;
       const existing = Array.from(target.children) as HTMLElement[];
 
@@ -982,7 +1127,7 @@ const useMorphdomMarkdown = ({
     return () => {
       active = false;
     };
-  }, [containerRef, text, streaming, cacheKey, imageMode, ctx, refreshMermaidViewers]);
+  }, [containerRef, text, streaming, cacheKey, imageMode, internalUriSchemes, ctx, refreshMermaidViewers]);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -1035,9 +1180,15 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
   streamPerfObserve('ui.markdown_renderer.content_len', content.length);
   const currentTheme = useCurrentMermaidTheme();
   const { editor, runtime } = useRuntimeAPIs();
+  const { t } = useI18n();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const openContextPreview = useUIStore((state) => state.openContextPreview);
+  // uri.v1 gates internal-URI linkification end to end (spec 04 §5.2.5):
+  // off ⇒ no anchors, no bare-text uplift, no click handling — transcripts
+  // render exactly as they did before the feature.
+  const internalUrisEnabled = useOmpFeatureEnabled('uri.v1');
+  const internalUriSchemes = internalUrisEnabled ? URI_V1_ENABLED_SCHEMES : null;
 
   const handlePreviewLoopback = React.useCallback((url: string) => {
     if (!effectiveDirectory) return;
@@ -1058,12 +1209,15 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
     editor,
     preferRuntimeEditor: runtime.isVSCode,
     enabled: enableFileReferences && !isStreaming,
+    internalUriSchemes,
+    internalUriTitle: t('dialogs.internalUri.linkTitle'),
   });
+  useInternalUriInteractions({ containerRef, enabled: internalUrisEnabled });
   useExternalLinkInteractions({ containerRef });
 
   const syntaxVars = React.useMemo(() => getMarkdownSyntaxVars(currentTheme), [currentTheme]);
   const ctx = useDecorateContext(currentTheme, live, effectiveDirectory ? handlePreviewLoopback : undefined, DEFAULT_MERMAID_CONTROLS);
-  const cacheKey = `markdown-${part?.id ? `part-${part.id}` : `message-${messageId}`}`;
+  const cacheKey = `markdown-${part?.id ? `part-${part.id}` : `message-${messageId}`}${internalUriSchemes !== null ? ':iu' : ''}`;
 
   useMorphdomMarkdown({
     containerRef,
@@ -1128,9 +1282,12 @@ const SimpleMarkdownRendererImpl: React.FC<{
   enableFileReferences = true,
 }) => {
   const { editor, runtime } = useRuntimeAPIs();
+  const { t } = useI18n();
   const currentTheme = useCurrentMermaidTheme();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
+  const internalUrisEnabled = useOmpFeatureEnabled('uri.v1');
+  const internalUriSchemes = internalUrisEnabled ? URI_V1_ENABLED_SCHEMES : null;
 
   const renderedContent = React.useMemo(
     () => (stripFrontmatter ? stripLeadingFrontmatter(content) : content),
@@ -1150,7 +1307,10 @@ const SimpleMarkdownRendererImpl: React.FC<{
     editor,
     preferRuntimeEditor: runtime.isVSCode,
     enabled: enableFileReferences,
+    internalUriSchemes,
+    internalUriTitle: t('dialogs.internalUri.linkTitle'),
   });
+  useInternalUriInteractions({ containerRef, enabled: internalUrisEnabled });
   useExternalLinkInteractions({ containerRef, enabled: !disableLinkSafety });
 
   const syntaxVars = React.useMemo(() => getMarkdownSyntaxVars(currentTheme), [currentTheme]);
@@ -1160,7 +1320,8 @@ const SimpleMarkdownRendererImpl: React.FC<{
     containerRef,
     text: renderedContent,
     streaming: false,
-    cacheKey: `simple:${variant}`,
+    cacheKey: `simple:${variant}${internalUriSchemes !== null ? ':iu' : ''}`,
+    internalUriSchemes,
     syntaxVars,
     ctx,
   });

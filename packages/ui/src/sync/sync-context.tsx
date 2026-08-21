@@ -8,9 +8,12 @@ import type { OpencodeClient } from '@/lib/opencode/wire'
 import { createEventPipeline } from "./event-pipeline"
 import { createOmpEventPipeline } from "./omp-event-pipeline"
 import { useOmpSessionStore } from "./useOmpSessionStore"
+import { useOmpDialogStore } from "./useOmpDialogStore"
+import { ompDialogController } from "./omp-dialog-controller"
 import { showOmpNoticeToast } from "./omp-notice-toast"
 import type { OmpEventEffect } from "./omp-event-reducer"
-import { OMP_ENDPOINTS } from "@/lib/api/omp"
+import { OMP_ENDPOINTS, parseOmpDialogsSnapshotPayload } from "@/lib/api/omp"
+import { formatMessage, useI18nStore } from "@/lib/i18n/store"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { isVSCodeRuntime } from "@/lib/desktop"
 import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
@@ -1447,6 +1450,7 @@ export function handleEvent(
     const sessionID = getSessionIdFromPayload(payload)
     if (sessionID && directory && directory !== "global") {
       cleanupPersistedSessionState({ runtimeKey: expectedRuntimeKey, directory, sessionId: sessionID })
+      useOmpDialogStore.getState().clearSession(expectedRuntimeKey, directory, sessionID)
     }
   }
 
@@ -1651,6 +1655,22 @@ export function handleEvent(
       if (parentID) {
         enqueueSessionMaterialization(resolvedDirectory, parentID, childStores, { reason: "child-session-idle" })
       }
+    }
+  }
+
+  // Seed the omp session-model badge from the wire projection (spec 01
+  // §5.5): sessions that never emit omp.model.changed still show their
+  // actual model; authoritative events overwrite the seed.
+  if (payload.type === "session.updated") {
+    const updatedSessionId = getSessionIdFromPayload(payload)
+    const model = (payload.properties as { info?: { model?: { providerID?: string; id?: string } } }).info?.model
+    if (updatedSessionId && model?.providerID && model?.id) {
+      useOmpSessionStore
+        .getState()
+        .seedSessionModel(getRuntimeKey(), resolvedDirectory, updatedSessionId, {
+          provider: model.providerID,
+          id: model.id,
+        })
     }
   }
 
@@ -2274,11 +2294,32 @@ export function SyncProvider(props: {
 
     const ompStore = useOmpSessionStore.getState()
     ompStore.clearAll(runtimeKey)
+    useOmpDialogStore.getState().adoptRuntime(runtimeKey)
+
+    // C9 (spec 03 §5.3.4): a dialog for a session the user is not looking
+    // at surfaces through the in-app toast + OS notification channel, dedup
+    // by dialog id (tag). The active session's modal is rendered by
+    // OmpDialogLayer; opening the session from the toast clears the noise.
+    const notifyDialogIfBackground = (directory: string, sessionId: string, dialogId: string): void => {
+      const ui = useSessionUIStore.getState()
+      if (ui.currentSessionId === sessionId) return
+      const dictionary = useI18nStore.getState().dictionary
+      const title = formatMessage(dictionary, "dialogs.omp.notify.backgroundTitle")
+      const body = formatMessage(dictionary, "dialogs.omp.notify.backgroundBody", { session: sessionId })
+      toast.info(title, { id: `omp-dialog:${dialogId}`, description: body })
+      const notifications = getRegisteredRuntimeAPIs()?.notifications
+      void notifications?.notifyAgentCompletion?.({ title, body, tag: `omp-dialog-${dialogId}` })
+    }
 
     const executeEffects = (directory: string, effects: OmpEventEffect[]): void => {
       for (const effect of effects) {
         if (effect.kind === "notice") {
           showOmpNoticeToast(effect)
+        } else if (effect.kind === "dialog-requested") {
+          useOmpDialogStore.getState().ingestRequested(runtimeKey, directory, effect.dialog)
+          notifyDialogIfBackground(directory, effect.dialog.sessionId, effect.dialog.id)
+        } else if (effect.kind === "dialog-settled") {
+          useOmpDialogStore.getState().ingestSettled(runtimeKey, directory, effect.dialogId)
         } else if (effect.kind === "settings-revision") {
           // Revision jumped past the last applied one: authoritative GET
           // (compare-then-fetch, spec 05 §5.2.4 settings row). The settings
@@ -2317,6 +2358,14 @@ export function SyncProvider(props: {
         },
         refetchWire: (directory) => {
           triggerDirectoryResync(directory, "stream-reconnect")
+        },
+        consumeDialogs: (directory, result) => {
+          // Authoritative reconcile (§5.6.2-2). Unavailable = surface off
+          // (R2 skip); failure keeps prior state (D2) — never a clear.
+          if (!result.ok) return
+          const dialogs = parseOmpDialogsSnapshotPayload(result.data)
+          if (dialogs === null) return
+          useOmpDialogStore.getState().reconcileSnapshot(runtimeKey, directory, dialogs)
         },
       },
     })
@@ -2609,7 +2658,22 @@ export function useDirectorySync<T>(selector: (state: State) => T, directory?: s
   return useStore(store, selector)
 }
 
-/** Get session messages for a specific session */
+/** Wire `Session.model` for a session (spec 01 §5.5 badge seeding).
+ * Returns the session record's own model reference (stable between events)
+ * or null — never a fresh object, so useSyncExternalStore identity checks
+ * hold. */
+export function useSessionWireModel(sessionID: string, directory?: string): { providerID: string; id: string } | null {
+  return useDirectorySync(
+    useCallback((state: State) => {
+      if (!sessionID) return null
+      const session = state.session.find((item) => item.id === sessionID) as (Session & { model?: { id?: string; providerID?: string } }) | undefined
+      const model = session?.model
+      return model?.id && model?.providerID ? (model as { providerID: string; id: string }) : null
+    }, [sessionID]),
+    directory,
+  )
+}
+
 export function useSessionMessages(sessionID: string, directory?: string) {
   const store = useDirectoryStore(directory)
   const getSnapshot = useCallback(() => {

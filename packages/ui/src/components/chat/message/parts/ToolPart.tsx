@@ -69,6 +69,8 @@ import { toAbsoluteFilePath } from '@/lib/path-utils';
 import { getToolDescriptionFallback } from './toolRenderUtils';
 import { ApplyPatchFileButtons } from './ApplyPatchFileButtons';
 import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
+import { AskAnswerCard } from './AskAnswerCard';
+import { parseAskToolDetails } from './askToolDetails';
 
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
@@ -1267,7 +1269,8 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
         || part.tool === 'openchamber_web'
         || part.tool === 'apply_patch'
         || part.tool === 'edit'
-        || part.tool === 'multiedit';
+        || part.tool === 'multiedit'
+        || part.tool === 'ask';
     const diagnosticSection = React.useMemo(
         () => getToolDiagnosticSection(part.tool, input, metadata, currentDirectory),
         [currentDirectory, input, metadata, part.tool],
@@ -1405,6 +1408,56 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         };
 
+        // omp ask tool: transcript answer card (spec 03 §5.4.1). The omp
+        // projection carries the SDK AskToolDetails in state.metadata.details;
+        // render it per question. Falls back to generic output when the
+        // details are absent (chat-redirect text, legacy records).
+        if (part.tool === 'ask') {
+            if (state.status === 'completed') {
+                const askModel = parseAskToolDetails(metadata?.details);
+                if (askModel) {
+                    return renderScrollableBlock(
+                        <AskAnswerCard model={askModel} />,
+                        { maxHeightClass: 'max-h-[40vh]' }
+                    );
+                }
+            } else if (state.status !== 'error') {
+                // Dialog open elsewhere: show what was asked, mirroring the
+                // question tool's pending rendering.
+                const askInput = input as {
+                    questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string }> }>;
+                } | undefined;
+                if (Array.isArray(askInput?.questions) && askInput.questions.length > 0) {
+                    return renderScrollableBlock(
+                        <div className="space-y-2">
+                            {askInput.questions.map((question, index) => (
+                                <div key={index} className="space-y-0.5">
+                                    {question.header ? (
+                                        <div className="typography-micro text-muted-foreground">{coerceToText(question.header)}</div>
+                                    ) : null}
+                                    <div className="typography-meta text-foreground whitespace-pre-wrap">{coerceToText(question.question)}</div>
+                                    {Array.isArray(question.options) && question.options.length > 0 ? (
+                                        <div className="flex flex-wrap gap-1 mt-0.5">
+                                            {question.options.map((option, optionIndex) => (
+                                                <span
+                                                    key={`${optionIndex}:${coerceToText(option?.label)}`}
+                                                    className="typography-micro px-1.5 py-0.5 rounded bg-muted/30 border border-border/30 text-muted-foreground"
+                                                >
+                                                    {coerceToText(option?.label)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ))}
+                        </div>,
+                        { maxHeightClass: 'max-h-[40vh]' }
+                    );
+                }
+            }
+            // Completed ask without parseable details (chat-redirect text)
+            // and error states fall through to the generic output below.
+        }
         // Question tool: show parsed Q&A summary or question content from input
         if (part.tool === 'question') {
             if (state.status === 'completed' && hasStringOutput) {

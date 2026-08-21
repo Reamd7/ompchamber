@@ -452,10 +452,10 @@ export const createScheduledTasksRuntime = (deps) => {
   };
 
   const buildPromptAsyncPayload = (task, projectPath) => ({
-    model: {
-      providerID: task.execution.providerID,
-      modelID: task.execution.modelID,
-    },
+    ...(task.execution.providerID && task.execution.modelID
+      ? { model: { providerID: task.execution.providerID, modelID: task.execution.modelID } }
+      // Role-follow tasks omit the model so the engine resolves its default role.
+      : {}),
     ...(task.execution.agent ? { agent: task.execution.agent } : {}),
     ...(task.execution.variant ? { variant: task.execution.variant } : {}),
     parts: [
@@ -513,7 +513,9 @@ export const createScheduledTasksRuntime = (deps) => {
       command: command.command,
       arguments: command.arguments,
       ...(task.execution.agent ? { agent: task.execution.agent } : {}),
-      model: `${task.execution.providerID}/${task.execution.modelID}`,
+      ...(task.execution.providerID && task.execution.modelID
+        ? { model: `${task.execution.providerID}/${task.execution.modelID}` }
+        : {}),
       ...(task.execution.variant ? { variant: task.execution.variant } : {}),
     });
 

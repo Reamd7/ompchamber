@@ -273,26 +273,13 @@ describe('settings helpers', () => {
     });
   });
 
-  it('accepts OpenCode update notification preference as a persisted shared setting', () => {
+  it('rejects retired OpenCode update notification fields', () => {
     const helpers = createTestHelpers();
 
-    expect(helpers.sanitizeSettingsUpdate({ showOpenCodeUpdateNotifications: false })).toEqual({
-      showOpenCodeUpdateNotifications: false,
-    });
-    expect(helpers.sanitizeSettingsUpdate({ showOpenCodeUpdateNotifications: true })).toEqual({
+    expect(helpers.sanitizeSettingsUpdate({
       showOpenCodeUpdateNotifications: true,
-    });
-  });
-
-  it('accepts dismissed OpenCode update toast version as a persisted shared setting', () => {
-    const helpers = createTestHelpers();
-
-    expect(helpers.sanitizeSettingsUpdate({ openCodeUpdateToastDismissedVersion: ' 1.16.0 ' })).toEqual({
       openCodeUpdateToastDismissedVersion: '1.16.0',
-    });
-    expect(helpers.sanitizeSettingsUpdate({ openCodeUpdateToastDismissedVersion: '' })).toEqual({
-      openCodeUpdateToastDismissedVersion: '',
-    });
+    })).toEqual({});
   });
 
   it('rejects non-boolean collapsibleThinkingBlocks values', () => {

@@ -12,6 +12,7 @@ import { useUIStore } from "@/stores/useUIStore";
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore";
 import { WorkingPlaceholder } from "./message/parts/WorkingPlaceholder";
 import { isVSCodeRuntime } from "@/lib/desktop";
+import { useOmpSessionLoaders } from "@/sync/useOmpSessionStore";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from "@/lib/i18n";
@@ -189,7 +190,10 @@ export const StatusRow: React.FC<StatusRowProps> = ({
   }, [liveTodos, persistedSessionTodos, currentSessionId]);
   const isMobile = useUIStore((state) => state.isMobile);
   const isCompact = isMobile || isVSCodeRuntime();
-
+  const ompLoaders = useOmpSessionLoaders(currentSessionDirectory ?? '', currentSessionId ?? undefined);
+  // GAP-E04 (05 §5.5): compaction progress is visible in the status row —
+  // the queue gate holds until compaction-ended + idle.
+  const compactionActive = Boolean(ompLoaders?.compaction);
   // Filter out cancelled todos for display and keep original order.
   // This prevents items from jumping around when status changes.
   const visibleTodos = React.useMemo(() => {
@@ -228,7 +232,7 @@ export const StatusRow: React.FC<StatusRowProps> = ({
   // Original logic from ChatInput
   const shouldRenderPlaceholder = !showAbortStatus && (wasAborted || !abortActive);
 
-  const hasContent = hasAssistantContent || hasTodoContent || hasLeftAccessory;
+  const hasContent = hasAssistantContent || hasTodoContent || hasLeftAccessory || compactionActive;
 
   // Close popover when clicking outside
   const popoverRef = React.useRef<HTMLDivElement>(null);
@@ -320,6 +324,13 @@ export const StatusRow: React.FC<StatusRowProps> = ({
               <span className="flex items-center gap-1.5 typography-ui-label">
                 <Icon name="close-circle" aria-hidden="true"/>
                 {t('chat.statusRow.aborted')}
+              </span>
+            </div>
+          ) : compactionActive ? (
+            <div className="flex h-full items-center text-muted-foreground pl-0.5">
+              <span className="flex items-center gap-1.5 typography-ui-label">
+                <Icon name="loader-4" className="size-3.5 animate-spin" aria-hidden="true" />
+                {t('chat.statusRow.compacting')}
               </span>
             </div>
           ) : showAssistantStatus && shouldRenderPlaceholder ? (

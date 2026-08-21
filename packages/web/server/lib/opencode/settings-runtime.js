@@ -803,6 +803,20 @@ export const createSettingsRuntime = (deps) => {
     return { settings: next, changed: true };
   };
 
+  // OpenCode updates now ship only with OpenChamber. Remove the retired
+  // notification preference and dismissed-version marker from disk so stale
+  // clients cannot keep reintroducing a dead UI contract.
+  const migrateSettingsRemoveOpenCodeUpdateState = (current) => {
+    const settings = current && typeof current === 'object' ? current : {};
+    const legacyKeys = ['showOpenCodeUpdateNotifications', 'openCodeUpdateToastDismissedVersion'];
+    if (!legacyKeys.some((key) => Object.prototype.hasOwnProperty.call(settings, key))) {
+      return { settings, changed: false };
+    }
+    const next = { ...settings };
+    for (const key of legacyKeys) delete next[key];
+    return { settings: next, changed: true };
+  };
+
   const readSettingsFromDiskMigrated = async () => {
     const current = await readSettingsFromDisk();
     const migration1 = await migrateSettingsFromLegacyLastDirectory(current);
@@ -813,10 +827,11 @@ export const createSettingsRuntime = (deps) => {
     const migration6 = normalizeSettingsPaths(migration5.settings);
     const migration7 = await migrateSettingsToDeterministicProjectIds(migration6.settings);
     const migration8 = migrateSettingsRemoveApprovedDirectories(migration7.settings);
-    if (migration1.changed || migration2.changed || migration3.changed || migration4.changed || migration5.changed || migration6.changed || migration7.changed || migration8.changed) {
-      await writeSettingsToDisk(migration8.settings);
+    const migration9 = migrateSettingsRemoveOpenCodeUpdateState(migration8.settings);
+    if (migration1.changed || migration2.changed || migration3.changed || migration4.changed || migration5.changed || migration6.changed || migration7.changed || migration8.changed || migration9.changed) {
+      await writeSettingsToDisk(migration9.settings);
     }
-    return migration8.settings;
+    return migration9.settings;
   };
 
   const persistSettings = async (changes) => {

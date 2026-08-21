@@ -24,7 +24,12 @@ sync engine, and web server call; everything else answers 404.
   (`options.settings`, spec 06 §5.1/master R6), the lease-driven `hasUI`
   snapshot (R13), and session-pinned `localProtocolOptions` (R7/R8), and
   retains the private `AgentRegistry` + `CreateAgentSessionResult` handle
-  for the agent-runs aggregator and `setToolUIContext`.
+  for the agent-runs aggregator and `setToolUIContext`. The first live lease
+  initializes the SDK extension runner through its canonical
+  `initializeExtensions(..., { mode: 'json', uiContext })` helper and updates
+  the tool context; a lease present before first materialization is applied
+  directly before publishing the host session. This keeps both custom-command
+  dialogs and tool approvals interactive on the first turn.
 - `projection.js` — pure omp→wire translation with deterministic ids;
   projects dividers (`compactionSummary`/`branchSummary`), execution roles
   (`bashExecution`/`pythonExecution`), `fileMention`, and streaming partial
@@ -61,6 +66,13 @@ sync engine, and web server call; everything else answers 404.
   mutation), URI token service (no absolute sourcePath echo, R7), session
   tree, `AgentRunsAggregator` (250ms coalesced `omp.agents.updated`),
   parked/historical split, jobs 501 steady state (R12).
+- `domain-commands.js` (spec 08 §5.4) — `GET /api/omp/commands?directory=`:
+  omp slash-command discovery for the UI's three-layer pipeline. Tier A rows
+  (`client-builtin`) are the full reserved builtin registry; Tier B rows
+  (`engine`) come from a headless `buildAvailableSlashCommands` session
+  (skills via `discoverSkills` + file commands from the directory; extension/
+  custom TS commands need a live session and stay absent). Gated by
+  `commands.v1`; discovery failure degrades to the builtin-only list.
 - `event-dispositions.json` / `omp-event-registry.json` /
   `omp-bootstrap-matrix.json` — machine-checked contracts.
   `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)

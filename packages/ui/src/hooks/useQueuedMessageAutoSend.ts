@@ -11,6 +11,7 @@ import { useSelectionStore } from '@/sync/selection-store';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { getMessageQueueKey, parseMessageQueueKey, useMessageQueueStore, type MessageQueueTarget, type QueuedMessage } from '@/stores/messageQueueStore';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
+import { isOmpModelRolesEnabled } from '@/lib/omp/capabilityGate';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
@@ -97,8 +98,8 @@ export const buildQueuedAutoSendPayload = (queue: QueuedMessage[]) => {
 
 type QueuedAutoSendPayload = NonNullable<ReturnType<typeof buildQueuedAutoSendPayload>>;
 type ResolvedQueuedSendConfig = {
-  providerID: string;
-  modelID: string;
+  providerID?: string;
+  modelID?: string;
   agent?: string;
   variant?: string;
 };
@@ -286,10 +287,12 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       const resolved = captured?.providerID && captured?.modelID
         ? captured
         : resolveSessionSendConfig(sessionId);
-      if (!resolved.providerID || !resolved.modelID) {
+      if ((!resolved.providerID || !resolved.modelID) && !isOmpModelRolesEnabled()) {
         // Legacy queues may predate captured send configuration. Config
         // hydration is asynchronous, so retry instead of stranding the item
-        // until an unrelated status or directory update happens.
+        // until an unrelated status or directory update happens. Under model
+        // roles an identifier-free send is legal and follows the engine's
+        // default role, so it dispatches instead of retrying.
         retryScheduler.schedule(Date.now() + AUTO_SEND_RETRY_BASE_DELAY_MS);
         return;
       }

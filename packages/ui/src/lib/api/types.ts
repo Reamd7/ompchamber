@@ -1,11 +1,15 @@
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import type {
+  OmpAgentDefinitionsAPI,
   OmpCapabilitiesAPI,
   OmpEventsAPI,
   OmpModelsAPI,
   OmpModesAPI,
+  OmpPersonasAPI,
   OmpSessionAPI,
+  OmpSettingsAPI,
+  OmpUriAPI,
 } from './omp';
 
 type RuntimePlatform = 'web' | 'desktop' | 'vscode';
@@ -664,8 +668,6 @@ export interface SettingsPayload {
   queueModeEnabled?: boolean;
   gitmojiEnabled?: boolean;
   inputSpellcheckEnabled?: boolean;
-  showOpenCodeUpdateNotifications?: boolean;
-  openCodeUpdateToastDismissedVersion?: string;
   showToolFileIcons?: boolean;
   codeBlockLineWrap?: boolean;
   showTurnChangedFiles?: boolean;
@@ -1246,8 +1248,12 @@ export interface RuntimeAPIs {
   ompEvents: OmpEventsAPI;
   ompCapabilities: OmpCapabilitiesAPI;
   ompSession: OmpSessionAPI;
-  ompModels: OmpModelsAPI;
   ompModes: OmpModesAPI;
+  ompModels: OmpModelsAPI;
+  ompAgentDefinitions: OmpAgentDefinitionsAPI;
+  ompPersonas: OmpPersonasAPI;
+  ompSettings: OmpSettingsAPI;
+  ompUri: OmpUriAPI;
   tools: ToolsAPI;
   editor?: EditorAPI;
   vscode?: VSCodeAPI;

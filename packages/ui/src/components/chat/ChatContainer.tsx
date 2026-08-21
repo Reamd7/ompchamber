@@ -13,6 +13,9 @@ import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import MessageList, { type MessageListHandle } from './MessageList';
 import { PermissionCard } from './PermissionCard';
 import { QuestionCard } from './QuestionCard';
+import { OmpDialogLayer } from '@/components/dialogs/OmpDialogLayer';
+import { OmpPlanReviewOverlay } from '@/components/dialogs/OmpPlanReviewOverlay';
+import { InternalUriViewer } from '@/components/dialogs/InternalUriViewer';
 import { hasActiveQuestionToolInCurrentTurn, recoverPendingQuestionWithRetry } from '@/sync/question-recovery';
 import { StatusRowContainer } from './StatusRowContainer';
 import { SessionRecapNote } from '@/components/chat/SessionRecapSpacer';
@@ -20,8 +23,9 @@ import ScrollToBottomButton from './components/ScrollToBottomButton';
 import { PromptNavigatorRail } from './components/PromptNavigatorRail';
 import { ScrollShadow } from '@/components/ui/ScrollShadow';
 import { useChatAutoFollow, type AnimationHandlers, type ContentChangeReason } from '@/hooks/useChatAutoFollow';
-import { useChatTimelineController } from './hooks/useChatTimelineController';
 import { TimelineDialog } from './TimelineDialog';
+import { SessionTreeDialog } from './SessionTreeDialog';
+import { useChatTimelineController } from './hooks/useChatTimelineController';
 import { useChatTurnNavigation } from './hooks/useChatTurnNavigation';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 import { useDeviceInfo } from '@/lib/device';
@@ -587,6 +591,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const [embeddedAllowPrompting, setEmbeddedAllowPrompting] = React.useState(initialAllowPromptingSubagentSessions);
     const isTimelineDialogOpen = useUIStore((s) => s.isTimelineDialogOpen);
     const setTimelineDialogOpen = useUIStore((s) => s.setTimelineDialogOpen);
+    const isSessionTreeDialogOpen = useUIStore((s) => s.isSessionTreeDialogOpen);
+    const setSessionTreeDialogOpen = useUIStore((s) => s.setSessionTreeDialogOpen);
 
     // Streaming state
     const streamingMessageId = useStreamingStore(
@@ -1158,35 +1164,44 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         return null;
     }
 
+    const withOmpDialogLayer = (content: React.ReactNode): React.ReactNode => (
+        <>
+            {content}
+            <OmpDialogLayer directory={effectiveSessionDirectory} sessionId={currentSessionId} />
+            <InternalUriViewer directory={effectiveSessionDirectory} sessionId={currentSessionId} />
+            <OmpPlanReviewOverlay directory={effectiveSessionDirectory} sessionId={currentSessionId} />
+        </>
+    );
+
 	if (isSessionHydrating && sessionMessages.length === 0 && !sessionIsWorking) {
 		if (sessionMessageLoadState.status === 'error') {
-			return (
-				<div data-composer-bound className="relative flex h-full flex-col bg-background">
-					{returnToParentButton}
-					<div className="flex min-h-0 flex-1 items-center justify-center px-6">
-						<div className="max-w-sm text-center">
-							<div className="mx-auto mb-3 flex size-9 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] text-[var(--status-error)]">
-								<Icon name="error-warning" className="size-4" />
-							</div>
-							<p className="typography-ui-label font-medium text-foreground">{t('chat.container.sessionLoadError.title')}</p>
-							<p className="typography-meta mt-1 text-muted-foreground">{t('chat.container.sessionLoadError.description')}</p>
-							<Button variant="outline" size="sm" className="mt-4" onClick={retrySessionLoad}>
-								{t('chat.container.sessionLoadError.retry')}
-							</Button>
-						</div>
-					</div>
-					<div className="relative z-10 bg-background">
-						{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-					</div>
-				</div>
-			);
+            return withOmpDialogLayer(
+                <div data-composer-bound className="relative flex h-full flex-col bg-background">
+                    {returnToParentButton}
+                    <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+                        <div className="max-w-sm text-center">
+                            <div className="mx-auto mb-3 flex size-9 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] text-[var(--status-error)]">
+                                <Icon name="error-warning" className="size-4" />
+                            </div>
+                            <p className="typography-ui-label font-medium text-foreground">{t('chat.container.sessionLoadError.title')}</p>
+                            <p className="typography-meta mt-1 text-muted-foreground">{t('chat.container.sessionLoadError.description')}</p>
+                            <Button variant="outline" size="sm" className="mt-4" onClick={retrySessionLoad}>
+                                {t('chat.container.sessionLoadError.retry')}
+                            </Button>
+                        </div>
+                    </div>
+                    <div className="relative z-10 bg-background">
+                        {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                    </div>
+                </div>,
+            );
 		}
-		return (
-			<div data-composer-bound className="relative flex flex-col h-full bg-background">
-				{returnToParentButton}
-				<div
-					className={cn(
-						'relative min-h-0',
+        return withOmpDialogLayer(
+            <div data-composer-bound className="relative flex flex-col h-full bg-background">
+                {returnToParentButton}
+                <div
+                    className={cn(
+                        'relative min-h-0',
                         isDesktopExpandedInput
                             ? 'absolute inset-0 opacity-0 pointer-events-none'
                             : 'flex-1'
@@ -1200,15 +1215,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                                     <div className="chat-message-column">
                                         <div className="space-y-2.5 px-4 py-3">
                                             <div className="space-y-1.5">
-                                                {item.toolRows.map((row) => {
-                                                    return (
-                                                        <div key={`${item.id}-${row.id}`} className="flex items-center gap-2">
-                                                            <Skeleton className="h-3.5 w-3.5 rounded-full flex-shrink-0" />
-                                                            <Skeleton className={cn('h-4 rounded-md', row.titleWidth)} />
-                                                            <Skeleton className={cn('h-4 rounded-md', row.detailWidth)} />
-                                                        </div>
-                                                    );
-                                                })}
+                                                {item.toolRows.map((row) => (
+                                                    <div key={`${item.id}-${row.id}`} className="flex items-center gap-2">
+                                                        <Skeleton className="h-3.5 w-3.5 rounded-full flex-shrink-0" />
+                                                        <Skeleton className={cn('h-4 rounded-md', row.titleWidth)} />
+                                                        <Skeleton className={cn('h-4 rounded-md', row.detailWidth)} />
+                                                    </div>
+                                                ))}
                                             </div>
                                             <div className="space-y-1.5 pt-1">
                                                 <Skeleton className={cn('h-4 rounded-md', item.textWidths[0])} />
@@ -1222,28 +1235,19 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         </div>
                     </div>
                 </div>
-                <div
-                    className={cn(
-                        'relative z-10',
-						isDesktopExpandedInput
-							? 'flex-1 min-h-0 bg-background'
-							: 'bg-background'
-					)}
-				>
+                <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
                     {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-				</div>
-            </div>
+                </div>
+            </div>,
         );
     }
 
 	if (sessionMessages.length === 0 && !sessionIsWorking) {
-		return (
-			// No transform here either — same fixed-positioning constraint as the
-			// draft branch above.
-			<div data-composer-bound className="relative flex flex-col h-full bg-background">
-				{returnToParentButton}
-				<div
-					className={cn(
+        return withOmpDialogLayer(
+            <div data-composer-bound className="relative flex flex-col h-full bg-background">
+                {returnToParentButton}
+                <div
+                    className={cn(
                         'relative min-h-0',
                         isDesktopExpandedInput
                             ? 'absolute inset-0 opacity-0 pointer-events-none'
@@ -1257,23 +1261,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         </div>
                     ) : null}
                 </div>
-                <div
-                    className={cn(
-                        'relative z-10',
-						isDesktopExpandedInput
-							? 'flex-1 min-h-0 bg-background'
-							: 'bg-background'
-					)}
-				>
+                <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
                     {promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-				</div>
-            </div>
+                </div>
+            </div>,
         );
     }
 
-	return (
-		<div ref={workStatusRowRef} className="flex h-full min-h-0 bg-background">
-		<div data-composer-bound className="relative flex min-w-0 flex-1 flex-col h-full bg-background">
+    return withOmpDialogLayer(
+        <div ref={workStatusRowRef} className="flex h-full min-h-0 bg-background">
+        <div data-composer-bound className="relative flex min-w-0 flex-1 flex-col h-full bg-background">
 			{returnToParentButton}
 			<ChatViewport
 				currentSessionId={currentSessionId}
@@ -1348,6 +1345,12 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                 isLoadingEarlier={timelineController.isLoadingOlder}
                 onLoadEarlier={handleLoadOlderClick}
             />
+            <SessionTreeDialog
+                open={isSessionTreeDialogOpen}
+                onOpenChange={setSessionTreeDialogOpen}
+                sessionId={currentSessionId ?? null}
+                directory={workStatusDirectory ?? null}
+            />
         </div>
         {/* Kept mounted while it could ever show, so it can animate its own
             collapse; `visible` drives that. Unmounting on the spot is what made
@@ -1359,6 +1362,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                 directory={workStatusDirectory ?? null}
             />
         ) : null}
-        </div>
+        </div>,
     );
 };

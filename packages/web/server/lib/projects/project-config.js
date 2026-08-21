@@ -211,6 +211,7 @@ const normalizeExecution = (value) => {
   const prompt = clampLength(asNonEmptyString(value.prompt) || '', MAX_TASK_PROMPT_LENGTH);
   const providerID = asNonEmptyString(value.providerID);
   const modelID = asNonEmptyString(value.modelID);
+  const modelRole = value.modelRole === 'default' ? 'default' : undefined;
   const variant = asNonEmptyString(value.variant);
   const agent = asNonEmptyString(value.agent);
   const goalEnabled = value.goalEnabled === true;
@@ -224,17 +225,21 @@ const normalizeExecution = (value) => {
   if (!prompt) {
     throw new Error('execution.prompt is required');
   }
-  if (!providerID) {
+  // A task may either pin an explicit model (legacy contract, provider/model
+  // required) or follow the engine's default model role (`modelRole:
+  // 'default'`), in which case identifiers are omitted and the engine picks.
+  if (!providerID && modelRole !== 'default') {
     throw new Error('execution.providerID is required');
   }
-  if (!modelID) {
+  if (!modelID && modelRole !== 'default') {
     throw new Error('execution.modelID is required');
   }
 
   return {
     prompt,
-    providerID,
-    modelID,
+    ...(providerID ? { providerID } : {}),
+    ...(modelID ? { modelID } : {}),
+    ...(modelRole ? { modelRole } : {}),
     ...(variant ? { variant } : {}),
     ...(agent ? { agent } : {}),
     ...(goalEnabled ? { goalEnabled: true } : {}),

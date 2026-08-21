@@ -1254,15 +1254,14 @@ export async function optimisticSend(input: {
   runtimeKey?: string
   sessionId: string
   content: string
-  providerID: string
-  modelID: string
+  providerID?: string
+  modelID?: string
   agent?: string
   directory?: string | null
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   onOptimisticInsert?: () => void
   onMessageID?: (messageID: string) => void
   beforeOptimisticInsert?: () => void
-  /** The actual API call — receives the optimistic messageID so the server can use the same ID */
   send: (messageID: string) => Promise<void>
 }): Promise<void> {
   if (!_optimisticAdd || !_optimisticRemove) {
@@ -1336,11 +1335,11 @@ export async function optimisticSend(input: {
     role: "user" as const,
     sessionID: input.sessionId,
     parentID: "",
-    modelID: input.modelID,
-    providerID: input.providerID,
+    ...(input.modelID ? { modelID: input.modelID } : {}),
+    ...(input.providerID ? { providerID: input.providerID } : {}),
     system: "",
     agent: input.agent ?? "",
-    model: `${input.providerID}/${input.modelID}`,
+    ...(input.providerID && input.modelID ? { model: `${input.providerID}/${input.modelID}` } : {}),
     metadata: {} as Record<string, unknown>,
     time: { created: Date.now(), completed: 0 },
   } as unknown as Message

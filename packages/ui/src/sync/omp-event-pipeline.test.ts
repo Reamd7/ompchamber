@@ -210,6 +210,34 @@ describe('runOmpResync', () => {
     expect(requests).toEqual(['/api/omp/models?/repo']);
   });
 
+  test('dialogs results are delivered to the consumer per directory (ok/unavailable/failure)', async () => {
+    const delivered: Array<{ directory: string; ok: boolean }> = [];
+    const context: OmpResyncContext = {
+      ...trackContext([]),
+      fetchOmpJson: async (path) => {
+        if (path !== '/api/omp/dialogs') return { ok: false, unavailable: true };
+        return { ok: true, data: { dialogs: [] } };
+      },
+      consumeDialogs: (directory, result) => {
+        delivered.push({ directory, ok: result.ok });
+      },
+    };
+    await runOmpResync(['dialogs'], context);
+    expect(delivered).toEqual([{ directory: '/repo', ok: true }]);
+  });
+
+  test('dialogs without a consumer keeps the fetch-only behavior', async () => {
+    const requests: string[] = [];
+    await runOmpResync(['dialogs'], {
+      ...trackContext(requests),
+      fetchOmpJson: async (path, query) => {
+        requests.push(`${path}?${query.directory}`);
+        return { ok: false, unavailable: true };
+      },
+    });
+    expect(requests).toEqual(['/api/omp/dialogs?/repo']);
+  });
+
   test('fetch failures never clear state and never abort sibling domains', async () => {
     const requests: string[] = [];
     const context: OmpResyncContext = {

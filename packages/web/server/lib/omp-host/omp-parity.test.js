@@ -155,9 +155,26 @@ afterAll(() => {
   }
 });
 
+/**
+ * Real Settings for the pointer tests. Sibling suites mock.module the SDK
+ * package specifier (stub Settings without loadIsolated); the source-path
+ * import pierces that registry so these integration assertions always run
+ * against the genuine loader.
+ */
+const loadRealSettings = async () => {
+  const sdk = await import('@oh-my-pi/pi-coding-agent');
+  if (typeof sdk.Settings?.loadIsolated === 'function') return sdk.Settings;
+  // Package exports block subpaths; import the source file directly.
+  const { pathToFileURL } = await import('node:url');
+  const settingsFile = path.join(
+    process.cwd(), 'node_modules', '@oh-my-pi', 'pi-coding-agent', 'src', 'config', 'settings.ts',
+  );
+  return (await import(pathToFileURL(settingsFile).href)).Settings;
+};
+
 describe('defaultModelPointer (spec 01 §5.3/GAP-03)', () => {
   test('points at modelRoles.default, never the first-sorted model', async () => {
-    const { Settings } = await import('@oh-my-pi/pi-coding-agent');
+    const Settings = await loadRealSettings();
     const { defaultModelPointer } = await import('./endpoints.js');
     const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-ptr-'));
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-ptr-proj-'));
@@ -173,9 +190,8 @@ describe('defaultModelPointer (spec 01 §5.3/GAP-03)', () => {
     boot.cancelPendingSaves?.();
     expect(pointer).toEqual({ model: 'p-z/role-model' });
   });
-
   test('omits the pointer when no role default resolves or the store is absent', async () => {
-    const { Settings } = await import('@oh-my-pi/pi-coding-agent');
+    const Settings = await loadRealSettings();
     const { defaultModelPointer } = await import('./endpoints.js');
     const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-ptr-2-'));
     pointerCleanup.push(agentDir);

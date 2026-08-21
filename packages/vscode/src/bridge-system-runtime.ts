@@ -8,7 +8,6 @@ import { getProviderAuth, removeProviderAuth } from './opencodeAuth';
 import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProviders';
 import { credentialStatus, deleteCredential, importCursorCredential, normalizeCredential, readCredential, validateCredential, writeCredential, type ManagedProvider } from './quotaCredentials';
 import { getSessionActivitySnapshot } from './sessionActivityWatcher';
-import { getOpenCodeUpgradeStatus, upgradeManagedOpenCode } from './opencode-upgrade-runtime';
 import { buildDeferredRestartResponse } from './config-mutation-response';
 import type { BridgeContext, BridgeResponse } from './bridge';
 
@@ -271,15 +270,6 @@ export async function handleSystemBridgeMessage(
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { id, type, success: true, data: { version: null, error: errorMessage } };
       }
-    }
-
-    case 'api:opencode/upgrade-status': {
-      return { id, type, success: true, data: await getOpenCodeUpgradeStatus(ctx?.manager) };
-    }
-
-    case 'api:opencode/upgrade': {
-      const target = (payload as { target?: unknown } | undefined)?.target;
-      return { id, type, success: true, data: await upgradeManagedOpenCode(ctx?.manager, target) };
     }
 
     case 'api:session-activity:get': {

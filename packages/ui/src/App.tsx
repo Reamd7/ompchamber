@@ -47,6 +47,7 @@ import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
+import { useOmpFeatureFlags } from '@/hooks/useOmpModelRoles';
 import type { RuntimeAPIs } from '@/lib/api/types';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { McpOAuthCallbackPage } from '@/components/sections/mcp/McpOAuthCallbackPage';
@@ -62,7 +63,6 @@ import {
 import { SyncAppEffects } from '@/apps/AppEffects';
 import { resetAppForRuntimeEndpointChange } from '@/apps/runtimeEndpointReset';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
-import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
 import { markStartupTrace, startupTraceEnabled } from '@/lib/startupTrace';
 
 // Lazy-loaded heavy views — loaded on demand to reduce initial bundle size.
@@ -206,7 +206,6 @@ const EmbeddedSessionChatContent: React.FC<{
   return (
     <>
       <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
-      <OpenCodeUpdateToast />
       <ChatView
         active={embeddedBackgroundWorkEnabled}
         // Always subscribe to message history in the mounted session-chat
@@ -400,8 +399,19 @@ function App({ apis }: AppProps) {
 
     return () => clearTimeout(fallbackTimer);
   }, [isDesktopRuntime, isInitialized]);
+  const ompFeatureFlags = useOmpFeatureFlags();
 
   React.useEffect(() => {
+    // GAP-F9 (06 §6.4 stage 1): with modes.v1 the omp mode domain owns plan
+    // surfaces — the experimental flag is neither produced nor consumed. The
+    // capability probe settles before this read runs, so legacy engines keep
+    // the exact /health behavior.
+    if (ompFeatureFlags.modes) {
+      setPlanModeEnabled(false);
+      return;
+    }
+    if (!ompFeatureFlags.resolved) return;
+
     let cancelled = false;
 
     const run = async () => {
@@ -421,7 +431,7 @@ function App({ apis }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [setPlanModeEnabled]);
+  }, [ompFeatureFlags.modes, ompFeatureFlags.resolved, setPlanModeEnabled]);
 
   React.useEffect(() => {
     // VS Code runtime bootstraps config + sessions after the managed OpenCode instance reports "connected".
@@ -943,7 +953,6 @@ function App({ apis }: AppProps) {
               <TooltipProvider delayDuration={300} skipDelayDuration={150}>
                 <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
                   <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
-                  <OpenCodeUpdateToast />
                   <MainLayout />
                   <Toaster />
                   {!isBootShell && (

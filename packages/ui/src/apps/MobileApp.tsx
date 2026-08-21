@@ -1,7 +1,6 @@
 import React from 'react';
 
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
-import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
 import { MobileAppUpdateToast } from '@/components/update/MobileAppUpdateToast';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { Button } from '@/components/ui/button';
@@ -84,6 +83,7 @@ const MOBILE_SETTINGS_PAGES = [
   'usage',
   'voice',
   'integrations',
+  'engine',
   'about',
 ] as const;
 
@@ -1252,7 +1252,6 @@ export function MobileApp({ apis }: MobileAppProps) {
                 </div>
               ) : null}
               <SyncAppEffects embeddedBackgroundWorkEnabled={isInitialized} />
-              <OpenCodeUpdateToast />
               <MobileAppUpdateToast />
               <MobileShell onActiveConnectionDeleted={() => {
                 switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });

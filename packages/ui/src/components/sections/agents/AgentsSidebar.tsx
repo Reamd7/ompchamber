@@ -27,6 +27,7 @@ import { SettingsProjectSelector } from '@/components/sections/shared/SettingsPr
 import { SidebarGroup } from '@/components/sections/shared/SidebarGroup';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
+import { useOmpFeatureFlags } from '@/hooks/useOmpModelRoles';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
 
 interface AgentsSidebarProps {
@@ -195,9 +196,10 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
         } else {
           toast.success(t('settings.agents.sidebar.toast.agentReset', { name: confirmActionAgent.name }));
         }
-        closeConfirmActionDialog();
       } else if (confirmActionType === 'delete') {
-        toast.error(t('settings.agents.sidebar.toast.deleteFailed'));
+        toast.error(result.reason === 'not-found'
+          ? t('settings.agents.sidebar.toast.definitionNotFound')
+          : t('settings.agents.sidebar.toast.deleteFailed'));
       } else {
         toast.error(t('settings.agents.sidebar.toast.resetFailed'));
       }
@@ -559,6 +561,7 @@ const AgentListItem: React.FC<AgentListItemProps> = ({
   onMenuOpenChange,
 }) => {
   const { t } = useI18n();
+  const ompAgentDefinitions = useOmpFeatureFlags().agentDefinitions;
   const extAgent = agent as Agent & { scope?: AgentScope };
   const isMobile = isMobileDeviceViaCSS();
   const [isContextMenuOpen, setIsContextMenuOpen] = React.useState(false);
@@ -602,10 +605,15 @@ const AgentListItem: React.FC<AgentListItemProps> = ({
             <span className="typography-ui-label font-normal truncate text-foreground">
               {agent.name}
             </span>
-            {getAgentModeIcon(agent.mode)}
             {(extAgent.scope || isAgentBuiltIn(agent)) && (
               <span className="typography-micro text-muted-foreground bg-muted px-1 rounded flex-shrink-0 leading-none pb-px border border-border/50">
-                {isAgentBuiltIn(agent) ? t('settings.agents.sidebar.badge.system') : extAgent.scope}
+                {isAgentBuiltIn(agent)
+                  ? t('settings.agents.sidebar.badge.system')
+                  : ompAgentDefinitions
+                    ? (extAgent.scope === 'project'
+                      ? t('settings.agents.sidebar.badge.project')
+                      : t('settings.agents.sidebar.badge.global'))
+                    : extAgent.scope}
               </span>
             )}
           </div>

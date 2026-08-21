@@ -37,6 +37,7 @@ import {
   recordProviderSuccess,
   recordProviderError,
 } from "./provider-tracker";
+import { isOmpModelRolesEnabled } from '@/lib/omp/capabilityGate';
 
 // Use relative path by default (works with both dev and nginx proxy server)
 // Can be overridden with VITE_OPENCODE_URL for absolute URLs in special deployments
@@ -779,8 +780,8 @@ class OpencodeService {
   async sendMessage(params: {
     runtimeKey?: string;
     id: string;
-    providerID: string;
-    modelID: string;
+    providerID?: string;
+    modelID?: string;
     text: string;
     prefaceText?: string;
     prefaceTextSynthetic?: boolean;
@@ -804,6 +805,10 @@ class OpencodeService {
     directory?: string | null;
   }): Promise<string> {
     this.assertRuntimeUnchanged(params.runtimeKey);
+    // Capture the protocol row before any attachment normalization awaits.
+    // A capability change applies to the next request; this request's shape
+    // remains immutable once sending begins (master §8.3 Batch 2 matrix).
+    const omitPromptModel = isOmpModelRolesEnabled();
 
     // Use the optimistic/client-generated ID as the real user message ID so SSE
     // can reconcile the echoed server message in-place.
@@ -896,12 +901,14 @@ class OpencodeService {
       const result = await this.client.session.promptAsync({
         sessionID: params.id,
         ...(requestDirectory ? { directory: requestDirectory } : {}),
-        model: {
-          providerID: params.providerID,
-          modelID: params.modelID,
-        },
+        ...(!omitPromptModel && params.providerID && params.modelID ? {
+          model: {
+            providerID: params.providerID,
+            modelID: params.modelID,
+          },
+          ...(params.variant !== undefined ? { variant: params.variant } : {}),
+        } : {}),
         agent: params.agent,
-        variant: params.variant,
         messageID: messageId,
         ...(params.delivery ? { delivery: params.delivery } : {}),
         ...(params.format ? { format: params.format } : {}),
@@ -957,8 +964,8 @@ class OpencodeService {
   async sendCommand(params: {
     runtimeKey?: string;
     id: string;
-    providerID: string;
-    modelID: string;
+    providerID?: string;
+    modelID?: string;
     command: string;
     arguments?: string;
     agent?: string;
@@ -968,6 +975,7 @@ class OpencodeService {
     directory?: string | null;
   }): Promise<string> {
     this.assertRuntimeUnchanged(params.runtimeKey);
+    const omitPromptModel = isOmpModelRolesEnabled();
 
     const tempMessageId = params.messageId ?? ascendingId("msg");
 
@@ -986,9 +994,11 @@ class OpencodeService {
       ...(requestDirectory ? { directory: requestDirectory } : {}),
       command: params.command,
       arguments: params.arguments ?? '',
-      model: `${params.providerID}/${params.modelID}`,
+      ...(!omitPromptModel ? {
+        model: `${params.providerID}/${params.modelID}`,
+        ...(params.variant !== undefined ? { variant: params.variant } : {}),
+      } : {}),
       agent: params.agent,
-      variant: params.variant,
       ...(parts.length > 0 ? { parts } : {}),
       messageID: tempMessageId,
     });
@@ -1012,8 +1022,8 @@ class OpencodeService {
     runtimeKey?: string;
     sessionId: string;
     command: string;
-    agent: string;
-    model: { providerID: string; modelID: string };
+    agent?: string;
+    model?: { providerID?: string; modelID?: string };
     messageId?: string;
     directory?: string | null;
   }): Promise<{ info: Message; parts: Part[] }> {
@@ -1024,7 +1034,9 @@ class OpencodeService {
       ...(requestDirectory ? { directory: requestDirectory } : {}),
       messageID: params.messageId,
       agent: params.agent,
-      model: params.model,
+      ...(params.model?.providerID && params.model?.modelID
+        ? { model: { providerID: params.model.providerID, modelID: params.model.modelID } }
+        : {}),
       command: params.command,
     });
     return unwrapSdkData(response, 'session.shell') as { info: Message; parts: Part[] };

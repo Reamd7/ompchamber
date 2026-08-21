@@ -10,6 +10,10 @@ import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync
 import { useNotificationStore } from '@/sync/notification-store';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { respondToPermission } from '@/sync/session-actions';
+import { compareOmpDialogs, useOmpDialogStore } from '@/sync/useOmpDialogStore';
+import { ompDialogController, type OmpDialogController } from '@/sync/omp-dialog-controller';
+import type { OmpPendingDialog } from '@/lib/api/omp';
+import { formatMessage, useI18nStore } from '@/lib/i18n';
 import {
   useGlobalSessionsStore,
   ensureGlobalSessionsLoaded,
@@ -69,6 +73,21 @@ type TrayApproval = {
   directory: string;
 };
 
+// Pending omp dialogs (approval/ask bridge, spec 03). Only approval/ask
+// surface in the tray — the other kinds need the full in-app modal. Labels
+// are localized here because the Electron main process renders the menu but
+// has no dictionary access.
+type TrayOmpDialog = {
+  directory: string;
+  sessionId: string;
+  dialogId: string;
+  kind: 'approval' | 'ask';
+  toolName?: string;
+  label: string;
+  approveLabel: string;
+  denyLabel: string;
+};
+
 type TrayUsageRow = { label: string; value: string };
 type TrayUsageGroup = { provider: string; rows: TrayUsageRow[]; status: string | null };
 type TrayUsage = { mode: 'usage' | 'remaining'; groups: TrayUsageGroup[] };
@@ -76,6 +95,8 @@ type TrayUsage = { mode: 'usage' | 'remaining'; groups: TrayUsageGroup[] };
 type TraySnapshot = {
   sessions: TraySession[];
   approvals: TrayApproval[];
+  // Pending omp approval/ask dialogs across all directories, oldest first.
+  ompDialogs: TrayOmpDialog[];
   // Active instance label (e.g. "Local OpenChamber" or a remote host name) so
   // the tray header makes clear which instance/window it reflects.
   instanceName: string;
@@ -90,9 +111,11 @@ type TraySnapshot = {
 
 // focus-session / new-session are routed natively by the main process through
 // the existing `openchamber:open-session` / `openchamber:open-draft-session`
-// events (handled in App.tsx). Only respond-permission needs handling here.
-type TrayAction =
-  | { type: 'respond-permission'; sessionId: string; id: string; response: 'once' | 'always' | 'reject' };
+// events (handled in App.tsx). respond-permission and respond-omp-dialog are
+// delivered back here over the tray-action channel instead.
+export type TrayAction =
+  | { type: 'respond-permission'; sessionId: string; id: string; response: 'once' | 'always' | 'reject' }
+  | { type: 'respond-omp-dialog'; directory: string; sessionId: string; dialogId: string; response: 'Approve' | 'Deny' };
 
 type DesktopBridgeGlobal = {
   listen?: (
@@ -119,6 +142,52 @@ const permissionLabel = (request: PermissionRequest): string => {
 const questionLabel = (request: QuestionRequest): string => {
   const first = Array.isArray(request.questions) ? request.questions[0] : undefined;
   return first?.header || first?.question || 'Question';
+};
+
+// Compact session reference for tray rows — omp dialogs carry only the raw id.
+const shortSessionId = (sessionId: string): string => {
+  const body = sessionId.startsWith('ses_') ? sessionId.slice(4) : sessionId;
+  return body.slice(0, 8) || sessionId;
+};
+
+// Pending omp dialogs across every directory slice. Only approval/ask become
+// tray rows (select/confirm/input/editor need the full in-app modal); ordering
+// mirrors the server queue (createdAt asc, dialog id tiebreak) so the tray
+// lists the oldest blocker first. Labels are localized here because the
+// Electron main process owns the menu but has no dictionary access.
+const collectOmpDialogs = (): TrayOmpDialog[] => {
+  const dictionary = useI18nStore.getState().dictionary;
+  type Scoped = Extract<OmpPendingDialog, { kind: 'approval' | 'ask' }>;
+  const entries: Array<{ directory: string; dialog: Scoped }> = [];
+  const seen = new Set<string>();
+  for (const [directory, slice] of Object.entries(useOmpDialogStore.getState().directories)) {
+    for (const dialog of Object.values(slice?.dialogs ?? {})) {
+      if (!dialog || (dialog.kind !== 'approval' && dialog.kind !== 'ask')) continue;
+      const key = `${directory}\u0000${dialog.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ directory, dialog });
+    }
+  }
+  entries.sort((left, right) => compareOmpDialogs(left.dialog, right.dialog));
+  return entries.map(({ directory, dialog }) => {
+    const session = shortSessionId(dialog.sessionId);
+    const toolName = dialog.kind === 'approval' ? dialog.approval.toolName?.trim() ?? '' : '';
+    return {
+      directory,
+      sessionId: dialog.sessionId,
+      dialogId: dialog.id,
+      kind: dialog.kind,
+      ...(toolName ? { toolName } : {}),
+      label: dialog.kind === 'ask'
+        ? formatMessage(dictionary, 'dialogs.omp.tray.askRow', { session })
+        : toolName
+          ? formatMessage(dictionary, 'dialogs.omp.tray.approvalRowWithTool', { session, tool: toolName })
+          : formatMessage(dictionary, 'dialogs.omp.tray.approvalRow', { session }),
+      approveLabel: formatMessage(dictionary, 'dialogs.omp.approval.approve'),
+      denyLabel: formatMessage(dictionary, 'dialogs.omp.approval.deny'),
+    };
+  });
 };
 
 const compareSessionOrder = (left: Session, right: Session): number => (
@@ -327,7 +396,7 @@ const collectStatusPollDirectories = (): Map<string, string[]> => {
   return targets;
 };
 
-const buildSnapshot = (instanceName: string): TraySnapshot => {
+export const buildSnapshot = (instanceName: string): TraySnapshot => {
   const live = collectLiveData();
   const notif = useNotificationStore.getState().index.session;
 
@@ -424,7 +493,37 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     }
   }
 
-  return { sessions, approvals, instanceName, usage: buildUsage(), dockBadgeCount };
+  return { sessions, approvals, ompDialogs: collectOmpDialogs(), instanceName, usage: buildUsage(), dockBadgeCount };
+};
+
+// Tray click routing. Module-level with an injectable controller so the
+// action contract stays testable without mounting the hook or the desktop
+// bridge.
+export const handleTrayAction = (
+  action: TrayAction,
+  controller: OmpDialogController = ompDialogController,
+): void => {
+  switch (action.type) {
+    case 'respond-permission':
+      void respondToPermission(action.sessionId, action.id, action.response).catch(() => {
+        toast.error('Failed to respond to permission request');
+      });
+      break;
+    case 'respond-omp-dialog':
+      void controller.respond(action.directory, action.dialogId, { kind: 'select', value: action.response })
+        .then((result) => {
+          // conflict/unavailable converge quietly (settled elsewhere, or the
+          // surface was dropped); only a real failure needs a tray-side toast
+          // because the in-app dialog card may not be visible.
+          if (result.ok) return;
+          if (('conflict' in result && result.conflict) || ('unavailable' in result && result.unavailable)) return;
+          toast.error(formatMessage(useI18nStore.getState().dictionary, 'dialogs.omp.approval.respondFailed'));
+        })
+        .catch(() => {
+          toast.error(formatMessage(useI18nStore.getState().dictionary, 'dialogs.omp.approval.respondFailed'));
+        });
+      break;
+  }
 };
 
 export const useTraySync = (): void => {
@@ -534,6 +633,10 @@ export const useTraySync = (): void => {
     const unsubscribeGlobalStatus = useGlobalSessionStatusStore.subscribe(() => scheduleFlush());
     const unsubscribeSessionOrder = useSessionOrderingStore.subscribe(() => scheduleFlush());
     const unsubscribePinnedSessions = useSessionPinnedStore.subscribe(() => scheduleFlush());
+    // Pending omp dialogs feed the tray approval rows; the locale store owns
+    // their localized labels, so both changes must re-push the snapshot.
+    const unsubscribeOmpDialogs = useOmpDialogStore.subscribe(() => scheduleFlush());
+    const unsubscribeI18n = useI18nStore.subscribe(() => scheduleFlush());
 
     // Make the tray self-sufficient: load the full cross-project list now
     // (independent of the sidebar) and refresh it periodically so sessions from
@@ -579,6 +682,8 @@ export const useTraySync = (): void => {
       unsubscribeSessionOrder();
       unsubscribePinnedSessions();
       unsubscribeQuota();
+      unsubscribeOmpDialogs();
+      unsubscribeI18n();
       unsubscribeRegistry?.();
       for (const unsub of storeUnsubs.values()) unsub();
       storeUnsubs.clear();
@@ -591,21 +696,11 @@ export const useTraySync = (): void => {
     const listen = bridge?.listen;
     if (typeof listen !== 'function') return;
 
-    const handle = (action: TrayAction) => {
-      switch (action.type) {
-        case 'respond-permission':
-          void respondToPermission(action.sessionId, action.id, action.response).catch(() => {
-            toast.error('Failed to respond to permission request');
-          });
-          break;
-      }
-    };
-
     let unlisten: null | (() => void | Promise<void>) = null;
     listen(TRAY_ACTION_EVENT, (evt) => {
       const action = evt?.payload as TrayAction | undefined;
       if (!action || typeof action !== 'object' || typeof action.type !== 'string') return;
-      handle(action);
+      handleTrayAction(action);
     })
       .then((fn) => { unlisten = fn; })
       .catch(() => { /* ignore */ });

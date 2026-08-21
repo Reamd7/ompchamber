@@ -37,6 +37,8 @@ import { GitPage } from '@/components/sections/git-identities/GitPage';
 import { IntegrationsPage } from '@/components/sections/integrations/IntegrationsPage';
 import type { OpenChamberSection } from '@/components/sections/openchamber/types';
 import { OpenChamberPage } from '@/components/sections/openchamber/OpenChamberPage';
+import { OmpEngineSettingsPage } from '@/components/sections/omp/OmpEngineSettingsPage';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
@@ -110,6 +112,7 @@ const pageOrder: SettingsPageSlug[] = [
   'commands',
   'mcp',
   'plugins',
+  'engine',
   // 'content' group — Library
   'magic-prompts',
   'snippets',
@@ -234,8 +237,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
   // keep platform check available for future window chrome tweaks
 
-  const runtimeCtx = React.useMemo(() => buildRuntimeContext(isDesktopApp, isMobile), [isDesktopApp, isMobile]);
+  // Server-adjudicated omp settings gate: false until the capability probe
+  // settles ON (hooks/useOmpFeatureEnabled), which also hides the nav entry.
+  const ompEngineSettingsEnabled = useOmpFeatureEnabled('settings.v1');
 
+  const runtimeCtx = React.useMemo(() => buildRuntimeContext(isDesktopApp, isMobile), [isDesktopApp, isMobile]);
   const visiblePages = React.useMemo(() => {
     const allowedPages = visiblePageSlugs ? new Set<SettingsPageSlug>(visiblePageSlugs) : null;
     return SETTINGS_PAGE_METADATA
@@ -243,9 +249,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       .filter((page) => !allowedPages || allowedPages.has(page.slug))
       .filter((page) => isPageAvailable(page, runtimeCtx))
       .filter((page) => !(runtimeCtx.isVSCode && page.slug === 'projects'))
-      .filter((page) => !(isMobile && page.slug === 'shortcuts'));
-  }, [runtimeCtx, isMobile, visiblePageSlugs]);
-
+      .filter((page) => !(isMobile && page.slug === 'shortcuts'))
+      // The omp engine settings page only exists when the runtime's omp
+      // host advertises `settings.v1` (spec 06 §6.2 stage 0: capability off
+      // → the page is not shown at all, legacy pages unchanged).
+      .filter((page) => page.slug !== 'engine' || ompEngineSettingsEnabled);
+  }, [runtimeCtx, isMobile, visiblePageSlugs, ompEngineSettingsEnabled]);
   const sortedFilteredPages = React.useMemo(() => {
     const rank = new Map<SettingsPageSlug, number>(pageOrder.map((s, i) => [s, i]));
     return visiblePages
@@ -385,6 +394,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return t('settings.page.tunnel.title');
       case 'about':
         return t('settings.page.about.title');
+      case 'engine':
+        return t('settings.page.engine.title');
       case 'home':
       default:
         return t('settings.view.home.title');
@@ -642,6 +653,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <AgentsPage />;
       case 'behavior':
         return <BehaviorPage />;
+      case 'plugins':
+        return <PluginsPage />;
+      case 'engine':
+        return <OmpEngineSettingsPage />;
       case 'commands':
         return <CommandsPage />;
       case 'mcp':

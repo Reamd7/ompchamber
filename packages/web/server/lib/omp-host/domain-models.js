@@ -204,12 +204,30 @@ const parseRoleModelValue = (value) => {
  * and the persisted source layer; unconfigured roles map to `null`.
  * `resolved`-style full model resolution against the registry belongs to the
  * engine's `roleSnapshot` (01 §5.3(1) — needs availableModels); this payload
- * is the settings-side truth.
+ * is the settings-side truth. When `models` (engine registry models) is
+ * supplied, a `models[]` projection with thinking metadata is included
+ * (01 §5.3(1)/§5.4 GAP-06).
  *
  * @param {Settings} settings
- * @param {{ legacyDefaults?: { defaultModel: string, defaultProvider?: string } | null }} [options]
+ * @param {{ legacyDefaults?: { defaultModel: string, defaultProvider?: string } | null, models?: Array<object> }} [options]
  */
-export const buildModelsPayload = (settings, { legacyDefaults = null } = {}) => {
+/** Registry model → wire projection: identity + baked thinking surface. */
+export const projectModelThinking = (model) => ({
+  provider: model?.provider,
+  id: model?.id,
+  ...(model?.name ? { name: model.name } : {}),
+  reasoning: Boolean(model?.reasoning),
+  ...(Number.isFinite(model?.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+  ...(Number.isFinite(model?.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+  thinking: {
+    // Mirrors the TUI's getSupportedEfforts: a non-reasoning model has no
+    // effort surface (empty list), reasoning models read baked efforts.
+    supported: model?.reasoning ? [...(model?.thinking?.efforts ?? [])] : [],
+    defaultLevel: model?.thinking?.defaultLevel ?? null,
+  },
+});
+
+export const buildModelsPayload = (settings, { legacyDefaults = null, models = null } = {}) => {
   const roles = {};
   const roleMeta = {};
   for (const role of getKnownRoleIds(settings)) {
@@ -235,6 +253,7 @@ export const buildModelsPayload = (settings, { legacyDefaults = null } = {}) => 
   return {
     schemaVersion: VERSION,
     directory: settings.getCwd(),
+    ...(models ? { models: models.map(projectModelThinking) } : {}),
     roles,
     roleMeta,
     cycleOrder: settings.get('cycleOrder'),
@@ -641,13 +660,23 @@ const directoryFromRequest = (request) => {
  * handlers). `publish` is wired by the coordinator to
  * `ompBus.publish` (durable omp.settings.updated, spec 06 §5.4).
  */
-export const registerModelSettingsRoutes = (route, { store, publish, legacySettingsPath } = {}) => {
+export const registerModelSettingsRoutes = (route, { store, publish, legacySettingsPath, listModels = null } = {}) => {
   route('GET', '/omp/models', async (request) => {
     const settings = await store.settingsFor(directoryFromRequest(request));
     const legacyDefaults = detectLegacyDefaultModel(
       legacySettingsPath ? { settingsPath: legacySettingsPath } : {},
     );
-    return Response.json(buildModelsPayload(settings, { legacyDefaults }));
+    let models = null;
+    if (typeof listModels === 'function') {
+      // Engine registry models (needs boot); failures degrade to a
+      // roles-only payload, never a failed snapshot.
+      try {
+        models = await listModels();
+      } catch {
+        models = null;
+      }
+    }
+    return Response.json(buildModelsPayload(settings, { legacyDefaults, models }));
   });
 
   route('GET', '/omp/settings', async (request) => {

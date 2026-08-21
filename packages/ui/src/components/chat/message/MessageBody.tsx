@@ -441,6 +441,7 @@ interface MessageBodyProps {
     onToggleContextPin?: () => void;
     footerProviderID?: string | null;
     footerModelName?: string;
+    footerFallbackActive?: boolean;
     footerAgentName?: string;
     footerVariant?: string;
     isDarkTheme?: boolean;
@@ -1098,6 +1099,7 @@ const AssistantMessageBody = React.memo(({
     onToggleContextPin,
     footerProviderID,
     footerModelName,
+    footerFallbackActive,
     footerAgentName,
     footerVariant,
     isDarkTheme = false,
@@ -2280,6 +2282,15 @@ const AssistantMessageBody = React.memo(({
                                     />
                                 )}
                                 <span className="truncate">{footerModelName}</span>
+                                {footerFallbackActive ? (
+                                    <span
+                                        className="message-footer__label inline-flex items-center gap-1 text-[color:var(--status-warning)]"
+                                        title={t('chat.message.fallbackTag')}
+                                    >
+                                        <Icon name="alert" className="h-3 w-3 flex-shrink-0" />
+                                        {t('chat.message.fallbackTag')}
+                                    </span>
+                                ) : null}
                             </span>
                         ) : null}
                         {footerVariant && !['default', 'none'].includes(footerVariant.toLowerCase()) ? (

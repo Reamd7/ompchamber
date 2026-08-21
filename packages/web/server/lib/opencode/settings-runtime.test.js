@@ -95,6 +95,26 @@ describe('settings runtime', () => {
     }
   });
 
+  it('removes retired OpenCode update state from persisted settings', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({
+        theme: 'dark',
+        showOpenCodeUpdateNotifications: true,
+        openCodeUpdateToastDismissedVersion: '1.18.8',
+      }), 'utf8');
+
+      const migrated = await runtime.readSettingsFromDiskMigrated();
+      expect(migrated.theme).toBe('dark');
+      expect(migrated).not.toHaveProperty('showOpenCodeUpdateNotifications');
+      expect(migrated).not.toHaveProperty('openCodeUpdateToastDismissedVersion');
+      const persisted = JSON.parse(await fsPromises.readFile(settingsFilePath, 'utf8'));
+      expect(persisted).toEqual(migrated);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it.skipIf(process.platform !== 'win32')('falls back when Windows blocks atomic settings replacement', async () => {
     const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-settings-runtime-'));
     const settingsFilePath = path.join(tempRoot, 'settings.json');

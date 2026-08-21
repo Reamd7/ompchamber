@@ -49,6 +49,12 @@ interface OmpSessionStoreActions {
   applyEvent: (runtimeKey: string, directory: string, envelope: OmpEventEnvelope) => OmpEventEffect[];
   /** Wire session.idle reached — clear volatile per-session state. */
   settleSession: (runtimeKey: string, directory: string, sessionID: string) => void;
+  seedSessionModel: (
+    runtimeKey: string,
+    directory: string,
+    sessionID: string,
+    model: { provider: string; id: string },
+  ) => void;
   /** Wire session.deleted reached — drop every trace of the session. */
   clearSession: (runtimeKey: string, directory: string, sessionID: string) => void;
   /** Directory store disposed/evicted — drop the slice. */
@@ -178,6 +184,39 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
       return effects;
     },
 
+    /**
+     * Seeds the session-model badge from the wire `Session.model` projection
+     * (spec 01 §5.5: initial value comes from the wire, events refresh it).
+     * Authoritative omp.model.changed events still win when they arrive.
+     */
+    seedSessionModel(runtimeKey, directory, sessionID, model) {
+      if (runtimeKey !== get().runtimeKey) return;
+      if (!model?.provider || !model?.id) return;
+      set((state) => {
+        const slice = state.directories[directory];
+        const existing = slice?.sessionModel[sessionID];
+        if (existing && existing.provider === model.provider && existing.id === model.id) return state;
+        return {
+          directories: {
+            ...state.directories,
+            [directory]: {
+              ...slice,
+              sessionModel: {
+                ...slice?.sessionModel,
+                [sessionID]: {
+                  provider: model.provider,
+                  id: model.id,
+                  ...(existing?.thinkingLevel ? { thinkingLevel: existing.thinkingLevel } : {}),
+                  ...(existing?.role ? { role: existing.role } : {}),
+                  updatedAt: Date.now(),
+                },
+              },
+            },
+          },
+        };
+      });
+    },
+
     settleSession(runtimeKey, directory, sessionID) {
       if (runtimeKey !== get().runtimeKey) return;
       set((state) => {
@@ -267,7 +306,8 @@ export const isOmpCompactionActive = (directory: string, sessionID: string): boo
 // Leaf selectors (store DOCUMENTATION selector rules — never subscribe to
 // the whole directories map from a component)
 // ---------------------------------------------------------------------------
-
+export const useOmpThinkingState = (directory: string, sessionID: string | undefined) =>
+  useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.thinking[sessionID] ?? null : null));
 export const useOmpRetrySupersession = (messageID: string | undefined): boolean =>
   useOmpSessionStore((state) => {
     if (!messageID) return false;
@@ -307,6 +347,9 @@ export const useOmpModeState = (directory: string, sessionID: string | undefined
 
 export const useOmpGoalState = (directory: string, sessionID: string | undefined) =>
   useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.goal[sessionID] ?? null : null));
+
+export const useOmpPlanReview = (directory: string, sessionID: string | undefined) =>
+  useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.planReview[sessionID] ?? null : null));
 
 export const useOmpTelemetry = (directory: string, sessionID: string | undefined) =>
   useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.telemetry[sessionID] ?? null : null));

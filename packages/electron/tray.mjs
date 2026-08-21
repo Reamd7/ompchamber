@@ -4,8 +4,8 @@
 //  1. an aggregate activity indicator (idle / busy / error+retry) in the icon
 //     title, rendered as a monochrome template image plus a text counter so it
 //     adapts to light/dark menu bars (colour can't be shown in template mode);
-//  2. pending approvals (permission + question requests) that block agents,
-//     with inline Allow/Deny actions;
+//  2. pending approvals (permission/question requests and omp approval/ask
+//     dialogs) that block agents, with inline Allow/Deny actions;
 //  3. the list of active sessions with status + branch, click to focus;
 //  4. quick actions (new session, show window, quit).
 //
@@ -188,6 +188,7 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
   const buildMenu = (snapshot) => {
     const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
     const approvals = Array.isArray(snapshot.approvals) ? snapshot.approvals : [];
+    const ompDialogs = Array.isArray(snapshot.ompDialogs) ? snapshot.ompDialogs : [];
     const header = typeof snapshot.instanceName === 'string' && snapshot.instanceName.trim()
       ? snapshot.instanceName.trim()
       : 'OpenChamber';
@@ -197,7 +198,7 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
       { type: 'separator' },
     ];
 
-    if (approvals.length > 0) {
+    if (approvals.length > 0 || ompDialogs.length > 0) {
       template.push({ label: 'Needs your attention', enabled: false });
       const approvalItem = (approval) => {
         if (approval.kind === 'permission') {
@@ -226,6 +227,35 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
         template.push({
           label: `${approvalOverflow.length} more…`,
           submenu: approvalOverflow.map(approvalItem),
+        });
+      }
+
+      // omp dialogs: approval rows carry renderer-localized Approve/Deny
+      // subitems (main has no dictionary access); ask rows only route to the
+      // session because answering needs the full in-app modal.
+      const ompDialogItem = (dialog) => {
+        if (dialog.kind === 'approval') {
+          return {
+            label: truncate(dialog.label || 'Approval needed', 60),
+            submenu: [
+              { label: truncate(dialog.approveLabel || 'Approve', 24), click: () => onAction({ type: 'respond-omp-dialog', directory: dialog.directory, sessionId: dialog.sessionId, dialogId: dialog.dialogId, response: 'Approve' }) },
+              { label: truncate(dialog.denyLabel || 'Deny', 24), click: () => onAction({ type: 'respond-omp-dialog', directory: dialog.directory, sessionId: dialog.sessionId, dialogId: dialog.dialogId, response: 'Deny' }) },
+            ],
+          };
+        }
+        return {
+          label: truncate(dialog.label || 'Question waiting', 60),
+          click: () => onAction({ type: 'focus-session', sessionId: dialog.sessionId, directory: dialog.directory || '' }),
+        };
+      };
+      for (const dialog of ompDialogs.slice(0, MAX_APPROVALS)) {
+        template.push(ompDialogItem(dialog));
+      }
+      const ompOverflow = ompDialogs.slice(MAX_APPROVALS);
+      if (ompOverflow.length > 0) {
+        template.push({
+          label: `${ompOverflow.length} more…`,
+          submenu: ompOverflow.map(ompDialogItem),
         });
       }
       template.push({ type: 'separator' });
@@ -315,12 +345,14 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
   const menuKey = (snapshot) => {
     const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
     const approvals = Array.isArray(snapshot.approvals) ? snapshot.approvals : [];
+    const ompDialogs = Array.isArray(snapshot.ompDialogs) ? snapshot.ompDialogs : [];
     const usage = snapshot.usage && typeof snapshot.usage === 'object' ? snapshot.usage : {};
     const groups = Array.isArray(usage.groups) ? usage.groups : [];
     return JSON.stringify({
       h: typeof snapshot.instanceName === 'string' ? snapshot.instanceName : '',
       s: sessions.map((s) => `${s.id}|${s.title}|${s.status}|${s.unseen}|${s.hasError}|${s.subtitle}|${s.directory}`),
       a: approvals.map((a) => `${a.id}|${a.kind}|${a.sessionId}|${a.sessionTitle}|${a.label}|${a.directory}`),
+      o: ompDialogs.map((d) => `${d.dialogId}|${d.kind}|${d.sessionId}|${d.directory}|${d.label}|${d.approveLabel}|${d.denyLabel}`),
       u: usage.mode || '',
       g: groups.map((g) => `${g.provider}|${g.status}|${(Array.isArray(g.rows) ? g.rows : []).map((r) => `${r.label}|${r.value}`).join(',')}`),
     });
@@ -330,11 +362,14 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
     const snapshot = rawSnapshot && typeof rawSnapshot === 'object' ? rawSnapshot : {};
     const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
     const approvals = Array.isArray(snapshot.approvals) ? snapshot.approvals : [];
+    const ompDialogs = Array.isArray(snapshot.ompDialogs) ? snapshot.ompDialogs : [];
 
     const counts = {
       busy: sessions.filter((s) => s.status === 'busy' || s.status === 'retry').length,
       error: sessions.filter((s) => s.hasError).length,
-      approvals: approvals.length,
+      // omp dialogs are decisions too — they join the ◆ count/tooltip so a
+      // pending approval is visible in the icon, not only in the menu.
+      approvals: approvals.length + ompDialogs.length,
       unseen: sessions.reduce((sum, s) => sum + (Number.isFinite(s.unseen) ? s.unseen : 0), 0),
     };
 

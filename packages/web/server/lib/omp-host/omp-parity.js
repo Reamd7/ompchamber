@@ -45,6 +45,8 @@ export const ompFeatures = () => ({
   'uri.v1': true,
   'tree.v1': true,
   'agentRuns.v1': true,
+  // 08: omp slash-command discovery for the three-layer pipeline (§5.4).
+  'commands.v1': true,
   // jobs: SDK AsyncJobManager only attaches to the first top-level session;
   // capability stays false until upstream injection (master R12).
   'jobs.v1': false,

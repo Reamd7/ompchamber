@@ -31,6 +31,10 @@ export interface OmpFeatureFlagsState {
   resolved: boolean;
   modelRoles: boolean;
   modes: boolean;
+  /** personas.v1 — the composer agent chip becomes a persona selector. */
+  personas: boolean;
+  /** agentDefinitions.v1 — the agents settings surface writes /api/omp/agent-definitions. */
+  agentDefinitions: boolean;
 }
 
 const reResolvedRuntimes = new Set<string>();
@@ -52,12 +56,24 @@ const reResolveDefaultSelection = (): void => {
  * the settled answer to React.
  */
 export const useOmpFeatureFlags = (): OmpFeatureFlagsState => {
-  const [state, setState] = React.useState<OmpFeatureFlagsState>({ resolved: false, modelRoles: false, modes: false });
+  const [state, setState] = React.useState<OmpFeatureFlagsState>({
+    resolved: false,
+    modelRoles: false,
+    modes: false,
+    personas: false,
+    agentDefinitions: false,
+  });
   const runtimeKey = getRuntimeKey();
 
   React.useEffect(() => {
     let cancelled = false;
-    setState({ resolved: false, modelRoles: false, modes: false });
+    setState({
+      resolved: false,
+      modelRoles: false,
+      modes: false,
+      personas: false,
+      agentDefinitions: false,
+    });
     void primeOmpCapabilityGate().then((entry) => {
       if (cancelled) return;
       const features = entry.capabilities?.features ?? {};
@@ -65,6 +81,8 @@ export const useOmpFeatureFlags = (): OmpFeatureFlagsState => {
         resolved: true,
         modelRoles: features['modelRoles.v1'] === true,
         modes: features['modes.v1'] === true,
+        personas: features['personas.v1'] === true,
+        agentDefinitions: features['agentDefinitions.v1'] === true,
       });
       if (features['modelRoles.v1'] === true) reResolveDefaultSelection();
     });
@@ -83,6 +101,8 @@ export interface OmpRoleSlot {
   tag?: string;
   configured: boolean;
   model: { provider: string; id: string; thinkingLevel?: string } | null;
+  /** Persisted layer for the assignment ('global' | 'project'); absent when unconfigured. */
+  source?: string;
 }
 
 const toRoleSlot = (id: string, snapshot: OmpModelsSnapshot): OmpRoleSlot | null => {
@@ -102,6 +122,7 @@ const toRoleSlot = (id: string, snapshot: OmpModelsSnapshot): OmpRoleSlot | null
     ...(meta?.tag !== undefined ? { tag: meta.tag } : {}),
     configured: entry != null,
     model,
+    ...(entry?.source !== undefined ? { source: entry.source } : {}),
   };
 };
 
@@ -129,14 +150,23 @@ export interface OmpModelRolesState {
   modelRolesEnabled: boolean;
   /** Mode selector replaces the agent chip (modes.v1 && modelRoles.v1). */
   modesEnabled: boolean;
+  /** Persona selector replaces the agent chip (personas.v1, spec 02 §5.1 D-B2). */
+  personasEnabled: boolean;
   snapshot: OmpModelsSnapshot | null;
   roles: OmpRoleSlot[];
+  /** True while a (re)fetch is in flight — lets settings surfaces distinguish "loading" from "unavailable". */
+  pending: boolean;
+  /** Re-fetches the models snapshot (settings writes need immediate feedback). */
+  reload: () => void;
 }
 
 export const useOmpModelRoles = (directory: string | null | undefined): OmpModelRolesState => {
   const flags = useOmpFeatureFlags();
   const { ompModels } = useRuntimeAPIs();
   const [snapshot, setSnapshot] = React.useState<OmpModelsSnapshot | null>(null);
+  const [reloadEpoch, setReloadEpoch] = React.useState(0);
+  const [pending, setPending] = React.useState(false);
+
 
   const directoryKey = directory ?? null;
   const featureOn = flags.modelRoles;
@@ -144,42 +174,65 @@ export const useOmpModelRoles = (directory: string | null | undefined): OmpModel
   React.useEffect(() => {
     if (!featureOn || !directoryKey) {
       setSnapshot(null);
+      setPending(false);
       return;
     }
     let cancelled = false;
     setSnapshot(null);
+    setPending(true);
     void ompModels.getModels({ directory: directoryKey }).then((result) => {
       if (cancelled) return;
       // Fetch failure / malformed payload / surface absent → keep the legacy
       // picker; never render roles from a non-authoritative answer.
       setSnapshot(result.ok ? result.data : null);
+      setPending(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [ompModels, featureOn, directoryKey]);
+  }, [ompModels, featureOn, directoryKey, reloadEpoch]);
 
+
+
+
+
+
+  const reload = React.useCallback(() => setReloadEpoch((epoch) => epoch + 1), []);
   const roles = React.useMemo(() => (snapshot ? buildRoleSlots(snapshot) : []), [snapshot]);
 
   return {
     resolved: flags.resolved,
     modelRolesEnabled: featureOn && snapshot !== null,
     modesEnabled: flags.modes && flags.modelRoles,
+    personasEnabled: flags.personas,
     snapshot,
     roles,
+    pending,
+    reload,
   };
 };
-
 /**
  * The composer's agent field under the omp concept system: with model roles
  * active, new sessions carry no agent (sessions default to standard; master
  * D3 row 1). Explicit `@agent` mentions flow through `agentMentions`, not
  * this field, and stay untouched.
+ *
+ * Under personas.v1 the same wire field becomes the explicit persona
+ * carrier (spec 02 §5.1 D-B2/D-B3): a selected persona rides the next
+ * prompt as the agent param — the engine persists it to the session's
+ * registry meta and rebuilds the AgentSession — and an explicit switch back
+ * to "Standard" sends 'build', the engine's standard sentinel, so a
+ * previously persisted persona is cleared. No selection (null/empty) omits
+ * the field and the engine keeps the session's persisted persona.
  */
 export const resolveSendAgent = (
   legacyAgent: string | null | undefined,
   modelRolesEnabled: boolean,
-): string | undefined => (modelRolesEnabled ? undefined : legacyAgent || undefined);
+  personasEnabled = false,
+): string | undefined => {
+  if (personasEnabled) return legacyAgent || undefined;
+  return modelRolesEnabled ? undefined : legacyAgent || undefined;
+};
 
 /** Re-exported for hook-level tests. */
 export { __resetOmpCapabilityGateForTests };

@@ -3,7 +3,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionWorktreeStore } from './session-worktree-store';
-import { expandSlashCommandGoalObjective, routeMessage, useSessionUIStore } from './session-ui-store';
+import { acquireFirstTurnDialogLease, expandSlashCommandGoalObjective, routeMessage, useSessionUIStore } from './session-ui-store';
 import { setActionRefs, setOptimisticRefs } from './session-actions';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
@@ -196,6 +196,42 @@ describe('session-worktree-store worktree routing', () => {
     const attachment = store.getAttachment('session-not-repo');
     expect(attachment).toBeDefined();
     expect(attachment.worktreeStatus).toBe('not-a-repo');
+  });
+});
+
+describe('first-turn omp dialog lease handoff', () => {
+  const capabilities = (dialogs) => ({
+    capabilities: {
+      version: 1,
+      eventSchema: '1.0',
+      features: { 'dialogs.v1': dialogs },
+      minUiVersion: '0.0.0',
+    },
+  });
+
+  test('acquires the page holder before the first prompt when dialogs.v1 is active', async () => {
+    const calls = [];
+    await acquireFirstTurnDialogLease('ses_new', '/repo', {
+      primeCapabilities: async () => capabilities(true),
+      getClientId: () => 'page_1',
+      api: { acquireLease: async (input) => { calls.push(input); return { ok: true, lease: { leaseId: 'l1', expiresAt: 1, heartbeatIntervalMs: 10_000 } }; } },
+    });
+    expect(calls).toEqual([{ directory: '/repo', sessionId: 'ses_new', clientId: 'page_1' }]);
+  });
+
+  test('does not touch the endpoint when capability is absent or the directory is unknown', async () => {
+    let calls = 0;
+    const api = { acquireLease: async () => { calls += 1; return { ok: false, unavailable: true }; } };
+    await acquireFirstTurnDialogLease('ses_new', '/repo', { primeCapabilities: async () => capabilities(false), api });
+    await acquireFirstTurnDialogLease('ses_new', null, { primeCapabilities: async () => capabilities(true), api });
+    expect(calls).toBe(0);
+  });
+
+  test('fails the send boundary when an advertised dialog surface cannot attach', async () => {
+    await expect(acquireFirstTurnDialogLease('ses_new', '/repo', {
+      primeCapabilities: async () => capabilities(true),
+      api: { acquireLease: async () => ({ ok: false, unavailable: false }) },
+    })).rejects.toThrow('Failed to attach the interactive dialog surface');
   });
 });
 

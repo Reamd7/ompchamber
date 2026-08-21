@@ -10,9 +10,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BUILTIN_TOOLS, getAgentDir } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.js';
-import { buildCapabilities, ompFeatures } from './omp-parity.js';
+import { buildCapabilities, featureUnavailable, ompFeatures } from './omp-parity.js';
 import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models.js';
 import { registerModesDomainRoutes } from './domain-modes.js';
+import { registerCommandsDomainRoutes } from './domain-commands.js';
 
 
 /**
@@ -187,7 +188,6 @@ export const registerEndpoints = (route, engine, { version }) => {
   });
   route('GET', '/global/config', async () => json(await configPayload()));
   route('PATCH', '/global/config', async () => json(await configPayload()));
-  route('POST', '/global/upgrade', async () => unsupported('The omp host upgrades with the OpenChamber application, not through the API.'));
 
   // ---- sessions ----
   route('GET', '/session', async (request, ctx) => {
@@ -593,10 +593,15 @@ export const registerEndpoints = (route, engine, { version }) => {
       },
     },
     publish: ompPublish,
+    listModels: async () => {
+      await engine.ready();
+      return engine.availableModels();
+    },
   });
   engine.dialogs.mount(route);
   registerModesDomainRoutes(route, engine.modesDomain, { features: ompFeatures() });
   engine.uriDomain.mount(route);
+  registerCommandsDomainRoutes(route, { features: ompFeatures() });
 
   // ---- omp parity foundation (spec docs/omp-parity; public paths
   // /api/omp/* — the web proxy strips the /api prefix, master D6-R3/R4) ----
@@ -634,6 +639,25 @@ export const registerEndpoints = (route, engine, { version }) => {
       kinds,
     });
     return entries ? json(entries) : notFound('session not found');
+  });
+
+  route('POST', '/omp/sessions/{id}/model', async (request, ctx) => {
+    if (ompFeatures()['modelRoles.v1'] !== true) {
+      return featureUnavailable('modelRoles.v1');
+    }
+    const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
+    if (!directory) return badRequest('directory is required');
+    const body = await request.json().catch(() => ({}));
+    const result = await engine.setSessionModel({
+      sessionID: ctx.params.id,
+      directory,
+      model: body?.model && typeof body.model === 'object' ? body.model : null,
+      ...(typeof body?.thinkingLevel === 'string' && body.thinkingLevel.length > 0
+        ? { thinkingLevel: body.thinkingLevel }
+        : {}),
+    });
+    if (!result.ok) return badRequest(result.error);
+    return json(result);
   });
 
   route('GET', '/omp/events', async (request) => {

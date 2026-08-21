@@ -7,6 +7,7 @@ import { WireEventBus } from './events.js';
 import { promptPayloadFromWire } from './endpoints.js';
 import {
   StreamProjector,
+  normalizeToolExecutionResult,
   projectConversation,
   projectUserMessage,
   wireMessageId,
@@ -178,6 +179,63 @@ describe('projection', () => {
     expect(plain[1].parts.find((p) => p.type === 'tool').state.title).toBe('read');
   });
 
+  test('tool results carry structured details in tool part metadata (ask answer cards, spec 03 §5.4.1)', () => {
+    const askDetails = {
+      question: 'Ship the release?',
+      options: ['Yes', 'No'],
+      multi: false,
+      selectedOptions: ['Yes'],
+      timedOut: true,
+    };
+    const messages = [
+      userMessage('check'),
+      assistantMessage([
+        { type: 'toolCall', id: 'a1', name: 'ask', arguments: { questions: [] }, intent: 'Confirm release' },
+      ]),
+      { ...toolResult('a1', 'User answers:\nYes'), details: askDetails },
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    const toolPart = projected[1].parts.find((p) => p.type === 'tool');
+    expect(toolPart.state.output).toBe('User answers:\nYes');
+    expect(toolPart.state.metadata).toEqual({ intent: 'Confirm release', details: askDetails });
+    // results without details keep the plain metadata shape
+    const plain = projectConversation(
+      [userMessage('go'), assistantMessage([{ type: 'toolCall', id: 'c8', name: 'read', arguments: { path: '/x' } }]), toolResult('c8', 'data')],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    expect(plain[1].parts.find((p) => p.type === 'tool').state.metadata).toEqual({});
+  });
+
+  test('normalizeToolExecutionResult accepts AgentToolResult objects and plain strings', () => {
+    expect(normalizeToolExecutionResult({ content: [{ type: 'text', text: 'ans' }], details: { timedOut: true } })).toEqual({
+      content: [{ type: 'text', text: 'ans' }],
+      text: 'ans',
+      details: { timedOut: true },
+    });
+    expect(normalizeToolExecutionResult('plain')).toEqual({ content: [{ type: 'text', text: 'plain' }], text: 'plain' });
+    expect(normalizeToolExecutionResult({ content: [], details: {} })).toEqual({ content: [], text: '' });
+    expect(normalizeToolExecutionResult(undefined)).toEqual({ content: [], text: '' });
+  });
+  test('toolFinished passes structured metadata through the transient tool part', () => {
+    const emitted = [];
+    const projector = new StreamProjector({
+      sessionID: 's1',
+      directory: '/repo',
+      agent: 'build',
+      emit: (type, properties) => emitted.push({ type, properties }),
+    });
+    projector.startAssistant(assistantMessage([]));
+    projector.toolStarted('c1', 'ask', { questions: [] });
+    projector.toolFinished('c1', { output: 'ans', metadata: { details: { question: 'q' } } });
+    const part = emitted
+      .filter((e) => e.type === 'message.part.updated')
+      .map((e) => e.properties.part)
+      .filter((p) => p.type === 'tool')
+      .at(-1);
+    expect(part.state.status).toBe('completed');
+    expect(part.state.output).toBe('ans');
+    expect(part.state.metadata).toEqual({ details: { question: 'q' } });
+  });
   test('streaming projector emits matching part ids for the final projection', () => {
     const emitted = [];
     const projector = new StreamProjector({

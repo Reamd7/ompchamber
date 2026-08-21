@@ -4,11 +4,13 @@ import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { useAgentsStore, type AgentConfig, type AgentMutationResult, type AgentScope } from '@/stores/useAgentsStore';
+import { useAgentsStore, getConfigDirectory, type AgentConfig, type AgentMutationResult, type AgentScope } from '@/stores/useAgentsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ModelSelector } from './ModelSelector';
 import { useI18n } from '@/lib/i18n';
+import { useOmpFeatureFlags } from '@/hooks/useOmpModelRoles';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
+import type { Agent } from '@/lib/opencode/wire';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
@@ -30,6 +32,16 @@ import {
 } from '@/components/ui/select';
 import { Icon } from '@/components/icon/Icon';
 import { AgentPermissionsEditor } from './AgentPermissionsEditor';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import {
+  applyTaskOverrideChanges,
+  buildTaskOverrideChanges,
+  emptyTaskOverrideRecords,
+  parseTaskOverrideRecords,
+  TASK_OVERRIDE_SETTING_KEYS,
+  type TaskOverrideRecords,
+} from './agentTaskOverrides';
 
 type AgentVariantProvider = {
   id: string;
@@ -52,8 +64,235 @@ const getVariantOptionsForModel = (
   const model = provider?.models?.find((item) => item.id === parsedModel.modelId);
   return model?.variants ? Object.keys(model.variants) : [];
 };
+
+/**
+ * One pattern-override input (model / prewalk / advisor). Commits on Enter,
+ * blur, or clear — the parent skips unchanged values.
+ */
+const OverridePatternField: React.FC<{
+  id: string;
+  label: string;
+  info: string;
+  placeholder: string;
+  value: string;
+  saving: boolean;
+  onChange: (value: string) => void;
+  onApply: (value: string) => void;
+  clearLabel: string;
+}> = ({ id, label, info, placeholder, value, saving, onChange, onApply, clearLabel }) => {
+  const { t } = useI18n();
+  return (
+    <SettingsFieldRow settingsItem={id} label={label} info={info}>
+      <Input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') onApply(value);
+        }}
+        onBlur={() => onApply(value)}
+        placeholder={placeholder}
+        disabled={saving}
+        className="h-7 w-full max-w-md px-2 font-mono"
+      />
+      <Button
+        size="sm"
+        type="button"
+        variant="ghost"
+        disabled={saving}
+        aria-label={clearLabel}
+        title={clearLabel}
+        onClick={() => {
+          onChange('');
+          onApply('');
+        }}
+        className={SETTINGS_ICON_BUTTON_CLASS}
+      >
+        <Icon name="close" className="h-3.5 w-3.5" />
+      </Button>
+    </SettingsFieldRow>
+  );
+};
+
+/**
+ * Per-agent task.* override chips (02 §5.3 per-agent override area,
+ * GAP-B05). Writes go through `PUT /api/omp/settings` with the full key
+ * value — the raw records are read once from the settings face so sibling
+ * entries (including bundled agents absent from this page) survive every
+ * write. The disabled toggle writes through immediately (agents-hub chip
+ * parity); pattern inputs commit on apply. Rejected keys surface inline
+ * (R9: key + reason only, never the submitted value).
+ */
+const AgentTaskOverridesSection: React.FC<{ agentName: string }> = ({ agentName }) => {
+  const { t } = useI18n();
+  const { ompSettings } = useRuntimeAPIs();
+  const [records, setRecords] = React.useState<TaskOverrideRecords | null>(null);
+  const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [rejectedKeys, setRejectedKeys] = React.useState<Array<{ key: string; reason?: string }>>([]);
+  const [saving, setSaving] = React.useState(false);
+  const [modelDraft, setModelDraft] = React.useState('');
+  const [prewalkDraft, setPrewalkDraft] = React.useState('');
+  const [advisorDraft, setAdvisorDraft] = React.useState('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setRecords(null);
+    setLoadState('loading');
+    setRejectedKeys([]);
+    void ompSettings.getSettings({
+      directory: getConfigDirectory() ?? '',
+      keys: [...TASK_OVERRIDE_SETTING_KEYS],
+    }).then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setLoadState('unavailable');
+        return;
+      }
+      const parsed = parseTaskOverrideRecords(result.data);
+      setRecords(parsed);
+      setModelDraft(parsed.modelOverrides[agentName] ?? '');
+      setPrewalkDraft(parsed.prewalk[agentName] ?? '');
+      setAdvisorDraft(parsed.advisor[agentName] ?? '');
+      setLoadState('ready');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentName, ompSettings]);
+
+  const saveChanges = React.useCallback((changes: Record<string, unknown>) => {
+    const current = records ?? emptyTaskOverrideRecords();
+    if (Object.keys(changes).length === 0 || saving) return;
+    setSaving(true);
+    setRejectedKeys([]);
+    void ompSettings.putSettings({
+      directory: getConfigDirectory() ?? '',
+      changes,
+    }).then((result) => {
+      setSaving(false);
+      if (result.ok) {
+        setRecords(applyTaskOverrideChanges(current, result.applied));
+        return;
+      }
+      if (result.unavailable) {
+        toast.error(t('settings.agents.page.overrides.saveFailed'));
+        return;
+      }
+      if (result.kind === 'rejected') {
+        setRejectedKeys(result.rejected);
+        return;
+      }
+      toast.error(t(result.kind === 'quarantined'
+        ? 'settings.agents.page.overrides.quarantined'
+        : 'settings.agents.page.overrides.saveFailed'));
+    });
+  }, [ompSettings, records, saving, t]);
+
+  if (loadState !== 'ready' || records === null) {
+    return (
+      <SettingsSection title={t('settings.agents.page.overrides.title')} settingsItem="agents.task-overrides">
+        <p className="typography-meta text-muted-foreground">
+          {loadState === 'unavailable'
+            ? t('settings.agents.page.overrides.unavailable')
+            : t('settings.agents.page.overrides.loading')}
+        </p>
+      </SettingsSection>
+    );
+  }
+
+  const disabled = records.disabledAgents.includes(agentName);
+  const applyPattern = (
+    key: 'modelOverride' | 'prewalkOverride' | 'advisorOverride',
+    value: string,
+  ): void => {
+    const currentEntry = key === 'modelOverride'
+      ? records.modelOverrides[agentName]
+      : key === 'prewalkOverride'
+        ? records.prewalk[agentName]
+        : records.advisor[agentName];
+    if ((currentEntry ?? '') === value.trim()) return;
+    saveChanges(buildTaskOverrideChanges(agentName, records, { [key]: value }));
+  };
+
+  return (
+    <SettingsSection
+      title={t('settings.agents.page.overrides.title')}
+      info={t('settings.agents.page.overrides.hint')}
+      settingsItem="agents.task-overrides"
+      contentClassName="space-y-3"
+    >
+      <SettingsFieldRow
+        settingsItem="agents.task-overrides-disabled"
+        label={t('settings.agents.page.overrides.disabled.label')}
+        info={t('settings.agents.page.overrides.disabled.hint')}
+      >
+        <Button
+          variant="chip"
+          size="sm"
+          aria-pressed={disabled}
+          disabled={saving}
+          onClick={() => saveChanges(buildTaskOverrideChanges(agentName, records, { disabled: !disabled }))}
+          data-testid="omp-agent-disabled-chip"
+        >
+          {disabled
+            ? t('settings.agents.page.overrides.disabled.on')
+            : t('settings.agents.page.overrides.disabled.off')}
+        </Button>
+      </SettingsFieldRow>
+
+      <OverridePatternField
+        id="agents.task-overrides-model"
+        label={t('settings.agents.page.overrides.model.label')}
+        info={t('settings.agents.page.overrides.model.hint')}
+        placeholder={t('settings.agents.page.overrides.model.placeholder')}
+        value={modelDraft}
+        saving={saving}
+        onChange={setModelDraft}
+        onApply={(value) => applyPattern('modelOverride', value)}
+        clearLabel={t('settings.common.actions.clear')}
+      />
+      <OverridePatternField
+        id="agents.task-overrides-prewalk"
+        label={t('settings.agents.page.overrides.prewalk.label')}
+        info={t('settings.agents.page.overrides.prewalk.hint')}
+        placeholder={t('settings.agents.page.overrides.prewalk.placeholder')}
+        value={prewalkDraft}
+        saving={saving}
+        onChange={setPrewalkDraft}
+        onApply={(value) => applyPattern('prewalkOverride', value)}
+        clearLabel={t('settings.common.actions.clear')}
+      />
+      <OverridePatternField
+        id="agents.task-overrides-advisor"
+        label={t('settings.agents.page.overrides.advisor.label')}
+        info={t('settings.agents.page.overrides.advisor.hint')}
+        placeholder={t('settings.agents.page.overrides.advisor.placeholder')}
+        value={advisorDraft}
+        saving={saving}
+        onChange={setAdvisorDraft}
+        onApply={(value) => applyPattern('advisorOverride', value)}
+        clearLabel={t('settings.common.actions.clear')}
+      />
+
+      {rejectedKeys.length > 0 ? (
+        <div className="flex flex-col gap-1" data-testid="omp-agent-overrides-rejected" role="alert">
+          {rejectedKeys.map((entry) => (
+            <p key={entry.key} className="typography-meta text-status-error">
+              {entry.reason
+                ? t('settings.agents.page.overrides.rejectedWithReason', { key: entry.key, reason: entry.reason })
+                : t('settings.agents.page.overrides.rejected', { key: entry.key })}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </SettingsSection>
+  );
+};
+
+
 export const AgentsPage: React.FC = () => {
   const { t } = useI18n();
+  const ompAgentDefinitions = useOmpFeatureFlags().agentDefinitions;
+  const ompSettingsEnabled = useOmpFeatureEnabled('settings.v1');
   const providers = useConfigStore((state) => state.providers) as AgentVariantProvider[];
   const {
     selectedAgentName,
@@ -85,6 +324,7 @@ export const AgentsPage: React.FC = () => {
   const [temperature, setTemperature] = React.useState<number | undefined>(undefined);
   const [topP, setTopP] = React.useState<number | undefined>(undefined);
   const [prompt, setPrompt] = React.useState('');
+  const [tools, setTools] = React.useState('');
   const [isSaving, setIsSaving] = React.useState(false);
   const initialStateRef = React.useRef<{
     draftName: string;
@@ -96,6 +336,7 @@ export const AgentsPage: React.FC = () => {
     temperature: number | undefined;
     topP: number | undefined;
     prompt: string;
+    tools: string;
   } | null>(null);
 
   const variantOptions = React.useMemo(() => getVariantOptionsForModel(providers, model), [model, providers]);
@@ -117,6 +358,7 @@ export const AgentsPage: React.FC = () => {
       const temperatureValue = agentDraft.temperature ?? undefined;
       const topPValue = agentDraft.top_p ?? undefined;
       const promptValue = agentDraft.prompt || '';
+      const toolsValue = (agentDraft.tools ?? []).join(', ');
 
       setDraftName(draftNameValue);
       setDraftScope(draftScopeValue);
@@ -127,6 +369,7 @@ export const AgentsPage: React.FC = () => {
       setTemperature(temperatureValue);
       setTopP(topPValue);
       setPrompt(promptValue);
+      setTools(toolsValue);
 
       initialStateRef.current = {
         draftName: draftNameValue,
@@ -138,6 +381,7 @@ export const AgentsPage: React.FC = () => {
         temperature: temperatureValue,
         topP: topPValue,
         prompt: promptValue,
+        tools: toolsValue,
       };
       return;
     }
@@ -148,10 +392,11 @@ export const AgentsPage: React.FC = () => {
       const modelValue = selectedAgent.model?.providerID && selectedAgent.model?.modelID
         ? `${selectedAgent.model.providerID}/${selectedAgent.model.modelID}`
         : '';
+      const promptValue = selectedAgent.prompt || '';
+      const toolsValue = ((selectedAgent as Agent & { tools?: string[] }).tools ?? []).join(', ');
       const variantValue = selectedAgent.variant || '';
       const temperatureValue = selectedAgent.temperature ?? undefined;
       const topPValue = selectedAgent.topP ?? undefined;
-      const promptValue = selectedAgent.prompt || '';
 
       setDescription(descriptionValue);
       setMode(modeValue);
@@ -161,6 +406,7 @@ export const AgentsPage: React.FC = () => {
       setTemperature(temperatureValue);
       setTopP(topPValue);
       setPrompt(promptValue);
+      setTools(toolsValue);
 
       initialStateRef.current = {
         draftName: '',
@@ -172,6 +418,7 @@ export const AgentsPage: React.FC = () => {
         temperature: temperatureValue,
         topP: topPValue,
         prompt: promptValue,
+        tools: toolsValue,
       };
     }
   }, [agentDraft, isNewAgent, selectedAgent, selectedAgentName]);
@@ -190,13 +437,11 @@ export const AgentsPage: React.FC = () => {
     if (description !== initial.description) return true;
     if (mode !== initial.mode) return true;
     if (model !== initial.model) return true;
-    if (variant !== initial.variant) return true;
-    if (temperature !== initial.temperature) return true;
-    if (topP !== initial.topP) return true;
     if (prompt !== initial.prompt) return true;
+    if (tools !== initial.tools) return true;
 
     return false;
-  }, [description, draftName, draftScope, isNewAgent, mode, model, prompt, temperature, topP, variant]);
+  }, [description, draftName, draftScope, isNewAgent, mode, model, prompt, temperature, tools, topP, variant]);
 
   const handleSave = async () => {
     const agentName = isNewAgent ? draftName.trim().replace(/\s+/g, '-') : selectedAgentName?.trim();
@@ -218,6 +463,7 @@ export const AgentsPage: React.FC = () => {
       const trimmedModel = model.trim();
       const trimmedVariant = variant.trim();
       const trimmedPrompt = prompt.trim();
+      const parsedTools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
       const config: AgentConfig = {
         name: agentName,
         ...(description.trim() ? { description: description.trim() } : {}),
@@ -227,6 +473,7 @@ export const AgentsPage: React.FC = () => {
         temperature: temperature ?? null,
         top_p: topP ?? null,
         prompt: trimmedPrompt || (isNewAgent ? undefined : null),
+        ...(parsedTools.length > 0 ? { tools: parsedTools } : {}),
         ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
       };
 
@@ -249,7 +496,11 @@ export const AgentsPage: React.FC = () => {
           toast.success(isNewAgent ? t('settings.agents.page.toast.created') : t('settings.agents.page.toast.updated'));
         }
       } else {
-        toast.error(isNewAgent ? t('settings.agents.page.toast.createFailed') : t('settings.agents.page.toast.updateFailed'));
+        toast.error(result.reason === 'invalid-prompt'
+          ? t('settings.agents.page.toast.promptRequired')
+          : result.reason === 'agent-definition-exists'
+            ? t('settings.agents.sidebar.toast.agentExists')
+            : isNewAgent ? t('settings.agents.page.toast.createFailed') : t('settings.agents.page.toast.updateFailed'));
       }
     } catch (error) {
       console.error('Error saving agent:', error);
@@ -341,15 +592,42 @@ export const AgentsPage: React.FC = () => {
             aria-label={t('settings.agents.page.field.mode')}
             value={mode}
             onChange={setMode}
-            options={[
-              { value: 'primary', label: t('settings.agents.page.mode.primary') },
-              { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
-              { value: 'all', label: t('settings.agents.page.mode.all') },
-            ]}
+            options={ompAgentDefinitions
+              ? [
+                  // omp has no primary agents (02 §5.3): the build/plan
+                  // concept is deleted; definitions are worker-scoped.
+                  { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
+                  { value: 'all', label: t('settings.agents.page.mode.all') },
+                ]
+              : [
+                  { value: 'primary', label: t('settings.agents.page.mode.primary') },
+                  { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
+                  { value: 'all', label: t('settings.agents.page.mode.all') },
+                ]}
           />
         </SettingsStackedField>
+
+        {ompAgentDefinitions && (
+          <SettingsStackedField
+            label={t('settings.agents.page.field.tools')}
+            info={t('settings.agents.page.field.toolsHint')}
+            controlClassName="w-full max-w-none"
+          >
+            <Input
+              value={tools}
+              onChange={(e) => setTools(e.target.value)}
+              placeholder={t('settings.agents.page.field.toolsPlaceholder')}
+              className="h-7 w-full max-w-md px-2 font-mono"
+            />
+          </SettingsStackedField>
+        )}
       </SettingsSection>
 
+      {ompAgentDefinitions && ompSettingsEnabled && !isNewAgent && selectedAgent ? (
+        <AgentTaskOverridesSection agentName={selectedAgent.name} />
+      ) : null}
+
+      {!ompAgentDefinitions && (
       <SettingsSection
         title={t('settings.agents.page.section.modelParameters')}
         contentClassName="space-y-3"
@@ -502,6 +780,7 @@ export const AgentsPage: React.FC = () => {
           )}
         </SettingsFieldRow>
       </SettingsSection>
+      )}
 
       <SettingsSection
         title={t('settings.agents.page.section.systemPrompt')}
@@ -516,7 +795,7 @@ export const AgentsPage: React.FC = () => {
         />
       </SettingsSection>
 
-      {!isNewAgent && selectedAgent && (
+      {!isNewAgent && selectedAgent && !ompAgentDefinitions && (
         <AgentPermissionsEditor agent={selectedAgent} />
       )}
 

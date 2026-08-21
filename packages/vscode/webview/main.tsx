@@ -994,16 +994,6 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     });
   }
 
-  if (pathname === '/api/opencode/upgrade-status' && method === 'GET') {
-    const data = await sendBridgeMessage('api:opencode/upgrade-status');
-    return jsonResponse(data);
-  }
-
-  if (pathname === '/api/opencode/upgrade' && method === 'POST') {
-    const body = await extractJsonBody(input, init, method);
-    const result = await sendBridgeMessage<{ status: number; body: unknown }>('api:opencode/upgrade', body);
-    return jsonResponse(result.body, result.status);
-  }
 
   if (pathname === '/api/zen/models' && method === 'GET') {
     try {

@@ -6,6 +6,10 @@ export interface CommandAutocompleteSearchItem {
   searchAliases?: string[];
   isBuiltIn?: boolean;
   isSkill?: boolean;
+  /** omp discovery layer (GET /api/omp/commands — spec 08 §5.4). */
+  isOmp?: boolean;
+  /** The omp layer displaced a lower OpenChamber layer with this name (collision notice). */
+  ompOverrides?: boolean;
 }
 
 function addSearchAliases<T extends CommandAutocompleteSearchItem>(winner: T, duplicate: T): T {
@@ -22,44 +26,56 @@ function addSearchAliases<T extends CommandAutocompleteSearchItem>(winner: T, du
   return unchanged ? winner : { ...winner, searchAliases: aliases };
 }
 
+const withOmpOverride = <T extends CommandAutocompleteSearchItem>(item: T, flag: boolean): T =>
+  flag ? { ...item, ompOverrides: true } : item;
+
 /**
- * Precedence is local command, discovered skill, OpenCode skill-command, then
- * custom/plugin command. Identity matches session.command's case-sensitive lookup.
+ * Precedence is the omp discovery layer, local command, discovered skill,
+ * OpenCode skill-command, then custom/plugin command (spec 08 §5.4 three-layer
+ * pipeline: omp → custom → magic). Identity matches session.command's
+ * case-sensitive lookup. An omp winner that displaced a lower layer keeps that
+ * layer's search aliases and is flagged `ompOverrides` for the collision badge.
  */
 export function mergeCommandAutocompleteItems<T extends CommandAutocompleteSearchItem>(
   builtIns: T[],
   commands: T[],
   skills: T[],
+  ompCommands: T[] = [],
 ): T[] {
   const merged: T[] = [];
-  const byName = new Map<string, { index: number; item: T; precedence: number }>();
+  const byName = new Map<string, { index: number; item: T; precedence: number; omp: boolean }>();
 
-  const addItems = (items: T[], getPrecedence: (item: T) => number) => {
+  const addItems = (items: T[], getPrecedence: (item: T) => number, omp: boolean) => {
     for (const item of items) {
       const precedence = getPrecedence(item);
       const identity = item.name;
       const existing = byName.get(identity);
       if (!existing) {
-        byName.set(identity, { index: merged.length, item, precedence });
+        byName.set(identity, { index: merged.length, item, precedence, omp });
         merged.push(item);
         continue;
       }
 
-      const winner = precedence > existing.precedence
-        ? addSearchAliases(item, existing.item)
-        : addSearchAliases(existing.item, item);
+      const incomingWins = precedence > existing.precedence;
+      const winner = incomingWins
+        ? withOmpOverride(addSearchAliases(item, existing.item), omp && !existing.omp)
+        : // The omp layer is added first, so a surviving omp row overrode the
+          // incoming lower layer — that displacement is the collision notice.
+          withOmpOverride(addSearchAliases(existing.item, item), existing.omp && !omp);
       merged[existing.index] = winner;
       byName.set(identity, {
         index: existing.index,
         item: winner,
         precedence: Math.max(existing.precedence, precedence),
+        omp: incomingWins ? omp : existing.omp,
       });
     }
   };
 
-  addItems(builtIns, () => 3);
-  addItems(commands, (item) => item.isBuiltIn ? 3 : item.isSkill ? 1 : 0);
-  addItems(skills, () => 2);
+  addItems(ompCommands, () => 4, true);
+  addItems(builtIns, () => 3, false);
+  addItems(commands, (item) => item.isBuiltIn ? 3 : item.isSkill ? 1 : 0, false);
+  addItems(skills, () => 2, false);
   return merged;
 }
 

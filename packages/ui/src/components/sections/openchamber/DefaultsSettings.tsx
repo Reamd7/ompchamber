@@ -14,6 +14,9 @@ import {
   SETTINGS_OPTION_STACK_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
+import { OmpModelRolesEditor } from '@/components/sections/omp/OmpModelRolesEditor';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -33,8 +36,15 @@ const getDisplayModel = (
   return { providerId: '', modelId: '' };
 };
 
+
 export const DefaultsSettings: React.FC = () => {
   const { t } = useI18n();
+  // omp settings face gate (spec 06 §5.7 GAP-F3): with `settings.v1` the
+  // Default Model/Thinking/Agent trio is replaced by the model-roles editor;
+  // every degraded state (probe unresolved, off, fetch failed) keeps the
+  // legacy trio exactly as before.
+  const ompEngineEnabled = useOmpFeatureEnabled('settings.v1');
+  const ompDirectory = useEffectiveDirectory() ?? null;
   const setProvider = useConfigStore((state) => state.setProvider);
   const setModel = useConfigStore((state) => state.setModel);
   const setAgent = useConfigStore((state) => state.setAgent);
@@ -327,6 +337,10 @@ export const DefaultsSettings: React.FC = () => {
     <>
       <SettingsSection title={t('settings.openchamber.defaults.title')} divider={false}>
         <div className="space-y-0">
+          {ompEngineEnabled ? (
+            <OmpModelRolesEditor directory={ompDirectory} />
+          ) : (
+          <>
           <div className="mt-0 mb-1 typography-meta text-muted-foreground">
             {t('settings.openchamber.defaults.summaryPrefix')}
             {' '}
@@ -391,6 +405,8 @@ export const DefaultsSettings: React.FC = () => {
               />
             </SettingsFieldRow>
           </div>
+          </>
+          )}
 
           <SettingsInset className={SETTINGS_OPTION_STACK_CLASS}>
             <SettingsCheckboxRow

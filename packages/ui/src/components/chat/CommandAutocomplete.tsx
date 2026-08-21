@@ -10,9 +10,13 @@ import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useOmpCommandsForDirectory, useOmpCommandsStore } from '@/stores/useOmpCommandsStore';
+import type { OmpCommandRecord } from '@/lib/api/omp';
 import { commandMatchesSearch, mergeCommandAutocompleteItems } from './commandAutocompleteItems';
 
-type CommandSource = 'openchamber' | 'opencode' | 'skill';
+type CommandSource = 'openchamber' | 'opencode' | 'skill' | 'omp';
 
 export interface CommandInfo {
   id: string;
@@ -25,6 +29,10 @@ export interface CommandInfo {
   isBuiltIn?: boolean;
   isOpenChamber?: boolean;
   isSkill?: boolean;
+  /** omp discovery layer row (spec 08 §5.4). */
+  isOmp?: boolean;
+  /** omp displaced a lower OpenChamber layer with this name (collision notice). */
+  ompOverrides?: boolean;
   scope?: string;
 }
 
@@ -48,6 +56,10 @@ const PROJECT_BADGE_CLASS = cn(
 const NEUTRAL_BADGE_CLASS = cn(
   BASE_BADGE_CLASS,
   "bg-[var(--surface-muted)] text-muted-foreground border-[var(--interactive-border)]/60"
+);
+const OMP_OVERRIDE_BADGE_CLASS = cn(
+  BASE_BADGE_CLASS,
+  "bg-[color-mix(in_srgb,var(--status-warning)_12%,transparent)] text-[color-mix(in_srgb,var(--status-warning)_75%,transparent)] border-[color-mix(in_srgb,var(--status-warning)_25%,transparent)]"
 );
 
 interface CommandAutocompleteProps {
@@ -107,11 +119,105 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     };
   }, [onClose]);
 
+  const ompTreeEnabled = useOmpFeatureEnabled('tree.v1');
+
+  // omp discovery layer (spec 08 §5.4): loads once per directory, then feeds
+  // the merge below. Off capability → null records → no omp rows at all.
+  const ompDirectory = useEffectiveDirectory() ?? null;
+  const ompRecords = useOmpCommandsForDirectory(ompDirectory);
+  const loadOmpCommands = useOmpCommandsStore((s) => s.load);
   React.useEffect(() => {
-    // Force refresh to get latest project context when mounting
-    void refreshCommands();
-    void refreshSkills();
-  }, [refreshCommands, refreshSkills]);
+    void loadOmpCommands(ompDirectory);
+  }, [loadOmpCommands, ompDirectory]);
+
+  // /debug yields its name to the omp debug command when omp owns it; the
+  // OpenChamber magic command surfaces as /troubleshoot with the old name as
+  // a search alias (08 §5.4 collision rules).
+  const ompOwnsDebug = ompRecords?.some((record) => record.name === 'debug') ?? false;
+
+  const buildBuiltInCommands = React.useCallback((): CommandInfo[] => [
+    ...(hasSession && !hasMessagesInCurrentSession
+      ? [{ id: 'openchamber:init', name: 'init', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.initDescription'), isBuiltIn: true }]
+      : []
+    ),
+    ...(hasSession  // Show when session exists, not when hasMessages
+      ? [
+          { id: 'openchamber:undo', name: 'undo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.undoDescription'), isBuiltIn: true },
+          { id: 'openchamber:redo', name: 'redo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.redoDescription'), isBuiltIn: true },
+          { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
+        ]
+      : []
+    ),
+    { id: 'openchamber:compact', name: 'compact', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.compactDescription'), isBuiltIn: true },
+    ...(hasSession
+      ? [{ id: 'openchamber:summary', name: 'summary', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.summaryDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:workspace-review', name: 'workspace-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.workspaceReviewDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canUseReviewHandoffFlow
+      ? [{ id: 'openchamber:handoff-review', name: 'handoff-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.handoffReviewDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:plan-feature', name: 'plan-feature', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.featurePlanDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:catch-up', name: 'catch-up', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.catchUpDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{
+          id: 'openchamber:debug',
+          name: ompOwnsDebug ? 'troubleshoot' : 'debug',
+          source: 'openchamber' as const,
+          description: t('chat.commandAutocomplete.command.debugDescription'),
+          isOpenChamber: true,
+          ...(ompOwnsDebug ? { searchAliases: ['debug'] } : {}),
+        }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:weigh', name: 'weigh', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.weighDescription'), isOpenChamber: true }]
+      : []
+    ),
+    ...(canStartSessionCommand
+      ? [{ id: 'openchamber:explore', name: 'explore', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.exploreDescription'), isOpenChamber: true }]
+      : []
+    ),
+    // /tree under tree.v1 — the web counterpart of the omp builtin selector
+    // (when commands.v1 is also on, the omp 'tree' row wins the name in the
+    // merge and this entry is deduped away; same semantic either way).
+    ...(hasSession && ompTreeEnabled
+      ? [{ id: 'openchamber:tree', name: 'tree', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.treeDescription'), isBuiltIn: true }]
+      : []
+    ),
+  ], [canStartSessionCommand, canUseReviewHandoffFlow, hasMessagesInCurrentSession, hasSession, ompOwnsDebug, ompTreeEnabled, t]);
+
+  const ompCommands = React.useMemo(
+    (): CommandInfo[] => (ompRecords ?? []).map((record: OmpCommandRecord) => ({
+      id: `omp:${record.source}:${record.name}`,
+      name: record.name,
+      source: 'omp',
+      description: record.description,
+      isOmp: true,
+      ...(record.argumentHint
+        ? { description: record.description ? `${record.description} (${record.argumentHint})` : record.argumentHint }
+        : {}),
+    })),
+    [ompRecords],
+  );
 
   React.useEffect(() => {
     const loadCommands = async () => {
@@ -138,62 +244,13 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
           scope: skill.scope,
         }));
 
-        const builtInCommands: CommandInfo[] = [
-          ...(hasSession && !hasMessagesInCurrentSession
-            ? [{ id: 'openchamber:init', name: 'init', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.initDescription'), isBuiltIn: true }]
-            : []
-          ),
-          ...(hasSession  // Show when session exists, not when hasMessages
-            ? [
-                { id: 'openchamber:undo', name: 'undo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.undoDescription'), isBuiltIn: true },
-                { id: 'openchamber:redo', name: 'redo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.redoDescription'), isBuiltIn: true },
-                { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
-              ]
-            : []
-          ),
-          { id: 'openchamber:compact', name: 'compact', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.compactDescription'), isBuiltIn: true },
-          ...(hasSession
-            ? [{ id: 'openchamber:summary', name: 'summary', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.summaryDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:workspace-review', name: 'workspace-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.workspaceReviewDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canUseReviewHandoffFlow
-            ? [{ id: 'openchamber:handoff-review', name: 'handoff-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.handoffReviewDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:plan-feature', name: 'plan-feature', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.featurePlanDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:catch-up', name: 'catch-up', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.catchUpDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:debug', name: 'debug', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.debugDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:weigh', name: 'weigh', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.weighDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:explore', name: 'explore', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.exploreDescription'), isOpenChamber: true }]
-            : []
-          ),
-        ];
-        const allCommands = mergeCommandAutocompleteItems(builtInCommands, customCommands, skillCommands);
+        // Three-layer pipeline (08 §5.4): omp discovery → local/custom → skills.
+        const allCommands = mergeCommandAutocompleteItems(
+          buildBuiltInCommands(),
+          customCommands,
+          skillCommands,
+          ompCommands,
+        );
 
         const allowInitCommand = !hasMessagesInCurrentSession;
         const filtered = (searchQuery
@@ -210,70 +267,14 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
 
         setCommands(filtered);
       } catch {
-
         const allowInitCommand = !hasMessagesInCurrentSession;
-        const builtInCommands: CommandInfo[] = [
-          ...(hasSession && !hasMessagesInCurrentSession
-            ? [{ id: 'openchamber:init', name: 'init', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.initDescription'), isBuiltIn: true }]
-            : []
-          ),
-          ...(hasSession  // Show when session exists, not when hasMessages
-            ? [
-                { id: 'openchamber:undo', name: 'undo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.undoDescription'), isBuiltIn: true },
-                { id: 'openchamber:redo', name: 'redo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.redoDescription'), isBuiltIn: true },
-                { id: 'openchamber:timeline', name: 'timeline', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.timelineDescription'), isBuiltIn: true },
-              ]
-            : []
-          ),
-          { id: 'openchamber:compact', name: 'compact', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.compactDescription'), isBuiltIn: true },
-          ...(hasSession
-            ? [{ id: 'openchamber:summary', name: 'summary', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.summaryDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:workspace-review', name: 'workspace-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.workspaceReviewDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canUseReviewHandoffFlow
-            ? [{ id: 'openchamber:handoff-review', name: 'handoff-review', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.handoffReviewDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:plan-feature', name: 'plan-feature', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.featurePlanDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:catch-up', name: 'catch-up', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.catchUpDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:debug', name: 'debug', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.debugDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:weigh', name: 'weigh', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.weighDescription'), isOpenChamber: true }]
-            : []
-          ),
-          ...(canStartSessionCommand
-            ? [{ id: 'openchamber:explore', name: 'explore', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.exploreDescription'), isOpenChamber: true }]
-            : []
-          ),
-        ];
-
+        const fallbackCommands = mergeCommandAutocompleteItems(buildBuiltInCommands(), [], [], ompCommands);
         const filtered = (searchQuery
-          ? builtInCommands.filter(cmd =>
+          ? fallbackCommands.filter(cmd =>
               fuzzyMatch(cmd.name, searchQuery) ||
               (cmd.description && fuzzyMatch(cmd.description, searchQuery))
             )
-          : builtInCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
+          : fallbackCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
 
         setCommands(filtered);
       } finally {
@@ -282,7 +283,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
     };
 
     loadCommands();
-  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t]);
+  }, [searchQuery, hasMessagesInCurrentSession, hasSession, canStartSessionCommand, canUseReviewHandoffFlow, commandsWithMetadata, skills, t, buildBuiltInCommands, ompCommands]);
 
   React.useEffect(() => {
     setSelectedIndex(0);
@@ -452,6 +453,16 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
                           {t('chat.commandAutocomplete.badge.command')}
                         </span>
                       )}
+                      {command.isOmp ? (
+                        <span className={NEUTRAL_BADGE_CLASS}>
+                          omp
+                        </span>
+                      ) : null}
+                      {command.ompOverrides ? (
+                        <span className={OMP_OVERRIDE_BADGE_CLASS}>
+                          {t('chat.commandAutocomplete.badge.ompOverride')}
+                        </span>
+                      ) : null}
                       {isOpenChamberBadge ? (
                         <span className={NEUTRAL_BADGE_CLASS}>
                           OpenChamber
