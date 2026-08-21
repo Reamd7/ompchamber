@@ -257,3 +257,20 @@
 **门**:UI 隔离套件 **296/296**(+2 文件)、omp-host **253/253**(+1 文件)、五包 tsc 0 错、check:events OK(26 事件)、dead-code 仅既有噪声。
 
 **deviation 留档**:①E02 StatusRow 消费面未接(host 侧就绪,UI 段渲染留待 E01 真机反馈后同车);②无头浏览器 open 持续超时(SSE 长连),WidgetBar 视觉确认待真机——组件级 4 测背书,与 §6.7 待真机口径一致;③E03/E04(setEditorText/title/open_url)按批次表随车项未做(09 章批次 7 行的"随车"为可选,主项 E01/E02/E08 已闭)。
+
+### 6.11 真机 UI 扫描(2026-08-22 凌晨,CDP 驱动用户真实 Edge)
+
+仪表结论:无头方案在本机全灭(puppeteer/Playwright 启动均卡 CDP 握手;根因之一为 bun 的 WebSocket 实现与 CDP 不兼容——同一脚本 node 直连成功);正路 = 窗口化 Edge `--remote-debugging-port` + Playwright `connectOverCDP`(node 运行)。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 扩展 widget 视觉 | ✅ **闭环** | 真实 Edge 渲染五行配额条,视觉模型读图逐字确认(Token 95%!);DOM testid 命中;早前"0"为跨服务器重启的陈旧 SSE 流,新会话+租约触发后 <1s 出现 |
+| 真实模型回合(端到端) | ✅ | UI 发 "reply with exactly: ok" → GLM-5.3 回 "ok",transcript 双侧渲染(截图 ui-30) |
+| persona 菜单 | ✅ | modes.v1 下 persona 区位于模式菜单内,开合正常(截图 ui-23) |
+| 斜杠自动补全合并 | ✅ | `/` 菜单含 `/tree` 与 `/troubleshoot`(引擎层命令进合并列表) |
+| notice toast | ✅(偶得) | MCP 模块挂载 notice 以 toast 呈现——omp.notice.raised → toast 链路实跑 |
+| /tree 对话框 | ⚠️ **缺陷登记** | 对话框能开但卡 "Loading branches…"(curl `/api/omp/sessions/{id}/tree` 返回真谱系;UI 侧 fetch 待查,疑目录参数或认证) |
+| /undo | ⚠️ **疑似缺陷** | 真实回合后提交:无预填、无回退、无报错(3 单测过;dispatch 条件待查) |
+| /compact loader | 未捕获 | 命令已提交,采样窗口错过 loader(回合长),待复验 |
+
+截图:`%TEMP%/ui-20~33-*.png`。两项 ⚠️ 修复前不计入闭环;PROGRESS 第二档已同步。
