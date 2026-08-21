@@ -20,6 +20,7 @@ import {
   discoverAuthStorage,
 } from '@oh-my-pi/pi-coding-agent';
 import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
+import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
 import { WireEventBus, OmpEventBus } from './events.js';
 import {
@@ -30,6 +31,8 @@ import {
   projectDividerMessage,
   projectUserMessage,
   wireMessageId,
+  deterministicWireId,
+  resolveWireIdToEntryId,
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.js';
@@ -654,11 +657,8 @@ export class OmpHostEngine {
     const prefix = `${directoryKey}\u0000${sessionID}\u0000`;
     return (message) => {
       if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
-      const seed = message.role === 'assistant' && !textOfContent(message.content)
-        ? (message.content?.[0]?.name ?? '')
-        : textOfContent(message.content);
       return this.wireIdOverrides.get(
-        prefix + wireMessageId(message.role, message.timestamp, seed),
+        prefix + deterministicWireId(message),
       );
     };
   }
@@ -1526,8 +1526,14 @@ export class OmpHostEngine {
     const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return null;
     const manager = hostSession.agentSession.sessionManager;
+    // The UI sends the wire message id it read from GET messages; branch()
+    // wants the engine entry id. Resolve through the same projection the UI
+    // saw (native ids pass through unchanged for compat).
+    const entryId = resolveWireIdToEntryId(manager.getEntries?.() ?? [], messageID, {
+      wireIdFor: this.#wireIdResolver(directoryKey, sessionID),
+    });
+    manager.branch(entryId ?? messageID);
     const previousLeaf = manager.getLeafId();
-    manager.branch(messageID);
     this.registry.update(directoryKey, sessionID, {
       revert: { messageID, previousLeaf },
       timeUpdated: Date.now(),
@@ -1536,6 +1542,36 @@ export class OmpHostEngine {
     session.revert = { messageID };
     this.bus.emit('session.updated', { sessionID, info: session }, directoryKey);
     return session;
+  }
+
+  /**
+   * Live-session extension commands for one directory (09 §5.4 discovery
+   * gap): the headless AvailableCommandsSession has no extension runner, so
+   * `pi.registerCommand` commands (e.g. user extensions in
+   * ~/.omp/agent/extensions) only exist on materialized sessions. The
+   * extension factory runs at session creation, so any live session for the
+   * directory is a valid source.
+   */
+  liveCommandsFor(directory) {
+    const directoryKey = normalizeDirectoryKey(directory);
+    for (const hostSession of this.sessions.values()) {
+      if (hostSession.directory !== directoryKey) continue;
+      const session = hostSession.agentSession;
+      if (!session?.extensionRunner) continue;
+      try {
+        const commands = getSessionSlashCommands(session) ?? [];
+        return Promise.resolve(commands.map((command) => ({
+          name: command.name,
+          ...(typeof command.description === 'string' && command.description
+            ? { description: command.description }
+            : {}),
+          source: command.source ?? 'extension',
+        })));
+      } catch {
+        return Promise.resolve([]);
+      }
+    }
+    return Promise.resolve([]);
   }
 
   async unrevert({ sessionID, directory }) {

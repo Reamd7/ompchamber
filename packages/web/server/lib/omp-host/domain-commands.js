@@ -106,6 +106,7 @@ export const listOmpCommands = async ({
   directory,
   loadAvailable = defaultLoadAvailable,
   loadSkills = defaultLoadSkills,
+  loadLiveCommands = null,
 } = {}) => {
   const commands = [];
   const seen = new Set();
@@ -132,6 +133,20 @@ export const listOmpCommands = async ({
   } catch {
     // Degraded, not authoritative-empty: the builtin half is still real.
   }
+  // Live-session extension commands (09 §5.4 discovery gap): the headless
+  // synthetic session above has no extension runner, so commands registered
+  // by user extensions (pi.registerCommand) only exist on materialized
+  // sessions. A degraded/absent live source appends nothing — the builtin
+  // + headless halves stay authoritative.
+  if (typeof loadLiveCommands === 'function') {
+    try {
+      for (const live of (await loadLiveCommands(directory)) ?? []) {
+        append(projectOmpCommand({ ...live, source: live?.source ?? 'extension' }));
+      }
+    } catch {
+      // Live source unavailable — same degradation contract as above.
+    }
+  }
   return commands;
 };
 
@@ -139,15 +154,20 @@ export const listOmpCommands = async ({
  * Mount the /omp routes owned by this domain. Capability-gated per master R2:
  * `commands.v1` off ⇒ explicit 501 (clients fall back to the legacy
  * two-source resolution, never a silent empty list).
- *
  * @param {(method: string, pattern: string, handler: Function) => void} route
- * @param {{ features?: Record<string, boolean>, list?: typeof listOmpCommands }} [options]
+ * @param {{ features?: Record<string, boolean>, list?: typeof listOmpCommands, liveCommandsFor?: ((directory: string) => Promise<Array<object>>) | null }} [options]
  */
-export function registerCommandsDomainRoutes(route, { features = ompFeatures(), list = listOmpCommands } = {}) {
+export function registerCommandsDomainRoutes(
+  route,
+  { features = ompFeatures(), list = listOmpCommands, liveCommandsFor = null } = {},
+) {
   route('GET', '/omp/commands', async (request) => {
     if (features?.['commands.v1'] !== true) return featureUnavailable('commands.v1');
     const url = new URL(request.url);
     const directory = url.searchParams.get('directory') ?? process.cwd();
-    return json(await list({ directory }));
+    return json(await list({
+      directory,
+      ...(typeof liveCommandsFor === 'function' ? { loadLiveCommands: liveCommandsFor } : {}),
+    }));
   });
 }

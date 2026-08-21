@@ -1614,7 +1614,18 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // handleSlashUndo — reads from sync, records history for redo
   // ---------------------------------------------------------------------------
   handleSlashUndo: async (sessionId) => {
-    const messages = getSyncMessages(sessionId)
+    // The slash can land while the session transcript is still loading
+    // (fresh tab, just-switched session): a silent no-op there read as
+    // "undo is broken". Bounded-wait for the first user message before
+    // concluding there is nothing to undo.
+    let messages = getSyncMessages(sessionId)
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (messages.some((m) => m.role === "user")) break
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 250)
+      })
+      messages = getSyncMessages(sessionId)
+    }
     const sessions = getSyncSessions()
     const currentSession = sessions.find((s) => s.id === sessionId)
 

@@ -157,3 +157,48 @@ describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
     expect(directories).toEqual(['/proj']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live-session extension commands merge (09 §5.4 discovery gap)
+// ---------------------------------------------------------------------------
+
+describe('listOmpCommands — loadLiveCommands', () => {
+  test('live extension commands append after builtins, deduped by name', async () => {
+    const commands = await listOmpCommands({
+      directory: '/repo',
+      loadAvailable: async () => [],
+      loadSkills: async () => [],
+      loadLiveCommands: async () => [
+        { name: 'zhipu-usage', description: '查询智谱 GLM Coding Plan 用量' },
+        { name: 'tps-monitor', description: 'tps stats' },
+        { name: 'debug' }, // collides with a builtin — builtin must win
+      ],
+    });
+    const byName = new Map(commands.map((c) => [c.name, c]));
+    expect(byName.get('zhipu-usage')).toMatchObject({ tier: 'engine', source: 'extension' });
+    expect(byName.get('tps-monitor')).toMatchObject({ tier: 'engine' });
+    expect(byName.get('debug')?.tier).toBe('client-builtin');
+  });
+
+  test('a throwing live source degrades to the static halves', async () => {
+    const commands = await listOmpCommands({
+      directory: '/repo',
+      loadAvailable: async () => [],
+      loadSkills: async () => [],
+      loadLiveCommands: async () => {
+        throw new Error('no live session');
+      },
+    });
+    expect(commands.length).toBeGreaterThan(0);
+    expect(commands.some((c) => c.name === 'zhipu-usage')).toBe(false);
+  });
+
+  test('absent loader changes nothing (legacy call shape)', async () => {
+    const commands = await listOmpCommands({
+      directory: '/repo',
+      loadAvailable: async () => [],
+      loadSkills: async () => [],
+    });
+    expect(commands.every((c) => c.name !== 'zhipu-usage')).toBe(true);
+  });
+});

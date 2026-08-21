@@ -44,6 +44,37 @@ export const wireMessageId = (role, timestamp, seedText) => {
 };
 
 /**
+ * Deterministic wire id of one engine message — the exact derivation the
+ * user/assistant projectors use (assistant messages with no text seed from
+ * the first content block's name).
+ */
+export const deterministicWireId = (message) => {
+  const seed = message.role === 'assistant' && !textOfContent(message.content)
+    ? (message.content?.[0]?.name ?? '')
+    : textOfContent(message.content);
+  return wireMessageId(message.role, message.timestamp, seed);
+};
+
+/**
+ * Resolve a wire message id (what the UI reads from GET messages) back to
+ * the session ENTRY id (what SessionManager.branch expects). Walks the
+ * manager's entry list: each `type: "message"` entry wraps the AgentMessage
+ * whose deterministic projection the UI saw. Returns null when no entry
+ * projects to that id — callers decide whether to pass the raw id through
+ * (compat: native entry ids already worked).
+ */
+export const resolveWireIdToEntryId = (entries, wireId, { wireIdFor } = {}) => {
+  if (!Array.isArray(entries) || typeof wireId !== 'string' || !wireId) return null;
+  for (const entry of entries) {
+    if (entry?.type !== 'message' || !entry.message) continue;
+    const message = entry.message;
+    if (message.role !== 'user' && message.role !== 'assistant') continue;
+    const projected = wireIdFor?.(message) ?? deterministicWireId(message);
+    if (projected === wireId) return entry.id;
+  }
+  return null;
+};
+/**
  * Page a chronologically ascending wire-message list by the OpenCode
  * message-history contract: `limit` caps the newest tail, `before` is an
  * exclusive message-id boundary, and the returned cursor is the oldest id of

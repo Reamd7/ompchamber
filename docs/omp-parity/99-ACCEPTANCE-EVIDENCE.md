@@ -274,3 +274,15 @@
 | /compact loader | 未捕获 | 命令已提交,采样窗口错过 loader(回合长),待复验 |
 
 截图:`%TEMP%/ui-20~33-*.png`。两项 ⚠️ 修复前不计入闭环;PROGRESS 第二档已同步。
+
+### 6.12 三缺陷修复(2026-08-22,§6.11 两项 ⚠️ + /zhipu-usage 识别)
+
+| 缺陷 | 根因 | 修复 | 验证 |
+|---|---|---|---|
+| `/undo` 静默 no-op | **UI 发的 wire 消息 id,引擎 branch() 要 session ENTRY id**(`Entry … not found` 500)——wire id 是投影确定性生成(`projection.js wireMessageId`),与 entry id 完全不同域 | `resolveWireIdToEntryId`:走 `manager.getEntries()`,`type:"message"` 条目包内层 AgentMessage,按同一投影规则反解出 entry id;原生 id 直通兼容;`#wireIdResolver` 复用新抽的 `deterministicWireId` 去重 | projection-wireid.test 4 测(含 override/非消息条目/退化输入); omp-host 260/260 |
+| `/undo` 加载竞态(次生) | 斜杠落在 transcript 尚未加载完时,`getSyncMessages` 空 → 静默早退 | handleSlashUndo 有界等待(250ms×12)首个用户消息就位再判空 | tsc/全套件绿;浏览器复验受阻(见下) |
+| `/zhipu-usage` 不识别 | headless AvailableCommandsSession 无 extension runner → `pi.registerCommand` 命令(用户扩展)不出现在 `/api/omp/commands` | `engine.liveCommandsFor(directory)`:取该目录任一物化会话,经 SDK `getSessionSlashCommands` 枚举 extension/prompt/skill 命令并入 Tier B(dedup,builtin 优先;降级不污染) | domain-commands.test +3;**浏览器实测**:输入 `/zhipu` 自动补全出现该命令;curl 注册表含 `source:"extension"` |
+
+**/tree 复核**:§6.11 的"卡 Loading"未复现——对有回合会话经发送按钮提交,对话框 500ms 打开且稳定;此前失败为 Enter×自动补全菜单交互竞态 + 一次空会话陈旧流误读。**改为 ✅ 闭环**(截图 ui-43)。
+
+**浏览器复验 `/undo` 预填受阻留档**:①验证主力会话经 10+ 次 revert/重启后 transcript 永久骨架(UI 端消息加载不恢复,服务端 GET /message 200 正常——独立缺陷待查);②新建健康会话需真实模型回合,而 zhipu 配额当晚已打满(Token 95%→上限)。服务端修复经单测+HTTP 层证实;UI 预填链路复验留待额度恢复(步骤:新会话两回合 → /undo → composer 预填)。

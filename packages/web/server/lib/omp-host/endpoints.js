@@ -602,7 +602,7 @@ export const registerEndpoints = (route, engine, { version }) => {
   engine.dialogs.mount(route);
   registerModesDomainRoutes(route, engine.modesDomain, { features: ompFeatures() });
   engine.uriDomain.mount(route);
-  registerCommandsDomainRoutes(route, { features: ompFeatures() });
+  registerCommandsDomainRoutes(route, { features: ompFeatures(), liveCommandsFor: (directory) => engine.liveCommandsFor(directory) });
   registerChromeDomainRoutes(route, { chrome: engine.chrome, features: ompFeatures() });
 
   // ---- omp parity foundation (spec docs/omp-parity; public paths
