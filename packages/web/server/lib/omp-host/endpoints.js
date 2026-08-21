@@ -695,7 +695,7 @@ export const registerEndpoints = (route, engine, { version }) => {
             schemaVersion: bus.schemaVersion,
             createdAt: Date.now(),
             payload: {
-              scope: ['sessions', 'modes', 'model', 'dialogs', 'settings', 'agents', 'jobs', 'queue', 'tree', 'transcript'],
+              scope: ['sessions', 'modes', 'model', 'dialogs', 'chrome', 'settings', 'agents', 'jobs', 'queue', 'tree', 'transcript'],
               lastEventId,
             },
           };
