@@ -22,7 +22,9 @@ const candidates =
         path.join(process.resourcesPath ?? '', 'omp-host', binaryName),
         // electron-builder unpacked outputs for each desktop platform.
         path.join(electronRoot, 'dist', 'win-unpacked', 'resources', 'omp-host', binaryName),
+        path.join(electronRoot, 'dist', 'win-arm64-unpacked', 'resources', 'omp-host', binaryName),
         path.join(electronRoot, 'dist', 'linux-unpacked', 'resources', 'omp-host', binaryName),
+        path.join(electronRoot, 'dist', 'linux-arm64-unpacked', 'resources', 'omp-host', binaryName),
         path.join(electronRoot, 'dist', 'mac', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
         path.join(electronRoot, 'dist', 'mac-arm64', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
       ];

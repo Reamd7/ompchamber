@@ -24,6 +24,11 @@ const createPayload = () => {
   for (const name of ['pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
+  // onnxruntime-style packages stage every platform; only Linux binaries
+  // may be parsed, foreign Mach-O/PE copies must be ignored.
+  writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node'), 'x64');
+  fs.mkdirSync(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/onnxruntime_binding.node'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
   return root;
 };
 
@@ -44,14 +49,14 @@ test('AppImage artifact names use electron-builder arch suffixes', () => {
   assert.equal(linuxAppImageArchSuffix('arm64'), 'arm64');
 });
 
-test('verifies identity and native payload architecture', () => {
+test('ignores foreign-platform onnxruntime binaries and checks the Linux copy', () => {
   const root = createPayload();
   try {
     const result = verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
     });
-    assert.equal(result.nativeModuleCount, 2);
+    assert.equal(result.nativeModuleCount, 3);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

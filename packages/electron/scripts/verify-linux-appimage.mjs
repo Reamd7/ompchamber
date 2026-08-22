@@ -95,7 +95,15 @@ export const verifyExtractedPayload = ({
   const nativeModules = collectFiles(unpackedModules, (name, fullPath) => {
     if (!name.endsWith('.node')) return false;
     const normalizedPath = fullPath.split(path.sep).join('/');
-    if (!normalizedPath.includes('/prebuilds/')) return true;
+    if (!normalizedPath.includes('/prebuilds/')) {
+      // onnxruntime-style packages ship every platform under
+      // bin/napi-v*/<platform>/<arch>/ and the packager's file traversal
+      // stages them all. Only the Linux copy belongs here; skip foreign
+      // Mach-O/PE binaries instead of failing to parse them as ELF.
+      const napiPlatform = normalizedPath.match(/\/napi-v\d+\/(darwin|win32|linux|freebsd|android|sunos)\//);
+      if (napiPlatform && napiPlatform[1] !== 'linux') return false;
+      return true;
+    }
     return normalizedPath.includes(`/prebuilds/linux-${targetArchitecture}/`);
   });
   for (const requiredName of REQUIRED_NATIVE_MODULES) {
