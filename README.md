@@ -1,5 +1,7 @@
 # <picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/openchamber-logo-dark.svg"><img src="docs/references/badges/openchamber-logo-light.svg" width="32" height="32" align="absmiddle" /></picture> OMPChamber
 
+English | [简体中文](README.zh-CN.md)
+
 [![GitHub stars](https://img.shields.io/github/stars/Reamd7/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/openchamber/stargazers)
 [![GitHub release](https://img.shields.io/github/v/release/Reamd7/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/openchamber/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
