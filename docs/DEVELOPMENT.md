@@ -171,7 +171,53 @@ await page.goto("http://localhost:3903");
 | 斜杠命令提交后"没反应" | 输入框自动补全菜单开着时,Enter 是"选中建议"不是"提交" | 先 Esc 关菜单再 Enter,或直接点发送按钮 |
 | 单测/页面行为对不上 | Service Worker 缓存了旧 bundle | §4 的清缓存步骤 |
 
-## 8. 提交前清单
+
+## 8. 打包 Electron 桌面应用(Windows 发布)
+
+**核心机制(bun 依赖已解决)**:omp 引擎宿主(`host.js` + `@oh-my-pi/pi-coding-agent`,只能跑在 bun 上)由 `prepare:omp-host` 用 **`bun build --compile`** 编译成自包含单文件 `resources/omp-host/omp-host.exe`,随安装包分发。**终端用户机器不需要装 bun**——Electron 主进程(Node)只把这个二进制当引擎子进程拉起(`omp-host-launch.js` 优先找 `process.resourcesPath/omp-host`)。
+
+### 一条命令
+
+```powershell
+cd packages/electron
+$env:PYTHON   = "$(uv python find 3.12)"                          # node-gyp 用(uv 管理)
+$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"  # github 直连不通时
+bun run package -- --publish never
+```
+
+`package` 脚本串联五步:`build:web-assets`(web 产物→resources/web-dist)→ `prepare:omp-host`(bun 编译引擎)→ `bundle:main`(主进程打包)→ `rebuild:native`(node-pty 按 Electron ABI 重编)→ `package.mjs`(electron-builder → NSIS)。
+
+产物:`packages/electron/dist/OpenChamber-<版本>-win-x64.exe`(+ `.blockmap` + `latest.yml` 更新清单;未签名)。
+
+### 本机已踩的坑(都有解)
+
+| 坑 | 解 |
+|---|---|
+| node-gyp 找不到 Python | **用 uv**:`uv python install 3.12`,把 `uv python find 3.12` 的路径给 `PYTHON` 环境变量(node-gyp 认它);VS 2022 Build Tools(含 C++ 工具链)本机已有 |
+| MSB8040 要求 Spectre 缓解库 | 仓库根放 `Directory.Build.targets` 设 `<SpectreMitigation>false</SpectreMitigation>`(**必须 .targets,不是 .props**——props 在工程体之前导入会被覆盖)。官方解法是 VS Installer 加 Spectre 组件(需管理员) |
+| LNK1181 找不到 delayimp.lib | 本机 Windows SDK 的 `um/x64` 缺这个库,但每个 MSVC 工具集 `lib/x64` 里都有;同一个 `Directory.Build.targets` 里给 `<Link>` 追加 `$(VCToolsInstallDir)lib\x64` |
+| electron zip 下载超时 | github 直连不通;`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` |
+| CI 误触发 implicit publish | 追加 `-- --publish never` |
+| `web-dist` staging 重命名 EPERM | Windows 句柄占用(Defender 扫描),清 `resources/web-dist-staging-*` 重跑即可 |
+
+`Directory.Build.targets` 是本机旁路,保持**不入库**(untracked);内容见文件内注释,含官方替代方案。新机器克隆后按上表重建。
+
+### 打包后验证(已验证过的配方)
+
+```bash
+# 1. 引擎二进制独立健康检查(证明 bun 自包含成立)
+dist/win-unpacked/resources/omp-host/omp-host.exe serve --hostname 127.0.0.1 --port 3997 &
+curl -s http://127.0.0.1:3997/global/health   # 期待 {"healthy":true,...}
+taskkill /F /IM omp-host.exe
+
+# 2. 整应用烟测:启动 → 观察多进程+后端日志 → 关闭
+dist/win-unpacked/OpenChamber.exe &           # 期待 5 个进程、HTTP 日志输出
+taskkill /F /T /IM OpenChamber.exe
+```
+
+注:`verify:omp-host --packaged` 设计给 Electron 运行时内部用(读 `process.resourcesPath`),对 win-unpacked 树请用上面的手动配方。macOS/Linux 目标见 `package.json` build 段(mac 需公证配置,linux 出 AppImage)。
+
+## 9. 提交前清单
 
 1. 改动包的 `bun run test` + `type-check` 绿
 2. 新增/删除文件或导出:`bun run dead-code` 检视报告
