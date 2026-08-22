@@ -78,6 +78,7 @@ export const verifyExtractedPayload = ({
   root,
   targetArchitecture,
 }) => {
+  const target = normalizeTargetArchitecture(targetArchitecture);
   const desktopPath = path.join(root, 'ompchamber.desktop');
   if (!fs.existsSync(desktopPath)) throw new Error(`Missing desktop entry: ${desktopPath}`);
   const desktop = fs.readFileSync(desktopPath, 'utf8');
@@ -86,9 +87,9 @@ export const verifyExtractedPayload = ({
   }
   if (!/^Exec=AppRun(?:\s|$)/m.test(desktop)) throw new Error('Desktop identity mismatch: expected AppImage AppRun entrypoint');
 
-  assertElfArchitecture(path.join(root, 'ompchamber'), targetArchitecture, 'Electron executable');
+  assertElfArchitecture(path.join(root, 'ompchamber'), target.node, 'Electron executable');
   const hostPath = path.join(root, 'resources', 'omp-host', 'omp-host');
-  assertElfArchitecture(hostPath, targetArchitecture, 'omp host');
+  assertElfArchitecture(hostPath, target.node, 'omp host');
 
   const unpackedModules = path.join(root, 'resources', 'app.asar.unpacked', 'node_modules');
   if (!fs.existsSync(unpackedModules)) throw new Error(`Missing unpacked native modules: ${unpackedModules}`);
@@ -96,22 +97,25 @@ export const verifyExtractedPayload = ({
     if (!name.endsWith('.node')) return false;
     const normalizedPath = fullPath.split(path.sep).join('/');
     if (!normalizedPath.includes('/prebuilds/')) {
-      // onnxruntime-style packages ship every platform under
+      // onnxruntime-style packages ship every platform and arch under
       // bin/napi-v*/<platform>/<arch>/ and the packager's file traversal
-      // stages them all. Only the Linux copy belongs here; skip foreign
-      // Mach-O/PE binaries instead of failing to parse them as ELF.
-      const napiPlatform = normalizedPath.match(/\/napi-v\d+\/(darwin|win32|linux|freebsd|android|sunos)\//);
-      if (napiPlatform && napiPlatform[1] !== 'linux') return false;
+      // stages them all. Only the target platform+arch copy belongs here;
+      // skip foreign Mach-O/PE and wrong-arch binaries instead of failing
+      // to parse or mismatching them.
+      const napiPlatform = normalizedPath.match(/\/napi-v\d+\/(darwin|win32|linux|freebsd|android|sunos)\/([^/]+)\//);
+      if (napiPlatform) {
+        return napiPlatform[1] === 'linux' && napiPlatform[2] === target.node;
+      }
       return true;
     }
-    return normalizedPath.includes(`/prebuilds/linux-${targetArchitecture}/`);
+    return normalizedPath.includes(`/prebuilds/linux-${target.node}/`);
   });
   for (const requiredName of REQUIRED_NATIVE_MODULES) {
     if (!nativeModules.some((modulePath) => path.basename(modulePath) === requiredName)) {
       throw new Error(`Missing packaged native module: ${requiredName}`);
     }
   }
-  for (const modulePath of nativeModules) assertElfArchitecture(modulePath, targetArchitecture, 'Native module');
+  for (const modulePath of nativeModules) assertElfArchitecture(modulePath, target.node, 'Native module');
   return { nativeModuleCount: nativeModules.length };
 };
 

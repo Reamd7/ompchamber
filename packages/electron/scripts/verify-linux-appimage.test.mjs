@@ -27,6 +27,7 @@ const createPayload = () => {
   // onnxruntime-style packages stage every platform; only Linux binaries
   // may be parsed, foreign Mach-O/PE copies must be ignored.
   writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node'), 'x64');
+  writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/onnxruntime_binding.node'), 'arm64');
   fs.mkdirSync(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64'), { recursive: true });
   fs.writeFileSync(path.join(root, 'resources/app.asar.unpacked/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/onnxruntime_binding.node'), Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
   return root;
