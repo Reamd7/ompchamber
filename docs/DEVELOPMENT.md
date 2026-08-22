@@ -227,3 +227,22 @@ taskkill /F /T /IM OpenChamber.exe
 6. 提交信息沿用 conventional commits(`feat:` / `fix:` / `docs:` / `chore:`)
 
 > 更深的建设规范:根 `CONTRIBUTING.md`;omp 对齐规格与验收证据:`docs/omp-parity/`(00-MASTER 总纲,PROGRESS-*.md 用户口径进度)。
+
+## 10. 多 worktree 并行开发(端口不互抢)
+
+```bash
+# 在主仓执行(本仓 packageManager 锁 bun,pnpm 命令会被拒绝)
+bun run worktree init fix-foo              # 建 .worktrees/fix-foo + 分支 + bun install + 端口分配
+bun run worktree init fix-foo --json       # 脚本化;--quiet 出单行
+cd .worktrees/fix-foo && bun run dev       # 自动起在专属端口(5181/3903 起,避开主仓)
+
+git worktree remove .worktrees/fix-foo && git branch -d fix-foo   # 用完即删
+```
+
+机制:
+
+- `init` 把分配到的端口对写进 worktree 根的 `.dev-ports.json`(已 gitignore);分配时排除主仓默认口 5180/3902 与所有已登记 worktree 的口,再对候选口做真实 bind 测试
+- `scripts/dev-web-hmr.mjs` 读口优先级:环境变量 > `.dev-ports.json` > 默认 5180/3902(主仓行为不变);rsbuild 以 `--strict-port` 启动,端口被抢会响亮失败而非静默漂移
+- 分配发生在 `init` 时:端口跨重启稳定,未在跑的 worktree 的口也保持预留
+
+注意:`worktree` 脚本本身要已在你所基于的提交里 —— 首次落地本功能之前的旧提交建出的 worktree,需手动同步 `scripts/worktree*.mjs` 与 `dev-web-hmr.mjs`。

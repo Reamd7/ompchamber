@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_API_PORT, DEFAULT_UI_PORT, readDevPorts } from './worktree-ports.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,8 +81,11 @@ async function stopChildTree(child) {
   }
 }
 
-const uiPort = process.env.OPENCHAMBER_HMR_UI_PORT || '5180';
-const backendPort = process.env.OPENCHAMBER_HMR_API_PORT || '3902';
+const persistedDevPorts = readDevPorts(repoRoot);
+const uiPort = process.env.OPENCHAMBER_HMR_UI_PORT
+  || (persistedDevPorts ? String(persistedDevPorts.uiPort) : String(DEFAULT_UI_PORT));
+const backendPort = process.env.OPENCHAMBER_HMR_API_PORT
+  || (persistedDevPorts ? String(persistedDevPorts.apiPort) : String(DEFAULT_API_PORT));
 const hmrHost = process.env.OPENCHAMBER_HMR_HOST || '127.0.0.1';
 
 function getLanAddresses() {
@@ -114,6 +118,9 @@ const api = run('api', 'bun', ['run', '--cwd', 'packages/web', 'dev:server:watch
   OPENCHAMBER_PORT: backendPort,
 });
 
+if (persistedDevPorts) {
+  console.log(`[dev:web:hmr] worktree ports from .dev-ports.json (UI ${persistedDevPorts.uiPort} / API ${persistedDevPorts.apiPort})`);
+}
 console.log(`[dev:web:hmr] UI with HMR: http://127.0.0.1:${uiPort}`);
 if (hmrHost === '0.0.0.0' || hmrHost === '::') {
   const lanAddresses = getLanAddresses();

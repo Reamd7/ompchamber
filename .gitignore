@@ -69,6 +69,7 @@ data/
 workspaces/
 *.pid
 .worktrees/
+.dev-ports.json
 test-results/
 artifacts/
 
