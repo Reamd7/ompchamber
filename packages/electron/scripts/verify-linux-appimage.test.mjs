@@ -16,10 +16,10 @@ const writeElf = (filePath, architecture) => {
 
 const createPayload = () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-payload-test-'));
-  fs.writeFileSync(path.join(root, 'openchamber.desktop'), [
-    '[Desktop Entry]', 'Name=OpenChamber', 'Exec=AppRun --no-sandbox %U', 'Icon=openchamber', 'StartupWMClass=openchamber', '',
+  fs.writeFileSync(path.join(root, 'ompchamber.desktop'), [
+    '[Desktop Entry]', 'Name=OMPChamber', 'Exec=AppRun --no-sandbox %U', 'Icon=ompchamber', 'StartupWMClass=ompchamber', '',
   ].join('\n'));
-  writeElf(path.join(root, 'openchamber'), 'x64');
+  writeElf(path.join(root, 'ompchamber'), 'x64');
   writeElf(path.join(root, 'resources/omp-host/omp-host'), 'x64');
   for (const name of ['pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');

@@ -78,15 +78,15 @@ export const verifyExtractedPayload = ({
   root,
   targetArchitecture,
 }) => {
-  const desktopPath = path.join(root, 'openchamber.desktop');
+  const desktopPath = path.join(root, 'ompchamber.desktop');
   if (!fs.existsSync(desktopPath)) throw new Error(`Missing desktop entry: ${desktopPath}`);
   const desktop = fs.readFileSync(desktopPath, 'utf8');
-  for (const entry of ['Name=OpenChamber', 'Icon=openchamber', 'StartupWMClass=openchamber']) {
+  for (const entry of ['Name=OMPChamber', 'Icon=ompchamber', 'StartupWMClass=ompchamber']) {
     if (!desktop.split(/\r?\n/).includes(entry)) throw new Error(`Desktop identity mismatch: missing ${entry}`);
   }
   if (!/^Exec=AppRun(?:\s|$)/m.test(desktop)) throw new Error('Desktop identity mismatch: expected AppImage AppRun entrypoint');
 
-  assertElfArchitecture(path.join(root, 'openchamber'), targetArchitecture, 'Electron executable');
+  assertElfArchitecture(path.join(root, 'ompchamber'), targetArchitecture, 'Electron executable');
   const hostPath = path.join(root, 'resources', 'omp-host', 'omp-host');
   assertElfArchitecture(hostPath, targetArchitecture, 'omp host');
 
@@ -109,7 +109,7 @@ export const verifyExtractedPayload = ({
 
 const findAppImage = (version, architecture) => {
   const suffix = linuxAppImageArchSuffix(architecture);
-  const expected = path.join(electronRoot, 'dist', `OpenChamber-${version}-linux-${suffix}.AppImage`);
+  const expected = path.join(electronRoot, 'dist', `OMPChamber-${version}-linux-${suffix}.AppImage`);
   if (!fs.existsSync(expected)) throw new Error(`Linux AppImage not found: ${expected}`);
   return expected;
 };

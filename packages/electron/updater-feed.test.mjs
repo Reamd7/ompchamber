@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -16,8 +17,20 @@ test('production updater feed is immutable GitHub configuration', () => {
   assert.equal(Object.isFrozen(PRODUCTION_UPDATER_FEED), true);
   assert.deepEqual(PRODUCTION_UPDATER_FEED, {
     provider: 'github',
-    owner: 'openchamber',
+    owner: 'Reamd7',
     repo: 'openchamber',
+  });
+});
+
+test('production updater feed matches electron-builder publish config', () => {
+  // electron-builder embeds build.publish into the packaged app-update.yml;
+  // drift between it and the runtime feed would make update checks target a
+  // different repository than the embedded default.
+  const publish = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).build.publish;
+  assert.deepEqual(PRODUCTION_UPDATER_FEED, {
+    provider: publish.provider,
+    owner: publish.owner,
+    repo: publish.repo,
   });
 });
 

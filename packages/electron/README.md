@@ -1,6 +1,6 @@
-# OpenChamber Desktop
+# OMPChamber Desktop
 
-Electron desktop runtime for OpenChamber on macOS, Windows, and Linux.
+Electron desktop runtime for OMPChamber on macOS, Windows, and Linux.
 
 This package owns the native shell: windows, menus, deep links, native notifications, auto-updates, host switching, SSH connections, tunnel helpers, and packaged desktop builds. The web UI and OpenChamber server logic still live in `packages/web` and shared React UI lives in `packages/ui`.
 
@@ -82,13 +82,15 @@ Build output goes to `packages/electron/dist`.
 
 macOS builds produce `dmg` and `zip` artifacts. Windows builds produce an NSIS installer. Linux builds produce an AppImage for the native x64 or arm64 host.
 
+Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners (macOS, Windows, Linux) and published to GitHub Releases. The in-app updater reads those releases through the GitHub provider configured in `build.publish` and `updater-feed.mjs` (`Reamd7/openchamber`); keep both in sync. Bump `packages/electron/package.json` `version` to match the release tag before pushing it — the workflow fails early on a mismatch. macOS signing and notarization run only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are configured; without them the workflow produces unsigned macOS artifacts and in-app updates only work on Windows and Linux (macOS Squirrel updates require a signed app).
+
 ## Platform Notes
 
 macOS packaging needs Xcode/build tools for notarized builds and icon asset compilation.
 
 Windows packaging needs NSIS support through `electron-builder`. If no Windows signing env is set, `package.mjs` disables code signing and builds an unsigned installer. Windows updates use `latest.yml` for x64 and the `latest-arm64.yml` channel for ARM64 so each installation resolves an architecture-matching installer.
 
-Linux AppImages must be built natively. Set `OPENCHAMBER_TARGET_ARCH=x64` or `OPENCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `openchamber`, desktop file `openchamber.desktop`, icon `openchamber`, and `StartupWMClass=openchamber`.
+Linux AppImages must be built natively. Set `OPENCHAMBER_TARGET_ARCH=x64` or `OPENCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `ompchamber`, desktop file `ompchamber.desktop`, icon `ompchamber`, and `StartupWMClass=ompchamber`.
 
 After packaging, run `bun run --cwd packages/electron verify:linux-appimage`. The verifier extracts the final AppImage and checks its ELF architecture, desktop identity, Electron executable, pinned OpenCode CLI version and architecture, and all packaged native `.node` modules.
 
@@ -169,9 +171,9 @@ Add new native capabilities in this order:
 
 ## Logs And Data
 
-Electron uses `electron-log`. In development, console logs are also visible in the terminal. In packaged apps, logs are written through the platform log path for the `OpenChamber` app name.
+Electron uses `electron-log`. In development, console logs are also visible in the terminal. In packaged apps, logs are written through the platform log path for the `OMPChamber` app name.
 
-Development builds use a separate user data directory named `OpenChamber Dev`, so dev state does not overwrite normal packaged app state.
+Development builds use a separate user data directory named `OMPChamber Dev`, so dev state does not overwrite normal packaged app state.
 
 ## Things To Be Careful With
 

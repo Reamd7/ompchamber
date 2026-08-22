@@ -12,7 +12,7 @@ test('preserves updater behavior outside packaged Linux', () => {
 test('rejects packaged Linux execution outside an AppImage', () => {
   assert.throws(
     () => assertUpdaterCapability({ platform: 'linux', packaged: true, appImagePath: '' }),
-    /Start OpenChamber from its \.AppImage file/,
+    /Start OMPChamber from its \.AppImage file/,
   );
 });
 

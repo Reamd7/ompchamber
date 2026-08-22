@@ -857,7 +857,7 @@ export class ElectronSshManager {
         password,
         trustDevice: true,
         issueClientToken: true,
-        clientLabel: 'OpenChamber Desktop SSH',
+        clientLabel: 'OMPChamber Desktop SSH',
       }),
     });
     if (!loginResponse.ok) {
@@ -879,7 +879,7 @@ export class ElectronSshManager {
         'Content-Type': 'application/json',
         Cookie: cookie,
       },
-      body: JSON.stringify({ label: 'OpenChamber Desktop SSH' }),
+      body: JSON.stringify({ label: 'OMPChamber Desktop SSH' }),
     });
     if (!tokenResponse.ok) return '';
     const tokenPayload = await tokenResponse.json().catch(() => null);

@@ -3,7 +3,7 @@
 // --staged   check resources/omp-host in the workspace (post prepare)
 // --packaged check the binary inside a packaged app directory
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,12 +13,18 @@ const electronRoot = path.resolve(__dirname, '..');
 const mode = process.argv.includes('--packaged') ? 'packaged' : 'staged';
 
 const binaryName = process.platform === 'win32' ? 'omp-host.exe' : 'omp-host';
+const appBundleName = 'OMPChamber.app';
 const candidates =
   mode === 'staged'
     ? [path.join(electronRoot, 'resources', 'omp-host', binaryName)]
     : [
+        // In-app invocation (Electron sets process.resourcesPath).
         path.join(process.resourcesPath ?? '', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', binaryName),
+        // electron-builder unpacked outputs for each desktop platform.
+        path.join(electronRoot, 'dist', 'win-unpacked', 'resources', 'omp-host', binaryName),
+        path.join(electronRoot, 'dist', 'linux-unpacked', 'resources', 'omp-host', binaryName),
+        path.join(electronRoot, 'dist', 'mac', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
+        path.join(electronRoot, 'dist', 'mac-arm64', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
       ];
 
 const binary = candidates.find((candidate) => fs.existsSync(candidate));
@@ -27,35 +33,59 @@ if (!binary) {
   process.exit(1);
 }
 
-// Boot the host on an ephemeral port and confirm it reports healthy, then
-// stop it. This proves the compiled engine actually serves.
+// Boot the host on a loopback port, poll /global/health until it reports
+// healthy, then stop it. This proves the compiled engine actually serves.
 const port = 3997;
-const child = spawnSync(
-  binary,
-  ['serve', '--hostname', '127.0.0.1', '--port', String(port)],
-  { stdio: 'ignore', windowsHide: true, timeout: 30000 },
-);
+const healthCheckTimeoutMs = 30_000;
 
-if (child.error && child.error.code !== 'ETIMEDOUT') {
-  // spawnSync waits for exit; a healthy server stays up until the timeout.
-  console.error(`[electron] omp host failed to launch: ${child.error.message}`);
-  process.exit(1);
-}
+const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+  stdio: 'ignore',
+  windowsHide: true,
+});
+child.unref();
 
-const check = spawnSync(
-  process.platform === 'win32' ? 'curl' : 'curl',
-  ['-s', '--max-time', '5', `http://127.0.0.1:${port}/global/health`],
-  { encoding: 'utf8', timeout: 10000 },
-);
-const healthy = (check.stdout || '').includes('"healthy":true');
-if (process.platform === 'win32') {
-  spawnSync('taskkill', ['/F', '/IM', binaryName], { stdio: 'ignore' });
-} else {
-  spawnSync('pkill', ['-f', 'omp-host serve'], { stdio: 'ignore' });
-}
+const stopChild = () => {
+  try {
+    process.kill(child.pid);
+  } catch {
+    // Already gone.
+  }
+};
 
-if (!healthy) {
-  console.error(`[electron] omp host health check failed: ${check.stdout || '(no output)'}`);
-  process.exit(1);
-}
-console.log(`[electron] verified omp host ${mode}: ${binary}`);
+const finish = (code) => {
+  stopChild();
+  setTimeout(() => process.exit(code), 250);
+};
+
+const waitForHealthy = async () => {
+  const deadline = Date.now() + healthCheckTimeoutMs;
+  const url = `http://127.0.0.1:${port}/global/health`;
+  for (;;) {
+    if (child.exitCode !== null) {
+      console.error(`[electron] omp host exited early with code ${child.exitCode}`);
+      process.exit(1);
+    }
+    if (Date.now() > deadline) {
+      console.error('[electron] omp host health check timed out');
+      finish(1);
+      return;
+    }
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
+      const body = await response.text();
+      if (response.ok && body.includes('"healthy":true')) {
+        console.log(`[electron] verified omp host ${mode}: ${binary}`);
+        finish(0);
+        return;
+      }
+      console.error(`[electron] omp host health endpoint returned ${response.status}: ${body.slice(0, 200)}`);
+      finish(1);
+      return;
+    } catch {
+      // Not listening yet; retry.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+};
+
+await waitForHealthy();

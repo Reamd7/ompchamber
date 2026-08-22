@@ -25,6 +25,13 @@ const bunBinary = bunBinaryCandidates.find((candidate) => {
   return false;
 }) || (process.platform === 'win32' ? 'bun.exe' : 'bun');
 
+// Local builds must never attempt to upload: a publish config in package.json
+// makes electron-builder try GitHub publishing whenever no explicit --publish
+// flag is set, which fails without GH_TOKEN. CI passes its own flag.
+if (!builderArgs.some((argument) => argument.startsWith('--publish'))) {
+  builderArgs.push('--publish=never');
+}
+
 if (process.platform === 'linux' && !builderArgs.some((argument) => (
   argument === '--x64' || argument === '--arm64' || argument === '--arch' || argument.startsWith('--arch=')
 ))) {

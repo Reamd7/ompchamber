@@ -1,9 +1,8 @@
 name: Publish VS Code Extension
 
+# Desktop releases are owned by release.yml; this workflow stays manual so a
+# v* tag does not also fire a VS Code marketplace publish.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
