@@ -1,17 +1,23 @@
-# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/openchamber-logo-dark.svg"><img src="docs/references/badges/openchamber-logo-light.svg" width="32" height="32" align="absmiddle" /></picture> OpenChamber
+# <picture><source media="(prefers-color-scheme: dark)" srcset="docs/references/badges/openchamber-logo-dark.svg"><img src="docs/references/badges/openchamber-logo-light.svg" width="32" height="32" align="absmiddle" /></picture> OMPChamber
 
-[![GitHub stars](https://img.shields.io/github/stars/openchamber/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/openchamber/openchamber/stargazers)
-[![GitHub release](https://img.shields.io/github/v/release/openchamber/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/openchamber/openchamber/releases/latest)
+[![GitHub stars](https://img.shields.io/github/stars/Reamd7/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/openchamber/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/Reamd7/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/openchamber/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
 [![Support the project](https://img.shields.io/badge/Support-Project-black?style=flat&labelColor=100F0F&color=EC8B49&logo=ko-fi&logoColor=FFFCF0)](https://ko-fi.com/G2G41SAWNS)
 
 ## Run agent work. Keep control. Ship from anywhere.
 
-**OpenChamber is an open-source workspace for running, supervising, and reviewing AI coding work across desktop, browser, editor, and mobile.**
+**OMPChamber keeps OpenChamber's workspace experience — running, supervising, and reviewing AI coding work across desktop, browser, editor, and mobile — and powers it with the omp engine (`@oh-my-pi/pi-coding-agent`) instead of an external OpenCode CLI.**
 
-OpenChamber gives you one place to direct agent work, understand the changes, and move them toward release. Your projects stay available when you switch devices or step away.
+What this repository adds on top of OpenChamber:
 
-![OpenChamber Chat](docs/references/chat_example.png)
+- **Embedded omp host engine** — a self-contained engine bundled with every desktop build together with its native addons; there is no separate agent CLI to install.
+- **omp's own product surface** — model roles (default/smol/slow/plan/vision and the rest), personas, session modes, live agent-run views, per-turn token usage, and a full engine-settings editor.
+- **Independent release channel** — OMPChamber desktop builds for macOS, Windows, and Linux (x64 and ARM64), built and published by this repository's GitHub Actions, with in-app updates served from its Releases.
+
+OMPChamber gives you one place to direct agent work, understand the changes, and move them toward release. Your projects stay available when you switch devices or step away.
+
+![OMPChamber Chat](docs/references/chat_example.png)
 
 <details>
 <summary>More screenshots</summary>
@@ -19,13 +25,13 @@ OpenChamber gives you one place to direct agent work, understand the changes, an
 ![VS Code Extension](packages/vscode/extension.jpg)
 
 <p>
-<img src="docs/references/pwa_chat_example.png" width="45%" alt="OpenChamber PWA chat">
-<img src="docs/references/pwa_diff_example.png" width="45%" alt="OpenChamber PWA diff review">
+<img src="docs/references/pwa_chat_example.png" width="45%" alt="OMPChamber PWA chat">
+<img src="docs/references/pwa_diff_example.png" width="45%" alt="OMPChamber PWA diff review">
 </p>
 
 </details>
 
-## What you can do with OpenChamber
+## What you can do with OMPChamber
 
 ### Goals that continue on their own
 
@@ -77,13 +83,13 @@ Run a prompt once, daily, weekly, or on a cron schedule. Scheduled tasks can use
 
 ### Desktop — macOS, Windows, and Linux
 
-Download the latest release from [GitHub Releases](https://github.com/openchamber/openchamber/releases/latest). Desktop bundles the matching OpenCode CLI, so no separate OpenCode installation is required.
+Download the latest release from [GitHub Releases](https://github.com/Reamd7/openchamber/releases/latest). Desktop bundles a self-contained omp host engine, so no separate OpenCode installation is required.
 
 Linux releases are available as x86_64 and ARM64 AppImages. Make the downloaded AppImage executable and keep it in a writable location for in-app updates:
 
 ```bash
-chmod +x OpenChamber-*.AppImage
-./OpenChamber-*.AppImage
+chmod +x OMPChamber-*.AppImage
+./OMPChamber-*.AppImage
 ```
 
 Linux AppImages require FUSE (`libfuse.so.2`). Without FUSE, run with `APPIMAGE_EXTRACT_AND_RUN=1`.
@@ -97,7 +103,7 @@ Install [OpenChamber from the Visual Studio Marketplace](https://marketplace.vis
 Requires Node.js 22+. CLI/Web and VS Code use your installed [OpenCode CLI](https://opencode.ai).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/openchamber/openchamber/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
 openchamber --ui-password be-creative-here
 ```
 
@@ -113,11 +119,11 @@ openchamber stop
 openchamber update
 ```
 
-OpenChamber binds to localhost by default. Use `--lan` only on a trusted network and protect browser access with `--ui-password`.
+OMPChamber binds to localhost by default. Use `--lan` only on a trusted network and protect browser access with `--ui-password`.
 
 ## Guides
 
-Go deeper with the OpenChamber guides:
+Go deeper with the guides:
 
 - [Quick start](packages/docs/content/docs/quickstart.mdx)
 - [Installation](packages/docs/content/docs/install.mdx)
@@ -134,13 +140,11 @@ Go deeper with the OpenChamber guides:
 
 For self-hosting details, see the [reverse proxy guide](docs/REVERSE_PROXY.md). For custom theme authoring, see the [custom themes guide](docs/CUSTOM_THEMES.md).
 
-## Why OpenCode?
+## Why omp?
 
-OpenChamber uses [OpenCode](https://opencode.ai) to power its coding agents. We chose it because we believe it provides the best open-source agentic coding experience today: capable, extensible, and open by design.
+OMPChamber exists to keep [OpenChamber](https://github.com/openchamber/openchamber)'s workspace experience while running it on [omp](https://github.com/can1357/oh-my-pi) (`@oh-my-pi/pi-coding-agent`). The engine ships embedded as the omp host — an OpenCode-compatible API surface backed by omp — so the app speaks omp's product surface directly: model roles, personas, session modes, and its approval and ask flows.
 
-Around that foundation, OpenChamber brings together the work that happens before, during, and after an agent run — deciding what to try, keeping it on track, reviewing the result, connecting from anywhere, and getting the change shipped.
-
-OpenChamber is an independent project and is not affiliated with the OpenCode team.
+OMPChamber is an independent project and is not affiliated with the OpenChamber, OpenCode, or omp teams.
 
 ## Contributing
 
@@ -150,7 +154,9 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and contribution 
 
 Special thanks to:
 
+- **[OpenChamber](https://github.com/openchamber/openchamber) and its contributors** — OMPChamber inherits its workspace, UI, and server; the experience you use here is their work, and the credit for that foundation belongs to them
 - [OpenCode](https://opencode.ai) for its excellent API and extensible open-source architecture
+- [omp](https://github.com/can1357/oh-my-pi) for the coding-agent engine powering this build
 - [Pierre](https://pierrejs-docs.vercel.app/) for its fast diff viewer and syntax highlighting
 - [Ghostty-web](https://github.com/coder/ghostty-web) for its Ghostty web renderer
 - [Yulia Ivashko](https://github.com/yulia-ivashko), who built the firework celebration that plays on every successful push

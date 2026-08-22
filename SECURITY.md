@@ -2,9 +2,9 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in OpenChamber, please report it responsibly.
+If you discover a security vulnerability in OMPChamber, please report it responsibly.
 
-**Email:** [security@openchamber.dev](mailto:security@openchamber.dev)
+**GitHub:** use [private security advisories](https://github.com/Reamd7/openchamber/security/advisories/new) on this repository.
 
 Please include:
 - Description of the vulnerability

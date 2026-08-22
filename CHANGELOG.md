@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Desktop:** fixed the packaged app failing to start its engine on machines without an existing omp install — the bundled engine now ships with its required native addon instead of relying on a per-user cache.
 - **Chat:** widgets from user-installed omp extensions (e.g. usage monitors that the terminal client shows above its editor) now render above the composer in the app — the same string content the TUI shows, kept live as the extension refreshes it, with the extension's own `/off` command clearing it.
 - **Chat:** `/compact` now visibly works — after a successful compaction the "compacted" divider appears immediately instead of only after a reload, and when the engine refuses (e.g. nothing to summarize yet) the error toast shows the engine's reason instead of a raw JSON blob.
 - **Engine:** the app now speaks omp's own product surface: model roles (default/smol/slow/plan/vision and the rest) replace the single "default model" pick, sessions show their real model after mid-chat switches and retry fallbacks, and the chat gains per-turn token usage lines, cache-miss markers, compaction dividers, and retry banners matching the terminal client. Session modes (plan/goal/vibe), personas, and a first-class agent-definitions surface are available, and engine approval/ask dialogs reach the UI through a presence-based bridge — unattended sessions fail closed instead of hanging.

@@ -1,9 +1,9 @@
-# Contributing to OpenChamber
+# Contributing to OMPChamber
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/openchamber/openchamber.git
+git clone https://github.com/Reamd7/openchamber.git
 cd openchamber
 bun install
 ```
@@ -261,4 +261,4 @@ You can still help:
 
 ## Questions?
 
-Open an [issue](https://github.com/openchamber/openchamber/issues) or ask in [Discord](https://discord.gg/ZYRSdnwwKA).
+Open an [issue](https://github.com/Reamd7/openchamber/issues) or ask in [Discord](https://discord.gg/ZYRSdnwwKA).
