@@ -302,3 +302,47 @@
 - 官方隔离门禁 **297/297** 文件(296→297),tsc 0 错误
 - **真实浏览器 CDP 复验**(3903 新构建):加载 + 展开 openchamber 项目 + 打开"Fix duplicate rows and commit chapter 09"会话,pageerror/console **全零**,崩溃签名未复现;用户在远程浏览器确认无问题
 - 骨架缺陷的加载恢复面:根因同源(事件应用被残缺 slice 阻断),随本修复解除;坏会话完整渲染的最终确认留待日常使用观察(§6.12 的 /undo 预填复验同会话进行)
+
+### 6.14 第二档清欠:/undo 预填 + 压缩 loader 复验(2026-08-22 上午,zhipu 额度恢复后)
+
+环境:本机(macOS/arm64)dev 栈 5180/3902;驱动 = 独立 profile 窗口化 Edge `--remote-debugging-port=9223` + CDP 连接(既有 §6.11 方案在 mac 上复刻;本机已有后台 Edge 进程吸收新实例,必须独立 user-data-dir)。验收目录 = 用户真实项目 sharkly。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| `/undo` 预填 | ✅ **闭环** | 新健康会话两真实回合("reply y: ok1"→"y: ok1";"second turn reply ok2"→"ok2")→ 提交 `/undo` → composer 预填 `second turn reply ok2`(DOM 读值 + 视觉模型逐字确认)、transcript 回退至仅剩第一回合、系统行 "Reverted messages 1"。§6.12 服务端修复(wire id→entry id 反解 + 有界等待)UI 链路全通 |
+| 压缩 loader | ✅ **闭环** | `Compacting context…` 状态行真实渲染:MutationObserver 捕获 4 次(窗口 ~2.4s)+ 窗口中点截图(旋转 loader 行 ×2 处:消息尾 + composer 上方)+ "compacted from 19K tokens" divider |
+
+**压缩 loader "此前未捕获"的根因(非 UI 缺陷,留档)**:
+1. `compaction.strategy` 引擎 schema 默认 = **snapcompact**(settings-schema.ts:2170;非 agent-core 的 context-full)→ 本地瞬时压缩,引擎日志实测 `auto_compaction_start→end` 仅 **2-11ms**,loader 渲染亚帧闪现,任何采样必错过。强制 `strategy: context-full`(LLM summary)后窗口秒级,渲染完全正常。
+2. 手动 `/compact` 走 `session.summarize` → SDK `compact()`,**不发 `auto_compaction_start/end` lifecycle 事件对**(该事件对仅 auto 路径发,session-maintenance.ts:2268/3049)→ loader 是 auto-compaction 专用品;手动路径靠 agent_end 尾同步出 divider,与 TUI 语义一致。
+3. SSE 通道验证:volatile 事件不回放(RingEventBus 语义),晚连接的捕获端看不到已过去的 volatile 事件——此前"流上没有事件"的观察对 volatile 无效;SDK 探针(仓库 17.3.7,带/不带用户扩展)均实证 `auto_compaction_start/end` 成对发出,omp-host `#handleEngineEvent` 收到(临时文件日志,已移除),ompBus→SSE→reducer→StatusRow 全链路通。
+
+**附带观察**:压缩测试会话均健康,"坏会话 transcript 骨架"(§6.13 已修复)未再出现。手动 `/compact` 对过小会话报 toast `session.summarize failed (500) Nothing to compact (session too small)`——引擎预期行为。
+
+验证后已还原:~/.omp/agent/config.yml 测试覆盖(threshold/keepRecent/strategy)全部移除;engine.js 调试行移除(git diff 空);omp-host 260/260 绿。
+
+### 6.15 研究:手动 `/compact` "没有效果"根因(2026-08-22 午间,CDP 全程真实 UI 驱动)
+
+复现矩阵(输入 /compact → Enter 选中 → Enter 提交,观察网络+toast+transcript):
+
+| 场景 | 结果 | 结论 |
+|---|---|---|
+| 新会话 2 消息,默认配置(keepRecentTokens=20000) | 500 "Nothing to compact (session too small)" + 红色错误 toast 一闪 | **引擎语义拒绝**:自上次压缩以来的消息全装进 20K 保留窗 → messagesToSummarize 空 → prepareCompaction 返回 undefined → compact() 抛错 |
+| 01a02765(19K 上下文+两次压缩历史),默认配置 | 同上 500 | 同类拒绝但成因不同:上次压缩后只剩 session_exit custom 条目,**没有消息可总结**;错误文案 "session too small" 误导 |
+| 新会话,keepRecentTokens=1(snapcompact 本地瞬时) | **200 成功,压缩 entry 落盘** | 阳性对照:地板就是唯一门槛;手动链路本身通 |
+| 同上成功场景的 UI | **divider 不出现**;手动刷新页面后 divider 出现("compacted from 19K tokens") | **UI 缺陷:成功后不刷新 transcript**(见 PROGRESS 新登记缺陷①) |
+
+证据链:探针(仓库 SDK 直调)打印 Settings.getGroup('compaction') 与 session entries,确认 keepRecentTokens 生效值与 `custom(session_exit)` 尾部条目;prepareCompaction 返回 undefined 的两个分支(keepRecent 窗口吃尽 / 压缩后无消息)分别对应两个复现场景。测试配置已还原(backup3 恢复,compaction 段移除),探针文件已删。
+
+附:研究中两次踩坑留档 —— config.yml 末行无换行导致追加粘行(第二次踩,已记牢);CDP 键入要求 Edge 前台(后台时键盘事件静默丢弃)。
+
+### 6.16 修复:手动 `/compact` 成功后不刷新 + 错误 toast 原文(2026-08-22 午后)
+
+改动:`packages/ui/src/lib/opencode/client.ts`(formatSdkError 提取 OpenCode 错误体 `{name,data:{message}}` 的嵌套 message)、`packages/ui/src/components/chat/ChatInput.tsx`(compact 分支成功后 `sessionActions.refetchSessionMessages`,刷新失败 `.catch` 降级不误报压缩失败)、`client.test.ts`(+1 契约测:嵌套 message 提取、无 JSON 原文)。
+
+| 路径 | 修复前 | 修复后(真机 CDP) |
+|---|---|---|
+| 成功(keepRecentTokens=1 临时配置) | 200,divider 要等刷新/切会话 | **200 → divider 免刷新出现**(waitForFunction 15s 内命中,截图 `%TEMP%/omp-sshots-15613469b*.webp`) |
+| 拒绝(默认配置小会话) | toast `session.summarize failed (500): {"name":"UnknownError",...}` | toast `session.summarize failed (500): Nothing to compact (session too small)` |
+
+验证:client.test 11/11(含新增);ui 包 tsc 通过;改动文件 eslint 0 error(1 处预先存在 warning);测试配置已还原并重启。已知边界:refreshTail 为 merge 语义,压缩掉的远端旧消息在本地滞留至下次整载 —— 完整对账留待引擎补 `session.compacted` 事件(wire 契约已有该类型,双端未实现,§6.15)。
