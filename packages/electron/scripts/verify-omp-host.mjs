@@ -39,10 +39,15 @@ const port = 3997;
 const healthCheckTimeoutMs = 30_000;
 
 const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
-  stdio: 'ignore',
+  stdio: ['ignore', 'ignore', 'pipe'],
   windowsHide: true,
 });
 child.unref();
+
+let stderrTail = '';
+child.stderr?.on('data', (chunk) => {
+  stderrTail = (stderrTail + String(chunk)).slice(-2000);
+});
 
 const stopChild = () => {
   try {
@@ -56,13 +61,13 @@ const finish = (code) => {
   stopChild();
   setTimeout(() => process.exit(code), 250);
 };
-
 const waitForHealthy = async () => {
   const deadline = Date.now() + healthCheckTimeoutMs;
   const url = `http://127.0.0.1:${port}/global/health`;
   for (;;) {
     if (child.exitCode !== null) {
       console.error(`[electron] omp host exited early with code ${child.exitCode}`);
+      if (stderrTail.trim()) console.error(`[electron] omp host stderr (tail):\n${stderrTail.trim()}`);
       process.exit(1);
     }
     if (Date.now() > deadline) {
