@@ -54,8 +54,15 @@ const OPENCODE_HEALTH_TIMEOUT_MS = 4_000;
 function formatSdkError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  if (error && typeof error === "object" && "message" in error && typeof (error as { message: unknown }).message === "string") {
-    return (error as { message: string }).message;
+  if (error && typeof error === "object") {
+    // OpenCode error body shape: { name, data: { message } }. The nested
+    // message is the engine's human-readable reason; showing the raw JSON
+    // blob in a toast is noise.
+    if ("data" in error && error.data && typeof error.data === "object" && "message" in error.data) {
+      const nested = error.data.message;
+      if (typeof nested === "string") return nested;
+    }
+    if ("message" in error && typeof error.message === "string") return error.message;
   }
   try {
     return JSON.stringify(error);

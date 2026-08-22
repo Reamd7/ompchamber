@@ -19,6 +19,12 @@ const promptAsyncMock = mock(async (...args: unknown[]) => {
   if (next instanceof Error) throw next;
   return next ?? { response: new Response(null, { status: 200 }) };
 });
+const summarizeResults: Array<unknown> = [];
+const summarizeMock = mock(async () => {
+  const next = summarizeResults.shift();
+  if (next instanceof Error) throw next;
+  return next ?? { response: new Response(null, { status: 200 }) };
+});
 const commandMock = mock(async (...args: unknown[]) => {
   commandCalls.push(args);
   return { response: new Response(null, { status: 200 }) };
@@ -46,6 +52,7 @@ mock.module('@/lib/opencode/wire', () => ({
     session: {
       promptAsync: promptAsyncMock,
       command: commandMock,
+      summarize: summarizeMock,
     },
     path: {
       get: pathGetMock,
@@ -84,6 +91,7 @@ beforeEach(() => {
   runtimeKey = 'test-runtime';
   promptAsyncCalls.length = 0;
   promptAsyncResults.length = 0;
+  summarizeResults.length = 0;
   pathGetResults.length = 0;
   commandCalls.length = 0;
   modelRolesEnabled = false;
@@ -286,5 +294,25 @@ describe('opencodeClient prompt retry behavior', () => {
     expect(error).toBeInstanceOf(Error);
     expect(error instanceof Error ? error.message : String(error)).toContain('runtime changed');
     expect(promptAsyncCalls).toHaveLength(0);
+  });
+});
+
+describe('opencodeClient summarizeSession error surfacing', () => {
+  test('extracts the nested engine message from an OpenCode error body', async () => {
+    summarizeResults.push({
+      error: { name: 'UnknownError', data: { message: 'Nothing to compact (session too small)' } },
+      response: { status: 500 },
+    });
+
+    let error: unknown = null;
+    try {
+      await opencodeClient.summarizeSession('ses_compact', 'provider', 'model', '/workspace/project');
+    } catch (caught) {
+      error = caught;
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toBe('session.summarize failed (500): Nothing to compact (session too small)');
+    expect(message).not.toContain('{');
   });
 });

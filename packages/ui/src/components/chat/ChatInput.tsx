@@ -1195,6 +1195,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     await sessionActions.waitForConnectionOrThrow();
                     const compactDirectory = useSessionUIStore.getState().getDirectoryForSession(currentSessionId) || currentDirectory || undefined;
                     await opencodeClient.summarizeSession(currentSessionId, currentProviderId, currentModelId, compactDirectory);
+                    // Manual compaction publishes no lifecycle event pair, so
+                    // the server-side divider never arrives over the event
+                    // stream. Pull the refreshed tail now; a failed refresh
+                    // must not read as a failed compaction.
+                    await sessionActions.refetchSessionMessages(currentSessionId).catch(() => undefined);
                 } catch (error) {
                     toast.error(getSubmitErrorMessage(error, t('chat.chatInput.toast.compactFailed')));
                 }
