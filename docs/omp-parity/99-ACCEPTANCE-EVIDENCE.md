@@ -286,3 +286,19 @@
 **/tree 复核**:§6.11 的"卡 Loading"未复现——对有回合会话经发送按钮提交,对话框 500ms 打开且稳定;此前失败为 Enter×自动补全菜单交互竞态 + 一次空会话陈旧流误读。**改为 ✅ 闭环**(截图 ui-43)。
 
 **浏览器复验 `/undo` 预填受阻留档**:①验证主力会话经 10+ 次 revert/重启后 transcript 永久骨架(UI 端消息加载不恢复,服务端 GET /message 200 正常——独立缺陷待查);②新建健康会话需真实模型回合,而 zhipu 配额当晚已打满(Token 95%→上限)。服务端修复经单测+HTTP 层证实;UI 预填链路复验留待额度恢复(步骤:新会话两回合 → /undo → composer 预填)。
+
+### 6.13 坏会话 transcript 崩溃修复(2026-08-22,远程 web 触发)
+
+**症状**:远程浏览器(桌面实例 57123,登录 123456 后)打开会话聊天,console 反复抛 `TypeError: Cannot read properties of undefined (reading 'msg_0278…')`,ChatMessage 渲染崩溃重试循环;同签名此前已在 §6.12 的坏会话上登记为"transcript 骨架"缺陷。
+
+**根因**(`packages/ui/src/sync/useOmpSessionStore.ts`):双通道写入顺序竞态。wire 流 `session.updated`(带 `Session.model`)触发 `seedSessionModel`,而完整 slice 只由 omp 流 `applyEvent` 创建;目录尚无 slice 时旧代码 `{...undefined}` 展开出**只含 sessionModel 的残缺 slice**。retry 叶子选择器(`useOmpRetrySupersession/Note`)遍历全部 slice 按 wire 消息 id 索引 `superseded/notes` → `undefined[msg_x]` 崩溃。且旧 `applyEvent` 对已存在的残缺 slice 直接展开,reducer 写 undefined map 同样失败——**残缺 slice 一旦形成,事件到达也无法自愈**(这同时解释了骨架缺陷:事件应用失败 → 物化不完成 → 加载不恢复)。认证窗口(401 阶段 bootstrap 先行)只是放大了竞态,桌面慢引擎场景同样可中。
+
+**修复**(两层,commit `3291d04`):
+1. 根因——`applyEvent` 与 `seedSessionModel` 统一"空形状打底再覆盖"(`{...createEmptyOmpDirectoryState(), ...slice}`):无 slice / 遗留残缺 slice 均写出完整形状,后续事件自愈
+2. 防御——retry 选择器 `slice.superseded?.[id]` / `slice.notes?.[id]`:残缺数据降级为"无数据",永不崩 transcript
+
+**验证**:
+- 回归测试 `ompSeedSessionModelSlice.test.tsx` 3 用例:空目录播种得全形状、**遗留残缺 slice 下 renderToStaticMarkup 探针(两 hook)不抛**、工厂形状断言
+- 官方隔离门禁 **297/297** 文件(296→297),tsc 0 错误
+- **真实浏览器 CDP 复验**(3903 新构建):加载 + 展开 openchamber 项目 + 打开"Fix duplicate rows and commit chapter 09"会话,pageerror/console **全零**,崩溃签名未复现;用户在远程浏览器确认无问题
+- 骨架缺陷的加载恢复面:根因同源(事件应用被残缺 slice 阻断),随本修复解除;坏会话完整渲染的最终确认留待日常使用观察(§6.12 的 /undo 预填复验同会话进行)
