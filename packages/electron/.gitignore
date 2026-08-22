@@ -14,3 +14,5 @@ resources/opencode-cli/*
 
 # OS-specific
 .DS_Store
+resources/omp-host/*
+!resources/omp-host/.gitkeep

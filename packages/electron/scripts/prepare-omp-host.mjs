@@ -91,7 +91,9 @@ const main = () => {
   console.log(`[electron] prepared omp host: ${outputBinary} (${expectedDescriptor})`);
 };
 
-main().catch((error) => {
+try {
+  main();
+} catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
-});
+}
