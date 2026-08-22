@@ -172,7 +172,10 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
       if (runtimeKey !== get().runtimeKey) return [];
       const effects: OmpEventEffect[] = [];
       set((state) => {
-        const existing = state.directories[directory] ?? createEmptyOmpDirectoryState();
+        // Empty-shape base then overlay: a legacy partial slice (pre-fix
+        // seedSessionModel could write one) must not leak missing maps into
+        // the draft the reducer indexes.
+        const existing = { ...createEmptyOmpDirectoryState(), ...state.directories[directory] };
         const draft: OmpDirectoryState = {
           ...existing,
           loaders: { ...existing.loaders },
@@ -224,8 +227,11 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
       if (runtimeKey !== get().runtimeKey) return;
       if (!model?.provider || !model?.id) return;
       set((state) => {
-        const slice = state.directories[directory];
-        const existing = slice?.sessionModel[sessionID];
+        // Never seed a partial slice: empty-shape base + overlay gives the
+        // full maps even when the directory has no slice (or a legacy
+        // partial one) — leaf selectors index these maps by message id.
+        const slice = { ...createEmptyOmpDirectoryState(), ...state.directories[directory] };
+        const existing = slice.sessionModel[sessionID];
         if (existing && existing.provider === model.provider && existing.id === model.id) return state;
         return {
           directories: {
@@ -233,7 +239,7 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
             [directory]: {
               ...slice,
               sessionModel: {
-                ...slice?.sessionModel,
+                ...slice.sessionModel,
                 [sessionID]: {
                   provider: model.provider,
                   id: model.id,
@@ -381,7 +387,9 @@ export const useOmpRetrySupersession = (messageID: string | undefined): boolean 
   useOmpSessionStore((state) => {
     if (!messageID) return false;
     for (const slice of Object.values(state.directories)) {
-      if (slice.superseded[messageID]) return true;
+      // Defensive `?.`: a partial slice must degrade to "no data", never crash
+      // the transcript (defense-in-depth behind the seedSessionModel fix).
+      if (slice.superseded?.[messageID]) return true;
     }
     return false;
   });
@@ -390,7 +398,7 @@ export const useOmpRetryNote = (messageID: string | undefined): string | undefin
   useOmpSessionStore((state) => {
     if (!messageID) return undefined;
     for (const slice of Object.values(state.directories)) {
-      const note = slice.notes[messageID];
+      const note = slice.notes?.[messageID];
       if (note?.note !== undefined) return note.note;
     }
     return undefined;
