@@ -767,7 +767,7 @@ export const AgentsPage: React.FC = () => {
               onChange={(e) => patchOmpForm({ tools: e.target.value })}
               placeholder={t('settings.agents.page.field.toolsPlaceholder')}
               disabled={isReadOnly}
-              className="h-8 w-full max-w-md px-3 font-mono"
+              className="h-8 w-full px-3 font-mono"
             />
           </SettingsFieldRow>
 
@@ -783,7 +783,7 @@ export const AgentsPage: React.FC = () => {
               onChange={(e) => patchOmpForm({ modelPatterns: e.target.value })}
               placeholder={t('settings.agents.page.field.modelPatternsPlaceholder')}
               disabled={isReadOnly}
-              className="h-8 w-full max-w-md px-3 font-mono"
+              className="h-8 w-full px-3 font-mono"
             />
           </SettingsFieldRow>
 
@@ -828,7 +828,7 @@ export const AgentsPage: React.FC = () => {
               onChange={(e) => patchOmpForm({ spawns: e.target.value })}
               placeholder={t('settings.agents.page.field.spawnsPlaceholder')}
               disabled={isReadOnly}
-              className="h-8 w-full max-w-md px-3 font-mono"
+              className="h-8 w-full px-3 font-mono"
             />
           </SettingsFieldRow>
 
@@ -854,7 +854,7 @@ export const AgentsPage: React.FC = () => {
                 onChange={(e) => patchOmpForm({ prewalkPattern: e.target.value })}
                 placeholder={t('settings.agents.page.field.pattern.placeholder')}
                 disabled={isReadOnly}
-                className="h-8 w-40 px-3 font-mono"
+                className="h-8 min-w-0 flex-1 px-3 font-mono"
                 aria-label={t('settings.agents.page.field.prewalk.label')}
               />
             )}
@@ -882,7 +882,7 @@ export const AgentsPage: React.FC = () => {
                 onChange={(e) => patchOmpForm({ advisorPattern: e.target.value })}
                 placeholder={t('settings.agents.page.field.pattern.placeholder')}
                 disabled={isReadOnly}
-                className="h-8 w-40 px-3 font-mono"
+                className="h-8 min-w-0 flex-1 px-3 font-mono"
                 aria-label={t('settings.agents.page.field.advisor.label')}
               />
             )}
