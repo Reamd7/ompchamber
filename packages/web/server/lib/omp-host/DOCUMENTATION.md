@@ -59,9 +59,14 @@ sync engine, and web server call; everything else answers 404.
   and the always-allow write-first transaction.
 - `domain-modes.js` (spec 02) — mode tracker (mode_change persistence +
   cold recovery), plan review bridge (`setPlanProposalHandler`), persona
-  resolution, agent-definitions/personas CRUD, `planOptionsFor` (the
-  `PlanYolo {target,thinkingLevel?}` shape — the old
-  `{autoApproveOnResolve}` literal was the P0 defect).
+  resolution (`personaFor`: build/plan/unset → standard; unknown → degrade +
+  notice), agent-definitions CRUD backed by the omp discovery chain
+  (`discoverAgents` reads project/user/extension/bundled `.md` files; writes
+  land in the user/project agents dirs; bundled + extension-owned files are
+  read-only, same-name user copies shadow them), `serializeAgentMarkdown`
+  (SDK frontmatter contract round-trip), `migrateSidecarAgents` (one-time
+  `openchamber-agents.json` → `.md` + persona mirror, §6.2), and personas
+  CRUD over the personas sidecar.
 - `domain-uri.js` (spec 04) — local:// bridge (session-pinned, zero global
   mutation), URI token service (no absolute sourcePath echo, R7), session
   tree, `AgentRunsAggregator` (250ms coalesced `omp.agents.updated`),

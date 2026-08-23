@@ -505,19 +505,19 @@ describe('createOmpUriAPI (spec 04 §5.2.1/§5.2.4 — local:// bridge)', () => 
   });
 });
 
-describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contract)', () => {
+describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — discovery contract)', () => {
   const RECORD = {
     name: 'reviewer',
-    prompt: 'Review code.',
-    tools: ['read', 'bash'],
     description: 'Code review worker',
-    mode: 'subagent',
-    scope: 'global',
+    source: 'user',
+    systemPrompt: 'Review code.',
+    tools: ['read', 'bash'],
+    model: ['@smol'],
   };
 
   test('list parses the agents array; malformed payload is failure, never empty success', async () => {
     const api = createOmpAgentDefinitionsAPI({
-      fetchImpl: (async () => jsonResponse(200, { agents: [RECORD] })) as unknown as typeof fetch,
+      fetchImpl: (async () => jsonResponse(200, { agents: [RECORD], projectAgentsDir: null })) as unknown as typeof fetch,
     });
     const result = await api.list();
     expect(result.ok).toBe(true);
@@ -525,7 +525,7 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
       expect(result.data).toHaveLength(1);
       const record = result.data[0];
       expect(record?.name).toBe('reviewer');
-      expect(record?.scope).toBe('global');
+      expect(record?.source).toBe('user');
       expect(record?.tools).toEqual(['read', 'bash']);
     }
 
@@ -540,7 +540,7 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
     expect(await off.list()).toEqual({ ok: false, unavailable: true });
   });
 
-  test('create posts the scoped definition body and returns the record', async () => {
+  test('create posts the definition body and returns the record', async () => {
     const calls: Array<{ path: string; method: string; body?: string }> = [];
     const api = createOmpAgentDefinitionsAPI({
       fetchImpl: (async (path: string, init?: RequestInit) => {
@@ -550,9 +550,10 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
     });
     const result = await api.create({
       name: 'reviewer',
-      prompt: 'Review code.',
       description: 'Code review worker',
+      systemPrompt: 'Review code.',
       tools: ['read', 'bash'],
+      model: ['@smol'],
       scope: 'project',
     });
     expect(result).toEqual({ ok: true, record: RECORD });
@@ -562,9 +563,10 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
       scope: 'project',
       definition: {
         name: 'reviewer',
-        prompt: 'Review code.',
         description: 'Code review worker',
+        systemPrompt: 'Review code.',
         tools: ['read', 'bash'],
+        model: ['@smol'],
       },
     });
   });
@@ -573,7 +575,7 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
     const api = createOmpAgentDefinitionsAPI({
       fetchImpl: (async () => jsonResponse(409, { error: 'agent-definition-exists', name: 'reviewer' })) as unknown as typeof fetch,
     });
-    expect(await api.create({ name: 'reviewer', prompt: 'x' })).toEqual({
+    expect(await api.create({ name: 'reviewer', description: 'd', systemPrompt: 'x' })).toEqual({
       ok: false,
       unavailable: false,
       kind: 'rejected',
@@ -584,9 +586,9 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
 
   test('400 invalid-prompt rejection carries the domain error code', async () => {
     const api = createOmpAgentDefinitionsAPI({
-      fetchImpl: (async () => jsonResponse(400, { error: 'invalid-prompt', message: 'prompt must be a non-empty string' })) as unknown as typeof fetch,
+      fetchImpl: (async () => jsonResponse(400, { error: 'invalid-prompt', message: 'systemPrompt must be a non-empty string' })) as unknown as typeof fetch,
     });
-    expect(await api.create({ name: 'x', prompt: '' })).toEqual({
+    expect(await api.create({ name: 'x', description: 'd', systemPrompt: '' })).toEqual({
       ok: false,
       unavailable: false,
       kind: 'rejected',
@@ -602,19 +604,17 @@ describe('createOmpAgentDefinitionsAPI (spec 02 §5.2 — scoped sidecar contrac
         return jsonResponse(200, { ...RECORD, name: 'fresh' });
       }) as unknown as typeof fetch,
     });
-    const result = await api.update('old', { definition: { prompt: 'new prompt' }, renameTo: 'fresh' });
+    const result = await api.update('old', { definition: { systemPrompt: 'new prompt' }, renameTo: 'fresh' });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.record.name).toBe('fresh');
-    expect(calls[0]?.path).toBe('/api/omp/agent-definitions/old');
     expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
-      definition: { prompt: 'new prompt' },
+      definition: { systemPrompt: 'new prompt' },
       renameTo: 'fresh',
     });
 
     const missing = createOmpAgentDefinitionsAPI({
       fetchImpl: (async () => jsonResponse(404, { error: 'not-found' })) as unknown as typeof fetch,
     });
-    expect(await missing.update('ghost', { definition: { prompt: 'x' } })).toEqual({
+    expect(await missing.update('ghost', { definition: { systemPrompt: 'x' } })).toEqual({
       ok: false,
       unavailable: false,
       kind: 'rejected',

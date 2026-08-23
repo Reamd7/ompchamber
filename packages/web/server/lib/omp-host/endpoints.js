@@ -12,7 +12,7 @@ import { BUILTIN_TOOLS, getAgentDir } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.js';
 import { buildCapabilities, featureUnavailable, ompFeatures } from './omp-parity.js';
 import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models.js';
-import { registerModesDomainRoutes } from './domain-modes.js';
+import { ModeDomainError, registerModesDomainRoutes } from './domain-modes.js';
 import { registerCommandsDomainRoutes } from './domain-commands.js';
 import { registerChromeDomainRoutes } from './domain-chrome.js';
 import { registerPluginsDomainRoutes } from './domain-plugins.js';
@@ -42,6 +42,16 @@ const execFileAsync = promisify(execFile);
 
 const json = (data, init) => Response.json(data, init);
 
+// Domain errors from the prompt path (e.g. persona-not-found 404, 02 §5.1
+// R2-M3) answer with their own status; anything else stays a 500 in host.js.
+const domainErrorsToResponse = async (run) => {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof ModeDomainError) return json(error.body, { status: error.status });
+    throw error;
+  }
+};
 const notFound = (message) =>
   json({ name: 'UnknownError', data: { message } }, { status: 404 });
 
@@ -168,10 +178,10 @@ export const registerEndpoints = (route, engine, { version }) => {
       // keyed Settings instance (spec 01 §5.3/GAP-03) instead of pinning
       // whichever provider model sorts first.
       ...(await defaultModelPointer(engine)),
-      agents: [...engine.customAgents.values()],
-      provider: await providersPayload(),
-      // OpenCode-specific keys with no omp equivalent are absent; PATCH /config
-      // stores custom agents only.
+      // Agent definitions are the omp discovery chain (02 §5.2); the legacy
+      // wire payload carries no custom-agent list anymore.
+      agents: [],
+      // OpenCode-specific keys with no omp equivalent are absent.
     };
   };
 
@@ -264,7 +274,7 @@ export const registerEndpoints = (route, engine, { version }) => {
     const body = await readJsonBody(request);
     const directory = body.directory ?? projectDirectory(ctx);
     const payload = promptPayloadFromWire(body);
-    const wire = await engine.prompt({
+    const wire = await domainErrorsToResponse(() => engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
       text: payload.text,
@@ -272,7 +282,7 @@ export const registerEndpoints = (route, engine, { version }) => {
       agent: body.agent,
       images: payload.images,
       messageID: payload.messageID,
-    });
+    }));
     if (!wire) return notFound('session not found');
     const messages = await engine.getMessages({ sessionID: ctx.params.sessionID, directory });
     return json(messages ?? [wire]);
@@ -281,7 +291,7 @@ export const registerEndpoints = (route, engine, { version }) => {
     const body = await readJsonBody(request);
     const directory = body.directory ?? projectDirectory(ctx);
     const payload = promptPayloadFromWire(body);
-    const wire = await engine.prompt({
+    const wire = await domainErrorsToResponse(() => engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
       text: payload.text,
@@ -290,7 +300,7 @@ export const registerEndpoints = (route, engine, { version }) => {
       images: payload.images,
       messageID: payload.messageID,
       delivery: body.delivery,
-    });
+    }));
     if (!wire) return notFound('session not found');
     return json(wire.info);
   });
@@ -299,21 +309,13 @@ export const registerEndpoints = (route, engine, { version }) => {
     const directory = body.directory ?? projectDirectory(ctx);
     // Slash-command execution: forward the command text as a prompt; omp
     // expands its own slash commands when the session is materialized.
-    const wire = await engine.prompt({
+    const wire = await domainErrorsToResponse(() => engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
       text: body.command ?? '',
       model: body.model,
       agent: body.agent,
-    });
-    if (!wire) return notFound('session not found');
-    return json(wire.info);
-  });
-  route('POST', '/session/{sessionID}/abort', async (request, ctx) => {
-    const body = await readJsonBody(request);
-    const directory = body.directory ?? projectDirectory(ctx);
-    await engine.abort({ sessionID: ctx.params.sessionID, directory });
-    return json({});
+    }));
   });
   route('POST', '/session/{sessionID}/shell', async (request, ctx) => {
     return unsupported('Interactive session shells are not exposed by the omp engine.');
@@ -369,13 +371,10 @@ export const registerEndpoints = (route, engine, { version }) => {
 
   // ---- config / app / commands / tools ----
   route('GET', '/config', async () => json(await configPayload()));
-  route('PATCH', '/config', async (request) => {
-    const body = await readJsonBody(request);
-    if (Array.isArray(body.agents)) {
-      for (const agent of body.agents) {
-        if (agent && typeof agent.name === 'string') engine.upsertCustomAgent(agent);
-      }
-    }
+  route('PATCH', '/config', async () => {
+    // The agents write branch is gone (02 §5.8): agent definitions are the
+    // omp discovery chain, managed via /api/omp/agent-definitions. The
+    // legacy PATCH surface keeps answering the config payload unchanged.
     return json(await configPayload());
   });
   route('GET', '/config/providers', async () => {
@@ -384,19 +383,13 @@ export const registerEndpoints = (route, engine, { version }) => {
   });
   route('GET', '/agent', async () => {
     await engine.ready();
-    const builtin = [
+    // Legacy wire face (02 §5.1 D-B1): the manufactured build/plan shells
+    // keep old clients rendering; worker definitions live behind
+    // /api/omp/agent-definitions and personas behind /api/omp/personas.
+    return json([
       { name: 'build', description: 'General purpose coding agent', mode: 'primary', builtIn: true },
       { name: 'plan', description: 'Planning agent (read-only analysis before execution)', mode: 'primary', builtIn: true },
-    ];
-    const custom = [...engine.customAgents.values()].map((agent) => ({
-      name: agent.name,
-      description: agent.description ?? agent.name,
-      mode: 'subagent',
-      builtIn: false,
-      prompt: agent.prompt,
-      ...(Array.isArray(agent.tools) ? { tools: agent.tools } : {}),
-    }));
-    return json([...builtin, ...custom]);
+    ]);
   });
   route('GET', '/skill', async (request, ctx) => {
     const directory = projectDirectory(ctx);

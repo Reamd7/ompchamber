@@ -2,29 +2,28 @@
 // (server side, Wave-1 self-contained module; the coordinator mounts it).
 //
 // Surfaces:
-//   1. planOptionsFor          — P0 defect fix contract for the engine's
-//                                 planYolo mapping (02 §2.1, master §7.5a).
-//   2. createModeTracker       — session mode state machine (02 §5.4) with
+//   1. createModeTracker       — session mode state machine (02 §5.4) with
 //                                 mode_change entry persistence and the
 //                                 omp.mode.changed projection.
-//   3. agent-definitions CRUD  — scoped CRUD over the same sidecar storage
-//                                 engine.customAgents uses today (02 §5.2).
-//   4. personas CRUD + personaFor — independent persona resource and the
+//   2. agent-definitions CRUD  — omp agent discovery chain as the read
+//                                 authority; writes are .md files in the
+//                                 user/project agents dirs; bundled is
+//                                 read-only (02 §5.2, GAP-B03/B04).
+//   3. personas CRUD + personaFor — independent persona resource and the
 //                                 materialize-time systemPrompt overlay
 //                                 (02 §5.2a, master D6-R12).
-//   5. planReviewBridge        — xd://propose hook producing
+//   4. planReviewBridge        — xd://propose hook producing
 //                                 omp.plan.review_requested and the GET /plan
 //                                 review payload (02 §5.5).
-//   6. createModesDomain + registerModesDomainRoutes — per-session
+//   5. createModesDomain + registerModesDomainRoutes — per-session
 //                                 tracker/bridge ownership and route mounting.
 //
 // Engine integration points (coordinator wires; this module never imports
 // engine.js — all SDK state reaches it through the injected callbacks):
-//   - #materialize: spread `...planOptionsFor(meta, {...})` into
-//     createAgentSession options, replacing the invalid
-//     `{ autoApproveOnResolve: true }` literal at engine.js:468.
 //   - #materialize: persona overlay via personaFor(meta, personasStore) →
 //     systemPrompt/toolNames; status 'standard' = no overlay (02 §5.1 D-B2).
+//     (The old planYolo mapping is deleted — plan mode is a session mode
+//     driven by the mode endpoints, 02 §5.8.)
 //   - per hostSession: domain.trackerFor(id, dir) / domain.bridgeFor(id, dir);
 //     on plan enter call session.setPlanProposalHandler(bridge.hookFor(session))
 //     (SDK: agent-session.ts:1733-1735, mirrors TUI interactive-mode.ts:2739).
@@ -35,6 +34,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { stringify as stringifyYaml } from 'yaml';
 import { BUILTIN_TOOLS } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.js';
 import { featureUnavailable, ompFeatures } from './omp-parity.js';
@@ -63,8 +63,6 @@ const THINKING_LEVELS = new Set([
 
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-/** omp-valid worker modes. 'primary' is the deleted build/plan concept (02 §5.3). */
-const WORKER_MODES = new Set(['subagent', 'all']);
 
 const json = (data, init) => Response.json(data, init);
 const badRequest = (message, extra = {}) =>
@@ -101,57 +99,12 @@ const modeConflict = (mode) =>
   });
 
 // ---------------------------------------------------------------------------
-// 1. planOptionsFor — P0 defect fix (02 §2.1, master §7.5a)
+// 1. Storage adapters (personas sidecar)
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the plan-related `createAgentSession` options for a session meta.
- *
- * SDK contract (verified): `CreateAgentSessionOptions.planYolo?: PlanYolo`
- * where `PlanYolo = { target: Model; thinkingLevel?: ConfiguredThinkingLevel }`
- * (src/sdk.ts:393-394, src/session/agent-session-types.ts:89-92). The engine's
- * current `{ autoApproveOnResolve: true }` literal matches no SDK field: it is
- * truthy, so `armPlanYoloIfNeeded` arms hidden read-only plan mode
- * (prewalk.ts:247-259) and `#finalizePlanYoloProposal` dereferences
- * `planYolo.target.provider` (prewalk.ts:300) → TypeError on xd://propose.
- *
- * Rules:
- * - `meta.mode === 'plan'` (mode-aware path, modes.v1): plan mode is runtime
- *   state driven by the mode tracker (`setPlanModeState`); never arm
- *   constructor planYolo alongside it.
- * - Legacy `meta.agent === 'plan'`: arm planYolo only with the correct shape
- *   and only when a real Model `target` resolves; without a target the session
- *   degrades to a standard session instead of arming the crash shape.
- * - Anything else: no plan options.
- *
- * @param {{ agent?: string, mode?: string, persona?: string } | null} meta
- * @param {{ target?: object, thinkingLevel?: string }} [options]
- * @returns {{ planYolo?: { target: object, thinkingLevel?: string } }}
- */
-export function planOptionsFor(meta, options = {}) {
-  const { target, thinkingLevel } = options ?? {};
-  if (thinkingLevel !== undefined && !THINKING_LEVELS.has(thinkingLevel)) {
-    throw new ModeDomainError(400, { error: 'invalid-thinking-level', thinkingLevel });
-  }
-  if (meta?.mode === 'plan') return {};
-  if (meta?.agent !== 'plan') return {};
-  if (!target || typeof target !== 'object') return {};
-  return {
-    planYolo: {
-      target,
-      ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// 2. Storage adapters (sidecar-compatible)
-// ---------------------------------------------------------------------------
-
-/**
- * JSON sidecar file store. Default shape mirrors the engine's
- * openchamber-agents.json sidecar (engine.js #loadCustomAgents /
- * saveCustomAgents): `{ [key]: records[] }`, missing/corrupt file → [].
+ * JSON sidecar file store (used by the personas store). Shape:
+ * `{ [key]: records[] }`; missing/corrupt file → [].
  */
 export function jsonFileStore(filePath, key = 'agents') {
   return {
@@ -171,7 +124,7 @@ export function jsonFileStore(filePath, key = 'agents') {
   };
 }
 
-/** Adapter over the engine's live customAgents Map (coordinator wiring). */
+/** Adapter over the engine's live personas Map (coordinator wiring). */
 export function mapBackedStore(map, persist) {
   return {
     load() {
@@ -186,7 +139,7 @@ export function mapBackedStore(map, persist) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Agent definitions CRUD (02 §5.2, scoped contract)
+// 2. Agent definitions (02 §5.2 — omp discovery chain + .md file storage)
 // ---------------------------------------------------------------------------
 
 const definitionScope = (body) => {
@@ -217,44 +170,116 @@ const validateTools = (tools, allowedTools) => {
   return [...new Set(tools)];
 };
 
+const parseCsvList = (value) => (
+  typeof value === 'string'
+    ? value.split(',').map((entry) => entry.trim()).filter(Boolean)
+    : value
+);
+
+/** boolean | non-empty model pattern; `null` clears the field (02 §5.2). */
+const validateFlagOrPattern = (field, value) => {
+  if (value === null) return null;
+  if (value === true || value === false) return value;
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  throw new ModeDomainError(400, {
+    error: `invalid-${field}`,
+    message: `${field} must be a boolean or a model pattern string`,
+  });
+};
+
+/**
+ * Validate a definition patch (02 §5.2/§5.3 — the omp AgentDefinition
+ * frontmatter contract; the OpenCode mode/permission/temperature fields
+ * have no omp counterpart and are not accepted). Optional fields accept
+ * `null` to clear.
+ */
 const validateDefinitionPatch = (patch, allowedTools) => {
   const out = {};
-  if (patch.prompt !== undefined) {
-    if (typeof patch.prompt !== 'string' || !patch.prompt.trim()) {
-      throw new ModeDomainError(400, { error: 'invalid-prompt', message: 'prompt must be a non-empty string' });
-    }
-    out.prompt = patch.prompt;
-  }
   if (patch.description !== undefined) {
-    if (typeof patch.description !== 'string') {
-      throw new ModeDomainError(400, { error: 'invalid-description' });
+    if (typeof patch.description !== 'string' || !patch.description.trim()) {
+      throw new ModeDomainError(400, {
+        error: 'invalid-description',
+        message: 'description must be a non-empty string (required by the omp agent frontmatter)',
+      });
     }
     out.description = patch.description;
   }
-  if (patch.tools !== undefined) out.tools = validateTools(patch.tools, allowedTools);
-  if (patch.mode !== undefined) {
-    if (!WORKER_MODES.has(patch.mode)) {
-      throw new ModeDomainError(400, {
-        error: 'invalid-mode',
-        message: `mode must be one of ${[...WORKER_MODES].join(', ')} (primary agents are removed)`,
-      });
+  if (patch.systemPrompt !== undefined) {
+    if (typeof patch.systemPrompt !== 'string' || !patch.systemPrompt.trim()) {
+      throw new ModeDomainError(400, { error: 'invalid-prompt', message: 'systemPrompt must be a non-empty string' });
     }
-    out.mode = patch.mode;
+    out.systemPrompt = patch.systemPrompt;
   }
-  // Scope is handled by the caller (it gates on settingsProjectScopes).
+  if (patch.model !== undefined) {
+    if (patch.model === null) {
+      out.model = null;
+    } else {
+      const model = parseCsvList(patch.model);
+      if (!Array.isArray(model) || model.length === 0
+        || model.some((pattern) => typeof pattern !== 'string' || !pattern.trim())) {
+        throw new ModeDomainError(400, {
+          error: 'invalid-model',
+          message: 'model must be an array of model patterns, e.g. ["@smol", "anthropic/*:high"]',
+        });
+      }
+      out.model = model.map((pattern) => pattern.trim());
+    }
+  }
+  if (patch.thinkingLevel !== undefined) {
+    if (patch.thinkingLevel === null) {
+      out.thinkingLevel = null;
+    } else if (typeof patch.thinkingLevel !== 'string' || !THINKING_LEVELS.has(patch.thinkingLevel)) {
+      throw new ModeDomainError(400, {
+        error: 'invalid-thinking-level',
+        thinkingLevel: patch.thinkingLevel,
+        message: `thinkingLevel must be one of ${[...THINKING_LEVELS].join(', ')}`,
+      });
+    } else {
+      out.thinkingLevel = patch.thinkingLevel;
+    }
+  }
+  if (patch.tools !== undefined) {
+    out.tools = patch.tools === null ? null : validateTools(patch.tools, allowedTools);
+  }
+  if (patch.spawns !== undefined) {
+    if (patch.spawns === null) {
+      out.spawns = null;
+    } else {
+      const spawns = patch.spawns === '*' ? '*' : parseCsvList(patch.spawns);
+      if (spawns !== '*' && (!Array.isArray(spawns) || spawns.length === 0
+        || spawns.some((name) => typeof name !== 'string' || !name.trim()))) {
+        throw new ModeDomainError(400, {
+          error: 'invalid-spawns',
+          message: 'spawns must be "*" or an array of agent names',
+        });
+      }
+      out.spawns = spawns === '*' ? '*' : spawns.map((name) => name.trim());
+    }
+  }
+  if (patch.prewalk !== undefined) out.prewalk = validateFlagOrPattern('prewalk', patch.prewalk);
+  if (patch.advisor !== undefined) out.advisor = validateFlagOrPattern('advisor', patch.advisor);
+  if (patch.readSummarize !== undefined) {
+    if (patch.readSummarize === null) {
+      out.readSummarize = null;
+    } else if (typeof patch.readSummarize !== 'boolean') {
+      throw new ModeDomainError(400, { error: 'invalid-read-summarize', message: 'readSummarize must be a boolean' });
+    } else {
+      out.readSummarize = patch.readSummarize;
+    }
+  }
   return out;
 };
 
 const gateProjectScope = (scope, settingsProjectScopes) => {
-  if (scope === undefined || scope === null) return 'global';
-  if (scope !== 'global' && scope !== 'project') {
-    throw new ModeDomainError(400, { error: 'invalid-scope', scope, message: 'scope must be "global" or "project"' });
+  if (scope === undefined || scope === null) return 'user';
+  if (scope !== 'user' && scope !== 'project') {
+    throw new ModeDomainError(400, { error: 'invalid-scope', scope, message: 'scope must be "user" or "project"' });
   }
   if (scope !== 'project') return scope;
   if (settingsProjectScopes) return 'project';
   throw new ModeDomainError(409, {
     error: 'project-scope-unavailable',
-    message: 'Project-scoped agent definitions require settings.projectScopes.v1; use scope "global".',
+    message: 'Project-scoped agent definitions require settings.projectScopes.v1; use scope "user".',
   });
 };
 
@@ -300,91 +325,315 @@ const withTaskOverrides = async (records, overridesFor, directory) => {
   });
 };
 
+/** AgentDefinition (SDK task/types.ts:359-378) → OmpAgent record (02 §5.2). */
+const definitionToRecord = (agent) => ({
+  name: agent.name,
+  description: typeof agent.description === 'string' ? agent.description : '',
+  source: agent.source,
+  ...(agent.filePath ? { filePath: agent.filePath } : {}),
+  systemPrompt: typeof agent.systemPrompt === 'string' ? agent.systemPrompt : '',
+  ...(Array.isArray(agent.model) && agent.model.length > 0 ? { model: agent.model } : {}),
+  ...(agent.thinkingLevel !== undefined && agent.thinkingLevel !== null
+    ? { thinkingLevel: String(agent.thinkingLevel) }
+    : {}),
+  ...(Array.isArray(agent.tools) && agent.tools.length > 0 ? { tools: agent.tools } : {}),
+  ...(agent.spawns !== undefined && agent.spawns !== null ? { spawns: agent.spawns } : {}),
+  ...(agent.prewalk !== undefined && agent.prewalk !== null ? { prewalk: agent.prewalk } : {}),
+  ...(agent.advisor !== undefined && agent.advisor !== null ? { advisor: agent.advisor } : {}),
+  ...(agent.readSummarize !== undefined && agent.readSummarize !== null
+    ? { readSummarize: agent.readSummarize }
+    : {}),
+});
+
 /**
- * CRUD handlers for /omp/agent-definitions (02 §5.2, scoped to
- * `{ name, prompt, tools[], mode?, scope }` over the sidecar storage).
+ * Serialize a definition to the omp agent markdown shape: YAML frontmatter
+ * (name + description are required by the SDK parser,
+ * discovery/helpers.ts:256-260 parseAgentFields) with the body as the
+ * systemPrompt. Round-trips through `discoverAgents` (first-wins dedup,
+ * discovery.ts) — the re-discovered record, not this string, is the
+ * authority returned to clients.
+ */
+export function serializeAgentMarkdown(definition) {
+  const frontmatter = { name: definition.name, description: definition.description };
+  if (Array.isArray(definition.tools) && definition.tools.length > 0) frontmatter.tools = definition.tools;
+  if (Array.isArray(definition.model) && definition.model.length > 0) frontmatter.model = definition.model;
+  if (definition.thinkingLevel) frontmatter.thinkingLevel = definition.thinkingLevel;
+  if (definition.spawns !== undefined && definition.spawns !== null) frontmatter.spawns = definition.spawns;
+  if (definition.prewalk !== undefined && definition.prewalk !== null) frontmatter.prewalk = definition.prewalk;
+  if (definition.advisor !== undefined && definition.advisor !== null) frontmatter.advisor = definition.advisor;
+  if (definition.readSummarize !== undefined && definition.readSummarize !== null) {
+    frontmatter.readSummarize = definition.readSummarize;
+  }
+  const body = typeof definition.systemPrompt === 'string' ? definition.systemPrompt : '';
+  return `---\n${stringifyYaml(frontmatter)}---\n\n${body}\n`;
+}
+
+/**
+ * CRUD handlers for /omp/agent-definitions (02 §5.2, GAP-B03/B04): the omp
+ * agent discovery chain (project `.omp/agents` > user `~/.omp/agent/agents`
+ * > extension packages > bundled — SDK task/discovery.ts `discoverAgents`)
+ * is the read authority; writes land as agent markdown files in the user or
+ * project agents dir. Bundled and extension/plugin-owned definitions are
+ * read-only — overriding rides omp's first-wins shadowing (a same-name user
+ * definition), never mutation.
  *
- * @param {{ store: {load(): object[], save(records: object[]): void},
+ * @param {{ discover: (directory: string | null) => Promise<{ agents: object[], projectAgentsDir: string | null }>,
+ *           writeFile: (filePath: string, content: string) => Promise<void>,
+ *           deleteFile: (filePath: string) => Promise<boolean>,
+ *           userAgentsDir: string,
+ *           projectAgentsDirFor: (directory: string) => string,
  *           allowedTools?: Set<string>|Iterable<string>,
  *           settingsProjectScopes?: boolean,
- *           overridesFor?: (directory: string | null) => Promise<object | null> }} options
+ *           overridesFor?: OverridesFor }} options
  */
-export function createAgentDefinitionHandlers({ store, allowedTools, settingsProjectScopes = false, overridesFor } = {}) {
-  if (!store?.load || !store?.save) throw new TypeError('agent-definitions handlers require a store');
+export function createAgentDefinitionHandlers({
+  discover,
+  writeFile,
+  deleteFile,
+  userAgentsDir,
+  projectAgentsDirFor,
+  allowedTools,
+  settingsProjectScopes = false,
+  overridesFor,
+  onDefinitionsChanged,
+} = {}) {
+  if (typeof discover !== 'function' || typeof writeFile !== 'function' || typeof deleteFile !== 'function'
+    || typeof userAgentsDir !== 'string' || typeof projectAgentsDirFor !== 'function') {
+    throw new TypeError('agent-definitions handlers require discovery + file adapters');
+  }
   const allow = allowedTools instanceof Set ? allowedTools : new Set(allowedTools ?? Object.keys(BUILTIN_TOOLS ?? {}));
 
-  const find = (name) => store.load().find((record) => record.name === name) ?? null;
+  /**
+   * Hot-reload hook (02 §5.2 refresh): the SDK memoizes the create-time
+   * discovery per cwd (task/index.ts discoveryMemo) and every task tool
+   * advertises that list to the model. After a definition file changes,
+   * refreshAgentDiscovery must run in the engine process or live sessions
+   * keep describing the stale agent set. Swallowed failures never fail the
+   * mutation — dispatch-time discovery stays fresh regardless.
+   */
+  const definitionsChanged = async (directory) => {
+    if (typeof onDefinitionsChanged !== 'function') return;
+    try {
+      await onDefinitionsChanged(directory);
+    } catch (error) {
+      console.warn('[omp-host] agent discovery refresh failed:', error?.message ?? error);
+    }
+  };
+
+  const discoverSafe = async (directory) => {
+    try {
+      return await discover(directory);
+    } catch (error) {
+      throw new ModeDomainError(503, {
+        error: 'agent-discovery-failed',
+        message: error?.message ?? String(error),
+      });
+    }
+  };
+  const findAgent = async (directory, name) => {
+    const { agents } = await discoverSafe(directory);
+    return agents.find((agent) => agent?.name === name) ?? null;
+  };
+  const recordFor = async (directory, name) => {
+    const agent = await findAgent(directory, name);
+    if (!agent) {
+      throw new ModeDomainError(500, {
+        error: 'definition-not-parsed',
+        name,
+        message: 'the definition was written but did not parse back through discovery',
+      });
+    }
+    return definitionToRecord(agent);
+  };
+  const isManaged = (agent, directory) => {
+    if (!agent?.filePath) return false;
+    const resolved = path.resolve(agent.filePath);
+    return resolved.startsWith(path.resolve(userAgentsDir) + path.sep)
+      || resolved.startsWith(path.resolve(projectAgentsDirFor(directory ?? process.cwd())) + path.sep);
+  };
+  const assertWritable = (agent, directory) => {
+    if (agent.source === 'bundled') {
+      throw new ModeDomainError(409, {
+        error: 'bundled-read-only',
+        name: agent.name,
+        message: 'Bundled agents are read-only. Create a definition with the same name in the user or project scope to shadow it.',
+      });
+    }
+    if (!isManaged(agent, directory)) {
+      throw new ModeDomainError(409, {
+        error: 'definition-not-managed',
+        name: agent.name,
+        message: 'This definition is owned by an extension or plugin directory. Edit it at its source.',
+      });
+    }
+  };
+  const scopeDir = (scope, directory) =>
+    (scope === 'project' ? projectAgentsDirFor(directory ?? process.cwd()) : userAgentsDir);
+  const mergeDefinition = (existing, patch) => {
+    const merged = {
+      name: existing.name,
+      description: patch.description ?? existing.description,
+      systemPrompt: patch.systemPrompt !== undefined ? patch.systemPrompt : existing.systemPrompt,
+    };
+    for (const key of ['model', 'thinkingLevel', 'tools', 'spawns', 'prewalk', 'advisor', 'readSummarize']) {
+      const value = patch[key] !== undefined ? patch[key] : existing[key];
+      if (value !== null && value !== undefined) merged[key] = value;
+    }
+    return merged;
+  };
 
   return {
     async list(request, ctx) {
-      return json({ agents: await withTaskOverrides(store.load(), overridesFor, directoryParam(ctx)) });
+      const directory = directoryParam(ctx);
+      const { agents, projectAgentsDir } = await discoverSafe(directory);
+      return json({
+        agents: await withTaskOverrides(agents.map(definitionToRecord), overridesFor, directory),
+        projectAgentsDir: projectAgentsDir ?? null,
+      });
     },
 
     async get(request, ctx) {
-      const record = find(ctx?.params?.name);
-      if (!record) return json({ error: 'not-found' }, { status: 404 });
-      const [joined] = await withTaskOverrides([record], overridesFor, directoryParam(ctx));
+      const directory = directoryParam(ctx);
+      const agent = await findAgent(directory, ctx?.params?.name);
+      if (!agent) return json({ error: 'not-found' }, { status: 404 });
+      const [joined] = await withTaskOverrides([definitionToRecord(agent)], overridesFor, directory);
       return json(joined);
     },
 
     async create(request, ctx) {
+      const directory = directoryParam(ctx);
       const body = await readJsonBody(request);
       const definition = body?.definition ?? body;
       const name = validateName(definition?.name);
-      if (find(name)) {
+      if (await findAgent(directory, name)) {
         throw new ModeDomainError(409, { error: 'agent-definition-exists', name });
       }
       const scope = gateProjectScope(definitionScope(body), settingsProjectScopes);
       const patch = validateDefinitionPatch(definition, allow);
-      if (patch.prompt === undefined) {
-        throw new ModeDomainError(400, { error: 'invalid-prompt', message: 'prompt is required' });
+      if (patch.systemPrompt === undefined) {
+        throw new ModeDomainError(400, { error: 'invalid-prompt', message: 'systemPrompt is required' });
       }
-      const record = {
-        name,
-        prompt: patch.prompt,
-        tools: patch.tools ?? [],
-        ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.mode !== undefined ? { mode: patch.mode } : {}),
-        scope,
-      };
-      store.save([...store.load(), record]);
-      return json((await withTaskOverrides([record], overridesFor, directoryParam(ctx)))[0], { status: 201 });
+      if (patch.description === undefined) {
+        throw new ModeDomainError(400, { error: 'invalid-description', message: 'description is required' });
+      }
+      await writeFile(
+        path.join(scopeDir(scope, directory), `${name}.md`),
+        serializeAgentMarkdown(mergeDefinition({ name }, patch)),
+      );
+      const [joined] = await withTaskOverrides([await recordFor(directory, name)], overridesFor, directory);
+      await definitionsChanged(directory);
+      return json(joined, { status: 201 });
     },
 
     async update(request, ctx) {
+      const directory = directoryParam(ctx);
       const name = ctx?.params?.name;
-      const existing = find(name);
+      const existing = await findAgent(directory, name);
       if (!existing) throw new ModeDomainError(404, { error: 'not-found' });
+      assertWritable(existing, directory);
       const body = await readJsonBody(request);
       const renameTo = body?.renameTo !== undefined ? validateName(body.renameTo, { label: 'renameTo' }) : undefined;
-      if (renameTo !== undefined && renameTo !== name && find(renameTo)) {
+      if (renameTo !== undefined && renameTo !== name && await findAgent(directory, renameTo)) {
         throw new ModeDomainError(409, { error: 'agent-definition-exists', name: renameTo });
       }
       const patch = validateDefinitionPatch(body?.definition ?? {}, allow);
-      const scope = definitionScope(body) ?? existing.scope ?? 'global';
-      const nextScope = scope === existing.scope ? scope : gateProjectScope(scope, settingsProjectScopes);
-      const record = {
-        ...existing,
-        ...patch,
-        name: renameTo ?? existing.name,
-        tools: patch.tools ?? existing.tools ?? [],
-        scope: nextScope,
-      };
-      store.save(store.load().map((entry) => (entry.name === name ? record : entry)));
-      return json((await withTaskOverrides([record], overridesFor, directoryParam(ctx)))[0]);
+      const currentScope = existing.source === 'project' ? 'project' : 'user';
+      const nextScope = gateProjectScope(definitionScope(body) ?? currentScope, settingsProjectScopes);
+      const targetName = renameTo ?? name;
+      const nextPath = path.join(scopeDir(nextScope, directory), `${targetName}.md`);
+      await writeFile(nextPath, serializeAgentMarkdown({ ...mergeDefinition(existing, patch), name: targetName }));
+      if (existing.filePath && path.resolve(nextPath) !== path.resolve(existing.filePath)) {
+        await deleteFile(existing.filePath);
+      }
+      const [joined] = await withTaskOverrides(
+        [await recordFor(directory, targetName)],
+        overridesFor,
+        directory,
+      );
+      await definitionsChanged(directory);
+      return json(joined);
     },
 
     async remove(request, ctx) {
+      const directory = directoryParam(ctx);
       const name = ctx?.params?.name;
-      if (!find(name)) throw new ModeDomainError(404, { error: 'not-found' });
-      store.save(store.load().filter((entry) => entry.name !== name));
+      const existing = await findAgent(directory, name);
+      if (!existing) throw new ModeDomainError(404, { error: 'not-found' });
+      assertWritable(existing, directory);
+      await deleteFile(existing.filePath);
+      await definitionsChanged(directory);
+      return new Response(null, { status: 204 });
+    },
+
+    /** POST /omp/agent-definitions/refresh (02 §5.2): out-of-band file edits. */
+    async refresh(request, ctx) {
+      const directory = directoryParam(ctx);
+      await definitionsChanged(directory);
       return new Response(null, { status: 204 });
     },
   };
 }
 
+/**
+ * One-time sidecar → omp migration (02 §6.2): every
+ * `openchamber-agents.json` record becomes a user-scope worker `.md` plus a
+ * mirrored `OmpPersona`, so legacy `meta.agent` sessions keep resolving
+ * (D-B2: the worker file and the top-level persona are separate resources).
+ * A name that already exists in discovery is skipped (first-wins). Any
+ * failure keeps the sidecar for an idempotent retry on the next boot.
+ *
+ * @param {{ loadRecords: () => object[],
+ *           agentExists: (name: string) => Promise<boolean>,
+ *           writeAgent: (record: object) => Promise<void>,
+ *           personaExists: (name: string) => boolean,
+ *           mirrorPersona: (record: object) => void,
+ *           markDone: () => void,
+ *           log?: (message: string, error?: unknown) => void }} options
+ * @returns {Promise<{ migrated: number, skipped: number, failed?: string }>}
+ */
+export async function migrateSidecarAgents({
+  loadRecords,
+  agentExists,
+  writeAgent,
+  personaExists,
+  mirrorPersona,
+  markDone,
+  log = () => {},
+} = {}) {
+  let records = [];
+  try {
+    records = loadRecords();
+  } catch (error) {
+    log('sidecar read failed; leaving migration pending', error);
+    return { migrated: 0, skipped: 0 };
+  }
+  if (!Array.isArray(records)) records = [];
+  let migrated = 0;
+  let skipped = 0;
+  for (const record of records) {
+    if (!record || typeof record.name !== 'string' || !record.name.trim()) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      if (await agentExists(record.name)) {
+        skipped += 1;
+      } else {
+        await writeAgent(record);
+      }
+      if (!personaExists(record.name)) mirrorPersona(record);
+      migrated += 1;
+    } catch (error) {
+      log(`sidecar migration stopped at "${record.name}"; keeping the sidecar for retry`, error);
+      return { migrated, skipped, failed: record.name };
+    }
+  }
+  markDone();
+  return { migrated, skipped };
+}
+
 // ---------------------------------------------------------------------------
-// 4. Personas (02 §5.2a, master D6-R12)
+// 3. Personas (02 §5.2a, master D6-R12)
 // ---------------------------------------------------------------------------
 
 /**
@@ -503,7 +752,7 @@ export function personaFor(meta, personas) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Mode tracker (02 §5.4)
+// 4. Mode tracker (02 §5.4)
 // ---------------------------------------------------------------------------
 
 /**
@@ -828,7 +1077,7 @@ export function createModeTracker({ publish, appendEntry, now = Date.now } = {})
 }
 
 // ---------------------------------------------------------------------------
-// 6. Plan review bridge (02 §5.5)
+// 5. Plan review bridge (02 §5.5)
 // ---------------------------------------------------------------------------
 
 const SUPERSEDED_RESULT = {
@@ -980,7 +1229,7 @@ export function planReviewBridge({ publish, prepare, onReview, now = Date.now } 
 }
 
 // ---------------------------------------------------------------------------
-// 7. Modes domain + route mounting
+// 6. Modes domain + route mounting
 // ---------------------------------------------------------------------------
 
 const directoryParam = (ctx) => {
@@ -1011,7 +1260,7 @@ export function createModesDomain({
   publishFor,
   appendFor,
   sessionContextFor,
-  agentDefinitionStore,
+  agentDefinitions: agentDefinitionsOptions,
   personasStore,
   allowedTools,
   settingsProjectScopes = false,
@@ -1063,8 +1312,13 @@ export function createModesDomain({
     trackers.delete(key);
   };
 
-  const agentDefinitions = agentDefinitionStore
-    ? createAgentDefinitionHandlers({ store: agentDefinitionStore, allowedTools, settingsProjectScopes, overridesFor })
+  const agentDefinitions = agentDefinitionsOptions
+    ? createAgentDefinitionHandlers({
+      ...agentDefinitionsOptions,
+      allowedTools,
+      settingsProjectScopes,
+      overridesFor,
+    })
     : null;
   const personas = personasStore
     ? createPersonaHandlers({ store: personasStore, allowedTools })
@@ -1180,6 +1434,13 @@ export function registerModesDomainRoutes(route, domain, { features = ompFeature
     route('DELETE', '/omp/agent-definitions/{name}', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
         return await domain.agentDefinitions.remove(request, ctx);
+      } catch (error) {
+        return toResponse(error);
+      }
+    }));
+    route('POST', '/omp/agent-definitions/refresh', gated('agentDefinitions.v1', async (request, ctx) => {
+      try {
+        return await domain.agentDefinitions.refresh(request, ctx);
       } catch (error) {
         return toResponse(error);
       }

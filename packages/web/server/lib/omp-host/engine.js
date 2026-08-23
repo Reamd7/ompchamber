@@ -9,6 +9,7 @@
 // into wire events on the host bus.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -19,6 +20,8 @@ import {
   createAgentSession,
   discoverAuthStorage,
 } from '@oh-my-pi/pi-coding-agent';
+import { discoverAgents, refreshAgentDiscovery } from '@oh-my-pi/pi-coding-agent/task';
+import { getConfigDirs } from '@oh-my-pi/pi-coding-agent/config';
 import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
 import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
@@ -38,13 +41,28 @@ import {
 } from './projection.js';
 import { createSettingsStore } from './domain-models.js';
 import { createDomainDialogs } from './domain-dialogs.js';
+import {
+  ModeDomainError,
+  createModesDomain,
+  mapBackedStore,
+  migrateSidecarAgents,
+  personaFor,
+  serializeAgentMarkdown,
+} from './domain-modes.js';
 import { createDomainChrome } from './domain-chrome.js';
-import { createModesDomain, mapBackedStore } from './domain-modes.js';
 import { ompFeatures } from './omp-parity.js';
 import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
 
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
-const MAX_LIVE_SESSIONS = 12;
+
+/**
+ * Session-level persona key (02 §5.1 D-B3): unset and the deleted
+ * build/plan pair map to the standard session; any other name is a persona.
+ */
+const personaKeyFor = (name) => (!name || name === 'build' || name === 'plan' ? 'standard' : name);
+
+/** Wire `agent` projection: the standard session keeps the legacy 'build' id. */
+const wireAgentFor = (personaKey) => (personaKey === 'standard' ? 'build' : personaKey);
 
 const textOfContent = (content) => {
   if (typeof content === 'string') return content;
@@ -78,7 +96,6 @@ export class OmpHostEngine {
      * @type {Map<string, string>}
      */
     this.wireIdOverrides = new Map();
-    this.customAgents = new Map();
     /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
     this.personas = new Map();
     /** Per-directory keyed Settings store (spec 06 §5.1, master R6). */
@@ -118,7 +135,30 @@ export class OmpHostEngine {
           return undefined;
         }
       },
-      agentDefinitionStore: mapBackedStore(this.customAgents, () => this.saveCustomAgents()),
+      // omp agent discovery chain as the definitions authority (02 §5.2):
+      // reads come from discoverAgents (project > user > extensions >
+      // bundled), writes are .md files in the user/project agents dirs.
+      agentDefinitions: {
+        discover: (directory) => discoverAgents(directory ?? process.cwd()),
+        writeFile: async (filePath, content) => {
+          await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.promises.writeFile(filePath, content, 'utf8');
+        },
+        deleteFile: async (filePath) => {
+          try {
+            await fs.promises.unlink(filePath);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        // Hot reload (02 §5.2 refresh): the SDK memoizes create-time discovery
+        // per cwd and every task tool advertises that list to the model;
+        // refreshAgentDiscovery republishes the fresh set to live sessions.
+        onDefinitionsChanged: (directory) => refreshAgentDiscovery(directory ?? process.cwd()),
+        userAgentsDir: this.#userAgentsDir(),
+        projectAgentsDirFor: (directory) => path.join(path.resolve(directory), '.omp', 'agents'),
+      },
       personasStore: mapBackedStore(this.personas, () => this.savePersonas()),
       allowedTools: new Set(Object.keys(BUILTIN_TOOLS ?? {})),
       settingsProjectScopes: true,
@@ -185,8 +225,12 @@ export class OmpHostEngine {
       this.authStorage = await discoverAuthStorage(this.registry.agentDir);
       this.modelRegistry = new ModelRegistry(this.authStorage);
       await this.modelRegistry.refresh();
-      this.#loadCustomAgents();
       this.#loadPersonas();
+      // Sidecar → omp agent migration (02 §6.2) runs before the request
+      // surface opens; failure keeps the sidecar and never blocks boot.
+      await this.#migrateAgentsSidecar().catch((error) => {
+        console.warn('[omp-host] agent sidecar migration failed:', error?.message ?? error);
+      });
       // Per-directory keyed Settings store (spec 06 §5.1, master R6). The
       // boot instance doubles as the global-write executor; sessions inject
       // their directory's instance via options.settings (sdk.ts:1273-1275).
@@ -312,37 +356,81 @@ export class OmpHostEngine {
     return this.settingsStore;
   }
 
-  #metaConfigPath() {
-    return path.join(this.registry.registryRoot, 'openchamber-agents.json');
-  }
-
-  #loadCustomAgents() {
+  /**
+   * omp user-scope agents dir (SDK discovery order: `~/.omp/agent/agents`,
+   * pi-utils getConfigDirs with source '.omp'). Falls back to the derived
+   * path when config dirs are unavailable.
+   */
+  #userAgentsDir() {
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.#metaConfigPath(), 'utf8'));
-      for (const agent of Array.isArray(parsed?.agents) ? parsed.agents : []) {
-        if (agent && typeof agent.name === 'string') this.customAgents.set(agent.name, agent);
-      }
+      const entry = getConfigDirs('agents', { project: false })
+        .find((dir) => dir?.source === '.omp' && typeof dir?.path === 'string');
+      if (entry) return entry.path;
     } catch {
-      // No custom agents yet.
+      // Derived fallback below.
     }
+    return path.join(os.homedir(), '.omp', 'agent', 'agents');
   }
 
-  saveCustomAgents() {
-    fs.mkdirSync(this.registry.registryRoot, { recursive: true });
-    fs.writeFileSync(
-      this.#metaConfigPath(),
-      JSON.stringify({ agents: [...this.customAgents.values()] }, null, 2),
-    );
-  }
-
-  upsertCustomAgent(agent) {
-    this.customAgents.set(agent.name, agent);
-    this.saveCustomAgents();
-  }
-
-  deleteCustomAgent(name) {
-    this.customAgents.delete(name);
-    this.saveCustomAgents();
+  /**
+   * One-time sidecar → omp migration (02 §6.2): each legacy
+   * `openchamber-agents.json` record becomes a user-scope worker `.md`
+   * (frontmatter description/tools, body prompt) plus a mirrored persona so
+   * existing `meta.agent` sessions keep resolving. Runs before the request
+   * surface opens; any failure keeps the sidecar for an idempotent retry.
+   */
+  async #migrateAgentsSidecar() {
+    const sidecarPath = path.join(this.registry.registryRoot, 'openchamber-agents.json');
+    const userAgentsDir = this.#userAgentsDir();
+    let done = false;
+    const result = await migrateSidecarAgents({
+      loadRecords: () => {
+        const parsed = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+        return Array.isArray(parsed?.agents) ? parsed.agents : [];
+      },
+      agentExists: async (name) => {
+        const { agents } = await discoverAgents(process.cwd());
+        return agents.some((agent) => agent?.name === name);
+      },
+      writeAgent: async (record) => {
+        await fs.promises.mkdir(userAgentsDir, { recursive: true });
+        await fs.promises.writeFile(
+          path.join(userAgentsDir, `${record.name}.md`),
+          serializeAgentMarkdown({
+            name: record.name,
+            description: typeof record.description === 'string' && record.description.trim()
+              ? record.description
+              : record.name,
+            systemPrompt: typeof record.prompt === 'string' ? record.prompt : '',
+            ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {}),
+          }),
+          'utf8',
+        );
+      },
+      personaExists: (name) => this.personas.has(name),
+      mirrorPersona: (record) => {
+        this.personas.set(record.name, {
+          name: record.name,
+          ...(record.description ? { description: record.description } : {}),
+          ...(typeof record.prompt === 'string' && record.prompt ? { systemPrompt: record.prompt } : {}),
+          ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {}),
+        });
+      },
+      markDone: () => {
+        try {
+          fs.renameSync(sidecarPath, `${sidecarPath}.migrated-${Date.now()}`);
+          this.savePersonas();
+          done = true;
+        } catch (error) {
+          console.warn('[omp-host] sidecar migration markDone failed:', error?.message ?? error);
+        }
+      },
+      log: (message, error) => console.warn('[omp-host] agent sidecar migration:', message, error ?? ''),
+    });
+    if (done && result.migrated > 0) {
+      console.log(`[omp-host] migrated ${result.migrated} sidecar agent(s) to ${userAgentsDir} (+persona mirrors)`);
+    }
+    return result;
   }
 
   #sweepIdleSessions() {
@@ -400,7 +488,9 @@ export class OmpHostEngine {
       directory: normalizeDirectoryKey(info.cwd || directoryKey),
       parentID: meta?.parentID,
       title: meta?.title ?? info.title ?? 'Untitled',
-      ...(meta?.agent ? { agent: meta.agent } : {}),
+      ...(personaKeyFor(meta?.persona ?? meta?.agent) !== 'standard'
+        ? { agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)) }
+        : {}),
       ...(selector ? { model: { id: selector.modelID, providerID: selector.providerID } } : {}),
       ...(meta?.metadata ? { metadata: meta.metadata } : {}),
       time: {
@@ -470,7 +560,9 @@ export class OmpHostEngine {
       timeUpdated: now,
       ...(title ? { title } : {}),
       ...(parentID ? { parentID } : {}),
-      ...(agent ? { agent } : {}),
+      // The wire `agent` param is a persona name (or the legacy build/plan
+      // ids, which normalize away); store the normalized persona key.
+      ...(agent && personaKeyFor(agent) !== 'standard' ? { persona: personaKeyFor(agent) } : {}),
       ...(model ? { model } : {}),
     });
     await manager.close();
@@ -624,7 +716,7 @@ export class OmpHostEngine {
             return projectConversation(live.agentSession.messages, {
               sessionID,
               directory: directoryKey,
-              agent: meta?.agent ?? 'build',
+              agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
               wireIdFor,
             });
           }
@@ -633,7 +725,7 @@ export class OmpHostEngine {
           return projectConversation(fileMessages, {
             sessionID,
             directory: directoryKey,
-            agent: meta?.agent ?? 'build',
+            agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
             wireIdFor,
           });
         }
@@ -645,7 +737,7 @@ export class OmpHostEngine {
       return projectConversation(live.agentSession.messages, {
         sessionID,
         directory: directoryKey,
-        agent: meta?.agent ?? 'build',
+        agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
         wireIdFor,
       });
     }
@@ -704,9 +796,14 @@ export class OmpHostEngine {
     const model = this.#resolveModel(
       meta?.model ? splitModelSelector(meta.model) : undefined,
     );
-    const customAgent = meta?.agent && meta.agent !== 'build' && meta.agent !== 'plan'
-      ? this.customAgents.get(meta.agent)
-      : null;
+    // Persona overlay (02 §5.1 D-B2): 'build'/'plan'/unset → standard
+    // session; a persona name → top-level systemPrompt/toolset override;
+    // unknown name (deleted persona) → degrade to standard with a notice.
+    const personaState = personaFor(meta, this.personas);
+    if (personaState.status === 'missing') {
+      console.warn(`[omp-host] session ${sessionId} references unknown persona "${personaState.name}"; using a standard session`);
+    }
+    const persona = personaState.status === 'active' ? personaState.persona : null;
     const agentRegistry = new AgentRegistry();
     const { session, setToolUIContext } = await createAgentSession({
       cwd: directoryKey,
@@ -734,32 +831,24 @@ export class OmpHostEngine {
         this.#sessionDirFor(directoryKey),
       ),
       ...(model ? { model } : {}),
-      // P0 defect fix (02 §4/spec): SDK PlanYolo is `{target: Model,
-      // thinkingLevel?}` — the old `{autoApproveOnResolve}` shape was an
-      // unknown field, silently degrading plan sessions to read-only and
-      // throwing on the xd://propose approval path. With no pinned model we
-      // omit planYolo (plain plan mode, fail-closed) rather than guessing a
-      // target.
-      ...(meta?.agent === 'plan' && model ? { planYolo: { target: model } } : {}),
-      ...(customAgent
-        ? {
-            systemPrompt: customAgent.prompt,
-            ...(Array.isArray(customAgent.tools) && customAgent.tools.length > 0
-              ? { toolNames: customAgent.tools }
-              : {}),
-          }
+      // Persona overlay (02 §5.1 D-B2): constructor-time systemPrompt and
+      // toolset come from the persona resource; the deleted build/plan
+      // agent pair and the planYolo mapping never reach createAgentSession
+      // (plan mode is a session mode driven by the mode endpoints, §5.8).
+      ...(persona?.systemPrompt ? { systemPrompt: persona.systemPrompt } : {}),
+      ...(Array.isArray(persona?.tools) && persona.tools.length > 0
+        ? { toolNames: persona.tools }
         : {}),
     });
     const hostSession = existing ?? {
       sessionId,
       directory: directoryKey,
       agentSession: null,
-      unsubscribe: null,
+      currentPersona: personaKeyFor(meta?.persona ?? meta?.agent),
       projector: null,
       lastTouched: Date.now(),
       pendingUserWireId: null,
       lastUserWireId: null,
-      currentAgent: meta?.agent ?? 'build',
       // Transcript roles without dedicated SDK events (custom/dividers) are
       // tail-synced at agent_end / compaction_end; this set remembers what
       // was already emitted so syncs are idempotent (spec 05 §5.5).
@@ -915,7 +1004,7 @@ export class OmpHostEngine {
     const { sessionId, directory } = hostSession;
     const projected = projectCustomMessage(message, {
       sessionID: sessionId,
-      agent: hostSession.currentAgent,
+      agent: wireAgentFor(hostSession.currentPersona),
       parentID: hostSession.lastUserWireId || undefined,
     });
     const text = textOfContent(message.content);
@@ -968,7 +1057,7 @@ export class OmpHostEngine {
       if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
         const projected = projectDividerMessage(message, {
           sessionID: hostSession.sessionId,
-          agent: hostSession.currentAgent,
+          agent: wireAgentFor(hostSession.currentPersona),
           parentID: hostSession.lastUserWireId || undefined,
         });
         this.bus.emit('message.updated', { sessionID: hostSession.sessionId, info: projected.info }, hostSession.directory);
@@ -1016,7 +1105,7 @@ export class OmpHostEngine {
         hostSession.projector = new StreamProjector({
           sessionID: sessionId,
           directory,
-          agent: hostSession.currentAgent,
+          agent: wireAgentFor(hostSession.currentPersona),
           emit: (type, properties, dir) => this.bus.emit(type, properties, dir),
         });
         hostSession.projector.setParentID(hostSession.lastUserWireId ?? '');
@@ -1452,16 +1541,27 @@ export class OmpHostEngine {
     }
 
     const meta = this.registry.get(directoryKey, sessionID);
-    const agentName = agent ?? meta?.agent ?? 'build';
-    if (agentName !== hostSession.currentAgent) {
-      // Agent switch: the agent definition shapes the session's system prompt
-      // and toolset at construction, so rebuild the AgentSession over the same
-      // transcript.
+    // Persona switch (02 §5.1 D-B3, R2-M3): explicit session-level switch —
+    // the wire `agent` parameter and registry meta normalize through
+    // personaKeyFor, so the deleted build/plan values and unset all mean
+    // "standard" and never trigger a rebuild. A switch to a persona that no
+    // longer exists is rejected before any state changes: the session keeps
+    // its current persona and the message is not dispatched.
+    const nextPersona = personaKeyFor(agent ?? meta?.persona ?? meta?.agent);
+    if (nextPersona !== 'standard' && !this.personas.has(nextPersona)) {
+      throw new ModeDomainError(404, { error: 'persona-not-found', name: nextPersona });
+    }
+    if (nextPersona !== hostSession.currentPersona) {
+      // The persona shapes the session's system prompt and toolset at
+      // construction, so rebuild the AgentSession over the same transcript.
       this.#disposeSession(hostSession);
-      this.registry.update(directoryKey, sessionID, { agent: agentName });
+      this.registry.update(directoryKey, sessionID, {
+        persona: nextPersona === 'standard' ? undefined : nextPersona,
+        agent: undefined,
+      });
       const rebuilt = await this.#materialize(sessionID, directoryKey);
       if (!rebuilt) return null;
-      return this.prompt({ sessionID, directory: directoryKey, text, model, agent: agentName, images, delivery, messageID });
+      return this.prompt({ sessionID, directory: directoryKey, text, model, agent: nextPersona, images, delivery, messageID });
     }
 
     const content = [];
@@ -1481,7 +1581,7 @@ export class OmpHostEngine {
       },
       {
         sessionID,
-        agent: agentName,
+        agent: wireAgentFor(nextPersona),
         model: session.model,
         ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {}),
       },
@@ -1588,6 +1688,7 @@ export class OmpHostEngine {
       title: meta?.title ? `${meta.title} (fork)` : 'Forked session',
       timeCreated: now,
       timeUpdated: now,
+      ...(meta?.persona ? { persona: meta.persona } : {}),
       ...(meta?.agent ? { agent: meta.agent } : {}),
       ...(meta?.model ? { model: meta.model } : {}),
     });

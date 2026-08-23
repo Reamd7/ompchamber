@@ -653,28 +653,47 @@ export const createOmpModesAPI = (apiOptions: OmpJsonApiOptions = {}): OmpModesA
 
 const AgentDefinitionRecordSchema = z.looseObject({
   name: z.string().min(1),
+  description: z.string(),
+  /** Definition layer (omp discovery chain; bundled is read-only). */
+  source: z.enum(['project', 'user', 'bundled']),
+  filePath: z.string().optional(),
   /** Definition body — the worker's system prompt (markdown). */
-  prompt: z.string(),
-  tools: z.array(z.string()).default([]),
-  description: z.string().optional(),
-  /** omp worker modes; 'primary' is the deleted build/plan concept (02 §5.3). */
-  mode: z.string().optional(),
-  /** Storage layer of the definition ('global' | 'project'). */
-  scope: z.string().optional(),
+  systemPrompt: z.string(),
+  /** Model patterns, e.g. ["@smol", "anthropic/*:high"]. */
+  model: z.array(z.string()).optional(),
+  thinkingLevel: z.string().optional(),
+  tools: z.array(z.string()).optional(),
+  spawns: z.union([z.array(z.string()), z.literal('*')]).optional(),
+  prewalk: z.union([z.boolean(), z.string()]).optional(),
+  advisor: z.union([z.boolean(), z.string()]).optional(),
+  readSummarize: z.boolean().optional(),
+  /** Settings-level task.* override projection (02 §5.2). */
+  disabled: z.boolean().optional(),
+  modelOverride: z.string().optional(),
+  prewalkOverride: z.string().optional(),
+  advisorOverride: z.string().optional(),
 });
 
-const AgentDefinitionsListSchema = z.object({ agents: z.array(AgentDefinitionRecordSchema) });
+const AgentDefinitionsListSchema = z.object({
+  agents: z.array(AgentDefinitionRecordSchema),
+  projectAgentsDir: z.string().nullable(),
+});
 
-/** GET /api/omp/agent-definitions record (scoped sidecar contract, domain-modes.js). */
+/** GET /api/omp/agent-definitions record (OmpAgent, 02 §5.2 discovery contract). */
 export type OmpAgentDefinitionRecord = z.infer<typeof AgentDefinitionRecordSchema>;
 
-/** POST/PUT definition body (server contract: name, prompt, tools?, description?, mode?). */
+/** POST/PUT definition body (omp AgentDefinition frontmatter fields). */
 export interface OmpAgentDefinitionInput {
   name: string;
-  prompt: string;
-  description?: string;
+  description: string;
+  systemPrompt: string;
+  model?: string[];
+  thinkingLevel?: string;
   tools?: string[];
-  mode?: 'subagent' | 'all';
+  spawns?: string[] | '*';
+  prewalk?: boolean | string;
+  advisor?: boolean | string;
+  readSummarize?: boolean;
 }
 
 const PersonaSchema = z.looseObject({
@@ -772,14 +791,22 @@ const readCrudDeleteResponse = async (response: Response): Promise<OmpCrudDelete
 };
 
 export interface OmpAgentDefinitionsAPI {
-  list(): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord[]>>;
-  get(name: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord>>;
-  create(input: OmpAgentDefinitionInput & { scope?: 'global' | 'project' }): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
+  list(directory?: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord[]>>;
+  get(name: string, directory?: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord>>;
+  create(
+    input: OmpAgentDefinitionInput & { scope?: 'user' | 'project' },
+    directory?: string,
+  ): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
   update(
     name: string,
-    patch: { definition?: Partial<OmpAgentDefinitionInput>; renameTo?: string; scope?: 'global' | 'project' },
+    patch: {
+      definition?: Partial<OmpAgentDefinitionInput>;
+      renameTo?: string;
+      scope?: 'user' | 'project';
+    },
+    directory?: string,
   ): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
-  remove(name: string): Promise<OmpCrudDeleteResult>;
+  remove(name: string, directory?: string): Promise<OmpCrudDeleteResult>;
 }
 
 const parseAgentDefinitionRecord = (value: unknown): OmpAgentDefinitionRecord | null => {
@@ -787,37 +814,53 @@ const parseAgentDefinitionRecord = (value: unknown): OmpAgentDefinitionRecord | 
   return parsed.success ? parsed.data : null;
 };
 
+const definitionBody = (input: OmpAgentDefinitionInput): Record<string, unknown> => ({
+  name: input.name,
+  description: input.description,
+  systemPrompt: input.systemPrompt,
+  ...(input.model !== undefined ? { model: input.model } : {}),
+  ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+  ...(input.tools !== undefined ? { tools: input.tools } : {}),
+  ...(input.spawns !== undefined ? { spawns: input.spawns } : {}),
+  ...(input.prewalk !== undefined ? { prewalk: input.prewalk } : {}),
+  ...(input.advisor !== undefined ? { advisor: input.advisor } : {}),
+  ...(input.readSummarize !== undefined ? { readSummarize: input.readSummarize } : {}),
+});
+
+const withDirectory = (options: RuntimeFetchOptions, directory?: string): RuntimeFetchOptions =>
+  (directory ? { ...options, headers: { 'x-opencode-directory': directory, ...(options.headers ?? {}) } } : options);
+
 export const createOmpAgentDefinitionsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAgentDefinitionsAPI => {
   const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
   return {
-    list: () => ompFetchJson(
+    list: (directory) => ompFetchJson(
       fetchImpl,
       OMP_ENDPOINTS.agentDefinitions,
       (value) => {
         const parsed = AgentDefinitionsListSchema.safeParse(value);
         return parsed.success ? parsed.data.agents : null;
       },
+      withDirectory({}, directory),
     ),
-    get: (name) => ompFetchJson(
+    get: (name, directory) => ompFetchJson(
       fetchImpl,
       OMP_ENDPOINTS.agentDefinition(name),
       parseAgentDefinitionRecord,
+      withDirectory({}, directory),
     ),
-    async create(input) {
+    async create(input, directory) {
       let response: Response;
       try {
         response = await fetchImpl(OMP_ENDPOINTS.agentDefinitions, {
           method: 'POST',
-          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            ...(directory ? { 'x-opencode-directory': directory } : {}),
+          },
           body: JSON.stringify({
             ...(input.scope !== undefined ? { scope: input.scope } : {}),
-            definition: {
-              name: input.name,
-              prompt: input.prompt,
-              ...(input.description !== undefined ? { description: input.description } : {}),
-              ...(input.tools !== undefined ? { tools: input.tools } : {}),
-              ...(input.mode !== undefined ? { mode: input.mode } : {}),
-            },
+            definition: definitionBody(input),
           }),
         });
       } catch {
@@ -825,24 +868,18 @@ export const createOmpAgentDefinitionsAPI = (apiOptions: OmpJsonApiOptions = {})
       }
       return readCrudMutationResponse(response, parseAgentDefinitionRecord);
     },
-    async update(name, patch) {
+    async update(name, patch, directory) {
       let response: Response;
       try {
         response = await fetchImpl(OMP_ENDPOINTS.agentDefinition(name), {
           method: 'PUT',
-          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            ...(directory ? { 'x-opencode-directory': directory } : {}),
+          },
           body: JSON.stringify({
-            ...(patch.definition !== undefined
-              ? {
-                  definition: {
-                    ...(patch.definition.name !== undefined ? { name: patch.definition.name } : {}),
-                    ...(patch.definition.prompt !== undefined ? { prompt: patch.definition.prompt } : {}),
-                    ...(patch.definition.description !== undefined ? { description: patch.definition.description } : {}),
-                    ...(patch.definition.tools !== undefined ? { tools: patch.definition.tools } : {}),
-                    ...(patch.definition.mode !== undefined ? { mode: patch.definition.mode } : {}),
-                  },
-                }
-              : {}),
+            ...(patch.definition !== undefined ? { definition: definitionBody(patch.definition as OmpAgentDefinitionInput) } : {}),
             ...(patch.renameTo !== undefined ? { renameTo: patch.renameTo } : {}),
             ...(patch.scope !== undefined ? { scope: patch.scope } : {}),
           }),
@@ -852,10 +889,13 @@ export const createOmpAgentDefinitionsAPI = (apiOptions: OmpJsonApiOptions = {})
       }
       return readCrudMutationResponse(response, parseAgentDefinitionRecord);
     },
-    async remove(name) {
+    async remove(name, directory) {
       let response: Response;
       try {
-        response = await fetchImpl(OMP_ENDPOINTS.agentDefinition(name), { method: 'DELETE' });
+        response = await fetchImpl(OMP_ENDPOINTS.agentDefinition(name), {
+          method: 'DELETE',
+          ...(directory ? { headers: { 'x-opencode-directory': directory } } : {}),
+        });
       } catch {
         return { ok: false, unavailable: false, kind: 'error' };
       }

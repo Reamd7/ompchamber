@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { useAgentsStore, getConfigDirectory, type AgentConfig, type AgentMutationResult, type AgentScope } from '@/stores/useAgentsStore';
+import { useAgentsStore, getConfigDirectory, type AgentConfig, type AgentMutationResult, type AgentScope, type AgentWithExtras } from '@/stores/useAgentsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ModelSelector } from './ModelSelector';
 import { useI18n } from '@/lib/i18n';
@@ -15,6 +15,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
   SettingsSection,
+  SettingsCheckboxRow,
   SettingsFieldRow,
   SettingsStackedField,
   SettingsChipGroup,
@@ -42,6 +43,18 @@ import {
   TASK_OVERRIDE_SETTING_KEYS,
   type TaskOverrideRecords,
 } from './agentTaskOverrides';
+import {
+  agentSourceOf,
+  formatCsvValue,
+  ompFormStateFrom,
+  ompFormStatesEqual,
+  parseCsvValue,
+  patternModeOf,
+  patternValueFrom,
+  OMP_THINKING_LEVELS,
+  type OmpAgentFormState,
+  type PatternMode,
+} from './ompAgentForm';
 
 type AgentVariantProvider = {
   id: string;
@@ -315,6 +328,14 @@ export const AgentsPage: React.FC = () => {
   const selectedAgent = selectedAgentName ? getAgentByName(selectedAgentName) : null;
   const isNewAgent = Boolean(agentDraft && agentDraft.name === selectedAgentName && !selectedAgent);
 
+  // omp mode: the agent row carries the discovery contract (02 §5.2/§5.3);
+  // bundled definitions are read-only, overridable by a same-name copy.
+  const ompSource = ompAgentDefinitions && selectedAgent
+    ? agentSourceOf(selectedAgent as AgentWithExtras)
+    : null;
+  const isBundledAgent = ompSource === 'bundled';
+  const isReadOnly = ompAgentDefinitions && !isNewAgent && isBundledAgent;
+
   const [draftName, setDraftName] = React.useState('');
   const [draftScope, setDraftScope] = React.useState<AgentScope>('user');
   const [description, setDescription] = React.useState('');
@@ -325,6 +346,7 @@ export const AgentsPage: React.FC = () => {
   const [topP, setTopP] = React.useState<number | undefined>(undefined);
   const [prompt, setPrompt] = React.useState('');
   const [tools, setTools] = React.useState('');
+  const [ompForm, setOmpForm] = React.useState<OmpAgentFormState>(ompFormStateFrom(null));
   const [isSaving, setIsSaving] = React.useState(false);
   const initialStateRef = React.useRef<{
     draftName: string;
@@ -337,6 +359,7 @@ export const AgentsPage: React.FC = () => {
     topP: number | undefined;
     prompt: string;
     tools: string;
+    ompForm: OmpAgentFormState;
   } | null>(null);
 
   const variantOptions = React.useMemo(() => getVariantOptionsForModel(providers, model), [model, providers]);
@@ -351,6 +374,20 @@ export const AgentsPage: React.FC = () => {
     if (isNewAgent && agentDraft) {
       const draftNameValue = agentDraft.name || '';
       const draftScopeValue = agentDraft.scope || 'user';
+      const ompFormValue: OmpAgentFormState = {
+        ...ompFormStateFrom(null),
+        description: agentDraft.description ?? '',
+        systemPrompt: agentDraft.prompt ?? '',
+        tools: formatCsvValue(agentDraft.tools),
+        modelPatterns: formatCsvValue(agentDraft.modelPatterns),
+        thinkingLevel: agentDraft.thinkingLevel ?? '',
+        spawns: agentDraft.spawns === '*' ? '*' : formatCsvValue(agentDraft.spawns as string[] | undefined),
+        prewalkMode: patternModeOf(agentDraft.prewalk),
+        prewalkPattern: typeof agentDraft.prewalk === 'string' ? agentDraft.prewalk : '',
+        advisorMode: patternModeOf(agentDraft.advisor),
+        advisorPattern: typeof agentDraft.advisor === 'string' ? agentDraft.advisor : '',
+        readSummarize: agentDraft.readSummarize ?? false,
+      };
       const descriptionValue = agentDraft.description || '';
       const modeValue = agentDraft.mode || 'subagent';
       const modelValue = agentDraft.model || '';
@@ -370,6 +407,7 @@ export const AgentsPage: React.FC = () => {
       setTopP(topPValue);
       setPrompt(promptValue);
       setTools(toolsValue);
+      setOmpForm(ompFormValue);
 
       initialStateRef.current = {
         draftName: draftNameValue,
@@ -382,11 +420,13 @@ export const AgentsPage: React.FC = () => {
         topP: topPValue,
         prompt: promptValue,
         tools: toolsValue,
+        ompForm: ompFormValue,
       };
       return;
     }
 
     if (selectedAgent && selectedAgentName === selectedAgent.name) {
+      const ompFormValue = ompFormStateFrom(selectedAgent as AgentWithExtras);
       const descriptionValue = selectedAgent.description || '';
       const modeValue = selectedAgent.mode || 'subagent';
       const modelValue = selectedAgent.model?.providerID && selectedAgent.model?.modelID
@@ -407,6 +447,7 @@ export const AgentsPage: React.FC = () => {
       setTopP(topPValue);
       setPrompt(promptValue);
       setTools(toolsValue);
+      setOmpForm(ompFormValue);
 
       initialStateRef.current = {
         draftName: '',
@@ -419,6 +460,7 @@ export const AgentsPage: React.FC = () => {
         topP: topPValue,
         prompt: promptValue,
         tools: toolsValue,
+        ompForm: ompFormValue,
       };
     }
   }, [agentDraft, isNewAgent, selectedAgent, selectedAgentName]);
@@ -434,6 +476,10 @@ export const AgentsPage: React.FC = () => {
       if (draftScope !== initial.draftScope) return true;
     }
 
+    if (ompAgentDefinitions) {
+      return !ompFormStatesEqual(ompForm, initial.ompForm);
+    }
+
     if (description !== initial.description) return true;
     if (mode !== initial.mode) return true;
     if (model !== initial.model) return true;
@@ -441,7 +487,7 @@ export const AgentsPage: React.FC = () => {
     if (tools !== initial.tools) return true;
 
     return false;
-  }, [description, draftName, draftScope, isNewAgent, mode, model, prompt, temperature, tools, topP, variant]);
+  }, [description, draftName, draftScope, isNewAgent, mode, model, ompAgentDefinitions, ompForm, prompt, temperature, tools, topP, variant]);
 
   const handleSave = async () => {
     const agentName = isNewAgent ? draftName.trim().replace(/\s+/g, '-') : selectedAgentName?.trim();
@@ -460,31 +506,71 @@ export const AgentsPage: React.FC = () => {
     setIsSaving(true);
 
     try {
-      const trimmedModel = model.trim();
-      const trimmedVariant = variant.trim();
-      const trimmedPrompt = prompt.trim();
-      const parsedTools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
-      const config: AgentConfig = {
-        name: agentName,
-        ...(description.trim() ? { description: description.trim() } : {}),
-        mode,
-        model: trimmedModel === '' ? null : trimmedModel,
-        variant: trimmedVariant === '' ? null : trimmedVariant || undefined,
-        temperature: temperature ?? null,
-        top_p: topP ?? null,
-        prompt: trimmedPrompt || (isNewAgent ? undefined : null),
-        ...(parsedTools.length > 0 ? { tools: parsedTools } : {}),
-        ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
-      };
-
       let result: AgentMutationResult;
-      if (isNewAgent) {
-        result = await createAgent(config);
-        if (result.ok) {
-          setAgentDraft(null); // Clear draft after successful creation
+
+      if (ompAgentDefinitions) {
+        const trimmedPrompt = ompForm.systemPrompt.trim();
+        const trimmedDescription = ompForm.description.trim();
+        if (!trimmedDescription) {
+          toast.error(t('settings.agents.page.toast.descriptionRequired'));
+          return;
+        }
+        const parsedTools = parseCsvValue(ompForm.tools);
+        const parsedSpawns = ompForm.spawns.trim() === '*' ? '*' : parseCsvValue(ompForm.spawns);
+        const config: AgentConfig = {
+          name: agentName,
+          description: trimmedDescription,
+          prompt: trimmedPrompt,
+          ...(parsedTools.length > 0 ? { tools: parsedTools } : {}),
+          ...(ompForm.modelPatterns.trim()
+            ? { modelPatterns: parseCsvValue(ompForm.modelPatterns) }
+            : {}),
+          ...(ompForm.thinkingLevel ? { thinkingLevel: ompForm.thinkingLevel } : {}),
+          ...(parsedSpawns === '*' || parsedSpawns.length > 0 ? { spawns: parsedSpawns } : {}),
+          ...(() => {
+            const value = patternValueFrom(ompForm.prewalkMode, ompForm.prewalkPattern);
+            return value !== undefined ? { prewalk: value } : {};
+          })(),
+          ...(() => {
+            const value = patternValueFrom(ompForm.advisorMode, ompForm.advisorPattern);
+            return value !== undefined ? { advisor: value } : {};
+          })(),
+          readSummarize: ompForm.readSummarize,
+          ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
+        };
+        if (isNewAgent) {
+          result = await createAgent(config);
+          if (result.ok) {
+            setAgentDraft(null); // Clear draft after successful creation
+          }
+        } else {
+          result = await updateAgent(agentName, config);
         }
       } else {
-        result = await updateAgent(agentName, config);
+        const trimmedModel = model.trim();
+        const trimmedVariant = variant.trim();
+        const trimmedPrompt = prompt.trim();
+        const parsedTools = tools.split(',').map((tool) => tool.trim()).filter(Boolean);
+        const config: AgentConfig = {
+          name: agentName,
+          ...(description.trim() ? { description: description.trim() } : {}),
+          mode,
+          model: trimmedModel === '' ? null : trimmedModel,
+          variant: trimmedVariant === '' ? null : trimmedVariant || undefined,
+          temperature: temperature ?? null,
+          top_p: topP ?? null,
+          prompt: trimmedPrompt || (isNewAgent ? undefined : null),
+          ...(parsedTools.length > 0 ? { tools: parsedTools } : {}),
+          ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
+        };
+        if (isNewAgent) {
+          result = await createAgent(config);
+          if (result.ok) {
+            setAgentDraft(null); // Clear draft after successful creation
+          }
+        } else {
+          result = await updateAgent(agentName, config);
+        }
       }
 
       if (result.ok) {
@@ -498,9 +584,13 @@ export const AgentsPage: React.FC = () => {
       } else {
         toast.error(result.reason === 'invalid-prompt'
           ? t('settings.agents.page.toast.promptRequired')
-          : result.reason === 'agent-definition-exists'
-            ? t('settings.agents.sidebar.toast.agentExists')
-            : isNewAgent ? t('settings.agents.page.toast.createFailed') : t('settings.agents.page.toast.updateFailed'));
+          : result.reason === 'invalid-description'
+            ? t('settings.agents.page.toast.descriptionRequired')
+            : result.reason === 'agent-definition-exists'
+              ? t('settings.agents.sidebar.toast.agentExists')
+              : result.reason === 'bundled-read-only'
+                ? t('settings.agents.page.readonly.bundled')
+                : isNewAgent ? t('settings.agents.page.toast.createFailed') : t('settings.agents.page.toast.updateFailed'));
       }
     } catch (error) {
       console.error('Error saving agent:', error);
@@ -523,6 +613,270 @@ export const AgentsPage: React.FC = () => {
     );
   }
 
+  const thinkingLevelOptions = ['', ...OMP_THINKING_LEVELS];
+
+  const patchOmpForm = (patch: Partial<OmpAgentFormState>) => setOmpForm((prev) => ({ ...prev, ...patch }));
+
+  // ---- omp form (spec 02 §5.3) ----
+  if (ompAgentDefinitions) {
+    return (
+      <SettingsPageLayout
+        title={isNewAgent ? t('settings.agents.page.title.new') : selectedAgentName}
+        description={isNewAgent
+          ? t('settings.agents.page.subtitle.newWorker')
+          : t('settings.agents.page.subtitle.edit')}
+        showSaveStatus={false}
+      >
+        {isReadOnly ? (
+          <p className="typography-meta text-status-warning" data-testid="omp-agent-bundled-notice">
+            {t('settings.agents.page.readonly.bundled')}
+          </p>
+        ) : null}
+
+        <SettingsSection
+          title={t('settings.agents.page.section.definition')}
+          divider={false}
+          contentClassName="space-y-3"
+        >
+          {isNewAgent && (
+            <SettingsFieldRow
+              settingsItem="agents.name"
+              label={t('settings.agents.page.field.agentName')}
+            >
+              <div className="flex items-center">
+                <span className="typography-ui-label text-muted-foreground mr-1">@</span>
+                <Input
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder={t('settings.agents.page.field.agentNamePlaceholder')}
+                  className="h-7 w-40 px-2"
+                />
+              </div>
+              <Select value={draftScope} onValueChange={(v) => setDraftScope(v as AgentScope)}>
+                <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-fit min-w-[100px]">
+                  <SelectValue placeholder={t('settings.agents.page.field.scopePlaceholder')} />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="user">
+                    <div className="flex items-center gap-2">
+                      <Icon name="user-3" className="h-3.5 w-3.5" />
+                      <span>{t('settings.agents.sidebar.section.user')}</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="project">
+                    <div className="flex items-center gap-2">
+                      <Icon name="folder" className="h-3.5 w-3.5" />
+                      <span>{t('settings.agents.sidebar.section.project')}</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsFieldRow>
+          )}
+
+          {!isNewAgent && ompSource && (
+            <SettingsFieldRow
+              settingsItem="agents.source"
+              label={t('settings.agents.page.field.source')}
+              info={(selectedAgent as AgentWithExtras).filePath}
+            >
+              <span
+                className="typography-ui-label text-muted-foreground"
+                data-testid="omp-agent-source"
+              >
+                {ompSource === 'project'
+                  ? t('settings.agents.sidebar.section.project')
+                  : ompSource === 'user'
+                    ? t('settings.agents.sidebar.section.user')
+                    : t('settings.agents.sidebar.section.bundled')}
+              </span>
+            </SettingsFieldRow>
+          )}
+
+          <SettingsStackedField
+            settingsItem="agents.description"
+            label={t('settings.common.field.description')}
+            controlClassName="w-full max-w-none"
+          >
+            <Input
+              value={ompForm.description}
+              onChange={(e) => patchOmpForm({ description: e.target.value })}
+              placeholder={t('settings.agents.page.field.descriptionPlaceholder')}
+              disabled={isReadOnly}
+              className="h-8 w-full max-w-md px-3"
+            />
+          </SettingsStackedField>
+
+          <SettingsStackedField
+            settingsItem="agents.system-prompt"
+            label={t('settings.agents.page.field.systemPrompt')}
+          >
+            <Textarea
+              value={ompForm.systemPrompt}
+              onChange={(e) => patchOmpForm({ systemPrompt: e.target.value })}
+              placeholder={t('settings.agents.page.field.systemPromptPlaceholder')}
+              disabled={isReadOnly}
+              rows={8}
+              className="w-full font-mono typography-meta min-h-[120px] max-h-[60vh] bg-transparent resize-y"
+            />
+          </SettingsStackedField>
+        </SettingsSection>
+
+        <SettingsSection
+          title={t('settings.agents.page.section.workerBehavior')}
+          contentClassName="space-y-3"
+        >
+          <SettingsFieldRow
+            settingsItem="agents.tools"
+            label={t('settings.agents.page.field.tools')}
+            info={t('settings.agents.page.field.toolsHint')}
+          >
+            <Input
+              value={ompForm.tools}
+              onChange={(e) => patchOmpForm({ tools: e.target.value })}
+              placeholder={t('settings.agents.page.field.toolsPlaceholder')}
+              disabled={isReadOnly}
+              className="h-8 w-full max-w-md px-3 font-mono"
+            />
+          </SettingsFieldRow>
+
+          <SettingsFieldRow
+            settingsItem="agents.model-patterns"
+            label={t('settings.agents.page.field.modelPatterns')}
+            info={t('settings.agents.page.field.modelPatternsHint')}
+          >
+            <Input
+              value={ompForm.modelPatterns}
+              onChange={(e) => patchOmpForm({ modelPatterns: e.target.value })}
+              placeholder={t('settings.agents.page.field.modelPatternsPlaceholder')}
+              disabled={isReadOnly}
+              className="h-8 w-full max-w-md px-3 font-mono"
+            />
+          </SettingsFieldRow>
+
+          <SettingsFieldRow
+            settingsItem="agents.thinking-level"
+            label={t('settings.agents.page.field.thinkingLevel')}
+            info={t('settings.agents.page.field.thinkingLevelHint')}
+          >
+            <Select
+              value={ompForm.thinkingLevel || '__default'}
+              onValueChange={(value) => patchOmpForm({ thinkingLevel: value === '__default' ? '' : value })}
+              disabled={isReadOnly}
+            >
+              <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {thinkingLevelOptions.map((level) => (
+                  <SelectItem key={level || '__default'} value={level || '__default'}>
+                    {level || t('settings.agents.page.field.thinkingLevelDefault')}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingsFieldRow>
+
+          <SettingsFieldRow
+            settingsItem="agents.spawns"
+            label={t('settings.agents.page.field.spawns')}
+            info={t('settings.agents.page.field.spawnsHint')}
+          >
+            <Input
+              value={ompForm.spawns}
+              onChange={(e) => patchOmpForm({ spawns: e.target.value })}
+              placeholder={t('settings.agents.page.field.spawnsPlaceholder')}
+              disabled={isReadOnly}
+              className="h-8 w-full max-w-md px-3 font-mono"
+            />
+          </SettingsFieldRow>
+
+          <SettingsFieldRow
+            settingsItem="agents.prewalk"
+            label={t('settings.agents.page.field.prewalk.label')}
+            info={t('settings.agents.page.field.prewalk.hint')}
+          >
+            <SettingsChipGroup
+              aria-label={t('settings.agents.page.field.prewalk.label')}
+              value={ompForm.prewalkMode}
+              onChange={(value) => patchOmpForm({ prewalkMode: value as PatternMode })}
+              options={[
+                { value: 'off', label: t('settings.agents.page.field.pattern.off') },
+                { value: 'default', label: t('settings.agents.page.field.pattern.default') },
+                { value: 'custom', label: t('settings.agents.page.field.pattern.custom') },
+              ]}
+            />
+            {ompForm.prewalkMode === 'custom' && (
+              <Input
+                value={ompForm.prewalkPattern}
+                onChange={(e) => patchOmpForm({ prewalkPattern: e.target.value })}
+                placeholder={t('settings.agents.page.field.pattern.placeholder')}
+                disabled={isReadOnly}
+                className="h-8 w-40 px-3 font-mono"
+                aria-label={t('settings.agents.page.field.prewalk.label')}
+              />
+            )}
+          </SettingsFieldRow>
+
+          <SettingsFieldRow
+            settingsItem="agents.advisor"
+            label={t('settings.agents.page.field.advisor.label')}
+            info={t('settings.agents.page.field.advisor.hint')}
+          >
+            <SettingsChipGroup
+              aria-label={t('settings.agents.page.field.advisor.label')}
+              value={ompForm.advisorMode}
+              onChange={(value) => patchOmpForm({ advisorMode: value as PatternMode })}
+              options={[
+                { value: 'off', label: t('settings.agents.page.field.pattern.off') },
+                { value: 'default', label: t('settings.agents.page.field.pattern.default') },
+                { value: 'custom', label: t('settings.agents.page.field.pattern.custom') },
+              ]}
+            />
+            {ompForm.advisorMode === 'custom' && (
+              <Input
+                value={ompForm.advisorPattern}
+                onChange={(e) => patchOmpForm({ advisorPattern: e.target.value })}
+                placeholder={t('settings.agents.page.field.pattern.placeholder')}
+                disabled={isReadOnly}
+                className="h-8 w-40 px-3 font-mono"
+                aria-label={t('settings.agents.page.field.advisor.label')}
+              />
+            )}
+          </SettingsFieldRow>
+
+          <SettingsCheckboxRow
+            settingsItem="agents.read-summarize"
+            checked={ompForm.readSummarize}
+            onChange={(checked) => patchOmpForm({ readSummarize: checked })}
+            disabled={isReadOnly}
+            label={t('settings.agents.page.field.readSummarize.label')}
+            ariaLabel={t('settings.agents.page.field.readSummarize.label')}
+            info={t('settings.agents.page.field.readSummarize.hint')}
+          />
+        </SettingsSection>
+
+        {ompSettingsEnabled && !isNewAgent && selectedAgent ? (
+          <AgentTaskOverridesSection agentName={selectedAgent.name} />
+        ) : null}
+
+        {!isReadOnly && (
+          <div className="pb-8">
+            <Button
+              onClick={handleSave}
+              disabled={isSaving || !isDirty}
+              size="xs"
+              className="!font-normal"
+            >
+              {isSaving ? t('settings.common.actions.saving') : t('settings.common.actions.saveChanges')}
+            </Button>
+          </div>
+        )}
+      </SettingsPageLayout>
+    );
+  }
+
+  // ---- legacy (OpenCode runtime) form ----
   return (
     <SettingsPageLayout
       title={isNewAgent ? t('settings.agents.page.title.new') : selectedAgentName}
@@ -592,42 +946,15 @@ export const AgentsPage: React.FC = () => {
             aria-label={t('settings.agents.page.field.mode')}
             value={mode}
             onChange={setMode}
-            options={ompAgentDefinitions
-              ? [
-                  // omp has no primary agents (02 §5.3): the build/plan
-                  // concept is deleted; definitions are worker-scoped.
-                  { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
-                  { value: 'all', label: t('settings.agents.page.mode.all') },
-                ]
-              : [
-                  { value: 'primary', label: t('settings.agents.page.mode.primary') },
-                  { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
-                  { value: 'all', label: t('settings.agents.page.mode.all') },
-                ]}
+            options={[
+              { value: 'primary', label: t('settings.agents.page.mode.primary') },
+              { value: 'subagent', label: t('settings.agents.page.mode.subagent') },
+              { value: 'all', label: t('settings.agents.page.mode.all') },
+            ]}
           />
         </SettingsStackedField>
-
-        {ompAgentDefinitions && (
-          <SettingsStackedField
-            label={t('settings.agents.page.field.tools')}
-            info={t('settings.agents.page.field.toolsHint')}
-            controlClassName="w-full max-w-none"
-          >
-            <Input
-              value={tools}
-              onChange={(e) => setTools(e.target.value)}
-              placeholder={t('settings.agents.page.field.toolsPlaceholder')}
-              className="h-7 w-full max-w-md px-2 font-mono"
-            />
-          </SettingsStackedField>
-        )}
       </SettingsSection>
 
-      {ompAgentDefinitions && ompSettingsEnabled && !isNewAgent && selectedAgent ? (
-        <AgentTaskOverridesSection agentName={selectedAgent.name} />
-      ) : null}
-
-      {!ompAgentDefinitions && (
       <SettingsSection
         title={t('settings.agents.page.section.modelParameters')}
         contentClassName="space-y-3"
@@ -780,7 +1107,6 @@ export const AgentsPage: React.FC = () => {
           )}
         </SettingsFieldRow>
       </SettingsSection>
-      )}
 
       <SettingsSection
         title={t('settings.agents.page.section.systemPrompt')}
@@ -795,7 +1121,7 @@ export const AgentsPage: React.FC = () => {
         />
       </SettingsSection>
 
-      {!isNewAgent && selectedAgent && !ompAgentDefinitions && (
+      {!isNewAgent && selectedAgent && (
         <AgentPermissionsEditor agent={selectedAgent} />
       )}
 

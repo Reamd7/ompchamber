@@ -346,3 +346,26 @@
 | 拒绝(默认配置小会话) | toast `session.summarize failed (500): {"name":"UnknownError",...}` | toast `session.summarize failed (500): Nothing to compact (session too small)` |
 
 验证:client.test 11/11(含新增);ui 包 tsc 通过;改动文件 eslint 0 error(1 处预先存在 warning);测试配置已还原并重启。已知边界:refreshTail 为 merge 语义,压缩掉的远端旧消息在本地滞留至下次整载 —— 完整对账留待引擎补 `session.compacted` 事件(wire 契约已有该类型,双端未实现,§6.15)。
+
+### 6.17 重构:agent-definitions 数据面换轨 omp 发现链 + persona 修复(2026-08-22)
+
+用户观察:`?settings=agents` 显示 Total 0,而磁盘上实际有 10 个用户级 agent(`~/.omp/agent/agents/*.md`)+ 7 个 bundled —— 页面读的是 OpenCode 时代 sidecar(`openchamber-agents.json`),不是 omp 发现链(02 §2.2/§2.3/§6.2 判定的 split-brain)。另一实锤:composer 选 persona 从未生效(engine #materialize 查 sidecar customAgents,personas 资源没人消费)。
+
+改动(对齐 02 §5.2/§5.3/§5.8/§6.1/§6.2):
+
+| 面 | 改动 | 验证 |
+|---|---|---|
+| domain-modes.js | agent-definitions CRUD 重写为发现链读权威(SDK `discoverAgents`:project > user > extension > bundled)+ `.md` 文件写(YAML frontmatter + body,`serializeAgentMarkdown` 过真解析器 round-trip);bundled/扩展目录只读(409 `bundled-read-only` / `definition-not-managed`,同名 user 副本遮蔽);契约删 `mode`,补 model patterns/thinkingLevel/spawns/prewalk/advisor/readSummarize/source/filePath;`migrateSidecarAgents` 一次性迁移(sidecar → 用户层 .md + persona 镜像,失败保留幂等重试) | domain-modes.test 47/47(含真解析器 round-trip、409 矩阵、迁移 4 场景);bun 脚本冒烟:create 201 记录经发现链回读(tools 自动补 yield)、dup 409、bundled 409、rename+null 清字段、project 门控、delete 204 |
+| engine.js | #materialize 改 `personaFor`(build/plan/unset→standard;unknown→降级+告警;active→systemPrompt/toolNames 覆盖);prompt() 按 personaKey 语义切换(切到不存在的 persona → 404 `persona-not-found`,消息不派发);boot 迁移 sidecar;`planYolo` 行删除(02 §5.8);sidecar customAgents 机制(load/save/upsert/delete)删除 | omp-host 全套 260/260(含新测试:legacy plan meta → standard 无 planYolo;persona meta → overlay 生效) |
+| endpoints.js | PATCH /config agents 分支删除(死写);GET /agent 只回 build/plan 壳;prompt 三端点映射 ModeDomainError(404 不再变 500) | node --check;260/260 |
+| UI(omp.ts/store/page/sidebar) | 契约换轨(systemPrompt/source/filePath/…);omp 表单按 02 §5.3 重排(Description/System Prompt/Tools/Model patterns/Thinking level/Spawns/Prewalk/Advisor/Summarize reads);侧栏按 project/user/bundled 分组;bundled 只读横幅;list/update/delete 带 directory;i18n ×12 语言全量翻译 | ui 包 tsc 0 error;omp.test 44/44(契约重写);lint 与基线逐条 diff 相同(零新增);dead-code 零新增 |
+
+E2E:dev 栈重启后浏览器驱动(见 PROGRESS 2026-08-22 更新)。
+
+**追加修复(08-22 晚二)**:侧栏「重命名」在 omp 模式此前走 legacy create+delete,会丢 model patterns/thinkingLevel/spawns/prewalk/advisor/readSummarize 全部 omp 字段(仅 description/prompt 存活)。修复:`AgentConfig` 增 transport 字段 `renameTo`,`updateAgent` omp 分支透传 PUT `renameTo`(服务端原子改写文件),侧栏 omp 分支改单次调用(bundled 不出 Rename/Delete 菜单项;legacy 运行时保持 create+delete)。真机验证:经 UI 对话框重命名 → 网络 PUT `/agent-definitions/ui-rename-probe` 200 → 磁盘文件改名且上述六字段逐项保留(model=["@smol"]/thinkingLevel=high/spawns=*/prewalk/advisor/readSummarize)→ 列表刷新出新名。回归:domain-modes 47/47、omp.test 44/44、ui tsc 0 error。
+
+**追加修复(08-22 晚三,用户复查指出)**:agent 有 project/user 两层,设置界面必须随所选项目目录切换。三处补齐——① 侧栏 `SettingsProjectSelector`(旧设计保留)切换项目后此前**不会**重新拉取 omp 列表(sidebar effect 只在挂载时跑一次):现订阅 `activeProjectId`,切换即重拉 + 失效选中清空;② `create` 此前不带所选目录 → project 层文件会落进服务端 boot 目录的 `.omp/agents`(list/update/delete 均带,唯 create 漏):`OmpAgentDefinitionsAPI.create(input, directory?)` 补 directory header,store 传 `getConfigDirectory()`;③ `update` 的 directory header spread 会覆盖 Content-Type(顺手修:headers 合并)。真机验证:API 带 header 建 project 层 → 文件落 `<所选项目>/.omp/agents/`;UI 切换 sharkly→sharkly-codex 无刷新即时出现 **Project Agents 1**(含 probe),切回即消失、Total 17↔18;probe 清理后项目 `.omp` 目录移除。回归:omp.test 44/44、domain-modes 47/47、tsc 0 error。
+
+**追加修复(08-22 晚四,用户问「omp 支持热重载 agent 吗」引出)**:确定答案=半热半冷。**派发热**:`resolveEffectiveSubagentPolicy` 每次 task 派发直接 `await discoverAgents(cwd)` 重扫磁盘、无缓存,settings 覆盖也每派发现读(structured-subagent.ts:254-267)。**广告冷**:SDK 进程级 create-time memo(task/index.ts discoveryMemo/discoverySnapshots)——task 工具给模型的 description 用该清单,omp-host 长进程里写盘后不刷新则运行中乃至后续新建会话都广告旧清单(TUI 在 /agents hub 写盘后必调 `refreshAgentDiscovery`,agents-hub.ts:808)。修复:handlers 增 `onDefinitionsChanged(directory)`(create/update/remove 成功后异步触发,失败只告警不回滚——派发路径本就新鲜);engine 接 `refreshAgentDiscovery(directory ?? process.cwd())`;新增 `POST /api/omp/agent-definitions/refresh`(带 directory,兜外部编辑器改文件的场景)。验证:单测 +2(hook 三连触发 + refresh 204;hook 抛错不破坏 mutation);真机 create 201 / refresh 204 / delete 204;全套 262/262。
+
+**E2E 环境备注**:`capabilityGate` 每 runtime 只探测一次——后端重启窗口期的失败探测会被缓存,UI 侧 omp 面降级为 legacy(Total 0);后端稳定后整页刷新即恢复。排查 UI「面没了」时先想这一条。

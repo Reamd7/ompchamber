@@ -13,13 +13,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+const { parseAgent } = await import('@oh-my-pi/pi-coding-agent/task/agents');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
   BUILTIN_TOOLS: { read: class {}, bash: class {}, write: class {}, task: class {} },
 }));
 
 const {
-  planOptionsFor,
   createModeTracker,
   ModeDomainError,
   createAgentDefinitionHandlers,
@@ -30,6 +30,8 @@ const {
   registerModesDomainRoutes,
   jsonFileStore,
   mapBackedStore,
+  migrateSidecarAgents,
+  serializeAgentMarkdown,
   DEFAULT_PLAN_FILE_PATH,
 } = await import('./domain-modes.js');
 
@@ -69,54 +71,7 @@ const ctxFor = (url) => ({ params: {}, url: new URL(url), headers: new Headers()
 /** Yield long enough for async bridge prepares to resolve and register pending. */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-const STATUS_ACTIVE = { provider: 'anthropic', id: 'claude-sonnet-4' };
 
-// ---------------------------------------------------------------------------
-// 1. planOptionsFor — P0 defect fix contract
-// ---------------------------------------------------------------------------
-
-describe('planOptionsFor (spec 02 §2.1 P0 defect a)', () => {
-  test('emits the verified SDK PlanYolo shape for legacy plan agent with a resolvable target', () => {
-    const options = planOptionsFor({ agent: 'plan' }, { target: STATUS_ACTIVE });
-    expect(options).toEqual({ planYolo: { target: STATUS_ACTIVE } });
-    // The crash shape must never be produced (autoApproveOnResolve matches no
-    // SDK field; prewalk.ts:300 dereferences planYolo.target).
-    expect('autoApproveOnResolve' in options.planYolo).toBe(false);
-  });
-
-  test('passes thinkingLevel through as an optional sibling of target', () => {
-    expect(planOptionsFor({ agent: 'plan' }, { target: STATUS_ACTIVE, thinkingLevel: 'high' })).toEqual({
-      planYolo: { target: STATUS_ACTIVE, thinkingLevel: 'high' },
-    });
-    expect(planOptionsFor({ agent: 'plan' }, { target: STATUS_ACTIVE, thinkingLevel: 'auto' })).toEqual({
-      planYolo: { target: STATUS_ACTIVE, thinkingLevel: 'auto' },
-    });
-  });
-
-  test('legacy plan agent without a resolvable target degrades to a standard session', () => {
-    expect(planOptionsFor({ agent: 'plan' }, {})).toEqual({});
-    expect(planOptionsFor({ agent: 'plan' }, { target: undefined })).toEqual({});
-    expect(planOptionsFor({ agent: 'plan' })).toEqual({});
-  });
-
-  test('mode-aware plan (modes.v1) never arms constructor planYolo', () => {
-    expect(planOptionsFor({ agent: 'plan', mode: 'plan' }, { target: STATUS_ACTIVE })).toEqual({});
-    expect(planOptionsFor({ mode: 'plan' }, { target: STATUS_ACTIVE })).toEqual({});
-  });
-
-  test('non-plan metas get no plan options', () => {
-    expect(planOptionsFor({ agent: 'build' }, { target: STATUS_ACTIVE })).toEqual({});
-    expect(planOptionsFor({ agent: 'reviewer' }, { target: STATUS_ACTIVE })).toEqual({});
-    expect(planOptionsFor(null, { target: STATUS_ACTIVE })).toEqual({});
-    expect(planOptionsFor(undefined, {})).toEqual({});
-  });
-
-  test('rejects an invalid thinking level loudly', () => {
-    expect(() => planOptionsFor({ agent: 'plan' }, { target: STATUS_ACTIVE, thinkingLevel: 'ultra' })).toThrow(
-      ModeDomainError,
-    );
-  });
-});
 
 // ---------------------------------------------------------------------------
 // 2. Mode tracker — transitions, persistence, projection
@@ -349,57 +304,121 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
 // 3. Agent definitions CRUD
 // ---------------------------------------------------------------------------
 
-const definitionHandlers = (overrides = {}) => {
-  const map = new Map();
-  const persisted = [];
-  const store = mapBackedStore(map, (records) => persisted.push(records));
-  return {
-    map,
-    persisted,
-    handlers: createAgentDefinitionHandlers({
-      store,
-      allowedTools: new Set(['read', 'bash', 'write', 'task', 'mcp__custom']),
-      ...overrides,
-    }),
+// In-memory discovery + fs fake: writes land in a files Map, discovery
+// re-parses them with the REAL SDK parser (round-trip fidelity), bundled
+// agents stay read-only, and project/user dirs mirror the engine adapters.
+const definitionHarness = (overrides = {}) => {
+  const refreshCalls = [];
+  const root = path.join(tmpRoot, `harness-${Math.random().toString(36).slice(2)}`);
+  const userAgentsDir = path.join(root, 'user-agents');
+  const projAgentsDir = path.join(root, 'proj', '.omp', 'agents');
+  const files = new Map();
+  const writes = [];
+  const deletes = [];
+  const bundled = [
+    { name: 'scout', description: 'Read-only recon', systemPrompt: 'Scout.', source: 'bundled' },
+    { name: 'task', description: 'General worker', systemPrompt: 'Work.', source: 'bundled', model: ['@task'], spawns: '*' },
+  ];
+  const discover = async (directory) => {
+    const agents = [];
+    const seen = new Set();
+    for (const [dir, source] of [
+      [path.join(path.resolve(directory ?? root), '.omp', 'agents'), 'project'],
+      [userAgentsDir, 'user'],
+    ]) {
+      for (const file of [...files.keys()].filter((p) => p.startsWith(dir + path.sep) && p.endsWith('.md')).sort()) {
+        const agent = parseAgent(file, files.get(file), source, 'off');
+        if (!seen.has(agent.name)) { seen.add(agent.name); agents.push(agent); }
+      }
+    }
+    for (const agent of bundled) if (!seen.has(agent.name)) agents.push(agent);
+    return { agents, projectAgentsDir: files.size > 0 && [...files.keys()].some((p) => p.startsWith(projAgentsDir)) ? projAgentsDir : null };
   };
+  const handlers = createAgentDefinitionHandlers({
+    discover,
+    writeFile: async (p, content) => {
+      files.set(p, content);
+      writes.push({ path: p, content });
+    },
+    deleteFile: async (p) => {
+      if (!files.has(p)) return false;
+      files.delete(p);
+      deletes.push(p);
+      return true;
+    },
+    userAgentsDir,
+    projectAgentsDirFor: (directory) => path.join(path.resolve(directory ?? root), '.omp', 'agents'),
+    allowedTools: new Set(['read', 'bash', 'write', 'task', 'yield', 'mcp__custom']),
+    onDefinitionsChanged: async (directory) => { refreshCalls.push(directory); },
+    ...overrides,
+  });
+  return { handlers, files, writes, deletes, userAgentsDir, projAgentsDir, root, refreshCalls };
 };
 
-describe('agent-definitions CRUD (spec 02 §5.2, scoped sidecar contract)', () => {
-  test('create → 201 with the scoped record shape; list returns it; delete → 204', async () => {
-    const { handlers, map } = definitionHandlers();
+const ctxForName = (name, directory) => ({
+  params: { name },
+  url: new URL(`http://x/omp/agent-definitions/${name}?directory=${encodeURIComponent(directory)}`),
+  headers: new Headers(),
+});
+
+describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storage)', () => {
+  const PROJ_DIR = '/tmp/wire-proj';
+
+  test('create writes the .md, re-discovers the record (201); list joins sources; delete → 204', async () => {
+    const { handlers, files, writes, deletes, userAgentsDir } = definitionHarness();
     const created = await handlers.create(
       post('http://x/omp/agent-definitions', {
-        scope: 'global',
-        definition: { name: 'reviewer', prompt: 'Review code.', tools: ['read', 'mcp__custom'], mode: 'subagent' },
+        scope: 'user',
+        definition: {
+          name: 'reviewer',
+          description: 'Review code.',
+          systemPrompt: 'Be thorough.',
+          model: ['@smol'],
+          thinkingLevel: 'medium',
+          tools: ['read'],
+          spawns: '*',
+          prewalk: true,
+          advisor: '@slow:high',
+        },
       }),
-      ctxFor('http://x/omp/agent-definitions'),
+      ctxForName(undefined, PROJ_DIR),
     );
     expect(created.status).toBe(201);
-    expect(await created.json()).toEqual({
+    const record = await created.json();
+    expect(record).toMatchObject({
       name: 'reviewer',
-      prompt: 'Review code.',
-      tools: ['read', 'mcp__custom'],
-      mode: 'subagent',
-      scope: 'global',
+      description: 'Review code.',
+      source: 'user',
+      systemPrompt: 'Be thorough.',
+      model: ['@smol'],
+      thinkingLevel: 'medium',
+      tools: ['read', 'yield'],
+      spawns: '*',
+      prewalk: true,
+      advisor: '@slow:high',
     });
-    expect(map.get('reviewer')?.scope).toBe('global');
+    // The written file is the discovery truth (SDK frontmatter contract).
+    const filePath = path.join(userAgentsDir, 'reviewer.md');
+    expect(files.get(filePath)).toContain('name: reviewer');
+    expect(files.get(filePath)).toContain('description: Review code.');
+    expect(writes).toHaveLength(1);
 
-    const listed = await handlers.list();
-    expect(await listed.json()).toEqual({ agents: [map.get('reviewer')] });
+    const listed = await handlers.list(null, ctxForName(undefined, PROJ_DIR));
+    const payload = await listed.json();
+    expect(payload.agents.map((a) => a.name)).toEqual(['reviewer', 'scout', 'task']);
+    expect(payload.agents.map((a) => a.source)).toEqual(['user', 'bundled', 'bundled']);
 
-    const removed = await handlers.remove(null, { params: { name: 'reviewer' } });
+    const removed = await handlers.remove(null, ctxForName('reviewer', PROJ_DIR));
     expect(removed.status).toBe(204);
-    expect(map.size).toBe(0);
+    expect(deletes).toEqual([filePath]);
   });
 
-
-  test('duplicate create throws 409 agent-definition-exists (route maps it)', async () => {
-    const { handlers } = definitionHandlers();
-    const body = { definition: { name: 'scout', prompt: 'p' } };
-    await handlers.create(post('http://x', body), ctxFor('http://x'));
+  test('duplicate create and unknown-name delete throw the documented domain errors', async () => {
+    const { handlers } = definitionHarness();
+    const body = { definition: { name: 'scout', description: 'shadow', systemPrompt: 'p' } };
     let caught = null;
     try {
-      await handlers.create(post('http://x', body), ctxFor('http://x'));
+      await handlers.create(post('http://x', body), ctxForName(undefined, PROJ_DIR));
     } catch (error) {
       caught = error;
     }
@@ -409,20 +428,41 @@ describe('agent-definitions CRUD (spec 02 §5.2, scoped sidecar contract)', () =
 
     let missing = null;
     try {
-      await handlers.remove(null, { params: { name: 'nope' } });
+      await handlers.remove(null, ctxForName('nope', PROJ_DIR));
     } catch (error) {
       missing = error;
     }
     expect(missing?.status).toBe(404);
+    expect(missing?.body.error).toBe('not-found');
   });
 
-  test('tools are validated against BUILTIN_TOOLS + registered tools', async () => {
-    const { handlers } = definitionHandlers();
+  test('bundled definitions are read-only (update and delete → 409 bundled-read-only)', async () => {
+    const { handlers } = definitionHarness();
+    for (const run of [
+      () => handlers.update(
+        put('http://x/omp/agent-definitions/scout', { definition: { description: 'x' } }),
+        ctxForName('scout', PROJ_DIR),
+      ),
+      () => handlers.remove(null, ctxForName('scout', PROJ_DIR)),
+    ]) {
+      let caught = null;
+      try {
+        await run();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught?.status).toBe(409);
+      expect(caught?.body.error).toBe('bundled-read-only');
+    }
+  });
+
+  test('tools are validated against the allowlist (unknown-tools 400)', async () => {
+    const { handlers } = definitionHarness();
     let caught = null;
     try {
       await handlers.create(
-        post('http://x', { definition: { name: 'a1', prompt: 'p', tools: ['read', 'nonsense'] } }),
-        ctxFor('http://x'),
+        post('http://x', { definition: { name: 'a1', description: 'd', systemPrompt: 'p', tools: ['read', 'nonsense'] } }),
+        ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
       caught = error;
@@ -431,28 +471,53 @@ describe('agent-definitions CRUD (spec 02 §5.2, scoped sidecar contract)', () =
     expect(caught.body).toEqual({ error: 'unknown-tools', tools: ['nonsense'] });
   });
 
-  test('mode:"primary" is rejected — the deleted build/plan concept (02 §5.3)', async () => {
-    const { handlers } = definitionHandlers();
+  test('thinkingLevel is validated against the SDK selector set (invalid-thinking-level 400)', async () => {
+    const { handlers } = definitionHarness();
     let caught = null;
     try {
       await handlers.create(
-        post('http://x', { definition: { name: 'a2', prompt: 'p', mode: 'primary' } }),
-        ctxFor('http://x'),
+        post('http://x', { definition: { name: 'a2', description: 'd', systemPrompt: 'p', thinkingLevel: 'ultra' } }),
+        ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
       caught = error;
     }
     expect(caught?.status).toBe(400);
-    expect(caught.body.error).toBe('invalid-mode');
+    expect(caught.body.error).toBe('invalid-thinking-level');
+  });
+
+  test('description + systemPrompt are required (400 invalid-description / invalid-prompt)', async () => {
+    const { handlers } = definitionHarness();
+    let noDescription = null;
+    try {
+      await handlers.create(
+        post('http://x', { definition: { name: 'a3', systemPrompt: 'p' } }),
+        ctxForName(undefined, PROJ_DIR),
+      );
+    } catch (error) {
+      noDescription = error;
+    }
+    expect(noDescription?.body.error).toBe('invalid-description');
+
+    let noPrompt = null;
+    try {
+      await handlers.create(
+        post('http://x', { definition: { name: 'a4', description: 'd' } }),
+        ctxForName(undefined, PROJ_DIR),
+      );
+    } catch (error) {
+      noPrompt = error;
+    }
+    expect(noPrompt?.body.error).toBe('invalid-prompt');
   });
 
   test('project scope is gated behind settingsProjectScopes (409 until lit, R2-M4)', async () => {
-    const gatedOff = definitionHandlers();
+    const gatedOff = definitionHarness();
     let caught = null;
     try {
       await gatedOff.handlers.create(
-        post('http://x', { scope: 'project', definition: { name: 'a3', prompt: 'p' } }),
-        ctxFor('http://x'),
+        post('http://x', { scope: 'project', definition: { name: 'a5', description: 'd', systemPrompt: 'p' } }),
+        ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
       caught = error;
@@ -460,52 +525,159 @@ describe('agent-definitions CRUD (spec 02 §5.2, scoped sidecar contract)', () =
     expect(caught?.status).toBe(409);
     expect(caught.body.error).toBe('project-scope-unavailable');
 
-    const gatedOn = definitionHandlers({ settingsProjectScopes: true });
+    const gatedOn = definitionHarness({ settingsProjectScopes: true });
     const created = await gatedOn.handlers.create(
-      post('http://x', { scope: 'project', definition: { name: 'a3', prompt: 'p' } }),
-      ctxFor('http://x'),
+      post('http://x', { scope: 'project', definition: { name: 'a5', description: 'd', systemPrompt: 'p' } }),
+      ctxForName(undefined, PROJ_DIR),
     );
     expect(created.status).toBe(201);
-    expect((await created.json()).scope).toBe('project');
+    expect((await created.json()).source).toBe('project');
+    expect([...gatedOn.files.keys()][0]).toBe(path.join('/tmp/wire-proj/.omp/agents', 'a5.md'));
   });
 
-  test('update patches fields, renames via renameTo, and preserves unknown sidecar fields', async () => {
-    const { handlers, map } = definitionHandlers();
+  test('update patches the file, renames via renameTo (write new + delete old), and null clears a field', async () => {
+    const { handlers, files, deletes } = definitionHarness();
     await handlers.create(
-      post('http://x', { definition: { name: 'old', prompt: 'p', tools: ['read'], description: 'keep me' } }),
-      ctxFor('http://x'),
+      post('http://x', { definition: { name: 'old', description: 'd', systemPrompt: 'p', model: ['@smol'] } }),
+      ctxForName(undefined, PROJ_DIR),
     );
     const updated = await handlers.update(
-      put('http://x/omp/agent-definitions/old', { definition: { prompt: 'new prompt' }, renameTo: 'fresh' }),
-      { params: { name: 'old' }, url: new URL('http://x/omp/agent-definitions/old'), headers: new Headers() },
+      put('http://x/omp/agent-definitions/old', {
+        definition: { systemPrompt: 'new prompt', model: null },
+        renameTo: 'fresh',
+      }),
+      ctxForName('old', PROJ_DIR),
     );
-    expect(await updated.json()).toEqual({
-      name: 'fresh',
-      prompt: 'new prompt',
-      tools: ['read'],
-      description: 'keep me',
-      scope: 'global',
-    });
-    expect(map.has('old')).toBe(false);
-    expect(map.has('fresh')).toBe(true);
+    const record = await updated.json();
+    expect(record.name).toBe('fresh');
+    expect(record.systemPrompt).toBe('new prompt');
+    expect(record.model).toBeUndefined();
+    expect(files.has(path.join(record.filePath))).toBe(true);
+    expect(deletes).toEqual([path.join(path.dirname(record.filePath), 'old.md')]);
   });
 
-  test('jsonFileStore round-trips the engine sidecar shape and tolerates missing/corrupt files', () => {
-    const file = path.join(tmpRoot, 'nested', 'openchamber-agents.json');
-    const store = jsonFileStore(file, 'agents');
-    expect(store.load()).toEqual([]);
-    store.save([{ name: 'a', prompt: 'p', tools: [] }]);
-    expect(existsSync(file)).toBe(true);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ agents: [{ name: 'a', prompt: 'p', tools: [] }] });
-    expect(store.load()).toEqual([{ name: 'a', prompt: 'p', tools: [] }]);
-    writeFileSync(file, '{corrupt');
-    expect(store.load()).toEqual([]);
+  test('mutations fire onDefinitionsChanged (hot reload, 02 §5.2 refresh) and the refresh handler answers 204', async () => {
+    const { handlers, refreshCalls } = definitionHarness();
+    await handlers.create(
+      post('http://x', { scope: 'user', definition: { name: 'hot-probe', description: 'd', systemPrompt: 'p' } }),
+      ctxForName(undefined, PROJ_DIR),
+    );
+    await handlers.update(
+      put('http://x/omp/agent-definitions/hot-probe', { definition: { systemPrompt: 'p2' } }),
+      ctxForName('hot-probe', PROJ_DIR),
+    );
+    await handlers.remove(null, ctxForName('hot-probe', PROJ_DIR));
+    expect(refreshCalls).toHaveLength(3);
+
+    const refreshed = await handlers.refresh(null, ctxForName(undefined, PROJ_DIR));
+    expect(refreshed.status).toBe(204);
+    expect(refreshCalls).toHaveLength(4);
+  });
+
+  test('a failing onDefinitionsChanged never fails the mutation (dispatch stays fresh regardless)', async () => {
+    const { handlers, files } = definitionHarness({
+      onDefinitionsChanged: async () => { throw new Error('refresh exploded'); },
+    });
+    const created = await handlers.create(
+      post('http://x', { scope: 'user', definition: { name: 'resilient', description: 'd', systemPrompt: 'p' } }),
+      ctxForName(undefined, PROJ_DIR),
+    );
+    expect(created.status).toBe(201);
+    expect([...files.keys()].some((p) => p.endsWith('resilient.md'))).toBe(true);
+  });
+
+  test('serializeAgentMarkdown round-trips through the real SDK parser', () => {
+    const md = serializeAgentMarkdown({
+      name: 'round',
+      description: 'Round trip: with colon',
+      systemPrompt: 'Body line 1\nline 2.',
+      tools: ['read'],
+      model: ['@smol', 'anthropic/*:high'],
+      thinkingLevel: 'auto',
+      spawns: '*',
+      prewalk: true,
+      advisor: '@slow',
+    });
+    const parsed = parseAgent(path.join(tmpRoot, 'round.md'), md, 'user', 'off');
+    expect(parsed.name).toBe('round');
+    expect(parsed.description).toBe('Round trip: with colon');
+    expect(parsed.systemPrompt).toBe('Body line 1\nline 2.');
+    expect(parsed.model).toEqual(['@smol', 'anthropic/*:high']);
+    expect(parsed.thinkingLevel).toBe('auto');
+    expect(parsed.spawns).toBe('*');
+    expect(parsed.prewalk).toBe(true);
+    expect(parsed.advisor).toBe('@slow');
   });
 });
 
-// ---------------------------------------------------------------------------
-// 4. Personas
-// ---------------------------------------------------------------------------
+describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirror)', () => {
+  const record = (name) => ({ name, description: `${name} desc`, prompt: `${name} prompt.`, tools: ['read'] });
+
+  test('writes every record, mirrors personas, and marks the sidecar done', async () => {
+    const written = [];
+    const personas = new Map();
+    let done = false;
+    const result = await migrateSidecarAgents({
+      loadRecords: () => [record('one'), record('two')],
+      agentExists: async () => false,
+      writeAgent: async (r) => written.push(r.name),
+      personaExists: (name) => personas.has(name),
+      mirrorPersona: (r) => personas.set(r.name, { name: r.name, systemPrompt: r.prompt }),
+      markDone: () => { done = true; },
+    });
+    expect(result).toEqual({ migrated: 2, skipped: 0 });
+    expect(written).toEqual(['one', 'two']);
+    expect([...personas.keys()]).toEqual(['one', 'two']);
+    expect(done).toBe(true);
+  });
+
+  test('a name already present in discovery skips the write but still mirrors the persona', async () => {
+    const written = [];
+    const personas = new Map();
+    const result = await migrateSidecarAgents({
+      loadRecords: () => [record('exists')],
+      agentExists: async (name) => name === 'exists',
+      writeAgent: async (r) => written.push(r.name),
+      personaExists: () => false,
+      mirrorPersona: (r) => personas.set(r.name, r),
+      markDone: () => {},
+    });
+    expect(result).toEqual({ migrated: 1, skipped: 1 });
+    expect(written).toEqual([]);
+    expect(personas.has('exists')).toBe(true);
+  });
+
+  test('an existing persona is never clobbered by the mirror', async () => {
+    const mirrored = [];
+    await migrateSidecarAgents({
+      loadRecords: () => [record('kept')],
+      agentExists: async () => false,
+      writeAgent: async () => {},
+      personaExists: () => true,
+      mirrorPersona: (r) => mirrored.push(r.name),
+      markDone: () => {},
+    });
+    expect(mirrored).toEqual([]);
+  });
+
+  test('a write failure keeps the sidecar (no markDone) for an idempotent retry', async () => {
+    let done = false;
+    const result = await migrateSidecarAgents({
+      loadRecords: () => [record('fine'), record('boom')],
+      agentExists: async () => false,
+      writeAgent: async (r) => {
+        if (r.name === 'boom') throw new Error('disk full');
+      },
+      personaExists: () => false,
+      mirrorPersona: () => {},
+      markDone: () => { done = true; },
+      log: () => {},
+    });
+    expect(result).toEqual({ migrated: 1, skipped: 0, failed: 'boom' });
+    expect(done).toBe(false);
+  });
+});
+
 
 const personaHandlers = () => {
   const file = path.join(tmpRoot, 'personas.json');
@@ -710,7 +882,25 @@ const mountedDomain = ({ features, ...domainOptions } = {}) => {
   const domain = createModesDomain({
     publishFor,
     appendFor,
-    agentDefinitionStore: mapBackedStore(new Map()),
+    agentDefinitions: (() => {
+    // Minimal in-memory discovery: written definitions are re-discovered as
+    // plain records (route-level tests assert routing/gating, not parsing).
+    const records = [];
+    return {
+      discover: async () => ({ agents: [...records], projectAgentsDir: null }),
+      writeFile: async (filePath, content) => {
+        records.push(parseAgent(filePath, content, 'user', 'off'));
+      },
+      deleteFile: async (filePath) => {
+        const index = records.findIndex((record) => record.filePath === filePath);
+        if (index < 0) return false;
+        records.splice(index, 1);
+        return true;
+      },
+      userAgentsDir: path.join(tmpRoot, 'mounted-user-agents'),
+      projectAgentsDirFor: () => path.join(tmpRoot, 'mounted-proj-agents'),
+    };
+  })(),
     personasStore: jsonFileStore(path.join(tmpRoot, `personas-${Date.now()}-${Math.random()}.json`), 'personas'),
     allowedTools: new Set(['read', 'bash']),
     ...domainOptions,
@@ -836,19 +1026,19 @@ describe('modes domain + route mounting', () => {
   test('agent-definitions + personas CRUD through the mounted routes', async () => {
     const { call } = mountedDomain();
     const created = await call('POST', '/omp/agent-definitions', {
-      body: { definition: { name: 'via-route', prompt: 'p', tools: ['read'] } },
+      body: { definition: { name: 'via-route', description: 'd', systemPrompt: 'p', tools: ['read'] } },
     });
     expect(created.status).toBe(201);
     const listed = await call('GET', '/omp/agent-definitions');
     expect(await listed.json()).toMatchObject({ agents: [{ name: 'via-route' }] });
 
     const gated = await call('POST', '/omp/agent-definitions', {
-      body: { scope: 'project', definition: { name: 'proj', prompt: 'p' } },
+      body: { scope: 'project', definition: { name: 'proj', description: 'd', systemPrompt: 'p' } },
     });
     expect(gated.status).toBe(409);
     expect(await gated.json()).toEqual({
       error: 'project-scope-unavailable',
-      message: 'Project-scoped agent definitions require settings.projectScopes.v1; use scope "global".',
+      message: 'Project-scoped agent definitions require settings.projectScopes.v1; use scope "user".',
     });
 
     const persona = await call('POST', '/omp/personas', {

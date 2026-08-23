@@ -220,21 +220,25 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(typeof extensionInit[0].options.uiContext.askDialog).toBe('function');
   });
 
-  test('plan sessions receive the SDK PlanYolo shape {target, thinkingLevel?}', async () => {
-    // P0 defect a regression guard: the old `{autoApproveOnResolve}` literal
-    // was an unknown field — silent read-only plan mode + xd://propose
-    // TypeError (spec 02 §4). With a persisted model the correct shape is
-    // passed; without one planYolo is omitted entirely (never the bad shape).
+  test('legacy build/plan metas normalize to the standard session; planYolo never reaches createAgentSession', async () => {
+    // 02 §5.1/§5.8: the build/plan agent pair is deleted — 'plan' meta is a
+    // standard session (plan mode is driven by the mode endpoints), so no
+    // planYolo, no systemPrompt overlay, and no crash shape can occur.
     const engine = new OmpHostEngine({ agentDir });
     engine.registry.update('/repo', 's1', { agent: 'plan', model: 'p1/zzz-first' });
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'plan it' });
-    const withModel = createdOptions.at(-1);
-    expect(withModel.planYolo).toEqual({ target: { provider: 'p1', id: 'zzz-first' } });
+    const planOptions = createdOptions.at(-1);
+    expect(planOptions.planYolo).toBeUndefined();
+    expect(planOptions.systemPrompt).toBeUndefined();
+    expect(JSON.stringify(planOptions)).not.toContain('autoApproveOnResolve');
 
-    engine.registry.update('/repo', 's2', { agent: 'plan' });
-    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'plan without model' });
-    const withoutModel = createdOptions.at(-1);
-    expect(withoutModel.planYolo).toBeUndefined();
-    expect(JSON.stringify(withoutModel)).not.toContain('autoApproveOnResolve');
+    // A persona meta resolves the persona store (02 §5.1 D-B2): the overlay
+    // shapes systemPrompt/toolNames at construction.
+    engine.personas.set('grumpy', { name: 'grumpy', systemPrompt: 'Be grumpy.', tools: ['read'] });
+    engine.registry.update('/repo', 's2', { persona: 'grumpy' });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'hello' });
+    const personaOptions = createdOptions.at(-1);
+    expect(personaOptions.systemPrompt).toBe('Be grumpy.');
+    expect(personaOptions.toolNames).toEqual(['read']);
   });
 });

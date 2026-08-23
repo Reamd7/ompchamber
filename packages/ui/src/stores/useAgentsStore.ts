@@ -119,6 +119,19 @@ export interface AgentConfig {
 
   disable?: boolean;
   scope?: AgentScope;
+  // ---- omp AgentDefinition frontmatter fields (spec 02 §5.3); omp path only ----
+  /** Model patterns, e.g. ["@smol", "anthropic/*:high"]; undefined = unset. */
+  modelPatterns?: string[];
+  thinkingLevel?: string;
+  /** Sub-agents this worker may dispatch; "*" = any. */
+  spawns?: string[] | '*';
+  /** true = default prewalk target; string = custom target pattern. */
+  prewalk?: boolean | string;
+  /** true = default advisor model; string = model pattern (optional :level). */
+  advisor?: boolean | string;
+  readSummarize?: boolean;
+  /** omp-only transport field: atomic rename via PUT renameTo (server rewrites the file). */
+  renameTo?: string;
 }
 
 /**
@@ -137,17 +150,26 @@ const ompDefinitionsEnabled = async (): Promise<boolean> => {
 };
 
 /**
- * omp definition record → sidebar/picker Agent row. The omp contract has no
- * primary/permission/sampling fields (02 §5.3); `tools` and the storage
- * scope ride the wire-extras extension.
+ * omp definition record → sidebar/page Agent row (spec 02 §5.2). The omp
+ * contract has no mode/permission/sampling fields (02 §5.3): `builtIn` maps
+ * from the discovery source, `scope` from the storage layer, and the
+ * frontmatter fields ride the wire-extras extension for the settings form.
  */
 const ompDefinitionToAgent = (record: OmpAgentDefinitionRecord): AgentWithExtras => ({
   name: record.name,
   description: record.description || undefined,
-  prompt: record.prompt,
-  mode: record.mode === 'all' ? 'all' : 'subagent',
-  ...(record.tools.length > 0 ? { tools: record.tools } : {}),
-  ...(record.scope ? { scope: (record.scope === 'project' ? 'project' : 'user') as AgentScope } : {}),
+  prompt: record.systemPrompt,
+  builtIn: record.source === 'bundled',
+  ...(record.tools && record.tools.length > 0 ? { tools: record.tools } : {}),
+  scope: (record.source === 'project' ? 'project' : 'user') as AgentScope,
+  source: record.source,
+  ...(record.filePath !== undefined ? { filePath: record.filePath } : {}),
+  ...(record.model !== undefined ? { modelPatterns: record.model } : {}),
+  ...(record.thinkingLevel !== undefined ? { thinkingLevel: record.thinkingLevel } : {}),
+  ...(record.spawns !== undefined ? { spawns: record.spawns } : {}),
+  ...(record.prewalk !== undefined ? { prewalk: record.prewalk } : {}),
+  ...(record.advisor !== undefined ? { advisor: record.advisor } : {}),
+  ...(record.readSummarize !== undefined ? { readSummarize: record.readSummarize } : {}),
   ...(record.disabled !== undefined ? { disabled: record.disabled } : {}),
   ...(record.modelOverride !== undefined ? { modelOverride: record.modelOverride } : {}),
   ...(record.prewalkOverride !== undefined ? { prewalkOverride: record.prewalkOverride } : {}),
@@ -190,6 +212,16 @@ export type AgentWithExtras = Agent & {
   group?: string;
   /** omp agent-definition tool whitelist (spec 02 §5.2); undefined = all tools. */
   tools?: string[];
+  /** omp discovery source (spec 02 §5.2); bundled definitions are read-only. */
+  source?: 'project' | 'user' | 'bundled';
+  filePath?: string;
+  /** omp AgentDefinition frontmatter fields (spec 02 §5.3). */
+  modelPatterns?: string[];
+  thinkingLevel?: string;
+  spawns?: string[] | '*';
+  prewalk?: boolean | string;
+  advisor?: boolean | string;
+  readSummarize?: boolean;
   /** omp task.* override projection (spec 02 §5.2; effective value). */
   disabled?: boolean;
   modelOverride?: string;
@@ -310,6 +342,13 @@ export interface AgentDraft {
   disable?: boolean;
   /** omp agent-definition tool whitelist (spec 02 §5.2); empty = all tools. */
   tools?: string[];
+  /** omp AgentDefinition frontmatter fields (spec 02 §5.3); omp drafts only. */
+  modelPatterns?: string[];
+  thinkingLevel?: string;
+  spawns?: string[] | '*';
+  prewalk?: boolean | string;
+  advisor?: boolean | string;
+  readSummarize?: boolean;
 }
 
 interface AgentsStore {
@@ -379,7 +418,7 @@ export const useAgentsStore = create<AgentsStore>()(
             // agent-definitions resource. A failed fetch keeps the previous
             // state — it is never treated as authoritative empty success.
             if (await ompDefinitionsEnabled()) {
-              const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.list();
+              const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.list(configDirectory ?? undefined);
               if (!result || !result.ok) {
                 set({ isLoading: false });
                 return false;
@@ -471,19 +510,24 @@ export const useAgentsStore = create<AgentsStore>()(
             agentsLoadInFlight.delete(cacheKey);
           }
         },
-
         createAgent: async (config: AgentConfig) => {
           // omp mode (02 §5.2): create writes the agent-definitions resource;
-          // unified storage happens server-side, the UI never writes files.
+          // the selected project directory decides where a project-scoped
+          // definition file lands.
           if (await ompDefinitionsEnabled()) {
             const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.create({
               name: config.name,
-              prompt: (config.prompt ?? '').trim(),
-              ...(config.description ? { description: config.description } : {}),
-              ...(config.mode === 'all' || config.mode === 'subagent' ? { mode: config.mode } : {}),
-              ...(config.tools && config.tools.length > 0 ? { tools: config.tools } : {}),
-              ...(config.scope ? { scope: config.scope === 'project' ? 'project' : 'global' } : {}),
-            });
+              description: config.description ?? config.name,
+              systemPrompt: (config.prompt ?? '').trim(),
+              ...(config.tools !== undefined ? { tools: config.tools } : {}),
+              ...(config.modelPatterns !== undefined ? { model: config.modelPatterns } : {}),
+              ...(config.thinkingLevel !== undefined ? { thinkingLevel: config.thinkingLevel } : {}),
+              ...(config.spawns !== undefined ? { spawns: config.spawns } : {}),
+              ...(config.prewalk !== undefined ? { prewalk: config.prewalk } : {}),
+              ...(config.advisor !== undefined ? { advisor: config.advisor } : {}),
+              ...(config.readSummarize !== undefined ? { readSummarize: config.readSummarize } : {}),
+              ...(config.scope ? { scope: config.scope } : {}),
+            }, getConfigDirectory() ?? undefined);
             if (result?.ok) {
               invalidateAgentsLoadCache(getConfigDirectory());
               upsertOptimisticAgentLocal(set, get, config.name, config);
@@ -573,15 +617,22 @@ export const useAgentsStore = create<AgentsStore>()(
         updateAgent: async (name: string, config: Partial<AgentConfig>) => {
           // omp mode (02 §5.2): update patches the agent-definitions resource.
           if (await ompDefinitionsEnabled()) {
+            const configDirectory = getConfigDirectory();
             const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.update(name, {
               definition: {
-                ...(config.prompt != null && config.prompt.trim() ? { prompt: config.prompt } : {}),
+                ...(config.prompt !== undefined ? { systemPrompt: (config.prompt ?? '').trim() } : {}),
                 ...(config.description !== undefined ? { description: config.description } : {}),
-                ...(config.mode === 'all' || config.mode === 'subagent' ? { mode: config.mode } : {}),
                 ...(config.tools !== undefined ? { tools: config.tools } : {}),
+                ...(config.modelPatterns !== undefined ? { model: config.modelPatterns } : {}),
+                ...(config.thinkingLevel !== undefined ? { thinkingLevel: config.thinkingLevel } : {}),
+                ...(config.spawns !== undefined ? { spawns: config.spawns } : {}),
+                ...(config.prewalk !== undefined ? { prewalk: config.prewalk } : {}),
+                ...(config.advisor !== undefined ? { advisor: config.advisor } : {}),
+                ...(config.readSummarize !== undefined ? { readSummarize: config.readSummarize } : {}),
               },
-              ...(config.scope ? { scope: config.scope === 'project' ? 'project' : 'global' } : {}),
-            });
+              ...(config.scope ? { scope: config.scope } : {}),
+              ...(config.renameTo ? { renameTo: config.renameTo } : {}),
+            }, configDirectory ?? undefined);
             if (result?.ok) {
               invalidateAgentsLoadCache(getConfigDirectory());
               upsertOptimisticAgentLocal(set, get, name, config);
@@ -663,10 +714,9 @@ export const useAgentsStore = create<AgentsStore>()(
         },
 
         deleteAgent: async (name: string, scope?: AgentScope) => {
-          // omp mode (02 §5.2): delete removes the agent-definitions record.
-          // The resource is not scope-split server-side, so `scope` is unused.
+          // omp mode (02 §5.2): delete removes the definition file server-side.
           if (await ompDefinitionsEnabled()) {
-            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.remove(name);
+            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.remove(name, getConfigDirectory() ?? undefined);
             if (result?.ok) {
               invalidateAgentsLoadCache(getConfigDirectory());
               if (get().selectedAgentName === name) {

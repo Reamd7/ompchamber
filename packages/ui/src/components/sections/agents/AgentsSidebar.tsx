@@ -27,6 +27,7 @@ import { SettingsProjectSelector } from '@/components/sections/shared/SettingsPr
 import { SidebarGroup } from '@/components/sections/shared/SidebarGroup';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
+import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useOmpFeatureFlags } from '@/hooks/useOmpModelRoles';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
 
@@ -118,6 +119,7 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
     setSelectedAgent,
     setAgentDraft,
     createAgent,
+    updateAgent,
     deleteAgent,
     loadAgents,
   } = useAgentsStore(useShallow((s) => ({
@@ -126,13 +128,31 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
     setSelectedAgent: s.setSelectedAgent,
     setAgentDraft: s.setAgentDraft,
     createAgent: s.createAgent,
+    updateAgent: s.updateAgent,
     deleteAgent: s.deleteAgent,
     loadAgents: s.loadAgents,
   })));
 
+  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const prevProjectIdRef = React.useRef<string | null | undefined>(activeProjectId);
+
   React.useEffect(() => {
     loadAgents();
   }, [loadAgents]);
+
+  // Project switch (02 §5.2 discovery is directory-scoped): refetch the
+  // definitions for the newly selected project and drop a selection that no
+  // longer resolves in that directory's discovery chain.
+  React.useEffect(() => {
+    if (prevProjectIdRef.current === activeProjectId) return;
+    prevProjectIdRef.current = activeProjectId;
+    const selected = useAgentsStore.getState().selectedAgentName;
+    if (selected !== null && !agents.some((a) => a.name === selected)) {
+      setSelectedAgent(null);
+      setAgentDraft(null);
+    }
+    void loadAgents();
+  }, [activeProjectId, agents, loadAgents, setAgentDraft, setSelectedAgent]);
 
   const bgClass = 'bg-background';
 
@@ -234,6 +254,14 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
       ? `${agent.model.providerID}/${agent.model.modelID}`
       : null;
     const draftAgent = agent as Agent & { disable?: boolean };
+    const ompAgent = agent as Agent & {
+      modelPatterns?: string[];
+      thinkingLevel?: string;
+      spawns?: string[] | '*';
+      prewalk?: boolean | string;
+      advisor?: boolean | string;
+      readSummarize?: boolean;
+    };
     setAgentDraft({
       name: newName,
       scope: extAgent.scope || 'user',
@@ -246,6 +274,12 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
       mode: agent.mode,
       permission: rulesetToPermissionConfig(agent.permission),
       disable: draftAgent.disable,
+      ...(ompAgent.modelPatterns !== undefined ? { modelPatterns: ompAgent.modelPatterns } : {}),
+      ...(ompAgent.thinkingLevel !== undefined ? { thinkingLevel: ompAgent.thinkingLevel } : {}),
+      ...(ompAgent.spawns !== undefined ? { spawns: ompAgent.spawns } : {}),
+      ...(ompAgent.prewalk !== undefined ? { prewalk: ompAgent.prewalk } : {}),
+      ...(ompAgent.advisor !== undefined ? { advisor: ompAgent.advisor } : {}),
+      ...(ompAgent.readSummarize !== undefined ? { readSummarize: ompAgent.readSummarize } : {}),
     });
     setSelectedAgent(newName);
 
@@ -275,8 +309,25 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
       toast.error(t('settings.agents.sidebar.toast.agentExists'));
       return;
     }
+    if (ompAgentDefinitions) {
+      // omp mode (02 §5.2): atomic server-side rename — the definition file
+      // is rewritten under the new name; no fields travel through the UI,
+      // so nothing can be dropped (the legacy create+delete path lost the
+      // omp-only frontmatter fields).
+      const result = await updateAgent(renameDialogAgent.name, { renameTo: sanitizedName });
+      if (result.ok) {
+        toast.success(t('settings.agents.sidebar.toast.agentRenamed', { name: sanitizedName }));
+        setSelectedAgent(sanitizedName);
+      } else {
+        toast.error(result.reason === 'agent-definition-exists'
+          ? t('settings.agents.sidebar.toast.agentExists')
+          : t('settings.agents.sidebar.toast.renameFailed'));
+      }
+      setRenameDialogAgent(null);
+      return;
+    }
 
-    // Create new agent with new name and all existing config
+    // Legacy (OpenCode runtime): create new agent with new name and all existing config
     const renameModelStr = renameDialogAgent.model?.providerID && renameDialogAgent.model?.modelID
       ? `${renameDialogAgent.model.providerID}/${renameDialogAgent.model.modelID}`
       : null;
@@ -333,6 +384,22 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
   const builtInAgents = visibleAgents.filter(isAgentBuiltIn);
   const customAgents = visibleAgents.filter((agent) => !isAgentBuiltIn(agent));
 
+  // omp mode (02 §5.2): group by the discovery source — project, user,
+  // bundled (read-only) — mirroring the TUI /agents hub grouping.
+  const ompAgentDefinitions = useOmpFeatureFlags().agentDefinitions;
+  const ompGroups = useMemo(() => {
+    if (!ompAgentDefinitions) return null;
+    const bySource: Record<'project' | 'user' | 'bundled', typeof visibleAgents> = {
+      project: [], user: [], bundled: [],
+    };
+    for (const agent of visibleAgents) {
+      const source = (agent as Agent & { source?: 'project' | 'user' | 'bundled' }).source
+        ?? (isAgentBuiltIn(agent) ? 'bundled' : 'user');
+      bySource[source]?.push(agent);
+    }
+    return bySource;
+  }, [ompAgentDefinitions, visibleAgents]);
+
   // Group custom agents by subfolder
   const { groupedCustomAgents, ungroupedCustomAgents } = useMemo(() => {
     const groups: Record<string, typeof customAgents> = {};
@@ -381,6 +448,40 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
             <p className="typography-ui-label font-medium">{t('settings.agents.sidebar.empty.title')}</p>
             <p className="typography-meta mt-1 opacity-75">{t('settings.agents.sidebar.empty.description')}</p>
           </div>
+        ) : ompGroups ? (
+          <>
+            {(['project', 'user', 'bundled'] as const).map((source) => (
+              ompGroups[source].length > 0 ? (
+                <React.Fragment key={source}>
+                  <div className="px-2 pb-1.5 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {source === 'project'
+                      ? t('settings.agents.sidebar.section.project')
+                      : source === 'user'
+                        ? t('settings.agents.sidebar.section.user')
+                        : t('settings.agents.sidebar.section.bundled')}
+                    <span className="ml-1.5 font-normal opacity-70">{ompGroups[source].length}</span>
+                  </div>
+                  {ompGroups[source].map((agent) => (
+                    <AgentListItem
+                      key={agent.name}
+                      agent={agent}
+                      isSelected={selectedAgentName === agent.name}
+                      onSelect={() => {
+                        setSelectedAgent(agent.name);
+                        onItemSelect?.();
+                      }}
+                      onRename={source !== 'bundled' ? () => handleOpenRenameDialog(agent) : undefined}
+                      onDelete={source !== 'bundled' ? () => handleDeleteAgent(agent) : undefined}
+                      onDuplicate={() => handleDuplicateAgent(agent)}
+                      getAgentModeIcon={getAgentModeIcon}
+                      isMenuOpen={openMenuAgent === agent.name}
+                      onMenuOpenChange={(open) => setOpenMenuAgent(open ? agent.name : null)}
+                    />
+                  ))}
+                </React.Fragment>
+              ) : null
+            ))}
+          </>
         ) : (
           <>
             {builtInAgents.length > 0 && (
@@ -452,7 +553,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
                     onSelect={() => {
                       setSelectedAgent(agent.name);
                       onItemSelect?.();
-
                     }}
                     onRename={() => handleOpenRenameDialog(agent)}
                     onDelete={() => handleDeleteAgent(agent)}
