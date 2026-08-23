@@ -309,6 +309,7 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
 // agents stay read-only, and project/user dirs mirror the engine adapters.
 const definitionHarness = (overrides = {}) => {
   const refreshCalls = [];
+  const revealCalls = [];
   const root = path.join(tmpRoot, `harness-${Math.random().toString(36).slice(2)}`);
   const userAgentsDir = path.join(root, 'user-agents');
   const projAgentsDir = path.join(root, 'proj', '.omp', 'agents');
@@ -350,9 +351,10 @@ const definitionHarness = (overrides = {}) => {
     projectAgentsDirFor: (directory) => path.join(path.resolve(directory ?? root), '.omp', 'agents'),
     allowedTools: new Set(['read', 'bash', 'write', 'task', 'yield', 'mcp__custom']),
     onDefinitionsChanged: async (directory) => { refreshCalls.push(directory); },
+    revealFile: async (filePath) => { revealCalls.push(filePath); },
     ...overrides,
   });
-  return { handlers, files, writes, deletes, userAgentsDir, projAgentsDir, root, refreshCalls };
+  return { handlers, files, writes, deletes, userAgentsDir, projAgentsDir, root, refreshCalls, revealCalls };
 };
 
 const ctxForName = (name, directory) => ({
@@ -572,6 +574,34 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
     const refreshed = await handlers.refresh(null, ctxForName(undefined, PROJ_DIR));
     expect(refreshed.status).toBe(204);
     expect(refreshCalls).toHaveLength(4);
+  });
+
+  test('reveal opens the definition file for editable layers; bundled and unknown answer 409/404', async () => {
+    const { handlers, revealCalls, userAgentsDir } = definitionHarness();
+    await handlers.create(
+      post('http://x', { scope: 'user', definition: { name: 'revealable', description: 'd', systemPrompt: 'p' } }),
+      ctxForName(undefined, PROJ_DIR),
+    );
+    const revealed = await handlers.reveal(null, ctxForName('revealable', PROJ_DIR));
+    expect(revealed.status).toBe(200);
+    expect(revealCalls).toEqual([path.join(userAgentsDir, 'revealable.md')]);
+
+    let bundled = null;
+    try {
+      await handlers.reveal(null, ctxForName('scout', PROJ_DIR));
+    } catch (error) {
+      bundled = error;
+    }
+    expect(bundled?.status).toBe(409);
+    expect(bundled?.body.error).toBe('bundled-read-only');
+
+    let missing = null;
+    try {
+      await handlers.reveal(null, ctxForName('ghost', PROJ_DIR));
+    } catch (error) {
+      missing = error;
+    }
+    expect(missing?.status).toBe(404);
   });
 
   test('a failing onDefinitionsChanged never fails the mutation (dispatch stays fresh regardless)', async () => {

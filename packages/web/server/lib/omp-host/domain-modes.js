@@ -396,6 +396,7 @@ export function createAgentDefinitionHandlers({
   settingsProjectScopes = false,
   overridesFor,
   onDefinitionsChanged,
+  revealFile,
 } = {}) {
   if (typeof discover !== 'function' || typeof writeFile !== 'function' || typeof deleteFile !== 'function'
     || typeof userAgentsDir !== 'string' || typeof projectAgentsDirFor !== 'function') {
@@ -570,6 +571,34 @@ export function createAgentDefinitionHandlers({
       const directory = directoryParam(ctx);
       await definitionsChanged(directory);
       return new Response(null, { status: 204 });
+    },
+
+    /** POST /omp/agent-definitions/{name}/reveal — open the definition file's folder. */
+    async reveal(request, ctx) {
+      const directory = directoryParam(ctx);
+      const existing = await findAgent(directory, ctx?.params?.name);
+      if (!existing) throw new ModeDomainError(404, { error: 'not-found' });
+      if (existing.source === 'bundled') {
+        throw new ModeDomainError(409, {
+          error: 'bundled-read-only',
+          name: existing.name,
+          message: 'Bundled agents have no definition file. Create a user or project copy to customize it.',
+        });
+      }
+      if (typeof revealFile !== 'function' || !isManaged(existing, directory)) {
+        throw new ModeDomainError(404, {
+          error: 'definition-not-managed',
+          name: existing.name,
+          message: 'This definition has no editable file in the user or project agents directory.',
+        });
+      }
+      try {
+        await revealFile(path.resolve(existing.filePath));
+      } catch (error) {
+        console.warn('[omp-host] failed to reveal agent definition:', error?.message ?? error);
+        return json({ error: 'reveal-failed' }, { status: 500 });
+      }
+      return json({ ok: true });
     },
   };
 }
@@ -1441,6 +1470,13 @@ export function registerModesDomainRoutes(route, domain, { features = ompFeature
     route('POST', '/omp/agent-definitions/refresh', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
         return await domain.agentDefinitions.refresh(request, ctx);
+      } catch (error) {
+        return toResponse(error);
+      }
+    }));
+    route('POST', '/omp/agent-definitions/{name}/reveal', gated('agentDefinitions.v1', async (request, ctx) => {
+      try {
+        return await domain.agentDefinitions.reveal(request, ctx);
       } catch (error) {
         return toResponse(error);
       }

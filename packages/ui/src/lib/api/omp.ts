@@ -107,6 +107,7 @@ export const OMP_ENDPOINTS = {
   settings: '/api/omp/settings',
   agentDefinitions: '/api/omp/agent-definitions',
   agentDefinition: (name: string) => `/api/omp/agent-definitions/${encodeURIComponent(name)}`,
+  agentDefinitionReveal: (name: string) => `/api/omp/agent-definitions/${encodeURIComponent(name)}/reveal`,
   personas: '/api/omp/personas',
   persona: (name: string) => `/api/omp/personas/${encodeURIComponent(name)}`,
   agentRuns: '/api/omp/agent-runs',
@@ -789,7 +790,6 @@ const readCrudDeleteResponse = async (response: Response): Promise<OmpCrudDelete
   }
   return { ok: false, unavailable: false, kind: 'error' };
 };
-
 export interface OmpAgentDefinitionsAPI {
   list(directory?: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord[]>>;
   get(name: string, directory?: string): Promise<OmpFetchJsonResult<OmpAgentDefinitionRecord>>;
@@ -807,6 +807,8 @@ export interface OmpAgentDefinitionsAPI {
     directory?: string,
   ): Promise<OmpCrudMutationResult<OmpAgentDefinitionRecord>>;
   remove(name: string, directory?: string): Promise<OmpCrudDeleteResult>;
+  /** POST /agent-definitions/{name}/reveal — open the definition file in the system file manager. */
+  reveal(name: string, directory?: string): Promise<{ ok: boolean } | { ok: false; error?: string }>;
 }
 
 const parseAgentDefinitionRecord = (value: unknown): OmpAgentDefinitionRecord | null => {
@@ -900,6 +902,25 @@ export const createOmpAgentDefinitionsAPI = (apiOptions: OmpJsonApiOptions = {})
         return { ok: false, unavailable: false, kind: 'error' };
       }
       return readCrudDeleteResponse(response);
+    },
+    async reveal(name, directory) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.agentDefinitionReveal(name), {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            ...(directory ? { 'x-opencode-directory': directory } : {}),
+          },
+        });
+      } catch {
+        return { ok: false, error: undefined };
+      }
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null) as { error?: unknown } | null;
+        return { ok: false, error: typeof payload?.error === 'string' ? payload.error : undefined };
+      }
+      return { ok: true };
     },
   };
 };

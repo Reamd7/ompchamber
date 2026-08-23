@@ -9,6 +9,8 @@ interface SettingsInfoHintProps {
   className?: string;
   /** Tooltip panel width cap. @default 'max-w-sm' */
   contentClassName?: string;
+  /** Official documentation link rendered below the hint text (opens in a new tab). */
+  docsUrl?: string;
 }
 
 /**
@@ -21,6 +23,7 @@ export const SettingsInfoHint: React.FC<SettingsInfoHintProps> = ({
   children,
   className,
   contentClassName,
+  docsUrl,
 }) => {
   const { t } = useI18n();
   const [open, setOpen] = React.useState(false);
@@ -64,6 +67,18 @@ export const SettingsInfoHint: React.FC<SettingsInfoHintProps> = ({
       </TooltipTrigger>
       <TooltipContent sideOffset={8} className={cn('max-w-sm', contentClassName)}>
         {children}
+        {docsUrl ? (
+          <a
+            href={docsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(event) => event.stopPropagation()}
+            className="mt-2 inline-flex items-center gap-1 typography-meta text-primary hover:underline"
+          >
+            <Icon name="external-link" className="h-3 w-3" />
+            {t('settings.common.infoHintDocs')}
+          </a>
+        ) : null}
       </TooltipContent>
     </Tooltip>
   );

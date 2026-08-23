@@ -2,7 +2,22 @@
 // Model patterns / spawns / prewalk / advisor map between the CSV-ish inputs
 // and the omp AgentDefinition frontmatter fields; `null` clears.
 
+
 import { isAgentBuiltIn, type AgentWithExtras } from '@/stores/useAgentsStore';
+
+/** Official oh-my-pi documentation (github.com/can1357/oh-my-pi/tree/main/docs). */
+export const OMP_DOCS = {
+  agentDefinitions:
+    'https://github.com/can1357/oh-my-pi/blob/main/docs/task-agent-discovery.md',
+  agentDefinitionShape:
+    'https://github.com/can1357/oh-my-pi/blob/main/docs/task-agent-discovery.md#agent-definition-shape',
+  modelPrecedence:
+    'https://github.com/can1357/oh-my-pi/blob/main/docs/task-agent-discovery.md#model-and-structured-output-precedence',
+  prewalk: 'https://github.com/can1357/oh-my-pi/blob/main/docs/prewalk.md',
+  advisor: 'https://github.com/can1357/oh-my-pi/blob/main/docs/advisor-watchdog.md',
+  agentHub: 'https://github.com/can1357/oh-my-pi/blob/main/docs/agent-hub.md',
+} as const;
+
 
 export type PatternMode = 'off' | 'default' | 'custom';
 

@@ -51,8 +51,8 @@ import {
 } from './domain-modes.js';
 import { createDomainChrome } from './domain-chrome.js';
 import { ompFeatures } from './omp-parity.js';
+import { revealCommand } from './domain-plugins.js';
 import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
-
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 
 /**
@@ -159,6 +159,14 @@ export class OmpHostEngine {
         // per cwd and every task tool advertises that list to the model;
         // refreshAgentDiscovery republishes the fresh set to live sessions.
         onDefinitionsChanged: (directory) => refreshAgentDiscovery(directory ?? process.cwd()),
+        // Reveal in file manager (plugins.v1 parity): reuse the plugins
+        // domain's platform builder instead of a second opener implementation.
+        revealFile: async (filePath) => {
+          const { execFile } = await import('node:child_process');
+          const { promisify } = await import('node:util');
+          const { command, args } = revealCommand(process.platform, filePath);
+          await promisify(execFile)(command, args, { windowsHide: true });
+        },
         userAgentsDir: this.#userAgentsDir(),
         projectAgentsDirFor: (directory) => path.join(path.resolve(directory), '.omp', 'agents'),
       },

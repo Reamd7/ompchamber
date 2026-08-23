@@ -84,6 +84,8 @@ interface SettingsSectionProps {
   titleAccessory?: React.ReactNode;
   /** Helper text hidden behind an info icon next to the title. */
   info?: React.ReactNode;
+  /** Official docs link surfaced inside the info hint (opens in a new tab). */
+  infoDocsUrl?: string;
   /** Optional action aligned to the right of the header. */
   headerAction?: React.ReactNode;
   children: React.ReactNode;
@@ -106,6 +108,8 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   description,
   titleAccessory,
   info,
+
+  infoDocsUrl,
   headerAction,
   children,
   divider = true,
@@ -135,7 +139,7 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
                   title
                 )}
                 {titleAccessory}
-                {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+                {info != null ? <SettingsInfoHint docsUrl={infoDocsUrl}>{info}</SettingsInfoHint> : null}
               </div>
             ) : null}
             {description != null ? (
@@ -191,6 +195,8 @@ interface SettingsControlGroupProps {
   description?: React.ReactNode;
   /** Helper text hidden behind an info icon next to the group title. */
   info?: React.ReactNode;
+  /** Official docs link surfaced inside the info hint (opens in a new tab). */
+  infoDocsUrl?: string;
   children: React.ReactNode;
   className?: string;
   contentClassName?: string;
@@ -202,6 +208,8 @@ export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
   title,
   description,
   info,
+
+  infoDocsUrl,
   children,
   className,
   contentClassName,
@@ -214,7 +222,7 @@ export const SettingsControlGroup: React.FC<SettingsControlGroupProps> = ({
           {title != null ? (
             <div className="flex items-center gap-1.5">
               <SettingsGroupTitle>{title}</SettingsGroupTitle>
-              {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+              {info != null ? <SettingsInfoHint docsUrl={infoDocsUrl}>{info}</SettingsInfoHint> : null}
             </div>
           ) : null}
           {description != null ? (
@@ -232,6 +240,8 @@ interface SettingsStackedFieldProps {
   description?: React.ReactNode;
   /** Helper text hidden behind an info icon next to the label. */
   info?: React.ReactNode;
+  /** Official docs link surfaced inside the info hint (opens in a new tab). */
+  infoDocsUrl?: string;
   /** Where helper text sits relative to the control. @default 'before' */
   descriptionPlacement?: 'before' | 'after';
   children: React.ReactNode;
@@ -248,6 +258,8 @@ export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
   label,
   description,
   info,
+
+  infoDocsUrl,
   descriptionPlacement = 'before',
   children,
   settingsItem,
@@ -264,7 +276,7 @@ export const SettingsStackedField: React.FC<SettingsStackedFieldProps> = ({
       <div className="space-y-0.5">
         <div className="flex items-center gap-1.5">
           <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
-          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+          {info != null ? <SettingsInfoHint docsUrl={infoDocsUrl}>{info}</SettingsInfoHint> : null}
         </div>
         {descriptionPlacement === 'before' ? descriptionNode : null}
       </div>
@@ -279,6 +291,8 @@ interface SettingsFieldRowProps {
   description?: React.ReactNode;
   /** Helper text hidden behind an info icon next to the label. */
   info?: React.ReactNode;
+  /** Official docs link surfaced inside the info hint (opens in a new tab). */
+  infoDocsUrl?: string;
   children: React.ReactNode;
   settingsItem?: string;
   className?: string;
@@ -295,6 +309,8 @@ export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
   label,
   description,
   info,
+
+  infoDocsUrl,
   children,
   settingsItem,
   className,
@@ -312,7 +328,7 @@ export const SettingsFieldRow: React.FC<SettingsFieldRowProps> = ({
       <div className="min-w-0 @xl:w-56 @xl:shrink-0">
         <div className="flex items-center gap-1.5">
           <div className={SETTINGS_FIELD_LABEL_CLASS}>{label}</div>
-          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+          {info != null ? <SettingsInfoHint docsUrl={infoDocsUrl}>{info}</SettingsInfoHint> : null}
         </div>
         {description != null ? (
           <p className={cn(SETTINGS_HELPER_CLASS, 'mt-0.5')}>{description}</p>
@@ -365,6 +381,8 @@ interface SettingsCheckboxRowProps {
   labelAccessory?: React.ReactNode;
   /** Helper text hidden behind an info icon next to the label. */
   info?: React.ReactNode;
+  /** Official docs link surfaced inside the info hint (opens in a new tab). */
+  infoDocsUrl?: string;
 }
 
 /** Shared checkbox setting row with keyboard support. */
@@ -379,6 +397,8 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
   className,
   labelAccessory,
   info,
+
+  infoDocsUrl,
 }) => {
   const toggle = () => {
     if (!disabled) onChange(!checked);
@@ -417,7 +437,7 @@ export const SettingsCheckboxRow: React.FC<SettingsCheckboxRowProps> = ({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={SETTINGS_FIELD_LABEL_CLASS}>{label}</span>
           {labelAccessory}
-          {info != null ? <SettingsInfoHint>{info}</SettingsInfoHint> : null}
+          {info != null ? <SettingsInfoHint docsUrl={infoDocsUrl}>{info}</SettingsInfoHint> : null}
         </div>
         {hasDescription ? (
           <span className={SETTINGS_HELPER_CLASS}>{description}</span>

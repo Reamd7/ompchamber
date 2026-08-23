@@ -32,8 +32,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Icon } from '@/components/icon/Icon';
-import { AgentPermissionsEditor } from './AgentPermissionsEditor';
+import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { AgentPermissionsEditor } from './AgentPermissionsEditor';
 import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
 import {
   applyTaskOverrideChanges,
@@ -51,6 +52,7 @@ import {
   parseCsvValue,
   patternModeOf,
   patternValueFrom,
+  OMP_DOCS,
   OMP_THINKING_LEVELS,
   type OmpAgentFormState,
   type PatternMode,
@@ -230,6 +232,7 @@ const AgentTaskOverridesSection: React.FC<{ agentName: string }> = ({ agentName 
     <SettingsSection
       title={t('settings.agents.page.overrides.title')}
       info={t('settings.agents.page.overrides.hint')}
+      infoDocsUrl={OMP_DOCS.agentHub}
       settingsItem="agents.task-overrides"
       contentClassName="space-y-3"
     >
@@ -690,6 +693,29 @@ export const AgentsPage: React.FC = () => {
                     ? t('settings.agents.sidebar.section.user')
                     : t('settings.agents.sidebar.section.bundled')}
               </span>
+              {!isReadOnly && (selectedAgent as AgentWithExtras).filePath ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  data-testid="omp-agent-reveal"
+                  onClick={() => {
+                    const name = selectedAgent?.name;
+                    if (!name) return;
+                    void getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.reveal(
+                      name,
+                      getConfigDirectory() ?? undefined,
+                    ).then((result) => {
+                      if (!result.ok) {
+                        toast.error(t('settings.agents.page.toast.revealFailed'));
+                      }
+                    });
+                  }}
+                >
+                  <Icon name="folder" className="size-3.5" />
+                  {t('settings.agents.page.actions.reveal')}
+                </Button>
+              ) : null}
             </SettingsFieldRow>
           )}
 
@@ -730,6 +756,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.tools"
             label={t('settings.agents.page.field.tools')}
             info={t('settings.agents.page.field.toolsHint')}
+            infoDocsUrl={OMP_DOCS.agentDefinitionShape}
           >
             <Input
               value={ompForm.tools}
@@ -744,6 +771,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.model-patterns"
             label={t('settings.agents.page.field.modelPatterns')}
             info={t('settings.agents.page.field.modelPatternsHint')}
+            infoDocsUrl={OMP_DOCS.modelPrecedence}
           >
             <Input
               value={ompForm.modelPatterns}
@@ -758,6 +786,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.thinking-level"
             label={t('settings.agents.page.field.thinkingLevel')}
             info={t('settings.agents.page.field.thinkingLevelHint')}
+            infoDocsUrl={OMP_DOCS.agentDefinitionShape}
           >
             <Select
               value={ompForm.thinkingLevel || '__default'}
@@ -781,6 +810,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.spawns"
             label={t('settings.agents.page.field.spawns')}
             info={t('settings.agents.page.field.spawnsHint')}
+            infoDocsUrl={OMP_DOCS.agentDefinitionShape}
           >
             <Input
               value={ompForm.spawns}
@@ -795,6 +825,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.prewalk"
             label={t('settings.agents.page.field.prewalk.label')}
             info={t('settings.agents.page.field.prewalk.hint')}
+            infoDocsUrl={OMP_DOCS.prewalk}
           >
             <SettingsChipGroup
               aria-label={t('settings.agents.page.field.prewalk.label')}
@@ -822,6 +853,7 @@ export const AgentsPage: React.FC = () => {
             settingsItem="agents.advisor"
             label={t('settings.agents.page.field.advisor.label')}
             info={t('settings.agents.page.field.advisor.hint')}
+            infoDocsUrl={OMP_DOCS.advisor}
           >
             <SettingsChipGroup
               aria-label={t('settings.agents.page.field.advisor.label')}
@@ -853,6 +885,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.readSummarize.label')}
             ariaLabel={t('settings.agents.page.field.readSummarize.label')}
             info={t('settings.agents.page.field.readSummarize.hint')}
+            infoDocsUrl={OMP_DOCS.agentDefinitionShape}
           />
         </SettingsSection>
 
