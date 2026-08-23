@@ -2149,6 +2149,7 @@ export const settingsDict = {
   'settings.openchamber.desktopPassword.field.passwordPlaceholder': '不需要密碼',
   'settings.page.plugins.title': '外掛',
   'settings.plugins.dialog.add.action.cancel': '取消',
+  'settings.plugins.dialog.add.scopeHint': '專案級僅適用於 marketplace 安裝（name@marketplace）；npm 與本機路徑安裝始終寫入使用者插件目錄。',
   'settings.plugins.dialog.add.action.submit': '新增',
   'settings.plugins.dialog.add.tab.file': '新增檔案',
   'settings.plugins.dialog.add.tab.npm': '從 npm',

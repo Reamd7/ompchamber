@@ -1118,6 +1118,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': 'Новий файл',
   'settings.plugins.dialog.add.action.submit': 'Додати',
   'settings.plugins.dialog.add.action.cancel': 'Скасувати',
+  'settings.plugins.dialog.add.scopeHint': 'Область проєкту застосовується лише до встановлень із marketplace (name@marketplace); встановлення npm і з локального шляху завжди потрапляють до каталогу плагінів користувача.',
   'settings.plugins.toast.created': 'Плагін додано',
   'settings.plugins.toast.updated': 'Плагін оновлено',
   'settings.plugins.toast.reloadFailed': 'Не вдалося перезавантажити opencode; потрібен перезапуск',

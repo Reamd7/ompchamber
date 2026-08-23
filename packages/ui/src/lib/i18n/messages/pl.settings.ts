@@ -688,6 +688,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': 'Nowy plik',
   'settings.plugins.dialog.add.action.submit': 'Dodaj',
   'settings.plugins.dialog.add.action.cancel': 'Anuluj',
+  'settings.plugins.dialog.add.scopeHint': 'Zakres projektu dotyczy tylko instalacji z marketplace (name@marketplace); instalacje npm i ze ścieżki lokalnej trafiają zawsze do katalogu wtyczek użytkownika.',
   'settings.plugins.toast.created': 'Plugin dodany',
   'settings.plugins.toast.updated': 'Plugin zaktualizowany',
   'settings.plugins.toast.reloadFailed': 'Nie udało się przeładować opencode; wymagany restart',

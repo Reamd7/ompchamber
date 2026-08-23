@@ -46,15 +46,6 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
   const [installSpec, setInstallSpec] = React.useState('');
   const [installScope, setInstallScope] = React.useState<'user' | 'project'>('user');
 
-  // omp semantics: only marketplace installs (name@marketplace) support project
-  // scope. npm specs and local paths always install to the user plugins root.
-  // Show the Project button only for specs that plausibly reference a marketplace.
-  const specLooksLikeMarketplace = installSpec.trim().length > 0
-    && installSpec.trim().includes('@')
-    && !installSpec.trim().startsWith('@')
-    && !/\d/.test(installSpec.trim().split('@').pop() ?? '');
-  const effectiveScope = specLooksLikeMarketplace ? installScope : 'user';
-
   React.useEffect(() => {
     void load();
   }, [activeProjectId, load]);
@@ -140,11 +131,17 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
   const handleInstall = async () => {
     const spec = installSpec.trim();
     if (!spec) return;
-    const result = await install(spec, specLooksLikeMarketplace ? installScope : undefined);
+    const result = await install(spec, installScope);
     if (result.ok) {
       setInstallSpec('');
       setInstallOpen(false);
-      toast.success(t('settings.view.pendingRestart.saved'));
+      // The server echoes omp's own scope warning when the requested scope
+      // cannot be honored (npm/local specs) — surface it instead of a plain success.
+      if (result.message?.includes('Warning') || result.message?.includes('--scope')) {
+        toast.warning(result.message);
+      } else {
+        toast.success(t('settings.view.pendingRestart.saved'));
+      }
     } else {
       toast.error(result.error || t('settings.plugins.sidebar.toast.deleteFailed'));
     }
@@ -217,11 +214,10 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
             <DialogDescription>{t('settings.plugins.sidebar.empty.description')}</DialogDescription>
           </DialogHeader>
           <div className="flex gap-2">
-            <Button type="button" size="sm" variant={effectiveScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
-            {specLooksLikeMarketplace ? (
-              <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
-            ) : null}
+            <Button type="button" size="sm" variant={installScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
+            <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
           </div>
+          <p className="text-xs text-muted-foreground">{t('settings.plugins.dialog.add.scopeHint')}</p>
           <Input value={installSpec} onChange={(event) => setInstallSpec(event.target.value)} placeholder={t('settings.plugins.page.field.spec.placeholder')} className="font-mono" data-settings-item="plugins.spec" />
           <DialogFooter>
             <Button variant="ghost" onClick={() => setInstallOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>

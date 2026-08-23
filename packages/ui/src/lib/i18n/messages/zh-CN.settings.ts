@@ -1118,6 +1118,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': '新建文件',
   'settings.plugins.dialog.add.action.submit': '添加',
   'settings.plugins.dialog.add.action.cancel': '取消',
+  'settings.plugins.dialog.add.scopeHint': '项目级仅适用于 marketplace 安装（name@marketplace）；npm 与本地路径安装始终写入用户插件目录。',
   'settings.plugins.toast.created': '插件已添加',
   'settings.plugins.toast.updated': '插件已更新',
   'settings.plugins.toast.reloadFailed': 'opencode 重新加载失败；需要重启',

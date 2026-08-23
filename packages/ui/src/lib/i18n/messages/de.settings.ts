@@ -1088,6 +1088,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': 'Neue Datei',
   'settings.plugins.dialog.add.action.submit': 'Hinzufügen',
   'settings.plugins.dialog.add.action.cancel': 'Abbrechen',
+  'settings.plugins.dialog.add.scopeHint': 'Der Projekt-Geltungsbereich gilt nur für Marketplace-Installationen (name@marketplace); npm- und lokale Pfadinstallationen landen immer im Benutzer-Plugin-Verzeichnis.',
   'settings.plugins.toast.created': 'Plugin hinzugefügt',
   'settings.plugins.toast.updated': 'Plugin aktualisiert',
   'settings.plugins.toast.reloadFailed': 'opencode Neuladen fehlgeschlagen — Neustart erforderlich',

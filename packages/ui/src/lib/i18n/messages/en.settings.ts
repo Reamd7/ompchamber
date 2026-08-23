@@ -1150,6 +1150,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': 'New file',
   'settings.plugins.dialog.add.action.submit': 'Add',
   'settings.plugins.dialog.add.action.cancel': 'Cancel',
+  'settings.plugins.dialog.add.scopeHint': 'Project scope applies to marketplace installs (name@marketplace); npm and local-path installs always go to the user plugins directory.',
   'settings.plugins.toast.created': 'Plugin added',
   'settings.plugins.toast.updated': 'Plugin updated',
   'settings.plugins.toast.reloadFailed': 'opencode reload failed — restart required',

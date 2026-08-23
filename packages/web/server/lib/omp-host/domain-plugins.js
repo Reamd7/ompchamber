@@ -434,11 +434,12 @@ export const registerPluginsDomainRoutes = (
       const marketplaces = await marketplaceManager.listMarketplaces();
       const target = classifyInstallTarget(spec, new Set(marketplaces.map((entry) => entry.name)));
       const scope = body?.scope === 'project' ? 'project' : 'user';
-      // omp semantics: only marketplace installs support project scope. npm
-      // packages and local paths always install to the user plugins root.
-      // Reject the mismatch instead of silently downgrading scope.
+      // omp semantics (plugin-cli.ts --scope): the user's scope choice is
+      // explicit; only marketplace installs can honor project. npm/local specs
+      // install user-scope with a warning instead of rejecting the request.
+      let scopeWarning = null;
       if (scope === 'project' && target.type !== 'marketplace') {
-        return badRequest('project scope is only supported for marketplace installs (name@marketplace)');
+        scopeWarning = `--scope is only supported for marketplace installs (name@marketplace). Ignoring for ${spec}.`;
       }
       if (target.type === 'marketplace') {
         await marketplaceManager.installPlugin(target.name, target.marketplace, { scope });
@@ -451,7 +452,9 @@ export const registerPluginsDomainRoutes = (
         await manager.install(target.spec);
       }
       await invalidatePluginCaches(directory);
-      return json(restartDeferred('OMP plugin installed. Restart the omp engine to apply it.'));
+      return json(restartDeferred(
+        scopeWarning ?? 'OMP plugin installed. Restart the omp engine to apply it.',
+      ));
     } catch (error) {
       console.warn('[omp-host] failed to install plugin:', error?.message ?? error);
       return failed('Failed to install omp plugin');

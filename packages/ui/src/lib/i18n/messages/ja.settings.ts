@@ -1151,6 +1151,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': '新しいファイル',
   'settings.plugins.dialog.add.action.submit': '追加',
   'settings.plugins.dialog.add.action.cancel': 'キャンセル',
+  'settings.plugins.dialog.add.scopeHint': 'プロジェクトスコープは marketplace インストール（name@marketplace）のみに適用されます。npm とローカルパスのインストールは常にユーザープラグインディレクトリに配置されます。',
   'settings.plugins.toast.created': 'Plugin を追加しました',
   'settings.plugins.toast.updated': 'Plugin を更新しました',
   'settings.plugins.toast.reloadFailed': 'opencode の再読み込みに失敗しました - 再起動が必要です',

@@ -1118,6 +1118,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': 'Archivo nuevo',
   'settings.plugins.dialog.add.action.submit': 'Añadir',
   'settings.plugins.dialog.add.action.cancel': 'Cancelar',
+  'settings.plugins.dialog.add.scopeHint': 'El ámbito de proyecto solo se aplica a instalaciones de marketplace (name@marketplace); las instalaciones npm y de ruta local siempre van al directorio de plugins del usuario.',
   'settings.plugins.toast.created': 'Plugin añadido',
   'settings.plugins.toast.updated': 'Plugin actualizado',
   'settings.plugins.toast.reloadFailed': 'Falló la recarga de opencode; se requiere reiniciar',

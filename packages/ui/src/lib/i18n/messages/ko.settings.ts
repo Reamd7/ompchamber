@@ -1118,6 +1118,7 @@ export const settingsDict = {
   'settings.plugins.dialog.add.tab.file': '새 파일',
   'settings.plugins.dialog.add.action.submit': '추가',
   'settings.plugins.dialog.add.action.cancel': '취소',
+  'settings.plugins.dialog.add.scopeHint': '프로젝트 스코프는 marketplace 설치(name@marketplace)에만 적용됩니다. npm 및 로컬 경로 설치는 항상 사용자 플러그인 디렉터리에 설치됩니다.',
   'settings.plugins.toast.created': '플러그인이 추가되었습니다',
   'settings.plugins.toast.updated': '플러그인이 업데이트되었습니다',
   'settings.plugins.toast.reloadFailed': 'opencode 다시 로드 실패; 재시작이 필요합니다',
