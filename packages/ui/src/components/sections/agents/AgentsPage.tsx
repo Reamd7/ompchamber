@@ -760,6 +760,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.tools')}
             info={t('settings.agents.page.field.toolsHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
+            controlClassName="w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.tools}
@@ -775,6 +776,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.modelPatterns')}
             info={t('settings.agents.page.field.modelPatternsHint')}
             infoDocsUrl={OMP_DOCS.modelPrecedence}
+            controlClassName="w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.modelPatterns}
@@ -790,14 +792,19 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.thinkingLevel')}
             info={t('settings.agents.page.field.thinkingLevelHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
+            controlClassName="w-full @xl:flex-1 @xl:justify-start"
           >
             <Select
               value={ompForm.thinkingLevel || '__default'}
               onValueChange={(value) => patchOmpForm({ thinkingLevel: value === '__default' ? '' : value })}
               disabled={isReadOnly}
             >
-              <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
-                <SelectValue />
+              <SelectTrigger size={SETTINGS_SELECT_SIZE} className="w-full">
+                <SelectValue>
+                  {(value: string | undefined) => (!value || value === '__default'
+                    ? t('settings.agents.page.field.thinkingLevelDefault')
+                    : value)}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent align="end">
                 {thinkingLevelOptions.map((level) => (
@@ -814,6 +821,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.spawns')}
             info={t('settings.agents.page.field.spawnsHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
+            controlClassName="w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.spawns}
