@@ -664,6 +664,8 @@ interface UIStore {
   settingsPage: string;
   settingsHasOpenedOnce: boolean;
   settingsProjectsSelectedId: string | null;
+  /** Providers split-page rail collapsed while the create/edit form owns the pane. */
+  settingsProvidersRailHidden: boolean;
   settingsRemoteInstancesSelectedId: string | null;
   eventStreamStatus: EventStreamStatus;
   eventStreamHint: string | null;
@@ -841,6 +843,7 @@ interface UIStore {
   applyTheme: () => void;
   setSidebarSection: (section: SidebarSection) => void;
   setSettingsPage: (slug: string) => void;
+  setSettingsProvidersRailHidden: (hidden: boolean) => void;
   setSettingsProjectsSelectedId: (projectId: string | null) => void;
   setSettingsRemoteInstancesSelectedId: (instanceId: string | null) => void;
   setEventStreamStatus: (status: EventStreamStatus, hint?: string | null) => void;
@@ -1003,6 +1006,7 @@ export const useUIStore = create<UIStore>()(
         isArchivePageOpen: false,
         worktreesPageProjectId: null,
         isSettingsDialogOpen: false,
+        settingsProvidersRailHidden: false,
         isNewWorktreeDialogOpen: false,
         isModelSelectorOpen: false,
         sidebarSection: 'sessions',
@@ -1742,7 +1746,7 @@ export const useUIStore = create<UIStore>()(
         setSettingsDialogOpen: (open) => {
           set((state) => {
             if (!open) {
-              return { isSettingsDialogOpen: false };
+              return { isSettingsDialogOpen: false, settingsProvidersRailHidden: false };
             }
             if (state.settingsHasOpenedOnce) {
               return { isSettingsDialogOpen: true };
@@ -1767,6 +1771,9 @@ export const useUIStore = create<UIStore>()(
           set({ settingsPage: slug });
         },
 
+        setSettingsProvidersRailHidden: (hidden) => {
+          set({ settingsProvidersRailHidden: hidden });
+        },
         setSettingsProjectsSelectedId: (projectId) => {
           set({ settingsProjectsSelectedId: projectId });
         },

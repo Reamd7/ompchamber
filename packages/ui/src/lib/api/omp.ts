@@ -113,6 +113,9 @@ export const OMP_ENDPOINTS = {
   agentRuns: '/api/omp/agent-runs',
   jobs: '/api/omp/jobs',
   commands: '/api/omp/commands',
+  providers: '/api/omp/providers',
+  provider: (id: string) => `/api/omp/providers/${encodeURIComponent(id)}`,
+  providerFetch: (id: string) => `/api/omp/providers/${encodeURIComponent(id)}/fetch-models`,
   uriResolve: '/api/omp/uri/resolve',
   uriOpen: '/api/omp/uri/open',
   plugins: '/api/omp/plugins',
@@ -1200,6 +1203,240 @@ export const createOmpSettingsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpSet
       if (!parsed.success) return { ok: false, unavailable: false };
       const applied = parsed.data.applied[`modelRoles.${role}`];
       return { ok: true, value: typeof applied === 'string' ? applied : null };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Providers API — GUI CRUD over the engine's custom provider file
+// (~/.omp/agent/models.yml; capability `providers.v1`). Credentials never
+// travel back from the engine — file rows carry `hasApiKey` only.
+// ---------------------------------------------------------------------------
+
+export const OMP_PROVIDER_API_VALUES = [
+  'openai-completions',
+  'openai-responses',
+  'openai-codex-responses',
+  'azure-openai-responses',
+  'anthropic-messages',
+  'bedrock-converse-stream',
+  'google-generative-ai',
+  'google-gemini-cli',
+  'google-vertex',
+] as const;
+export type OmpProviderApiValue = (typeof OMP_PROVIDER_API_VALUES)[number];
+
+export const OMP_MODEL_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type OmpModelEffort = (typeof OMP_MODEL_EFFORTS)[number];
+
+const OmpModelThinkingSchema = z.looseObject({
+  efforts: z.array(z.string()).default([]),
+  defaultLevel: z.string().optional(),
+});
+
+const OmpModelCostSchema = z.looseObject({
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+});
+
+const OmpProviderModelSchema = z.looseObject({
+  id: z.string(),
+  name: z.string().optional(),
+  reasoning: z.boolean().optional(),
+  contextWindow: z.number().optional(),
+  maxTokens: z.number().optional(),
+  thinking: OmpModelThinkingSchema.optional(),
+  hasThinking: z.boolean().optional(),
+  input: z.array(z.enum(['text', 'image'])).optional(),
+  supportsTools: z.boolean().optional(),
+  omitMaxOutputTokens: z.boolean().optional(),
+  cost: OmpModelCostSchema.optional(),
+  baseUrl: z.string().optional(),
+  api: z.string().optional(),
+  contextPromotionTarget: z.string().optional(),
+  compactionModel: z.string().optional(),
+});
+
+const OmpFileProviderSchema = z.looseObject({
+  id: z.string(),
+  source: z.literal('file'),
+  baseUrl: z.string().optional(),
+  api: z.string().optional(),
+  authHeader: z.boolean().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  hasApiKey: z.boolean(),
+  models: z.array(OmpProviderModelSchema),
+});
+
+const OmpEngineProviderSchema = z.looseObject({
+  id: z.string(),
+  source: z.literal('engine'),
+  models: z.array(z.unknown()).default([]),
+});
+
+export type OmpProviderModelRow = z.infer<typeof OmpProviderModelSchema>;
+export type OmpFileProvider = z.infer<typeof OmpFileProviderSchema>;
+export type OmpEngineProviderRow = z.infer<typeof OmpEngineProviderSchema>;
+export type OmpProviderRow = OmpFileProvider | OmpEngineProviderRow;
+
+/** `thinking` replaces the block; `null` removes it; omit to keep the file's block. */
+export interface OmpProviderModelThinkingInput {
+  mode?: 'effort';
+  efforts: string[];
+  defaultLevel?: string;
+}
+
+export type OmpModelInputModality = 'text' | 'image';
+
+export interface OmpModelCostInput {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/**
+ * Extended managed keys. `null` clears a key; omitted keys keep the file's
+ * value server-side (hand-authored config survives untouched).
+ */
+export interface OmpProviderModelInput {
+  id: string;
+  name?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+  thinking?: OmpProviderModelThinkingInput | null;
+  input?: OmpModelInputModality[] | null;
+  supportsTools?: boolean | null;
+  omitMaxOutputTokens?: boolean | null;
+  cost?: OmpModelCostInput | null;
+  baseUrl?: string | null;
+  api?: string;
+  contextPromotionTarget?: string | null;
+  compactionModel?: string | null;
+}
+
+/** PUT payload. `null` clears a key; omitted keys keep the file's value. */
+export interface OmpProviderInput {
+  id: string;
+  baseUrl?: string;
+  api?: OmpProviderApiValue;
+  apiKey?: string | null;
+  authHeader?: boolean | null;
+  headers?: Record<string, string> | null;
+  models?: OmpProviderModelInput[] | null;
+}
+
+export type OmpProviderWriteResult =
+  | { ok: true; provider: OmpFileProvider }
+  | { ok: false; unavailable: boolean; message?: string };
+
+export type OmpProviderDeleteResult =
+  | { ok: true }
+  | { ok: false; unavailable: boolean; message?: string };
+
+const OmpProvidersListSchema = z.looseObject({
+  providers: z.array(z.union([OmpFileProviderSchema, OmpEngineProviderSchema])),
+});
+
+export interface OmpProvidersAPI {
+  /**
+   * Engine providers tagged by origin: `file` rows (models.yml-defined) are
+   * GUI-editable and carry config with a masked key (`hasApiKey`); `engine`
+   * rows (builtin/login) are read-only. `unavailable` = providers.v1 off or
+   * old engine.
+   */
+  listProviders(): Promise<OmpFetchJsonResult<OmpProviderRow[]>>;
+  putProvider(input: { provider: OmpProviderInput }): Promise<OmpProviderWriteResult>;
+  deleteProvider(id: string): Promise<OmpProviderDeleteResult>;
+  /**
+   * POST /omp/providers/{id}/fetch-models — the engine host queries the
+   * provider's own model-list endpoint ({baseUrl}/models) server-side and
+   * returns the ids (Cherry Studio / LobeChat "Fetch models" pattern).
+   */
+  fetchModels(id: string, options?: { baseUrl?: string; apiKey?: string }): Promise<OmpProviderFetchResult>;
+}
+
+export type OmpProviderFetchResult =
+  | { ok: true; models: string[] }
+  | { ok: false; unavailable: boolean; message?: string };
+
+const parseOmpProviders = (value: unknown): OmpProviderRow[] | null => {
+  const parsed = OmpProvidersListSchema.safeParse(value);
+  return parsed.success ? parsed.data.providers as OmpProviderRow[] : null;
+};
+const OmpFileProviderPutResponseSchema = z.looseObject({ provider: OmpFileProviderSchema });
+
+export const createOmpProvidersAPI = (apiOptions: OmpJsonApiOptions = {}): OmpProvidersAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  const writeErrorPayload = async (response: Response): Promise<{ unavailable: boolean; message?: string }> => {
+    let payload: unknown = null;
+    try { payload = await response.json(); } catch { /* status is enough */ }
+    if (response.status === 404 || response.status === 501) return { unavailable: true };
+    const parsed = z.object({ message: z.string().optional(), error: z.string().optional() }).safeParse(payload);
+    const message = parsed.success ? (parsed.data.message ?? parsed.data.error) : undefined;
+    return { unavailable: false, ...(message ? { message } : {}) };
+  };
+  return {
+    listProviders() {
+      return ompFetchJson(fetchImpl, OMP_ENDPOINTS.providers, parseOmpProviders);
+    },
+    async putProvider({ provider }) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.providers, {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider }),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      if (!response.ok) return { ok: false, ...(await writeErrorPayload(response)) };
+      const parsed = OmpFileProviderPutResponseSchema.safeParse(await response.json().catch(() => null));
+      return parsed.success
+        ? { ok: true, provider: parsed.data.provider }
+        : { ok: false, unavailable: false };
+    },
+    async fetchModels(id, options = {}) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.providerFetch(id), {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          // Draft overrides let an unsaved create/edit fetch before its first
+          // save (the server falls back to the persisted provider otherwise).
+          body: JSON.stringify({
+            ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+            ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+          }),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      if (!response.ok) return { ok: false, ...(await writeErrorPayload(response)) };
+      const parsed = z.looseObject({ models: z.array(z.string()).default([]) }).safeParse(await response.json().catch(() => null));
+      return parsed.success
+        ? { ok: true, models: parsed.data.models }
+        : { ok: false, unavailable: false };
+    },
+    async deleteProvider(id) {
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.provider(id), {
+          method: 'DELETE',
+          headers: { Accept: 'application/json' },
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+      if (!response.ok) return { ok: false, ...(await writeErrorPayload(response)) };
+      return { ok: true };
     },
   };
 };

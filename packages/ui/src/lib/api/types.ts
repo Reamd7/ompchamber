@@ -10,6 +10,7 @@ import type {
   OmpPluginsAPI,
   OmpSessionAPI,
   OmpSettingsAPI,
+  OmpProvidersAPI,
   OmpUriAPI,
 } from './omp';
 
@@ -1255,6 +1256,7 @@ export interface RuntimeAPIs {
   ompPersonas: OmpPersonasAPI;
   ompPlugins: OmpPluginsAPI;
   ompSettings: OmpSettingsAPI;
+  ompProviders: OmpProvidersAPI;
   ompUri: OmpUriAPI;
   tools: ToolsAPI;
   editor?: EditorAPI;

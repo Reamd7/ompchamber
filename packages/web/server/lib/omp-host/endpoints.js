@@ -16,6 +16,7 @@ import { ModeDomainError, registerModesDomainRoutes } from './domain-modes.js';
 import { registerCommandsDomainRoutes } from './domain-commands.js';
 import { registerChromeDomainRoutes } from './domain-chrome.js';
 import { registerPluginsDomainRoutes } from './domain-plugins.js';
+import { registerProvidersDomainRoutes } from './domain-providers.js';
 
 
 /**
@@ -580,6 +581,10 @@ export const registerEndpoints = (route, engine, { version }) => {
         const store = engine.settingsStore;
         return store ? store.chainWrites(targetKey, task) : Promise.resolve();
       },
+      invalidateDerived: async () => {
+        const store = await engine.settingsStoreReady();
+        await store.invalidateDerived();
+      },
       get boot() {
         return engine.settingsStore?.boot;
       },
@@ -602,6 +607,17 @@ export const registerEndpoints = (route, engine, { version }) => {
     features: ompFeatures(),
     snapshots: () => engine.appliedPluginsSnapshots(),
     reloadSessions: (directory, sessionId) => engine.reloadAppliedPlugins(directory, sessionId),
+  });
+  registerProvidersDomainRoutes(route, {
+    features: ompFeatures(),
+    listEngineModels: () => {
+      try {
+        return engine.availableModels();
+      } catch {
+        return [];
+      }
+    },
+    refreshModels: () => engine.refreshModels(),
   });
 
   // ---- omp parity foundation (spec docs/omp-parity; public paths

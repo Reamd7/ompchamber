@@ -362,13 +362,50 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
       expect(readGlobalConfig(agentDir)).toContain('autoResume: true');
       expect(readProjectConfig(dirB)).toBeNull();
 
-      // Registered caveat (06 §5.1.7b): an already-derived clone holds a
-      // snapshot of the global layer from its derivation time — live clones
-      // do not hot-see later global writes; freshly derived ones do.
+      // Registered caveat (06 §5.1.7b): a live holder keeps the pre-write
+      // snapshot (its instance object is not mutated by the global write)…
       expect(before.get('autoResume')).toBe(false);
-      await store.disposeAll();
+      // …but the store's cached clone was invalidated, so the directory's
+      // NEXT derivation (the roles editor's read-after-write, a new
+      // session's injected settings) observes the write without any
+      // explicit disposeAll.
       const after = await store.settingsFor(dirB);
+      expect(after).not.toBe(before);
       expect(after.get('autoResume')).toBe(true);
+    } finally {
+      await disarm(env);
+    }
+  });
+
+  test('global PUT invalidates cached per-directory clones (roles editor read-after-write)', async () => {
+    // Regression: the model-roles editor PUTs `modelRoles.<role>` (global
+    // scope, executed on boot) and immediately re-reads
+    // GET /omp/models?directory=<editor directory>. Cached clones snapshot
+    // the global layer at derivation time, so before the invalidation the
+    // editor read its own write back stale — and new sessions in that
+    // directory resolved the pre-write role (01 §6.3 violation).
+    const env = await makeEnv();
+    const { store, boot, dirB } = env;
+    try {
+      boot.setModelRole('smol', 'prov/old-smol');
+      await boot.flush();
+      const keyed = await store.settingsFor(dirB);
+      expect(keyed.getModelRole('smol')).toBe('prov/old-smol');
+
+      const result = await applySettingsChanges(store, {
+        directory: dirB,
+        changes: { 'modelRoles.smol': 'prov/new-smol' },
+      });
+      expect(result.status).toBe(200);
+      expect(result.body.applied['modelRoles.smol']).toBe('prov/new-smol');
+
+      // The editor's immediate re-read reflects the write.
+      const fresh = await store.settingsFor(dirB);
+      expect(fresh).not.toBe(keyed);
+      expect(fresh.getModelRole('smol')).toBe('prov/new-smol');
+      expect(fresh.getModelRoleSource('smol')).toBe('global');
+      // Live holders keep their pre-write instance (per-session caveat).
+      expect(keyed.getModelRole('smol')).toBe('prov/old-smol');
     } finally {
       await disarm(env);
     }

@@ -210,6 +210,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const settingsSlug = resolveSettingsSlug(settingsPageRaw);
+  const providersRailHidden = useUIStore((state) => state.settingsProvidersRailHidden);
 
   const [mobileStage, setMobileStage] = React.useState<MobileStage>(initialMobileStage);
   // Seed with the mount-time slug when opening at the nav stage: the slug
@@ -1040,11 +1041,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     }
 
     if (activePageMeta.kind === 'split') {
+      // Split pages may temporarily take over the full content width (e.g.
+      // the providers editor collapses its rail while a form is open, per
+      // Cherry Studio/LobeChat pattern: the editor gets a wide column).
+      const sidebarCollapsed = settingsSlug === 'providers' && providersRailHidden;
       return (
         <div className="flex h-full min-h-0 overflow-hidden">
-          <div className={cn('border-r', runtimeCtx.isVSCode ? 'bg-background' : 'bg-sidebar')} style={{ width: SETTINGS_SPLIT_SIDEBAR_WIDTH, minWidth: SETTINGS_SPLIT_SIDEBAR_WIDTH, borderColor: 'var(--interactive-border)' }}>
-            <ErrorBoundary>{renderPageSidebar(settingsSlug, {})}</ErrorBoundary>
-          </div>
+          {sidebarCollapsed ? null : (
+            <div className={cn('border-r', runtimeCtx.isVSCode ? 'bg-background' : 'bg-sidebar')} style={{ width: SETTINGS_SPLIT_SIDEBAR_WIDTH, minWidth: SETTINGS_SPLIT_SIDEBAR_WIDTH, borderColor: 'var(--interactive-border)' }}>
+              <ErrorBoundary>{renderPageSidebar(settingsSlug, {})}</ErrorBoundary>
+            </div>
+          )}
           <div className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden bg-background">
             <ErrorBoundary>{renderPageContent(settingsSlug)}</ErrorBoundary>
           </div>

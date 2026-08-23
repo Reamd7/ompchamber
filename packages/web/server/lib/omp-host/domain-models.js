@@ -84,7 +84,9 @@ export const CAPABILITY_KEYS = {
  *   settingsFor(directoryKey?: string): Promise<Settings>,
  *   getRevision(): number,
  *   bumpRevision(): number,
- *   disposeAll(): Promise<void>,
+ *   chainWrites(targetKey: string, task: () => Promise<unknown>): Promise<unknown>,
+ *   invalidateDerived(): Promise<void>,
+ *   disposeAll(): Promise<unknown[]>,
  * }>}
  */
 export const createSettingsStore = async (bootSettingsIsh) => {
@@ -98,6 +100,11 @@ export const createSettingsStore = async (bootSettingsIsh) => {
   const deriving = new Map();
   let ownsBoot = boot !== bootSettingsIsh;
   let revision = 0;
+  // Bumped whenever cached clones are dropped. A clone derivation that
+  // straddles an invalidation must not re-cache itself: it would pin the
+  // pre-invalidation global layer (cloneForCwd structuredClones boot's
+  // global at derivation start, settings.ts:607-625).
+  let derivedEpoch = 0;
   /** Per-target write chains (06 §5.3.7: per-directory promise chaining). */
   const writeChains = new Map();
 
@@ -112,9 +119,10 @@ export const createSettingsStore = async (bootSettingsIsh) => {
       // configPath, re-loads this directory's project layer, does not run the
       // full #load (no agent.db / migrations / marker files), and does not
       // mutate the boot instance.
+      const epochAtDerive = derivedEpoch;
       pending = boot.cloneForCwd(key).then((clone) => {
-        if (!byDirectory.has(key)) byDirectory.set(key, clone);
-        return byDirectory.get(key);
+        if (epochAtDerive === derivedEpoch && !byDirectory.has(key)) byDirectory.set(key, clone);
+        return clone;
       });
       pending.finally(() => deriving.delete(key)).catch(() => {});
       deriving.set(key, pending);
@@ -142,6 +150,36 @@ export const createSettingsStore = async (bootSettingsIsh) => {
     },
 
     /**
+     * Drop every cached non-boot clone so the next `settingsFor(dir)`
+     * re-derives from boot's CURRENT global layer plus that directory's
+     * project file. Called after global-scope writes: clones snapshot the
+     * global layer at derivation time, so without this every directory that
+     * already has a keyed instance reads the write back stale — the roles
+     * editor, `GET /omp/settings|models`, and new-session role resolution
+     * for that directory (spec 06 §5.1.7b: only already-live sessions keep
+     * their injected pre-write instance; 01 §6.3: a global role write must
+     * reach new sessions in every directory). Each clone is flushed first
+     * so an in-flight project-layer write is not lost; a failed flush keeps
+     * its debounce armed — the write still persists through the same
+     * in-lock per-key merge (06 §3.3), so invalidation never drops writes.
+     */
+    invalidateDerived: async () => {
+      derivedEpoch += 1;
+      const clones = [...byDirectory.values()];
+      byDirectory.clear();
+      deriving.clear();
+      for (const clone of clones) {
+        try {
+          await clone.flush();
+        } catch {
+          // best-effort — the discarded clone's armed debounce timer is
+          // left to retry through the write lock; cancelPendingSaves here
+          // would drop the pending project write.
+        }
+      }
+    },
+
+    /**
      * Teardown: flush + disarm every derived clone so no armed debounce
      * timer races a successor's file locks (Settings.cancelPendingSaves
      * contract). A caller-provided boot instance is flushed but left armed —
@@ -150,6 +188,7 @@ export const createSettingsStore = async (bootSettingsIsh) => {
      * from disk.
      */
     disposeAll: async () => {
+      derivedEpoch += 1;
       const clones = [...byDirectory.values()];
       byDirectory.clear();
       deriving.clear();
@@ -177,6 +216,7 @@ export const createSettingsStore = async (bootSettingsIsh) => {
     },
   };
 };
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Role value parsing (SDK model-selector format "provider/id[:thinking]")
@@ -624,6 +664,15 @@ export const applySettingsChanges = async (store, input, { publish } = {}) => {
       return appliedNow;
     });
 
+    // Global writes execute on boot while cached per-directory clones hold a
+    // structuredClone'd global snapshot from their derivation time — drop
+    // them so the next read/session for those directories re-derives with
+    // the post-write layer (roles editor read-after-write, GET /omp/models|settings,
+    // new-session role resolution; 06 §5.1.7b / 01 §6.3). Before the publish:
+    // event-driven refetches must observe the fresh value. Project-scope
+    // writes need no invalidation — only their own directory's instance
+    // consumes that layer, and that instance applied the write in memory.
+    if (scope === 'global') await store.invalidateDerived();
     const revision = store.bumpRevision();
     // Spec 05 §5.0.2 envelope normalization: directory lives on the envelope,
     // not the payload (redundant copies are dropped).

@@ -24,6 +24,18 @@ import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { opencodeClient } from '@/lib/opencode/client';
 import { shouldLoadAvailableProviders } from './providerAvailability';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import type { OmpFileProvider, OmpProviderRow } from '@/lib/api/omp';
+import { OmpProviderForm } from './OmpProviderForm';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   getOAuthAuthMethods,
   parseAuthPayload,
@@ -152,6 +164,20 @@ export const ProvidersPage: React.FC = () => {
   const toggleHiddenModel = useUIStore((state) => state.toggleHiddenModel);
   const hideAllModels = useUIStore((state) => state.hideAllModels);
   const showAllModels = useUIStore((state) => state.showAllModels);
+  // omp-host runtime: every listed provider is engine-managed (built from
+  // availableModels) and auth writes answer 501 (engine credential store),
+  // so the legacy OpenCode source/auth probes must not drive this panel.
+  const ompEngineProviders = useOmpFeatureEnabled('modelRoles.v1');
+  const { ompProviders } = useRuntimeAPIs();
+
+  // providers.v1 GUI CRUD state (engine custom providers, models.yml).
+  const [ompProviderRows, setOmpProviderRows] = React.useState<OmpProviderRow[]>([]);
+  const [ompEditing, setOmpEditing] = React.useState<OmpFileProvider | null>(null);
+  const [ompDraftDirty, setOmpDraftDirty] = React.useState(false);
+  const [ompCloseConfirmOpen, setOmpCloseConfirmOpen] = React.useState(false);
+  const setSettingsProvidersRailHidden = useUIStore((state) => state.setSettingsProvidersRailHidden);
+  const [ompDeleteTarget, setOmpDeleteTarget] = React.useState<OmpFileProvider | null>(null);
+  const [ompBusy, setOmpBusy] = React.useState(false);
 
   const [authMethodsByProvider, setAuthMethodsByProvider] = React.useState<Record<string, AuthMethod[]>>({});
   const [authLoading, setAuthLoading] = React.useState(false);
@@ -180,6 +206,14 @@ export const ProvidersPage: React.FC = () => {
     && !isAddMode,
   );
 
+  // While the omp editor owns the pane, collapse the provider rail so the
+  // form gets the full content width (rail returns when the form closes).
+  React.useEffect(() => {
+    if (!ompEngineProviders) return undefined;
+    const formActive = isAddMode || ompEditing !== null;
+    setSettingsProvidersRailHidden(formActive);
+    return () => setSettingsProvidersRailHidden(false);
+  }, [ompEngineProviders, isAddMode, ompEditing, setSettingsProvidersRailHidden]);
   React.useEffect(() => {
     if (!selectedProviderId && providers.length > 0) {
       setSelectedProvider(providers[0].id);
@@ -224,6 +258,63 @@ export const ProvidersPage: React.FC = () => {
     };
   }, [selectedProviderId, t]);
 
+  // Engine custom-provider rows (models.yml truth): edit/delete affordances
+  // and create-form collision checks read this; reloaded after every write.
+  React.useEffect(() => {
+    if (!ompEngineProviders) {
+      setOmpProviderRows([]);
+      return;
+    }
+    let cancelled = false;
+    void ompProviders.listProviders().then((result) => {
+      if (!cancelled && result.ok) setOmpProviderRows(result.data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ompEngineProviders, ompProviders]);
+
+  const reloadEngineProviders = React.useCallback(() => {
+    void ompProviders.listProviders().then((result) => {
+      if (result.ok) {
+        setOmpProviderRows(result.data);
+        void useConfigStore.getState().loadProviders({ source: 'settings:omp-providers' });
+      }
+    });
+  }, [ompProviders]);
+
+  const ompFileProviderById = React.useMemo(() => {
+    const map = new Map<string, OmpFileProvider>();
+    for (const row of ompProviderRows) {
+      if (row.source === 'file') map.set(row.id, row);
+    }
+    return map;
+  }, [ompProviderRows]);
+
+  const ompKnownProviderIds = React.useMemo(() => {
+    const ids = new Set(providers.map((provider) => provider.id));
+    for (const row of ompProviderRows) ids.add(row.id);
+    return ids;
+  }, [providers, ompProviderRows]);
+
+  const handleOmpDelete = async () => {
+    if (!ompDeleteTarget) return;
+    setOmpBusy(true);
+    const result = await ompProviders.deleteProvider(ompDeleteTarget.id);
+    setOmpBusy(false);
+    setOmpDeleteTarget(null);
+    if (result.ok) {
+      toast.success(t('settings.providers.omp.toast.deleted'));
+      if (selectedProviderId === ompDeleteTarget.id) {
+        setSelectedProvider(providers.find((p) => p.id !== ompDeleteTarget.id)?.id ?? '');
+      }
+      reloadEngineProviders();
+      return;
+    }
+    toast.error(result.unavailable
+      ? t('settings.providers.omp.error.unavailable')
+      : (result.message ?? t('settings.providers.omp.toast.deleteFailed')));
+  };
   React.useEffect(() => {
     if (!shouldLoadAvailableProviders(isAddMode)) {
       return;
@@ -310,9 +401,11 @@ export const ProvidersPage: React.FC = () => {
   }, [selectedProviderId, editingCustomProviderId]);
 
   // Unauthenticated providers (OAuth-only plugins before login) should open the
-  // auth panel instead of a false "Connected" summary.
+  // auth panel instead of a false "Connected" summary. Engine-managed (omp)
+  // providers never match: their credentials live in the engine store, which
+  // the OpenCode source probe cannot see.
   React.useEffect(() => {
-    if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID) {
+    if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID || ompEngineProviders) {
       return;
     }
     const sources = providerSources[selectedProviderId];
@@ -327,7 +420,7 @@ export const ProvidersPage: React.FC = () => {
     if (!hasCreds) {
       setShowAuthPanel(true);
     }
-  }, [selectedProviderId, providerSources, providers]);
+  }, [selectedProviderId, providerSources, providers, ompEngineProviders]);
 
   React.useEffect(() => {
     if (!selectedProviderId || selectedProviderId === ADD_PROVIDER_ID) {
@@ -527,6 +620,79 @@ export const ProvidersPage: React.FC = () => {
           <p className="typography-meta mt-1 opacity-75">{t('settings.providers.page.empty.checkOpenCodeConfiguration')}</p>
         </div>
       </div>
+    );
+  }
+
+  // Engine-managed create/edit: the form takes over the pane and collapses
+  // the provider rail (SettingsView) so the editor gets a wide column — the
+  // Cherry Studio/LobeChat provider-editor pattern. Back/cancel guards a
+  // dirty draft via the shared confirm dialog.
+  if (ompEngineProviders && (isAddMode || ompEditing !== null)) {
+    const editing = ompEditing ?? undefined;
+    const closeForm = () => {
+      setOmpEditing(null);
+      setCandidateProviderId('');
+      setOmpDraftDirty(false);
+      if (!editing) setSelectedProvider(providers[0]?.id ?? '');
+    };
+    const requestClose = () => {
+      if (ompDraftDirty) {
+        setOmpCloseConfirmOpen(true);
+        return;
+      }
+      closeForm();
+    };
+    return (
+      <SettingsPageLayout
+        title={editing
+          ? t('settings.providers.omp.title.edit')
+          : t('settings.providers.omp.title.create')}
+        titleAccessory={editing ? (
+          <span className="font-mono typography-settings-description text-muted-foreground">{editing.id}</span>
+        ) : undefined}
+        titleLeading={(
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-foreground"
+            onClick={requestClose}
+            aria-label={t('settings.providers.omp.actions.back')}
+          >
+            <Icon name="arrow-left" className="size-4" />
+          </Button>
+        )}
+        showSaveStatus={false}
+      >
+        <OmpProviderForm
+          provider={editing}
+          existingProviderIds={ompKnownProviderIds}
+          onDone={(providerId) => {
+            setOmpEditing(null);
+            setCandidateProviderId('');
+            setOmpDraftDirty(false);
+            setSelectedProvider(providerId);
+            reloadEngineProviders();
+          }}
+          onRequestClose={requestClose}
+          onDirtyChange={setOmpDraftDirty}
+        />
+        <Dialog open={ompCloseConfirmOpen} onOpenChange={setOmpCloseConfirmOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>{t('settings.providers.omp.confirmClose.title')}</DialogTitle>
+              <DialogDescription>{t('settings.providers.omp.confirmClose.body')}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" size="sm" onClick={() => setOmpCloseConfirmOpen(false)}>
+                {t('settings.providers.omp.confirmClose.cancel')}
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => { setOmpCloseConfirmOpen(false); closeForm(); }}>
+                {t('settings.providers.omp.confirmClose.confirm')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </SettingsPageLayout>
     );
   }
 
@@ -763,6 +929,7 @@ export const ProvidersPage: React.FC = () => {
     getOAuthAuthMethods(providerAuthMethods),
     oauthMethodFallbackLabel,
   );
+  const selectedOmpProvider = ompEngineProviders ? (ompFileProviderById.get(selectedProviderId) ?? null) : null;
   const showApiKeyAuth = shouldShowApiKeyAuth(providerAuthMethods);
   const sourcesLoaded = Boolean(selectedSources);
   const isEditableCustomProvider = sourcesLoaded
@@ -773,8 +940,11 @@ export const ProvidersPage: React.FC = () => {
   const hasStoredAuth = Boolean(selectedSources?.auth.exists);
   const hasEnvCredentials = providerEnv.length > 0;
   const hasCredentials = hasStoredAuth || hasEnvCredentials;
-  const authStatusIncomplete = sourcesLoaded && !hasCredentials;
-  const showModelsSection = providerModels.length > 0 && (!sourcesLoaded || hasCredentials);
+  // Engine-managed providers are listed by construction from the engine's
+  // available models — the engine is the credential authority, so the panel
+  // never reports them incomplete and always shows their model list.
+  const authStatusIncomplete = !ompEngineProviders && sourcesLoaded && !hasCredentials;
+  const showModelsSection = providerModels.length > 0 && (ompEngineProviders || !sourcesLoaded || hasCredentials);
   const incompleteAuthHint = !showApiKeyAuth && oauthAuthMethods.length > 0
     ? t('settings.providers.page.auth.useReconnectHint')
     : t('settings.providers.page.auth.incompleteHint');
@@ -821,12 +991,32 @@ export const ProvidersPage: React.FC = () => {
       title={selectedProvider.name || selectedProvider.id}
       titleLeading={<ProviderLogo providerId={selectedProvider.id} className="h-5 w-5 shrink-0" />}
       description={<span className="font-mono typography-settings-description text-muted-foreground">{selectedProvider.id}</span>}
+      headerEnd={ompEngineProviders && selectedOmpProvider ? (
+        <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="xs"
+            className="!font-normal"
+            onClick={() => setOmpEditing(selectedOmpProvider)}
+          >
+            {t('settings.providers.omp.actions.editProvider')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="!font-normal text-[var(--status-error)] hover:text-[var(--status-error)]"
+            onClick={() => setOmpDeleteTarget(selectedOmpProvider)}
+          >
+            {t('settings.providers.omp.actions.deleteProvider')}
+          </Button>
+        </div>
+      ) : undefined}
       showSaveStatus={false}
     >
       <SettingsSection
         title={t('settings.providers.page.auth.title')}
         divider={false}
-        headerAction={(
+        headerAction={ompEngineProviders ? null : (
           <div className="flex items-center gap-1">
             {isEditableCustomProvider ? (
               <Button
@@ -855,7 +1045,13 @@ export const ProvidersPage: React.FC = () => {
         )}
         settingsItem="providers.auth"
       >
-            {!showAuthPanel ? (
+            {ompEngineProviders ? (
+              <div className="flex items-center gap-1.5 py-1.5">
+                <Icon name="check" className="w-4 h-4 text-[var(--status-success)] shrink-0" />
+                <span className="typography-ui-label text-foreground">{t('settings.providers.page.auth.connected')}</span>
+                <SettingsInfoHint docsUrl="https://omp.sh/docs/providers">{t('settings.providers.page.auth.engineManagedHint')}</SettingsInfoHint>
+              </div>
+            ) : !showAuthPanel ? (
               authStatusIncomplete ? (
                 <div className="flex items-center gap-1.5 py-1.5">
                   <Icon name="alert" className="w-4 h-4 text-[var(--status-warning)] shrink-0" />
@@ -924,7 +1120,13 @@ export const ProvidersPage: React.FC = () => {
       >
             <div className="flex flex-col gap-2 py-1.5 @xl:flex-row @xl:items-center @xl:justify-between @xl:gap-8">
               <div className="flex min-w-0 flex-col">
-                {selectedSources && (selectedSources.auth.exists || selectedSources.user.exists || selectedSources.project.exists || selectedSources.custom?.exists) ? (
+                {ompEngineProviders ? (
+                  <span className="typography-meta text-muted-foreground">
+                    {t('settings.providers.page.connectionDetails.configuredIn')}{' '}
+                    {t('settings.providers.page.connectionDetails.source.engineConfig')}
+                    <SettingsInfoHint docsUrl="https://omp.sh/docs/providers">{t('settings.providers.page.connectionDetails.engineManagedHint')}</SettingsInfoHint>
+                  </span>
+                ) : selectedSources && (selectedSources.auth.exists || selectedSources.user.exists || selectedSources.project.exists || selectedSources.custom?.exists) ? (
                   <span className="typography-meta text-muted-foreground">
                     {t('settings.providers.page.connectionDetails.configuredIn')}{' '}
                     {[
@@ -939,15 +1141,17 @@ export const ProvidersPage: React.FC = () => {
                 )}
               </div>
 
-              <Button
-                variant="ghost"
-                size="xs"
-                className="!font-normal text-[var(--status-error)] hover:text-[var(--status-error)]"
-                onClick={() => handleDisconnectProvider(selectedProvider.id)}
-                disabled={authBusyKey === `disconnect:${selectedProvider.id}`}
-              >
-                {authBusyKey === `disconnect:${selectedProvider.id}` ? t('settings.providers.page.actions.disconnecting') : t('settings.providers.page.actions.disconnect')}
-              </Button>
+              {ompEngineProviders ? null : (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="!font-normal text-[var(--status-error)] hover:text-[var(--status-error)]"
+                  onClick={() => handleDisconnectProvider(selectedProvider.id)}
+                  disabled={authBusyKey === `disconnect:${selectedProvider.id}`}
+                >
+                  {authBusyKey === `disconnect:${selectedProvider.id}` ? t('settings.providers.page.actions.disconnecting') : t('settings.providers.page.actions.disconnect')}
+                </Button>
+              )}
             </div>
       </SettingsSection>
 
@@ -1067,6 +1271,32 @@ export const ProvidersPage: React.FC = () => {
             )}
       </SettingsSection>
       ) : null}
+
+      <Dialog open={ompDeleteTarget !== null} onOpenChange={(open) => { if (!open) setOmpDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('settings.providers.omp.confirmDelete.title')}</DialogTitle>
+            <DialogDescription>
+              {ompDeleteTarget
+                ? t('settings.providers.omp.confirmDelete.body', { provider: ompDeleteTarget.id })
+                : null}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setOmpDeleteTarget(null)} disabled={ompBusy}>
+              {t('settings.providers.omp.confirmDelete.cancel')}
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => { void handleOmpDelete(); }}
+              disabled={ompBusy}
+            >
+              {t('settings.providers.omp.confirmDelete.confirm')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </SettingsPageLayout>
   );
 };

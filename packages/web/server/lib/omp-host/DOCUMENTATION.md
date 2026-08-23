@@ -48,12 +48,28 @@ sync engine, and web server call; everything else answers 404.
 - `omp-parity.js` — `ompFeatures()` capability table (the server-adjudicated
   switchboard, master R2) + registry access.
 - `domain-models.js` (specs 01/06) — per-directory keyed Settings store
-  (`cloneForCwd` derivation, boot instance as global-write executor),
+  (`cloneForCwd` derivation, boot instance as global-write executor; a
+  successful global-scope write invalidates the cached clones so the next
+  read or session for those directories re-derives with the post-write
+  global layer — only already-live sessions keep their pre-write instance),
   `/omp/models` role payload, `/omp/settings` proxy with credential
   sanitization (R9) and modelRoles-only project writes (R6), legacy
   defaultModel detect/import.
+- `domain-providers.js` — OpenChamber-owned GUI CRUD over the engine's
+  custom provider file (`~/.omp/agent/models.yml`; capability `providers.v1`).
+  `GET /omp/providers` tags each engine provider `file` (models.yml-defined,
+  editable, key masked as `hasApiKey`) or `engine` (builtin/login, read-only);
+  `PUT /omp/providers` upserts one provider with field-merge semantics —
+  only GUI-managed keys are written, hand-authored config the form never
+  shows (thinking blocks, compat, discovery, cost, …) survives, and an
+  absent apiKey keeps the stored one; `DELETE /omp/providers/{id}` removes a
+  file provider. Writes go through the `yaml` Document API (comments are
+  preserved — models.yml is user-authored), validate the merged value with
+  the SDK schema + `validateProviderConfiguration` before touching disk,
+  atomically rename, keep a one-time `models.yml.backup` anchor, then
+  `engine.refreshModels()` (mtime-checked static reload) makes the change
+  live without a host restart.
 - `domain-dialogs.js` (spec 03) — `UiLeaseTable` (per-session UI attachment
-  leases: the ONLY `hasUI` authority, R13), `PendingDialogRegistry`
   (atomic respond/abort, presented-ack `T_answer` + `T_present` TTLs, orphan
   settle on lease loss, R11 shutdown settle-all), the WebUIContext bridge,
   and the always-allow write-first transaction.

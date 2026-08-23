@@ -237,6 +237,54 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
       expect(patterns).toContain(expected);
     }
   });
+
+  test('route store wrapper forwards the full write surface (invalidateDerived)', async () => {
+    // Regression: registerModelSettingsRoutes receives a piecemeal wrapper,
+    // not the engine's store. applySettingsChanges calls invalidateDerived()
+    // after global-scope writes; a wrapper missing it turned every global
+    // PUT into a 500 settings-write-failed (TypeError swallowed by the
+    // generic catch).
+    const { registerEndpoints } = await import('./endpoints.js');
+    const routes = [];
+    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const calls = [];
+    const roles = {};
+    const bootStub = {
+      setModelRole: (role, value) => { roles[role] = value; },
+      getModelRole: (role) => roles[role],
+      flush: async () => {},
+    };
+    const storeStub = {
+      settingsFor: async () => ({ get: () => undefined, getCwd: () => '/stub' }),
+      getRevision: () => 1,
+      bumpRevision: () => 2,
+      chainWrites: async (_key, task) => task(),
+      invalidateDerived: async () => { calls.push('invalidateDerived'); },
+      disposeAll: async () => [],
+      boot: bootStub,
+      bootDirectory: '/stub',
+    };
+    const stubEngine = {
+      ompBus: new OmpEventBus(),
+      dialogs: { mount: () => {} },
+      modesDomain: {},
+      uriDomain: { mount: () => {} },
+      settingsStoreReady: async () => storeStub,
+      settingsStore: storeStub,
+      customAgents: new Map(),
+      ready: async () => {},
+      availableModels: () => [],
+    };
+    registerEndpoints(route, stubEngine, { version: 'test' });
+    const put = routes.find((r) => r.method === 'PUT' && r.pattern === '/omp/settings').handler;
+    const response = await put(new Request('http://host/omp/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: '/stub', changes: { 'modelRoles.smol': 'prov/x' } }),
+    }));
+    expect(response.status).toBe(200);
+    expect(calls).toContain('invalidateDerived');
+  });
 });
 
 describe('capabilities (spec 05 §5.2.3, master R2)', () => {

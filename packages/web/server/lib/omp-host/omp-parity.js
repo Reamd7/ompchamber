@@ -34,6 +34,9 @@ export const ompFeatures = () => ({
   'modelRoles.v1': true,
   'settings.v1': true,
   'settings.projectScopes.v1': true,
+  // OpenChamber-owned GUI CRUD over the engine's custom provider file
+  // (models.yml); the SDK itself has no write API for it.
+  'providers.v1': true,
   // 02: session modes + agent-definitions + personas resources.
   'modes.v1': true,
   'agentDefinitions.v1': true,

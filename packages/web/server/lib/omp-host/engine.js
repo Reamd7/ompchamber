@@ -1844,6 +1844,19 @@ export class OmpHostEngine {
     return this.modelRegistry?.getAvailable() ?? [];
   }
 
+  /**
+   * Reload models from disk (builtin + custom models.yml). Static inputs are
+   * mtime-checked inside ModelRegistry.#reloadStaticModels, so a no-op when
+   * nothing changed. 'offline' skips network discovery — the provider CRUD
+   * domain calls this after writing models.yml so GUI edits are live without
+   * a host restart.
+   */
+  async refreshModels() {
+    await this.#boot();
+    if (!this.modelRegistry) return;
+    await this.modelRegistry.refresh('offline');
+  }
+
   /** Public boot barrier for endpoint handlers that need registry state. */
   async ready() {
     await this.#boot();
