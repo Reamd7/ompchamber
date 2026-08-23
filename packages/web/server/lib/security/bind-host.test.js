@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isLoopbackBindHost,
   isNetworkExposedBindHost,
+  isDevelopmentServer,
 } from './bind-host.js';
 
 describe('bind host exposure classification', () => {
@@ -32,5 +33,12 @@ describe('bind host exposure classification', () => {
       expect(isLoopbackBindHost(host), host).toBe(false);
       expect(isNetworkExposedBindHost(host), host).toBe(true);
     }
+  });
+
+  it('recognizes only the explicit development server marker', () => {
+    expect(isDevelopmentServer({ OPENCHAMBER_DEV_SERVER: 'true' })).toBe(true);
+    expect(isDevelopmentServer({ OPENCHAMBER_DEV_SERVER: 'false' })).toBe(false);
+    expect(isDevelopmentServer({ NODE_ENV: 'development' })).toBe(false);
+    expect(isDevelopmentServer({})).toBe(false);
   });
 });

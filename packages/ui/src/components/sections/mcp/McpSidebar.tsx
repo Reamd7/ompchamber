@@ -196,20 +196,24 @@ export const McpSidebar: React.FC<McpSidebarProps> = ({ onItemSelect }) => {
             <Icon name="refresh" className={cn('h-4 w-4', isRefreshingStatus && 'animate-spin')} />
           </button>
         </div>
-        <SettingsProjectSelector className="mb-3" />
+        <div className="mb-3">
+          <SettingsProjectSelector />
+        </div>
         <div className="flex items-center justify-between gap-2">
           <span className="typography-meta text-muted-foreground">
             {t('settings.mcp.sidebar.total', { count: mcpServers.length })}
           </span>
-          <Button size="sm"
-            data-settings-item="mcp.create"
-            variant="ghost"
-            className="h-7 w-7 px-0 -my-1 text-muted-foreground"
-            onClick={handleCreateNew}
-            title={t('settings.mcp.sidebar.actions.addServerTitle')}
-          >
-            <Icon name="add" className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button size="sm"
+              data-settings-item="mcp.create"
+              variant="ghost"
+              className="h-7 w-7 px-0 -my-1 text-muted-foreground"
+              onClick={handleCreateNew}
+              title={t('settings.mcp.sidebar.actions.addServerTitle')}
+            >
+              <Icon name="add" className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
 

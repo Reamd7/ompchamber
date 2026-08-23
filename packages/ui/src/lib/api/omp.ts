@@ -27,7 +27,7 @@ export interface OmpEventEnvelope {
   type: string;
   directory: string;
   sessionID?: string;
-  schemaVersion: string;
+  schemaVersion?: string;
   createdAt: number;
   payload: unknown;
 }
@@ -114,7 +114,15 @@ export const OMP_ENDPOINTS = {
   commands: '/api/omp/commands',
   uriResolve: '/api/omp/uri/resolve',
   uriOpen: '/api/omp/uri/open',
-} as const;
+  plugins: '/api/omp/plugins',
+  plugin: (id: string) => `/api/omp/plugins/${encodeURIComponent(id)}`,
+  pluginExtension: (id: string) => `/api/omp/plugins/extensions/${encodeURIComponent(id)}`,
+  pluginReveal: (id: string) => `/api/omp/plugins/${encodeURIComponent(id)}/reveal`,
+  extensionReveal: (id: string) => `/api/omp/plugins/extensions/${encodeURIComponent(id)}/reveal`,
+  pluginsApplied: '/api/omp/plugins/applied',
+  pluginsReload: '/api/omp/plugins/reload',
+  pluginExtensions: '/api/omp/plugins/extensions',
+ } as const;
 
 // ---------------------------------------------------------------------------
 // JSON GET helper — parses at the boundary. Failures are reported distinctly
@@ -2166,6 +2174,294 @@ export const createOmpCommandsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpCom
         }),
         { query: { directory } },
       );
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Plugins API — omp PluginManager + extension files. OpenCode's `/api/config/plugins`
+// is intentionally not used here; this is the engine-owned settings surface.
+// ---------------------------------------------------------------------------
+
+export interface OmpPluginFeature {
+  name: string;
+  enabled: boolean;
+  description?: string;
+}
+
+export interface OmpPluginSetting {
+  type?: string;
+  description?: string;
+  secret?: boolean;
+  configured?: boolean;
+  value?: unknown;
+  default?: unknown;
+  values?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
+export interface OmpPluginRecord {
+  id: string;
+  kind: 'npm' | 'marketplace';
+  scope: 'user' | 'project';
+  name: string;
+  version: string;
+  enabled: boolean;
+  editable: boolean;
+  description?: string;
+  features?: OmpPluginFeature[];
+  settings?: Record<string, OmpPluginSetting>;
+  extensionEntries: string[];
+  permissions: {
+    toggle: boolean;
+    features: boolean;
+    settings: boolean;
+    uninstall: boolean;
+  };
+}
+
+export interface OmpExtensionRecord {
+  id: string;
+  kind: 'extension';
+  scope: 'user' | 'project';
+  name: string;
+  source: 'native' | 'configured' | 'discovered' | 'plugin-manifest';
+  editable: boolean;
+  loaded: boolean;
+  pluginId?: string;
+  pluginName?: string;
+  declaredEntry?: string;
+}
+
+export interface OmpPluginsSnapshot {
+  plugins: OmpPluginRecord[];
+  extensions: OmpExtensionRecord[];
+}
+
+export interface OmpAppliedSession {
+  sessionId: string;
+  directory: string;
+  appliedAt: number;
+  extensionIds: string[];
+  pluginNames: string[];
+}
+
+const OmpAppliedSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  directory: z.string().min(1),
+  appliedAt: z.number(),
+  extensionIds: z.array(z.string()),
+  pluginNames: z.array(z.string()),
+});
+
+const OmpAppliedSnapshotSchema = z.object({
+  sessions: z.array(OmpAppliedSessionSchema),
+});
+
+const OmpPluginFeatureSchema = z.object({
+  name: z.string().min(1),
+  enabled: z.boolean(),
+  description: z.string().optional(),
+});
+
+const OmpPluginSettingSchema = z.object({
+  type: z.string().optional(),
+  description: z.string().optional(),
+  secret: z.boolean().optional(),
+  configured: z.boolean().optional(),
+  value: z.unknown().optional(),
+  default: z.unknown().optional(),
+  values: z.array(z.string()).optional(),
+  min: z.number().optional(),
+  max: z.number().optional(),
+  step: z.number().optional(),
+});
+
+const PluginPermissionsSchema = z.object({
+  toggle: z.boolean(),
+  features: z.boolean(),
+  settings: z.boolean(),
+  uninstall: z.boolean(),
+});
+
+const OmpPluginRecordSchema = z.object({
+  id: z.string().min(1),
+  kind: z.enum(['npm', 'marketplace']),
+  scope: z.enum(['user', 'project']),
+  name: z.string().min(1),
+  version: z.string().min(1),
+  enabled: z.boolean(),
+  editable: z.boolean(),
+  description: z.string().optional(),
+  features: z.array(OmpPluginFeatureSchema).optional(),
+  settings: z.record(z.string(), OmpPluginSettingSchema).optional(),
+  extensionEntries: z.array(z.string()),
+  permissions: PluginPermissionsSchema,
+});
+
+const OmpExtensionRecordSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal('extension'),
+  scope: z.enum(['user', 'project']),
+  name: z.string().min(1),
+  source: z.enum(['native', 'configured', 'discovered', 'plugin-manifest']),
+  editable: z.boolean(),
+  loaded: z.boolean(),
+  pluginId: z.string().optional(),
+  pluginName: z.string().optional(),
+  declaredEntry: z.string().optional(),
+});
+
+const OmpPluginsSnapshotSchema = z.object({
+  plugins: z.array(OmpPluginRecordSchema),
+  extensions: z.array(OmpExtensionRecordSchema),
+});
+
+const parseOmpPluginsSnapshot = (value: unknown): OmpPluginsSnapshot | null => {
+  const parsed = OmpPluginsSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export type OmpPluginMutationResult =
+  | { ok: true; restartDeferred: boolean; message?: string }
+  | { ok: false; unavailable: boolean; error?: string };
+
+export interface OmpPluginsAPI {
+  list(options: { directory: string }): Promise<OmpFetchJsonResult<OmpPluginsSnapshot>>;
+  listApplied(options: { directory: string }): Promise<OmpFetchJsonResult<OmpAppliedSession[]>>;
+  reload(input: { directory: string; sessionId?: string }): Promise<OmpPluginMutationResult & { sessionsRefreshed?: number }>;
+  revealPlugin(input: { id: string; directory: string }): Promise<OmpPluginMutationResult>;
+  install(input: { spec: string; directory: string; scope?: 'user' | 'project' }): Promise<OmpPluginMutationResult>;
+  update(input: {
+    id: string;
+    directory: string;
+    enabled?: boolean;
+    enabledFeatures?: string[];
+    setting?: { key: string; value?: unknown; remove?: boolean };
+  }): Promise<OmpPluginMutationResult>;
+  remove(input: { id: string; directory: string }): Promise<OmpPluginMutationResult>;
+  setEnabled(input: { id: string; enabled: boolean; directory: string }): Promise<OmpPluginMutationResult>;
+  readExtension(input: { id: string; directory: string }): Promise<OmpFetchJsonResult<{
+    fileName: string;
+    scope: 'user' | 'project';
+    content: string;
+    editable: boolean;
+    source: OmpExtensionRecord['source'];
+  }>>;
+  createExtension(input: { fileName: string; content: string; scope: 'user' | 'project'; directory: string }): Promise<OmpPluginMutationResult>;
+  updateExtension(input: { id: string; content: string; directory: string }): Promise<OmpPluginMutationResult>;
+  removeExtension(input: { id: string; directory: string }): Promise<OmpPluginMutationResult>;
+  revealExtension(input: { id: string; directory: string }): Promise<OmpPluginMutationResult>;
+}
+
+const readOmpPluginMutation = async (response: Response): Promise<OmpPluginMutationResult> => {
+  const payload = await response.json().catch(() => null) as { message?: unknown; error?: unknown; restartDeferred?: unknown } | null;
+  if (response.status === 404 || response.status === 501) return { ok: false, unavailable: true };
+  if (!response.ok) return { ok: false, unavailable: false, error: typeof payload?.error === 'string' ? payload.error : undefined };
+  return {
+    ok: true,
+    restartDeferred: payload?.restartDeferred === true,
+    ...(typeof payload?.message === 'string' ? { message: payload.message } : {}),
+  };
+};
+
+
+const readOmpReloadResult = async (response: Response): Promise<OmpPluginMutationResult & { sessionsRefreshed?: number }> => {
+  const payload = await response.clone().json().catch(() => null) as { sessionsRefreshed?: unknown } | null;
+  const base = await readOmpPluginMutation(response);
+  return { ...base, ...(typeof payload?.sessionsRefreshed === 'number' ? { sessionsRefreshed: payload.sessionsRefreshed } : {}) };
+};
+
+export const createOmpPluginsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpPluginsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  const mutation = async (path: string, init: RequestInit & { query?: Record<string, string> }): Promise<OmpPluginMutationResult> =>
+    readOmpPluginMutation(await fetchImpl(path, init));
+  const update = ({ id, directory, enabled, enabledFeatures, setting }: {
+    id: string;
+    directory: string;
+    enabled?: boolean;
+    enabledFeatures?: string[];
+    setting?: { key: string; value?: unknown; remove?: boolean };
+  }) => mutation(OMP_ENDPOINTS.plugin(id), {
+    method: 'PATCH',
+    query: { directory },
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      directory,
+      ...(enabled === undefined ? {} : { enabled }),
+      ...(enabledFeatures ? { enabledFeatures } : {}),
+      ...(setting ? { setting } : {}),
+    }),
+  });
+  return {
+    revealPlugin({ id, directory }) {
+      return mutation(OMP_ENDPOINTS.pluginReveal(id), { method: 'POST', query: { directory } });
+    },
+    revealExtension({ id, directory }) {
+      return mutation(OMP_ENDPOINTS.extensionReveal(id), { method: 'POST', query: { directory } });
+    },
+    list({ directory }) {
+      return ompFetchJson(fetchImpl, OMP_ENDPOINTS.plugins, parseOmpPluginsSnapshot, { query: { directory } });
+    },
+    listApplied({ directory }) {
+      return ompFetchJson(fetchImpl, OMP_ENDPOINTS.pluginsApplied, (value) => {
+        const parsed = OmpAppliedSnapshotSchema.safeParse(value);
+        return parsed.success ? parsed.data.sessions : null;
+      }, { query: { directory } });
+    },
+    reload({ directory, sessionId }) {
+      return fetchImpl(OMP_ENDPOINTS.pluginsReload, {
+        method: 'POST',
+        query: sessionId ? { directory, sessionId } : { directory },
+      }).then(readOmpReloadResult);
+    },
+    install({ spec, directory, scope }) {
+      return mutation(OMP_ENDPOINTS.plugins, {
+        method: 'POST',
+        query: { directory },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec, directory, ...(scope ? { scope } : {}) }),
+      });
+    },
+    update,
+    setEnabled(input) {
+      return update(input);
+    },
+    remove({ id, directory }) {
+      return mutation(OMP_ENDPOINTS.plugin(id), { method: 'DELETE', query: { directory } });
+    },
+    readExtension({ id, directory }) {
+      return ompFetchJson(fetchImpl, OMP_ENDPOINTS.pluginExtension(id), (value) => {
+        const parsed = z.object({
+          fileName: z.string().min(1),
+          scope: z.enum(['user', 'project']),
+          content: z.string(),
+          editable: z.boolean(),
+          source: z.enum(['native', 'configured', 'discovered', 'plugin-manifest']),
+        }).safeParse(value);
+        return parsed.success ? parsed.data : null;
+      }, { query: { directory } });
+    },
+    createExtension({ fileName, content, scope, directory }) {
+      return mutation(OMP_ENDPOINTS.pluginExtensions, {
+        method: 'POST',
+        query: { directory },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileName, content, scope, directory }),
+      });
+    },
+    updateExtension({ id, content, directory }) {
+      return mutation(OMP_ENDPOINTS.pluginExtension(id), {
+        method: 'PUT',
+        query: { directory },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, directory }),
+      });
+    },
+    removeExtension({ id, directory }) {
+      return mutation(OMP_ENDPOINTS.pluginExtension(id), { method: 'DELETE', query: { directory } });
     },
   };
 };

@@ -217,17 +217,21 @@ export const SkillsSidebar: React.FC<SkillsSidebarProps> = ({ onItemSelect }) =>
     <div className={cn('flex h-full flex-col', bgClass)}>
       <div className="border-b px-3 pt-4 pb-3">
         <h2 className={`${SETTINGS_PANEL_TITLE_CLASS} mb-3`}>{t('settings.skills.sidebar.title')}</h2>
-        <SettingsProjectSelector className="mb-3" />
+        <div className="mb-3">
+          <SettingsProjectSelector />
+        </div>
         <div className="flex items-center justify-between gap-2">
           <span className="typography-meta text-muted-foreground">{t('settings.skills.sidebar.total', { count: skills.length })}</span>
-          <Button size="sm"
-            data-settings-item="skills.create"
-            variant="ghost"
-            className="h-7 w-7 px-0 -my-1 text-muted-foreground"
-            onClick={handleCreateNew}
-          >
-            <Icon name="add" className="h-3.5 w-3.5" />
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button size="sm"
+              data-settings-item="skills.create"
+              variant="ghost"
+              className="h-7 w-7 px-0 -my-1 text-muted-foreground"
+              onClick={handleCreateNew}
+            >
+              <Icon name="add" className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         </div>
       </div>
 

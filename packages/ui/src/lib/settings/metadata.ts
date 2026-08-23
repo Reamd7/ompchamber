@@ -130,7 +130,7 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     title: 'Plugins',
     group: 'opencode',
     kind: 'split',
-    keywords: ['plugin', 'plugins', 'extensions', 'addons', 'npm', 'opencode-wakatime'],
+    keywords: ['plugin', 'plugins', 'extensions', 'addons', 'npm', 'omp'],
   },
   {
     slug: 'skills.installed',

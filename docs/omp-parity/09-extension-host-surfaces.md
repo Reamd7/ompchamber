@@ -75,6 +75,10 @@ omp 自己的 RPC 模式(`oh-my-pi/src/modes/rpc/rpc-mode.ts:798-882`,契约 `<s
 
 - **custom 条目**:扩展经 `pi.sendMessage(custom)`/`pi.appendEntry(type,data)` 写入的条目走 omp custom 管道,OC 侧现为 `[omp:<customType>]` 文本前缀 + synthetic 消息(projection.js:159-189,05 章 §2 已录);结构化分层 = 05 章 GAP-E11(P2,未做)。扩展专属的 TUI 渲染器 `registerMessageRenderer`/`registerAssistantThinkingRenderer`(types.d.ts:915-917)为组件工厂,归 §3.3 未来路径。
 - **registerProvider**(types.d.ts:995):扩展可注册自定义供应商(含 `streamSimple` 自定义流)。理论上经引擎 modelRegistry 流入 `/api/omp/models` → 选择器自动出现——**流通性未验证**(§5.6,一条 curl)。
+
+### 2.5 Settings recognition boundary (implemented)
+
+The Settings → Plugins page is an OMP surface, not an OpenCode `plugin`-config editor. The UI now consumes `GET /api/omp/plugins?directory=...` through `RuntimeAPIs.ompPlugins`; the omp-host owns SDK `PluginManager`/marketplace enumeration and profile-scoped `.omp/agent/extensions` file discovery. OpenCode `/api/config/plugins` remains a legacy route for compatibility but is no longer the source for this page. Install, enable/disable, remove, and extension-file edits are routed back through the same OMP domain and report deferred restart explicitly.
 - **registerShortcut**(types.d.ts:899-903):TUI KeyId 键位,OC 无对应物(CommandPalette 是语义不同的面)。
 
 ## 3. 目标语义

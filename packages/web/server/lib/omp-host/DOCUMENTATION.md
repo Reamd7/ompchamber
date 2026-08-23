@@ -73,6 +73,7 @@ sync engine, and web server call; everything else answers 404.
   (skills via `discoverSkills` + file commands from the directory; extension/
   custom TS commands need a live session and stay absent). Gated by
   `commands.v1`; discovery failure degrades to the builtin-only list.
+- `domain-plugins.js` (spec 09/OMP plugin parity) — `/api/omp/plugins` reads the SDK `PluginManager` and marketplace registries, exposes only sanitized metadata (never install paths), and `/api/omp/plugins/extensions/*` reads the profile-scoped `.omp/agent/extensions` files. Mutations return deferred-restart outcomes because extension discovery is session-start state.
 - `event-dispositions.json` / `omp-event-registry.json` /
   `omp-bootstrap-matrix.json` — machine-checked contracts.
   `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)

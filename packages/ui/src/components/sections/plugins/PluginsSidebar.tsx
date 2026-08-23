@@ -1,402 +1,233 @@
 import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { AddPluginDialog } from './AddPluginDialog';
-import { RegistryBadge } from './RegistryBadge';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { toast } from '@/components/ui';
 import { Icon } from '@/components/icon/Icon';
-import type { IconName } from '@/components/icon/icons';
 import { SettingsSidebarLayout } from '@/components/sections/shared/SettingsSidebarLayout';
+import { SettingsProjectSelector } from '@/components/sections/shared/SettingsProjectSelector';
 import { SettingsSidebarItem } from '@/components/sections/shared/SettingsSidebarItem';
-import { useI18n } from '@/lib/i18n';
-import {
-  usePluginsStore,
-  type PluginEntry,
-  type PluginFile,
-} from '@/stores/usePluginsStore';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
+import { useI18n } from '@/lib/i18n';
+import { useOmpPluginsStore } from '@/stores/useOmpPluginsStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import type { OmpExtensionRecord, OmpPluginRecord } from '@/lib/api/omp';
 
 interface PluginsSidebarProps {
   onItemSelect?: () => void;
-  onAddClick?: () => void;
 }
 
 type DeleteTarget =
-  | { kind: 'entry'; id: string; label: string }
-  | { kind: 'file'; id: string; label: string }
+  | { kind: 'plugin'; id: string; label: string }
+  | { kind: 'extension'; id: string; label: string }
   | null;
 
-const entryIcon = (entry: PluginEntry): IconName =>
-  entry.parsedKind === 'npm' ? 'code-box' : 'folder';
-
-export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({
-  onItemSelect,
-  onAddClick,
-}) => {
+export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) => {
   const { t } = useI18n();
-
-  const { entries, files, selectedId, setSelected, deleteEntry, deleteFile, loadPlugins } =
-    usePluginsStore(
-      useShallow((s) => ({
-        entries: s.entries,
-        files: s.files,
-        selectedId: s.selectedId,
-        setSelected: s.setSelected,
-        deleteEntry: s.deleteEntry,
-        deleteFile: s.deleteFile,
-        loadPlugins: s.loadPlugins,
-      })),
-    );
-
-  const registryInfo = usePluginsStore((s) => s.registryInfo);
-  const isLoadingRegistry = usePluginsStore((s) => s.isLoadingRegistry);
-  const loadRegistryInfo = usePluginsStore((s) => s.loadRegistryInfo);
-  const updateToLatest = usePluginsStore((s) => s.updateToLatest);
-
+  const {
+    plugins,
+    extensions,
+    selectedId,
+    isLoading,
+    isSaving,
+    setSelected,
+    load,
+    install,
+    removePlugin,
+    removeExtension,
+    revealPlugin,
+    revealExtension,
+    reloadPlugins,
+  } = useOmpPluginsStore(useShallow((state) => state));
+  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
   const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget>(null);
-  const [isDeleting, setIsDeleting] = React.useState(false);
-  const [isAddOpen, setIsAddOpen] = React.useState(false);
+  const [installOpen, setInstallOpen] = React.useState(false);
+  const [installSpec, setInstallSpec] = React.useState('');
+  const [installScope, setInstallScope] = React.useState<'user' | 'project'>('user');
 
   React.useEffect(() => {
-    void loadPlugins();
-  }, [loadPlugins]);
+    void load();
+  }, [activeProjectId, load]);
 
   React.useEffect(() => {
-    const handleOpenAdd = () => setIsAddOpen(true);
+    const handleOpenAdd = () => setInstallOpen(true);
     window.addEventListener('openchamber:settings-open-plugin-add', handleOpenAdd);
     return () => window.removeEventListener('openchamber:settings-open-plugin-add', handleOpenAdd);
   }, []);
 
-  const updateCounts = React.useMemo(() => {
-    const counts = { userEntries: 0, projectEntries: 0 };
-    for (const entry of entries) {
-      const info = registryInfo[entry.spec];
-      if (info?.kind === 'npm-ok' && info.hasUpdate) {
-        if (entry.scope === 'user') counts.userEntries++;
-        else if (entry.scope === 'project') counts.projectEntries++;
-      }
-    }
-    return counts;
-  }, [entries, registryInfo]);
-
-  const userEntries = React.useMemo(
-    () => entries.filter((e) => e.scope === 'user'),
-    [entries],
-  );
-  const projectEntries = React.useMemo(
-    () => entries.filter((e) => e.scope === 'project'),
-    [entries],
-  );
-  const userFiles = React.useMemo(
-    () => files.filter((f) => f.scope === 'user'),
-    [files],
-  );
-  const projectFiles = React.useMemo(
-    () => files.filter((f) => f.scope === 'project'),
-    [files],
-  );
-
-  const total = entries.length + files.length;
-  const isEmpty = total === 0;
-
-  const handleAdd = React.useCallback(() => {
-    if (onAddClick) {
-      onAddClick();
-    } else {
-      setIsAddOpen(true);
-    }
-  }, [onAddClick]);
-
-  const handleSelect = React.useCallback(
-    (id: string) => {
-      setSelected(id);
-      onItemSelect?.();
-    },
-    [onItemSelect, setSelected],
-  );
-
-  const handleUpdateToLatest = React.useCallback(
-    async (id: string) => {
-      const entry = entries.find((e) => e.id === id);
-      if (!entry) return;
-      const info = registryInfo[entry.spec];
-      if (!info || info.kind !== 'npm-ok' || !info.hasUpdate || !info.latestVersion) {
-        return;
-      }
-      const latest = info.latestVersion;
-      const result = await updateToLatest(id);
-      if (result.ok) {
-        toast.success(
-          t('settings.plugins.toast.updatedToLatest', { version: latest }),
-        );
-      } else {
-        toast.error(t('settings.plugins.toast.refreshFailed'));
-      }
-    },
-    [entries, registryInfo, t, updateToLatest],
-  );
-
-  const handleRefresh = React.useCallback(async () => {
-    toast.info(t('settings.plugins.toast.refreshing'));
-    try {
-      await loadRegistryInfo({ force: true });
-    } catch {
-      toast.error(t('settings.plugins.toast.refreshFailed'));
-    }
-  }, [loadRegistryInfo, t]);
-
-  const handleDelete = React.useCallback(async () => {
-    if (!deleteTarget) return;
-    setIsDeleting(true);
-    const result =
-      deleteTarget.kind === 'entry'
-        ? await deleteEntry(deleteTarget.id)
-        : await deleteFile(deleteTarget.id);
-    if (result.ok) {
-      toast.success(
-        result.message ||
-          t('settings.plugins.sidebar.toast.deleted', { name: deleteTarget.label }),
-      );
-    } else {
-      toast.error(t('settings.plugins.sidebar.toast.deleteFailed'));
-    }
-    setDeleteTarget(null);
-    setIsDeleting(false);
-  }, [deleteEntry, deleteFile, deleteTarget, t]);
-
-  const renderEntry = (entry: PluginEntry) => {
-    const info = registryInfo[entry.spec];
-    const canUpdate =
-      info?.kind === 'npm-ok' && info.hasUpdate && !!info.latestVersion;
-    const actions: Array<{
-      label: string;
-      icon?: IconName;
-      destructive?: boolean;
-      onClick: () => void;
-    }> = [];
-    if (canUpdate) {
-      actions.push({
-        label: t('settings.plugins.sidebar.actions.updateToLatest'),
-        icon: 'arrow-up-s',
-        onClick: () => void handleUpdateToLatest(entry.id),
-      });
-    }
-    actions.push({
-      label: t('settings.common.actions.delete'),
-      icon: 'delete-bin',
-      destructive: true,
-      onClick: () =>
-        setDeleteTarget({ kind: 'entry', id: entry.id, label: entry.spec }),
-    });
-    return (
-      <SettingsSidebarItem
-        key={entry.id}
-        title={
-          <span className="flex min-w-0 items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate">{entry.spec}</span>
-            <RegistryBadge spec={entry.spec} />
-          </span>
-        }
-        metadata={
-          entry.parsedKind === 'npm'
-            ? t('settings.plugins.sidebar.kind.npm')
-            : t('settings.plugins.sidebar.kind.path')
-        }
-        selected={selectedId === entry.id}
-        onSelect={() => handleSelect(entry.id)}
-        icon={
-          <Icon
-            name={entryIcon(entry)}
-            className="h-4 w-4 flex-shrink-0 text-muted-foreground/70"
-          />
-        }
-        actions={actions}
-      />
-    );
+  const select = (id: string) => {
+    setSelected(id);
+    onItemSelect?.();
   };
 
-  const renderFile = (file: PluginFile) => (
+  const handleReload = async () => {
+    const result = await reloadPlugins();
+    if (result.ok) toast.success(t('settings.plugins.toast.reloaded', { count: result.sessionsRefreshed ?? 0 }));
+    else toast.error(t('settings.plugins.sidebar.toast.deleteFailed'));
+  };
+  const pluginActions = (plugin: OmpPluginRecord) => [
+    {
+      label: t('settings.plugins.actions.reveal'),
+      icon: 'folder' as const,
+      onClick: () => { void revealPlugin(plugin.id); },
+    },
+    ...(plugin.editable ? [{
+      label: t('settings.common.actions.delete'),
+      icon: 'delete-bin' as const,
+      destructive: true,
+      onClick: () => setDeleteTarget({ kind: 'plugin', id: plugin.id, label: plugin.name }),
+    }] : []),
+  ];
+
+  const renderPlugin = (plugin: OmpPluginRecord) => (
     <SettingsSidebarItem
-      key={file.id}
-      title={file.fileName}
-      metadata={t('settings.plugins.sidebar.kind.file')}
-      selected={selectedId === file.id}
-      onSelect={() => handleSelect(file.id)}
-      icon={
-        <Icon
-          name="file-text"
-          className="h-4 w-4 flex-shrink-0 text-muted-foreground/70"
-        />
-      }
-      actions={[
-        {
-          label: t('settings.common.actions.delete'),
-          icon: 'delete-bin',
-          destructive: true,
-          onClick: () =>
-            setDeleteTarget({ kind: 'file', id: file.id, label: file.fileName }),
-        },
-      ]}
+      key={plugin.id}
+      title={plugin.name}
+      metadata={`${plugin.kind === 'marketplace' ? t('settings.plugins.sidebar.kind.marketplace') : t('settings.plugins.sidebar.kind.npm')} · ${plugin.version}`}
+      selected={selectedId === plugin.id}
+      onSelect={() => select(plugin.id)}
+      icon={<Icon name="plug-2" className="size-4 text-muted-foreground/70" />}
+      actions={pluginActions(plugin)}
     />
   );
 
-  const renderGroup = (
-    label: string,
-    children: React.ReactNode,
-    updateCount = 0,
-  ) => (
+  const renderExtension = (extension: OmpExtensionRecord) => (
+    <SettingsSidebarItem
+      key={extension.id}
+      title={extension.name}
+      metadata={extension.pluginName
+        ? `${extension.pluginName} · ${extension.declaredEntry ?? extension.name}`
+        : `${t('settings.plugins.sidebar.kind.file')} · ${extension.scope === 'project' ? t('settings.plugins.scope.project') : t('settings.plugins.scope.user')}`}
+      selected={selectedId === extension.id}
+      onSelect={() => select(extension.id)}
+      icon={<Icon name="file-code" className="size-4 text-muted-foreground/70" />}
+      actions={[{
+        label: t('settings.plugins.actions.reveal'),
+        icon: 'folder' as const,
+        onClick: () => { void revealExtension(extension.id); },
+      }, ...(extension.editable ? [{
+        label: t('settings.common.actions.delete'),
+        icon: 'delete-bin' as const,
+        destructive: true,
+        onClick: () => setDeleteTarget({ kind: 'extension', id: extension.id, label: extension.name }),
+      }] : [])]}
+    />
+  );
+
+  const group = (label: string, children: React.ReactNode) => (
     <>
-      <div className="px-2 pb-1.5 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {label}
-        {updateCount > 0 && (
-          <span className="ml-2 normal-case font-normal text-[var(--status-success)]">
-            {t(
-              updateCount === 1
-                ? 'settings.plugins.sidebar.group.updatesAvailable_one'
-                : 'settings.plugins.sidebar.group.updatesAvailable_other',
-              { count: updateCount },
-            )}
-          </span>
-        )}
-      </div>
+      <div className="px-2 pb-1.5 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
       {children}
     </>
   );
+
+  const userPlugins = plugins.filter((item) => item.scope === 'user');
+  const projectPlugins = plugins.filter((item) => item.scope === 'project');
+  const userExtensions = extensions.filter((item) => item.scope === 'user');
+  const projectExtensions = extensions.filter((item) => item.scope === 'project');
+  const total = plugins.length + extensions.length;
+
+  const handleInstall = async () => {
+    const spec = installSpec.trim();
+    if (!spec) return;
+    const result = await install(spec, installScope);
+    if (result.ok) {
+      setInstallSpec('');
+      setInstallOpen(false);
+      toast.success(t('settings.view.pendingRestart.saved'));
+    } else {
+      toast.error(result.error || t('settings.plugins.sidebar.toast.deleteFailed'));
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    const result = deleteTarget.kind === 'plugin'
+      ? await removePlugin(deleteTarget.id)
+      : await removeExtension(deleteTarget.id);
+    if (result.ok) toast.success(t('settings.plugins.sidebar.toast.deleted', { name: deleteTarget.label }));
+    else toast.error(t('settings.plugins.sidebar.toast.deleteFailed'));
+    setDeleteTarget(null);
+  };
 
   return (
     <>
       <SettingsSidebarLayout
         variant="background"
-        header={
-          <div className="border-b px-3 pt-4 pb-3">
+        header={(
+          <div className="border-b px-3 pb-3 pt-4">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className={SETTINGS_PANEL_TITLE_CLASS}>
-                {t('settings.plugins.sidebar.title')}
-              </h2>
+              <h2 className={SETTINGS_PANEL_TITLE_CLASS}>{t('settings.plugins.sidebar.title')}</h2>
+            </div>
+            <div className="mb-3">
+              <SettingsProjectSelector />
             </div>
             <div className="flex items-center justify-between gap-2">
-              <span className="typography-meta text-muted-foreground">
-                {t('settings.plugins.sidebar.total', { count: total })}
-              </span>
+              <span className="typography-meta text-muted-foreground">{t('settings.plugins.sidebar.total', { count: total })}</span>
               <div className="flex items-center gap-1">
-                <Button
-                  type="button"
-                  data-settings-item="plugins.create"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 -my-1 text-muted-foreground"
-                  onClick={() => void handleRefresh()}
-                  disabled={isLoadingRegistry}
-                  aria-label={t('settings.plugins.sidebar.actions.refresh')}
-                  title={t('settings.plugins.sidebar.actions.refresh')}
-                >
-                  <Icon
-                    name="refresh"
-                    className={
-                      isLoadingRegistry ? 'size-4 animate-spin' : 'size-4'
-                    }
-                  />
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7 -my-1 text-muted-foreground" onClick={() => void load({ force: true })} disabled={isLoading} aria-label={t('settings.plugins.sidebar.actions.refresh')} title={t('settings.plugins.sidebar.actions.refresh')}>
+                  <Icon name="refresh" className={isLoading ? 'size-4 animate-spin' : 'size-4'} />
                 </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 -my-1 text-muted-foreground"
-                  onClick={handleAdd}
-                  aria-label={t('settings.plugins.sidebar.actions.addTitle')}
-                  title={t('settings.plugins.sidebar.actions.addTitle')}
-                >
+                <Button type="button" variant="ghost" size="icon" className="h-7 w-7 -my-1 text-muted-foreground" onClick={() => void handleReload()} aria-label={t('settings.plugins.actions.reload')} title={t('settings.plugins.actions.reload')}>
+                  <Icon name="restart" className="size-4" />
+                </Button>
+                <Button type="button" data-settings-item="plugins.create" variant="ghost" size="icon" className="h-7 w-7 -my-1 text-muted-foreground" onClick={() => setInstallOpen(true)} aria-label={t('settings.plugins.sidebar.actions.addTitle')} title={t('settings.plugins.sidebar.actions.addTitle')}>
                   <Icon name="add" className="size-4" />
                 </Button>
               </div>
             </div>
           </div>
-        }
+        )}
       >
-        {isEmpty ? (
-          <div className="py-12 px-4 text-center text-muted-foreground">
-            <Icon name="plug" className="mx-auto mb-3 h-10 w-10 opacity-50" />
-            <p className="typography-ui-label font-medium">
-              {t('settings.plugins.sidebar.empty.title')}
-            </p>
-            <p className="typography-meta mt-1 opacity-75">
-              {t('settings.plugins.sidebar.empty.description')}
-            </p>
+        {total === 0 ? (
+          <div className="px-4 py-12 text-center text-muted-foreground">
+            <Icon name="plug" className="mx-auto mb-3 size-10 opacity-50" />
+            <p className="typography-ui-label font-medium">{t('settings.plugins.sidebar.empty.title')}</p>
+            <p className="typography-meta mt-1 opacity-75">{t('settings.plugins.sidebar.empty.description')}</p>
           </div>
         ) : (
           <>
-            {userEntries.length > 0 &&
-              renderGroup(
-                t('settings.plugins.sidebar.group.userEntries'),
-                userEntries.map(renderEntry),
-                updateCounts.userEntries,
-              )}
-            {userFiles.length > 0 &&
-              renderGroup(
-                t('settings.plugins.sidebar.group.userFiles'),
-                userFiles.map(renderFile),
-              )}
-            {projectEntries.length > 0 &&
-              renderGroup(
-                t('settings.plugins.sidebar.group.projectEntries'),
-                projectEntries.map(renderEntry),
-                updateCounts.projectEntries,
-              )}
-            {projectFiles.length > 0 &&
-              renderGroup(
-                t('settings.plugins.sidebar.group.projectFiles'),
-                projectFiles.map(renderFile),
-              )}
+            {group(
+              t('settings.plugins.sidebar.group.userEntries'),
+              userPlugins.length > 0
+                ? userPlugins.map(renderPlugin)
+                : <p className="px-2 py-2 typography-meta text-muted-foreground">{t('settings.plugins.sidebar.empty.packages')}</p>,
+            )}
+            {userExtensions.length > 0 && group(t('settings.plugins.sidebar.group.userFiles'), userExtensions.map(renderExtension))}
+            {projectPlugins.length > 0 && group(t('settings.plugins.sidebar.group.projectEntries'), projectPlugins.map(renderPlugin))}
+            {projectExtensions.length > 0 && group(t('settings.plugins.sidebar.group.projectFiles'), projectExtensions.map(renderExtension))}
           </>
         )}
       </SettingsSidebarLayout>
 
-      <AddPluginDialog open={isAddOpen} onOpenChange={setIsAddOpen} />
-
-      <Dialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !isDeleting) setDeleteTarget(null);
-        }}
-      >
+      <Dialog open={installOpen} onOpenChange={setInstallOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              {t('settings.plugins.sidebar.deleteDialog.title')}
-            </DialogTitle>
-            <DialogDescription>
-              {t('settings.plugins.sidebar.deleteDialog.description', {
-                name: deleteTarget?.label ?? '',
-              })}
-            </DialogDescription>
+            <DialogTitle>{t('settings.plugins.dialog.add.title')}</DialogTitle>
+            <DialogDescription>{t('settings.plugins.sidebar.empty.description')}</DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant={installScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
+            <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
+          </div>
+          <Input value={installSpec} onChange={(event) => setInstallSpec(event.target.value)} placeholder={t('settings.plugins.page.field.spec.placeholder')} className="font-mono" data-settings-item="plugins.spec" />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setInstallOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
+            <Button onClick={() => void handleInstall()} disabled={isSaving || !installSpec.trim()}>{t('settings.plugins.dialog.add.action.submit')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open && !isSaving) setDeleteTarget(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t('settings.plugins.sidebar.deleteDialog.title')}</DialogTitle>
+            <DialogDescription>{t('settings.plugins.sidebar.deleteDialog.description', { name: deleteTarget?.label ?? '' })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setDeleteTarget(null)}
-              disabled={isDeleting}
-            >
-              {t('settings.common.actions.cancel')}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={isDeleting}
-            >
-              {isDeleting
-                ? t('settings.plugins.sidebar.actions.deleting')
-                : t('settings.common.actions.delete')}
-            </Button>
+            <Button variant="ghost" onClick={() => setDeleteTarget(null)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
+            <Button variant="destructive" onClick={() => void handleDelete()} disabled={isSaving}>{t('settings.common.actions.delete')}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

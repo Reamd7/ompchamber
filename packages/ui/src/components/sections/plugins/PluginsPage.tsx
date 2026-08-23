@@ -7,372 +7,298 @@ import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
-import { SettingsSection } from '@/components/sections/shared/SettingsSection';
-import { RegistryBanner } from './RegistryBanner';
-import {
-  usePluginsStore,
-  type PluginDraft,
-  type PluginEntry,
-  type PluginFile,
-  type PluginScope,
-} from '@/stores/usePluginsStore';
+import { SettingsCheckboxRow, SettingsSection } from '@/components/sections/shared/SettingsSection';
+import { useOmpPluginsStore } from '@/stores/useOmpPluginsStore';
+import type { OmpPluginRecord, OmpPluginSetting } from '@/lib/api/omp';
 
-interface OptionsParseResult {
-  ok: boolean;
-  value?: Record<string, unknown>;
-}
+const ScopeBadge: React.FC<{ scope: 'user' | 'project'; label: string }> = ({ scope, label }) => (
+  <span className={cn(
+    'typography-micro rounded-full border px-2 py-0.5',
+    scope === 'project'
+      ? 'border-[var(--status-info-border)] bg-[var(--status-info-background)] text-[var(--status-info)]'
+      : 'border-[var(--interactive-border)] bg-[var(--surface-elevated)] text-foreground',
+  )}>
+    {label}
+  </span>
+);
 
-function parseOptionsJson(raw: string): OptionsParseResult {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) {
-    return { ok: true, value: undefined };
-  }
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { ok: false };
-    }
-    return { ok: true, value: parsed as Record<string, unknown> };
-  } catch {
-    return { ok: false };
-  }
-}
+const PluginSettingControl: React.FC<{
+  plugin: OmpPluginRecord;
+  settingKey: string;
+  setting: OmpPluginSetting;
+}> = ({ plugin, settingKey, setting }) => {
+  const { t } = useI18n();
+  const updatePlugin = useOmpPluginsStore((state) => state.updatePlugin);
+  const isSaving = useOmpPluginsStore((state) => state.isSaving);
+  const [value, setValue] = React.useState<unknown>(setting.value ?? setting.default ?? '');
 
-function stringifyOptions(options: Record<string, unknown> | undefined): string {
-  if (!options || Object.keys(options).length === 0) {
-    return '';
-  }
-  return JSON.stringify(options, null, 2);
-}
-
-function buildEntryDraft(entry: PluginEntry): PluginDraft {
-  return {
-    mode: 'entry',
-    scope: entry.scope,
-    spec: entry.spec,
-    optionsJson: stringifyOptions(entry.options),
-    fileName: '',
-    content: '',
+  const save = async () => {
+    const result = await updatePlugin({ id: plugin.id, setting: { key: settingKey, value } });
+    if (result.ok) toast.success(t('settings.view.pendingRestart.saved'));
+    else toast.error(t('settings.plugins.sidebar.toast.deleteFailed'));
   };
-}
 
-function buildFileDraft(file: PluginFile, content: string): PluginDraft {
-  return {
-    mode: 'file',
-    scope: file.scope,
-    spec: '',
-    optionsJson: '',
-    fileName: file.fileName,
-    content,
-  };
-}
+  if (setting.type === 'boolean') {
+    return (
+      <div className="space-y-2">
+        <SettingsCheckboxRow
+          checked={Boolean(value)}
+          onChange={setValue}
+          label={settingKey}
+          ariaLabel={settingKey}
+          disabled={!plugin.permissions.settings || isSaving}
+        />
+        {plugin.permissions.settings ? <Button size="sm" onClick={() => void save()} disabled={isSaving}>{t('settings.plugins.page.action.save')}</Button> : null}
+      </div>
+    );
+  }
 
-const ScopeBadge: React.FC<{ scope: PluginScope; label: string }> = ({ scope, label }) => {
   return (
-    <span
-      className={cn(
-        'typography-micro font-medium rounded-full px-2 py-0.5',
-        'bg-[var(--surface-elevated)] text-muted-foreground',
-        'border border-[var(--interactive-border)]',
+    <div className="space-y-2">
+      {setting.description ? <p className="typography-meta text-muted-foreground">{setting.description}</p> : null}
+      <Input
+        value={String(value ?? '')}
+        onChange={(event) => setValue(event.target.value)}
+        type={setting.secret ? 'password' : 'text'}
+        disabled={!plugin.permissions.settings || isSaving}
+      />
+      {plugin.permissions.settings ? <Button size="sm" onClick={() => void save()} disabled={isSaving}>{t('settings.plugins.page.action.save')}</Button> : null}
+    </div>
+  );
+};
+
+const PluginDetails: React.FC<{ plugin: OmpPluginRecord }> = ({ plugin }) => {
+  const { t } = useI18n();
+  const updatePlugin = useOmpPluginsStore((state) => state.updatePlugin);
+  const revealPlugin = useOmpPluginsStore((state) => state.revealPlugin);
+  const reloadPlugins = useOmpPluginsStore((state) => state.reloadPlugins);
+  const extensions = useOmpPluginsStore((state) => state.extensions);
+  const isSaving = useOmpPluginsStore((state) => state.isSaving);
+  const manifestExtensions = extensions.filter((extension) => extension.pluginId === plugin.id);
+  const applied = useOmpPluginsStore((state) => state.applied);
+  const appliedHere = applied.filter((session) => session.pluginNames.includes(plugin.name)
+    || session.extensionIds.some((id) => manifestExtensions.some((extension) => extension.id === id)));
+
+  return (
+    <SettingsPageLayout
+      title={plugin.name}
+      titleAccessory={(
+        <ScopeBadge
+          scope={plugin.scope}
+          label={plugin.scope === 'project'
+            ? t('settings.plugins.sidebar.group.projectEntries')
+            : t('settings.plugins.sidebar.group.userEntries')}
+        />
       )}
-      data-scope={scope}
+      showSaveStatus={false}
     >
-      {label}
-    </span>
+      <SettingsSection title={t('settings.plugins.page.field.spec')} divider={false} settingsItem="plugins.spec">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-mono typography-meta">{plugin.name}@{plugin.version}</div>
+            {plugin.description ? <p className="typography-ui text-muted-foreground">{plugin.description}</p> : null}
+          </div>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => { void revealPlugin(plugin.id); }}>
+            <Icon name="folder" className="size-3.5" />
+            {t('settings.plugins.actions.reveal')}
+          </Button>
+        </div>
+      </SettingsSection>
+
+      {plugin.permissions.toggle ? (
+        <SettingsSection title={t('settings.plugins.page.header.entry')} settingsItem="plugins.options">
+          <SettingsCheckboxRow
+            checked={plugin.enabled}
+            onChange={(enabled) => void updatePlugin({ id: plugin.id, enabled })}
+            label={plugin.enabled
+              ? t('sessions.scheduledTasks.dialog.taskToggle.enabled')
+              : t('settings.remoteInstances.relay.state.disabled')}
+            ariaLabel={t('settings.plugins.page.header.entry')}
+            disabled={isSaving}
+          />
+        </SettingsSection>
+      ) : null}
+
+      {Object.entries(plugin.settings ?? {}).map(([key, setting]) => (
+        <SettingsSection key={key} title={key}>
+          <PluginSettingControl plugin={plugin} settingKey={key} setting={setting} />
+        </SettingsSection>
+      ))}
+
+      {plugin.features?.length ? (
+        <SettingsSection title={t('settings.plugins.page.field.options')}>
+          <div className="space-y-1">
+            {plugin.features.map((feature) => (
+              <SettingsCheckboxRow
+                key={feature.name}
+                checked={feature.enabled}
+                onChange={(enabled) => {
+                  const enabledFeatures = plugin.features?.filter((item) => item.name !== feature.name && item.enabled).map((item) => item.name) ?? [];
+                  if (enabled) enabledFeatures.push(feature.name);
+                  void updatePlugin({ id: plugin.id, enabledFeatures });
+                }}
+                label={feature.name}
+                ariaLabel={feature.name}
+                info={feature.description}
+                disabled={!plugin.permissions.features || isSaving}
+              />
+            ))}
+          </div>
+        </SettingsSection>
+      ) : null}
+
+      {manifestExtensions.length > 0 ? (
+        <SettingsSection title={t('settings.plugins.page.field.content')}>
+          <div className="space-y-2">
+            {manifestExtensions.map((extension) => (
+              <div key={extension.id} className="rounded border border-border/60 px-2 py-1.5">
+                <div className="font-mono typography-meta">{extension.declaredEntry ?? extension.name}</div>
+                <div className="typography-micro text-muted-foreground">{extension.loaded ? extension.name : t('settings.plugins.registry.banner.invalid.pathMissing')}</div>
+              </div>
+            ))}
+          </div>
+        </SettingsSection>
+      ) : null}
+
+      <SettingsSection title={t('settings.plugins.page.applied.title')}>
+        {appliedHere.length === 0 ? (
+          <p className="typography-meta text-muted-foreground">{t('settings.plugins.page.applied.empty')}</p>
+        ) : (
+          <div className="space-y-1">
+            {appliedHere.map((session) => (
+              <div key={session.sessionId} className="typography-meta flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5">
+                <span className="min-w-0 truncate font-mono">{session.sessionId}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {t('settings.plugins.page.applied.since', { time: new Date(session.appliedAt).toLocaleTimeString() })}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 text-muted-foreground"
+                  onClick={() => { void reloadPlugins(session.sessionId); }}
+                  aria-label={t('settings.plugins.page.applied.refreshSession')}
+                  title={t('settings.plugins.page.applied.refreshSession')}
+                >
+                  <Icon name="restart" className="size-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+      </SettingsSection>
+    </SettingsPageLayout>
   );
 };
 
 export const PluginsPage: React.FC = () => {
   const { t } = useI18n();
-
-  const selectedId = usePluginsStore((s) => s.selectedId);
-  const entries = usePluginsStore((s) => s.entries);
-  const files = usePluginsStore((s) => s.files);
-  const draft = usePluginsStore((s) => s.draft);
-  const setDraft = usePluginsStore((s) => s.setDraft);
-  const updateEntry = usePluginsStore((s) => s.updateEntry);
-  const updateFile = usePluginsStore((s) => s.updateFile);
-  const readFile = usePluginsStore((s) => s.readFile);
-
-  const selectedEntry = React.useMemo(
-    () => (selectedId ? entries.find((e) => e.id === selectedId) ?? null : null),
-    [entries, selectedId],
-  );
-  const selectedFile = React.useMemo(
-    () => (selectedId ? files.find((f) => f.id === selectedId) ?? null : null),
-    [files, selectedId],
-  );
-
-  const [isSaving, setIsSaving] = React.useState(false);
-  const [isLoadingFile, setIsLoadingFile] = React.useState(false);
-  const originalFileContentById = React.useRef(new Map<string, string>());
+  const selectedId = useOmpPluginsStore((state) => state.selectedId);
+  const revealExtension = useOmpPluginsStore((state) => state.revealExtension);
+  const reloadPlugins = useOmpPluginsStore((state) => state.reloadPlugins);
+  const plugins = useOmpPluginsStore((state) => state.plugins);
+  const extensions = useOmpPluginsStore((state) => state.extensions);
+  const readExtension = useOmpPluginsStore((state) => state.readExtension);
+  const updateExtension = useOmpPluginsStore((state) => state.updateExtension);
+  const isSaving = useOmpPluginsStore((state) => state.isSaving);
+  const selectedPlugin = selectedId ? plugins.find((item) => item.id === selectedId) ?? null : null;
+  const selectedExtension = selectedId ? extensions.find((item) => item.id === selectedId) ?? null : null;
+  const [content, setContent] = React.useState('');
+  const [originalContent, setOriginalContent] = React.useState('');
+  const [isLoading, setIsLoading] = React.useState(false);
 
   React.useEffect(() => {
     let cancelled = false;
-
-    if (selectedEntry) {
-      setDraft(buildEntryDraft(selectedEntry));
-      return () => {
-        cancelled = true;
-      };
+    if (!selectedExtension) {
+      setContent('');
+      setOriginalContent('');
+      return () => { cancelled = true; };
     }
+    setIsLoading(true);
+    void readExtension(selectedExtension.id).then((result) => {
+      if (cancelled) return;
+      const next = result?.content ?? '';
+      setContent(next);
+      setOriginalContent(next);
+      setIsLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [readExtension, selectedExtension]);
+  const appliedAll = useOmpPluginsStore((state) => state.applied);
+  if (selectedPlugin) return <PluginDetails plugin={ selectedPlugin } />;
 
-    if (selectedFile) {
-      setIsLoadingFile(true);
-      void (async () => {
-        const result = await readFile(selectedFile.id);
-        if (cancelled) return;
-        setIsLoadingFile(false);
-        const content = result?.content ?? '';
-        originalFileContentById.current.set(selectedFile.id, content);
-        setDraft(buildFileDraft(selectedFile, content));
-      })();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    setDraft(null);
-    return () => {
-      cancelled = true;
+  const appliedForExtension = selectedId
+    ? appliedAll.filter((session) => session.extensionIds.includes(selectedId))
+    : [];
+  if (selectedExtension) {
+    const extensionContent = useOmpPluginsStore.getState().extensionContent[selectedExtension.id];
+    const editable = extensionContent?.editable ?? selectedExtension.editable;
+    const save = async () => {
+      if (!editable) return;
+      const result = await updateExtension(selectedExtension.id, content);
+      if (result.ok) {
+        setOriginalContent(content);
+        toast.success(t('settings.view.pendingRestart.saved'));
+      } else toast.error(t('settings.plugins.sidebar.toast.deleteFailed'));
     };
-  }, [selectedEntry, selectedFile, readFile, setDraft]);
-
-  if (!selectedId) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="text-center text-muted-foreground">
-          <Icon name="plug" className="mx-auto mb-3 h-12 w-12 opacity-50" />
-          <p className="typography-body">{t('settings.plugins.page.empty.select')}</p>
-          <p className="typography-meta mt-1 opacity-75">
-            {t('settings.plugins.page.empty.add')}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (selectedEntry && draft && draft.mode === 'entry') {
-    const optionsResult = parseOptionsJson(draft.optionsJson);
-    const optionsValid = optionsResult.ok;
-    const isDirty =
-      draft.spec !== selectedEntry.spec ||
-      draft.optionsJson !== stringifyOptions(selectedEntry.options);
-
-    const handleEntryDiscard = () => {
-      setDraft(buildEntryDraft(selectedEntry));
-    };
-
-    const handleEntrySave = async () => {
-      if (!optionsValid) return;
-      const spec = draft.spec.trim();
-      if (!spec) {
-        toast.error(t('settings.plugins.validation.specRequired'));
-        return;
-      }
-
-      setIsSaving(true);
-      try {
-        const result = await updateEntry(selectedEntry.id, {
-          spec,
-          options: optionsResult.value,
-        });
-        if (result.ok) {
-          if (result.reloadFailed) {
-            toast.warning(
-              result.message || t('settings.plugins.toast.reloadFailed'),
-              { description: result.warning },
-            );
-          } else if (result.restartDeferred) {
-            toast.success(t('settings.view.pendingRestart.saved'));
-          } else {
-            toast.success(result.message || t('settings.plugins.toast.updated'));
-          }
-        } else {
-          toast.error(result.message || t('settings.plugins.toast.reloadFailed'));
-        }
-      } finally {
-        setIsSaving(false);
-      }
-    };
-
-    return (
-      <SettingsPageLayout
-        title={t('settings.plugins.page.header.entry')}
-        titleAccessory={(
-          <ScopeBadge
-            scope={selectedEntry.scope}
-            label={
-              selectedEntry.scope === 'project'
-                ? t('settings.plugins.sidebar.group.projectEntries')
-                : t('settings.plugins.sidebar.group.userEntries')
-            }
-          />
-        )}
-        showSaveStatus={false}
-      >
-        <SettingsSection divider={false}>
-          <RegistryBanner entryId={selectedEntry.id} spec={selectedEntry.spec} />
-        </SettingsSection>
-
-        <SettingsSection
-          title={t('settings.plugins.page.field.spec')}
-          settingsItem="plugins.spec"
-        >
-          <Input
-            value={draft.spec}
-            onChange={(e) =>
-              setDraft({ ...draft, spec: e.target.value })
-            }
-            placeholder={t('settings.plugins.page.field.spec.placeholder')}
-            className="font-mono typography-meta"
-            spellCheck={false}
-          />
-        </SettingsSection>
-
-        <SettingsSection
-          title={t('settings.plugins.page.field.options')}
-          settingsItem="plugins.options"
-        >
-          <Textarea
-            value={draft.optionsJson}
-            onChange={(e) =>
-              setDraft({ ...draft, optionsJson: e.target.value })
-            }
-            rows={10}
-            className={cn(
-              'font-mono typography-meta min-h-[200px]',
-              !optionsValid && 'border-[var(--status-error-border)]',
-            )}
-            spellCheck={false}
-            placeholder='{ }'
-          />
-          {!optionsValid && (
-            <p className="typography-micro text-[var(--status-error)]">
-              {t('settings.plugins.page.field.options.invalidJson')}
-            </p>
-          )}
-          <div className="flex items-center gap-2 pt-3">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => void handleEntrySave()}
-              disabled={!isDirty || !optionsValid || isSaving}
-            >
-              {t('settings.plugins.page.action.save')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleEntryDiscard}
-              disabled={!isDirty || isSaving}
-            >
-              {t('settings.plugins.page.action.discard')}
-            </Button>
-          </div>
-        </SettingsSection>
-      </SettingsPageLayout>
-    );
-  }
-
-  if (selectedFile && draft && draft.mode === 'file') {
-    const originalContent = originalFileContentById.current.get(selectedFile.id) ?? '';
-    const isDirty = draft.content !== originalContent || draft.fileName !== selectedFile.fileName;
-
-    const handleFileDiscard = () => {
-      void (async () => {
-        setIsLoadingFile(true);
-        const result = await readFile(selectedFile.id);
-        const content = result?.content ?? '';
-        setIsLoadingFile(false);
-        originalFileContentById.current.set(selectedFile.id, content);
-        setDraft(buildFileDraft(selectedFile, content));
-      })();
-    };
-
-    const handleFileSave = async () => {
-      setIsSaving(true);
-      try {
-        const result = await updateFile(selectedFile.id, { content: draft.content });
-        if (result.ok) {
-          originalFileContentById.current.set(selectedFile.id, draft.content);
-          if (result.reloadFailed) {
-            toast.warning(
-              result.message || t('settings.plugins.toast.reloadFailed'),
-              { description: result.warning },
-            );
-          } else if (result.restartDeferred) {
-            toast.success(t('settings.view.pendingRestart.saved'));
-          } else {
-            toast.success(result.message || t('settings.plugins.toast.updated'));
-          }
-        } else {
-          toast.error(result.message || t('settings.plugins.toast.reloadFailed'));
-        }
-      } finally {
-        setIsSaving(false);
-      }
-    };
-
     return (
       <SettingsPageLayout
         title={t('settings.plugins.page.header.file')}
-        titleAccessory={(
-          <>
-            <ScopeBadge
-              scope={selectedFile.scope}
-              label={
-                selectedFile.scope === 'project'
-                  ? t('settings.plugins.sidebar.group.projectFiles')
-                  : t('settings.plugins.sidebar.group.userFiles')
-              }
-            />
-            <span
-              className={cn(
-                'typography-micro font-mono rounded-full px-2 py-0.5',
-                'bg-[var(--surface-elevated)] text-foreground',
-                'border border-[var(--interactive-border)]',
-              )}
-            >
-              {selectedFile.fileName}
-            </span>
-          </>
-        )}
+        titleAccessory={<ScopeBadge scope={selectedExtension.scope} label={selectedExtension.scope === 'project' ? t('settings.plugins.sidebar.group.projectFiles') : t('settings.plugins.sidebar.group.userFiles')} />}
         showSaveStatus={false}
       >
-        <SettingsSection
-          title={t('settings.plugins.page.field.content')}
-          divider={false}
-          settingsItem="plugins.content"
-        >
-          <Textarea
-            value={draft.content}
-            onChange={(e) =>
-              setDraft({ ...draft, content: e.target.value })
-            }
-            rows={16}
-            className="font-mono typography-meta min-h-[320px]"
-            spellCheck={false}
-            disabled={isLoadingFile}
-          />
-          <div className="flex items-center gap-2 pt-3">
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => void handleFileSave()}
-              disabled={!isDirty || isSaving || isLoadingFile}
-            >
-              {t('settings.plugins.page.action.save')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleFileDiscard}
-              disabled={isSaving || isLoadingFile}
-            >
-              {t('settings.plugins.page.action.discard')}
-            </Button>
+        <SettingsSection title={selectedExtension.name} divider={false}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1 typography-meta text-muted-foreground">
+              <div>{selectedExtension.source}</div>
+              {selectedExtension.pluginName ? <div>{selectedExtension.pluginName}</div> : null}
+              {selectedExtension.declaredEntry ? <div className="font-mono">{selectedExtension.declaredEntry}</div> : null}
+              {!selectedExtension.loaded ? <div className="text-[var(--status-warning)]">{t('settings.plugins.registry.banner.invalid.pathMissing')}</div> : null}
+            </div>
+            {selectedExtension.loaded ? (
+              <Button variant="outline" size="sm" className="shrink-0" onClick={() => { void revealExtension(selectedExtension.id); }}>
+                <Icon name="folder" className="size-3.5" />
+                {t('settings.plugins.actions.reveal')}
+              </Button>
+            ) : null}
           </div>
+        </SettingsSection>
+        {selectedExtension.loaded ? (
+          <SettingsSection title={t('settings.plugins.page.field.content')} settingsItem="plugins.content">
+            <Textarea value={content} onChange={(event) => setContent(event.target.value)} rows={16} className="font-mono typography-meta min-h-[320px]" spellCheck={false} disabled={isLoading || !editable} />
+            {editable ? (
+              <div className="flex items-center gap-2 pt-3">
+                <Button size="sm" onClick={() => void save()} disabled={isLoading || isSaving || content === originalContent}>{t('settings.plugins.page.action.save')}</Button>
+                <Button variant="outline" size="sm" onClick={() => setContent(originalContent)} disabled={isLoading || isSaving || content === originalContent}>{t('settings.plugins.page.action.discard')}</Button>
+              </div>
+            ) : null}
+          </SettingsSection>
+        ) : null}
+
+        <SettingsSection title={t('settings.plugins.page.applied.title')}>
+          {appliedForExtension.length === 0 ? (
+            <p className="typography-meta text-muted-foreground">{t('settings.plugins.page.applied.empty')}</p>
+          ) : (
+            <div className="space-y-1">
+              {appliedForExtension.map((session) => (
+                <div key={session.sessionId} className="typography-meta flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5">
+                  <span className="min-w-0 truncate font-mono">{session.sessionId}</span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {t('settings.plugins.page.applied.since', { time: new Date(session.appliedAt).toLocaleTimeString() })}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 shrink-0 text-muted-foreground"
+                    onClick={() => { void reloadPlugins(session.sessionId); }}
+                    aria-label={t('settings.plugins.page.applied.refreshSession')}
+                    title={t('settings.plugins.page.applied.refreshSession')}
+                  >
+                    <Icon name="restart" className="size-3" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </SettingsSection>
       </SettingsPageLayout>
     );
@@ -381,7 +307,9 @@ export const PluginsPage: React.FC = () => {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="text-center text-muted-foreground">
-        <Icon name="loader-4" className="mx-auto mb-3 h-6 w-6 animate-spin opacity-50" />
+        <Icon name="plug" className="mx-auto mb-3 size-12 opacity-50" />
+        <p className="typography-body">{t('settings.plugins.page.empty.select')}</p>
+        <p className="typography-meta mt-1 opacity-75">{t('settings.plugins.page.empty.add')}</p>
       </div>
     </div>
   );

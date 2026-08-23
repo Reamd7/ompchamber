@@ -21,6 +21,7 @@ import {
   getUnauthenticatedLanErrorMessage,
   isNetworkExposedBindHost,
   isUnsafeUnauthenticatedLanAllowed,
+  isDevelopmentServer,
 } from './lib/security/bind-host.js';
 import {
   TUNNEL_MODE_MANAGED_LOCAL,
@@ -1400,6 +1401,7 @@ async function main(options = {}) {
     : (typeof process.env.OPENCHAMBER_UI_PASSWORD === 'string' ? process.env.OPENCHAMBER_UI_PASSWORD : null);
   if (
     isNetworkExposedBindHost(effectiveBindHost)
+    && !isDevelopmentServer(process.env)
     && !(typeof uiPassword === 'string' && uiPassword.trim().length > 0)
     && !isUnsafeUnauthenticatedLanAllowed(process.env)
   ) {

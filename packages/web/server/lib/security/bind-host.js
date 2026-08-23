@@ -34,6 +34,10 @@ export const isNetworkExposedBindHost = (host) => !isLoopbackBindHost(host);
 export const isUnsafeUnauthenticatedLanAllowed = (env = process.env) =>
   env?.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN === 'true';
 
+export const isDevelopmentServer = (env = process.env) =>
+  env?.OPENCHAMBER_DEV_SERVER === 'true';
+
+
 export const getUnauthenticatedLanErrorMessage = (host) =>
   `OpenChamber refuses to bind to ${host || 'a network-exposed host'} without UI authentication. `
   + 'Set --ui-password or OPENCHAMBER_UI_PASSWORD before exposing it over LAN, '

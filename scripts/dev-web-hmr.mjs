@@ -86,7 +86,7 @@ const uiPort = process.env.OPENCHAMBER_HMR_UI_PORT
   || (persistedDevPorts ? String(persistedDevPorts.uiPort) : String(DEFAULT_UI_PORT));
 const backendPort = process.env.OPENCHAMBER_HMR_API_PORT
   || (persistedDevPorts ? String(persistedDevPorts.apiPort) : String(DEFAULT_API_PORT));
-const hmrHost = process.env.OPENCHAMBER_HMR_HOST || '127.0.0.1';
+const hmrHost = process.env.OPENCHAMBER_HMR_HOST || '0.0.0.0';
 
 function getLanAddresses() {
   const addresses = [];
@@ -114,8 +114,12 @@ const devServer = run(
   { cwd: webRoot },
 );
 
+// Development-only LAN exposure. Production launchers never set this marker;
+// the server keeps its authentication guard for all other startup paths.
 const api = run('api', 'bun', ['run', '--cwd', 'packages/web', 'dev:server:watch'], {
   OPENCHAMBER_PORT: backendPort,
+  OPENCHAMBER_HOST: hmrHost,
+  OPENCHAMBER_DEV_SERVER: 'true',
 });
 
 if (persistedDevPorts) {

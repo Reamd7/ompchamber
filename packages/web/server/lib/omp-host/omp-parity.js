@@ -45,8 +45,8 @@ export const ompFeatures = () => ({
   'uri.v1': true,
   'tree.v1': true,
   'agentRuns.v1': true,
-  // 08: omp slash-command discovery for the three-layer pipeline (§5.4).
-  'commands.v1': true,
+  // OMP plugin manager surface (npm + marketplace registries).
+  'plugins.v1': true,
   // 09: extension chrome projection — widget/status strings via the dialog
   // bridge, mirroring RpcExtensionUIRequest (chapter 09 §5.0).
   'extensionChrome.v1': true,

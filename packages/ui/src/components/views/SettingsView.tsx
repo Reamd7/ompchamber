@@ -19,7 +19,7 @@ import { CommandsPage } from '@/components/sections/commands/CommandsPage';
 import { McpSidebar } from '@/components/sections/mcp/McpSidebar';
 import { McpPage } from '@/components/sections/mcp/McpPage';
 import { PluginsSidebar, PluginsPage } from '@/components/sections/plugins';
-import { usePluginsStore } from '@/stores/usePluginsStore';
+import { useOmpPluginsStore } from '@/stores/useOmpPluginsStore';
 import { SkillsSidebar } from '@/components/sections/skills/SkillsSidebar';
 import { SkillsPage } from '@/components/sections/skills/SkillsPage';
 import { ProjectsSidebar } from '@/components/sections/projects/ProjectsSidebar';
@@ -105,7 +105,7 @@ const pageOrder: SettingsPageSlug[] = [
   'remote-instances',
   'tunnel',
   'git',
-  // 'opencode' group — OpenCode
+  // Engine group — OMP-backed configuration and extension surfaces
   'providers',
   'agents',
   'behavior',
@@ -183,7 +183,27 @@ function getCurrentHistoryState(): Record<string, unknown> {
 export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile, isWindowed, visiblePageSlugs, initialMobileStage = 'nav' }) => {
   const { t } = useI18n();
   const deviceInfo = useDeviceInfo();
-  const isMobile = forceMobile ?? deviceInfo.isMobile;
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [isNarrowSettings, setIsNarrowSettings] = React.useState(false);
+
+  React.useLayoutEffect(() => {
+    const element = containerRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const update = () => {
+      const width = element.getBoundingClientRect().width;
+      setIsNarrowSettings(width < SETTINGS_NAV_WIDTH + SETTINGS_SPLIT_SIDEBAR_WIDTH + 320);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // A narrow desktop/browser viewport still needs the staged single-column
+  // settings flow; otherwise the fixed 256px nav + 280px entity sidebar leave
+  // no room for plugin details.
+  const isMobileDevice = forceMobile ?? deviceInfo.isMobile;
+  const isMobile = isMobileDevice || isNarrowSettings;
   const pendingRestartCount = usePendingOpenCodeRestartStore(selectPendingOpenCodeRestartCount);
 
   const settingsPageRaw = useUIStore((state) => state.settingsPage);
@@ -194,9 +214,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   const [mobileStage, setMobileStage] = React.useState<MobileStage>(initialMobileStage);
   // Seed with the mount-time slug when opening at the nav stage: the slug
   // persists across opens, and the deep-link auto-jump below must react only
-  // to slug CHANGES after mount — not re-enter the previously visited page
-  // every time settings reopen.
+  // to slug changes after mount.
   const autoNavSlugRef = React.useRef<string | null>(initialMobileStage === 'nav' ? settingsSlug : null);
+  const stagedOpenHandledRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!isSettingsDialogOpen) {
+      stagedOpenHandledRef.current = false;
+      return;
+    }
+    if (!isMobile || stagedOpenHandledRef.current) return;
+    stagedOpenHandledRef.current = true;
+    const hasExplicitSettingsRoute = typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).has('settings');
+    if (!hasExplicitSettingsRoute) {
+      autoNavSlugRef.current = settingsSlug;
+      setMobileStage('nav');
+    }
+  }, [isMobile, isSettingsDialogOpen, settingsSlug]);
 
   // No starter page on desktop: 'home' (fresh state) resolves to General.
   // settingsPage persists in the UI store, so subsequent opens restore the
@@ -210,7 +245,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   const [settingsSearchQuery, setSettingsSearchQuery] = React.useState('');
   const [pendingSearchItemId, setPendingSearchItemId] = React.useState<string | null>(null);
   const [activeSearchResultIndex, setActiveSearchResultIndex] = React.useState(0);
-  const containerRef = React.useRef<HTMLDivElement>(null);
   const searchResultRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
   const activeSearchResultIndexRef = React.useRef(0);
   const keyboardSearchNavigationRef = React.useRef(false);
@@ -235,13 +269,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   }, []);
   const isWindowsArm64 = React.useMemo(() => isWindowsArm64Platform(), []);
 
-  // keep platform check available for future window chrome tweaks
-
-  // Server-adjudicated omp settings gate: false until the capability probe
-  // settles ON (hooks/useOmpFeatureEnabled), which also hides the nav entry.
   const ompEngineSettingsEnabled = useOmpFeatureEnabled('settings.v1');
 
-  const runtimeCtx = React.useMemo(() => buildRuntimeContext(isDesktopApp, isMobile), [isDesktopApp, isMobile]);
+  // Runtime availability follows the actual device/runtime. The staged
+  // single-column layout below may also activate for a narrow desktop pane,
+  // but that must not hide desktop-only settings such as Shortcuts.
+  const runtimeCtx = React.useMemo(() => buildRuntimeContext(isDesktopApp, isMobileDevice), [isDesktopApp, isMobileDevice]);
   const visiblePages = React.useMemo(() => {
     const allowedPages = visiblePageSlugs ? new Set<SettingsPageSlug>(visiblePageSlugs) : null;
     return SETTINGS_PAGE_METADATA
@@ -249,12 +282,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       .filter((page) => !allowedPages || allowedPages.has(page.slug))
       .filter((page) => isPageAvailable(page, runtimeCtx))
       .filter((page) => !(runtimeCtx.isVSCode && page.slug === 'projects'))
-      .filter((page) => !(isMobile && page.slug === 'shortcuts'))
-      // The omp engine settings page only exists when the runtime's omp
-      // host advertises `settings.v1` (spec 06 §6.2 stage 0: capability off
-      // → the page is not shown at all, legacy pages unchanged).
+      .filter((page) => !(isMobileDevice && page.slug === 'shortcuts'))
       .filter((page) => page.slug !== 'engine' || ompEngineSettingsEnabled);
-  }, [runtimeCtx, isMobile, visiblePageSlugs, ompEngineSettingsEnabled]);
+  }, [runtimeCtx, isMobileDevice, visiblePageSlugs, ompEngineSettingsEnabled]);
   const sortedFilteredPages = React.useMemo(() => {
     const rank = new Map<SettingsPageSlug, number>(pageOrder.map((s, i) => [s, i]));
     return visiblePages
@@ -283,7 +313,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       return;
     }
     if (settingsSlug === 'plugins') {
-      void usePluginsStore.getState().loadPlugins();
+      void useOmpPluginsStore.getState().load();
       return;
     }
     if (settingsSlug === 'skills.installed' || settingsSlug === 'skills.catalog') {
@@ -661,8 +691,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <CommandsPage />;
       case 'mcp':
         return <McpPage />;
-      case 'plugins':
-        return <PluginsPage />;
       case 'skills.installed':
         return <SkillsPage view="installed" />;
       case 'skills.catalog':
@@ -707,26 +735,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     }
   }, [openChamberSectionBySlug, openPage, openThirdPartyProviderSetup, renderUnavailable, runtimeCtx, t]);
 
-  // Mobile: if opened via deep-link / palette to a non-home page, jump into it once.
+  // Explicit navigation/search changes move staged layouts into the selected
+  // page. Reopening Settings must stay on the root menu even when the store
+  // remembers a previously visited page such as Providers.
   React.useEffect(() => {
-    if (!isMobile) {
-      return;
-    }
-    if (mobileStage !== 'nav') {
-      return;
-    }
-    if (settingsSlug === 'home') {
-      return;
-    }
-    if (autoNavSlugRef.current === settingsSlug) {
-      return;
-    }
-    const def = getSettingsPageMeta(settingsSlug);
-    if (!def || def.slug === 'home') {
-      return;
-    }
+    if (!isMobile || mobileStage !== 'nav' || settingsSlug === 'home') return;
+    if (autoNavSlugRef.current === settingsSlug) return;
+    const page = getSettingsPageMeta(settingsSlug);
+    if (!page || page.slug === 'home') return;
     autoNavSlugRef.current = settingsSlug;
-    setMobileStage(def.kind === 'split' ? 'page-sidebar' : 'page-content');
+    setMobileStage(page.kind === 'split' ? 'page-sidebar' : 'page-content');
   }, [isMobile, mobileStage, settingsSlug]);
 
   const showBackButton = isMobile && mobileStage !== 'nav';
@@ -1042,7 +1060,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
   };
 
   return (
-    <div ref={containerRef} data-settings-view="true" className={cn('relative flex h-full min-h-0 flex-col overflow-hidden bg-background')}>
+    <div ref={containerRef} data-settings-view="true" data-settings-layout={isMobile ? 'staged' : 'columns'} className={cn('relative flex h-full min-h-0 flex-col overflow-hidden bg-background')}>
       {isMobile ? (
         <div
           className={cn(

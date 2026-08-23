@@ -81,7 +81,7 @@ const MOBILE_SETTINGS_PAGES = [
   'mcp',
   'providers',
   'usage',
-  'voice',
+  'plugins',
   'integrations',
   'engine',
   'about',

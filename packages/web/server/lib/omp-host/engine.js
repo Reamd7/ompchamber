@@ -777,7 +777,13 @@ export class OmpHostEngine {
       extensionUiInitialized: false,
       extensionUiPromise: null,
       planHandlerAttached: false,
+      // Plugin application snapshot (plugins.v1): the discovery set this
+      // session bound at materialization — feeds the Settings → Plugins
+      // "applied in sessions" projection and stays frozen for the session's
+      // lifetime (TS extension modules are not rebound by reload).
+      appliedPlugins: null,
     };
+    hostSession.appliedPlugins = await this.#snapshotAppliedPlugins(directoryKey);
     hostSession.agentSession = session;
     hostSession.lastTouched = Date.now();
     hostSession.unsubscribe = session.subscribe((event) => {
@@ -808,6 +814,85 @@ export class OmpHostEngine {
     return hostSession;
   }
 
+
+  /**
+   * Discovery-set snapshot for a freshly materialized session (plugins.v1).
+   * Runs right after createAgentSession so the SDK's discovery caches are warm
+   * and return exactly what the session just bound. Failures degrade to null
+   * — never block session setup on the settings projection.
+   */
+  async #snapshotAppliedPlugins(directoryKey) {
+    try {
+      const { discoverExtensionPaths } = await import('@oh-my-pi/pi-coding-agent/extensibility/extensions');
+      const { getEnabledPlugins } = await import('@oh-my-pi/pi-coding-agent/extensibility/plugins');
+      const directory = directoryKey ?? process.cwd();
+      const [extensionPaths, plugins] = await Promise.all([
+        discoverExtensionPaths([], directory),
+        getEnabledPlugins(directory),
+      ]);
+      return {
+        appliedAt: Date.now(),
+        extensionPaths: extensionPaths.map((item) => path.resolve(item)),
+        pluginNames: plugins.map((plugin) => plugin.name),
+      };
+    } catch (error) {
+      console.warn('[omp-host] applied-plugins snapshot failed:', error?.message ?? error);
+      return null;
+    }
+  }
+
+  /** Live per-session plugin application snapshots (plugins.v1 projection). */
+  appliedPluginsSnapshots() {
+    return [...this.sessions.values()]
+      .filter((hostSession) => hostSession.agentSession && hostSession.appliedPlugins)
+      .map((hostSession) => ({
+        sessionId: hostSession.sessionId,
+        directory: hostSession.directory,
+        ...hostSession.appliedPlugins,
+      }));
+  }
+
+  /**
+   * Hot-reload plugin state for live sessions in a directory (plugins.v1):
+   * mirrors omp's `/reload-plugins` — invalidate the process-global discovery
+   * caches, republish task/agent definitions, and refresh skills + slash
+   * commands on every live session of that directory. TS extension module
+   * bindings stay frozen (sessions rebind at next materialization).
+   */
+  async reloadAppliedPlugins(directory, sessionId = null) {
+    const directoryKey = normalizeDirectoryKey(directory ?? process.cwd());
+    let projectRegistryPath = null;
+    try {
+      const { resolveActiveProjectRegistryPath } = await import('@oh-my-pi/pi-coding-agent/discovery/helpers');
+      projectRegistryPath = await resolveActiveProjectRegistryPath(directoryKey);
+    } catch {
+      projectRegistryPath = null;
+    }
+    try {
+      const { clearPluginRootsAndCaches } = await import('@oh-my-pi/pi-coding-agent/discovery/helpers');
+      clearPluginRootsAndCaches(projectRegistryPath ? [projectRegistryPath] : undefined);
+    } catch (error) {
+      console.warn('[omp-host] reload cache invalidation failed:', error?.message ?? error);
+    }
+    try {
+      const { refreshAgentDiscovery } = await import('@oh-my-pi/pi-coding-agent/task');
+      await refreshAgentDiscovery(directoryKey);
+    } catch (error) {
+      console.warn('[omp-host] reload agent discovery refresh failed:', error?.message ?? error);
+    }
+    let sessionsRefreshed = 0;
+    for (const hostSession of this.sessions.values()) {
+      if (hostSession.directory !== directoryKey || !hostSession.agentSession) continue;
+      if (sessionId && hostSession.sessionId !== sessionId) continue;
+      try {
+        await hostSession.agentSession.refreshSkills?.();
+        sessionsRefreshed += 1;
+      } catch (error) {
+        console.warn('[omp-host] reload skills refresh failed:', hostSession.sessionId, error?.message ?? error);
+      }
+    }
+    return { sessionsRefreshed };
+  }
   /**
    * omp-native publish helper (spec 05 §5.2.1 envelope; master D6-R1 single
    * channel). Payload never carries directory/sessionID.

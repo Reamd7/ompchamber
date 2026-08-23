@@ -7,6 +7,7 @@ import type {
   OmpModelsAPI,
   OmpModesAPI,
   OmpPersonasAPI,
+  OmpPluginsAPI,
   OmpSessionAPI,
   OmpSettingsAPI,
   OmpUriAPI,
@@ -1252,6 +1253,7 @@ export interface RuntimeAPIs {
   ompModels: OmpModelsAPI;
   ompAgentDefinitions: OmpAgentDefinitionsAPI;
   ompPersonas: OmpPersonasAPI;
+  ompPlugins: OmpPluginsAPI;
   ompSettings: OmpSettingsAPI;
   ompUri: OmpUriAPI;
   tools: ToolsAPI;

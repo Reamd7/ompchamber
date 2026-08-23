@@ -15,6 +15,7 @@ import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models
 import { registerModesDomainRoutes } from './domain-modes.js';
 import { registerCommandsDomainRoutes } from './domain-commands.js';
 import { registerChromeDomainRoutes } from './domain-chrome.js';
+import { registerPluginsDomainRoutes } from './domain-plugins.js';
 
 
 /**
@@ -604,6 +605,11 @@ export const registerEndpoints = (route, engine, { version }) => {
   engine.uriDomain.mount(route);
   registerCommandsDomainRoutes(route, { features: ompFeatures(), liveCommandsFor: (directory) => engine.liveCommandsFor(directory) });
   registerChromeDomainRoutes(route, { chrome: engine.chrome, features: ompFeatures() });
+  registerPluginsDomainRoutes(route, {
+    features: ompFeatures(),
+    snapshots: () => engine.appliedPluginsSnapshots(),
+    reloadSessions: (directory, sessionId) => engine.reloadAppliedPlugins(directory, sessionId),
+  });
 
   // ---- omp parity foundation (spec docs/omp-parity; public paths
   // /api/omp/* — the web proxy strips the /api prefix, master D6-R3/R4) ----

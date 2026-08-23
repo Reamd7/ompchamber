@@ -6,6 +6,7 @@ import {
   createOmpCommandsAPI,
   createOmpEventsAPI,
   createOmpPersonasAPI,
+  createOmpPluginsAPI,
   createOmpSessionAPI,
   createOmpSettingsAPI,
   createOmpTreeAPI,
@@ -831,5 +832,62 @@ describe('createOmpCommandsAPI (spec 08 §5.4 — omp command discovery)', () =>
       fetchImpl: (async () => jsonResponse(501, { error: 'commands.v1-unavailable' })) as unknown as typeof fetch,
     });
     expect(await off.getCommands({ directory: '/repo' })).toEqual({ ok: false, unavailable: true });
+  });
+});
+
+describe('createOmpPluginsAPI (OMP plugin manager)', () => {
+  const SNAPSHOT = {
+    plugins: [{ id: 'npm-id', kind: 'npm', scope: 'user', name: 'example', version: '1.2.3', enabled: true, editable: true, extensionEntries: [], permissions: { toggle: true, features: true, settings: true, uninstall: true } }],
+    extensions: [{ id: 'ext-id', kind: 'extension', scope: 'user', name: 'status.ts', source: 'native', editable: true, loaded: true }],
+  };
+
+  test('parses installed plugins and extension files under the directory scope', async () => {
+    const calls: Array<{ path: string; query?: Query }> = [];
+    const api = createOmpPluginsAPI({
+      fetchImpl: (async (path: string, init?: RequestInit & { query?: Query }) => {
+        calls.push({ path, query: init?.query });
+        return jsonResponse(200, SNAPSHOT);
+      }) as unknown as typeof fetch,
+    });
+    expect(await api.list({ directory: '/repo' })).toEqual({ ok: true, data: SNAPSHOT });
+    expect(calls).toEqual([{ path: '/api/omp/plugins', query: { directory: '/repo' } }]);
+  });
+
+  test('uses the plugin and extension mutation routes', async () => {
+    const calls: Array<{ path: string; method?: string; query?: Query; body?: string }> = [];
+    const api = createOmpPluginsAPI({
+      fetchImpl: (async (path: string, init?: RequestInit & { query?: Query }) => {
+        calls.push({ path, method: init?.method, query: init?.query, body: init?.body as string | undefined });
+        return jsonResponse(200, { restartDeferred: true, message: 'saved' });
+      }) as unknown as typeof fetch,
+    });
+    expect(await api.setEnabled({ id: 'npm-id', enabled: false, directory: '/repo' })).toEqual({ ok: true, restartDeferred: true, message: 'saved' });
+    expect(await api.updateExtension({ id: 'ext-id', content: 'export default {}', directory: '/repo' })).toEqual({ ok: true, restartDeferred: true, message: 'saved' });
+    expect(calls).toEqual([
+      {
+        path: '/api/omp/plugins/npm-id',
+        method: 'PATCH',
+        query: { directory: '/repo' },
+        body: JSON.stringify({ directory: '/repo', enabled: false }),
+      },
+      {
+        path: '/api/omp/plugins/extensions/ext-id',
+        method: 'PUT',
+        query: { directory: '/repo' },
+        body: JSON.stringify({ content: 'export default {}', directory: '/repo' }),
+      },
+    ]);
+  });
+
+  test('feature-off and malformed snapshots fail distinctly', async () => {
+    const off = createOmpPluginsAPI({
+      fetchImpl: (async () => jsonResponse(501, { error: 'plugins.v1-unavailable' })) as unknown as typeof fetch,
+    });
+    expect(await off.list({ directory: '/repo' })).toEqual({ ok: false, unavailable: true });
+
+    const malformed = createOmpPluginsAPI({
+      fetchImpl: (async () => jsonResponse(200, { plugins: [{ name: 'missing-fields' }], extensions: [] })) as unknown as typeof fetch,
+    });
+    expect(await malformed.list({ directory: '/repo' })).toEqual({ ok: false, unavailable: false });
   });
 });
