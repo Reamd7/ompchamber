@@ -142,6 +142,50 @@ const marketplaceManagerFor = async (directory) => new MarketplaceManager({
   pluginsCacheDir: getPluginsCacheDir(),
 });
 
+const projectOverridesPath = (directory) =>
+  path.join(directory, '.omp', 'plugin-overrides.json');
+
+const readProjectOverrides = (directory) => {
+  const overridesPath = projectOverridesPath(directory);
+  try {
+    return JSON.parse(fs.readFileSync(overridesPath, 'utf8'));
+  } catch {
+    return {};
+  }
+};
+
+const writeProjectOverrides = (directory, overrides) => {
+  const overridesPath = projectOverridesPath(directory);
+  fs.mkdirSync(path.dirname(overridesPath), { recursive: true });
+  const tempPath = `${overridesPath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tempPath, JSON.stringify(overrides, null, 2), 'utf8');
+  fs.renameSync(tempPath, overridesPath);
+};
+
+/** Toggle / feature / setting mutation through .omp/plugin-overrides.json —
+ * the same file omp TUI manages. Cache invalidation picks it up on the next
+ * discovery pass, so project-scoped package plugins become fully editable. */
+const applyProjectOverride = (directory, pluginName, mutation) => {
+  const overrides = readProjectOverrides(directory);
+  if (mutation.enabled === false) {
+    overrides.disabled = [...new Set([...(overrides.disabled ?? []), pluginName])];
+  } else if (mutation.enabled === true) {
+    overrides.disabled = (overrides.disabled ?? []).filter((name) => name !== pluginName);
+  }
+  if (Array.isArray(mutation.enabledFeatures)) {
+    overrides.features = { ...(overrides.features ?? {}), [pluginName]: mutation.enabledFeatures };
+  }
+  if (mutation.setting) {
+    const settings = { ...(overrides.settings ?? {}) };
+    const pluginSettings = { ...(settings[pluginName] ?? {}) };
+    if (mutation.setting.remove === true) delete pluginSettings[mutation.setting.key];
+    else pluginSettings[mutation.setting.key] = mutation.setting.value;
+    settings[pluginName] = pluginSettings;
+    overrides.settings = settings;
+  }
+  writeProjectOverrides(directory, overrides);
+};
+
 const execFileAsync = promisify(execFile);
 
 /**
@@ -225,6 +269,7 @@ const projectPlugin = (plugin, {
   settingValues = {},
 } = {}) => {
   const userPackage = kind === 'npm' && scope === 'user';
+  const npmPackage = kind === 'npm';
   return {
     id: encodePluginId(kind, scope, name),
     kind,
@@ -232,11 +277,11 @@ const projectPlugin = (plugin, {
     name,
     version: plugin.version || 'unknown',
     enabled: plugin.enabled !== false,
-    editable: userPackage,
+    editable: npmPackage,
     permissions: {
-      toggle: userPackage,
-      features: userPackage,
-      settings: userPackage,
+      toggle: npmPackage,
+      features: npmPackage,
+      settings: npmPackage,
       uninstall: userPackage,
     },
     ...(plugin.manifest?.description ? { description: plugin.manifest.description } : {}),
@@ -388,10 +433,15 @@ export const registerPluginsDomainRoutes = (
       const marketplaceManager = await marketplaceManagerFor(directory);
       const marketplaces = await marketplaceManager.listMarketplaces();
       const target = classifyInstallTarget(spec, new Set(marketplaces.map((entry) => entry.name)));
+      const scope = body?.scope === 'project' ? 'project' : 'user';
+      // omp semantics: only marketplace installs support project scope. npm
+      // packages and local paths always install to the user plugins root.
+      // Reject the mismatch instead of silently downgrading scope.
+      if (scope === 'project' && target.type !== 'marketplace') {
+        return badRequest('project scope is only supported for marketplace installs (name@marketplace)');
+      }
       if (target.type === 'marketplace') {
-        await marketplaceManager.installPlugin(target.name, target.marketplace, {
-          scope: body?.scope === 'project' ? 'project' : 'user',
-        });
+        await marketplaceManager.installPlugin(target.name, target.marketplace, { scope });
       } else if (target.type === 'local') {
         const localPath = target.path === '~' || target.path.startsWith('~/') || target.path.startsWith('~\\')
           ? path.join(os.homedir(), target.path.slice(2))
@@ -443,16 +493,6 @@ export const registerPluginsDomainRoutes = (
     return json(restartDeferred('OMP extension created. Restart the omp engine to apply it.'));
   });
 
-  route('PUT', '/omp/plugins/extensions/{id}', async (request, ctx) => {
-    if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = extensionFilesById.get(ctx.params.id);
-    if (!target) return notFound('extension not found');
-    if (target.editable !== true) return badRequest('extension entry is read-only');
-    const body = await request.json().catch(() => ({}));
-    fs.writeFileSync(target.path, typeof body?.content === 'string' ? body.content : '', 'utf8');
-    return json(restartDeferred('OMP extension updated. Restart the omp engine to apply it.'));
-  });
-
   route('DELETE', '/omp/plugins/extensions/{id}', async (_request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
     const target = extensionFilesById.get(ctx.params.id);
@@ -474,8 +514,11 @@ export const registerPluginsDomainRoutes = (
         if (typeof body?.enabled !== 'boolean') return badRequest('enabled must be boolean');
         const manager = await marketplaceManagerFor(directory);
         await manager.setPluginEnabled(target.name, body.enabled, target.scope);
+      } else if (target.scope === 'project') {
+        // Project-scoped package plugins mutate through .omp/plugin-overrides.json
+        // (the same file omp TUI manages) instead of the global lockfile.
+        applyProjectOverride(directory, target.name, body);
       } else {
-        if (target.scope !== 'user') return badRequest('project package plugins are read-only');
         const manager = new PluginManager(directory);
         if (typeof body?.enabled === 'boolean') await manager.setEnabled(target.name, body.enabled);
         if (Array.isArray(body?.enabledFeatures)) await manager.setEnabledFeatures(target.name, body.enabledFeatures);

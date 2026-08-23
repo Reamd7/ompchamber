@@ -46,6 +46,15 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
   const [installSpec, setInstallSpec] = React.useState('');
   const [installScope, setInstallScope] = React.useState<'user' | 'project'>('user');
 
+  // omp semantics: only marketplace installs (name@marketplace) support project
+  // scope. npm specs and local paths always install to the user plugins root.
+  // Show the Project button only for specs that plausibly reference a marketplace.
+  const specLooksLikeMarketplace = installSpec.trim().length > 0
+    && installSpec.trim().includes('@')
+    && !installSpec.trim().startsWith('@')
+    && !/\d/.test(installSpec.trim().split('@').pop() ?? '');
+  const effectiveScope = specLooksLikeMarketplace ? installScope : 'user';
+
   React.useEffect(() => {
     void load();
   }, [activeProjectId, load]);
@@ -131,7 +140,7 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
   const handleInstall = async () => {
     const spec = installSpec.trim();
     if (!spec) return;
-    const result = await install(spec, installScope);
+    const result = await install(spec, specLooksLikeMarketplace ? installScope : undefined);
     if (result.ok) {
       setInstallSpec('');
       setInstallOpen(false);
@@ -208,8 +217,10 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
             <DialogDescription>{t('settings.plugins.sidebar.empty.description')}</DialogDescription>
           </DialogHeader>
           <div className="flex gap-2">
-            <Button type="button" size="sm" variant={installScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
-            <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
+            <Button type="button" size="sm" variant={effectiveScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
+            {specLooksLikeMarketplace ? (
+              <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
+            ) : null}
           </div>
           <Input value={installSpec} onChange={(event) => setInstallSpec(event.target.value)} placeholder={t('settings.plugins.page.field.spec.placeholder')} className="font-mono" data-settings-item="plugins.spec" />
           <DialogFooter>

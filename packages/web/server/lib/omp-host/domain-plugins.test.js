@@ -40,7 +40,7 @@ describe('OMP plugin domain', () => {
     expect(await response.json()).toEqual({ error: 'plugins.v1-unavailable' });
     expect(calls).toBe(0);
   });
-  test('projects manifest extension entries with loaded state and read-only boundary', () => {
+  test('projects manifest extension entries with loaded state and project override permissions', () => {
     const plugin = {
       name: 'example',
       version: '1.0.0',
@@ -49,8 +49,8 @@ describe('OMP plugin domain', () => {
       manifest: { extensions: ['extensions/index.ts'] },
     };
     const projected = projectPlugin(plugin);
-    expect(projected).toMatchObject({ kind: 'npm', scope: 'project', editable: false });
-    expect(projected.permissions).toEqual({ toggle: false, features: false, settings: false, uninstall: false });
+    expect(projected).toMatchObject({ kind: 'npm', scope: 'project', editable: true });
+    expect(projected.permissions).toEqual({ toggle: true, features: true, settings: true, uninstall: false });
     const entry = projectExtension({
       filePath: '/repo/.omp/plugins/example/extensions/index.ts',
       scope: 'project',
