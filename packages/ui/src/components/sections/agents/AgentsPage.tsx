@@ -682,6 +682,7 @@ export const AgentsPage: React.FC = () => {
               settingsItem="agents.source"
               label={t('settings.agents.page.field.source')}
               info={(selectedAgent as AgentWithExtras).filePath}
+              infoDocsUrl={OMP_DOCS.agentDefinitions}
             >
               <span
                 className="typography-ui-label text-muted-foreground"
@@ -724,18 +725,20 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.common.field.description')}
             controlClassName="w-full max-w-none"
           >
-            <Input
+            <Textarea
               value={ompForm.description}
               onChange={(e) => patchOmpForm({ description: e.target.value })}
               placeholder={t('settings.agents.page.field.descriptionPlaceholder')}
               disabled={isReadOnly}
-              className="h-8 w-full max-w-md px-3"
+              rows={2}
+              className="w-full resize-none min-h-[52px] bg-transparent"
             />
           </SettingsStackedField>
 
           <SettingsStackedField
             settingsItem="agents.system-prompt"
             label={t('settings.agents.page.field.systemPrompt')}
+            controlClassName="w-full max-w-none"
           >
             <Textarea
               value={ompForm.systemPrompt}
