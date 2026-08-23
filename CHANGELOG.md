@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.18.6] - 2026-08-23
+
+- **Settings:** fixed the provider Edit and Delete buttons never appearing — a large models.yml that reuses model blocks through YAML anchors tripped the parser's abuse guard, and every provider-settings request failed silently.
+- **Models:** the models.dev catalog is cached on disk with ETag revalidation and a proxy fallback, so the model list stays available when the catalog is slow or unreachable.
+- Tasks: scheduled tasks can pick a persona when the personas capability is enabled.
+
 ## [1.18.5] - 2026-08-23
 
 - **CLI:** the command is now `ompchamber`, distributed as a tarball from this repository's GitHub Releases instead of the npm registry — install with the install script or `npm install -g <release tarball URL>`, and `ompchamber update` reinstalls from the latest release. The engine's required native addon is staged automatically on first launch, so a clean machine only needs Node.js 22+ and Bun.
