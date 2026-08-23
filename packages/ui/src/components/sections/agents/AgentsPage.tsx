@@ -760,7 +760,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.tools')}
             info={t('settings.agents.page.field.toolsHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
-            controlClassName="w-full @xl:flex-1 @xl:justify-start"
+            controlClassName="w-full @xl:w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.tools}
@@ -776,7 +776,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.modelPatterns')}
             info={t('settings.agents.page.field.modelPatternsHint')}
             infoDocsUrl={OMP_DOCS.modelPrecedence}
-            controlClassName="w-full @xl:flex-1 @xl:justify-start"
+            controlClassName="w-full @xl:w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.modelPatterns}
@@ -792,7 +792,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.thinkingLevel')}
             info={t('settings.agents.page.field.thinkingLevelHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
-            controlClassName="w-full @xl:flex-1 @xl:justify-start"
+            controlClassName="w-full @xl:w-full @xl:flex-1 @xl:justify-start"
           >
             <Select
               value={ompForm.thinkingLevel || '__default'}
@@ -821,7 +821,7 @@ export const AgentsPage: React.FC = () => {
             label={t('settings.agents.page.field.spawns')}
             info={t('settings.agents.page.field.spawnsHint')}
             infoDocsUrl={OMP_DOCS.agentDefinitionShape}
-            controlClassName="w-full @xl:flex-1 @xl:justify-start"
+            controlClassName="w-full @xl:w-full @xl:flex-1 @xl:justify-start"
           >
             <Input
               value={ompForm.spawns}
