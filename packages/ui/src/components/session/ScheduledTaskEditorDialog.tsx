@@ -24,10 +24,17 @@ import { useUIStore } from '@/stores/useUIStore';
 import type { ScheduledTask } from '@/lib/scheduledTasksApi';
 import { useI18n } from '@/lib/i18n';
 import { resolveOmpDefaults } from '@/lib/omp-defaults';
+import { useOmpModelRoles } from '@/hooks/useOmpModelRoles';
+import { useOmpPersonas } from '@/hooks/useOmpPersonas';
 import { isValidCronExpression, getNextRuns, CRON_EXAMPLES } from '@/lib/cron';
 import { canonicalizeTimezone } from '@/lib/timezones';
 
 const WEEKDAY_INDEXES = [0, 1, 2, 3, 4, 5, 6] as const;
+
+// Select sentinel for the persona picker's "Standard" entry (empty string
+// SelectItem values are unreliable); mirrors the thinking-level __default.
+const PERSONA_STANDARD = '__standard';
+
 
 // Mirrors the composer's footer icon toggles (PermissionAutoAcceptButton /
 // SessionGoalButton) so the state reads the same in both places.
@@ -742,6 +749,12 @@ export function ScheduledTaskEditorDialog(props: {
   const { t, locale } = useI18n();
   const [modelRolesEnabled, setModelRolesEnabled] = React.useState(false);
 
+  // Persona picker (spec 02 §5.1 D-B2, 08 §5.1 GAP-02): under personas.v1
+  // the agent field carries a persona name for the task's session instead
+  // of a legacy agent id; the gate is flags-based (directory-independent).
+  const ompRoles = useOmpModelRoles(open ? projectDirectory : null);
+  const personasState = useOmpPersonas(ompRoles.personasEnabled && open);
+  const personas = personasState.personas;
   const loadProviders = useConfigStore((state) => state.loadProviders);
   const loadAgents = useConfigStore((state) => state.loadAgents);
   const providers = useConfigStore((state) => state.providers);
@@ -832,7 +845,9 @@ export function ScheduledTaskEditorDialog(props: {
             ? (omp.model?.modelID ?? '')
             : currentModelID,
           variant: omp.modelRolesEnabled ? '' : currentVariant,
-          agent: currentAgentName,
+          // Personas.v1: standard session is the default; no legacy agent
+          // synthesis (spec 08 GAP-02).
+          agent: ompRoles.personasEnabled ? '' : currentAgentName,
         })
       );
       const sourceDate = parseISODateToLocal(task?.schedule?.date || '') || new Date();
@@ -859,7 +874,7 @@ export function ScheduledTaskEditorDialog(props: {
     return () => {
       cancelled = true;
     };
-  }, [open, task, projectDirectory, currentProviderID, currentModelID, currentVariant, currentAgentName]);
+  }, [open, task, projectDirectory, currentProviderID, currentModelID, currentVariant, currentAgentName, ompRoles.personasEnabled]);
 
   React.useEffect(() => {
     if (!isDatePickerOpen) {
@@ -1591,18 +1606,74 @@ export function ScheduledTaskEditorDialog(props: {
           </div>
 
           <div className="flex min-w-0 flex-col gap-1">
-            <FieldLabel>{t('sessions.scheduledTasks.editor.agent.label')}</FieldLabel>
-            <AgentSelector
-              agentName={draft.execution.agent}
-              filter={(agent) => isPrimaryMode(agent.mode)}
-              onChange={(agent) => setDraft((prev) => ({
-                ...prev,
-                execution: {
-                  ...prev.execution,
-                  agent,
-                },
-              }))}
-            />
+            <FieldLabel>{t(ompRoles.personasEnabled
+              ? 'sessions.scheduledTasks.editor.persona.label'
+              : 'sessions.scheduledTasks.editor.agent.label')}</FieldLabel>
+            {ompRoles.personasEnabled ? (
+              personas === null ? (
+                // Fetch failed or still loading: render the unavailable
+                // state instead of a fake "Standard only" universe.
+                <Select value={PERSONA_STANDARD} onValueChange={() => {}}>
+                  <SelectTrigger
+                    size="lg"
+                    className="w-fit max-w-full"
+                    disabled
+                    aria-label={t('sessions.scheduledTasks.editor.persona.ariaLabel')}
+                  >
+                    <SelectValue>
+                      {(value) => (value ? t('sessions.scheduledTasks.editor.persona.unavailable') : '')}
+                    </SelectValue>
+                  </SelectTrigger>
+                </Select>
+              ) : (
+                <Select
+                  value={personas.some((persona) => persona.name === draft.execution.agent)
+                    ? draft.execution.agent
+                    : PERSONA_STANDARD}
+                  onValueChange={(next) => setDraft((prev) => ({
+                    ...prev,
+                    execution: {
+                      ...prev.execution,
+                      agent: next === PERSONA_STANDARD ? '' : next,
+                    },
+                  }))}
+                >
+                  <SelectTrigger
+                    size="lg"
+                    className="w-fit max-w-full"
+                    aria-label={t('sessions.scheduledTasks.editor.persona.ariaLabel')}
+                  >
+                    <SelectValue>
+                      {(value) => (value === PERSONA_STANDARD
+                        ? t('sessions.scheduledTasks.editor.persona.standard')
+                        : value)}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={PERSONA_STANDARD}>
+                      {t('sessions.scheduledTasks.editor.persona.standard')}
+                    </SelectItem>
+                    {personas.map((persona) => (
+                      <SelectItem key={persona.name} value={persona.name}>
+                        {persona.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )
+            ) : (
+              <AgentSelector
+                agentName={draft.execution.agent}
+                filter={(agent) => isPrimaryMode(agent.mode)}
+                onChange={(agent) => setDraft((prev) => ({
+                  ...prev,
+                  execution: {
+                    ...prev.execution,
+                    agent,
+                  },
+                }))}
+              />
+            )}
           </div>
 
           <div className="flex flex-col gap-1">

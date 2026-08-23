@@ -22,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - Chat: `local://` links in transcripts (files, directories, and other engine URIs) are now clickable and open an in-app viewer instead of showing as plain text.
 - Work status: subagent rows now come from the engine's live agent-runs view (running/parked states), and the session goal row reads engine goal state.
 - Chat: scheduled tasks and GitHub-issue / worktree flows follow omp model roles — new defaults no longer force the old "default model" pick, and scheduled tasks can run on the default role without pinning a model.
+- Chat: scheduled tasks can now run as a persona — the task editor's agent field becomes a persona picker under the omp engine (defaults to a standard session), so an unattended run starts with that persona's system prompt and toolset instead of a dead legacy agent list.
 - **Chat:** retried turns no longer leave the failed attempt as an unmarked ghost — the superseded attempt is dimmed with a "superseded" badge and recovery notes stay attached.
 - Chat: engine notices (info/warning/error) now appear as toasts, and background deliveries keep a session marked busy until they truly finish, so queued messages don't fire early.
 - Internal: added a machine-checked event contract (SDK event dispositions, an omp event registry, and a bootstrap matrix) with CI guards against unregistered events or parallel channels; the web package's Node tests and the engine's Bun tests now run as separate suites.
