@@ -75,11 +75,24 @@ omp 自己的 RPC 模式(`oh-my-pi/src/modes/rpc/rpc-mode.ts:798-882`,契约 `<s
 
 - **custom 条目**:扩展经 `pi.sendMessage(custom)`/`pi.appendEntry(type,data)` 写入的条目走 omp custom 管道,OC 侧现为 `[omp:<customType>]` 文本前缀 + synthetic 消息(projection.js:159-189,05 章 §2 已录);结构化分层 = 05 章 GAP-E11(P2,未做)。扩展专属的 TUI 渲染器 `registerMessageRenderer`/`registerAssistantThinkingRenderer`(types.d.ts:915-917)为组件工厂,归 §3.3 未来路径。
 - **registerProvider**(types.d.ts:995):扩展可注册自定义供应商(含 `streamSimple` 自定义流)。理论上经引擎 modelRegistry 流入 `/api/omp/models` → 选择器自动出现——**流通性未验证**(§5.6,一条 curl)。
-
-### 2.5 Settings recognition boundary (implemented)
-
-The Settings → Plugins page is an OMP surface, not an OpenCode `plugin`-config editor. The UI now consumes `GET /api/omp/plugins?directory=...` through `RuntimeAPIs.ompPlugins`; the omp-host owns SDK `PluginManager`/marketplace enumeration and profile-scoped `.omp/agent/extensions` file discovery. OpenCode `/api/config/plugins` remains a legacy route for compatibility but is no longer the source for this page. Install, enable/disable, remove, and extension-file edits are routed back through the same OMP domain and report deferred restart explicitly.
 - **registerShortcut**(types.d.ts:899-903):TUI KeyId 键位,OC 无对应物(CommandPalette 是语义不同的面)。
+
+### 2.5 Settings plugins 面(已交付,2026-08-23)
+
+Settings → Plugins 页是 OMP 面,不是 OpenCode `plugin` 配置编辑器(旧 AddPluginDialog/RegistryBadge/RegistryBanner 已删)。数据源唯一:`PluginManager` + `MarketplaceManager` + `getEnabledPlugins()` + `discoverExtensionPaths()`,经 `RuntimeAPIs.ompPlugins`(`packages/ui/src/lib/api/omp.ts`,zod 边界)消费 `packages/web/server/lib/omp-host/domain-plugins.js` 的 `plugins.v1` 端点组。
+
+**投影**(GET /api/omp/plugins?directory=):npm/link 包插件(user+project)、marketplace 插件(含 project scope)、manifest 扩展入口(feature-gated + loaded/missing)、native 扩展文件(`~/.omp/agent/extensions` + `<project>/.omp/extensions`)、settings.extensions 配置路径。旁路端点:applied(per-session 物化快照)、reveal(Finder/Explorer/xdg-open,服务端按 id 反查路径,不接受任意路径)、reload(缓存失效 + refreshAgentDiscovery + refreshSkills,可选 sessionId 单会话刷新)。
+
+**变更边界**:
+
+- user 包插件 → `PluginManager` setEnabled/setEnabledFeatures/setPluginSetting(omp parseSettingValue + validateSetting 在边界校验);
+- **project 包插件 → `.omp/plugin-overrides.json` 直写**(`applyProjectOverride()`,原子写 temp+rename;格式 = SDK `ProjectPluginOverrides`{disabled,features,settings};写后 `invalidatePluginCaches` 下次发现即生效)。SDK 无公开写入口径,该文件即 TUI 管理的同一文件——fs 直写是唯一路径,非平行存储;
+- 权限矩阵:project npm 插件 toggle/features/settings = true(overrides 写入),uninstall = false(卸载是用户根全局操作);
+- 变更后一律 `clearPluginRootsAndCaches` —— 冒烟测试抓到的真 bug:不失效则新装插件的 manifest 入口投影为 not loaded。
+
+**安装 scope 语义**(2026-08-23 终版):用户显式选 User/Project,UI 不做启发式分类。切换到 Project 时小字即时提示规则;服务端对 project + 非 marketplace spec **400 拒绝**(文案可操作),**不静默降级** —— project 是更严格意图,静默给 user 违背显式选择。此处**有意偏离** omp CLI 的 warn-and-proceed(plugin-cli.ts:390/430):终端一次性命令可事后读输出,设置页会留下持久状态,降级即坑。
+
+验证:domain-plugins.test.js + omp-host 全套 270/270;tsc;i18n ×11;真实插件安装→开关→设置→卸载全链路冒烟通过。
 
 ## 3. 目标语义
 
