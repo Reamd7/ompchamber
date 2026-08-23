@@ -216,6 +216,7 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
           {installScope === 'project' ? (
             <p className="text-xs text-muted-foreground">{t('settings.plugins.dialog.add.scopeHint')}</p>
           ) : null}
+          <Input value={installSpec} onChange={(event) => setInstallSpec(event.target.value)} placeholder={t('settings.plugins.page.field.spec.placeholder')} className="font-mono" data-settings-item="plugins.spec" />
           <DialogFooter>
             <Button variant="ghost" onClick={() => setInstallOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
             <Button onClick={() => void handleInstall()} disabled={isSaving || !installSpec.trim()}>{t('settings.plugins.dialog.add.action.submit')}</Button>
