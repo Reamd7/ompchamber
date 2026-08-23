@@ -595,11 +595,17 @@ jobs:
             `OMPChamber-${version}-linux-arm64.AppImage`,
             'latest-linux-arm64.yml',
           ];
-          const response = await fetch(`https://api.github.com/repos/${repo}/releases/tags/v${version}`, {
-            headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
-          });
-          if (!response.ok) throw new Error(`Failed to inspect release assets: ${response.status} ${await response.text()}`);
-          const release = await response.json();
+          // The tag->release lookup can 404 briefly right after publish
+          // (token-scoped cache race); retry before failing.
+          let release = null;
+          for (let attempt = 1; attempt <= 5; attempt += 1) {
+            const response = await fetch(`https://api.github.com/repos/${repo}/releases/tags/v${version}`, {
+              headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+            });
+            if (response.ok) { release = await response.json(); break; }
+            if (attempt === 5) throw new Error(`Failed to inspect release assets: ${response.status} ${await response.text()}`);
+            await new Promise((resolve) => setTimeout(resolve, 15000));
+          }
           for (const name of expected) {
             const matches = release.assets.filter((asset) => asset.name === name);
             if (matches.length !== 1) throw new Error(`Expected exactly one ${name} release asset, found ${matches.length}`);
