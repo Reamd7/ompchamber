@@ -73,6 +73,9 @@ const textOfContent = (content) => {
 const modelSelector = (model) => (model ? `${model.provider}/${model.id}` : undefined);
 
 export class OmpHostEngine {
+  /** In-flight #materialize dedup (`${directory}\0${sessionId}` → promise); prevents duplicate AgentSessions on lease/prompt races. */
+  #materializeInFlight = new Map();
+
   constructor({ agentDir } = {}) {
     this.authStorage = null;
     this.modelRegistry = null;
@@ -782,6 +785,22 @@ export class OmpHostEngine {
   }
 
   async #materialize(sessionId, directoryKey) {
+    // Concurrent materialization dedup: a UI-lease attach racing the first
+    // prompt (leases.acquire is fire-and-forget) used to build two
+    // AgentSessions for one id — the loser never entered `sessions`, leaked
+    // its event subscription, and extension UI initialized twice. Callers
+    // now share one in-flight promise per session.
+    const flightKey = `${directoryKey}\u0000${sessionId}`;
+    const inFlight = this.#materializeInFlight.get(flightKey);
+    if (inFlight) return inFlight;
+    const run = this.#materializeNow(sessionId, directoryKey).finally(() => {
+      this.#materializeInFlight.delete(flightKey);
+    });
+    this.#materializeInFlight.set(flightKey, run);
+    return run;
+  }
+
+  async #materializeNow(sessionId, directoryKey) {
     const existing = this.sessions.get(sessionId);
     if (existing?.agentSession) return existing;
     const file = await this.#findSessionFile(sessionId, directoryKey);
