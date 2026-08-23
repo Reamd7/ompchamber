@@ -141,9 +141,10 @@ const extractAppImage = (appImagePath, destination) => {
 };
 
 const main = () => {
-  const rootPackage = readJson(path.join(workspaceRoot, 'package.json'));
-  const target = normalizeTargetArchitecture(process.env.OPENCHAMBER_TARGET_ARCH || process.arch).node;
-  const appImagePath = process.argv[2] ? path.resolve(process.argv[2]) : findAppImage(rootPackage.version, target);
+  // The AppImage artifact name is stamped from packages/electron's version
+  // (electron-builder's package root), not the workspace root's.
+  const electronPackage = readJson(path.join(electronRoot, 'package.json'));
+  const appImagePath = process.argv[2] ? path.resolve(process.argv[2]) : findAppImage(electronPackage.version, target);
   assertElfArchitecture(appImagePath, target, 'AppImage');
 
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-appimage-'));

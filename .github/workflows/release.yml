@@ -47,7 +47,7 @@ jobs:
         env:
           VERSION: ${{ steps.get_version.outputs.version }}
         run: |
-          for pkg in packages/electron/package.json packages/web/package.json; do
+          for pkg in package.json packages/electron/package.json packages/web/package.json; do
             APP_VERSION=$(node -p "require('./$pkg').version")
             if [ "$APP_VERSION" != "$VERSION" ]; then
               echo "::error::Release version $VERSION does not match $pkg version $APP_VERSION. Bump the package version before tagging."
