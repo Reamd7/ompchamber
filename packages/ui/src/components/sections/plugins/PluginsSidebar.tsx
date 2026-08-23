@@ -135,14 +135,10 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
     if (result.ok) {
       setInstallSpec('');
       setInstallOpen(false);
-      // The server echoes omp's own scope warning when the requested scope
-      // cannot be honored (npm/local specs) — surface it instead of a plain success.
-      if (result.message?.includes('Warning') || result.message?.includes('--scope')) {
-        toast.warning(result.message);
-      } else {
-        toast.success(t('settings.view.pendingRestart.saved'));
-      }
+      toast.success(t('settings.view.pendingRestart.saved'));
     } else {
+      // Server rejects project scope for non-marketplace specs with a clear
+      // message; surface it verbatim so the user knows how to proceed.
       toast.error(result.error || t('settings.plugins.sidebar.toast.deleteFailed'));
     }
   };
@@ -217,8 +213,9 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
             <Button type="button" size="sm" variant={installScope === 'user' ? 'default' : 'outline'} onClick={() => setInstallScope('user')}>{t('settings.plugins.scope.user')}</Button>
             <Button type="button" size="sm" variant={installScope === 'project' ? 'default' : 'outline'} onClick={() => setInstallScope('project')}>{t('settings.plugins.scope.project')}</Button>
           </div>
-          <p className="text-xs text-muted-foreground">{t('settings.plugins.dialog.add.scopeHint')}</p>
-          <Input value={installSpec} onChange={(event) => setInstallSpec(event.target.value)} placeholder={t('settings.plugins.page.field.spec.placeholder')} className="font-mono" data-settings-item="plugins.spec" />
+          {installScope === 'project' ? (
+            <p className="text-xs text-muted-foreground">{t('settings.plugins.dialog.add.scopeHint')}</p>
+          ) : null}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setInstallOpen(false)} disabled={isSaving}>{t('settings.common.actions.cancel')}</Button>
             <Button onClick={() => void handleInstall()} disabled={isSaving || !installSpec.trim()}>{t('settings.plugins.dialog.add.action.submit')}</Button>
