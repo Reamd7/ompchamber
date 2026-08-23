@@ -486,7 +486,7 @@ const fetchModelsDevMetadata = async (): Promise<Map<string, ModelMetadata>> => 
 
     for (const source of sources) {
         const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
-        const timeout = controller ? setTimeout(() => controller.abort(), 8000) : undefined;
+        const timeout = controller ? setTimeout(() => controller.abort(), 20000) : undefined;
 
         try {
             const isAbsoluteUrl = /^https?:\/\//i.test(source);

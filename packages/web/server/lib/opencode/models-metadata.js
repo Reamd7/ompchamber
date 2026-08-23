@@ -1,6 +1,9 @@
 const MODELS_DEV_API_URL = 'https://models.dev/api.json';
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
-const DEFAULT_TIMEOUT_MS = 8000;
+// models.dev/api.json is a ~4MB catalog; cold fetches routinely exceed 8s
+// (Node fetch also ignores shell proxy env, so this is a direct connection).
+// The route serves stale cache on failure, so a patient timeout is safe.
+const DEFAULT_TIMEOUT_MS = 20000;
 
 // Shared in-process cache of the models.dev catalog. Used by the
 // /api/openchamber/models-metadata route and the small-model resolver so the

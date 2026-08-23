@@ -1212,8 +1212,13 @@ export const ProvidersPage: React.FC = () => {
                     (item) => item.providerID === selectedProvider.id && item.modelID === modelId
                   );
 
-                  const contextTokens = formatTokens(metadata?.limit?.context);
-                  const outputTokens = formatTokens(metadata?.limit?.output);
+                  // The wire provider payload carries the engine's own limits
+                  // (omp registry truth, incl. custom gateway models that
+                  // models.dev never catalogues); the catalog only fills gaps.
+                  const wireContext = typeof model?.limit?.context === 'number' ? model.limit.context : undefined;
+                  const wireOutput = typeof model?.limit?.output === 'number' ? model.limit.output : undefined;
+                  const contextTokens = formatTokens(wireContext ?? metadata?.limit?.context);
+                  const outputTokens = formatTokens(wireOutput ?? metadata?.limit?.output);
 
                   const capabilityIcons: Array<{ key: string; icon: IconName; label: string }> = [];
                   if (metadata?.tool_call) capabilityIcons.push({ key: 'tools', icon: "tools", label: t('settings.providers.page.models.capability.toolCalling') });
