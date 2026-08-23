@@ -31,22 +31,27 @@ const resolvePackageDir = (name) => {
   try {
     return path.dirname(require.resolve(`${name}/package.json`));
   } catch {
-    // Not resolvable through exports or not installed at this level; try the
-    // hoisted tree next to the always-present pi-natives meta package and the
-    // standard node_modules lookup paths.
-    try {
-      const metaDir = path.dirname(require.resolve('@oh-my-pi/pi-natives/package.json'));
-      const sibling = path.join(metaDir, '..', name);
-      if (fs.existsSync(path.join(sibling, 'package.json'))) return sibling;
-    } catch {
-      // Meta package unavailable.
-    }
-    for (const root of require.resolve.paths(name) ?? []) {
-      const candidate = path.join(root, name);
+    // Exports-restricted or absent from the plain lookup paths.
+  }
+  // npm/bun layouts the resolver misses: direct links at each node_modules
+  // root, bun's hoist root (.bun/node_modules), and bun's workspace store
+  // entries (.bun/@scope+pkg@ver/node_modules/pkg).
+  const storePrefix = name.replace('/', '+') + '@';
+  for (const root of require.resolve.paths(name) ?? []) {
+    for (const candidate of [path.join(root, name), path.join(root, '.bun', 'node_modules', name)]) {
       if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
     }
-    return null;
+    try {
+      for (const entry of fs.readdirSync(path.join(root, '.bun'))) {
+        if (!entry.startsWith(storePrefix)) continue;
+        const candidate = path.join(root, '.bun', entry, 'node_modules', name);
+        if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
+      }
+    } catch {
+      // Not a bun store root.
+    }
   }
+  return null;
 };
 
 const readNpmRegistry = () => {
@@ -100,16 +105,18 @@ export const ensureOmpHostNatives = async () => {
   const tag = NATIVES_PLATFORM_TAG[process.platform];
   if (!tag) return;
 
-  let version = null;
+  const metaDir = resolvePackageDir('@oh-my-pi/pi-natives');
+  if (!metaDir) {
+    // No installed meta package to derive the addon version from; the
+    // engine surfaces its own actionable error if the addon is missing.
+    return;
+  }
+  let version;
   try {
-    version = JSON.parse(fs.readFileSync(
-      path.join(resolvePackageDir('@oh-my-pi/pi-natives') ?? '', 'package.json'),
-      'utf8',
-    )).version;
+    version = JSON.parse(fs.readFileSync(path.join(metaDir, 'package.json'), 'utf8')).version;
   } catch {
     return;
   }
-  if (!version) return;
 
   const cacheDir = path.join(os.homedir(), '.omp', 'natives', version);
   if (listAddonFiles(cacheDir).length > 0) return;
