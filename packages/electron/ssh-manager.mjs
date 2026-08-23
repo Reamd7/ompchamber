@@ -93,7 +93,6 @@ const sanitizeBindHost = (raw) => {
 
 const splitShellWords = (input) => {
   const tokens = [];
-  let current = '';
   let inSingle = false;
   let inDouble = false;
   const chars = [...String(input)];
@@ -1002,17 +1001,18 @@ export class ElectronSshManager {
   async installOpenChamberManaged(parsed, controlPath, version, preferred) {
     const hasBun = await this.remoteCommandExists(parsed, controlPath, 'bun');
     const hasNpm = await this.remoteCommandExists(parsed, controlPath, 'npm');
+    // ompchamber ships as a GitHub release tarball (not on the npm registry).
+    const tarball = `https://github.com/Reamd7/openchamber/releases/download/v${version}/ompchamber-${version}.tgz`;
     const commands = [];
-
     if (preferred === 'bun') {
-      if (hasBun) commands.push(`bun add -g @openchamber/web@${version}`);
-      if (hasNpm) commands.push(`npm install -g @openchamber/web@${version}`);
+      if (hasBun) commands.push(`bun add -g ${tarball}`);
+      if (hasNpm) commands.push(`npm install -g ${tarball}`);
     } else if (preferred === 'npm') {
-      if (hasNpm) commands.push(`npm install -g @openchamber/web@${version}`);
-      if (hasBun) commands.push(`bun add -g @openchamber/web@${version}`);
+      if (hasNpm) commands.push(`npm install -g ${tarball}`);
+      if (hasBun) commands.push(`bun add -g ${tarball}`);
     } else {
-      if (hasBun) commands.push(`bun add -g @openchamber/web@${version}`);
-      if (hasNpm) commands.push(`npm install -g @openchamber/web@${version}`);
+      if (hasBun) commands.push(`bun add -g ${tarball}`);
+      if (hasNpm) commands.push(`npm install -g ${tarball}`);
     }
 
     if (commands.length === 0) {

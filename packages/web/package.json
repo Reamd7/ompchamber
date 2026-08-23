@@ -1,12 +1,12 @@
 {
-  "name": "@openchamber/web",
+  "name": "ompchamber",
   "version": "1.18.4",
   "private": false,
   "type": "module",
   "main": "./server/index.js",
   "types": "./server/index.d.ts",
   "bin": {
-    "openchamber": "./bin/cli.js"
+    "ompchamber": "./bin/cli.js"
   },
   "publishConfig": {
     "access": "public"

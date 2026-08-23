@@ -79,7 +79,7 @@ Run a prompt once, daily, weekly, or on a cron schedule. Scheduled tasks can use
 | **Web / PWA** | Open your workspace in a browser, install it as an app, and stay up to date through background notifications |
 | **VS Code** | Keep sessions beside your code, send selections to the agent, open results in the editor, and compare parallel runs |
 | **iOS / Android** | Review and steer work away from your desk, receive completion alerts, and use the terminal with touch controls |
-| **CLI / Server** | Run OpenChamber on a workstation or server, schedule work, manage remote access, and keep it available after login |
+| **CLI / Server** | Run OMPChamber on a workstation or server, schedule work, manage remote access, and keep it available after login |
 
 ## Quick start
 
@@ -102,24 +102,25 @@ Install [OpenChamber from the Visual Studio Marketplace](https://marketplace.vis
 
 ### CLI — Web and PWA
 
-Requires Node.js 22+. CLI/Web and VS Code use your installed [OpenCode CLI](https://opencode.ai).
+Requires Node.js 22+ and the [Bun](https://bun.sh) runtime (the omp engine runs under Bun; no separate agent CLI is needed).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
-openchamber --ui-password be-creative-here
+ompchamber --ui-password be-creative-here
 ```
 
 Common operations:
 
 ```bash
-openchamber status
-openchamber connect-url --qr
-openchamber tunnel start --provider cloudflare --mode quick --qr
-openchamber startup enable
-openchamber logs
-openchamber stop
-openchamber update
+ompchamber status
+ompchamber connect-url --qr
+ompchamber tunnel start --provider cloudflare --mode quick --qr
+ompchamber startup enable
+ompchamber logs
+ompchamber stop
+ompchamber update
 ```
+
 
 OMPChamber binds to localhost by default. Use `--lan` only on a trusted network and protect browser access with `--ui-password`.
 

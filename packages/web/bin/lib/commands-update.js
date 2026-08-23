@@ -32,7 +32,7 @@ function createUpdateCommand({ importFromFilePath, packageManagerPath, serveComm
     const currentVersion = getCurrentVersion();
 
     if (showOutput) {
-      clackIntro('OpenChamber Update');
+      clackIntro('OMPChamber Update');
     }
 
     if (showOutput && !updateSpin) {
@@ -92,7 +92,7 @@ function createUpdateCommand({ importFromFilePath, packageManagerPath, serveComm
     }
 
     const pm = detectPackageManager();
-    const result = executeUpdate(pm, { silent: isJsonMode(options) || isQuietMode(options) });
+    const result = executeUpdate(pm, { silent: isJsonMode(options) || isQuietMode(options), version: updateInfo.version });
     if (!result.success) {
       updateSpin?.error('Update failed');
       if (showOutput) {

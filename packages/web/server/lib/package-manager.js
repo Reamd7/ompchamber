@@ -8,18 +8,23 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PACKAGE_NAME = '@openchamber/web';
+const PACKAGE_NAME = 'ompchamber';
 const PACKAGE_PATH_SEGMENTS = PACKAGE_NAME.split('/');
-const NPM_REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}`;
-const CHANGELOG_URL = 'https://raw.githubusercontent.com/openchamber/openchamber/main/CHANGELOG.md';
-const GITHUB_RELEASES_URL = 'https://github.com/openchamber/openchamber/releases';
-const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/openchamber/openchamber/releases';
+const GITHUB_REPO = 'Reamd7/openchamber';
+const CHANGELOG_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/CHANGELOG.md`;
+const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
+const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
+// OMPChamber is distributed as release tarballs, not on the npm registry;
+// the version-less URL always resolves to the newest published release.
+const RELEASE_TARBALL_LATEST_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/ompchamber-latest.tgz`;
 let cachedDetectedPm = null;
 
 function getSpawnSyncBaseOptions() {
   return process.platform === 'win32' ? { windowsHide: true } : {};
 }
-const UPDATE_CHECK_URL = process.env.OPENCHAMBER_UPDATE_API_URL || 'https://api.openchamber.dev/v1/update/check';
+// Optional hosted update-check API (upstream telemetry service is disabled
+// for this fork; set OPENCHAMBER_UPDATE_API_URL to use a custom one).
+const UPDATE_CHECK_URL = process.env.OPENCHAMBER_UPDATE_API_URL || '';
 
 function getOpenChamberConfigDir() {
   if (process.platform === 'win32') {
@@ -121,6 +126,7 @@ async function resolveAndroidApkUrl(version, candidateUrl) {
 }
 
 async function checkForUpdatesFromApi(currentVersion, options = {}) {
+  if (!UPDATE_CHECK_URL) return null;
   try {
     const appType = normalizeAppType(options.appType);
     const hostPlatform = mapPlatform(process.platform);
@@ -654,17 +660,20 @@ function isPackageInstalledWith(pm) {
 /**
  * Get the update command for the detected package manager
  */
-export function getUpdateCommand(pm = detectPackageManager()) {
+export function getUpdateCommand(pm = detectPackageManager(), version = null) {
   const pmCommand = quoteCommand(resolvePackageManagerCommand(pm));
+  const tarballUrl = typeof version === 'string' && version.trim()
+    ? `https://github.com/${GITHUB_REPO}/releases/download/v${version.trim()}/ompchamber-${version.trim()}.tgz`
+    : RELEASE_TARBALL_LATEST_URL;
   switch (pm) {
     case 'pnpm':
-      return `${pmCommand} add -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} add -g ${tarballUrl}`;
     case 'yarn':
-      return `${pmCommand} global add ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} global add ${tarballUrl}`;
     case 'bun':
-      return `${pmCommand} add -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} add -g ${tarballUrl}`;
     default:
-      return `${pmCommand} install -g ${PACKAGE_NAME}@latest`;
+      return `${pmCommand} install -g ${tarballUrl}`;
   }
 }
 
@@ -682,21 +691,22 @@ export function getCurrentVersion() {
 }
 
 /**
- * Fetch latest version from npm registry
+ * Fetch latest published version from this repository's GitHub releases.
  */
 async function getLatestVersion() {
   try {
-    const response = await fetch(NPM_REGISTRY_URL, {
-      headers: { Accept: 'application/json' },
+    const response = await fetch(`${GITHUB_RELEASES_API_URL}/latest`, {
+      headers: { Accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
-      throw new Error(`Registry responded with ${response.status}`);
+      throw new Error(`GitHub releases API responded with ${response.status}`);
     }
 
     const data = await response.json();
-    return data['dist-tags']?.latest || null;
+    const tag = typeof data?.tag_name === 'string' ? data.tag_name.replace(/^v/, '') : '';
+    return tag || null;
   } catch (error) {
     return null;
   }
@@ -822,12 +832,8 @@ export async function checkForUpdates(options = {}) {
     updateCommand: 'openchamber update',
   };
 }
-
-/**
- * Execute the update (used by CLI)
- */
 export function executeUpdate(pm = detectPackageManager(), options = {}) {
-  const command = getUpdateCommand(pm);
+  const command = getUpdateCommand(pm, options?.version);
   if (!options?.silent) {
     console.log(`Updating ${PACKAGE_NAME} using ${pm}...`);
     console.log(`Running: ${command}`);

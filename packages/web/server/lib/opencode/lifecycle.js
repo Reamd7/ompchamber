@@ -4,6 +4,7 @@ import { stripAppImageArgv0Leak } from '../inherited-env.js';
 import { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses } from './managed-process-registry.js';
 import { applyProviderEnvAliases } from './provider-env-aliases.js';
 import { resolveOmpHostLaunchSpec } from './omp-host-launch.js';
+import { ensureOmpHostNatives } from './omp-host-natives.js';
 import { recordStartupPerformance } from './startup-performance.js';
 
 const parsePositiveInt = (value, fallback) => {
@@ -257,6 +258,11 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     // pi-coding-agent), launched with the same `serve --hostname --port`
     // shape `opencode serve` used, including the readiness stdout line.
     const launch = resolveOmpHostLaunchSpec({ hostname, port });
+    if (launch.source !== 'env-host' && launch.source !== 'bundled') {
+      // Source launches need the pi_natives addon in the per-user cache;
+      // compiled host binaries already ship it beside the executable.
+      await ensureOmpHostNatives();
+    }
     const binary = launch.binary;
     const args = launch.args;
     const sourceBinary = binary;

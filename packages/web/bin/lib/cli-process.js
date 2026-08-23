@@ -4,11 +4,11 @@ import { spawnSync } from 'child_process';
 import { getRunDir } from './cli-paths.js';
 
 async function getPidFilePath(port) {
-  return path.join(getRunDir(), `openchamber-${port}.pid`);
+  return path.join(getRunDir(), `ompchamber-${port}.pid`);
 }
 
 async function getInstanceFilePath(port) {
-  return path.join(getRunDir(), `openchamber-${port}.json`);
+  return path.join(getRunDir(), `ompchamber-${port}.json`);
 }
 
 function readPidFile(pidFilePath) {
@@ -127,15 +127,16 @@ function isOpenchamberCmdline(cmdline) {
   if (typeof cmdline !== 'string' || cmdline.length === 0) {
     return false;
   }
-  // Every install path contains the "openchamber" segment — the npm package
-  // (@openchamber/web) and the source checkout both do, for the foreground
-  // (bin/cli.js) and daemon (server/index.js) entrypoints alike. Matching the
-  // path segment (not a generic "cli.js") keeps a recycled stranger such as
-  // "npm-cli.js" or "agentmemory" from being mistaken for us.
-  return cmdline.toLowerCase().includes('openchamber');
+  // Every install path contains a "…chamber" segment — the ompchamber npm
+  // tarball, the legacy @ompchamber/web layout, and the source checkout all
+  // do, for the foreground (bin/cli.js) and daemon (server/index.js)
+  // entrypoints alike. Matching the path segment (not a generic "cli.js")
+  // keeps a recycled stranger such as "npm-cli.js" or "agentmemory" from
+  // being mistaken for us.
+  return /(?:open|omp)chamber/.test(cmdline.toLowerCase());
 }
 
-// Liveness + identity — "is the OpenChamber instance recorded in a pid file
+// Liveness + identity — "is the OMPChamber instance recorded in a pid file
 // still the process running under this PID". Use this (not isProcessRunning)
 // when validating a PID read from a pid file. After an ungraceful shutdown
 // removePidFile never runs, so the stale PID can be recycled to an unrelated

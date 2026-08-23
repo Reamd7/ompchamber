@@ -137,7 +137,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
           });
         }
 
-        const updateJobName = `openchamber-update-${Date.now()}`;
+        const updateJobName = `ompchamber-update-${Date.now()}`;
         const updateLogPath = `journalctl --user-unit ${updateJobName}.service`;
         const updateScript = [
           'set -eu',

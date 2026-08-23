@@ -51,7 +51,7 @@ function ensureLogsDir() {
 }
 
 function getLogFilePath(port) {
-  return path.join(getLogsDir(), `openchamber-${port}.log`);
+  return path.join(getLogsDir(), `ompchamber-${port}.log`);
 }
 
 function getTunnelProfilesFilePath() {

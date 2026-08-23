@@ -31,7 +31,7 @@ import {
   setLinuxAutostartEnabled,
 } from './linux-autostart.mjs';
 import { unsupportedAppSpecificOpenError, validateLocalPath } from './path-open-utils.mjs';
-import { mintOutsideFileGrant } from '@openchamber/web/server/lib/fs/routes.js';
+import { mintOutsideFileGrant } from 'ompchamber/server/lib/fs/routes.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -1446,8 +1446,8 @@ const loadShellEnv = () => {
 };
 
 // Merge the user's login-shell env (PATH, etc.) into this process before we
-import { pathLooksUserConfigured, mergePathValues } from '@openchamber/web/server/lib/opencode/path-utils.js';
-import { clearAppImageArgv0FromProcessEnv } from '@openchamber/web/server/lib/inherited-env.js';
+import { pathLooksUserConfigured, mergePathValues } from 'ompchamber/server/lib/opencode/path-utils.js';
+import { clearAppImageArgv0FromProcessEnv } from 'ompchamber/server/lib/inherited-env.js';
 
 // import/start the server in-process. The server and its children (opencode
 // CLI, git, etc.) inherit process.env directly now — there is no sidecar
@@ -1547,7 +1547,7 @@ const spawnLocalServer = async () => {
   process.env.NO_PROXY = process.env.NO_PROXY || 'localhost,127.0.0.1';
   process.env.no_proxy = process.env.no_proxy || 'localhost,127.0.0.1';
 
-  const { startWebUiServer } = await import('@openchamber/web/server/index.js');
+  const { startWebUiServer } = await import('ompchamber/server/index.js');
 
   const handle = await startWebUiServer({
     port: chosenPort,
@@ -3725,7 +3725,7 @@ const runSpecChain = (specs, appName) => {
 let devTunnelClientPromise = null;
 const getDevTunnelClient = async () => {
   if (!devTunnelClientPromise) {
-    devTunnelClientPromise = import('@openchamber/web/server/lib/dev-tunnel/client.js')
+    devTunnelClientPromise = import('ompchamber/server/lib/dev-tunnel/client.js')
       .then(({ createDevTunnelClient }) => createDevTunnelClient({ logger: log }))
       .catch((error) => {
         devTunnelClientPromise = null;

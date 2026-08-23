@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# OpenChamber Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/btriapitsyn/openchamber/main/scripts/install.sh | bash
+# OMPChamber Install Script
+# Usage: curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
 
 set -euo pipefail
 
-PACKAGE_NAME="@openchamber/web"
-BIN_NAME="openchamber"
+PACKAGE_NAME="ompchamber"
+BIN_NAME="ompchamber"
 MIN_NODE_VERSION=22
+GITHUB_REPO="Reamd7/openchamber"
+# ompchamber ships as GitHub release tarballs, not on the npm registry; the
+# version-less URL always resolves to the newest published release.
+TARBALL_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/ompchamber-latest.tgz"
 
 # Colors
 RED='\033[0;31m'
@@ -94,10 +98,10 @@ detect_package_manager() {
 get_install_command() {
   local pm=$1
   case "$pm" in
-    pnpm) echo "pnpm add -g $PACKAGE_NAME" ;;
-    yarn) echo "yarn global add $PACKAGE_NAME" ;;
-    bun) echo "bun add -g $PACKAGE_NAME" ;;
-    npm) echo "npm install -g $PACKAGE_NAME" ;;
+    pnpm) echo "pnpm add -g $TARBALL_URL" ;;
+    yarn) echo "yarn global add $TARBALL_URL" ;;
+    bun) echo "bun add -g $TARBALL_URL" ;;
+    npm) echo "npm install -g $TARBALL_URL" ;;
     *) echo "" ;;
   esac
 }
@@ -156,8 +160,8 @@ main() {
   echo ""
   echo "  ╭───────────────────────────────────╮"
   echo "  │                                   │"
-  echo "  │   OpenChamber Installer           │"
-  echo "  │   Web interface for OpenCode      │"
+  echo "  │   OMPChamber Installer            │"
+  echo "  │   OpenChamber workspace + omp     │"
   echo "  │                                   │"
   echo "  ╰───────────────────────────────────╯"
   echo ""
@@ -176,23 +180,36 @@ main() {
   fi
   success "Node.js v$NODE_VERSION found"
 
-  # If OpenChamber is already installed, hand off to its own updater instead
-  # of guessing a package manager. `openchamber update` detects which manager
+  # The embedded omp engine runs under the Bun runtime; without it the
+  # server starts but no agent session can boot.
+  if ! command_exists bun; then
+    echo ""
+    error "Bun is required to run the omp engine but was not found."
+    echo ""
+    echo "Install Bun:"
+    echo "  curl -fsSL https://bun.sh/install | bash"
+    echo ""
+    exit 1
+  fi
+  success "Bun found"
+
+  # If OMPChamber is already installed, hand off to its own updater instead
+  # of guessing a package manager. `ompchamber update` detects which manager
   # actually owns the existing global install and reinstalls with that one —
   # reinstalling with a different manager here would orphan files and break PATH.
   if command_exists "$BIN_NAME"; then
-    info "OpenChamber is already installed — updating via 'openchamber update'..."
+    info "OMPChamber is already installed — updating via 'ompchamber update'..."
     echo ""
-    if openchamber update; then
+    if ompchamber update; then
       echo ""
-      success "OpenChamber is up to date!"
+      success "OMPChamber is up to date!"
       exit 0
     fi
     echo ""
     error "Update failed."
     echo ""
     echo "  Try running it manually:"
-    echo "    openchamber update"
+    echo "    ompchamber update"
     echo ""
     exit 1
   fi
@@ -216,7 +233,7 @@ main() {
 
   # Install
   echo ""
-  info "Installing OpenChamber..."
+  info "Installing OMPChamber from the latest GitHub release..."
   echo "  Running: $INSTALL_CMD"
   echo ""
   
@@ -225,16 +242,9 @@ main() {
     # Wordmark (toilet "pagga", "Open"/"Chamber" stacked).
     # Hardcoded so the user needs no extra tools.
     printf '%b' "$BLUE"
-    cat <<'EOF'
-  ░█▀█░█▀█░█▀▀░█▀█
-  ░█░█░█▀▀░█▀▀░█░█
-  ░▀▀▀░▀░░░▀▀▀░▀░▀
-  ░█▀▀░█░█░█▀█░█▄█░█▀▄░█▀▀░█▀▄
-  ░█░░░█▀█░█▀█░█░█░█▀▄░█▀▀░█▀▄
-  ░▀▀▀░▀░▀░▀░▀░▀░▀░▀▀░░▀▀▀░▀░▀
-EOF
+    echo "   O M P C H A M B E R"
     printf '%b\n' "$NC"
-    success "OpenChamber installed successfully!"
+    success "OMPChamber installed successfully!"
     echo ""
 
     # Verify the binary is actually reachable. Global installs frequently
@@ -242,8 +252,8 @@ EOF
     # letting the user hit a confusing "command not found".
     if command_exists "$BIN_NAME"; then
       echo "  Get started:"
-      echo "    openchamber              # Start server on port 3000"
-      echo "    openchamber --help       # Show all options"
+      echo "    ompchamber              # Start server on port 3000"
+      echo "    ompchamber --help       # Show all options"
     else
       warn "'$BIN_NAME' was installed but isn't on your PATH yet."
       echo ""
@@ -259,12 +269,12 @@ EOF
         echo "    export PATH=\"$bin_dir:\$PATH\""
       else
         echo "  Add your package manager's global bin directory to PATH,"
-        echo "  then restart your terminal and run: openchamber"
+        echo "  then restart your terminal and run: ompchamber"
       fi
     fi
     echo ""
-    echo "  Prerequisites:"
-    echo "    Make sure OpenCode is running: opencode serve"
+    echo "  Engine:"
+    echo "    The omp engine starts on demand — no separate OpenCode install needed."
     echo ""
   else
     echo ""

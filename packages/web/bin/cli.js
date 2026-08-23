@@ -48,7 +48,7 @@ import { createTunnelCommand, isValidTunnelDoctorResponse, shouldDisplayTunnelQr
 import {
   resolveDoctorPortStatuses,
   discoverRunningInstances,
-  discoverOpenChamberInstanceOnPort,
+  discoverOMPChamberInstanceOnPort,
   discoverLifecycleInstances,
   discoverUnconfirmedRegistryInstanceOnPort,
   resolveTunnelProviders,
@@ -146,7 +146,7 @@ function getPreferredServerRuntime() {
 }
 
 async function checkOpenCodeCLI(onNotice) {
-  // The managed engine is the OpenChamber omp host, launched under Bun. The
+  // The managed engine is the OMPChamber omp host, launched under Bun. The
   // old opencode CLI lookup is gone; what matters now is that a Bun runtime
   // can launch the host (see server/lib/opencode/omp-host-launch.js).
   if (process.env.OPENCHAMBER_OMP_HOST_RUNTIME) {
@@ -347,7 +347,7 @@ async function main() {
   await commands[command](options);
 }
 
-const isCliExecution = isModuleCliExecution(process.argv[1], import.meta.url, fs.realpathSync, 'openchamber');
+const isCliExecution = isModuleCliExecution(process.argv[1], import.meta.url, fs.realpathSync, 'ompchamber');
 
 if (isCliExecution) {
   let isHandlingSigint = false;
@@ -447,7 +447,7 @@ export {
   fetchTunnelProvidersFromPort,
   fetchSystemInfoFromPort,
   discoverRunningInstances,
-  discoverOpenChamberInstanceOnPort,
+  discoverOMPChamberInstanceOnPort,
   discoverLifecycleInstances,
   discoverUnconfirmedRegistryInstanceOnPort,
   ensureTunnelProfilesMigrated,

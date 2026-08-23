@@ -5,9 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createUpdateCommand } from './commands-update.js';
 
-async function withTempOpenChamberDataDir(fn) {
+async function withTempOMPChamberDataDir(fn) {
   const previous = process.env.OPENCHAMBER_DATA_DIR;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-update-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-update-test-'));
   process.env.OPENCHAMBER_DATA_DIR = dir;
   try {
     return await fn(dir);
@@ -23,7 +23,7 @@ async function withTempOpenChamberDataDir(fn) {
 
 describe('update command', () => {
   it('uses the package-manager helpers on the update-available path', async () => {
-    await withTempOpenChamberDataDir(async () => {
+    await withTempOMPChamberDataDir(async () => {
       const originalWrite = process.stdout.write;
       process.stdout.write = vi.fn(() => true);
       const executeUpdate = vi.fn(() => ({ success: true, exitCode: 0 }));
@@ -41,7 +41,7 @@ describe('update command', () => {
       try {
         await updateCommand({ json: true });
 
-        expect(executeUpdate).toHaveBeenCalledWith('npm', { silent: true });
+      expect(executeUpdate).toHaveBeenCalledWith('npm', { silent: true, version: '9.9.9' });
       } finally {
         process.stdout.write = originalWrite;
       }

@@ -26,8 +26,8 @@ const result = await Bun.build({
   format: 'esm',
   external: [
     'electron',
-    '@openchamber/web',
-    '@openchamber/web/*',
+    'ompchamber',
+    'ompchamber/*',
     'bun-pty',
     'node-pty',
   ],

@@ -79,7 +79,7 @@ OMPChamber 为你提供一个统一的地方来指挥 agent 工作、理解变�
 | **Web / PWA** | 在浏览器中打开工作区，可安装为应用，通过后台通知保持更新 |
 | **VS Code** | 会话就在代码旁：把选区发给 agent、在编辑器中打开结果、对比并行运行 |
 | **iOS / Android** | 离开工位也能评审和引导工作，接收完成提醒，用触控操作终端 |
-| **CLI / 服务器** | 在工作站或服务器上运行 OpenChamber，计划任务、管理远程访问，登录后依然可用 |
+| **CLI / 服务器** | 在工作站或服务器上运行 OMPChamber，计划任务、管理远程访问，登录后依然可用 |
 
 ## 快速开始
 
@@ -102,26 +102,27 @@ Linux AppImage 需要 FUSE（`libfuse.so.2`）。没有 FUSE 时，使用 `APPIM
 
 ### CLI — Web 与 PWA
 
-需要 Node.js 22+。CLI/Web 与 VS Code 使用你已安装的 [OpenCode CLI](https://opencode.ai)。
+需要 Node.js 22+ 和 [Bun](https://bun.sh) 运行时（omp 引擎运行在 Bun 之上；无需单独安装任何 agent CLI）。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
-openchamber --ui-password be-creative-here
+ompchamber --ui-password be-creative-here
 ```
 
 常用操作：
 
 ```bash
-openchamber status
-openchamber connect-url --qr
-openchamber tunnel start --provider cloudflare --mode quick --qr
-openchamber startup enable
-openchamber logs
-openchamber stop
-openchamber update
+ompchamber status
+ompchamber connect-url --qr
+ompchamber tunnel start --provider cloudflare --mode quick --qr
+ompchamber startup enable
+ompchamber logs
+ompchamber stop
+ompchamber update
 ```
 
 OMPChamber 默认只绑定 localhost。仅在可信网络中使用 `--lan`，并用 `--ui-password` 保护浏览器访问。
+
 
 ## 指南
 

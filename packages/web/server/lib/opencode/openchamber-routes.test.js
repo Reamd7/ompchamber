@@ -61,7 +61,7 @@ beforeEach(() => {
   packageManager.detectPackageManagerDetails.mockReturnValue({
     packageManager: 'npm',
   });
-  packageManager.getUpdateCommand.mockReturnValue('npm install -g @openchamber/web@latest');
+  packageManager.getUpdateCommand.mockReturnValue('npm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-latest.tgz');
 });
 
 afterEach(() => {
@@ -105,7 +105,7 @@ describe('OpenChamber foreground update route', () => {
     const { app } = createApp({
       environment: {
         INVOCATION_ID: 'systemd-invocation',
-        OPENCHAMBER_SYSTEMD_UNIT: 'openchamber@wsl.service',
+        OPENCHAMBER_SYSTEMD_UNIT: 'ompchamber@wsl.service',
         PATH: '/home/syu/.npm-global/bin:/usr/bin:/bin',
       },
     });
@@ -119,19 +119,19 @@ describe('OpenChamber foreground update route', () => {
         packageManager: 'npm',
         autoRestart: true,
         restartManager: 'systemd',
-        jobId: 'openchamber-update-1700000000000',
-        logPath: 'journalctl --user-unit openchamber-update-1700000000000.service',
+        jobId: 'ompchamber-update-1700000000000',
+        logPath: 'journalctl --user-unit ompchamber-update-1700000000000.service',
       });
 
     expect(childProcess.spawnSync).toHaveBeenCalledWith('systemd-run', [
       '--user',
-      '--unit=openchamber-update-1700000000000',
+      '--unit=ompchamber-update-1700000000000',
       '--collect',
       '--service-type=exec',
       '--setenv=PATH=/home/syu/.npm-global/bin:/usr/bin:/bin',
       '/bin/sh',
       '-c',
-      "set -eu\nnpm install -g @openchamber/web@latest\nsystemctl --user restart 'openchamber@wsl.service'",
+      "set -eu\nnpm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-latest.tgz\nsystemctl --user restart 'ompchamber@wsl.service'",
     ], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
