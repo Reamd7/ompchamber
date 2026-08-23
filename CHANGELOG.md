@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.18.5] - 2026-08-23
+
 - **CLI:** the command is now `ompchamber`, distributed as a tarball from this repository's GitHub Releases instead of the npm registry — install with the install script or `npm install -g <release tarball URL>`, and `ompchamber update` reinstalls from the latest release. The engine's required native addon is staged automatically on first launch, so a clean machine only needs Node.js 22+ and Bun.
 - **Chat:** widgets from user-installed omp extensions (e.g. usage monitors that the terminal client shows above its editor) now render above the composer in the app — the same string content the TUI shows, kept live as the extension refreshes it, with the extension's own `/off` command clearing it.
 - **Chat:** `/compact` now visibly works — after a successful compaction the "compacted" divider appears immediately instead of only after a reload, and when the engine refuses (e.g. nothing to summarize yet) the error toast shows the engine's reason instead of a raw JSON blob.
