@@ -1102,7 +1102,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': 'Plugin instalado',
   'settings.plugins.page.header.file': 'Arquivo de plugin',
   'settings.plugins.page.field.spec': 'Especificação',
-  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace, pacote-npm ou /caminho/absoluto',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace, pacote-npm ou /caminho',
   'settings.plugins.page.field.options': 'Opções (JSON)',
   'settings.plugins.page.field.options.invalidJson': 'JSON inválido',
   'settings.plugins.page.field.fileName': 'Nome do arquivo',

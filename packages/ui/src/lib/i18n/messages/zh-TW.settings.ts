@@ -2268,7 +2268,7 @@ export const settingsDict = {
   'settings.plugins.page.field.options.invalidJson': 'JSON 無效',
   'settings.plugins.page.field.scope': '範圍',
   'settings.plugins.page.field.spec': '套件或路徑',
-  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace、npm 套件或 /絕對路徑',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace、npm 套件或 /路徑',
   'settings.plugins.page.header.entry': '已安裝外掛',
   'settings.plugins.page.header.file': '外掛檔案',
   'settings.plugins.registry.badge.malformed.tooltip': '套件或路徑格式錯誤',
