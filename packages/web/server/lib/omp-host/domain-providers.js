@@ -81,7 +81,10 @@ const readDocument = (modelsPath) => {
     }
     throw error;
   }
-  return { doc: parseDocument(raw, { merge: false }), existed: true };
+  // models.yml is OpenChamber-authored state, not untrusted input; disable
+  // the yaml billion-laughs alias-count guard so large hand-maintained
+  // files using anchors/aliases still parse (-1 = guard off).
+  return { doc: parseDocument(raw, { merge: false, maxAliasCount: -1 }), existed: true };
 };
 
 const providersMapOf = (doc) => {
@@ -106,7 +109,7 @@ const schemaProblems = (check) => {
   }
   return check?.message ?? String(check);
 };
-const plainValue = (doc, node) => (node == null ? null : node.toJS(doc, { maxAliasCount: 0 }));
+const plainValue = (doc, node) => (node == null ? null : node.toJS(doc, { maxAliasCount: -1 }));
 
 const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -466,7 +469,7 @@ export const putOmpProvider = async (input, options = {}) => {
   }
 
   // ── validate the resulting whole-file value BEFORE touching disk ──
-  const mergedFileValue = doc.toJS({ maxAliasCount: 0 });
+  const mergedFileValue = doc.toJS({ maxAliasCount: -1 });
   const schemaError = schemaProblems(ModelsConfigFile.schema(mergedFileValue));
   if (schemaError) {
     return { status: 400, body: { error: 'validation', message: `models.yml schema rejected the result: ${schemaError}` } };
@@ -537,7 +540,7 @@ export const deleteOmpProvider = async (input, options = {}) => {
   }
 
   providersMap.delete(id);
-  const schemaError = schemaProblems(ModelsConfigFile.schema(doc.toJS({ maxAliasCount: 0 })));
+  const schemaError = schemaProblems(ModelsConfigFile.schema(doc.toJS({ maxAliasCount: -1 })));
   if (schemaError) {
     return { status: 500, body: { error: 'invalid-result', message: `refusing to write an invalid models.yml: ${schemaError}` } };
   }
