@@ -1102,7 +1102,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': '설치된 플러그인',
   'settings.plugins.page.header.file': '플러그인 파일',
   'settings.plugins.page.field.spec': '명세',
-  'settings.plugins.page.field.spec.placeholder': 'npm-패키지@버전 또는 /절대/경로',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace, npm-패키지 또는 /절대/경로',
   'settings.plugins.page.field.options': '옵션(JSON)',
   'settings.plugins.page.field.options.invalidJson': '잘못된 JSON',
   'settings.plugins.page.field.fileName': '파일 이름',

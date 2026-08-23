@@ -1102,7 +1102,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': '已安装插件',
   'settings.plugins.page.header.file': '插件文件',
   'settings.plugins.page.field.spec': '规格',
-  'settings.plugins.page.field.spec.placeholder': 'npm-package@version 或 /absolute/path',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace、npm 包或 /绝对路径',
   'settings.plugins.page.field.options': '选项（JSON）',
   'settings.plugins.page.field.options.invalidJson': 'JSON 无效',
   'settings.plugins.page.field.fileName': '文件名',

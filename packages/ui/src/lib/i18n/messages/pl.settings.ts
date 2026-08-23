@@ -672,7 +672,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': 'Zainstalowany plugin',
   'settings.plugins.page.header.file': 'Plik pluginu',
   'settings.plugins.page.field.spec': 'Specyfikacja',
-  'settings.plugins.page.field.spec.placeholder': 'pakiet-npm@wersja lub /ścieżka/bezwzględna',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace, pakiet-npm lub /ścieżka/bezwzględna',
   'settings.plugins.page.field.options': 'Opcje (JSON)',
   'settings.plugins.page.field.options.invalidJson': 'Nieprawidłowy JSON',
   'settings.plugins.page.field.fileName': 'Nazwa pliku',

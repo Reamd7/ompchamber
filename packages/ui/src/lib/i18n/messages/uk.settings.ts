@@ -1102,7 +1102,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': 'Встановлений плагін',
   'settings.plugins.page.header.file': 'Файл плагіна',
   'settings.plugins.page.field.spec': 'Специфікація',
-  'settings.plugins.page.field.spec.placeholder': 'npm-пакет@версія або /абсолютний/шлях',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace, npm-пакет або /абсолютний/шлях',
   'settings.plugins.page.field.options': 'Параметри (JSON)',
   'settings.plugins.page.field.options.invalidJson': 'Некоректний JSON',
   'settings.plugins.page.field.fileName': 'Назва файлу',

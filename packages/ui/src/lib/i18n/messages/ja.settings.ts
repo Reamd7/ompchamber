@@ -1135,7 +1135,7 @@ export const settingsDict = {
   'settings.plugins.page.header.entry': 'インストール済み Plugin',
   'settings.plugins.page.header.file': 'Plugin ファイル',
   'settings.plugins.page.field.spec': '仕様',
-  'settings.plugins.page.field.spec.placeholder': 'npm-package@version または /absolute/path',
+  'settings.plugins.page.field.spec.placeholder': 'plugin@marketplace、npm-package、または /absolute/path',
   'settings.plugins.page.field.options': 'オプション（JSON）',
   'settings.plugins.page.field.options.invalidJson': '無効な JSON',
   'settings.plugins.page.field.fileName': 'ファイル名',
