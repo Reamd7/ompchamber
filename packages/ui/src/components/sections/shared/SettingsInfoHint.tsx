@@ -38,6 +38,12 @@ export const SettingsInfoHint: React.FC<SettingsInfoHintProps> = ({
       if (trigger && event.target instanceof Node && trigger.contains(event.target)) {
         return;
       }
+      // Clicks inside the tooltip (e.g. the documentation link) must pass
+      // through: closing on pointerdown would unmount the anchor before the
+      // click completes and swallow the navigation.
+      if (event.target instanceof Element && event.target.closest('[data-slot="tooltip-content"]')) {
+        return;
+      }
       setOpen(false);
     };
     document.addEventListener('pointerdown', handlePointerDown, true);
