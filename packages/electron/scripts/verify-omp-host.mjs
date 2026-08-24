@@ -81,13 +81,23 @@ const waitForHealthy = async () => {
       const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
       const body = await response.text();
       if (response.ok && body.includes('"healthy":true')) {
+        // /global/health only proves the server booted; capabilities also
+        // proves bundled build-time data survived compilation (a runtime
+        // readFileSync into the bunfs root 500'd every packaged build
+        // while health-only verification stayed green).
+        const caps = await fetch(`http://127.0.0.1:${port}/omp/capabilities`, { signal: AbortSignal.timeout(5000) })
+          .then((r) => r.json())
+          .catch(() => null);
+        if (!caps?.features?.['modelRoles.v1']) {
+          console.error(`[electron] omp host capabilities check failed: ${JSON.stringify(caps).slice(0, 300)}`);
+          finish(1);
+          return;
+        }
+        console.log(`[electron] omp host capabilities: ${Object.keys(caps.features).length} features`);
         console.log(`[electron] verified omp host ${mode}: ${binary}`);
         finish(0);
         return;
       }
-      console.error(`[electron] omp host health endpoint returned ${response.status}: ${body.slice(0, 200)}`);
-      finish(1);
-      return;
     } catch {
       // Not listening yet; retry.
       await new Promise((resolve) => setTimeout(resolve, 500));

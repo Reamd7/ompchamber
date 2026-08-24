@@ -88,7 +88,15 @@ if (isDev) {
   app.setPath('userData', path.join(app.getPath('appData'), 'OMPChamber Dev'));
 }
 app.setAppUserModelId(APP_USER_MODEL_ID);
-app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
+// Never route loopback through a configured system proxy. The in-process
+// web server fetches the managed omp engine on 127.0.0.1, and Electron's
+// main-process fetch rides Chromium networking: with a system proxy set
+// and the default loopback bypass removed ('<-loopback>', the previous
+// setting) those engine calls were pushed through the proxy and failed
+// (capabilities 500, engine endpoints 503) while the engine itself was
+// healthy. The connection-limit exemption below applies to direct
+// connections and is unaffected by an explicit bypass.
+app.commandLine.appendSwitch('proxy-bypass-list', '<local>;127.0.0.1;localhost');
 // Lift Chromium's per-host cap only for bundled UI. Applying this to the dev
 // server HMR lets the renderer request most of the module graph at once,
 // overwhelming it and leaving the HTML splash visible for up to a minute

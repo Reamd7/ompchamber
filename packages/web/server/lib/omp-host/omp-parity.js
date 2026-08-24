@@ -7,18 +7,15 @@
 // flip their key when their surface lands; consumers must treat a missing
 // key or a 404 as "feature off" and degrade to wire-only behavior.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const readManifest = (name) =>
-  JSON.parse(fs.readFileSync(path.join(__dirname, name), 'utf8'));
+// The event registry is bundled build-time data: a static JSON import is
+// inlined by every bundler (including `bun build --compile`, where a
+// runtime readFileSync against __dirname looks into the bunfs root and the
+// file is not there — capabilities 500 on every packaged build).
+import ompEventRegistry from './omp-event-registry.json' with { type: 'json' };
 
 /** @returns {{ eventSchema: string, events: Record<string, { durable: boolean, scope: string, snapshotEndpoints: string[], since: string, gated?: string, control?: boolean }> }} */
 export const loadOmpEventRegistry = () => {
-  const manifest = readManifest('omp-event-registry.json');
+  const manifest = ompEventRegistry;
   return { eventSchema: manifest.eventSchema, events: manifest.events };
 };
 
