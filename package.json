@@ -150,7 +150,8 @@
   },
   "overrides": {
     "@codemirror/language": "6.12.2",
-    "@codemirror/view": "6.39.13"
+    "@codemirror/view": "6.39.13",
+    "ghostty-web": "file:references/ghostty-web"
   },
   "devDependencies": {
     "@clack/prompts": "^1.1.0",

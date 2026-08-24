@@ -75,3 +75,8 @@ artifacts/
 
 # Python venv (uv)
 .venv/
+
+
+references/*
+
+!references/ghostty-web
