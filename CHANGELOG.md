@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **UI:** the app logo now carries the Oh my Pi mark — the isometric chamber keeps its shape, but the OpenCode square on its open top is replaced by omp's π with the orange plugin connector, across the web app icon/splash, desktop app and tray, VS Code extension, mobile app icons, iOS widget, and docs badges.
 
 ## [1.18.6] - 2026-08-23
 

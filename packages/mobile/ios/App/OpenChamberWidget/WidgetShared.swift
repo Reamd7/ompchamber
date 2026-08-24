@@ -87,9 +87,10 @@ struct OverviewProvider: TimelineProvider {
 // MARK: - Logo (full OpenChamber mark drawn from the SVG)
 
 /// The OpenChamber logo, drawn to match packages/web/public/logo-dark-512x512.svg: an
-/// isometric cube with translucent face fills, stroked edges, and the OpenCode mark on the
-/// top face. Faces use low-opacity `.primary` so the system tint on the Lock Screen / Control
-/// Center reads as a translucent fill (no colour) rather than a flat wireframe. Coordinates are
+/// isometric cube with translucent face fills, stroked edges, and the Oh my Pi mark on the
+/// top face (π with an orange plugin connector). Faces use low-opacity `.primary` so the
+/// system tint on the Lock Screen / Control Center reads as a translucent fill (no colour)
+/// rather than a flat wireframe. Coordinates are
 /// the SVG inner group (range x:-41.568…41.568, y:-48…48).
 struct CubeLogoView: View {
     var body: some View {
@@ -103,11 +104,10 @@ struct CubeLogoView: View {
 
             // Cube coordinate → canvas point.
             func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: cx + x * scale, y: cy + y * scale) }
-            // OpenCode-mark local coordinate → canvas point (SVG: matrix(0.866,0.5,-0.866,0.5,0,-24) · scale(0.75)).
+            // π-mark local coordinate → canvas point (SVG: matrix(0.866,0.5,-0.866,0.5,0,-24)).
             func m(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-                let s: CGFloat = 0.75
-                let mx = 0.866 * s * x - 0.866 * s * y
-                let my = 0.5 * s * x + 0.5 * s * y - 24
+                let mx = 0.866 * x - 0.866 * y
+                let my = 0.5 * x + 0.5 * y - 24
                 return p(mx, my)
             }
 
@@ -124,15 +124,25 @@ struct CubeLogoView: View {
             context.stroke(right, with: .color(.primary), style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round))
             context.stroke(top, with: .color(.primary), style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round))
 
-            // OpenCode mark: square ring (even-odd) + a partial inner fill.
-            var ring = Path()
-            ring.move(to: m(-16, -20)); ring.addLine(to: m(16, -20)); ring.addLine(to: m(16, 20)); ring.addLine(to: m(-16, 20)); ring.closeSubpath()
-            ring.move(to: m(-8, -12)); ring.addLine(to: m(-8, 12)); ring.addLine(to: m(8, 12)); ring.addLine(to: m(8, -12)); ring.closeSubpath()
-            context.fill(ring, with: .color(.primary), style: FillStyle(eoFill: true))
+            // Oh my Pi mark: π bar + legs, orange plugin connector with two slots cut out
+            // (even-odd), and two accent dots on the bar.
+            var pi = Path()
+            pi.move(to: m(-30, -22.2)); pi.addLine(to: m(30, -22.2)); pi.addLine(to: m(30, -15)); pi.addLine(to: m(-30, -15)); pi.closeSubpath()
+            pi.move(to: m(-21, -15)); pi.addLine(to: m(-13.8, -15)); pi.addLine(to: m(-13.8, 22.2)); pi.addLine(to: m(-21, 22.2)); pi.closeSubpath()
+            pi.move(to: m(9, -15)); pi.addLine(to: m(16.2, -15)); pi.addLine(to: m(16.2, 12)); pi.addLine(to: m(9, 12)); pi.closeSubpath()
+            context.fill(pi, with: .color(.primary))
 
-            var inner = Path()
-            inner.move(to: m(-8, -4)); inner.addLine(to: m(8, -4)); inner.addLine(to: m(8, 12)); inner.addLine(to: m(-8, 12)); inner.closeSubpath()
-            context.fill(inner, with: .color(.primary.opacity(0.4)))
+            var connector = Path()
+            connector.move(to: m(6.6, 6)); connector.addLine(to: m(18.6, 6)); connector.addLine(to: m(18.6, 15.6)); connector.addLine(to: m(6.6, 15.6)); connector.closeSubpath()
+            connector.move(to: m(9.6, 8.4)); connector.addLine(to: m(9.6, 13.2)); connector.addLine(to: m(11.4, 13.2)); connector.addLine(to: m(11.4, 8.4)); connector.closeSubpath()
+            connector.move(to: m(13.2, 8.4)); connector.addLine(to: m(13.2, 13.2)); connector.addLine(to: m(15, 13.2)); connector.addLine(to: m(15, 8.4)); connector.closeSubpath()
+            context.fill(connector, with: .color(.orange), style: FillStyle(eoFill: true))
+
+            for dotX in [-25.2, 25.2] {
+                let c = m(dotX, -18.6)
+                let dot = Path(ellipseIn: CGRect(x: c.x - 1.2 * scale, y: c.y - 1.2 * scale, width: 2.4 * scale, height: 2.4 * scale))
+                context.fill(dot, with: .color(.orange.opacity(0.8)))
+            }
         }
     }
 }

@@ -7,10 +7,14 @@
     <path d="M0 0 L41.568 -24 L41.568 24 L0 48 Z" fill="black" fill-opacity="0.35" stroke="black" stroke-width="3" stroke-linejoin="round"/>
     <!-- Top face - open -->
     <path d="M0 -48 L-41.568 -24 L0 0 L41.568 -24 Z" fill="none" stroke="black" stroke-width="3" stroke-linejoin="round"/>
-    <!-- OpenCode logo on top face -->
-    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 0, -24) scale(0.75)">
-      <path fill-rule="evenodd" clip-rule="evenodd" d="M-16 -20 L16 -20 L16 20 L-16 20 Z M-8 -12 L-8 12 L8 12 L8 -12 Z" fill="black"/>
-      <path d="M-8 -4 L8 -4 L8 12 L-8 12 Z" fill="black" fill-opacity="0.4"/>
+    <!-- Oh my Pi mark on top face: π with plugin connector -->
+    <g transform="matrix(0.866, 0.5, -0.866, 0.5, 0, -24)">
+      <rect x="-30" y="-22.2" width="60" height="7.2" rx="1.4" fill="black"/>
+      <rect x="-21" y="-15" width="7.2" height="37.2" rx="1.4" fill="black"/>
+      <rect x="9" y="-15" width="7.2" height="27" rx="1.4" fill="black"/>
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M8.5 6 H16.7 A1.9 1.9 0 0 1 18.6 7.9 V13.7 A1.9 1.9 0 0 1 16.7 15.6 H8.5 A1.9 1.9 0 0 1 6.6 13.7 V7.9 A1.9 1.9 0 0 1 8.5 6 Z M9.6 8.4 H11.4 V13.2 H9.6 Z M13.2 8.4 H15 V13.2 H13.2 Z" fill="#f97316"/>
+      <circle cx="-25.2" cy="-18.6" r="1.2" fill="#f97316" opacity="0.8"/>
+      <circle cx="25.2" cy="-18.6" r="1.2" fill="#f97316" opacity="0.8"/>
     </g>
   </g>
 </svg>
