@@ -69,6 +69,43 @@ describe('behavior AGENTS.md endpoints (omp-native target, 07 §5.13)', () => {
     expect(response.body.path).toBe(path.join(os.homedir(), '.omp', 'agent', 'AGENTS.md'));
   });
 
+  it('honors agent-dir changes across requests (profile switch)', async () => {
+    const dayDir = path.join(os.homedir(), '.omp', 'profiles', 'day', 'agent');
+    const nightDir = path.join(os.homedir(), '.omp', 'profiles', 'night', 'agent');
+    const dirs = [dayDir, nightDir];
+    let call = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ agentDir: dirs[Math.min(call++, 1)] }),
+    })));
+    const { app } = createApp();
+
+    const first = await request(app).get('/api/behavior/agents-md').expect(200);
+    const second = await request(app).get('/api/behavior/agents-md').expect(200);
+
+    expect(first.body.path).toBe(path.join(dayDir, 'AGENTS.md'));
+    expect(second.body.path).toBe(path.join(nightDir, 'AGENTS.md'));
+  });
+
+  it('does not pin the fallback when the omp-host is briefly unreachable', async () => {
+    const nativeDir = path.join(os.homedir(), '.omp', 'profiles', 'day', 'agent');
+    let fail = true;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (fail) {
+        fail = false;
+        throw new Error('ECONNREFUSED');
+      }
+      return { ok: true, json: async () => ({ agentDir: nativeDir }) };
+    }));
+    const { app } = createApp();
+
+    const fallback = await request(app).get('/api/behavior/agents-md').expect(200);
+    const recovered = await request(app).get('/api/behavior/agents-md').expect(200);
+
+    expect(fallback.body.path).toBe(path.join(os.homedir(), '.omp', 'agent', 'AGENTS.md'));
+    expect(recovered.body.path).toBe(path.join(nativeDir, 'AGENTS.md'));
+  });
+
   it('serves existing native content, reports legacy read-only, and writes to the native file', async () => {
     const nativeDir = path.join(os.homedir(), '.omp', 'agent');
     vi.stubGlobal('fetch', vi.fn(agentDirFetch(nativeDir)));

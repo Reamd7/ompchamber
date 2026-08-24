@@ -100,7 +100,6 @@ import { createBrowserControlBroker } from './lib/browser-control/broker.js';
 import { createDevServerScanner } from './lib/dev-servers/routes.js';
 import { createDevTunnelRuntime } from './lib/dev-tunnel/runtime.js';
 import { registerBrowserControlRoutes } from './lib/browser-control/routes.js';
-import { createSystemPromptRuntime } from './lib/system-prompt/runtime.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createScheduledTaskService } from './lib/scheduled-tasks/service.js';
 import { createOpenChamberControlService } from './lib/openchamber-control/service.js';
@@ -273,7 +272,6 @@ const readCustomThemesFromDisk = (...args) => themeRuntime.readCustomThemesFromD
 
 let notificationTemplateRuntime = null;
 let agentToolRuntime = null;
-let systemPromptRuntime = null;
 
 const createTimeoutSignal = (...args) => notificationTemplateRuntime.createTimeoutSignal(...args);
 const formatProjectLabel = (...args) => notificationTemplateRuntime.formatProjectLabel(...args);
@@ -1095,9 +1093,9 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   },
   getManagedOpenCodeEnv: async () => {
     // The omp host is not an OpenCode process: it never reads
-    // OPENCODE_CONFIG_CONTENT, so the agent-tool and system-prompt optimizer
-    // plugins are no longer injected at spawn. Those capabilities are
-    // documented as unavailable with the omp engine.
+    // OPENCODE_CONFIG_CONTENT, so the agent-tool plugin is no longer
+    // injected at spawn. That capability is documented as unavailable with
+    // the omp engine; the system-prompt optimizer was removed outright.
     return {};
   },
 });
@@ -1313,11 +1311,6 @@ async function main(options = {}) {
       const address = server?.address?.();
       return typeof address === 'object' && address ? address.port : null;
     },
-  });
-  systemPromptRuntime = createSystemPromptRuntime({
-    fsPromises,
-    path,
-    dataDir: OPENCHAMBER_DATA_DIR,
   });
 
   // Pairing transports advertised to the create-device dialog. LAN reachability is

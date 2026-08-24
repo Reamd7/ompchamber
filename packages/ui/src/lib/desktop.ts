@@ -154,7 +154,6 @@ export type DesktopSettings = {
   inputSpellcheckEnabled?: boolean;
   agentControlToolEnabled?: boolean;
   agentWebToolEnabled?: boolean;
-  optimizeSystemPrompt?: boolean;
   showToolFileIcons?: boolean;
   codeBlockLineWrap?: boolean;
   showTurnChangedFiles?: boolean;

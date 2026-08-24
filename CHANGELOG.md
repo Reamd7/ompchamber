@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app (terminal, text editor) are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
+- Settings: removed the "system prompt optimization" toggle from Settings → Behavior — it has had no effect since sessions moved to the omp engine.
 
 ## [1.18.5] - 2026-08-23
 
