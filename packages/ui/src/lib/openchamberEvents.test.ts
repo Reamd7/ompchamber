@@ -5,6 +5,7 @@ mock.module('./runtime-url', () => ({
 }));
 
 mock.module('./runtime-switch', () => ({
+  getRuntimeKey: () => 'test-runtime',
   subscribeRuntimeEndpointChanged: () => () => undefined,
 }));
 
@@ -68,6 +69,44 @@ describe('openchamber events', () => {
         createdAt: 123,
         promptDispatched: true,
         dispatchedAsCommand: false,
+      },
+    ]);
+    unsubscribe();
+  });
+
+  test('dispatches worktree topology change events', async () => {
+    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const events: unknown[] = [];
+    const listener = (event: unknown) => events.push(event);
+    const unsubscribe = subscribeOpenchamberEvents(listener);
+    const source = MockEventSource.instances[0];
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: 'openchamber:worktrees-changed',
+        properties: {
+          directories: ['C:\\repo\\main', '/repo/other'],
+        },
+      }),
+    });
+    // Malformed payloads are dropped, not dispatched.
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: 'openchamber:worktrees-changed',
+        properties: { directories: [42, ''] },
+      }),
+    });
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: 'openchamber:worktrees-changed',
+        properties: { directories: [] },
+      }),
+    });
+
+    expect(events).toEqual([
+      {
+        type: 'worktrees-changed',
+        directories: ['C:\\repo\\main', '/repo/other'],
       },
     ]);
     unsubscribe();

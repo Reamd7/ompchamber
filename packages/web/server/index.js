@@ -89,6 +89,7 @@ import { createApnsRuntime } from './lib/notifications/apns-runtime.js';
 import { createNotificationTemplateRuntime } from './lib/notifications/template-runtime.js';
 import { createPermissionAutoAcceptRuntime } from './lib/permission-auto-accept/runtime.js';
 import { createGracefulShutdownRuntime } from './lib/opencode/shutdown-runtime.js';
+import { createWorktreeWatcher } from './lib/git/worktree-watcher.js';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { createRemoteClientAuthRuntime } from './lib/client-auth/remote-clients.js';
 import { createClientPairingRuntime } from './lib/client-auth/pairing.js';
@@ -1157,6 +1158,34 @@ const emitSessionCreatedEvent = (event) => {
     }
   }
 };
+
+// Linked-worktree topology changes for registered projects, observed via
+// `.git/worktrees` metadata regardless of which client created or removed
+// the worktree. Emitted to OpenChamber clients so they re-list authoritatively.
+const emitWorktreesChangedEvent = (directories) => {
+  if (!Array.isArray(directories) || directories.length === 0) return;
+  for (const client of uiOpenChamberEventClients) {
+    try {
+      writeSseEvent(client, {
+        type: 'openchamber:worktrees-changed',
+        properties: {
+          directories,
+        },
+      });
+    } catch {
+      uiOpenChamberEventClients.delete(client);
+    }
+  }
+};
+const worktreeWatcherRuntime = createWorktreeWatcher({
+  listProjects: async () => {
+    const settings = await readSettingsFromDiskMigrated().catch(() => null);
+    return sanitizeProjects(settings?.projects || []);
+  },
+  settingsFilePath: SETTINGS_FILE_PATH,
+  onWorktreesChanged: emitWorktreesChangedEvent,
+  logger: console,
+});
 const scheduledTaskService = createScheduledTaskService({
   readSettingsFromDiskMigrated,
   sanitizeProjects,
@@ -1788,6 +1817,12 @@ async function main(options = {}) {
     console.warn('[ScheduledTasks] Failed to start runtime:', error?.message || error);
   }
 
+  try {
+    worktreeWatcherRuntime.start();
+  } catch (error) {
+    console.warn('[WorktreeWatcher] Failed to start:', error?.message || error);
+  }
+
   // Only opens a relay control socket when the user opted in (config enabled).
   // Reconcile the relay lifecycle from demand on startup: run it if any relay
   // device/session exists, stop it (and clear a stale enabled flag) otherwise.
@@ -1833,6 +1868,11 @@ async function main(options = {}) {
     stop: (shutdownOptions = {}) => {
       realtimeProxyRuntime.stop();
       clearInterval(relayReconcileTimer);
+      try {
+        worktreeWatcherRuntime.stop();
+      } catch {
+        // best-effort teardown of fs watchers
+      }
       try {
         relayService.stop();
       } catch {

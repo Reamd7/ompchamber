@@ -20,6 +20,12 @@ type SessionCreatedEvent = {
   dispatchedAsCommand: boolean;
 };
 
+type WorktreesChangedEvent = {
+  type: 'worktrees-changed';
+  /** Registered project paths whose worktree topology changed. */
+  directories: string[];
+};
+
 /**
  * One in-app browser action requested by the agent tool. Broadcast to every
  * connected client; only the one owning a browser view answers.
@@ -31,7 +37,7 @@ type BrowserControlRequestEvent = {
   parameters: Record<string, unknown>;
 };
 
-type OpenChamberEvent = ScheduledTaskRanEvent | SessionCreatedEvent | BrowserControlRequestEvent;
+type OpenChamberEvent = ScheduledTaskRanEvent | SessionCreatedEvent | WorktreesChangedEvent | BrowserControlRequestEvent;
 type Listener = (event: OpenChamberEvent) => void;
 
 let eventSource: EventSource | null = null;
@@ -159,6 +165,26 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
       parameters: rawParameters && typeof rawParameters === 'object' && !Array.isArray(rawParameters)
         ? rawParameters as Record<string, unknown>
         : {},
+    };
+    for (const listener of listeners) {
+      listener(nextEvent);
+    }
+    return;
+  }
+
+  if (envelope.type === 'openchamber:worktrees-changed') {
+    const properties = getEventProperties(envelope.properties);
+    const rawDirectories = properties?.directories;
+    const directories = Array.isArray(rawDirectories)
+      ? rawDirectories.filter((directory): directory is string => typeof directory === 'string' && directory.length > 0)
+      : [];
+    if (directories.length === 0) {
+      return;
+    }
+
+    const nextEvent: WorktreesChangedEvent = {
+      type: 'worktrees-changed',
+      directories,
     };
     for (const listener of listeners) {
       listener(nextEvent);

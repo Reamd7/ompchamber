@@ -382,7 +382,7 @@ const getWorktreeListGeneration = (projectDirectory: string): number => {
   return _worktreeListGeneration.get(projectDirectory) ?? 0;
 };
 
-const invalidateWorktreeList = (projectDirectory: string): void => {
+export const invalidateWorktreeList = (projectDirectory: string): void => {
   _worktreeListGeneration.set(projectDirectory, getWorktreeListGeneration(projectDirectory) + 1);
   _worktreeListCache.delete(projectDirectory);
 };

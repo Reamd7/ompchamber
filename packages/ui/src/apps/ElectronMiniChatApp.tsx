@@ -24,6 +24,7 @@ import {
   partitionWorktreesByRegisteredProject,
   worktreeMapsEqual,
 } from '@/lib/worktrees/worktreeManager';
+import { useWorktreeEventSync } from '@/lib/worktrees/worktreeEventSync';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
@@ -310,6 +311,7 @@ export function ElectronMiniChatApp({ apis }: ElectronMiniChatAppProps) {
   }, [apis]);
 
   useAppFontEffects();
+  useWorktreeEventSync();
   useMiniChatKeyboardShortcuts();
   usePushVisibilityBeacon({ enabled: true });
   useWindowTitle();

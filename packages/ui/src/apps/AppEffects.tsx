@@ -8,6 +8,7 @@ import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
+import { useWorktreeEventSync } from '@/lib/worktrees/worktreeEventSync';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
 
@@ -74,6 +75,7 @@ export function SyncRuntimeEffects({ embeddedBackgroundWorkEnabled }: {
 export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
+  useWorktreeEventSync();
   usePwaManifestSync();
   useWindowControlsOverlayLayout();
   useKeyboardShortcuts();
