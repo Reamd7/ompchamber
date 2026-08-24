@@ -107,7 +107,11 @@ void start();
 
 // Built-in theme JSON edits arrive as a custom rsbuild HMR event pushed by
 // the dev server plugin; forward them to the theme system without a reload.
-if (import.meta.webpackHot) {
+// `module.hot.on` only exists when the rsbuild HMR client has injected its
+// interceptor — in production (and in dev before that runs) calling `.on`
+// throws a TypeError that also swallowed the PWA registration below, so
+// check for the function itself, never just the hot object.
+if (import.meta.env.DEV && typeof import.meta.webpackHot?.on === 'function') {
   import.meta.webpackHot.on('openchamber:theme-updated', (theme: unknown) => {
     window.dispatchEvent(new CustomEvent('openchamber:theme-hmr', { detail: theme }));
   });
