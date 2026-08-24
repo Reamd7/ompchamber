@@ -358,6 +358,77 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     expect(await response.json()).toBe(true);
     expect(abortCalls).toEqual([{ sessionID: 'ses_1', directory: '/repo' }]);
   });
+
+  test('PATCH /session/{sessionID} answers 404 when the engine refuses a mis-addressed update', async () => {
+    // Regression (mis-addressed archive incident): engine.updateSession used
+    // to fabricate a synthesized session for any directory, so an archive
+    // addressed to a directory that owns neither transcript nor registry
+    // entry answered 200 while no listing could ever observe the write.
+    const { registerEndpoints } = await import('./endpoints.js');
+    const routes = [];
+    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const calls = [];
+    const stubEngine = {
+      ompBus: new OmpEventBus(),
+      dialogs: { mount: () => {} },
+      modesDomain: {},
+      uriDomain: { mount: () => {} },
+      settingsStoreReady: async () => null,
+      settingsStore: null,
+      customAgents: new Map(),
+      ready: async () => {},
+      availableModels: () => [],
+      updateSession: async (args) => { calls.push(args); return null; },
+    };
+    registerEndpoints(route, stubEngine, { version: 'test' });
+    const patchRoute = routes.find((r) => r.method === 'PATCH' && r.pattern === '/session/{sessionID}');
+    const response = await patchRoute.handler(new Request('http://host/session/ses_1', {
+      method: 'PATCH',
+      body: JSON.stringify({ directory: '/elsewhere', time: { archived: 123 } }),
+    }), {
+      url: new URL('http://host/session/ses_1'),
+      headers: new Headers(),
+      params: { sessionID: 'ses_1' },
+    });
+    expect(response.status).toBe(404);
+    expect(calls).toEqual([{
+      sessionID: 'ses_1', directory: '/elsewhere', title: undefined, metadata: undefined, timeArchived: 123,
+    }]);
+  });
+
+  test('GET /experimental/session scopes by directory and stays global without one', async () => {
+    // Scoped callers (directory bootstrap, per-directory refresh) contract:
+    // only the named directory's sessions. Answering with every directory's
+    // sessions seeded foreign records into every directory child store.
+    const { registerEndpoints } = await import('./endpoints.js');
+    const routes = [];
+    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const stubEngine = {
+      ompBus: new OmpEventBus(),
+      dialogs: { mount: () => {} },
+      modesDomain: {},
+      uriDomain: { mount: () => {} },
+      settingsStoreReady: async () => null,
+      settingsStore: null,
+      customAgents: new Map(),
+      ready: async () => {},
+      availableModels: () => [],
+      listAllSessions: async () => new Map([
+        ['/repo', [{ id: 'ses_repo', directory: '/repo', time: { updated: 2 } }]],
+        ['/other', [{ id: 'ses_other', directory: '/other', time: { updated: 1 } }]],
+      ]),
+    };
+    registerEndpoints(route, stubEngine, { version: 'test' });
+    const listRoute = routes.find((r) => r.method === 'GET' && r.pattern === '/experimental/session');
+
+    const scopedUrl = new URL('http://host/experimental/session?directory=/repo');
+    const scoped = await listRoute.handler(new Request(scopedUrl), { url: scopedUrl, headers: new Headers(), params: {} });
+    expect((await scoped.json()).map((session) => session.id)).toEqual(['ses_repo']);
+
+    const globalUrl = new URL('http://host/experimental/session');
+    const global = await listRoute.handler(new Request(globalUrl), { url: globalUrl, headers: new Headers(), params: {} });
+    expect((await global.json()).map((session) => session.id)).toEqual(['ses_repo', 'ses_other']);
+  });
 });
 
 describe('capabilities (spec 05 §5.2.3, master R2)', () => {

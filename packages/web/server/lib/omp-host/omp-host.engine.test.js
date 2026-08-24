@@ -6,7 +6,14 @@ import path from 'node:path';
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-engine-test-'));
 const sessionDir = path.join(agentDir, 'sessions');
 
-const sessionFiles = [{ id: 's1', path: path.join(sessionDir, 's1.jsonl') }, { id: 's2', path: path.join(sessionDir, 's2.jsonl') }];
+const sessionFiles = [
+  { id: 's1', path: path.join(sessionDir, 's1.jsonl') },
+  { id: 's2', path: path.join(sessionDir, 's2.jsonl') },
+  // Owned by /repo: lets tests address an idle session through a directory
+  // that does not own it (cwd-less files match every directory, preserving
+  // the pre-existing mock behavior for the other ids).
+  { id: 's3', path: path.join(sessionDir, 's3.jsonl'), cwd: '/repo' },
+];
 const createdOptions = [];
 const registries = [];
 const toolUiContextCalls = [];
@@ -17,6 +24,7 @@ const makeFakeSession = () => ({
   isStreaming: false,
   messages: [],
   subscribe: () => () => {},
+  sessionManager: { getSessionName: () => 'stub-session-name' },
   setModel: mock(async () => ({ switched: true })),
   setThinkingLevel: mock(async () => {}),
   maybeStartTitleGeneration: () => {},
@@ -57,10 +65,20 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     class {},
     {
       async open(file) {
-        return { getSessionId: () => path.basename(file, '.jsonl'), onSessionNameChanged: () => {} };
+        return {
+          getSessionId: () => path.basename(file, '.jsonl'),
+          onSessionNameChanged: () => {},
+          // Idle-session reads (#infoFromManager) need the transcript reader
+          // surface; an empty header/entries set is enough for wire building.
+          getHeader: () => null,
+          getEntries: () => [],
+          getCwd: () => undefined,
+          getSessionName: () => undefined,
+          close: async () => {},
+        };
       },
-      async list() {
-        return sessionFiles;
+      async list(cwd) {
+        return sessionFiles.filter((file) => !file.cwd || !cwd || file.cwd === cwd);
       },
       getDefaultSessionDir: () => sessionDir,
     },
@@ -141,6 +159,47 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(session.abort).toHaveBeenCalledWith({ reason: 'User aborted' });
 
     await expect(engine.abort({ sessionID: 'never-materialized', directory: '/repo' })).resolves.toBe(false);
+  });
+
+  test('updateSession writes the registry under a live session\'s own directory', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm up' });
+
+    const updated = await engine.updateSession({ sessionID: 's1', directory: '/elsewhere', timeArchived: 123 });
+
+    // The live session owns /repo: the patch must land and be reported there,
+    // never stranded as a phantom /elsewhere registry entry that listings under
+    // the owning directory never read.
+    expect(engine.registry.get('/repo', 's1')?.timeArchived).toBe(123);
+    expect(engine.registry.get('/elsewhere', 's1')).toBe(null);
+    expect(updated?.time?.archived).toBe(123);
+  });
+
+  test('updateSession refuses a mis-addressed update for an idle session', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+
+    // s3's transcript lives under /repo. A write addressed to /elsewhere owns
+    // neither the transcript nor a registry entry and must not fabricate one:
+    // before the guard it "succeeded" by answering with a synthesized session
+    // while no listing keyed by the transcript's cwd could ever observe it.
+    const refused = await engine.updateSession({ sessionID: 's3', directory: '/elsewhere', timeArchived: 123 });
+    expect(refused).toBe(null);
+    expect(engine.registry.get('/elsewhere', 's3')).toBe(null);
+
+    // The owning directory still applies the same update.
+    const updated = await engine.updateSession({ sessionID: 's3', directory: '/repo', timeArchived: 123 });
+    expect(updated?.time?.archived).toBe(123);
+    expect(engine.registry.get('/repo', 's3')?.timeArchived).toBe(123);
+  });
+
+  test('updateSession keeps registry-only sessions updatable for bookkeeping', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    engine.registry.update('/repo', 'pruned', { timeCreated: 1 });
+
+    const updated = await engine.updateSession({ sessionID: 'pruned', directory: '/repo', timeArchived: 9 });
+
+    expect(updated?.time?.archived).toBe(9);
+    expect(engine.registry.get('/repo', 'pruned')?.timeArchived).toBe(9);
   });
 
 
