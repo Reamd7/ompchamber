@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createGlobalUiEventBroadcaster, createMessageStreamWsRuntime } from './runtime.js';
 
@@ -508,5 +508,40 @@ describe('message stream websocket runtime', () => {
 
     socket.close();
     await runtime.close();
+  });
+  it('close() resolves even when wsServer.close never calls back', async () => {
+    vi.useFakeTimers();
+    const server = new EventEmitter();
+    const wsClients = new Set([{}]);
+
+    const runtime = createMessageStreamWsRuntime({
+      server,
+      uiAuthController: null,
+      isRequestOriginAllowed: async () => true,
+      rejectWebSocketUpgrade() {},
+      buildOpenCodeUrl: (path) => `http://127.0.0.1:4096${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      processForwardedEventPayload() {},
+      wsClients,
+      fetchImpl: async () => createSseResponse(),
+    });
+
+    // Simulate a client socket whose close event never arrives: ws#close
+    // would then wait forever. Without the timeout race this promise pins
+    // gracefulShutdown open with the upgrade listener already removed.
+    runtime.wsServer.close = () => {};
+
+    let settled = false;
+    const closing = runtime.close().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settled).toBe(true);
+    expect(wsClients.size).toBe(0);
+    await closing;
+    vi.useRealTimers();
   });
 });

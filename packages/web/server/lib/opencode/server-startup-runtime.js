@@ -1,6 +1,13 @@
 /** One stray uncaught exception is survivable; a storm means the process is broken. */
 const UNCAUGHT_STORM_LIMIT = 10;
 const UNCAUGHT_STORM_WINDOW_MS = 60_000;
+// A restart races the previous instance's graceful shutdown, which can hold
+// the port for seconds (OpenCode teardown, socket drain). Without a bounded
+// EADDRINUSE retry the new instance dies instantly and nodemon parks in
+// "app crashed", leaving the dev proxy pointed at nothing.
+const DEFAULT_BIND_RETRY_INTERVAL_MS = 500;
+const DEFAULT_BIND_RETRY_WINDOW_MS = 20_000;
+
 
 export const createServerStartupRuntime = (dependencies) => {
   const {
@@ -18,6 +25,8 @@ export const createServerStartupRuntime = (dependencies) => {
     TUNNEL_MODE_QUICK,
     TUNNEL_MODE_MANAGED_LOCAL,
     TUNNEL_MODE_MANAGED_REMOTE,
+    bindRetryIntervalMs = DEFAULT_BIND_RETRY_INTERVAL_MS,
+    bindRetryWindowMs = DEFAULT_BIND_RETRY_WINDOW_MS,
   } = dependencies;
 
   const resolveBindHost = (host) =>
@@ -25,6 +34,47 @@ export const createServerStartupRuntime = (dependencies) => {
     || (typeof process.env.OPENCHAMBER_HOST === 'string' && process.env.OPENCHAMBER_HOST.trim().length > 0
       ? process.env.OPENCHAMBER_HOST.trim()
       : '127.0.0.1');
+
+  const wait = (ms) => new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+
+  const listenWithBindRetry = async ({ port, bindHost, onListening }) => {
+    const deadline = Date.now() + bindRetryWindowMs;
+    let busyLogged = false;
+
+    for (;;) {
+      try {
+        await new Promise((resolve, reject) => {
+          const onError = (error) => {
+            server.off('error', onError);
+            server.off('listening', onListeningEvent);
+            reject(error);
+          };
+          const onListeningEvent = () => {
+            server.off('error', onError);
+            resolve();
+          };
+          server.once('error', onError);
+          server.once('listening', onListeningEvent);
+          server.listen(port, bindHost, onListening);
+        });
+        return;
+      } catch (error) {
+        const retriable = error && error.code === 'EADDRINUSE' && Date.now() + bindRetryIntervalMs <= deadline;
+        if (!retriable) {
+          throw error;
+        }
+        if (!busyLogged) {
+          busyLogged = true;
+          console.log(
+            `Port ${port} is still in use (previous instance draining?); retrying for up to ${Math.round(bindRetryWindowMs / 1000)}s`
+          );
+        }
+        await wait(bindRetryIntervalMs);
+      }
+    }
+  };
 
   const startListeningAndMaybeTunnel = async ({
     port,
@@ -35,13 +85,7 @@ export const createServerStartupRuntime = (dependencies) => {
     let activePort = port;
 
     await new Promise((resolve, reject) => {
-      const onError = (error) => {
-        server.off('error', onError);
-        reject(error);
-      };
-      server.once('error', onError);
       const onListening = async () => {
-        server.off('error', onError);
         try {
           const addressInfo = server.address();
           activePort = typeof addressInfo === 'object' && addressInfo ? addressInfo.port : port;
@@ -124,7 +168,7 @@ export const createServerStartupRuntime = (dependencies) => {
         }
       };
 
-      server.listen(port, bindHost, onListening);
+      listenWithBindRetry({ port, bindHost, onListening }).catch(reject);
     });
 
     return { activePort };

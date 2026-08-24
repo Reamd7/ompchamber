@@ -48,20 +48,35 @@ export const createRequestSecurityRuntime = (deps) => {
       500: 'Internal Server Error',
     }[statusCode] || 'Bad Request';
 
+    // Write+destroy races the socket's write queue and usually discards the
+    // response bytes, leaving browsers a bare "WebSocket connection failed"
+    // with no status. end() flushes first; destroy is the backstop for a
+    // client that never reads.
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(destroyTimer);
+      try {
+        socket.destroy();
+      } catch {
+      }
+    };
+    const destroyTimer = setTimeout(finish, 1000);
+    destroyTimer.unref?.();
+
     try {
-      socket.write(
+      socket.once('error', finish);
+      socket.end(
         `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
         'Connection: close\r\n' +
         'Content-Type: text/plain; charset=utf-8\r\n' +
-        `Content-Length: ${body.length}\r\n\r\n`
+        `Content-Length: ${body.length}\r\n\r\n` +
+        body,
+        finish
       );
-      socket.write(body);
     } catch {
-    }
-
-    try {
-      socket.destroy();
-    } catch {
+      finish();
     }
   };
 

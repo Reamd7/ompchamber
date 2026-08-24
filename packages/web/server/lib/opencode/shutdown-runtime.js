@@ -1,7 +1,16 @@
+// Every WebSocket upgrade listener (terminal, message stream, dictation) is
+// removed early in this sequence, well before the stages that can hang on
+// external processes. A shutdown wedged at one of those awaits therefore keeps
+// serving HTTP while rejecting all realtime upgrades — a half-dead backend the
+// next dev run happily proxies to. The watchdog exists to make that state
+// impossible to linger in.
+const DEFAULT_SHUTDOWN_WATCHDOG_TIMEOUT_MS = 30_000;
+
 export const createGracefulShutdownRuntime = (dependencies) => {
   const {
     process,
     shutdownTimeoutMs,
+    shutdownWatchdogTimeoutMs = DEFAULT_SHUTDOWN_WATCHDOG_TIMEOUT_MS,
     getExitOnShutdown,
     getIsShuttingDown,
     setIsShuttingDown,
@@ -33,6 +42,10 @@ export const createGracefulShutdownRuntime = (dependencies) => {
   } = dependencies;
 
   let shutdownPromise = null;
+  let shutdownPhase = 'starting';
+  const enterShutdownPhase = (phase) => {
+    shutdownPhase = phase;
+  };
 
   const runShutdown = async (options = {}) => {
     if (getIsShuttingDown()) return;
@@ -41,6 +54,8 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     syncToHmrState();
     console.log('Starting graceful shutdown...');
     const exitProcess = typeof options.exitProcess === 'boolean' ? options.exitProcess : getExitOnShutdown();
+
+    enterShutdownPhase('stopping session runtimes');
 
     openCodeWatcherRuntime.stop();
     sessionRuntime.dispose();
@@ -54,6 +69,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       clearHealthCheckInterval(healthCheckInterval);
     }
 
+    enterShutdownPhase('shutting down terminal runtime');
     const terminalRuntime = getTerminalRuntime();
     if (terminalRuntime) {
       try {
@@ -64,6 +80,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       }
     }
 
+    enterShutdownPhase('closing message stream runtime');
     const messageStreamRuntime = getMessageStreamRuntime();
     if (messageStreamRuntime) {
       try {
@@ -80,6 +97,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
 
       if (openCodeProcess) {
         console.log('Stopping OpenCode process...');
+        enterShutdownPhase('stopping OpenCode process');
         try {
           await openCodeProcess.close();
         } catch (error) {
@@ -88,6 +106,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
         setOpenCodeProcess(null);
       }
 
+      enterShutdownPhase('waiting for OpenCode port release');
       killProcessOnPort(portToKill);
       if (!(await waitForPortRelease(portToKill, 5000))) {
         console.warn(`Timed out waiting for OpenCode port ${portToKill} to be released during shutdown`);
@@ -96,6 +115,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       console.log('Skipping OpenCode shutdown (external server)');
     }
 
+    enterShutdownPhase('closing HTTP server');
     const server = getServer();
     if (server) {
       let closeTimeout = null;
@@ -115,18 +135,18 @@ export const createGracefulShutdownRuntime = (dependencies) => {
           }),
         ]);
       } finally {
-        if (closeTimeout) {
-          clearTimeout(closeTimeout);
-        }
+        clearTimeout(closeTimeout);
       }
     }
 
+    enterShutdownPhase('disposing UI auth');
     const uiAuthController = getUiAuthController();
     if (uiAuthController) {
       uiAuthController.dispose();
       setUiAuthController(null);
     }
 
+    enterShutdownPhase('stopping tunnel');
     const activeTunnelController = getActiveTunnelController();
     if (activeTunnelController) {
       console.log('Stopping active tunnel...');
@@ -134,7 +154,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
       setActiveTunnelController(null);
       tunnelAuthController.clearActiveTunnel();
     }
-
+    enterShutdownPhase('complete');
     console.log('Graceful shutdown complete');
     if (exitProcess) {
       process.exit(0);
@@ -143,7 +163,27 @@ export const createGracefulShutdownRuntime = (dependencies) => {
 
   const gracefulShutdown = (options = {}) => {
     if (shutdownPromise) return shutdownPromise;
-    shutdownPromise = runShutdown(options);
+
+    const exitProcess = typeof options?.exitProcess === 'boolean' ? options.exitProcess : getExitOnShutdown();
+    let watchdogTimer = null;
+    const shutdown = runShutdown(options).finally(() => {
+      clearTimeout(watchdogTimer);
+    });
+
+    watchdogTimer = setTimeout(() => {
+      console.error(
+        `Graceful shutdown timed out after ${shutdownWatchdogTimeoutMs}ms (stuck at: ${shutdownPhase})`
+      );
+      if (exitProcess) {
+        console.error('Forcing process exit');
+        process.exit(1);
+        return;
+      }
+      shutdownPromise = null;
+    }, shutdownWatchdogTimeoutMs);
+    watchdogTimer.unref?.();
+
+    shutdownPromise = shutdown;
     return shutdownPromise;
   };
 

@@ -23,8 +23,8 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/snippets.js`: opencode-snippets-compatible snippet file CRUD, discovery, and hashtag expansion.
 - `packages/web/server/lib/opencode/cli-options.js`: CLI/environment option parsing for server startup arguments.
 - `packages/web/server/lib/opencode/core-routes.js`: server status/system routes, auth/access guard routes, and settings utility route registration.
-- `packages/web/server/lib/opencode/shutdown-runtime.js`: graceful shutdown orchestration runtime for watcher/session/terminal/process/server teardown.
-- `packages/web/server/lib/opencode/server-startup-runtime.js`: server listen/startup tunnel flow and process/signal handler orchestration runtime.
+- `packages/web/server/lib/opencode/shutdown-runtime.js`: graceful shutdown orchestration runtime for watcher/session/terminal/process/server teardown. Every stage is named; a watchdog bounds the whole sequence (default 30s, `shutdownWatchdogTimeoutMs`) because a shutdown wedged after the WebSocket runtimes are torn down leaves a backend that still serves HTTP but rejects every realtime upgrade.
+- `packages/web/server/lib/opencode/server-startup-runtime.js`: server listen/startup tunnel flow and process/signal handler orchestration runtime. Listen retries `EADDRINUSE` for a bounded window (defaults 500ms interval / 20s, `bindRetryIntervalMs`/`bindRetryWindowMs`) because a restart races the previous instance's graceful shutdown for the port.
 - `packages/web/server/lib/opencode/static-routes-runtime.js`: static asset/SPA fallback route registration and manifest route wiring.
 - `packages/web/server/lib/opencode/feature-routes-runtime.js`: feature route composition runtime for dynamic import-backed config/skill/provider route registration.
 - `packages/web/server/lib/opencode/opencode-resolution-runtime.js`: OpenCode binary resolution snapshot runtime for settings routes and diagnostics.
@@ -312,7 +312,7 @@ Transport-triggered health checks share the periodic monitor's failure accountin
 ## Public exports (shutdown-runtime.js)
 - `createGracefulShutdownRuntime(dependencies)`: creates graceful shutdown runtime for managed OpenCode and web server teardown sequencing.
 - Returned API:
-  - `gracefulShutdown(options?)`
+  - `gracefulShutdown(options?)` — resolves on completion; if a stage hangs past the watchdog timeout the runtime logs the stuck phase, force-exits when the process owns its lifecycle (`exitProcess`), and otherwise resets so a caller is never blocked forever.
 
 ## Public exports (server-startup-runtime.js)
 - `createServerStartupRuntime(dependencies)`: creates runtime for server bind/startup tunnel and process handler wiring.

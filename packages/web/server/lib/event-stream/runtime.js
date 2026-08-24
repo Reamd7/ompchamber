@@ -15,6 +15,12 @@ import {
   DEFAULT_UPSTREAM_STALL_TIMEOUT_MS,
 } from './upstream-reader.js';
 
+// wsServer.close() waits for every client socket to report close. A socket
+// whose close event never arrives (observed under the Bun dev runtime) would
+// pin gracefulShutdown open forever with the upgrade listener already
+// removed; the terminal runtime races the same close with a timeout.
+const MESSAGE_STREAM_CLOSE_TIMEOUT_MS = 1000;
+
 export function createGlobalUiEventBroadcaster({
   sseClients,
   wsClients,
@@ -200,9 +206,14 @@ export function createMessageStreamWsRuntime({
           }
         }
 
-        await new Promise((resolve) => {
-          wsServer.close(() => resolve());
-        });
+        await Promise.race([
+          new Promise((resolve) => {
+            wsServer.close(() => resolve());
+          }),
+          new Promise((resolve) => {
+            setTimeout(resolve, MESSAGE_STREAM_CLOSE_TIMEOUT_MS).unref?.();
+          }),
+        ]);
       } catch {
       } finally {
         wsClients.clear();

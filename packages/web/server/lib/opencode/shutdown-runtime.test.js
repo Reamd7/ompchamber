@@ -2,9 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createGracefulShutdownRuntime } from './shutdown-runtime.js';
 
-const createRuntime = (server) => createGracefulShutdownRuntime({
+const createRuntime = (server, overrides = {}) => createGracefulShutdownRuntime({
   process: { exit: vi.fn() },
   shutdownTimeoutMs: 1000,
+  shutdownWatchdogTimeoutMs: 5_000,
   getExitOnShutdown: () => false,
   getIsShuttingDown: () => false,
   setIsShuttingDown: vi.fn(),
@@ -30,6 +31,7 @@ const createRuntime = (server) => createGracefulShutdownRuntime({
   getActiveTunnelController: () => null,
   setActiveTunnelController: vi.fn(),
   tunnelAuthController: { clearActiveTunnel: vi.fn() },
+  ...overrides,
 });
 
 describe('graceful shutdown runtime', () => {
@@ -54,5 +56,44 @@ describe('graceful shutdown runtime', () => {
 
     expect(warnSpy).not.toHaveBeenCalledWith('Server close timeout reached, forcing shutdown');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('watchdog force-exits and names the phase when a shutdown stage hangs', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const processExit = vi.fn();
+    const runtime = createRuntime(null, {
+      process: { exit: processExit },
+      getMessageStreamRuntime: () => ({ close: () => new Promise(() => {}) }),
+      setMessageStreamRuntime: vi.fn(),
+    });
+
+    const shutdown = runtime.gracefulShutdown({ exitProcess: true });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(processExit).toHaveBeenCalledWith(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Graceful shutdown timed out after 5000ms (stuck at: closing message stream runtime)')
+    );
+    // The hung runShutdown promise never settles; dropping it must be silent.
+    shutdown.catch(() => {});
+  });
+
+  it('watchdog unblocks an embedded (exitProcess: false) caller without exiting the process', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const processExit = vi.fn();
+    const runtime = createRuntime(null, {
+      process: { exit: processExit },
+      getMessageStreamRuntime: () => ({ close: () => new Promise(() => {}) }),
+      setMessageStreamRuntime: vi.fn(),
+    });
+
+    const shutdown = runtime.gracefulShutdown({ exitProcess: false });
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(processExit).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
+    shutdown.catch(() => {});
   });
 });
