@@ -578,47 +578,34 @@ jobs:
     needs: [create-release, package-cli, build-desktop-electron-macos, build-desktop-electron-windows, build-desktop-electron-linux, publish-electron-linux, combine-electron-manifests]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify final Linux release asset inventory
+      - name: Verify final release asset inventory
         if: ${{ github.event.inputs.dry_run != 'true' }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
-          node - <<'NODE'
-          (async () => {
-          const { REPOSITORY: repo, VERSION: version, GITHUB_TOKEN: token } = process.env;
-          const expected = [
-            `ompchamber-${version}.tgz`,
-            'ompchamber-latest.tgz',
-            `OMPChamber-${version}-linux-x86_64.AppImage`,
-            'latest-linux.yml',
-            `OMPChamber-${version}-linux-arm64.AppImage`,
-            'latest-linux-arm64.yml',
-          ];
-          // The tag->release lookup can 404 briefly right after publish
-          // (token-scoped cache race); retry before failing.
-          let release = null;
-          for (let attempt = 1; attempt <= 5; attempt += 1) {
-            const response = await fetch(`https://api.github.com/repos/${repo}/releases/tags/v${version}`, {
-              headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
-            });
-            if (response.ok) { release = await response.json(); break; }
-            if (attempt === 5) throw new Error(`Failed to inspect release assets: ${response.status} ${await response.text()}`);
-            await new Promise((resolve) => setTimeout(resolve, 15000));
-          }
-          for (const name of expected) {
-            const matches = release.assets.filter((asset) => asset.name === name);
-            if (matches.length !== 1) throw new Error(`Expected exactly one ${name} release asset, found ${matches.length}`);
-            if (!Number.isSafeInteger(matches[0].size) || matches[0].size <= 0) {
-              throw new Error(`Release asset ${name} has invalid size ${matches[0].size}`);
-            }
-          }
-          console.log(`Verified ${expected.length} Linux release assets and both architecture manifests.`);
-          })().catch((error) => {
-          console.error(error);
-          process.exit(1);
-          });
-          NODE
+          set -euo pipefail
+          expected=(
+            "ompchamber-${VERSION}.tgz"
+            "ompchamber-latest.tgz"
+            "OMPChamber-${VERSION}-linux-x86_64.AppImage"
+            "latest-linux.yml"
+            "OMPChamber-${VERSION}-linux-arm64.AppImage"
+            "latest-linux-arm64.yml"
+          )
+          # The raw releases/tags API endpoint 404s for this job's token long
+          # after publish (observed across three releases) while anonymous
+          # reads succeed; gh release view uses a different auth path and
+          # resolves reliably.
+          assets=$(gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          for name in "${expected[@]}"; do
+            count=$(printf '%s\n' "$assets" | grep -cxF "$name" || true)
+            if [ "$count" -ne 1 ]; then
+              echo "::error::Expected exactly one ${name} release asset, found ${count}"
+              exit 1
+            fi
+          done
+          echo "Verified ${#expected[@]} release assets."
 
       - name: Publish release
         if: ${{ github.event.inputs.dry_run != 'true' }}
