@@ -244,7 +244,7 @@ export const registerEndpoints = (route, engine, { version }) => {
     const url = ctx.url;
     const directory = directoryFromRequest(ctx) ?? url.searchParams.get('directory') ?? process.cwd();
     await engine.deleteSession({ sessionID: ctx.params.sessionID, directory });
-    return json({});
+    return json(true);
   });
   route('GET', '/session/{sessionID}/children', async (request, ctx) => {
     const directory = projectDirectory(ctx);
@@ -317,6 +317,14 @@ export const registerEndpoints = (route, engine, { version }) => {
       model: body.model,
       agent: body.agent,
     }));
+  });
+  route('POST', '/session/{sessionID}/abort', async (request, ctx) => {
+    // Wire stop control (UI abortCurrentOperation, Esc shortcut, mobile
+    // pill): 200 boolean per the vendored contract. `directory` rides the
+    // query string / directory header; engine.abort resolves the live
+    // session by ID (sessions are keyed by sessionID, not directory).
+    const directory = directoryFromRequest(ctx);
+    return json(await engine.abort({ sessionID: ctx.params.sessionID, directory }));
   });
   route('POST', '/session/{sessionID}/shell', async (request, ctx) => {
     return unsupported('Interactive session shells are not exposed by the omp engine.');
