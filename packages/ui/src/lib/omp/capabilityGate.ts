@@ -11,9 +11,12 @@
  * matrices (new UI/old engine, old UI/new engine, relay bundle) all land on
  * "existing picker unchanged" (spec 01 §6.4).
  *
- * A transport failure is cached as "absent" for the runtime's lifetime: a
- * flaky probe must not flip the composer between two picker universes, and
- * a runtime switch re-probes under the new key.
+ * A definitive "engine has no capabilities" answer is cached as absent for
+ * the runtime's lifetime: a flaky probe must not flip the composer between
+ * two picker universes, and a runtime switch re-probes under the new key.
+ * Transport failures retry with backoff first — the managed engine can take
+ * minutes to become ready on a cold desktop start, and permanently caching
+ * that window as absence left every omp surface off for the whole session.
  */
 
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
@@ -34,13 +37,22 @@ const probeRuntime = (runtimeKey: string): Promise<OmpCapabilityGateResult> => {
   const attempt = (async (): Promise<OmpCapabilityGateResult> => {
     const apis = getRegisteredRuntimeAPIs();
     if (!apis?.ompCapabilities) return { capabilities: null };
-    try {
-      // `null` = definitive absence (old engine / feature off). A throw is a
-      // transport failure — degraded, not authoritative absence — but cached
-      // all the same so one flaky mount cannot oscillate the UI.
-      return { capabilities: await apis.ompCapabilities.getCapabilities() };
-    } catch {
-      return { capabilities: null };
+    // `null` = definitive absence (old engine / feature off) — cached for
+    // the runtime's lifetime. A throw is a transport failure — typically the
+    // managed engine still booting on cold desktop start — so retry with
+    // backoff before settling. The promise settles at most once either way,
+    // keeping the no-oscillation guarantee below.
+    const retryDelaysMs = [5_000, 15_000, 30_000, 60_000, 60_000];
+    for (let attemptIndex = 0; ; attemptIndex += 1) {
+      try {
+        return { capabilities: await apis.ompCapabilities.getCapabilities() };
+      } catch {
+        const delay = retryDelaysMs[attemptIndex];
+        if (delay === undefined) return { capabilities: null };
+        const { promise: retryDelay, resolve: retryAfterDelay } = Promise.withResolvers<void>();
+        setTimeout(retryAfterDelay, delay);
+        await retryDelay;
+      }
     }
   })();
 
