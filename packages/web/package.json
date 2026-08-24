@@ -26,7 +26,7 @@
     "@clack/prompts": "^1.1.0",
     "@octokit/rest": "^22.0.1",
     "@simplewebauthn/server": "13.3.1",
-    "@oh-my-pi/pi-coding-agent": "^17.3.7",
+    "@oh-my-pi/pi-coding-agent": "^18.0.4",
     "adm-zip": "^0.6.0",
     "bun-pty": "^0.4.5",
     "compression": "^1.8.1",
