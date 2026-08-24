@@ -238,7 +238,7 @@ export const registerEndpoints = (route, engine, { version }) => {
       metadata: body.metadata,
       timeArchived: body.time?.archived,
     });
-    return json(session);
+    return session ? json(session) : notFound('session not found');
   });
   route('DELETE', '/session/{sessionID}', async (request, ctx) => {
     const url = ctx.url;
@@ -560,9 +560,20 @@ export const registerEndpoints = (route, engine, { version }) => {
   // ---- experimental ----
   route('GET', '/experimental/session', async (request, ctx) => {
     const archived = ctx.url.searchParams.get('archived');
+    const directory = ctx.url.searchParams.get('directory');
     const limit = Number(ctx.url.searchParams.get('limit') ?? 500);
     const byDirectory = await engine.listAllSessions({ archived: archived === 'false' ? false : undefined });
-    const all = [...byDirectory.values()].flat();
+    let all = [...byDirectory.values()].flat();
+    if (directory) {
+      // Scoped callers (directory bootstrap, per-directory refresh) expect only
+      // the sessions the named directory owns — the contract external OpenCode
+      // runtimes honor and the proxy forwards. Answering with every
+      // directory's sessions seeded foreign records into every directory child
+      // store, poisoning containment-based session-directory resolution
+      // (mis-addressed archive incident).
+      const directoryKey = normalizeDirectoryKey(directory);
+      all = all.filter((session) => normalizeDirectoryKey(session.directory ?? '') === directoryKey);
+    }
     all.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
     const page = Number.isFinite(limit) && limit > 0 ? all.slice(0, limit) : all;
     return json(page);

@@ -531,6 +531,65 @@ describe("confirmed session removal", () => {
     expect((globalUpsertedSessions[0] as Session)?.time?.archived).toBe(2)
   })
 
+  test("archives against the owning directory, not a containing foreign store", async () => {
+    sessionUpdateResult = {
+      data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 2 } } as Session,
+    }
+    // Poisoned containment, as in the mis-addressed archive incident: a foreign
+    // directory's store lists the session (a phantom registry entry keeps it
+    // there), while the session record owns /test/project.
+    const foreign = createStore({}, {
+      session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
+    })
+    const owned = createStore({}, {
+      session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
+    })
+    const { archiveSession, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/foreign/project", foreign], ["/test/project", owned]]), () => "/foreign/project")
+
+    expect(await archiveSession("session-a")).toBe(true)
+    const updates = replyCalls.filter((call) => call.method === "session.update")
+    expect(updates.map((call) => call.params.directory)).toEqual(["/test/project"])
+    // Every store holding the archived session drops it, owning or poisoned.
+    expect(foreign.getState().session).toEqual([])
+    expect(owned.getState().session).toEqual([])
+  })
+
+  test("containment fallback reads the held record's owning directory when no registration exists", async () => {
+    sessionUpdateResult = {
+      data: { id: "session-c", directory: "/owned/project", time: { created: 1, archived: 2 } } as Session,
+    }
+    // No UI-store registration (the mock only knows session-a/session-b), so
+    // resolution falls to the child-store scan — which must read the record's
+    // own directory instead of the holding store's key, or a foreign store
+    // holding the session re-poisons the address.
+    const foreign = createStore({}, {
+      session: [{ id: "session-c", directory: "/owned/project", time: { created: 1 } } as Session],
+    })
+    const { archiveSession, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/foreign/project", foreign]]), () => "/foreign/project")
+
+    expect(await archiveSession("session-c")).toBe(true)
+    const updates = replyCalls.filter((call) => call.method === "session.update")
+    expect(updates.map((call) => call.params.directory)).toEqual(["/owned/project"])
+    expect(foreign.getState().session).toEqual([])
+  })
+
+  test("fails the archive when the server response is not archived", async () => {
+    sessionUpdateResult = {
+      data: { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session,
+    }
+    const source = createStore({}, {
+      session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
+    })
+    const { archiveSession, setActionRefs } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/test/project", source]]), () => "/test/project")
+
+    expect(await archiveSession("session-a")).toBe(false)
+    expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
+    expect(globalUpsertedSessions).toEqual([])
+  })
+
   test("rejects an archive response that arrives after a runtime switch", async () => {
     sessionUpdateResult = {
       data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 2 } } as Session,

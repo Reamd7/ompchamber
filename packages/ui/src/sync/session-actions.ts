@@ -10,7 +10,7 @@ import { useInputStore } from "./input-store"
 import type { ChildStoreManager } from "./child-store"
 import { computeSubtreeIds } from "./scoped-blocking-requests"
 import { opencodeClient } from "@/lib/opencode/client"
-import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { mergeSessionDirectoryMetadata, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { registerSessionDirectory } from "./sync-refs"
 import { recordSendFailure } from "./send-failure-log"
@@ -436,37 +436,46 @@ type SessionListSnapshot = {
 
 type DirectoryStoreApi = ReturnType<ChildStoreManager["ensureChild"]>
 
-function getGlobalSessionSnapshot(sessionId: string): Session | null {
-  const global = useGlobalSessionsStore.getState()
-  return [...global.activeSessions, ...global.archivedSessions].find((session) => session.id === sessionId) ?? null
-}
-
 function getSessionDirectory(sessionId: string): string | undefined {
-  const globalSession = getGlobalSessionSnapshot(sessionId)
-  return findSessionDirectoryInChildStores(sessionId)
-    || useSessionUIStore.getState().getDirectoryForSession(sessionId)
-    || (globalSession ? resolveGlobalSessionDirectory(globalSession) ?? undefined : undefined)
-    || dir()
+  // Ownership beats containment (session-directory-resolution, rule 1): a child
+  // store that holds a session proves containment, not ownership — a project's
+  // list legitimately includes its worktrees' sessions, and a mis-addressed
+  // update leaves registry entries that keep the wrong directory listing the
+  // session, so every later archive/delete/rename would stay addressed to a
+  // directory that does not own it and never take effect. Resolve the session
+  // record's server-confirmed directory first via the canonical per-session
+  // resolver; holding-store scans are only a fallback for sessions no record
+  // covers, mirroring resolveDirectoryForBlockingRequest.
+  return useSessionUIStore.getState().getDirectoryForSession(sessionId)
+    ?? findSessionDirectoryInChildStores(sessionId)
+    ?? dir()
 }
 
 function findSessionDirectoryInChildStores(sessionId: string): string | null {
   const stores = _childStores
   if (!stores || !sessionId) return null
 
+  let containedBy: string | null = null
   for (const [directory, store] of stores.children) {
     const state = store.getState()
-    if (
-      state.session.some((session) => session.id === sessionId)
+    const record = state.session.find((session) => session.id === sessionId)
+    const holdsSession = Boolean(record)
       || Object.prototype.hasOwnProperty.call(state.message, sessionId)
       || Object.prototype.hasOwnProperty.call(state.session_status ?? {}, sessionId)
       || Object.prototype.hasOwnProperty.call(state.permission ?? {}, sessionId)
       || Object.prototype.hasOwnProperty.call(state.question ?? {}, sessionId)
-    ) {
-      return directory
-    }
+    if (!holdsSession) continue
+    // Ownership beats containment inside the scan too: a holding store's key
+    // only proves containment, while the session record itself names the
+    // owning directory (a foreign store can legitimately list another
+    // directory's session). Keep the store key only when no held record
+    // carries a directory.
+    const ownedDirectory = record ? resolveSessionOwnedDirectory(record) : null
+    if (ownedDirectory) return ownedDirectory
+    containedBy ??= directory
   }
 
-  return null
+  return containedBy
 }
 
 function getSessionReplyClient(sessionId?: string): OpencodeClient {
@@ -1057,7 +1066,7 @@ export async function archiveSession(sessionId: string, expectedRuntimeKey = get
     if (isStaleRuntime(expectedRuntimeKey)) return false
     const archived = await opencodeClient.updateSession(sessionId, { time: { archived: archivedAt } }, sessionDirectory)
     if (isStaleRuntime(expectedRuntimeKey)) return false
-    if (!archived) {
+    if (!archived?.time?.archived) {
       throw new Error("session.update failed: server did not return the archived session")
     }
     const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)

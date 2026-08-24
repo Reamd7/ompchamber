@@ -637,13 +637,34 @@ export class OmpHostEngine {
 
   async updateSession({ sessionID, directory, title, metadata, timeArchived }) {
     await this.#boot();
-    const directoryKey = normalizeDirectoryKey(directory);
+    const live = this.sessions.get(sessionID);
+    // A live session owns its registry entry under its own directory, and
+    // getSession answers from the live record first regardless of the
+    // requested directory. Writing the patch under a differing requested
+    // directory would return and broadcast an update that was never applied,
+    // and strand the patch as a phantom registry entry that listings under
+    // the owning directory never read.
+    const directoryKey = live
+      ? normalizeDirectoryKey(live.directory)
+      : normalizeDirectoryKey(directory);
+    if (!live) {
+      // Idle sessions are on-disk records owned by exactly one directory:
+      // transcript and registry entry both live there. An update addressed to
+      // a directory that owns neither is mis-addressed — writing it would
+      // fabricate a phantom registry entry and answer with a session no
+      // listing (keyed by the transcript's own cwd) can ever observe, so the
+      // caller sees success while nothing takes effect. Refuse; registry-only
+      // bookkeeping (transcript pruned externally) stays updatable.
+      const hadRegistryEntry = this.registry.get(directoryKey, sessionID) != null;
+      if (!hadRegistryEntry && !(await this.#findSessionFile(sessionID, directoryKey))) {
+        return null;
+      }
+    }
     const patch = { timeUpdated: Date.now() };
     if (typeof title === 'string') patch.title = title;
     if (metadata !== undefined) patch.metadata = metadata;
     if (timeArchived !== undefined) patch.timeArchived = timeArchived || undefined;
     const meta = this.registry.update(directoryKey, sessionID, patch);
-    const live = this.sessions.get(sessionID);
     if (live && typeof title === 'string') {
       await live.agentSession?.setSessionName(title, 'user').catch(() => {});
     }

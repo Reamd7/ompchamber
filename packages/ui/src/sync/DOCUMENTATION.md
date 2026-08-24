@@ -246,7 +246,7 @@ Session actions live in `session-actions.ts` and are the canonical place for SDK
 Rules:
 
 1. If an action mutates session list membership or visible session metadata, update `useGlobalSessionsStore` there.
-2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
+2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct. `getSessionDirectory` resolves registration (`getDirectoryForSession`) first, then the child-store scan — and that scan reads the held session record's own `directory` (ownership) before falling back to the holding store's key (containment), mirroring rule 1 above. Addressing a mutation by containment alone once landed an archive flag in an unrelated worktree's registry: the server reported success while no listing keyed by the transcript's own cwd could observe it.
 3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
 4. Sending after a revert commits the new branch optimistically: remove the reverted tail and marker before inserting the new message, and restore both if the send is rejected.
 5. Composer and queued sends carry their captured runtime, directory, and session through asynchronous preparation. A runtime change cancels the send instead of re-resolving it against the new runtime.

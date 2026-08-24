@@ -3,7 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
-- **Sessions:** deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.
+- **Sessions:** archiving or renaming a session in one worktree now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the app showed "Session archived" while the session stayed in the list.
+- **UI:** dropdown menus no longer draw their content outside the panel on short windows — the model picker's role list and search box now scroll inside the menu instead of floating over the page behind it.
 - Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app (terminal, text editor) are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
 - Settings: removed the "system prompt optimization" toggle from Settings → Behavior — it has had no effect since sessions moved to the omp engine.
 
