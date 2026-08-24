@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [1.18.7] - 2026-08-24
 - **UI:** the app logo now carries the Oh my Pi mark — the isometric chamber keeps its shape, but the OpenCode square on its open top is replaced by omp's π with the orange plugin connector, across the web app icon/splash, desktop app and tray, VS Code extension, mobile app icons, iOS widget, and docs badges.
 
 - **Desktop/CLI:** fixed the engine dying 60 seconds after every start — the idle-session sweeper referenced an undeclared constant, so an uncaught ReferenceError killed the omp host on its first run and the app restarted it in an endless loop (settings showed no providers, sessions and models failed with "service unavailable").
