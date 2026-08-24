@@ -92,7 +92,7 @@
     },
     "packages/electron": {
       "name": "@openchamber/electron",
-      "version": "1.18.4",
+      "version": "1.18.8",
       "dependencies": {
         "electron-context-menu": "^4.1.2",
         "electron-log": "^5.4.3",
@@ -253,7 +253,7 @@
     },
     "packages/web": {
       "name": "ompchamber",
-      "version": "1.18.4",
+      "version": "1.18.8",
       "bin": {
         "ompchamber": "./bin/cli.js",
       },
