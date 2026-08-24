@@ -197,18 +197,24 @@ export default defineConfig(({ command }) => ({
   },
   server: {
     port: 5173,
+    // changeOrigin must stay false (Rsbuild defaults it to true): the backend
+    // derives trusted origins for WebSocket upgrades (and passkey RP origins)
+    // from the Host/X-Forwarded-Host headers. Rewriting Host to the loopback
+    // target makes every dev-proxy WebSocket upgrade (terminal/event/dictation)
+    // fail the origin gate with 403 whenever the page is served from the dev
+    // port, which is always the case in `bun run dev`.
     proxy: {
       '/auth': {
         target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       '/health': {
         target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       '/api': {
         target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
-        changeOrigin: true,
+        changeOrigin: false,
         ws: true,
       },
     },
