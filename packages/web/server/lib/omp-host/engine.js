@@ -54,6 +54,10 @@ import { ompFeatures } from './omp-parity.js';
 import { revealCommand } from './domain-plugins.js';
 import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
+// Cap on concurrently live top-level sessions; idle sessions beyond this
+// are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
+// it was missing entirely and killed the engine on the first 60s sweep.
+const MAX_LIVE_SESSIONS = 16;
 
 /**
  * Session-level persona key (02 §5.1 D-B3): unset and the deleted

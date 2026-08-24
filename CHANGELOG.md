@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 - **UI:** the app logo now carries the Oh my Pi mark — the isometric chamber keeps its shape, but the OpenCode square on its open top is replaced by omp's π with the orange plugin connector, across the web app icon/splash, desktop app and tray, VS Code extension, mobile app icons, iOS widget, and docs badges.
 
+- **Desktop/CLI:** fixed the engine dying 60 seconds after every start — the idle-session sweeper referenced an undeclared constant, so an uncaught ReferenceError killed the omp host on its first run and the app restarted it in an endless loop (settings showed no providers, sessions and models failed with "service unavailable").
+
 ## [1.18.6] - 2026-08-23
 
 - **Settings:** fixed the provider Edit and Delete buttons never appearing — a large models.yml that reuses model blocks through YAML anchors tripped the parser's abuse guard, and every provider-settings request failed silently.
