@@ -614,4 +614,36 @@ describe('OpenCode lifecycle', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
     await server.close();
   });
+
+  it('kills the managed child when the readiness line never arrives', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const previousTimeout = process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
+    process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS = '150';
+    // Both attempts spawn a child that never prints the listening line.
+    const children = [];
+    spawnMock.mockImplementation(() => {
+      const child = createMockChild();
+      children.push(child);
+      return child;
+    });
+
+    const runtime = createRuntime();
+
+    try {
+      await expect(runtime.startOpenCode()).rejects.toThrow('Timeout waiting for OpenCode to start');
+      // Before the fix, a child that missed the readiness deadline stayed
+      // alive untracked (registry ownership starts only after readiness).
+      expect(children).toHaveLength(2);
+      for (const child of children) {
+        expect(child.kill).toHaveBeenCalled();
+        expect(child.signalCode).toBe('SIGTERM');
+      }
+    } finally {
+      if (typeof previousTimeout === 'string') {
+        process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS = previousTimeout;
+      } else {
+        delete process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
+      }
+    }
+  });
 });
