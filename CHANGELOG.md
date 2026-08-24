@@ -3,18 +3,25 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [1.19.0] - 2026-08-25
+
 - **Git:** expanding a changed file shows its diff again — every diff panel (changes view, per-file diff, commit history) had come up blank without an error after the bundler migration, because the diff web worker was compiled to an empty file and silently stopped answering.
+- **Settings/Providers:** saving from the provider dialog no longer wipes out your custom providers — clearing a field wrote a literal null into omp's models.yml, and the engine rejects the whole file on any null, so one save could silently erase every provider you defined.
+- Settings/Providers: unchecking Reasoning or the max-output override in the provider dialog now actually turns it off — those checkboxes could set a value but never clear it.
 - **Sessions:** deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.
-- **Sessions:** archiving or renaming a session in one worktree now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the app showed "Session archived" while the session stayed in the list.
-- **Dev:** fixed the terminal (and other live sockets) staying broken for the rest of a `bun run dev` session after the backend restarted or was stopped — a shutdown that hung mid-teardown left a half-dead server holding the API port: pages and requests kept working while every WebSocket upgrade failed. Shutdowns are now time-boxed with a named stage in the log, a hung backend exits instead of lingering, restarting after a server-code edit waits out the old instance instead of crash-looping on the busy port, and rejected WebSocket upgrades return a real HTTP error status on Node-based runtimes.
-- **Worktrees:** worktrees created or removed outside the app (terminal `git worktree`, another tool, another machine's client) now appear and disappear immediately — projects you've added are watched, and the sidebar, worktree lists, and new-session branch picker update on their own instead of waiting for a manual refresh.
-- **UI:** dropdown menus no longer draw their content outside the panel on short windows — the model picker's role list and search box now scroll inside the menu instead of floating over the page behind it.
-- Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app (terminal, text editor) are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
-- Settings: removed the "system prompt optimization" toggle from Settings → Behavior — it has had no effect since sessions moved to the omp engine.
+- Sessions: the stop button, Esc, and the mobile stop pill now actually stop a running turn — the engine route behind them was never wired, so every stop on the embedded engine silently did nothing and the turn ran to completion.
+- Sessions: archiving or renaming a session in one worktree now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the app showed "Session archived" while the session stayed in the list.
+- Worktrees: worktrees created or removed outside the app (terminal `git worktree`, another tool, another machine's client) now appear and disappear immediately — projects you've added are watched, and the sidebar, worktree lists, and new-session branch picker update on their own instead of waiting for a manual refresh.
+- UI: dropdown menus no longer draw their content outside the panel on short windows — the model picker's role list and search box now scroll inside the menu instead of floating over the page behind it.
+- Dev: fixed the terminal (and other live sockets) staying broken for the rest of a `bun run dev` session after the backend restarted or was stopped — a shutdown that hung mid-teardown left a half-dead server holding the API port: pages and requests kept working while every WebSocket upgrade failed. Shutdowns are now time-boxed with a named stage in the log, a hung backend exits instead of lingering, restarting after a server-code edit waits out the old instance instead of crash-looping on the busy port, and rejected WebSocket upgrades return a real HTTP error status on Node-based runtimes.
+- Dev: WebSocket connections through the dev-server proxy (terminal, live events) no longer fail with 403 — the proxy rewrote the Host header, which made the server treat every browser WebSocket as foreign.
 
 ## [1.18.8] - 2026-08-24
 
 - **Desktop:** fixed Settings showing no provider editing, model roles, personas, or plugins in every packaged build — the engine capability endpoint crashed reading a data file that does not survive compilation, so every omp feature read as unavailable while the app otherwise looked healthy (source/dev runs were unaffected).
+- Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app (terminal, text editor) are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
+- Settings: removed the "system prompt optimization" toggle from Settings → Behavior — it has had no effect since sessions moved to the omp engine.
 
 ## [1.18.7] - 2026-08-24
 - **UI:** the app logo now carries the Oh my Pi mark — the isometric chamber keeps its shape, but the OpenCode square on its open top is replaced by omp's π with the orange plugin connector, across the web app icon/splash, desktop app and tray, VS Code extension, mobile app icons, iOS widget, and docs badges.
