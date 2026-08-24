@@ -70,6 +70,8 @@ Model: project.defaultModel → settings.defaultModel(OC)→ agent 钉住的 mod
 - `responseStyle*` 是 OC 原创:首消息注入风格指令,"sent with your first message and do not change your global AGENTS.md rules"(en.settings.ts:606)。
 - **问题(2026-08-19 复核修正,原"死链"结论错误)**:omp SDK 的 OpenCode 兼容 provider **仍读**该文件——但仅**用户级**(`<s>`/discovery/opencode.ts:114-115 `getUserPath(ctx, "opencode", "AGENTS.md")`,provider 描述 :419-423),且优先级 55(:45)在用户级去重竞争中**垫底**:被 `~/.omp/agent/AGENTS.md`(100)、`~/.claude/CLAUDE.md`(80)、`~/.codex/AGENTS.md` 与 `~/.agent(s)/AGENTS.md`(70)依次遮蔽(完整发现顺序与去重机制见 §3.6)。即:文件不是死链,但对装了 Claude Code 等工具的用户会被静默遮蔽,且非 omp 原生挂载点。
 
+> **2026-08-24 状态**:GAP-F4/G13 改指向已落地(服务端经 omp-host `GET /agent-dir` 每请求解析,profile-scoped),编辑器取值改**文件权威、副本仅种子**(`ui/lib/behaviorPrompt.ts`);`optimizeSystemPrompt` 死开关整链删除。增量与尾款记录见 07 §5.13。本节保留为历史取证。
+
 ### 2.4 两个待退役键的现状接线
 
 - **permissionAutoAccept**:OC settings.json 键(server/lib/permission-auto-accept/runtime.js:1 `SETTINGS_KEY = 'permissionAutoAccept'`),按 session 布尔策略 + revision(settings-helpers.js:216-231 sanitize);scheduled tasks 携带同名字段(project-config.js:217、242)并在执行前 enroll(scheduled-tasks/runtime.js:561-563)。整条链挂在 OpenCode permission 协议上——omp-host 对 `/permission` 全部回答空(endpoints.js:335-344),该键只能空转。
@@ -157,9 +159,9 @@ omp 的上下文文件不是单一文件而是 **provider 竞争 + 按 scope 去
 | GAP-F1 | 无 `/api/omp/settings` 代理端点:web 端无法读写 omp schema/config.yml,UI 只能编辑 OC 平行宇宙 | 建 | P0 | 中(端点形状需稳定;schema 漂移) |
 | GAP-F2 | OC `defaultModel/defaultVariant/defaultAgent` 键与 UI 级联(useConfigStore.ts:282-396)覆盖 omp `modelRoles.default` 真值 | 删+改 | P0 | 高(牵动每 prompt 强制 model 参数、会话徽章;与 01 章联动) |
 | GAP-F3 | `DefaultsSettings` 页是"默认模型/agent"双选择器,omp 语义应为"模型角色"编辑面 | 改 | P0 | 中 |
-| GAP-F4 | BehaviorPage 写 `~/.config/opencode/AGENTS.md`(BehaviorPage.tsx:33)——兼容 provider 仅用户级且优先级垫底,被更高优先级用户级文件静默遮蔽,非 omp 原生挂载点(REVISED,§2.3/§3.6) | 删+改 | P1 | 中(用户存量内容迁移;用户槽接管检测) |
+| GAP-F4 | BehaviorPage 写 `~/.config/opencode/AGENTS.md`(BehaviorPage.tsx:33)——兼容 provider 仅用户级且优先级垫底,被更高优先级用户级文件静默遮蔽,非 omp 原生挂载点(REVISED,§2.3/§3.6)。**2026-08-24:已落地**——改指向 omp 原生用户级文件(服务端每请求解析),取值文件权威;详见 07 §5.13 增量 | 删+改 | P1(已完成) | 中(用户存量内容迁移;用户槽接管检测) |
 | GAP-F5 | 项目层写面缺失:`.omp/config.yml` 的 modelRoles 读写(`setProjectModelRole`/`modelRoleStorage`)无 web 入口 | 建 | P1 | 中(多目录语义) |
-| GAP-F6 | 并发一致性缺失:TUI 与 web 同时编辑同一 config.yml,web 端无 file watch、无变更事件,页面会显示陈旧值 | 建 | P1 | 中 |
+| GAP-F6 | 并发一致性缺失:TUI 与 web 同时编辑同一 config.yml,web 端无 file watch、无变更事件,页面会显示陈旧值。**扩围(2026-08-24 复核)**:`/api/behavior/agents-md` 编辑面同类缺口——页面打开期间 AGENTS.md 被 TUI/外部编辑器修改不热更(重开页面才见),双开页面文件级 LWW 后写胜;并入本 GAP 一并解决 | 建 | P1 | 中 |
 | GAP-F7 | credential 键屏蔽:代理端点若照搬 `get()` 会把 7 个 credential/secret 值回显到浏览器 | 建 | P0(安全) | 高(凭据泄漏) |
 | GAP-F8 | OC `permissionAutoAccept` 键整链(settings 键 + project-config 字段 + scheduled-tasks enroll)挂在已死的 permission 协议上。**清理分阶段(R12/R10)**:P0 审批桥原子落地为锚点 → P1 消费者切到 omp 审批(tools.approvalMode;无人值守任务 fail-closed,不改全局设置)→ P3 观察期后删键整链 | 删 | P0 锚点 / P1 消费者 / P3 删除 | 低 |
 | GAP-F9 | `planModeExperimentalEnabled` env flag 与 omp `plan.enabled` 键双轨。**退役时点(R12)**:02 章模式端点上线即停产停读(flag 生产与消费同刻停止);env/i18n 文案清扫 P3 随 07 | 删 | 停用随 02 上线 / 清扫 P3 | 低 |
@@ -364,8 +366,8 @@ PUT /api/omp/settings
 | `permissionAutoAccept`(全局键) | **删,分阶段(REVISED,R12:桥 P0 → 消费者 P1 → 删除 P3)** | P0 = 03 章审批桥原子落地(锚点,不动本键);P1 = 消费者切换(通知/待决状态/WorkStatus 改读 omp 审批面;sanitize 链 settings-helpers.js:216-231 与 permission-auto-accept/runtime.js:1 停止参与行为,键保留只读);P3 = 07 章观察期后随 permission 协议整链删除 + 清理器摘键 |
 | project-config `permissionAutoAccept` 字段 + scheduled-tasks enroll | **删,同上分阶段** | project-config.js:217/242、scheduled-tasks/runtime.js:561-563;P1 起无人值守任务改走 omp 审批语义且 **fail-closed**(R10:桥不可用即任务失败,不改全局审批设置);替代 = omp `tools.approvalMode`(任务模板落 omp 配置或任务参数,03 章定);字段 P3 删除 |
 | `planModeExperimentalEnabled`(env) | **删,停产与清扫分离(R12)** | 02 章模式端点上线**即刻**停产停读:env 生产(server/index.js:219-221)与三端消费(App.tsx:410-416、MobileApp.tsx:1076-1081、VSCodeApp.tsx:77-83)同刻停止,改读 omp `plan.enabled`;合成文本 plan 检测(hooks/usePlanDetection)同刻退役;env/i18n 文案清扫 P3 随 07 |
-| `globalBehaviorPrompt`(BehaviorPage 主 textarea) | **改挂载点(REVISED,裁定见 §3.6)** | 全局层目标 = omp 原生用户级 `~/.omp/agent/AGENTS.md`(优先级 100,赢得唯一用户槽;§3.6 证据链);迁移 = 只读检测 + 用户确认 + 永不覆盖既有文件(与 defaultModel 同纪律),并存用户级候选(`~/.claude/CLAUDE.md` 等)时提供合并/替换选择(新文件会接管用户槽,§3.6 推论③);旧路径 `~/.config/opencode/AGENTS.md` 原地保留(兼容 provider 仍读),仅停写。项目级规则不属于本键:项目 `AGENTS.md` 由项目侧裸文件承载,UI 做同深度遮蔽检测(§3.6 推论②) |
-| `responseStyle*` 三键 | **留(OC-native)** | OC 原创、首消息注入实现,与引擎设置无关(BehaviorPage.tsx:44-79) |
+| `globalBehaviorPrompt`(BehaviorPage 主 textarea) | **改挂载点(REVISED,裁定见 §3.6;2026-08-24 已落地)** | 全局层目标 = omp 原生用户级 `~/.omp/agent/AGENTS.md`(优先级 100,赢得唯一用户槽;§3.6 证据链);迁移 = 只读检测 + 用户确认 + 永不覆盖既有文件(与 defaultModel 同纪律),并存用户级候选(`~/.claude/CLAUDE.md` 等)时提供合并/替换选择(新文件会接管用户槽,§3.6 推论③);旧路径 `~/.config/opencode/AGENTS.md` 原地保留(兼容 provider 仍读),仅停写。项目级规则不属于本键:项目 `AGENTS.md` 由项目侧裸文件承载,UI 做同深度遮蔽检测(§3.6 推论②)。**落地语义**:文件存在即权威(含空文件),本键降级为"文件从未创建时"的编辑器种子,保存仍双写(文件+副本);契约 `ui/lib/behaviorPrompt.ts` |
+| `responseStyle*` 三键 | **留(OC-native)** | OC 原创、首消息注入实现,与引擎设置无关(BehaviorPage.tsx:44-79)。**2026-08-24 复核残留(minor,P3 文案级)**:enabled + custom 预设 + 空自定义文本时静默无效果(`buildResponseStyleInstruction` 返 null),UI 无提示 |
 | `notifyOn*` + `notificationTemplates` | **留(OC-native)** | OC 通知系统是原创面(08);与 omp `completion.notify/error.notify/ask.notify` 的关系 = 两层(OC 键控 web/desktop 通知,omp 键控 TUI),UI 需文案区分(OQ-F5) |
 | theme/字体/终端/布局/`messageStreamTransport`/`stt*`/projects/tunnels/git 凭据等其余 DesktopSettings 键 | **留(OC-native)** | OC 外观与基础设施;`/api/config/settings` 端点保留但**只**服务这些键 |
 

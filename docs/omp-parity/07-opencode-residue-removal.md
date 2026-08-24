@@ -120,7 +120,7 @@ omp 的 AGENTS.md 不是单一文件,而是一组 context-file discovery provide
 | GAP-G10 | MCP 空面:P1 只读化 + 全部操作开关禁用(capabilities 门控,R2/R12);**REVISED R2:04 章 descope 后恒只读/禁用为长期稳态,UI 面保留**;"管理启用 or 全删"归 MCP 专项轮次(04 §5.7.5),本轮无该分叉 | 改(只读化;本轮不删) | P1(只读化即终态) | 中(误导性 no-op 交互) | 无(04 章 R2 已裁决 descope) |
 | GAP-G11 | build/plan 二分残迹清除(`/agent` 制造、planYolo、`'build'` 回退、配色、移动端工具);plan 合成文本协议的停产停用随 02 章模式端点上线(同发布),P3 仅清扫 flag/文件/i18n(D6-R12) | 删 | P3 | 中(默认 agent 解析级联改动) | 第 01 章 roles + 第 02 章 custom agents/模式端点落地 |
 | GAP-G12 | 删 wire `/command` 空端点与同步命令源;CommandsPage(OC 原创)保留归 08 章;新命令语义走 `/api/omp/commands`(08 章,R3/R12),wire 端点保持空返直至本章删除 | 删 | P3 | 低 | 第 06 章确认 `/config` PATCH 去向(开放问题 6);08 章 `/api/omp/commands` 上线 |
-| GAP-G13 | BehaviorPage 指令文件改指向 omp 原生用户级 `getAgentDir()/AGENTS.md`(服务端解析,profile-scoped,见 3.3 REVISED),旧路径一次性导入;清 OpenCode 重启机器(共享部分随 R2/R12 协调) | 改 | P3 | 低 | 第 06 章设置代理定稿(目标文件终裁) |
+| GAP-G13 | BehaviorPage 指令文件改指向 omp 原生用户级 `getAgentDir()/AGENTS.md`(服务端解析,profile-scoped,见 3.3 REVISED),旧路径一次性导入;清 OpenCode 重启机器(共享部分随 R2/R12 协调)。**2026-08-24:改指向+取值语义已落地,`optimizeSystemPrompt` 死开关整链删除;重启机器仅剩 agents-md 保存路径一个 `behavior` 消费者(增量见 §5.13)** | 改 | P3(尾款:重启机器清扫) | 低 | 第 06 章设置代理定稿(目标文件终裁) |
 
 分类说明:G06/G07 的"删"发生在契约纪律层(守卫),不是文件删除;G09 是全章唯一"留"(总纲 §7.6 已裁决复用,开放问题 1 关闭);`message.part.removed` 同为"留",但它是 05 章 P2 门控投产的活 wire 契约(D1 例外/R5,05 §5.3.4),不是本章 GAP 的处置对象;G08 的 compacted/error 由"删+留"收敛为纯"删"、G10 由"删(两段)"收敛为"改(恒只读)"(R2)。
 
@@ -326,6 +326,13 @@ Step B(host):`endpoints.js:338-341` 四条路由删除。
 - **改指向**:`AGENTS_MD_PATH`(BehaviorPage.tsx:33)与 `/api/behavior/agents-md` 服务端读写目标改为 omp 原生用户级 `getAgentDir()/AGENTS.md` —— **路径必须由服务端解析**(`getAgentDir()` 是 profile-scoped:默认 `~/.omp/agent`,激活 profile 后 `~/.omp/profiles/<name>/agent`;`packages/utils/src/dirs.ts:452-498`,加载点 `discovery/builtin.ts:910`),UI 不得硬编码。原生文件 priority 100,存在即遮蔽兼容文件(3.3);**一次性迁移**:首次打开时若旧路径 `~/.config/opencode/AGENTS.md` 存在且有内容且新路径不存在,提供服务端导入(copy)并提示。OpenCode 兼容 provider 仍读旧路径(`discovery/opencode.ts:163-182`),不迁移引擎也能用,但产品面对齐 omp 原生路径(总纲裁决原则)。
 - 警告文案(:328-330)随路径更新;`recordDeferredOpenCodeRestart`/`noteDeferredRestartFromPayload`(:23)与 `usePendingOpenCodeRestartStore` 若 G02/G12 删除后无剩余消费者则一并删除(共享机器,DAG 中排在二者之后)。
 - **用户可见变化**:行为设置页的全局指令文件位置变为 omp 原生;存量用户获导入提示。**风险**:低;目标路径终裁若第 06 章另定(如 rules 文件体系),以 06 章为准并回写本节 —— 已在开放问题 6 标注。**阶段**:维持 P3(06 章设置代理定稿后执行);3.3 的发现顺序重验不改变阶段,只修正证据与 profile 解析要求。
+
+**2026-08-24 增量(已落地,commit eacb00c)**:
+
+- 改指向落地:`/api/behavior/agents-md` 读写目标为服务端解析的 `getAgentDir()/AGENTS.md`(经 omp-host `GET /agent-dir`),且**每请求重解析**——原服务端对 agentDir 的进程级永久缓存已删除:profile 切换后写入正确目录、omp-host 瞬时不可达不再钉死静态回退(回归:`routes-behavior.test.js` 5 测,含 profile 切换与回退不缓存两例)。
+- 取值语义对齐引擎:BehaviorPage 编辑器**文件存在即权威**(含空文件),`globalBehaviorPrompt` 副本降级为"文件从未创建时"的种子(迁移/新装机路径),外部修改(TUI/编辑器/profile 切换)不再被陈旧副本遮蔽或覆盖(契约:`ui/lib/behaviorPrompt.ts` `resolveInitialPrompt` + 5 测)。
+- `optimizeSystemPrompt` 死开关**整链删除**:自引擎切换到 omp 起 `getManagedOpenCodeEnv` 恒返 `{}`(index.js),插件注入零生产调用点,开关为静默 no-op。已删:BehaviorPage section、DesktopSettings 键、settings 搜索注册项、i18n 5 键 ×11 locale、`sanitizeSettingsUpdate` 分支(旧键自更新中丢弃)、`server/lib/system-prompt/` 模块整目录。
+- **G13 尾款(未做,仍列 P3)**:①重启机器——`behavior` scope 现仅剩 agents-md 保存路径一个消费者(`noteDeferredRestartFromPayload`,BehaviorPage `handleSave`),删除仍依赖 G02/G12 共享机器协调;"Restart OpenCode to apply" 文案对 omp 引擎语义失真(新会话即生效,无进程重启概念);②老安装 `<openchamber-data-dir>/system-prompt/` 物化目录不再生成,存量为惰性孤儿(无消费者),可与尾款同批回收;③老 settings.json 残留的 `optimizeSystemPrompt` 值惰性(无消费者,后续设置写入经 sanitize 即消失)。
 
 ### 5.14 删除顺序 DAG(对齐 D4/D6;REVISED:审批桥 P0 化 + 消费者切换插入)
 
