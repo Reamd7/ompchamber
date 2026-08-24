@@ -244,7 +244,7 @@ export const registerEndpoints = (route, engine, { version }) => {
     const url = ctx.url;
     const directory = directoryFromRequest(ctx) ?? url.searchParams.get('directory') ?? process.cwd();
     await engine.deleteSession({ sessionID: ctx.params.sessionID, directory });
-    return json({});
+    return json(true);
   });
   route('GET', '/session/{sessionID}/children', async (request, ctx) => {
     const directory = projectDirectory(ctx);

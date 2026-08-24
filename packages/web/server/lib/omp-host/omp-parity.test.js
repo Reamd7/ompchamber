@@ -286,6 +286,41 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     expect(calls).toContain('invalidateDerived');
   });
 
+  test('DELETE /session/{sessionID} answers 200 with literal true (wire 200: boolean)', async () => {
+    // Regression: the handler returned json({}). The shared UI client treats
+    // the body as the OpenCode boolean confirmation (client.ts deleteSession
+    // checks `=== true`), so every managed-runtime delete reported failure
+    // even though the engine had already deleted the session.
+    const { registerEndpoints } = await import('./endpoints.js');
+    const routes = [];
+    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const calls = [];
+    const stubEngine = {
+      ompBus: new OmpEventBus(),
+      dialogs: { mount: () => {} },
+      modesDomain: {},
+      uriDomain: { mount: () => {} },
+      settingsStoreReady: async () => null,
+      settingsStore: null,
+      customAgents: new Map(),
+      ready: async () => {},
+      availableModels: () => [],
+      deleteSession: async (args) => { calls.push(args); return null; },
+    };
+    registerEndpoints(route, stubEngine, { version: 'test' });
+    const deleteRoute = routes.find((r) => r.method === 'DELETE' && r.pattern === '/session/{sessionID}');
+    const url = new URL('http://host/session/ses_1?directory=/repo');
+    const response = await deleteRoute.handler(new Request(url), {
+      url,
+      headers: new Headers(),
+      params: { sessionID: 'ses_1' },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sessionID).toBe('ses_1');
+  });
+
   test('session abort route forwards to engine.abort and answers 200 boolean', async () => {
     // Regression: the vendored client POSTs /session/{sessionID}/abort for
     // every stop affordance (composer stop button, Esc shortcut, mobile
