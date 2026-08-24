@@ -1,6 +1,6 @@
 {
   "name": "ompchamber",
-  "version": "1.18.8",
+  "version": "1.19.0",
   "private": false,
   "type": "module",
   "main": "./server/index.js",
