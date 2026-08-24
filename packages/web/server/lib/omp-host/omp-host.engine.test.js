@@ -22,6 +22,7 @@ const makeFakeSession = () => ({
   maybeStartTitleGeneration: () => {},
   prompt: mock(async () => true),
   steer: mock(async () => {}),
+  abort: mock(async () => {}),
 });
 
 const fakeSessions = new Map();
@@ -129,6 +130,17 @@ describe('OmpHostEngine prompt dispatch', () => {
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'defaults' });
     const options = createdOptions.at(-1);
     expect(options.model).toBeUndefined();
+  });
+
+  test('abort forwards to the live agent session and reports unknown sessions as false', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm up' });
+    const session = sessionFor('s1');
+
+    await expect(engine.abort({ sessionID: 's1', directory: '/repo' })).resolves.toBe(true);
+    expect(session.abort).toHaveBeenCalledWith({ reason: 'User aborted' });
+
+    await expect(engine.abort({ sessionID: 'never-materialized', directory: '/repo' })).resolves.toBe(false);
   });
 
 

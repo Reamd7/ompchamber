@@ -285,6 +285,44 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     expect(response.status).toBe(200);
     expect(calls).toContain('invalidateDerived');
   });
+
+  test('session abort route forwards to engine.abort and answers 200 boolean', async () => {
+    // Regression: the vendored client POSTs /session/{sessionID}/abort for
+    // every stop affordance (composer stop button, Esc shortcut, mobile
+    // pill). The route was never registered, so the omp host answered 404
+    // and abortCurrentOperation silently swallowed the error — generation
+    // could not be stopped on the embedded engine.
+    const { registerEndpoints } = await import('./endpoints.js');
+    const routes = [];
+    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const abortCalls = [];
+    const stubEngine = {
+      ompBus: new OmpEventBus(),
+      dialogs: { mount: () => {} },
+      modesDomain: {},
+      uriDomain: { mount: () => {} },
+      settingsStoreReady: async () => null,
+      settingsStore: null,
+      customAgents: new Map(),
+      ready: async () => {},
+      availableModels: () => [],
+      abort: async (args) => { abortCalls.push(args); return true; },
+    };
+    registerEndpoints(route, stubEngine, { version: 'test' });
+    const abortRoute = routes.find(
+      (r) => r.method === 'POST' && r.pattern === '/session/{sessionID}/abort',
+    );
+    expect(abortRoute).toBeDefined();
+    const url = new URL('http://host/session/ses_1/abort?directory=/repo');
+    const response = await abortRoute.handler(new Request(url, { method: 'POST' }), {
+      url,
+      headers: new Headers(),
+      params: { sessionID: 'ses_1' },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toBe(true);
+    expect(abortCalls).toEqual([{ sessionID: 'ses_1', directory: '/repo' }]);
+  });
 });
 
 describe('capabilities (spec 05 §5.2.3, master R2)', () => {
