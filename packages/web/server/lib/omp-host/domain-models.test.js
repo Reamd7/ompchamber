@@ -294,14 +294,14 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
         directory: dirB,
         scope: 'project',
         changes: {
-          'compaction.strategy': 'handoff',
+          'compaction.methodOrder': ['snap'],
           'todo.reminders': true,
         },
       });
       expect(rejected.status).toBe(400);
       expect(rejected.body.error).toBe('validation');
       expect(rejected.body.rejected).toEqual([
-        { key: 'compaction.strategy', reason: 'project-scope-model-roles-only' },
+        { key: 'compaction.methodOrder', reason: 'project-scope-model-roles-only' },
         { key: 'todo.reminders', reason: 'project-scope-model-roles-only' },
       ]);
     } finally {
@@ -420,7 +420,7 @@ describe('PUT validation (06 §5.3.1)', () => {
       const result = await applySettingsChanges(store, {
         changes: {
           'nope.nope': 'leak-me-unknown',
-          'compaction.strategy': 'bogus-strategy',
+          'snapcompact.systemPrompt': 'bogus-mode',
           'todo.reminders': 'yes',
           modelRoles: { default: 'prov/x' },
         },
@@ -428,7 +428,7 @@ describe('PUT validation (06 §5.3.1)', () => {
       expect(result.status).toBe(400);
       expect(result.body.rejected).toEqual([
         { key: 'nope.nope', reason: 'unknown' },
-        { key: 'compaction.strategy', reason: 'invalid-value' },
+        { key: 'snapcompact.systemPrompt', reason: 'invalid-value' },
         { key: 'todo.reminders', reason: 'invalid-type' },
         { key: 'modelRoles', reason: 'record-write-unsupported' },
       ]);
@@ -629,13 +629,17 @@ describe('buildSettingsPayload (06 §5.2)', () => {
         groups: expect.any(Array),
       });
 
-      const compaction = payload.keys['compaction.strategy'];
-      expect(compaction.type).toBe('enum');
-      expect(compaction.values).toContain('snapcompact');
-      expect(compaction.value).toBe('snapcompact');
+      // 17.4 replaced compaction.strategy with the ordered methodOrder array.
+      const compaction = payload.keys['compaction.methodOrder'];
+      expect(compaction.type).toBe('array');
+      expect(compaction.value).toEqual(['remote', 'snapcompact', 'handoff', 'shake', 'soft']);
       expect(compaction.configured).toBe(false);
       expect(compaction.scope).toBe('global');
       expect(compaction.editable).toBe(true);
+      const snapcompactPrompt = payload.keys['snapcompact.systemPrompt'];
+      expect(snapcompactPrompt.type).toBe('enum');
+      expect(snapcompactPrompt.values).toContain('agents-md');
+      expect(snapcompactPrompt.value).toBe('none');
 
       // Terminal-only surfaces stay readable but not editable (06 §5.6).
       expect(payload.keys['theme.dark'].editable).toBe(false);
@@ -675,7 +679,7 @@ describe('buildSettingsPayload (06 §5.2)', () => {
       expect(advisorKey.hidden).toBe(true);
       expect(advisorKey.editable).toBe(false);
       // Unknown/unevaluated conditions fall back to visible (conservative).
-      expect(payload.keys['compaction.strategy'].hidden).toBeUndefined();
+    expect(payload.keys['compaction.methodOrder'].hidden).toBeUndefined();
     } finally {
       await disarm(env);
     }
