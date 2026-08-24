@@ -217,6 +217,81 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     expect(w2).not.toContain('contextPromotionTarget');
   });
 
+  test('dialog null payload clears per-model baseUrl instead of writing literal nulls (engine drops whole models.yml on null)', async () => {
+    const { modelsPath } = makeEnv();
+    // Establish a per-model endpoint override the dialog will clear.
+    const seeded = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [{ id: 'a1', baseUrl: 'https://override.example.com/v1' }],
+      },
+    }, { modelsPath });
+    expect(seeded.status).toBe(200);
+    expect(readFileSync(modelsPath, 'utf8')).toContain('https://override.example.com/v1');
+
+    // The exact payload shape the model dialog produces after any save:
+    // empty advanced fields arrive as nulls (UI contract: null clears).
+    const dialogSave = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [{
+          id: 'a1',
+          name: 'Alpha One',
+          reasoning: true,
+          contextWindow: 200000,
+          maxTokens: 8192,
+          input: ['text', 'image'],
+          thinking: { mode: 'effort', efforts: ['minimal'], defaultLevel: 'minimal' },
+          supportsTools: null,
+          cost: null,
+          baseUrl: null,
+          contextPromotionTarget: null,
+          compactionModel: null,
+        }],
+      },
+    }, { modelsPath });
+    expect(dialogSave.status).toBe(200);
+    const written = readFileSync(modelsPath, 'utf8');
+    expect(written).not.toContain('null');
+    expect(written).not.toContain('override.example.com');
+
+    // New-model rows carry the same nulls — the create path must skip them.
+    const withNew = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [
+          { id: 'a1' },
+          { id: 'a2', name: 'Alpha Two', baseUrl: null, contextPromotionTarget: null, compactionModel: null, cost: null, supportsTools: null },
+        ],
+      },
+    }, { modelsPath });
+    expect(withNew.status).toBe(200);
+    expect(readFileSync(modelsPath, 'utf8')).not.toContain('null');
+
+    // Hand-authored nulls inside the edited provider are swept before write:
+    writeFileSync(modelsPath, readFileSync(modelsPath, 'utf8').replace(
+      /^(\s*)- id: a1\s*$/m,
+      '$1- id: a1\n        contextPromotionTarget: null',
+    ));
+    const swept = await putOmpProvider({
+      provider: { id: 'alpha', baseUrl: 'https://alpha.example.com/v1', models: [{ id: 'a1' }, { id: 'a2' }] },
+    }, { modelsPath });
+    expect(swept.status).toBe(200);
+    const finalFile = readFileSync(modelsPath, 'utf8');
+    expect(finalFile).toContain('- id: a1');
+    expect(finalFile).not.toContain('null');
+
+    // The engine itself must accept the final file (whole-file parse).
+    const { ModelsConfigFile } = await import('@oh-my-pi/pi-coding-agent/config/models-config');
+    const { parseDocument } = await import('yaml');
+    const parsed = parseDocument(finalFile, { maxAliasCount: -1 }).toJS({ maxAliasCount: -1 });
+    const check = ModelsConfigFile.schema(parsed);
+    expect(Array.isArray(check) || typeof check === 'string').toBe(false);
+  });
+
   test('rejects invalid payloads without touching the file', async () => {
     const { modelsPath } = makeEnv();
     const before = readFileSync(modelsPath, 'utf8');

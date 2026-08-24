@@ -409,7 +409,12 @@ export const putOmpProvider = async (input, options = {}) => {
         // defaultLevel) and replaces/removes the prior block when provided.
         const modelNode = priorNode;
         for (const key of ['name', 'reasoning', 'contextWindow', 'maxTokens', 'baseUrl', 'api']) {
-          if (incoming[key] !== undefined) modelNode.set(new Scalar(key), new Scalar(incoming[key]));
+          if (incoming[key] === undefined) continue;
+          // `null` clears the key (documented contract) — a literal null is
+          // never written: the engine schema rejects any null model value by
+          // dropping the WHOLE models.yml (every custom provider disappears).
+          if (incoming[key] === null) modelNode.delete(key);
+          else modelNode.set(new Scalar(key), new Scalar(incoming[key]));
         }
         for (const key of ['supportsTools', 'omitMaxOutputTokens', 'contextPromotionTarget', 'compactionModel']) {
           if (incoming[key] === undefined) continue;
@@ -458,6 +463,8 @@ export const putOmpProvider = async (input, options = {}) => {
       } else {
         const modelNode = new YAMLMap();
         for (const [key, value] of Object.entries(incoming)) {
+          // Skip nulls for the same reason as the update path above.
+          if (value === null) continue;
           modelNode.set(new Scalar(key), new Scalar(value));
         }
         mergedModels.push(modelNode);
@@ -466,6 +473,23 @@ export const putOmpProvider = async (input, options = {}) => {
     const seq = new YAMLSeq();
     for (const node of mergedModels) seq.items.push(node);
     target.set(new Scalar('models'), seq);
+  }
+  // ── null sweep: the engine schema rejects ANY null value in a provider or
+  // model entry by dropping the whole models.yml (every custom provider
+  // disappears). Hand-authored nulls and any future null-leaking path are
+  // removed before the write instead of shipping a file the engine refuses.
+  const stripNullEntries = (mapNode) => {
+    if (!isMap(mapNode)) return;
+    for (const pair of [...mapNode.items]) {
+      if (pair.value == null || pair.value?.value === null) {
+        mapNode.delete(pair.key);
+      }
+    }
+  };
+  stripNullEntries(target);
+  const modelsNodeAfterMerge = target.get('models');
+  if (isSeq(modelsNodeAfterMerge)) {
+    for (const item of modelsNodeAfterMerge.items) stripNullEntries(item);
   }
 
   // ── validate the resulting whole-file value BEFORE touching disk ──
