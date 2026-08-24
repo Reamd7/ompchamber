@@ -564,24 +564,25 @@ ${desktopReturn ? `<a class="return" href="openchamber://focus/mcp-auth">Return 
   // priority 55) is still read by the engine's discovery provider, so it is
   // reported read-only for the UI notice; when the native file exists it
   const legacyAgentsMdPath = () => path.join(os.homedir(), '.config', 'opencode', 'AGENTS.md');
-  let cachedAgentDir = null;
+  // The agent dir is profile-scoped and can change while the server runs
+  // (profile activation), so it is resolved per request — the loopback fetch
+  // is cheap, and caching here would pin writes to a stale profile. The
+  // static default is only used while the omp-host is unreachable and is
+  // never cached, so a later request can pick up the real directory.
   const resolveAgentDir = async () => {
-    if (cachedAgentDir) return cachedAgentDir;
     try {
       const base = buildOpenCodeUrl('/agent-dir');
       const res = await fetch(base, { headers: getOpenCodeAuthHeaders() ?? {} });
       if (res.ok) {
         const body = await res.json();
         if (typeof body?.agentDir === 'string' && body.agentDir) {
-          cachedAgentDir = body.agentDir;
-          return cachedAgentDir;
+          return body.agentDir;
         }
       }
     } catch {
       // omp-host not reachable yet: fall through to the static default.
     }
-    cachedAgentDir = path.join(os.homedir(), '.omp', 'agent');
-    return cachedAgentDir;
+    return path.join(os.homedir(), '.omp', 'agent');
   };
   const agentsMdPath = async () => path.join(await resolveAgentDir(), 'AGENTS.md');
   const MAX_BEHAVIOR_PROMPT_SIZE = 1024 * 1024; // 1 MB

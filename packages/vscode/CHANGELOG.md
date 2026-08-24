@@ -1,5 +1,6 @@
 ## [Unreleased]
 - UI: the extension and marketplace icons now use the updated OpenChamber logo — the chamber keeps its shape and the top face carries the Oh my Pi π mark instead of the OpenCode square.
+- Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
 - Engine: the extension now consumes omp's own product surface — model roles replace the single default-model pick, per-turn token usage, cache-miss markers, compaction dividers, and retry banners match the terminal client, and engine approval/ask dialogs reach the webview through a presence-based bridge. The event stream for this runs over a new streaming endpoint that the extension's bridge now proxies correctly (it previously would have buffered it forever).
 - Chat: retried turns mark the superseded attempt with a badge and recovery notes instead of leaving an unmarked ghost, and engine notices appear as toasts.
 - Chat: the model menu follows omp model roles — role chips with resolved models and thinking levels, "Set as role" on model rows, and a per-session thinking-level selector; model picks are session-scoped and new chats follow the default role.
