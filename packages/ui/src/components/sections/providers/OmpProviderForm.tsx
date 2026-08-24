@@ -146,7 +146,7 @@ const rowsFromProvider = (provider: OmpFileProvider): ModelRowState[] =>
     costCacheWrite: model?.cost !== undefined ? String(model.cost.cacheWrite) : '',
     baseUrl: model?.baseUrl ?? '',
     api: model?.api ?? '',
-    omitMaxOutputTokens: false,
+    omitMaxOutputTokens: model?.omitMaxOutputTokens ?? false,
     contextPromotionTarget: model?.contextPromotionTarget ?? '',
     compactionModel: model?.compactionModel ?? '',
     dialogTouched: false,
@@ -257,7 +257,8 @@ export const OmpProviderForm: React.FC<OmpProviderFormProps> = ({
       models.push({
         id: row.id.trim(),
         ...(row.name.trim() ? { name: row.name.trim() } : {}),
-        ...(row.reasoning ? { reasoning: true } : {}),
+        // reasoning is sent explicitly for dialog-touched rows below; omitted
+        // here so untouched hand-authored values survive the merge.
         ...(row.contextWindow.trim() ? { contextWindow: Number(row.contextWindow) } : {}),
         ...(row.maxTokens.trim() ? { maxTokens: Number(row.maxTokens) } : {}),
         // Only the dialog's own saves send a thinking key; untouched
@@ -270,6 +271,7 @@ export const OmpProviderForm: React.FC<OmpProviderFormProps> = ({
         // Extended managed keys — only after the dialog saved this row, so
         // hand-authored config survives untouched rows byte-for-byte.
         ...(row.dialogTouched ? {
+          reasoning: row.reasoning,
           input: row.imageInput ? ['text', 'image'] : ['text'],
           ...(row.supportsTools === '' ? { supportsTools: null } : { supportsTools: row.supportsTools === 'on' }),
           ...(row.costInput.trim() || row.costOutput.trim() || row.costCacheRead.trim() || row.costCacheWrite.trim()
@@ -282,7 +284,7 @@ export const OmpProviderForm: React.FC<OmpProviderFormProps> = ({
             : { cost: null }),
           ...(row.baseUrl.trim() ? { baseUrl: row.baseUrl.trim() } : { baseUrl: null }),
           ...(row.api ? { api: row.api } : {}),
-          ...(row.omitMaxOutputTokens ? { omitMaxOutputTokens: true } : {}),
+          ...(row.omitMaxOutputTokens ? { omitMaxOutputTokens: true } : { omitMaxOutputTokens: null }),
           ...(row.contextPromotionTarget.trim() ? { contextPromotionTarget: row.contextPromotionTarget.trim() } : { contextPromotionTarget: null }),
           ...(row.compactionModel.trim() ? { compactionModel: row.compactionModel.trim() } : { compactionModel: null }),
         } : {}),

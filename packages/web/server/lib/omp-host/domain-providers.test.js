@@ -292,6 +292,42 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     expect(Array.isArray(check) || typeof check === 'string').toBe(false);
   });
 
+  test('dialog un-check round trip: explicit reasoning false lands, omitMax null clears, projection surfaces both', async () => {
+    const { modelsPath } = makeEnv();
+    const seeded = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [{ id: 'a1', reasoning: true, omitMaxOutputTokens: true }],
+      },
+    }, { modelsPath });
+    expect(seeded.status).toBe(200);
+    // GET projection must surface omitMaxOutputTokens so the dialog prefills reality.
+    const listed = await listOmpProviders({ modelsPath });
+    const seededModel = listed.providers.find((p) => p.id === 'alpha').models[0];
+    expect(seededModel.reasoning).toBe(true);
+    expect(seededModel.omitMaxOutputTokens).toBe(true);
+
+    // The dialog saves with both boxes un-checked: explicit false reasoning,
+    // null to clear the omit-max override.
+    const unchecked = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [{ id: 'a1', reasoning: false, omitMaxOutputTokens: null }],
+      },
+    }, { modelsPath });
+    expect(unchecked.status).toBe(200);
+    const { ModelsConfigFile } = await import('@oh-my-pi/pi-coding-agent/config/models-config');
+    const { parseDocument } = await import('yaml');
+    const value = parseDocument(readFileSync(modelsPath, 'utf8'), { maxAliasCount: -1 }).toJS({ maxAliasCount: -1 });
+    const model = value.providers.alpha.models[0];
+    expect(model.reasoning).toBe(false);
+    expect(model.omitMaxOutputTokens).toBeUndefined();
+    const check = ModelsConfigFile.schema(value);
+    expect(Array.isArray(check) || typeof check === 'string').toBe(false);
+  });
+
   test('rejects invalid payloads without touching the file', async () => {
     const { modelsPath } = makeEnv();
     const before = readFileSync(modelsPath, 'utf8');

@@ -135,6 +135,7 @@ const projectFileProvider = (id, value) => {
         ...(typeof model.maxTokens === 'number' ? { maxTokens: model.maxTokens } : {}),
         ...(Array.isArray(model.input) ? { input: model.input.filter((v) => v === 'text' || v === 'image') } : {}),
         ...(model.supportsTools !== undefined ? { supportsTools: Boolean(model.supportsTools) } : {}),
+        ...(model.omitMaxOutputTokens !== undefined ? { omitMaxOutputTokens: Boolean(model.omitMaxOutputTokens) } : {}),
         ...(isRecord(model.cost) ? { cost: {
           input: Number(model.cost.input) || 0,
           output: Number(model.cost.output) || 0,
