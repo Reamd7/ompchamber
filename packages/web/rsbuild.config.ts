@@ -238,6 +238,21 @@ export default defineConfig(({ command }) => ({
           },
         },
       };
+      rspackConfig.module ??= {};
+      rspackConfig.module.rules = [
+        ...(rspackConfig.module.rules ?? []),
+        {
+          // @pierre/diffs declares `sideEffects: ["dist/components/web-components.js"]`,
+          // so its worker entry — a pure side-effect module (top-level
+          // self.addEventListener, zero exports) — tree-shakes away when the
+          // app's worker entry imports it for side effects only. The emitted
+          // worker chunk is then empty: the worker spawns, answers nothing,
+          // and every diff render hangs silently with blank output.
+          test: /[\\/]node_modules[\\/]@pierre[\\/]diffs[\\/]dist[\\/]worker[\\/]worker\.js$/,
+          sideEffects: true,
+        },
+      ];
+
 
       // Theme JSON edits are handled by the HMR event above; keep them (and
       // the default ignores) out of Rspack's watcher so they never trigger a

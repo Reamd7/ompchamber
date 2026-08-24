@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **Git:** expanding a changed file shows its diff again — every diff panel (changes view, per-file diff, commit history) had come up blank without an error after the bundler migration, because the diff web worker was compiled to an empty file and silently stopped answering.
 - **Sessions:** archiving or renaming a session in one worktree now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the app showed "Session archived" while the session stayed in the list.
 - **UI:** dropdown menus no longer draw their content outside the panel on short windows — the model picker's role list and search box now scroll inside the menu instead of floating over the page behind it.
 - Settings: the Behavior page's global-instructions editor now shows the live contents of your omp `AGENTS.md` — edits made outside the app (terminal, text editor) are no longer overwritten by a stale stored copy, and instructions are written to the correct file when you switch omp profiles.
