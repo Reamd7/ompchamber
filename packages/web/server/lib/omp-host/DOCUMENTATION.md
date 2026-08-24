@@ -16,7 +16,20 @@ The wire contract itself is owned by OpenChamber and lives in
 route table implemented here is exactly the subset of that contract the UI,
 sync engine, and web server call; everything else answers 404.
 
-- `host.js` — entrypoint, route dispatch, Basic auth, SSE writer, shutdown.
+- `worker-dispatch.js` — `__omp_worker_*` selector dispatch, run by the
+  entrypoint BEFORE serving. The embedded SDK relaunches its own executable
+  (`process.execPath` = omp-host itself in packaged builds) into worker modes
+  (daemon broker, LSP mux, blob broker, ONNX inference workers, the JS-eval
+  kernel). Without this dispatch every such spawn booted a second full HTTP
+  host on a random port that nothing tore down — the "hundreds of
+  omp-host.exe processes" leak (~1 zombie per failed 10s daemon-broker
+  connect while the browser tool retried). Known selectors map to the SDK's
+  worker entries via literal `import()` thunks (required for
+  `bun build --compile` to embed them); thread-only selectors, the omp stats
+  worker, and `browser-relay` are explicit no-serve exits (exit 1), so an
+  unrecognized self-spawn can never become a zombie host. The table must be
+  re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
+  `worker-dispatch.test.js` pins the full selector list.
 - `engine.js` — `OmpHostEngine`: model/auth boot, session materialization
   (cold reads via `SessionManager` transcript projection, live turns via
   `createAgentSession` + event pump), session operations, idle sweeping.

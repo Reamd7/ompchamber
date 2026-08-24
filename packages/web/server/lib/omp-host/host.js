@@ -11,6 +11,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDispatchableInvocation, runWorkerDispatch } from './worker-dispatch.js';
 import { OmpHostEngine } from './engine.js';
 import { registerEndpoints } from './endpoints.js';
 
@@ -113,15 +114,26 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine } 
 
 const isMain = import.meta.main ?? false;
 if (isMain) {
-  const args = parseArgs(process.argv.slice(2));
-  const host = await startOmpHost(args);
-  // Same readiness line the managed OpenCode server printed on stdout.
-  console.log(`opencode server listening on ${host.baseUrl}`);
-  const shutdown = async (signal) => {
-    console.log(`[omp-host] received ${signal}, shutting down`);
-    await host.close();
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
+  const argv = process.argv.slice(2);
+
+  // Self-relaunch guard: the embedded SDK spawns this same binary with
+  // `__omp_worker_*` selectors (daemon broker, ONNX workers, ...). Dispatch
+  // those BEFORE serving — a selector we cannot honor must exit non-zero,
+  // never become a second host on a random port (see worker-dispatch.js).
+  if (isDispatchableInvocation(argv[0])) {
+    const dispatched = await runWorkerDispatch(argv[0]);
+    if (!dispatched) process.exitCode = 1;
+  } else {
+    const args = parseArgs(argv);
+    const host = await startOmpHost(args);
+    // Same readiness line the managed OpenCode server printed on stdout.
+    console.log(`opencode server listening on ${host.baseUrl}`);
+    const shutdown = async (signal) => {
+      console.log(`[omp-host] received ${signal}, shutting down`);
+      await host.close();
+      process.exit(0);
+    };
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+  }
 }

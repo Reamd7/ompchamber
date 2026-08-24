@@ -1,4 +1,5 @@
 ## [Unreleased]
+- Startup: engine processes left behind by a crash or force-quit are now identified and cleaned up on the next start — the cleanup only recognized the old engine's name (opencode) and never matched the current omp engine, so orphans accumulated. The engine host also now runs the background workers the engine relaunches itself for (the browser tool's helper, local models) instead of turning every relaunch into another idle server process.
 - Sessions: deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.
 - Sessions: archiving or renaming a session now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the session stayed in the list after archiving.
 - UI: the extension and marketplace icons now use the updated OpenChamber logo — the chamber keeps its shape and the top face carries the Oh my Pi π mark instead of the OpenCode square.

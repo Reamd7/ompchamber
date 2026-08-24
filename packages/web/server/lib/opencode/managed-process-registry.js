@@ -154,14 +154,33 @@ const readWindowsImageName = (pid) => {
   }
 };
 
-const commandIdentifiesOurServer = (command, entry) => {
+// The managed engine is the omp host: either a compiled `omp-host(.exe)`
+// binary or a Bun runtime launching `.../lib/omp-host/host.js serve`. Accept
+// the legacy `opencode serve` shape too so an older build's registry entries
+// still reap.
+const isManagedEngineIdentifier = (command) => {
   if (typeof command !== 'string') return false;
   const lower = command.toLowerCase();
-  if (!lower.includes('opencode') || !lower.includes('serve')) return false;
+  const isOurEngine = lower.includes('omp-host') || lower.includes('opencode');
+  return isOurEngine && lower.includes('serve');
+};
+
+// Exported for tests: misidentifying the engine here either leaks orphans
+// forever (this exact bug: `omp-host` never matched the old `opencode` check)
+// or risks reaping a process we do not own.
+export const commandIdentifiesOurServer = (command, entry) => {
+  if (!isManagedEngineIdentifier(command)) return false;
   // Tie to the exact server we registered when we know its port, so a recycled
-  // pid running a *different* opencode server is never mistaken for ours.
+  // pid running a *different* omp host instance is never mistaken for ours.
   if (Number.isInteger(entry.port) && !command.includes(String(entry.port))) return false;
   return true;
+};
+
+/** Whether a `tasklist` CSV row's image name is a managed engine binary. */
+export const windowsImageLooksLikeEngine = (image) => {
+  if (typeof image !== 'string') return false;
+  const lower = image.toLowerCase();
+  return lower.includes('omp-host') || lower.includes('opencode');
 };
 
 const killOrphan = async (pid) => {
@@ -196,14 +215,12 @@ const processEntry = async (entry, { log }) => {
   const ownerGone = Number.isInteger(entry.ownerPid) && !isPidAlive(entry.ownerPid);
 
   if (process.platform === 'win32') {
-    const image = readWindowsImageName(entry.pid);
-    const looksLikeOpencode = typeof image === 'string' && image.toLowerCase().includes('opencode');
     // Windows lacks reliable reparent-to-1 semantics (job objects usually kill
-    // children with the parent), so we reap only when the owner is provably dead
-    // AND the image still looks like opencode.
-    if (looksLikeOpencode && ownerGone) {
+    // children with the parent), so we reap only when the owner is provably
+    // dead AND the image still looks like a managed engine binary.
+    if (windowsImageLooksLikeEngine(readWindowsImageName(entry.pid)) && ownerGone) {
       await killOrphan(entry.pid);
-      log?.(`[lifecycle] reaped orphaned OpenCode pid ${entry.pid} (owner ${entry.ownerPid} gone)`);
+      log?.(`[lifecycle] reaped orphaned engine pid ${entry.pid} (owner ${entry.ownerPid} gone)`);
       return true;
     }
     return false;

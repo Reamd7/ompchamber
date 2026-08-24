@@ -147,10 +147,15 @@ const readWindowsImageName = (pid: number): string | null => {
   }
 };
 
+// The managed engine is the omp host (`omp-host.exe` /
+// `.../lib/omp-host/host.js serve`); the legacy `opencode serve` shape stays
+// accepted so an older build's entries still reap. Keep in sync with
+// packages/web/server/lib/opencode/managed-process-registry.js.
 const commandIdentifiesOurServer = (command: string, entry: ManagedProcessEntry): boolean => {
   if (typeof command !== 'string') return false;
   const lower = command.toLowerCase();
-  if (!lower.includes('opencode') || !lower.includes('serve')) return false;
+  const isOurEngine = lower.includes('omp-host') || lower.includes('opencode');
+  if (!isOurEngine || !lower.includes('serve')) return false;
   if (Number.isInteger(entry.port) && !command.includes(String(entry.port))) return false;
   return true;
 };
@@ -190,8 +195,9 @@ const processEntry = async (
 
   if (process.platform === 'win32') {
     const image = readWindowsImageName(entry.pid);
-    const looksLikeOpencode = typeof image === 'string' && image.toLowerCase().includes('opencode');
-    if (looksLikeOpencode && ownerGone) {
+    const lowerImage = typeof image === 'string' ? image.toLowerCase() : '';
+    const looksLikeOurEngine = lowerImage.includes('omp-host') || lowerImage.includes('opencode');
+    if (looksLikeOurEngine && ownerGone) {
       await killOrphan(entry.pid);
       log?.(`[opencode] reaped orphaned process pid ${entry.pid} (owner ${entry.ownerPid} gone)`);
       return true;

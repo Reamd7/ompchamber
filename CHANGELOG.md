@@ -3,6 +3,8 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **Desktop:** fixed hundreds of omp-host.exe processes piling up in Task Manager (tens of GB of memory) — the engine relaunches its own binary as background helpers (the browser tool's helper, local speech/title models), but the bundled engine treated every relaunch as another server start, so each one came up as an idle engine that never exited; roughly one leaked per 10-second retry while the browser tool kept trying. Helpers now run as the intended worker, and any relaunch the host doesn't recognize exits immediately instead of serving.
+- Desktop: engine processes orphaned by a crash or force-quit are now identified and cleaned up on the next start (the cleanup only recognized the old engine name and never matched), and an engine that misses its startup readiness window is stopped instead of lingering untracked.
 - **Git:** expanding a changed file shows its diff again — every diff panel (changes view, per-file diff, commit history) had come up blank without an error after the bundler migration, because the diff web worker was compiled to an empty file and silently stopped answering.
 - **Sessions:** deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.
 - **Sessions:** archiving or renaming a session in one worktree now applies to the worktree it belongs to — the change could previously be recorded against a different worktree's records, so the app showed "Session archived" while the session stayed in the list.

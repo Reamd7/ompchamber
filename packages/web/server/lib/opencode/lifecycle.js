@@ -25,6 +25,7 @@ const OPENCODE_HEALTH_PATH = '/global/health';
 const WARMUP_DIRECTORY_LIMIT = 4;
 const WARMUP_REQUEST_TIMEOUT_MS = 30000;
 
+
 export const createOpenCodeLifecycleRuntime = (deps) => {
   const {
     state,
@@ -294,7 +295,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    const url = await new Promise((resolve, reject) => {
+    const waitForListeningLine = new Promise((resolve, reject) => {
       let stdout = '';
       let stderr = '';
       let done = false;
@@ -349,6 +350,18 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       child.on('exit', onExit);
       child.on('error', onError);
     });
+
+    // Readiness failure must never leak the child: registry ownership (and
+    // with it teardown) is granted only after readiness, so a spawn that never
+    // prints the listening line — or times out doing so — is killed here
+    // instead of surviving as an untracked engine process.
+    let url;
+    try {
+      url = await waitForListeningLine;
+    } catch (error) {
+      await terminateChildProcess(child);
+      throw error;
+    }
 
     // Record this child so a future run can reap it if we crash before teardown.
     // The web-server lifecycle runs in-process inside multiple hosts, so tag the
@@ -522,7 +535,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       const serverInstance = await createManagedOpenCodeServerProcess({
         hostname: env.ENV_CONFIGURED_OPENCODE_HOSTNAME,
         port: spawnPort,
-        timeout: 30000,
+        timeout: parsePositiveInt(process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS, 30000),
         cwd: state.openCodeWorkingDirectory,
         shellEnvKeysCount: Object.keys(shellEnv).length,
         env: stripAppImageArgv0Leak(applyProviderEnvAliases({

@@ -124,12 +124,17 @@ The runtime maintains active-session count incrementally from idempotent activit
   - `waitForPortRelease(port, timeoutMs, hostname?)`
   - `killProcessOnPort(port)`
 
-Managed OpenCode launch also merges the environment returned by the agent-tool
-runtime. PATH and `OPENCODE_SERVER_PASSWORD` remain lifecycle-owned and cannot
-be replaced by injected values. External OpenCode processes receive no
-OpenChamber tool injection. Managed launch env strips AppImage `ARGV0` before
-spawn so zsh-backed OpenCode tools do not rewrite child argv[0] to the AppImage
-path (#2588).
+Managed spawn failure never leaks a child: if the readiness stdout line never
+arrives (configurable via `OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS`, default
+30s), or the child dies before printing it, the child is terminated before
+the attempt surfaces its error — registry ownership (and with it teardown)
+starts only after readiness, so an unkilled slow starter would otherwise
+survive as an untracked engine process. The startup orphan reaper
+(`managed-process-registry.js`, with a VS Code parity implementation in
+`packages/vscode/src/opencodeProcessRegistry.ts`) identifies recorded engines
+by an `omp-host`/`opencode` command-line or image match plus the recorded
+port — matching `opencode` alone was dead code since the engine became the
+omp host, so genuinely orphaned engines were never reaped.
 
 Before spawn, `applyProviderEnvAliases` fills unset Google credential aliases
 from any present sibling (`GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY`,
