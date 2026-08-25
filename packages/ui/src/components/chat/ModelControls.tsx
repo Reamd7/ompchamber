@@ -889,7 +889,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     // GAP-06: in-session thinking level change — same endpoint as the model
     // switch; the engine short-circuits to setThinkingLevel when the model is
-    // unchanged. `inherit` clears the explicit level.
+    // unchanged. 'inherit' travels as the wire sentinel; the engine maps it
+    // to setThinkingLevel(undefined), which clears the explicit level.
     const handleOmpThinkingSelect = React.useCallback((level: string) => {
         if (!currentSessionId || !ompSessionModel?.provider || !ompSessionModel?.id || !ompPickerDirectory) {
             return;
@@ -899,7 +900,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             { providerID: ompSessionModel.provider, modelID: ompSessionModel.id },
             {
                 directory: ompPickerDirectory,
-                ...(level !== 'inherit' ? { thinkingLevel: level } : {}),
+                thinkingLevel: level,
             },
         ).then((result) => {
             if (!result.ok && !result.unavailable) {

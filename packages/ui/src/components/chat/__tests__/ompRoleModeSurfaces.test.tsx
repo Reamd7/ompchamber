@@ -128,6 +128,13 @@ describe('createOmpModelsAPI.getModels', () => {
       query: { directory: '/repo' },
       body: JSON.stringify({ model: { providerID: 'prov', modelID: 'next' } }),
     }]);
+
+    expect(await api.setSessionModel('ses_1', { providerID: 'prov', modelID: 'next' }, { directory: '/repo', thinkingLevel: 'inherit' }))
+      .toEqual({ ok: true, model: 'prov/next' });
+    expect(JSON.parse(calls[1].body as string)).toEqual({
+      model: { providerID: 'prov', modelID: 'next' },
+      thinkingLevel: 'inherit',
+    });
   });
 });
 

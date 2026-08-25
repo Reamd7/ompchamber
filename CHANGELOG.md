@@ -4,13 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat:** changing the thinking level from the composer works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the resulting crash answered the request with a server error. Picking "Inherit" now genuinely clears the session's explicit level instead of being dropped.
+
 ## [1.19.1] - 2026-08-25
 
 - **Desktop:** fixed hundreds of omp-host.exe processes piling up in Task Manager (tens of GB of memory) — the engine relaunches its own binary as background helpers (the browser tool's helper, local speech/title models), but the bundled engine treated every relaunch as another server start, so each one came up as an idle engine that never exited; roughly one leaked per 10-second retry while the browser tool kept trying. Helpers now run as the intended worker, and any relaunch the host doesn't recognize exits immediately instead of serving.
 - Desktop: engine processes orphaned by a crash or force-quit are now identified and cleaned up on the next start (the cleanup only recognized the old engine name and never matched), and an engine that misses its startup readiness window is stopped instead of lingering untracked.
 
 ## [1.19.0] - 2026-08-25
-
 - **Git:** expanding a changed file shows its diff again — every diff panel (changes view, per-file diff, commit history) had come up blank without an error after the bundler migration, because the diff web worker was compiled to an empty file and silently stopped answering.
 - **Settings/Providers:** saving from the provider dialog no longer wipes out your custom providers — clearing a field wrote a literal null into omp's models.yml, and the engine rejects the whole file on any null, so one save could silently erase every provider you defined.
 - Settings/Providers: unchecking Reasoning or the max-output override in the provider dialog now actually turns it off — those checkboxes could set a value but never clear it.

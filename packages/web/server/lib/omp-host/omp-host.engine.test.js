@@ -26,7 +26,7 @@ const makeFakeSession = () => ({
   subscribe: () => () => {},
   sessionManager: { getSessionName: () => 'stub-session-name' },
   setModel: mock(async () => ({ switched: true })),
-  setThinkingLevel: mock(async () => {}),
+  setThinkingLevel: mock(() => {}),
   maybeStartTitleGeneration: () => {},
   prompt: mock(async () => true),
   steer: mock(async () => {}),
@@ -239,6 +239,20 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(result.ok).toBe(true);
     expect(session.setModel.mock.calls.length).toBe(modelCallsBefore);
     expect(session.setThinkingLevel).toHaveBeenLastCalledWith('high');
+
+    // Regression (real SDK contract): setThinkingLevel returns void
+    // (agent-session.d.ts:736). Treating it as a thenable threw
+    // "undefined is not an object (evaluating '.catch')" and answered the
+    // model endpoint with a 500 — every thinking-level change failed.
+    // 'inherit' is the wire sentinel that clears the explicit level.
+    const inherit = await engine.setSessionModel({
+      sessionID: 's1',
+      directory: '/repo',
+      model: { providerID: 'p1', modelID: 'current-model' },
+      thinkingLevel: 'inherit',
+    });
+    expect(inherit.ok).toBe(true);
+    expect(session.setThinkingLevel).toHaveBeenLastCalledWith(undefined);
 
     // A different model switches the model AND applies the thinking level.
     await engine.setSessionModel({
