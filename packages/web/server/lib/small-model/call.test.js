@@ -66,7 +66,7 @@ describe('callSmallModel — custom provider config', () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     vi.restoreAllMocks();
-    delete process.env.OPENCHAMBER_TEST_PROVIDER_KEY;
+    delete process.env.OMPCHAMBER_TEST_PROVIDER_KEY;
   });
 
   describe('config-supplied credentials (no auth.json entry)', () => {
@@ -100,11 +100,11 @@ describe('callSmallModel — custom provider config', () => {
     });
 
     it('resolves an OpenCode environment variable before sending the API key', async () => {
-      process.env.OPENCHAMBER_TEST_PROVIDER_KEY = 'sk-env-key';
+      process.env.OMPCHAMBER_TEST_PROVIDER_KEY = 'sk-env-key';
       readConfig.mockReturnValue({
         provider: {
           custom: {
-            options: { apiKey: '{env:OPENCHAMBER_TEST_PROVIDER_KEY}', baseURL: 'https://proxy.example.test/v1' },
+            options: { apiKey: '{env:OMPCHAMBER_TEST_PROVIDER_KEY}', baseURL: 'https://proxy.example.test/v1' },
           },
         },
       });

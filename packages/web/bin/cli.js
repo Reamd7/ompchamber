@@ -149,13 +149,13 @@ async function checkOpenCodeCLI(onNotice) {
   // The managed engine is the OMPChamber omp host, launched under Bun. The
   // old opencode CLI lookup is gone; what matters now is that a Bun runtime
   // can launch the host (see server/lib/opencode/omp-host-launch.js).
-  if (process.env.OPENCHAMBER_OMP_HOST_RUNTIME) {
-    const override = resolveExplicitBinary(process.env.OPENCHAMBER_OMP_HOST_RUNTIME);
+  if (process.env.OMPCHAMBER_OMP_HOST_RUNTIME) {
+    const override = resolveExplicitBinary(process.env.OMPCHAMBER_OMP_HOST_RUNTIME);
     if (override) {
-      process.env.OPENCHAMBER_OMP_HOST_RUNTIME = override;
+      process.env.OMPCHAMBER_OMP_HOST_RUNTIME = override;
       return override;
     }
-    const message = `OPENCHAMBER_OMP_HOST_RUNTIME="${process.env.OPENCHAMBER_OMP_HOST_RUNTIME}" is not an executable file. Falling back to PATH lookup.`;
+    const message = `OMPCHAMBER_OMP_HOST_RUNTIME="${process.env.OMPCHAMBER_OMP_HOST_RUNTIME}" is not an executable file. Falling back to PATH lookup.`;
     if (typeof onNotice === 'function') {
       onNotice({ level: 'warning', code: 'OMP_HOST_RUNTIME_INVALID', message });
     } else {
@@ -170,7 +170,7 @@ async function checkOpenCodeCLI(onNotice) {
 
   throw new Error(
     'Unable to locate a Bun runtime on PATH to launch the omp host engine. ' +
-    'Install Bun (https://bun.sh) or set OPENCHAMBER_OMP_HOST_RUNTIME to the bun binary.'
+    'Install Bun (https://bun.sh) or set OMPCHAMBER_OMP_HOST_RUNTIME to the bun binary.'
   );
 }
 

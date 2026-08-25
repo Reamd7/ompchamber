@@ -78,7 +78,7 @@ cd packages/web && bun run build     # rsbuild → dist/
 
 ```bash
 cd packages/web
-OPENCHAMBER_PORT=3903 bun server/index.js
+OMPCHAMBER_PORT=3903 bun server/index.js
 # 就绪标志:OpenChamber server listening on 127.0.0.1:3903
 ```
 
@@ -88,20 +88,20 @@ OPENCHAMBER_PORT=3903 bun server/index.js
 
 ```bash
 # 方式 A:环境变量(推荐,配合 §4 的直接起法)
-OPENCHAMBER_HOST=0.0.0.0 OPENCHAMBER_PORT=3903 bun server/index.js
+OMPCHAMBER_HOST=0.0.0.0 OMPCHAMBER_PORT=3903 bun server/index.js
 
 # 方式 B:CLI 旗标
 # openchamber serve --host 0.0.0.0
 ```
 
-**安全护栏**:仅给 `OPENCHAMBER_HOST=0.0.0.0` 会启动失败 —— 服务器拒绝无认证暴露在网络上,必须再二选一:
+**安全护栏**:仅给 `OMPCHAMBER_HOST=0.0.0.0` 会启动失败 —— 服务器拒绝无认证暴露在网络上,必须再二选一:
 
 ```bash
 # 选项 1:设 UI 密码(不受信网络用这个)
-OPENCHAMBER_HOST=0.0.0.0 OPENCHAMBER_UI_PASSWORD=你的密码 bun server/index.js
+OMPCHAMBER_HOST=0.0.0.0 OMPCHAMBER_UI_PASSWORD=你的密码 bun server/index.js
 
 # 选项 2:明示接受无认证(私有 mesh VPN 里可接受)
-OPENCHAMBER_HOST=0.0.0.0 OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN=true bun server/index.js
+OMPCHAMBER_HOST=0.0.0.0 OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN=true bun server/index.js
 ```
 
 验证:`netstat -ano | grep 3903` 应见 `0.0.0.0:3903 LISTENING`;从 mesh 另一节点 `curl http://<mesh-ip>:3903/health` 应 200。Windows 首次绑定可能弹防火墙,允许 bun 即可。

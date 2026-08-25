@@ -194,7 +194,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       viewMode: "${viewMode}",
       initialSessionId: ${initialSessionId ? `"${initialSessionId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : 'null'},
     };
-    window.__OPENCHAMBER_HOME__ = "${workspaceFolder.replace(/\\/g, '\\\\')}";
+    window.__OMPCHAMBER_HOME__ = "${workspaceFolder.replace(/\\/g, '\\\\')}";
     
     function getBootstrapMessages() {
       var locale = 'en';

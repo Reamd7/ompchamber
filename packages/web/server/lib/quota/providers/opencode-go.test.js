@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
-const previousDataDirectory = process.env.OPENCHAMBER_DATA_DIR;
+const previousDataDirectory = process.env.OMPCHAMBER_DATA_DIR;
 const temporaryDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-go-'));
-process.env.OPENCHAMBER_DATA_DIR = temporaryDataDirectory;
+process.env.OMPCHAMBER_DATA_DIR = temporaryDataDirectory;
 
 vi.mock('../../opencode/auth.js', () => ({
   readAuthFile: () => ({ 'opencode-go': { key: 'test-key' } }),
@@ -18,8 +18,8 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  if (previousDataDirectory === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
-  else process.env.OPENCHAMBER_DATA_DIR = previousDataDirectory;
+  if (previousDataDirectory === undefined) delete process.env.OMPCHAMBER_DATA_DIR;
+  else process.env.OMPCHAMBER_DATA_DIR = previousDataDirectory;
   fs.rmSync(temporaryDataDirectory, { recursive: true, force: true });
 });
 

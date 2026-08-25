@@ -342,8 +342,8 @@ function resolveOpencodeCliPath(): string | null {
   const explicit = [
     process.env.OPENCODE_BINARY,
     process.env.OPENCODE_PATH,
-    process.env.OPENCHAMBER_OPENCODE_PATH,
-    process.env.OPENCHAMBER_OPENCODE_BIN,
+    process.env.OMPCHAMBER_OPENCODE_PATH,
+    process.env.OMPCHAMBER_OPENCODE_BIN,
   ]
     .map((v) => (typeof v === 'string' ? stripWrappingQuotes(v) : ''))
     .filter(Boolean);
@@ -678,7 +678,7 @@ async function spawnManagedOpenCodeServer(
   // without it fails fast with an actionable message.
   const hostEntry = resolveOmpHostEntry();
   const runtime =
-    stripWrappingQuotes(process.env.OPENCHAMBER_OMP_HOST_RUNTIME || process.env.OPENCODE_BINARY || '') || 'bun';
+    stripWrappingQuotes(process.env.OMPCHAMBER_OMP_HOST_RUNTIME || process.env.OPENCODE_BINARY || '') || 'bun';
   const launch = resolveWindowsLaunchSpec(runtime, [hostEntry, 'serve', '--hostname', '127.0.0.1', '--port', String(port)]);
   const child = spawn(launch.binary, launch.args, {
     cwd: workingDirectory,

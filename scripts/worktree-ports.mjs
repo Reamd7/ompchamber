@@ -1,7 +1,7 @@
 // Per-worktree dev port allocation.
 //
-// The web dev stack is fully port-parameterized (OPENCHAMBER_HMR_UI_PORT /
-// OPENCHAMBER_HMR_API_PORT, see scripts/dev-web-hmr.mjs). A worktree created
+// The web dev stack is fully port-parameterized (OMPCHAMBER_HMR_UI_PORT /
+// OMPCHAMBER_HMR_API_PORT, see scripts/dev-web-hmr.mjs). A worktree created
 // by `worktree init` persists its own pair in `.dev-ports.json` at the
 // checkout root, and the dev launcher prefers that file over the shared
 // defaults so parallel worktrees never fight over 5180/3902.

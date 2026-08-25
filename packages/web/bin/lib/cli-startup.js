@@ -82,20 +82,20 @@ function collectStartupEnv(options = {}) {
   );
 
   if (options.envSnapshot !== false) {
-    const ompHostRuntime = process.env.OPENCHAMBER_OMP_HOST_RUNTIME || searchPathFor('bun');
+    const ompHostRuntime = process.env.OMPCHAMBER_OMP_HOST_RUNTIME || searchPathFor('bun');
     if (typeof ompHostRuntime === 'string' && ompHostRuntime.trim().length > 0) {
-      env.OPENCHAMBER_OMP_HOST_RUNTIME = ompHostRuntime.trim();
+      env.OMPCHAMBER_OMP_HOST_RUNTIME = ompHostRuntime.trim();
     }
   }
   const uiPassword = hasUiPasswordConfigured(options.uiPassword) ? options.uiPassword : undefined;
   if (uiPassword) {
-    env.OPENCHAMBER_UI_PASSWORD = uiPassword;
+    env.OMPCHAMBER_UI_PASSWORD = uiPassword;
   }
   if (options.apiOnly === true) {
-    env.OPENCHAMBER_API_ONLY = 'true';
+    env.OMPCHAMBER_API_ONLY = 'true';
   }
-  if (typeof process.env.OPENCHAMBER_DATA_DIR === 'string' && process.env.OPENCHAMBER_DATA_DIR.trim().length > 0) {
-    env.OPENCHAMBER_DATA_DIR = path.resolve(process.env.OPENCHAMBER_DATA_DIR.trim());
+  if (typeof process.env.OMPCHAMBER_DATA_DIR === 'string' && process.env.OMPCHAMBER_DATA_DIR.trim().length > 0) {
+    env.OMPCHAMBER_DATA_DIR = path.resolve(process.env.OMPCHAMBER_DATA_DIR.trim());
   }
   return env;
 }

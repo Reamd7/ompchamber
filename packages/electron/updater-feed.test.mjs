@@ -9,8 +9,8 @@ import {
 } from './updater-feed.mjs';
 
 const overrideEnvironment = {
-  OPENCHAMBER_E2E: '1',
-  OPENCHAMBER_UPDATER_E2E_URL: 'http://127.0.0.1:49152/updates/',
+  OMPCHAMBER_E2E: '1',
+  OMPCHAMBER_UPDATER_E2E_URL: 'http://127.0.0.1:49152/updates/',
 };
 
 test('production updater feed is immutable GitHub configuration', () => {
@@ -38,9 +38,9 @@ test('requires the complete E2E environment and embedded build-marker conjunctio
   const cases = [
     {},
     { environment: overrideEnvironment },
-    { environment: { OPENCHAMBER_E2E: '1' }, testBuild: true },
+    { environment: { OMPCHAMBER_E2E: '1' }, testBuild: true },
     {
-      environment: { OPENCHAMBER_UPDATER_E2E_URL: overrideEnvironment.OPENCHAMBER_UPDATER_E2E_URL },
+      environment: { OMPCHAMBER_UPDATER_E2E_URL: overrideEnvironment.OMPCHAMBER_UPDATER_E2E_URL },
       testBuild: true,
     },
     { environment: overrideEnvironment, testBuild: false },
@@ -80,7 +80,7 @@ test('uses a generic feed only when every test-only gate is valid', () => {
 test('invalid URLs fall back to the production feed even with both test gates', () => {
   for (const url of ['https://example.com/feed', 'http://localhost/feed', '']) {
     assert.equal(resolveUpdaterFeed({
-      environment: { ...overrideEnvironment, OPENCHAMBER_UPDATER_E2E_URL: url },
+      environment: { ...overrideEnvironment, OMPCHAMBER_UPDATER_E2E_URL: url },
       testBuild: true,
     }), PRODUCTION_UPDATER_FEED);
   }

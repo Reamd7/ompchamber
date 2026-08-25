@@ -16,8 +16,8 @@ test('renews an expired outside-file grant before returning read options', async
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
-      __OPENCHAMBER_ELECTRON__: { runtime: 'electron' },
-      __OPENCHAMBER_DESKTOP__: {
+      __OMPCHAMBER_ELECTRON__: { runtime: 'electron' },
+      __OMPCHAMBER_DESKTOP__: {
         invoke: async () => null,
         grantFileAccess: (path: string) => grantFileAccess(path),
       },

@@ -76,7 +76,7 @@ describe('OpenChamber foreground update route', () => {
     await request(app)
       .post('/api/openchamber/update-install')
       .expect(409, {
-        error: 'Foreground servers must be updated by their service manager. Set OPENCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
       });
 
     expect(childProcess.spawnSync).not.toHaveBeenCalled();
@@ -86,14 +86,14 @@ describe('OpenChamber foreground update route', () => {
     const { app } = createApp({
       environment: {
         INVOCATION_ID: 'systemd-invocation',
-        OPENCHAMBER_SYSTEMD_UNIT: 'openchamber.service; rm -rf /',
+        OMPCHAMBER_SYSTEMD_UNIT: 'openchamber.service; rm -rf /',
       },
     });
 
     await request(app)
       .post('/api/openchamber/update-install')
       .expect(409, {
-        error: 'Foreground servers must be updated by their service manager. Set OPENCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
       });
 
     expect(childProcess.spawnSync).not.toHaveBeenCalled();
@@ -105,7 +105,7 @@ describe('OpenChamber foreground update route', () => {
     const { app } = createApp({
       environment: {
         INVOCATION_ID: 'systemd-invocation',
-        OPENCHAMBER_SYSTEMD_UNIT: 'ompchamber@wsl.service',
+        OMPCHAMBER_SYSTEMD_UNIT: 'ompchamber@wsl.service',
         PATH: '/home/syu/.npm-global/bin:/usr/bin:/bin',
       },
     });

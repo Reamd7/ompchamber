@@ -38,7 +38,7 @@ const REFRESH_INTERVAL_MS = 2_000;
  */
 const isUnreachableFromHere = (): boolean => {
   if (typeof window === 'undefined') return false;
-  if (window.__OPENCHAMBER_ELECTRON__) return false;
+  if (window.__OMPCHAMBER_ELECTRON__) return false;
   const baseUrl = getRuntimeApiBaseUrl();
   if (!baseUrl) return false;
   try {

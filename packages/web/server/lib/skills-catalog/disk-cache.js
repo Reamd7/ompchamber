@@ -2,8 +2,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const resolveDataDir = () => (process.env.OPENCHAMBER_DATA_DIR
-  ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+const resolveDataDir = () => (process.env.OMPCHAMBER_DATA_DIR
+  ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
   : path.join(os.homedir(), '.config', 'openchamber'));
 
 const readJsonFile = (filePath) => {

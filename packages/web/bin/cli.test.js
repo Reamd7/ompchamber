@@ -45,16 +45,16 @@ import {
 } from './cli.js';
 
 async function withTempOMPChamberDataDir(fn) {
-  const previous = process.env.OPENCHAMBER_DATA_DIR;
+  const previous = process.env.OMPCHAMBER_DATA_DIR;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-cli-test-'));
-  process.env.OPENCHAMBER_DATA_DIR = dir;
+  process.env.OMPCHAMBER_DATA_DIR = dir;
   try {
     return await fn(dir);
   } finally {
     if (typeof previous === 'string') {
-      process.env.OPENCHAMBER_DATA_DIR = previous;
+      process.env.OMPCHAMBER_DATA_DIR = previous;
     } else {
-      delete process.env.OPENCHAMBER_DATA_DIR;
+      delete process.env.OMPCHAMBER_DATA_DIR;
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -680,15 +680,15 @@ describe('network-exposed auth validation', () => {
   });
 
   it('allows explicit unsafe LAN override from process env only', () => {
-    const previous = process.env.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN;
-    process.env.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN = 'true';
+    const previous = process.env.OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN;
+    process.env.OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN = 'true';
     try {
       expect(() => assertAuthenticatedNetworkExposure({ host: '0.0.0.0' })).not.toThrow();
     } finally {
       if (typeof previous === 'string') {
-        process.env.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN = previous;
+        process.env.OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN = previous;
       } else {
-        delete process.env.OPENCHAMBER_ALLOW_UNAUTHENTICATED_LAN;
+        delete process.env.OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN;
       }
     }
   });
@@ -732,30 +732,30 @@ describe('serve UI password resolution', () => {
 });
 
 describe('serve host resolution', () => {
-  it('uses OPENCHAMBER_HOST when --host is not provided', () => {
-    const previous = process.env.OPENCHAMBER_HOST;
-    process.env.OPENCHAMBER_HOST = '192.0.2.20';
+  it('uses OMPCHAMBER_HOST when --host is not provided', () => {
+    const previous = process.env.OMPCHAMBER_HOST;
+    process.env.OMPCHAMBER_HOST = '192.0.2.20';
     try {
       expect(resolveServeHost(undefined)).toBe('192.0.2.20');
     } finally {
       if (typeof previous === 'string') {
-        process.env.OPENCHAMBER_HOST = previous;
+        process.env.OMPCHAMBER_HOST = previous;
       } else {
-        delete process.env.OPENCHAMBER_HOST;
+        delete process.env.OMPCHAMBER_HOST;
       }
     }
   });
 
-  it('prefers explicit --host over OPENCHAMBER_HOST', () => {
-    const previous = process.env.OPENCHAMBER_HOST;
-    process.env.OPENCHAMBER_HOST = '192.0.2.20';
+  it('prefers explicit --host over OMPCHAMBER_HOST', () => {
+    const previous = process.env.OMPCHAMBER_HOST;
+    process.env.OMPCHAMBER_HOST = '192.0.2.20';
     try {
       expect(resolveServeHost('192.0.2.21')).toBe('192.0.2.21');
     } finally {
       if (typeof previous === 'string') {
-        process.env.OPENCHAMBER_HOST = previous;
+        process.env.OMPCHAMBER_HOST = previous;
       } else {
-        delete process.env.OPENCHAMBER_HOST;
+        delete process.env.OMPCHAMBER_HOST;
       }
     }
   });

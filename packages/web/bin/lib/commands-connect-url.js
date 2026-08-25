@@ -42,10 +42,10 @@ function isValidRelayUrl(value) {
 }
 
 // Resolve the relay endpoint the same way the running host does (service.js):
-// OPENCHAMBER_RELAY_URL env override, then the stored setting, then the default —
+// OMPCHAMBER_RELAY_URL env override, then the stored setting, then the default —
 // so the pairing link points at the same relay the host connects out to.
 function resolveRelayUrl(settings) {
-  const envUrl = process.env.OPENCHAMBER_RELAY_URL;
+  const envUrl = process.env.OMPCHAMBER_RELAY_URL;
   if (isValidRelayUrl(envUrl)) return envUrl.trim();
   const stored = settings?.privateRelay?.relayUrl;
   if (isValidRelayUrl(stored)) return stored.trim();
@@ -139,7 +139,7 @@ function buildPairingPayload({ pairing, label, candidates }) {
 
 async function resolveConnectUrlServerUrl(options) {
   let hostOverride = options.host;
-  if (typeof hostOverride !== 'string' && !process.env.OPENCHAMBER_HOST) {
+  if (typeof hostOverride !== 'string' && !process.env.OMPCHAMBER_HOST) {
     const storedOptions = readInstanceOptions(await getInstanceFilePath(options.port));
     if (typeof storedOptions?.host === 'string' && storedOptions.host.trim()) {
       hostOverride = storedOptions.host.trim();
@@ -207,8 +207,8 @@ function normalizeServerUrlForConnection(value) {
 }
 
 function getOMPChamberDataDir() {
-  return process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+  return process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber');
 }
 

@@ -282,7 +282,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
   const bundledOpenCodeCliCandidates = () => {
     const names = process.platform === 'win32' ? ['opencode.exe'] : ['opencode'];
     const roots = [
-      process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR,
+      process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR,
       typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'opencode-cli') : null,
     ]
       .map((value) => (typeof value === 'string' ? value.trim() : ''))
@@ -355,7 +355,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
     // Resolves the RUNTIME that launches the managed omp host (Bun), not an
     // opencode CLI. Kept under its historical name because the resolution
     // snapshot, PATH augmentation, and settings plumbing all flow through it.
-    const explicit = [process.env.OPENCHAMBER_OMP_HOST_RUNTIME, process.env.OPENCODE_BINARY]
+    const explicit = [process.env.OMPCHAMBER_OMP_HOST_RUNTIME, process.env.OPENCODE_BINARY]
       .map(stripWrappingQuotes)
       .filter(Boolean);
 
@@ -387,7 +387,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const resolveNodeCliPath = () => {
-    const explicit = [process.env.NODE_BINARY, process.env.OPENCHAMBER_NODE_BINARY]
+    const explicit = [process.env.NODE_BINARY, process.env.OMPCHAMBER_NODE_BINARY]
       .map((v) => (typeof v === 'string' ? v.trim() : ''))
       .filter(Boolean);
 
@@ -452,7 +452,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
   const resolveBunCliPath = () => {
-    const explicit = [process.env.BUN_BINARY, process.env.OPENCHAMBER_BUN_BINARY]
+    const explicit = [process.env.BUN_BINARY, process.env.OMPCHAMBER_BUN_BINARY]
       .map((v) => (typeof v === 'string' ? v.trim() : ''))
       .filter(Boolean);
 
@@ -955,7 +955,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
         clearWslOpencodeResolution();
         // The setting now names the runtime that launches the managed omp
         // host (Bun); OPENCODE_BINARY stays in sync for child-env snapshots.
-        process.env.OPENCHAMBER_OMP_HOST_RUNTIME = normalized;
+        process.env.OMPCHAMBER_OMP_HOST_RUNTIME = normalized;
         process.env.OPENCODE_BINARY = normalized;
         prependToPath(path.dirname(normalized));
         state.resolvedOpencodeBinary = normalized;
@@ -1028,7 +1028,7 @@ export const createOpenCodeEnvRuntime = (deps) => {
       return state.resolvedGitBinary;
     }
 
-    const explicit = [process.env.GIT_BINARY, process.env.OPENCHAMBER_GIT_BINARY]
+    const explicit = [process.env.GIT_BINARY, process.env.OMPCHAMBER_GIT_BINARY]
       .map((value) => (typeof value === 'string' ? value.trim() : ''))
       .filter(Boolean);
     for (const candidate of explicit) {

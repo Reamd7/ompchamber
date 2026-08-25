@@ -27,7 +27,7 @@ export const buildLocalDesktopHost = (localOrigin?: string | null): DesktopHost 
 
 export const getLocalDesktopOrigin = (): string => {
   if (typeof window === 'undefined') return '';
-  return window.__OPENCHAMBER_LOCAL_ORIGIN__ || window.location.origin;
+  return window.__OMPCHAMBER_LOCAL_ORIGIN__ || window.location.origin;
 };
 
 export const runtimeKeyForDesktopHost = (host: DesktopHost): string => {

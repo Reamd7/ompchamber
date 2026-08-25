@@ -31,8 +31,8 @@ const DEFAULT_TIMEOUT_MS = 20000;
 const DISK_CACHE_VERSION = 1;
 
 const cacheFilePath = () => path.join(
-  process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+  process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber'),
   'models-dev.catalog.json',
 );

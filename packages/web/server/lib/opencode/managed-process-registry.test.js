@@ -75,7 +75,7 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
 
   runOnWindows('reaps a dead-owner omp-host.exe orphan and prunes its entry', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'omp-registry-test-'));
-    process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY = dir;
+    process.env.OMPCHAMBER_MANAGED_PROCESS_REGISTRY = dir;
     const entryFile = path.join(dir, '4242.json');
     writeFileSync(
       entryFile,
@@ -112,14 +112,14 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
       expect(logs.join('\n')).toContain('reaped orphaned engine pid 4242');
       expect(existsSync(entryFile)).toBe(false);
     } finally {
-      delete process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY;
+      delete process.env.OMPCHAMBER_MANAGED_PROCESS_REGISTRY;
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
   runOnWindows('leaves an unrelated-image orphan untouched', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'omp-registry-test-'));
-    process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY = dir;
+    process.env.OMPCHAMBER_MANAGED_PROCESS_REGISTRY = dir;
     const entryFile = path.join(dir, '4243.json');
     writeFileSync(
       entryFile,
@@ -147,7 +147,7 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
       // The entry stays: the process is alive but not provably ours.
       expect(existsSync(entryFile)).toBe(true);
     } finally {
-      delete process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY;
+      delete process.env.OMPCHAMBER_MANAGED_PROCESS_REGISTRY;
       rmSync(dir, { recursive: true, force: true });
     }
   });

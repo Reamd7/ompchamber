@@ -54,7 +54,7 @@ both settings are `false`.
 - Session dispatches do not wait by default. Agents are told to set `wait` only
   when the user asks or the next step requires the completed result.
 - The tool exposes only agent-relevant actions
-  (`OPENCHAMBER_AGENT_TOOL_ACTIONS`): `schedule.status` stays CLI-only because
+  (`OMPCHAMBER_AGENT_TOOL_ACTIONS`): `schedule.status` stays CLI-only because
   `schedule.list` already returns scheduler status, and enable/disable are one
   `schedule.toggle` action driven by the `disabled` boolean.
 - The tool description frames intent: created sessions and scheduled tasks are

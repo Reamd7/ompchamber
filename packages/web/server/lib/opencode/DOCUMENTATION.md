@@ -128,7 +128,7 @@ The runtime maintains active-session count incrementally from idempotent activit
   - `killProcessOnPort(port)`
 
 Managed spawn failure never leaks a child: if the readiness stdout line never
-arrives (configurable via `OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS`, default
+arrives (configurable via `OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS`, default
 30s), or the child dies before printing it, the child is terminated before
 the attempt surfaces its error — registry ownership (and with it teardown)
 starts only after readiness, so an unkilled slow starter would otherwise
@@ -145,7 +145,7 @@ from any present sibling (`GOOGLE_GENERATIVE_AI_API_KEY`, `GOOGLE_API_KEY`,
 the Generative AI SDK path used at chat time. Existing non-empty values are
 never overwritten.
 
-Set `OPENCHAMBER_STARTUP_PERF=1` to emit bounded startup phase records for server listen, managed OpenCode preparation/readiness, and proxy readiness holds. Every OpenCode bootstrap emits one terminal `opencode.bootstrap.ready` or `opencode.bootstrap.error` event, including reused and external server paths. Records contain controlled phase/outcome/route labels and timing values only; they never contain request URLs, runtime keys, directories, session IDs, credentials, or content.
+Set `OMPCHAMBER_STARTUP_PERF=1` to emit bounded startup phase records for server listen, managed OpenCode preparation/readiness, and proxy readiness holds. Every OpenCode bootstrap emits one terminal `opencode.bootstrap.ready` or `opencode.bootstrap.error` event, including reused and external server paths. Records contain controlled phase/outcome/route labels and timing values only; they never contain request URLs, runtime keys, directories, session IDs, credentials, or content.
 
 macOS `say` voice enumeration starts concurrently with server composition. The server listener and managed OpenCode startup do not wait for it; `/api/tts/say/status` awaits the same authoritative capability promise when queried before enumeration completes.
 
@@ -367,7 +367,7 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
   - `POST /api/openchamber/update-install`
     - Foreground servers running under a systemd user unit queue installation in
       a separate transient unit and restart the configured service afterwards.
-      `OPENCHAMBER_SYSTEMD_UNIT` overrides the default `openchamber.service`.
+      `OMPCHAMBER_SYSTEMD_UNIT` overrides the default `openchamber.service`.
   - `GET /api/openchamber/models-metadata`
   - `GET /api/zen/models`
 
@@ -423,7 +423,7 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
 - User config: `~/.config/opencode/opencode.json`.
 - Project config: `<workingDirectory>/.opencode/opencode.json` or `opencode.json`.
 - Custom config: `OPENCODE_CONFIG` env var path.
-- Rate limit config: `OPENCHAMBER_RATE_LIMIT_MAX_ATTEMPTS`, `OPENCHAMBER_RATE_LIMIT_NO_IP_MAX_ATTEMPTS` env vars.
+- Rate limit config: `OMPCHAMBER_RATE_LIMIT_MAX_ATTEMPTS`, `OMPCHAMBER_RATE_LIMIT_NO_IP_MAX_ATTEMPTS` env vars.
 
 ## Notes for contributors
 - This module serves as foundation for OpenCode-related server utilities.

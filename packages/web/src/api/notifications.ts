@@ -184,7 +184,7 @@ const notifyWithDesktop = async (payload?: NotificationPayload): Promise<boolean
     return false;
   }
 
-  const desktop = (window as unknown as { __OPENCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OPENCHAMBER_DESKTOP__;
+  const desktop = (window as unknown as { __OMPCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OMPCHAMBER_DESKTOP__;
   if (!desktop?.invoke) {
     return false;
   }
@@ -214,7 +214,7 @@ export const createWebNotificationsAPI = (): NotificationsAPI => ({
   },
   canNotify: () => {
     if (typeof window !== 'undefined') {
-      const desktop = (window as unknown as { __OPENCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OPENCHAMBER_DESKTOP__;
+      const desktop = (window as unknown as { __OMPCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OMPCHAMBER_DESKTOP__;
       if (desktop?.invoke) {
         return true;
       }

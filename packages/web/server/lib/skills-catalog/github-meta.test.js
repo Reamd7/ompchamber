@@ -10,11 +10,11 @@ let tempDataDir;
 
 beforeEach(() => {
   tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'github-meta-test-'));
-  process.env.OPENCHAMBER_DATA_DIR = tempDataDir;
+  process.env.OMPCHAMBER_DATA_DIR = tempDataDir;
 });
 
 afterEach(() => {
-  delete process.env.OPENCHAMBER_DATA_DIR;
+  delete process.env.OMPCHAMBER_DATA_DIR;
   globalThis.fetch = originalFetch;
   clearGitHubMetaCache();
   vi.restoreAllMocks();

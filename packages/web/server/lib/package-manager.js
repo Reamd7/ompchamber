@@ -23,8 +23,8 @@ function getSpawnSyncBaseOptions() {
   return process.platform === 'win32' ? { windowsHide: true } : {};
 }
 // Optional hosted update-check API (upstream telemetry service is disabled
-// for this fork; set OPENCHAMBER_UPDATE_API_URL to use a custom one).
-const UPDATE_CHECK_URL = process.env.OPENCHAMBER_UPDATE_API_URL || '';
+// for this fork; set OMPCHAMBER_UPDATE_API_URL to use a custom one).
+const UPDATE_CHECK_URL = process.env.OMPCHAMBER_UPDATE_API_URL || '';
 
 function getOpenChamberConfigDir() {
   if (process.platform === 'win32') {
@@ -392,7 +392,7 @@ export function detectPackageManagerDetails() {
   // dozen spawnSync(pm, ['bin', '-g']) calls with 10s timeouts each; under
   // the in-process server every one blocks the Electron main event loop and
   // manifests as a multi-second UI freeze. Short-circuit here.
-  if (process.env.OPENCHAMBER_RUNTIME === 'desktop') {
+  if (process.env.OMPCHAMBER_RUNTIME === 'desktop') {
     return {
       packageManager: 'electron',
       reason: 'desktop-runtime',
@@ -412,7 +412,7 @@ export function detectPackageManagerDetails() {
       };
   }
 
-  const forcedPm = process.env.OPENCHAMBER_PACKAGE_MANAGER?.trim();
+  const forcedPm = process.env.OMPCHAMBER_PACKAGE_MANAGER?.trim();
   if (forcedPm && ['npm', 'pnpm', 'yarn', 'bun'].includes(forcedPm)) {
     const forcedPmCommand = resolvePackageManagerCommand(forcedPm);
     if (isCommandAvailable(forcedPmCommand)) {

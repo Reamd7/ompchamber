@@ -435,7 +435,7 @@ export const listenDesktopSshStatus = async (
     return async () => {};
   }
 
-  const desktop = (window as unknown as { __OPENCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OPENCHAMBER_DESKTOP__;
+  const desktop = (window as unknown as { __OMPCHAMBER_DESKTOP__?: DesktopBridgeGlobal }).__OMPCHAMBER_DESKTOP__;
   const listen = desktop?.listen;
   if (typeof listen !== 'function') {
     return async () => {};

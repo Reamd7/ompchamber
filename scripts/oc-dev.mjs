@@ -303,8 +303,8 @@ function startInstalledInstance(directory, port) {
   run('node', [cliPath, '--port', port], {
     cwd: directory,
     env: {
-      OPENCHAMBER_UI_PASSWORD: process.env.OPENCHAMBER_PASSWORD || '',
-      OPENCHAMBER_HOST: '0.0.0.0',
+      OMPCHAMBER_UI_PASSWORD: process.env.OMPCHAMBER_PASSWORD || '',
+      OMPCHAMBER_HOST: '0.0.0.0',
     },
     label: `start instance on ${port}`,
   });
@@ -378,7 +378,7 @@ async function deployWeb(options, config) {
   step(`Starting global instance on ${GLOBAL_PORT}`, () => {
     const cliPath = installedGlobalWebCli();
     if (!cliPath) throw new Error('Global OpenChamber CLI was not installed by bun add -g');
-    run('node', [cliPath, '--port', GLOBAL_PORT], { env: { OPENCHAMBER_UI_PASSWORD: process.env.OPENCHAMBER_PASSWORD || '', OPENCHAMBER_HOST: '0.0.0.0' } });
+    run('node', [cliPath, '--port', GLOBAL_PORT], { env: { OMPCHAMBER_UI_PASSWORD: process.env.OMPCHAMBER_PASSWORD || '', OMPCHAMBER_HOST: '0.0.0.0' } });
   });
 }
 
@@ -402,7 +402,7 @@ async function deployRemoteWeb(options, config) {
   step('Resetting remote install state', () => run('ssh', [host, `cd ~/${dir} && rm -f package.json package-lock.json pnpm-lock.yaml bun.lockb && rm -rf node_modules`]));
   step('Preparing remote package manifest', () => run('ssh', [host, `cd ~/${dir} && ${REMOTE_RUNTIME_ENV}; npm init -y >/dev/null 2>&1`]));
   step('Installing remote package', () => run('ssh', [host, `cd ~/${dir} && ${REMOTE_RUNTIME_ENV}; npm install ./releases/${packageBase}`]));
-  step(`Starting remote instance on ${host}:${port}`, () => run('ssh', [host, `set -e; cd ~/${dir}; ${REMOTE_RUNTIME_ENV}; PASSWORD_VALUE=$(grep '^export OPENCHAMBER_UI_PASSWORD=' ~/.bashrc 2>/dev/null | sed -E 's/.*=["“]?([^"”]+)["”]?/\\1/' || true); if [ -n "$PASSWORD_VALUE" ]; then export OPENCHAMBER_UI_PASSWORD="$PASSWORD_VALUE"; fi; if [ ${quote(apiOnly)} = 'true' ]; then export OPENCHAMBER_API_ONLY=true; fi; OPENCHAMBER_HOST=0.0.0.0 node ./node_modules/ompchamber/bin/cli.js --port ${quote(port)} >/dev/null 2>&1; sleep 0.5; if command -v lsof >/dev/null 2>&1; then lsof -ti :${quote(port)} >/dev/null 2>&1 || exit 1; fi`]));
+  step(`Starting remote instance on ${host}:${port}`, () => run('ssh', [host, `set -e; cd ~/${dir}; ${REMOTE_RUNTIME_ENV}; PASSWORD_VALUE=$(grep '^export OMPCHAMBER_UI_PASSWORD=' ~/.bashrc 2>/dev/null | sed -E 's/.*=["“]?([^"”]+)["”]?/\\1/' || true); if [ -n "$PASSWORD_VALUE" ]; then export OMPCHAMBER_UI_PASSWORD="$PASSWORD_VALUE"; fi; if [ ${quote(apiOnly)} = 'true' ]; then export OMPCHAMBER_API_ONLY=true; fi; OMPCHAMBER_HOST=0.0.0.0 node ./node_modules/ompchamber/bin/cli.js --port ${quote(port)} >/dev/null 2>&1; sleep 0.5; if command -v lsof >/dev/null 2>&1; then lsof -ti :${quote(port)} >/dev/null 2>&1 || exit 1; fi`]));
   log.success(`Remote deployment ready: ${host}:${port}`);
 }
 
@@ -418,7 +418,7 @@ async function startWebDev(options) {
     run('bun', ['run', 'dev:web:hmr'], { env: { VITE_ENABLE_REACT_SCAN: '1' } });
   } else if (mode === 'hmr-lan') {
     log.info('Starting web HMR LAN/mobile loop. Open the LAN URL printed after startup.');
-    run('bun', ['run', 'dev:web:hmr'], { env: { OPENCHAMBER_HMR_HOST: '0.0.0.0' } });
+    run('bun', ['run', 'dev:web:hmr'], { env: { OMPCHAMBER_HMR_HOST: '0.0.0.0' } });
   } else if (mode === 'full') {
     run('bun', ['run', 'dev:web:full']);
   } else {
@@ -439,7 +439,7 @@ async function startMobileDev(options) {
     throw new Error('iOS mobile dev actions require macOS and Xcode.');
   }
 
-  const hmrPort = process.env.OPENCHAMBER_HMR_UI_PORT || '5180';
+  const hmrPort = process.env.OMPCHAMBER_HMR_UI_PORT || '5180';
   let hmrBindHost = '127.0.0.1';
   let liveReloadHost = '127.0.0.1';
   let platform = 'ios';

@@ -12,7 +12,7 @@ other.
 - `service.js` validates and executes the fixed project, model, session, and
   scheduled-task action allowlist. `actions.js` marks CLI-only actions with
   `agentExposed: false` (currently `schedule.status`); the agent tool consumes
-  the filtered `OPENCHAMBER_AGENT_TOOL_*` exports. `schedule.toggle` requires
+  the filtered `OMPCHAMBER_AGENT_TOOL_*` exports. `schedule.toggle` requires
   the `disabled` boolean and replaces separate enable/disable actions;
   `schedule.list` also returns scheduler status as `scheduler`.
 - `routes.js` is the authenticated CLI HTTP adapter. It forwards one action,

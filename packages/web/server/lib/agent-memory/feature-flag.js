@@ -14,6 +14,6 @@
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
 export const isAgentMemoryFeatureAvailable = () => {
-  const raw = process.env.OPENCHAMBER_MEMORY_ENABLE;
+  const raw = process.env.OMPCHAMBER_MEMORY_ENABLE;
   return typeof raw === 'string' && TRUTHY.has(raw.trim().toLowerCase());
 };

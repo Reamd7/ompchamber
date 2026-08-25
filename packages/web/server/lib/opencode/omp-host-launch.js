@@ -19,7 +19,7 @@ const hostBinaryName = () => (process.platform === 'win32' ? 'omp-host.exe' : 'o
 
 const findBundledHostBinary = () => {
   const dirs = [
-    process.env.OPENCHAMBER_BUNDLED_OMP_HOST_DIR,
+    process.env.OMPCHAMBER_BUNDLED_OMP_HOST_DIR,
     process.resourcesPath ? path.join(process.resourcesPath, 'omp-host') : null,
   ].filter(Boolean);
   for (const dir of dirs) {
@@ -32,14 +32,14 @@ const findBundledHostBinary = () => {
 /**
  * Resolve the runtime binary that launches the omp host from source.
  *
- * Priority: explicit OPENCHAMBER_OMP_HOST_RUNTIME env → the current process
+ * Priority: explicit OMPCHAMBER_OMP_HOST_RUNTIME env → the current process
  * when it already runs under Bun → `bun` resolved from PATH.
  */
 export const resolveOmpHostRuntimeBinary = () => {
-  const explicit = (process.env.OPENCHAMBER_OMP_HOST_RUNTIME || '').trim();
+  const explicit = (process.env.OMPCHAMBER_OMP_HOST_RUNTIME || '').trim();
   if (explicit) {
     if (!fs.existsSync(explicit)) {
-      const error = new Error(`OPENCHAMBER_OMP_HOST_RUNTIME does not exist: ${explicit}`);
+      const error = new Error(`OMPCHAMBER_OMP_HOST_RUNTIME does not exist: ${explicit}`);
       error.code = 'OMP_HOST_RUNTIME_INVALID';
       throw error;
     }
@@ -61,10 +61,10 @@ export const resolveOmpHostRuntimeBinary = () => {
 export const resolveOmpHostLaunchSpec = ({ hostname, port }) => {
   const serveArgs = ['serve', '--hostname', hostname, '--port', String(port)];
 
-  const explicitHost = (process.env.OPENCHAMBER_OMP_HOST_BINARY || '').trim();
+  const explicitHost = (process.env.OMPCHAMBER_OMP_HOST_BINARY || '').trim();
   if (explicitHost) {
     if (!fs.existsSync(explicitHost)) {
-      const error = new Error(`OPENCHAMBER_OMP_HOST_BINARY does not exist: ${explicitHost}`);
+      const error = new Error(`OMPCHAMBER_OMP_HOST_BINARY does not exist: ${explicitHost}`);
       error.code = 'OMP_HOST_RUNTIME_INVALID';
       throw error;
     }

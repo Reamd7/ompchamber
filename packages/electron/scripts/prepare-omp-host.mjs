@@ -135,7 +135,7 @@ const main = async () => {
     throw new Error(`omp host entry missing: ${hostEntry}`);
   }
   const targetArchitecture = resolveTargetArchitecture();
-  const target = process.env.OPENCHAMBER_OMP_HOST_COMPILE_TARGET || targetForPlatform(process.platform, targetArchitecture);
+  const target = process.env.OMPCHAMBER_OMP_HOST_COMPILE_TARGET || targetForPlatform(process.platform, targetArchitecture);
   const binaryName = process.platform === 'win32' ? 'omp-host.exe' : 'omp-host';
   const outputBinary = path.join(outputDir, binaryName);
 

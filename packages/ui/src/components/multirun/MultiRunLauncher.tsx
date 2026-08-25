@@ -195,7 +195,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
 
   const macosMajorVersion = React.useMemo(() => {
     if (typeof window === 'undefined') return null;
-    const injected = (window as unknown as { __OPENCHAMBER_MACOS_MAJOR__?: unknown }).__OPENCHAMBER_MACOS_MAJOR__;
+    const injected = (window as unknown as { __OMPCHAMBER_MACOS_MAJOR__?: unknown }).__OMPCHAMBER_MACOS_MAJOR__;
     if (typeof injected === 'number' && Number.isFinite(injected) && injected > 0) return injected;
     if (typeof navigator === 'undefined') return null;
     const match = (navigator.userAgent || '').match(/Mac OS X (\d+)[._](\d+)/);

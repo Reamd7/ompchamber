@@ -24,7 +24,7 @@ export default defineConfig(({ command }) => ({
     define: {
       'process.env.NODE_ENV': JSON.stringify(command === 'build' ? 'production' : 'development'),
       global: 'globalThis',
-      '__OPENCHAMBER_WEBVIEW_BUILD_TIME__': JSON.stringify(new Date().toISOString()),
+      '__OMPCHAMBER_WEBVIEW_BUILD_TIME__': JSON.stringify(new Date().toISOString()),
     },
   },
   output: {

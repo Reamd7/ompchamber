@@ -13,11 +13,11 @@ const DEFAULT_STORE_VERSION = 1;
 const DEFAULT_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_RP_NAME = 'OpenChamber';
 
-const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
-  ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+const OMPCHAMBER_DATA_DIR = process.env.OMPCHAMBER_DATA_DIR
+  ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
   : path.join(os.homedir(), '.config', 'openchamber');
 
-const PASSKEY_STORE_FILE = path.join(OPENCHAMBER_DATA_DIR, 'ui-passkeys.json');
+const PASSKEY_STORE_FILE = path.join(OMPCHAMBER_DATA_DIR, 'ui-passkeys.json');
 
 const createUserId = () => crypto.randomBytes(32).toString('base64url');
 

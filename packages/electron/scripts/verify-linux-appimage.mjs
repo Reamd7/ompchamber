@@ -144,7 +144,7 @@ const main = () => {
   // The AppImage artifact name is stamped from packages/electron's version
   // (electron-builder's package root), not the workspace root's.
   const electronPackage = readJson(path.join(electronRoot, 'package.json'));
-  const target = normalizeTargetArchitecture(process.env.OPENCHAMBER_TARGET_ARCH || process.arch).node;
+  const target = normalizeTargetArchitecture(process.env.OMPCHAMBER_TARGET_ARCH || process.arch).node;
   const appImagePath = process.argv[2] ? path.resolve(process.argv[2]) : findAppImage(electronPackage.version, target);
   assertElfArchitecture(appImagePath, target, 'AppImage');
 

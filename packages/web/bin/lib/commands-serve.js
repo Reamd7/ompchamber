@@ -124,11 +124,11 @@ async function serveCommand(options) {
     if (!effectiveUiPassword && !options.suppressUiPasswordWarning) {
       const bindHost = effectiveHost;
       const networkExposed = isNetworkExposedBindHost(bindHost);
-      const warningLine = 'OPENCHAMBER_UI_PASSWORD is not set';
+      const warningLine = 'OMPCHAMBER_UI_PASSWORD is not set';
       const warningDetail = networkExposed
         ? `server is bound to ${bindHost} and reachable on your network with no UI auth. `
-          + 'Set --ui-password or OPENCHAMBER_UI_PASSWORD before exposing it over LAN.'
-        : 'browser UI is unsecured. Use --ui-password or OPENCHAMBER_UI_PASSWORD.';
+          + 'Set --ui-password or OMPCHAMBER_UI_PASSWORD before exposing it over LAN.'
+        : 'browser UI is unsecured. Use --ui-password or OMPCHAMBER_UI_PASSWORD.';
       if (showOutput) {
         logStatus('warning', warningLine, warningDetail);
       } else if (isJsonMode(options)) {
@@ -156,13 +156,13 @@ async function serveCommand(options) {
 
       // Propagate resolved values into env before importing the server module.
       if (ompHostRuntime) {
-        process.env.OPENCHAMBER_OMP_HOST_RUNTIME = ompHostRuntime;
+        process.env.OMPCHAMBER_OMP_HOST_RUNTIME = ompHostRuntime;
       }
       if (effectiveUiPassword) {
-        process.env.OPENCHAMBER_UI_PASSWORD = effectiveUiPassword;
+        process.env.OMPCHAMBER_UI_PASSWORD = effectiveUiPassword;
       }
-      process.env.OPENCHAMBER_HOST = effectiveHost;
-      process.env.OPENCHAMBER_RUNTIME = 'web';
+      process.env.OMPCHAMBER_HOST = effectiveHost;
+      process.env.OMPCHAMBER_RUNTIME = 'web';
 
       // In --quiet mode, redirect stdout/stderr to the log file so that
       // server runtime output (console.log calls) does not pollute the
@@ -282,13 +282,13 @@ async function serveCommand(options) {
       stdio: ['ignore', logFd, logFd, 'ipc'],
       env: {
         ...process.env,
-        OPENCHAMBER_PORT: String(targetPort),
-        OPENCHAMBER_RUNTIME: 'web',
-        OPENCHAMBER_OMP_HOST_RUNTIME: ompHostRuntime,
-        OPENCHAMBER_HOST: effectiveHost,
-        ...(effectiveUiPassword ? { OPENCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
-        ...(options.apiOnly === true ? { OPENCHAMBER_API_ONLY: 'true' } : {}),
-        ...(process.env.OPENCODE_SKIP_START ? { OPENCHAMBER_SKIP_OPENCODE_START: process.env.OPENCODE_SKIP_START } : {}),
+        OMPCHAMBER_PORT: String(targetPort),
+        OMPCHAMBER_RUNTIME: 'web',
+        OMPCHAMBER_OMP_HOST_RUNTIME: ompHostRuntime,
+        OMPCHAMBER_HOST: effectiveHost,
+        ...(effectiveUiPassword ? { OMPCHAMBER_UI_PASSWORD: effectiveUiPassword } : {}),
+        ...(options.apiOnly === true ? { OMPCHAMBER_API_ONLY: 'true' } : {}),
+        ...(process.env.OPENCODE_SKIP_START ? { OMPCHAMBER_SKIP_OPENCODE_START: process.env.OPENCODE_SKIP_START } : {}),
       },
     });
 

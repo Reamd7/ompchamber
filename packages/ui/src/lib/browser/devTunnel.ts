@@ -23,7 +23,7 @@ const localPortByTarget = new Map<string, number>();
 const originByLocalPort = new Map<number, string>();
 
 const isDesktopRuntime = (): boolean => (
-  typeof window !== 'undefined' && Boolean(window.__OPENCHAMBER_ELECTRON__)
+  typeof window !== 'undefined' && Boolean(window.__OMPCHAMBER_ELECTRON__)
 );
 
 /**
@@ -35,7 +35,7 @@ const isRemoteRuntime = (baseUrl: string): boolean => {
   if (!baseUrl) return false;
   try {
     const parsed = new URL(baseUrl, typeof window !== 'undefined' ? window.location.href : undefined);
-    const localOrigin = typeof window !== 'undefined' ? window.__OPENCHAMBER_LOCAL_ORIGIN__ : '';
+    const localOrigin = typeof window !== 'undefined' ? window.__OMPCHAMBER_LOCAL_ORIGIN__ : '';
     if (localOrigin && parsed.origin === localOrigin) return false;
     return !isLoopbackUrl(parsed.toString());
   } catch {

@@ -9,10 +9,10 @@ const originalComSpec = process.env.ComSpec;
 const originalPath = process.env.PATH;
 const originalLocalAppData = process.env.LOCALAPPDATA;
 const originalSystemRoot = process.env.SystemRoot;
-const originalBundledOpencodeCliDir = process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
+const originalBundledOpencodeCliDir = process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
 const originalResourcesPath = process.resourcesPath;
 const originalWslBinary = process.env.WSL_BINARY;
-const originalOpenChamberWslBinary = process.env.OPENCHAMBER_WSL_BINARY;
+const originalOpenChamberWslBinary = process.env.OMPCHAMBER_WSL_BINARY;
 const originalPlatform = process.platform;
 const tempDirs = [];
 const itIf = (condition) => condition ? it : it.skip;
@@ -69,9 +69,9 @@ afterEach(() => {
   }
 
   if (typeof originalBundledOpencodeCliDir === 'string') {
-    process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR = originalBundledOpencodeCliDir;
+    process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR = originalBundledOpencodeCliDir;
   } else {
-    delete process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
+    delete process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
   }
 
   Object.defineProperty(process, 'resourcesPath', {
@@ -86,9 +86,9 @@ afterEach(() => {
   }
 
   if (typeof originalOpenChamberWslBinary === 'string') {
-    process.env.OPENCHAMBER_WSL_BINARY = originalOpenChamberWslBinary;
+    process.env.OMPCHAMBER_WSL_BINARY = originalOpenChamberWslBinary;
   } else {
-    delete process.env.OPENCHAMBER_WSL_BINARY;
+    delete process.env.OMPCHAMBER_WSL_BINARY;
   }
 });
 
@@ -134,20 +134,20 @@ describe('OpenCode env runtime', () => {
   it('clears AppImage ARGV0 when applying a login-shell env snapshot', () => {
     const previousArgv0 = process.env.ARGV0;
     process.env.ARGV0 = '/path/to/OpenChamber.AppImage';
-    delete process.env.OPENCHAMBER_ARGV0_TEST_MARKER;
+    delete process.env.OMPCHAMBER_ARGV0_TEST_MARKER;
     const { runtime, state } = createRuntime({});
     state.cachedLoginShellEnvSnapshot = {
       PATH: '/usr/bin',
       ARGV0: '/leaked/from/shell.AppImage',
-      OPENCHAMBER_ARGV0_TEST_MARKER: '1',
+      OMPCHAMBER_ARGV0_TEST_MARKER: '1',
     };
 
     try {
       runtime.applyLoginShellEnvSnapshot();
       expect(process.env.ARGV0).toBeUndefined();
-      expect(process.env.OPENCHAMBER_ARGV0_TEST_MARKER).toBe('1');
+      expect(process.env.OMPCHAMBER_ARGV0_TEST_MARKER).toBe('1');
     } finally {
-      delete process.env.OPENCHAMBER_ARGV0_TEST_MARKER;
+      delete process.env.OMPCHAMBER_ARGV0_TEST_MARKER;
       if (previousArgv0 === undefined) delete process.env.ARGV0;
       else process.env.ARGV0 = previousArgv0;
     }
@@ -209,7 +209,7 @@ describe('OpenCode env runtime', () => {
     }
     process.env.PATH = pathDir;
     delete process.env.OPENCODE_BINARY;
-    delete process.env.OPENCHAMBER_OMP_HOST_RUNTIME;
+    delete process.env.OMPCHAMBER_OMP_HOST_RUNTIME;
     const { runtime, state } = createRuntime({}, {
       homedir: () => createTempDir('openchamber-empty-home-'),
     });
@@ -223,7 +223,7 @@ describe('OpenCode env runtime', () => {
     const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
     fs.writeFileSync(bundledBinary, '#!/bin/sh\nexit 0\n');
     if (process.platform !== 'win32') fs.chmodSync(bundledBinary, 0o755);
-    process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
+    process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
     const { runtime } = createRuntime({});
 
     expect(runtime.isBundledOpenCodeCliPath(bundledBinary)).toBe(true);
@@ -241,7 +241,7 @@ describe('OpenCode env runtime', () => {
       fs.chmodSync(bundledBinary, 0o755);
       fs.chmodSync(explicitBinary, 0o755);
     }
-    process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
+    process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
     process.env.OPENCODE_BINARY = explicitBinary;
     const { runtime, state } = createRuntime({});
 
@@ -251,9 +251,9 @@ describe('OpenCode env runtime', () => {
 
   it('returns null when no omp host runtime resolves', () => {
     process.env.PATH = createTempDir('openchamber-empty-path-');
-    delete process.env.OPENCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
+    delete process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR;
     delete process.env.OPENCODE_BINARY;
-    delete process.env.OPENCHAMBER_OMP_HOST_RUNTIME;
+    delete process.env.OMPCHAMBER_OMP_HOST_RUNTIME;
     const emptyHome = createTempDir('openchamber-empty-home-');
     const { runtime, state } = createRuntime({}, {
       spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),
@@ -298,7 +298,7 @@ describe('OpenCode env runtime', () => {
     process.env.PATH = createTempDir('openchamber-empty-path-');
     process.env.SystemRoot = createTempDir('openchamber-empty-systemroot-');
     delete process.env.OPENCODE_BINARY;
-    delete process.env.OPENCHAMBER_OMP_HOST_RUNTIME;
+    delete process.env.OMPCHAMBER_OMP_HOST_RUNTIME;
     const { runtime } = createRuntime({}, {
       spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),
       homedir: () => createTempDir('openchamber-empty-home-'),
@@ -314,7 +314,7 @@ describe('OpenCode env runtime', () => {
     fs.writeFileSync(pathBinary, '');
     process.env.PATH = pathDir;
     delete process.env.OPENCODE_BINARY;
-    delete process.env.OPENCHAMBER_OMP_HOST_RUNTIME;
+    delete process.env.OMPCHAMBER_OMP_HOST_RUNTIME;
     const { runtime, state } = createRuntime({}, {
       spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),
       homedir: () => createTempDir('openchamber-empty-home-'),
@@ -330,7 +330,7 @@ describe('OpenCode env runtime', () => {
     process.env.PATH = dir;
     process.env.SystemRoot = dir;
     process.env.WSL_BINARY = path.join(dir, 'missing-wsl.exe');
-    process.env.OPENCHAMBER_WSL_BINARY = path.join(dir, 'missing-openchamber-wsl.exe');
+    process.env.OMPCHAMBER_WSL_BINARY = path.join(dir, 'missing-openchamber-wsl.exe');
     const { runtime } = createRuntime({ opencodeBinary: 'wsl:/usr/local/bin/opencode' });
 
     await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({

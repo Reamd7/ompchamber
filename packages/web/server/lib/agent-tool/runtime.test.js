@@ -8,7 +8,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createAgentToolRuntime } from './runtime.js';
-import { OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS, OPENCHAMBER_CONTROL_ACTION_DEFINITIONS } from '../openchamber-control/actions.js';
+import { OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS, OMPCHAMBER_CONTROL_ACTION_DEFINITIONS } from '../openchamber-control/actions.js';
 
 const temporaryDirectories = [];
 
@@ -36,7 +36,7 @@ const createRuntime = async (overrides = {}) => {
 
 describe('agent tool action allowlist', () => {
   it('defines a short title and agent description for every action', () => {
-    expect(OPENCHAMBER_CONTROL_ACTION_DEFINITIONS.every(({ action, title, description }) => action && title && description)).toBe(true);
+    expect(OMPCHAMBER_CONTROL_ACTION_DEFINITIONS.every(({ action, title, description }) => action && title && description)).toBe(true);
   });
 
   it.each([
@@ -90,10 +90,10 @@ describe('managed agent tool runtime', () => {
       ['example-plugin', { flag: true }],
       expect.stringContaining('/agent-tool/openchamber-plugin.js'),
     ]);
-    expect(preparedEnv.OPENCHAMBER_AGENT_TOOL_URL).toBe('http://127.0.0.1:3901/api/openchamber/agent-tool');
-    expect(preparedEnv.OPENCHAMBER_AGENT_TOOL_TOKEN).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(preparedEnv.OMPCHAMBER_AGENT_TOOL_URL).toBe('http://127.0.0.1:3901/api/openchamber/agent-tool');
+    expect(preparedEnv.OMPCHAMBER_AGENT_TOOL_TOKEN).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(source).toContain('openchamber: {');
-    for (const { action, description } of OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS) {
+    for (const { action, description } of OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS) {
       expect(source).toContain(JSON.stringify({ const: action, description }));
     }
     expect(source).not.toContain('"schedule.status"');
@@ -111,7 +111,7 @@ describe('managed agent tool runtime', () => {
     expect(hooks.tool.openchamber.args.parameters.properties.sessionId).toEqual({ type: 'string' });
     expect(source).not.toContain('title: "OpenChamber"');
     expect(source).not.toContain('@opencode-ai/plugin');
-    expect(source).not.toContain(preparedEnv.OPENCHAMBER_AGENT_TOOL_TOKEN);
+    expect(source).not.toContain(preparedEnv.OMPCHAMBER_AGENT_TOOL_TOKEN);
   });
 
   it('emits both tools, each carrying only its own actions and inputs', async () => {
@@ -142,10 +142,10 @@ describe('managed agent tool runtime', () => {
 
     const sent = [];
     const originalFetch = globalThis.fetch;
-    const originalUrl = process.env.OPENCHAMBER_AGENT_TOOL_URL;
-    const originalToken = process.env.OPENCHAMBER_AGENT_TOOL_TOKEN;
-    process.env.OPENCHAMBER_AGENT_TOOL_URL = prepared.OPENCHAMBER_AGENT_TOOL_URL;
-    process.env.OPENCHAMBER_AGENT_TOOL_TOKEN = prepared.OPENCHAMBER_AGENT_TOOL_TOKEN;
+    const originalUrl = process.env.OMPCHAMBER_AGENT_TOOL_URL;
+    const originalToken = process.env.OMPCHAMBER_AGENT_TOOL_TOKEN;
+    process.env.OMPCHAMBER_AGENT_TOOL_URL = prepared.OMPCHAMBER_AGENT_TOOL_URL;
+    process.env.OMPCHAMBER_AGENT_TOOL_TOKEN = prepared.OMPCHAMBER_AGENT_TOOL_TOKEN;
     globalThis.fetch = async (_endpoint, init) => {
       sent.push(JSON.parse(init.body));
       return new Response(JSON.stringify({ schemaVersion: 1, ok: true, action: 'browser.open', data: {} }));
@@ -170,8 +170,8 @@ describe('managed agent tool runtime', () => {
       );
     } finally {
       globalThis.fetch = originalFetch;
-      process.env.OPENCHAMBER_AGENT_TOOL_URL = originalUrl;
-      process.env.OPENCHAMBER_AGENT_TOOL_TOKEN = originalToken;
+      process.env.OMPCHAMBER_AGENT_TOOL_URL = originalUrl;
+      process.env.OMPCHAMBER_AGENT_TOOL_TOKEN = originalToken;
     }
 
     expect(sent[0].input).toEqual({ action: 'browser.open', url: 'https://example.test', viewport: 'mobile' });
@@ -348,7 +348,7 @@ describe('managed agent tool runtime', () => {
 
     const response = await request(app)
       .post('/api/openchamber/agent-tool')
-      .set('authorization', `Bearer ${env.OPENCHAMBER_AGENT_TOOL_TOKEN}`)
+      .set('authorization', `Bearer ${env.OMPCHAMBER_AGENT_TOOL_TOKEN}`)
       .send({ input: { action: 'projects.list' } })
       .expect(200);
     expect(response.body).toEqual(expect.objectContaining({ ok: true, action: 'projects.list' }));
@@ -364,12 +364,12 @@ describe('managed agent tool runtime', () => {
     });
     activePort = server.address().port;
 
-    const previousUrl = process.env.OPENCHAMBER_AGENT_TOOL_URL;
-    const previousToken = process.env.OPENCHAMBER_AGENT_TOOL_TOKEN;
+    const previousUrl = process.env.OMPCHAMBER_AGENT_TOOL_URL;
+    const previousToken = process.env.OMPCHAMBER_AGENT_TOOL_TOKEN;
     try {
       const env = await runtime.prepareManagedOpenCodeEnv();
-      process.env.OPENCHAMBER_AGENT_TOOL_URL = env.OPENCHAMBER_AGENT_TOOL_URL;
-      process.env.OPENCHAMBER_AGENT_TOOL_TOKEN = env.OPENCHAMBER_AGENT_TOOL_TOKEN;
+      process.env.OMPCHAMBER_AGENT_TOOL_URL = env.OMPCHAMBER_AGENT_TOOL_URL;
+      process.env.OMPCHAMBER_AGENT_TOOL_TOKEN = env.OMPCHAMBER_AGENT_TOOL_TOKEN;
       const pluginPath = path.join(dataDir, 'agent-tool', 'openchamber-plugin.js');
       const pluginModule = await import(`${pathToFileURL(pluginPath).href}?test=${Date.now()}`);
       const hooks = await pluginModule.OpenChamberPlugin();
@@ -395,10 +395,10 @@ describe('managed agent tool runtime', () => {
         }),
       }));
     } finally {
-      if (previousUrl === undefined) delete process.env.OPENCHAMBER_AGENT_TOOL_URL;
-      else process.env.OPENCHAMBER_AGENT_TOOL_URL = previousUrl;
-      if (previousToken === undefined) delete process.env.OPENCHAMBER_AGENT_TOOL_TOKEN;
-      else process.env.OPENCHAMBER_AGENT_TOOL_TOKEN = previousToken;
+      if (previousUrl === undefined) delete process.env.OMPCHAMBER_AGENT_TOOL_URL;
+      else process.env.OMPCHAMBER_AGENT_TOOL_URL = previousUrl;
+      if (previousToken === undefined) delete process.env.OMPCHAMBER_AGENT_TOOL_TOKEN;
+      else process.env.OMPCHAMBER_AGENT_TOOL_TOKEN = previousToken;
       await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });

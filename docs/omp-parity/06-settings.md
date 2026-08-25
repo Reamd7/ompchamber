@@ -33,7 +33,7 @@
 ### 1.3 对外接口
 
 - **端点**:`GET/PUT /api/omp/settings`(新,见 §5.2/§5.3;集合复数路径,R3)。**R4 进程归属**:两端点与 watcher 只注册/运行在 omp-host 进程内(Basic auth),web server 仅做既有 `/api` 透传代理,不自行接触 Settings 实例或 config.yml。
-- **能力协商(R2)**:设置面以 `GET /api/omp/capabilities` 暴露的 capability 门控——代理端点组 = `settings.v1`;**每目录项目层语义(会话消费 + project-scope 写)= `settings.projectScopes.v1`**(修订轮 2 新增:02 章项目 agent overrides 等跨章消费方按此键门控,不得各自发明);**不使用**本地 env/runtime feature flag(`OPENCHAMBER_OMP_SETTINGS` 之类设计已废弃,§6.2)。capabilities 端点形状归总纲/05 章,本章只消费。
+- **能力协商(R2)**:设置面以 `GET /api/omp/capabilities` 暴露的 capability 门控——代理端点组 = `settings.v1`;**每目录项目层语义(会话消费 + project-scope 写)= `settings.projectScopes.v1`**(修订轮 2 新增:02 章项目 agent overrides 等跨章消费方按此键门控,不得各自发明);**不使用**本地 env/runtime feature flag(`OMPCHAMBER_OMP_SETTINGS` 之类设计已废弃,§6.2)。capabilities 端点形状归总纲/05 章,本章只消费。
 - **事件**:`omp.settings.updated`(经 05 章唯一 `OmpEventBus → /api/omp/events` SSE 通道下发,D1/R1;本章不进 OpenCode wire 生成类型、不另建通道)。
 - **UI**:SettingsView 新增 omp 导航组;`DefaultsSettings` 页重构;`useOmpSettingsStore` 新 store。
 
@@ -381,7 +381,7 @@ omp 拥有并持续维护自己的文件:legacy `settings.json`/agent.db → con
 
 ### 6.2 OpenChamber 侧:字段退役计划(阶段化)
 
-- **阶段 0(开关,REVISED R2)**:不再使用本地 env flag(原 `OPENCHAMBER_OMP_SETTINGS=proxy|legacy` 设计废弃)。门控 = `GET /api/omp/capabilities` 的 `settings.v1`:新 UI 见 capability 缺失(旧 engine)→ 整个 omp 设置页不露出、级联走旧路(降级不报错);旧 UI + 新 engine → 旧 UI 不调用新端点,零影响;relay 旧 bundle → 由 capabilities 声明的最低 UI 版本拦下或降级(R2 三矩阵,矩阵归总纲/05)。
+- **阶段 0(开关,REVISED R2)**:不再使用本地 env flag(原 `OMPCHAMBER_OMP_SETTINGS=proxy|legacy` 设计废弃)。门控 = `GET /api/omp/capabilities` 的 `settings.v1`:新 UI 见 capability 缺失(旧 engine)→ 整个 omp 设置页不露出、级联走旧路(降级不报错);旧 UI + 新 engine → 旧 UI 不调用新端点,零影响;relay 旧 bundle → 由 capabilities 声明的最低 UI 版本拦下或降级(R2 三矩阵,矩阵归总纲/05)。
 - **阶段 1(P0)**:GAP-F1 端点 + F7 屏蔽 + F10 实例拓扑(§5.1 REVISED R2:每目录 keyed 实例注入)落地;`DefaultsSettings` 读侧切到 omp 面。
 - **阶段 2(P0,与 01 同步,REVISED R12 —— 原自动写入设计废弃)**:defaultModel 存量只走"检测 + 确认导入":
   1. **只读检测**(无写入):读 OC settings.json 的 `defaultModel/defaultVariant` 与 omp 侧 `getModelRoleSource('default')`(经 §5.2 GET);

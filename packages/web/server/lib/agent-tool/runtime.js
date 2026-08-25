@@ -1,24 +1,24 @@
 import { parse as parseJsonc } from 'jsonc-parser';
 import { pathToFileURL } from 'node:url';
 import {
-  OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
-  OPENCHAMBER_AGENT_TOOL_ACTIONS,
-  OPENCHAMBER_MEMORY_ACTION_DEFINITIONS,
-  OPENCHAMBER_MEMORY_ACTIONS,
+  OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
+  OMPCHAMBER_AGENT_TOOL_ACTIONS,
+  OMPCHAMBER_MEMORY_ACTION_DEFINITIONS,
+  OMPCHAMBER_MEMORY_ACTIONS,
   resolveAgentToolAction,
-  OPENCHAMBER_WEB_ACTION_DEFINITIONS,
-  OPENCHAMBER_WEB_ACTIONS,
+  OMPCHAMBER_WEB_ACTION_DEFINITIONS,
+  OMPCHAMBER_WEB_ACTIONS,
 } from '../openchamber-control/actions.js';
 
 const TOOL_SCHEMA_VERSION = 1;
 // Everything either managed tool may ask for; the agent allowlist stays
 // narrower than the full control surface.
-const ACTIONS = new Set([...OPENCHAMBER_AGENT_TOOL_ACTIONS, ...OPENCHAMBER_WEB_ACTIONS, ...OPENCHAMBER_MEMORY_ACTIONS]);
+const ACTIONS = new Set([...OMPCHAMBER_AGENT_TOOL_ACTIONS, ...OMPCHAMBER_WEB_ACTIONS, ...OMPCHAMBER_MEMORY_ACTIONS]);
 const AGENT_TOOL_ACTION_TITLES = Object.fromEntries(
   [
-    ...OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
-    ...OPENCHAMBER_WEB_ACTION_DEFINITIONS,
-    ...OPENCHAMBER_MEMORY_ACTION_DEFINITIONS,
+    ...OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
+    ...OMPCHAMBER_WEB_ACTION_DEFINITIONS,
+    ...OMPCHAMBER_MEMORY_ACTION_DEFINITIONS,
   ].map(({ action, title }) => [action, title]),
 );
 
@@ -169,8 +169,8 @@ const createToolEntry = ({ name, description, actions, definitions, parameters }
             },
           },
         })
-        const endpoint = process.env.OPENCHAMBER_AGENT_TOOL_URL
-        const token = process.env.OPENCHAMBER_AGENT_TOOL_TOKEN
+        const endpoint = process.env.OMPCHAMBER_AGENT_TOOL_URL
+        const token = process.env.OMPCHAMBER_AGENT_TOOL_TOKEN
         const failure = (payload) => ({
           title,
           output: JSON.stringify(payload),
@@ -221,8 +221,8 @@ const createPluginSource = ({ includeControl, includeWeb, includeMemory }) => {
     entries.push(createToolEntry({
       name: 'openchamber',
       description: CONTROL_TOOL_DESCRIPTION,
-      actions: OPENCHAMBER_AGENT_TOOL_ACTIONS,
-      definitions: OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
+      actions: OMPCHAMBER_AGENT_TOOL_ACTIONS,
+      definitions: OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS,
       parameters: CONTROL_PARAMETER_PROPERTIES,
     }));
   }
@@ -230,8 +230,8 @@ const createPluginSource = ({ includeControl, includeWeb, includeMemory }) => {
     entries.push(createToolEntry({
       name: 'openchamber_web',
       description: WEB_TOOL_DESCRIPTION,
-      actions: OPENCHAMBER_WEB_ACTIONS,
-      definitions: OPENCHAMBER_WEB_ACTION_DEFINITIONS,
+      actions: OMPCHAMBER_WEB_ACTIONS,
+      definitions: OMPCHAMBER_WEB_ACTION_DEFINITIONS,
       parameters: WEB_PARAMETER_PROPERTIES,
     }));
   }
@@ -239,8 +239,8 @@ const createPluginSource = ({ includeControl, includeWeb, includeMemory }) => {
     entries.push(createToolEntry({
       name: 'openchamber_memory',
       description: MEMORY_TOOL_DESCRIPTION,
-      actions: OPENCHAMBER_MEMORY_ACTIONS,
-      definitions: OPENCHAMBER_MEMORY_ACTION_DEFINITIONS,
+      actions: OMPCHAMBER_MEMORY_ACTIONS,
+      definitions: OMPCHAMBER_MEMORY_ACTION_DEFINITIONS,
       parameters: MEMORY_PARAMETER_PROPERTIES,
     }));
   }
@@ -297,8 +297,8 @@ export const createAgentToolRuntime = (dependencies) => {
     const pluginUrl = pathToFileURL(pluginPath).href;
     return {
       OPENCODE_CONFIG_CONTENT: mergePluginConfig(env.OPENCODE_CONFIG_CONTENT, pluginUrl),
-      OPENCHAMBER_AGENT_TOOL_URL: `http://127.0.0.1:${port}/api/openchamber/agent-tool`,
-      OPENCHAMBER_AGENT_TOOL_TOKEN: activeToken,
+      OMPCHAMBER_AGENT_TOOL_URL: `http://127.0.0.1:${port}/api/openchamber/agent-tool`,
+      OMPCHAMBER_AGENT_TOOL_TOKEN: activeToken,
     };
   };
 

@@ -59,7 +59,7 @@ export type BrowserPaneProps = {
  * page but cannot inspect one, rather than pretending otherwise.
  */
 const isChromiumHost = (): boolean => (
-  typeof window !== 'undefined' && Boolean(window.__OPENCHAMBER_ELECTRON__)
+  typeof window !== 'undefined' && Boolean(window.__OMPCHAMBER_ELECTRON__)
 );
 
 /** How long to keep waiting for a dev server that is still coming up. */

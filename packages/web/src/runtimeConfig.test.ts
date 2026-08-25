@@ -59,11 +59,11 @@ afterAll(() => {
 describe('readRuntimeBootstrapConfig', () => {
   test('reads the runtime injected into the current window', () => {
     const current = makeWindow();
-    current.__OPENCHAMBER_API_BASE_URL__ = ' https://remote.example.com ';
-    current.__OPENCHAMBER_CLIENT_TOKEN__ = ' remote-token ';
-    current.__OPENCHAMBER_LOCAL_ORIGIN__ = ' http://127.0.0.1:3000 ';
-    current.__OPENCHAMBER_RUNTIME_HEADERS__ = { 'x-openchamber-relay': 'relay-value' };
-    current.__OPENCHAMBER_RELAY_HOST_ID__ = ' remote-host ';
+    current.__OMPCHAMBER_API_BASE_URL__ = ' https://remote.example.com ';
+    current.__OMPCHAMBER_CLIENT_TOKEN__ = ' remote-token ';
+    current.__OMPCHAMBER_LOCAL_ORIGIN__ = ' http://127.0.0.1:3000 ';
+    current.__OMPCHAMBER_RUNTIME_HEADERS__ = { 'x-openchamber-relay': 'relay-value' };
+    current.__OMPCHAMBER_RELAY_HOST_ID__ = ' remote-host ';
     installWindow(current);
 
     expect(readRuntimeBootstrapConfig()).toEqual({
@@ -77,8 +77,8 @@ describe('readRuntimeBootstrapConfig', () => {
 
   test('does not read runtime credentials directly from a parent window', () => {
     const parent = makeWindow();
-    parent.__OPENCHAMBER_API_BASE_URL__ = 'https://remote.example.com';
-    parent.__OPENCHAMBER_CLIENT_TOKEN__ = 'remote-token';
+    parent.__OMPCHAMBER_API_BASE_URL__ = 'https://remote.example.com';
+    parent.__OMPCHAMBER_CLIENT_TOKEN__ = 'remote-token';
     const child = makeWindow('?ocPanel=session-chat&sessionId=ses_child');
     child.parent = parent;
     installWindow(child);
@@ -118,15 +118,15 @@ describe('createConfiguredWebAPIs', () => {
 
   test('uses the configured desktop host id across changing SSH tunnel URLs', () => {
     const current = makeWindow();
-    current.__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__ = {
+    current.__OMPCHAMBER_DESKTOP_BOOT_OUTCOME__ = {
       target: 'remote',
       status: 'ok',
       hostId: 'ssh-castle',
       url: 'http://127.0.0.1:62545',
       localAvailable: true,
     };
-    current.__OPENCHAMBER_API_BASE_URL__ = 'http://127.0.0.1:62545';
-    current.__OPENCHAMBER_LOCAL_ORIGIN__ = 'http://127.0.0.1:3901';
+    current.__OMPCHAMBER_API_BASE_URL__ = 'http://127.0.0.1:62545';
+    current.__OMPCHAMBER_LOCAL_ORIGIN__ = 'http://127.0.0.1:3901';
     installWindow(current);
 
     createConfiguredWebAPIs();

@@ -49,7 +49,7 @@ describe('checkForUpdates', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    delete process.env.OPENCHAMBER_UPDATE_API_URL;
+    delete process.env.OMPCHAMBER_UPDATE_API_URL;
   });
 
   const latestRelease = (tag) => fetchMock.when('api.github.com/repos/Reamd7/openchamber/releases/latest', {
@@ -87,7 +87,7 @@ describe('checkForUpdates', () => {
     expect(result.available).toBe(false);
   });
 
-  it('never contacts the hosted update API when OPENCHAMBER_UPDATE_API_URL is unset', async () => {
+  it('never contacts the hosted update API when OMPCHAMBER_UPDATE_API_URL is unset', async () => {
     latestRelease('v1.10.0');
     fetchMock.when('raw.githubusercontent.com', {
       ok: true,
@@ -109,7 +109,7 @@ describe('checkForUpdates', () => {
   });
 
   it('resolves an Android APK asset when an enabled update API returns an AAB', async () => {
-    process.env.OPENCHAMBER_UPDATE_API_URL = 'https://api.openchamber.dev/v1/update/check';
+    process.env.OMPCHAMBER_UPDATE_API_URL = 'https://api.openchamber.dev/v1/update/check';
     vi.resetModules();
     const { checkForUpdates: check } = await import('./package-manager.js');
     fetchMock
@@ -147,7 +147,7 @@ describe('checkForUpdates', () => {
   });
 
   it('keeps a direct Android APK URL from an enabled update API', async () => {
-    process.env.OPENCHAMBER_UPDATE_API_URL = 'https://api.openchamber.dev/v1/update/check';
+    process.env.OMPCHAMBER_UPDATE_API_URL = 'https://api.openchamber.dev/v1/update/check';
     vi.resetModules();
     const { checkForUpdates: check } = await import('./package-manager.js');
     const apkUrl = 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OpenChamber-1.10.0-42-android.apk';

@@ -16,8 +16,8 @@ export const GOAL_OBJECTIVE_CHAR_LIMIT = 5_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{4,128}$/;
 
 const goalsDir = () => path.join(
-  process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+  process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber'),
   'goals',
 );

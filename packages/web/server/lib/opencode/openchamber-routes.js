@@ -5,8 +5,8 @@ function resolveSystemdServiceUnit(environment) {
     return null;
   }
 
-  const configuredUnit = typeof environment.OPENCHAMBER_SYSTEMD_UNIT === 'string'
-    ? environment.OPENCHAMBER_SYSTEMD_UNIT.trim()
+  const configuredUnit = typeof environment.OMPCHAMBER_SYSTEMD_UNIT === 'string'
+    ? environment.OMPCHAMBER_SYSTEMD_UNIT.trim()
     : '';
   const unit = configuredUnit || 'openchamber.service';
   return SYSTEMD_SERVICE_UNIT_PATTERN.test(unit) ? unit : null;
@@ -133,7 +133,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
       if (isForegroundService) {
         if (!systemdServiceUnit) {
           return res.status(409).json({
-            error: 'Foreground servers must be updated by their service manager. Set OPENCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+            error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
           });
         }
 

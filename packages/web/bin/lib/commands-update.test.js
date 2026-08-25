@@ -6,16 +6,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { createUpdateCommand } from './commands-update.js';
 
 async function withTempOMPChamberDataDir(fn) {
-  const previous = process.env.OPENCHAMBER_DATA_DIR;
+  const previous = process.env.OMPCHAMBER_DATA_DIR;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-update-test-'));
-  process.env.OPENCHAMBER_DATA_DIR = dir;
+  process.env.OMPCHAMBER_DATA_DIR = dir;
   try {
     return await fn(dir);
   } finally {
     if (typeof previous === 'string') {
-      process.env.OPENCHAMBER_DATA_DIR = previous;
+      process.env.OMPCHAMBER_DATA_DIR = previous;
     } else {
-      delete process.env.OPENCHAMBER_DATA_DIR;
+      delete process.env.OMPCHAMBER_DATA_DIR;
     }
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -21,7 +21,7 @@ Run commands from the project root unless a section says otherwise.
 | `bun run dev:web:hmr` | Rsbuild dev server + Express API. **Open the Rsbuild URL for HMR**, not the backend. | `5180` (Rsbuild HMR), `3902` (API) |
 | `bun run start:web` | Start the packaged web server. | `3000` by default |
 
-Both are configurable via env vars: `OPENCHAMBER_PORT`, `OPENCHAMBER_HMR_UI_PORT`, `OPENCHAMBER_HMR_API_PORT`.
+Both are configurable via env vars: `OMPCHAMBER_PORT`, `OMPCHAMBER_HMR_UI_PORT`, `OMPCHAMBER_HMR_API_PORT`.
 
 ### Desktop (Electron)
 
@@ -49,9 +49,9 @@ bun run vscode:build    # Build extension + webview
 bun run vscode:package  # Create a local .vsix package
 ```
 
-`bun run vscode:dev` opens an Extension Development Host automatically. You can override the editor or workspace with `OPENCHAMBER_VSCODE_BIN` and `OPENCHAMBER_VSCODE_DEV_WORKSPACE`.
+`bun run vscode:dev` opens an Extension Development Host automatically. You can override the editor or workspace with `OMPCHAMBER_VSCODE_BIN` and `OMPCHAMBER_VSCODE_DEV_WORKSPACE`.
 
-Example: `OPENCHAMBER_VSCODE_BIN=cursor bun run vscode:dev`.
+Example: `OMPCHAMBER_VSCODE_BIN=cursor bun run vscode:dev`.
 
 ### Shared UI (`packages/ui`)
 
@@ -99,9 +99,9 @@ bun run electron:build
 Linux x64 and arm64 AppImages are packaged natively on the matching host architecture. Use Bun for dependency installation and packaging orchestration:
 
 ```bash
-OPENCHAMBER_TARGET_ARCH=x64 bun run electron:build
+OMPCHAMBER_TARGET_ARCH=x64 bun run electron:build
 # On an arm64 host:
-OPENCHAMBER_TARGET_ARCH=arm64 bun run electron:build
+OMPCHAMBER_TARGET_ARCH=arm64 bun run electron:build
 
 bun run --cwd packages/electron verify:linux-appimage
 ```

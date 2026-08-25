@@ -79,7 +79,7 @@ cases only, which is the honest expectation.
 
 ## Shipping dark
 
-Agent memory is complete but unreleased. `OPENCHAMBER_MEMORY_ENABLE` decides
+Agent memory is complete but unreleased. `OMPCHAMBER_MEMORY_ENABLE` decides
 whether it exists in a given process at all: unset, there is no tool, no routes,
 no session index, no settings row and no panel tab — absent rather than switched
 off, which would invite turning on something never announced. The setting itself

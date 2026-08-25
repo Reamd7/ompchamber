@@ -622,7 +622,7 @@ describe('OpenCode lifecycle', () => {
     });
     const getManagedOpenCodeEnv = vi.fn(async () => ({
       OPENCODE_CONFIG_CONTENT: '{"plugin":["file:///tool.js"]}',
-      OPENCHAMBER_AGENT_TOOL_TOKEN: 'ephemeral',
+      OMPCHAMBER_AGENT_TOOL_TOKEN: 'ephemeral',
       PATH: '/untrusted/path',
       OPENCODE_SERVER_PASSWORD: 'untrusted-password',
     }));
@@ -633,7 +633,7 @@ describe('OpenCode lifecycle', () => {
 
     expect(getManagedOpenCodeEnv).toHaveBeenCalledOnce();
     expect(options.env.OPENCODE_CONFIG_CONTENT).toBe('{"plugin":["file:///tool.js"]}');
-    expect(options.env.OPENCHAMBER_AGENT_TOOL_TOKEN).toBe('ephemeral');
+    expect(options.env.OMPCHAMBER_AGENT_TOOL_TOKEN).toBe('ephemeral');
     expect(options.env.PATH).toBe('/home/user/.bun/bin:/usr/local/bin:/usr/bin');
     expect(options.env.OPENCODE_SERVER_PASSWORD).toBe('password');
 
@@ -795,8 +795,8 @@ describe('OpenCode lifecycle', () => {
 
   it('kills the managed child when the readiness line never arrives', async () => {
     delete process.env.OPENCODE_BINARY;
-    const previousTimeout = process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
-    process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS = '150';
+    const previousTimeout = process.env.OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
+    process.env.OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS = '150';
     // Both attempts spawn a child that never prints the listening line.
     const children = [];
     spawnMock.mockImplementation(() => {
@@ -818,9 +818,9 @@ describe('OpenCode lifecycle', () => {
       }
     } finally {
       if (typeof previousTimeout === 'string') {
-        process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS = previousTimeout;
+        process.env.OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS = previousTimeout;
       } else {
-        delete process.env.OPENCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
+        delete process.env.OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS;
       }
     }
   });

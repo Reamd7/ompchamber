@@ -8,11 +8,11 @@ let tempDataDir;
 
 beforeEach(() => {
   tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skills-cache-test-'));
-  process.env.OPENCHAMBER_DATA_DIR = tempDataDir;
+  process.env.OMPCHAMBER_DATA_DIR = tempDataDir;
 });
 
 afterEach(() => {
-  delete process.env.OPENCHAMBER_DATA_DIR;
+  delete process.env.OMPCHAMBER_DATA_DIR;
   clearCache();
   vi.restoreAllMocks();
   fs.rmSync(tempDataDir, { recursive: true, force: true });

@@ -69,8 +69,8 @@ bun run vscode:dev
 
 Optional overrides:
 
-- `OPENCHAMBER_VSCODE_BIN=cursor bun run vscode:dev`
-- `OPENCHAMBER_VSCODE_DEV_WORKSPACE=/path/to/workspace bun run vscode:dev`
+- `OMPCHAMBER_VSCODE_BIN=cursor bun run vscode:dev`
+- `OMPCHAMBER_VSCODE_DEV_WORKSPACE=/path/to/workspace bun run vscode:dev`
 - `bun run vscode:dev /path/to/workspace`
 
 To package manually:

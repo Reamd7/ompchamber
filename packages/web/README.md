@@ -30,7 +30,7 @@ ompchamber --port 8080              # Custom port
 ompchamber --lan --port 3000        # Listen on LAN (0.0.0.0)
 ompchamber --ui-password secret     # Password-protect UI
 ompchamber startup enable           # Start at login as a native service
-OPENCHAMBER_UI_PASSWORD=secret ompchamber startup enable # Save service password env
+OMPCHAMBER_UI_PASSWORD=secret ompchamber startup enable # Save service password env
 ompchamber startup status           # Show startup service status
 ompchamber startup disable          # Remove startup service
 ompchamber tunnel help              # Tunnel lifecycle commands
@@ -111,13 +111,13 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true ompchamber
 | `OPENCODE_HOST` | Full base URL of external server (overrides `OPENCODE_PORT`) |
 | `OPENCODE_PORT` | Port of external server |
 | `OPENCODE_SKIP_START` | Skip starting embedded OpenCode server |
-| `OPENCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only). Invalid values are rejected with an error and fall back to loopback |
-| `OPENCHAMBER_HOST` | Bind hostname for the OMPChamber web server (default: `127.0.0.1`; use `0.0.0.0` for LAN/remote access — trusted networks only) |
-| `OPENCHAMBER_VERBOSE_REQUEST_LOGS` | Set to `true` to log every HTTP request; disabled by default to keep user logs small |
-| `OPENCHAMBER_SKIP_API_COMPRESSION` | Set to `true` to disable gzip compression for `/api/*` responses |
-| `OPENCHAMBER_COMPRESS_API` | Set to `true` to force `/api/*` compression, or `false` to disable it. Desktop runtime disables API compression by default to reduce local sidecar CPU use |
-| `OPENCHAMBER_FS_UPLOAD_MAX_BYTES` | Maximum file upload size in bytes (default: 100 MiB) |
-| `OPENCHAMBER_TERMINAL_SHELL` | Preferred terminal shell executable used by the `Auto` setting before platform defaults |
+| `OMPCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only). Invalid values are rejected with an error and fall back to loopback |
+| `OMPCHAMBER_HOST` | Bind hostname for the OMPChamber web server (default: `127.0.0.1`; use `0.0.0.0` for LAN/remote access — trusted networks only) |
+| `OMPCHAMBER_VERBOSE_REQUEST_LOGS` | Set to `true` to log every HTTP request; disabled by default to keep user logs small |
+| `OMPCHAMBER_SKIP_API_COMPRESSION` | Set to `true` to disable gzip compression for `/api/*` responses |
+| `OMPCHAMBER_COMPRESS_API` | Set to `true` to force `/api/*` compression, or `false` to disable it. Desktop runtime disables API compression by default to reduce local sidecar CPU use |
+| `OMPCHAMBER_FS_UPLOAD_MAX_BYTES` | Maximum file upload size in bytes (default: 100 MiB) |
+| `OMPCHAMBER_TERMINAL_SHELL` | Preferred terminal shell executable used by the `Auto` setting before platform defaults |
 
 </details>
 
@@ -125,7 +125,7 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true ompchamber
 <summary>Bind managed OpenCode to LAN / Tailscale</summary>
 
 ```bash
-OPENCHAMBER_OPENCODE_HOSTNAME=0.0.0.0 ompchamber --port 3000
+OMPCHAMBER_OPENCODE_HOSTNAME=0.0.0.0 ompchamber --port 3000
 ```
 
 **Security note:** binding to `0.0.0.0` exposes the server on all network interfaces — use only on trusted networks and protect with firewall rules or `--ui-password`.
@@ -136,28 +136,28 @@ OPENCHAMBER_OPENCODE_HOSTNAME=0.0.0.0 ompchamber --port 3000
 ```yaml
 environment:
   UI_PASSWORD: your_secure_password
-  OPENCHAMBER_TUNNEL_MODE: quick # quick | managed-remote | managed-local
-  OPENCHAMBER_TUNNEL_PROVIDER: cloudflare
+  OMPCHAMBER_TUNNEL_MODE: quick # quick | managed-remote | managed-local
+  OMPCHAMBER_TUNNEL_PROVIDER: cloudflare
 ```
 
 For `managed-remote` mode, also set:
 
 ```yaml
 environment:
-  OPENCHAMBER_TUNNEL_MODE: managed-remote
-  OPENCHAMBER_TUNNEL_HOSTNAME: app.example.com
-  OPENCHAMBER_TUNNEL_TOKEN: <token>
+  OMPCHAMBER_TUNNEL_MODE: managed-remote
+  OMPCHAMBER_TUNNEL_HOSTNAME: app.example.com
+  OMPCHAMBER_TUNNEL_TOKEN: <token>
 ```
 
 For `managed-local` mode, you can set:
 
 ```yaml
 environment:
-  OPENCHAMBER_TUNNEL_MODE: managed-local
-  OPENCHAMBER_TUNNEL_CONFIG: /home/ompchamber/.cloudflared/config.yml
+  OMPCHAMBER_TUNNEL_MODE: managed-local
+  OMPCHAMBER_TUNNEL_CONFIG: /home/ompchamber/.cloudflared/config.yml
 ```
 
-Managed-local path note: `OPENCHAMBER_TUNNEL_CONFIG` must use a container path under `/home/ompchamber/...`. If the config file references `credentials-file`, ensure that JSON path is also mounted and reachable inside the container.
+Managed-local path note: `OMPCHAMBER_TUNNEL_CONFIG` must use a container path under `/home/ompchamber/...`. If the config file references `credentials-file`, ensure that JSON path is also mounted and reachable inside the container.
 
 **Data directory:** mount `data/` for persistent storage. Ensure permissions:
 ```bash
@@ -228,7 +228,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now opencode ompchamber
 ```
 
-`--host 0.0.0.0` is required to listen on all interfaces (the default is `127.0.0.1`). Use `--host <ip>` or `OPENCHAMBER_HOST=<ip>` to bind to a specific interface instead.
+`--host 0.0.0.0` is required to listen on all interfaces (the default is `127.0.0.1`). Use `--host <ip>` or `OMPCHAMBER_HOST=<ip>` to bind to a specific interface instead.
 
 </details>
 

@@ -16,9 +16,9 @@ import { getRuntimeProviderSnapshot } from './runtime-providers.js';
 // conditional on an endpoint existing.
 const CLAUDE_CODE_PROVIDER = 'claude-code';
 
-const OPENCHAMBER_SETTINGS_FILE = path.join(
-  process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+const OMPCHAMBER_SETTINGS_FILE = path.join(
+  process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber'),
   'settings.json',
 );
@@ -27,7 +27,7 @@ const OPENCHAMBER_SETTINGS_FILE = path.join(
 // their explicit override outranks every other resolution step.
 const readSmallModelSettingsOverride = () => {
   try {
-    const raw = fs.readFileSync(OPENCHAMBER_SETTINGS_FILE, 'utf8');
+    const raw = fs.readFileSync(OMPCHAMBER_SETTINGS_FILE, 'utf8');
     const settings = JSON.parse(raw);
     if (!settings || typeof settings !== 'object') return null;
     if (settings.smallModelUseDefault !== false) return null;

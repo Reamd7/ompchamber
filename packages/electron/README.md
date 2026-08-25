@@ -12,7 +12,7 @@ Desktop starts the OpenChamber web server in the same Electron main process. The
 
 Same-origin session-chat iframes complete an authenticated parent-frame handshake before creating their SDK client. The parent supplies its active in-memory endpoint and credentials; when relay is active it also supplies the public relay descriptor without any pairing grant, because Electron preload and IPC are unavailable inside the iframe. The iframe establishes its own transport and rebinds its SDK before rendering. Additional windows retain their own per-window runtime bootstrap instead of being overwritten by the main window. Credentials are never placed in iframe URLs, and other child pages do not receive this runtime state.
 
-The preload bridge exposes desktop-only APIs to the web UI through `window.__OPENCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI.
+The preload bridge exposes desktop-only APIs to the web UI through `window.__OMPCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI.
 
 ## Main Files
 
@@ -90,7 +90,7 @@ macOS packaging needs Xcode/build tools for notarized builds and icon asset comp
 
 Windows packaging needs NSIS support through `electron-builder`. If no Windows signing env is set, `package.mjs` disables code signing and builds an unsigned installer. Windows updates use `latest.yml` for x64 and the `latest-arm64.yml` channel for ARM64 so each installation resolves an architecture-matching installer.
 
-Linux AppImages must be built natively. Set `OPENCHAMBER_TARGET_ARCH=x64` or `OPENCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `ompchamber`, desktop file `ompchamber.desktop`, icon `ompchamber`, and `StartupWMClass=ompchamber`.
+Linux AppImages must be built natively. Set `OMPCHAMBER_TARGET_ARCH=x64` or `OMPCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `ompchamber`, desktop file `ompchamber.desktop`, icon `ompchamber`, and `StartupWMClass=ompchamber`.
 
 After packaging, run `bun run --cwd packages/electron verify:linux-appimage`. The verifier extracts the final AppImage and checks its ELF architecture, desktop identity, Electron executable, pinned OpenCode CLI version and architecture, and all packaged native `.node` modules.
 
@@ -116,8 +116,8 @@ Packaged Desktop builds include a self-contained omp host binary compiled from `
 
 Managed local Desktop startup resolves the engine in this order:
 
-1. An explicit compiled host binary: `OPENCHAMBER_OMP_HOST_BINARY`, or the bundled binary in `process.resourcesPath/omp-host`.
-2. A Bun runtime launching the host from source: `OPENCHAMBER_OMP_HOST_RUNTIME` (or `settings.opencodeBinary`, which now names the Bun runtime), then PATH.
+1. An explicit compiled host binary: `OMPCHAMBER_OMP_HOST_BINARY`, or the bundled binary in `process.resourcesPath/omp-host`.
+2. A Bun runtime launching the host from source: `OMPCHAMBER_OMP_HOST_RUNTIME` (or `settings.opencodeBinary`, which now names the Bun runtime), then PATH.
 
 Use an explicit override when testing a different engine build.
 
@@ -125,16 +125,16 @@ Use an explicit override when testing a different engine build.
 
 | Variable | Use |
 |----------|-----|
-| `OPENCHAMBER_ELECTRON_DEV=1` | Marks the runtime as desktop development mode |
-| `OPENCHAMBER_ELECTRON_USE_BUNDLED_UI=1` | Uses staged web assets instead of the HMR dev server |
-| `OPENCHAMBER_SKIP_LOCAL_SERVER=1` | Skips the in-process local OpenChamber server and uses the configured default remote instance; Desktop imports this from the user's login-shell environment, and packaged/bundled UI remains available for connection recovery |
-| `OPENCHAMBER_HMR_UI_PORT` | Preferred Rsbuild UI port for desktop dev, default `5173` |
-| `OPENCHAMBER_HMR_API_PORT` | Preferred API port for desktop dev, default `3901` |
-| `OPENCHAMBER_RUNTIME=desktop` | Set by Electron before starting the web server |
-| `OPENCHAMBER_TARGET_ARCH` | Explicit desktop package architecture (`x64` or `arm64`); Linux requires it to match the native host |
-| `OPENCHAMBER_DESKTOP_NOTIFY=true` | Enables desktop notification flow in the web server |
-| `OPENCHAMBER_SKIP_API_COMPRESSION=true` | Defaulted by Desktop to reduce local CPU overhead |
-| `OPENCHAMBER_OMP_HOST_BINARY` / `OPENCHAMBER_OMP_HOST_RUNTIME` | Overrides for the packaged engine: a compiled host binary, or the Bun runtime used to launch the host from source |
+| `OMPCHAMBER_ELECTRON_DEV=1` | Marks the runtime as desktop development mode |
+| `OMPCHAMBER_ELECTRON_USE_BUNDLED_UI=1` | Uses staged web assets instead of the HMR dev server |
+| `OMPCHAMBER_SKIP_LOCAL_SERVER=1` | Skips the in-process local OpenChamber server and uses the configured default remote instance; Desktop imports this from the user's login-shell environment, and packaged/bundled UI remains available for connection recovery |
+| `OMPCHAMBER_HMR_UI_PORT` | Preferred Rsbuild UI port for desktop dev, default `5173` |
+| `OMPCHAMBER_HMR_API_PORT` | Preferred API port for desktop dev, default `3901` |
+| `OMPCHAMBER_RUNTIME=desktop` | Set by Electron before starting the web server |
+| `OMPCHAMBER_TARGET_ARCH` | Explicit desktop package architecture (`x64` or `arm64`); Linux requires it to match the native host |
+| `OMPCHAMBER_DESKTOP_NOTIFY=true` | Enables desktop notification flow in the web server |
+| `OMPCHAMBER_SKIP_API_COMPRESSION=true` | Defaulted by Desktop to reduce local CPU overhead |
+| `OMPCHAMBER_OMP_HOST_BINARY` / `OMPCHAMBER_OMP_HOST_RUNTIME` | Overrides for the packaged engine: a compiled host binary, or the Bun runtime used to launch the host from source |
 | `OPENCODE_HOST` / `OPENCODE_PORT` / `OPENCODE_SKIP_START` | Connect Desktop to an external OpenCode server instead of starting one locally |
 
 ## Native Features Owned Here

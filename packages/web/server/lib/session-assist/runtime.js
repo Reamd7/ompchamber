@@ -12,9 +12,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const OPENCHAMBER_SETTINGS_FILE = path.join(
-  process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+const OMPCHAMBER_SETTINGS_FILE = path.join(
+  process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber'),
   'settings.json',
 );
@@ -24,7 +24,7 @@ const OPENCHAMBER_SETTINGS_FILE = path.join(
 // payloads stay untouched — clients keep showing them and dismissal still works.
 const getSessionAssistTargets = () => {
   try {
-    const raw = fs.readFileSync(OPENCHAMBER_SETTINGS_FILE, 'utf8');
+    const raw = fs.readFileSync(OMPCHAMBER_SETTINGS_FILE, 'utf8');
     const settings = JSON.parse(raw);
     return {
       recap: settings?.sessionRecapEnabled !== false,

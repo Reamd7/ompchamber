@@ -20,16 +20,16 @@ import path from 'path';
 
 import { GOAL_OBJECTIVE_CHAR_LIMIT, readObjective } from './objectives.js';
 
-const OPENCHAMBER_SETTINGS_FILE = path.join(
-  process.env.OPENCHAMBER_DATA_DIR
-    ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
+const OMPCHAMBER_SETTINGS_FILE = path.join(
+  process.env.OMPCHAMBER_DATA_DIR
+    ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
     : path.join(os.homedir(), '.config', 'openchamber'),
   'settings.json',
 );
 
 const isSessionGoalEnabled = () => {
   try {
-    const raw = fs.readFileSync(OPENCHAMBER_SETTINGS_FILE, 'utf8');
+    const raw = fs.readFileSync(OMPCHAMBER_SETTINGS_FILE, 'utf8');
     const settings = JSON.parse(raw);
     return settings?.sessionGoalEnabled !== false;
   } catch {

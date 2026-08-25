@@ -12,8 +12,8 @@ import '@openchamber/ui/styles/fonts';
 
 declare global {
   interface Window {
-    __OPENCHAMBER_RUNTIME_APIS__?: RuntimeAPIs;
-    __OPENCHAMBER_SURFACE__?: HostedSurface;
+    __OMPCHAMBER_RUNTIME_APIS__?: RuntimeAPIs;
+    __OMPCHAMBER_SURFACE__?: HostedSurface;
   }
 }
 
@@ -90,11 +90,11 @@ const start = async (): Promise<void> => {
   const embeddedBootstrap = isEmbeddedSessionChat()
     ? await requestEmbeddedSessionRuntimeBootstrap()
     : null;
-  window.__OPENCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs(embeddedBootstrap);
+  window.__OMPCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs(embeddedBootstrap);
 
   if (hostedSurface === 'mobile') {
     const { renderMobileApp } = await import('@openchamber/ui/apps/renderMobileApp');
-    renderMobileApp(window.__OPENCHAMBER_RUNTIME_APIS__);
+    renderMobileApp(window.__OMPCHAMBER_RUNTIME_APIS__);
     return;
   }
 

@@ -862,8 +862,8 @@ export const ContextPanel: React.FC = () => {
         const payload: EmbeddedSessionRuntimeBootstrap = {
           apiBaseUrl: getRuntimeApiBaseUrl(),
           clientToken: getRuntimeBearerTokenSync(),
-          localOrigin: typeof window.__OPENCHAMBER_LOCAL_ORIGIN__ === 'string'
-            ? window.__OPENCHAMBER_LOCAL_ORIGIN__
+          localOrigin: typeof window.__OMPCHAMBER_LOCAL_ORIGIN__ === 'string'
+            ? window.__OMPCHAMBER_LOCAL_ORIGIN__
             : '',
           runtimeHeaders: getRuntimeExtraHeadersSync(),
           relayHostId: runtimeKey.startsWith('host:') ? runtimeKey.slice('host:'.length) : '',

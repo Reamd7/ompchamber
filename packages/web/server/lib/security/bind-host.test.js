@@ -36,8 +36,8 @@ describe('bind host exposure classification', () => {
   });
 
   it('recognizes only the explicit development server marker', () => {
-    expect(isDevelopmentServer({ OPENCHAMBER_DEV_SERVER: 'true' })).toBe(true);
-    expect(isDevelopmentServer({ OPENCHAMBER_DEV_SERVER: 'false' })).toBe(false);
+    expect(isDevelopmentServer({ OMPCHAMBER_DEV_SERVER: 'true' })).toBe(true);
+    expect(isDevelopmentServer({ OMPCHAMBER_DEV_SERVER: 'false' })).toBe(false);
     expect(isDevelopmentServer({ NODE_ENV: 'development' })).toBe(false);
     expect(isDevelopmentServer({})).toBe(false);
   });

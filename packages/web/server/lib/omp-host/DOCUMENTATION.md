@@ -197,10 +197,10 @@ sync engine, and web server call; everything else answers 404.
 
 ## Launch resolution (see `../opencode/omp-host-launch.js`)
 
-1. `OPENCHAMBER_OMP_HOST_BINARY` — a compiled self-contained host
+1. `OMPCHAMBER_OMP_HOST_BINARY` — a compiled self-contained host
    (`bun build --compile`, staged by the desktop packaging).
 2. Bundled `resources/omp-host/omp-host(.exe)`.
-3. Bun runtime (`OPENCHAMBER_OMP_HOST_RUNTIME` → current process → PATH)
+3. Bun runtime (`OMPCHAMBER_OMP_HOST_RUNTIME` → current process → PATH)
    launching `host.js` from source — the development path.
 
 ## Known engine gaps (explicit, not silent)

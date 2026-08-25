@@ -205,15 +205,15 @@ export default defineConfig(({ command }) => ({
     // port, which is always the case in `bun run dev`.
     proxy: {
       '/auth': {
-        target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
+        target: `http://127.0.0.1:${process.env.OMPCHAMBER_PORT || 3001}`,
         changeOrigin: false,
       },
       '/health': {
-        target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
+        target: `http://127.0.0.1:${process.env.OMPCHAMBER_PORT || 3001}`,
         changeOrigin: false,
       },
       '/api': {
-        target: `http://127.0.0.1:${process.env.OPENCHAMBER_PORT || 3001}`,
+        target: `http://127.0.0.1:${process.env.OMPCHAMBER_PORT || 3001}`,
         changeOrigin: false,
         ws: true,
       },

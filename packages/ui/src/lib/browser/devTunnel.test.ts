@@ -29,7 +29,7 @@ const globalScope = globalThis as unknown as { window?: unknown };
 
 const asDesktop = (value: boolean) => {
   globalScope.window = value
-    ? { __OPENCHAMBER_ELECTRON__: true, location: { href: 'http://127.0.0.1:3901/' } }
+    ? { __OMPCHAMBER_ELECTRON__: true, location: { href: 'http://127.0.0.1:3901/' } }
     : { location: { href: 'http://127.0.0.1:3901/' } };
 };
 
