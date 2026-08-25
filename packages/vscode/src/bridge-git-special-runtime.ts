@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createOpencodeClient } from '@openchamber/ui/lib/opencode/wire';
+import { createOpencodeClient } from '@ompchamber/ui/lib/opencode/wire';
 import * as gitService from './gitService';
 import type { BridgeContext, BridgeResponse } from './bridge';
 

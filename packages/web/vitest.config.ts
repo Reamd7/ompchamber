@@ -9,10 +9,10 @@ export default defineConfig({
     alias: [
       { find: 'bun:test', replacement: path.resolve(here, './test/bun-test-shim.ts') },
       // The same shared-UI aliases the app build uses. Without them a test can
-      // reference `@openchamber/ui/...` in a mock factory but not resolve the
+      // reference `@ompchamber/ui/...` in a mock factory but not resolve the
       // real module behind it, which is what forced mocks to hand-copy export
       // lists that then fell behind the source.
-      { find: '@openchamber/ui', replacement: path.resolve(here, '../ui/src') },
+      { find: '@ompchamber/ui', replacement: path.resolve(here, '../ui/src') },
       { find: '@web', replacement: path.resolve(here, './src') },
       // Anchored to `@/` on purpose: a bare `@` prefix would also swallow
       // scoped dependencies the server tests rely on, such as `@octokit/rest`.

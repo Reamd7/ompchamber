@@ -55,7 +55,7 @@ export default defineConfig(({ command }) => ({
   },
   resolve: {
     alias: {
-      '@openchamber/ui': path.resolve(__dirname, '../ui/src'),
+      '@ompchamber/ui': path.resolve(__dirname, '../ui/src'),
       '@vscode': path.resolve(__dirname, './webview'),
       '@': path.resolve(__dirname, '../ui/src'),
     },

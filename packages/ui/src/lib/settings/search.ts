@@ -972,14 +972,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'integrations',
     titleKey: 'settings.integrations.thirdParty.opencodeClaude.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeClaude.description',
-    keywords: ['claude', 'anthropic', 'claude code', 'pro', 'max', 'agent sdk', '@openchamber/opencode-claude'],
+    keywords: ['claude', 'anthropic', 'claude code', 'pro', 'max', 'agent sdk', '@ompchamber/opencode-claude'],
   },
   {
     id: 'integrations.third-party.opencode-cursor-oauth',
     page: 'integrations',
     titleKey: 'settings.integrations.thirdParty.opencodeCursorOauth.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeCursorOauth.description',
-    keywords: ['cursor', 'oauth', 'subscription', 'openai compatible', '@openchamber/opencode-cursor'],
+    keywords: ['cursor', 'oauth', 'subscription', 'openai compatible', '@ompchamber/opencode-cursor'],
   },
 ] as const;
 

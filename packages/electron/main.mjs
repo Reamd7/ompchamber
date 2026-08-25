@@ -81,7 +81,7 @@ const shouldStartInBackground = (loginItemSettings = readLoginItemSettings()) =>
 };
 
 // Set the product name early so electron-log derives its log directory as
-// ~/Library/Logs/OMPChamber/ (not ~/Library/Logs/@openchamber/electron/).
+// ~/Library/Logs/OMPChamber/ (not ~/Library/Logs/@ompchamber/electron/).
 app.setName('OMPChamber');
 if (process.platform === 'linux') {
   app.setDesktopName('ompchamber.desktop');
@@ -208,13 +208,13 @@ const readAppMetadata = () => {
     try {
       const raw = fs.readFileSync(candidate, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed?.name === '@openchamber/electron' && typeof parsed.version === 'string') {
+      if (parsed?.name === '@ompchamber/electron' && typeof parsed.version === 'string') {
         return { name: parsed.name, version: parsed.version };
       }
     } catch {
     }
   }
-  return { name: '@openchamber/electron', version: app.getVersion() };
+  return { name: '@ompchamber/electron', version: app.getVersion() };
 };
 
 const APP_METADATA = readAppMetadata();

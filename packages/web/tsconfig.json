@@ -17,7 +17,7 @@
     "paths": {
       "@/*": ["../ui/src/*", "./src/*"],
       "@web/*": ["./src/*"],
-      "@openchamber/ui/*": ["../ui/src/*"],
+      "@ompchamber/ui/*": ["../ui/src/*"],
       "ompchamber/*": ["./src/*"]
     }
   },

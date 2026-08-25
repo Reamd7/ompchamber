@@ -142,7 +142,7 @@ export default defineConfig(({ command }) => ({
   },
   resolve: {
     alias: {
-      '@openchamber/ui': path.resolve(__dirname, '../ui/src'),
+      '@ompchamber/ui': path.resolve(__dirname, '../ui/src'),
       '@web': path.resolve(__dirname, './src'),
       '@': path.resolve(__dirname, '../ui/src'),
     },

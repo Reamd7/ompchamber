@@ -30,7 +30,7 @@ describe('settings search', () => {
 
   test('finds third-party integrations by OpenChamber npm package names', () => {
     const results = buildSettingsSearchResults({
-      query: '@openchamber/opencode-cursor',
+      query: '@ompchamber/opencode-cursor',
       runtimeCtx,
       t,
       getPageTitle: (page) => page,

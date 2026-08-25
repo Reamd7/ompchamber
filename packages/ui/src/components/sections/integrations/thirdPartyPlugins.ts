@@ -17,7 +17,7 @@ export interface ThirdPartyPluginDefinition {
 export const THIRD_PARTY_PLUGINS: readonly ThirdPartyPluginDefinition[] = [
   {
     id: 'opencode-claude',
-    packageName: '@openchamber/opencode-claude',
+    packageName: '@ompchamber/opencode-claude',
     providerId: 'claude-code',
     icon: 'claude-code',
     brandClassName: 'text-[#D97757]',
@@ -27,7 +27,7 @@ export const THIRD_PARTY_PLUGINS: readonly ThirdPartyPluginDefinition[] = [
   },
   {
     id: 'opencode-cursor-oauth',
-    packageName: '@openchamber/opencode-cursor',
+    packageName: '@ompchamber/opencode-cursor',
     providerId: 'cursor',
     icon: 'cursor',
     brandClassName: 'text-foreground',

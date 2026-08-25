@@ -1,11 +1,11 @@
-import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@openchamber/ui/lib/runtime-auth';
-import { installRuntimeFetchBridge } from '@openchamber/ui/lib/runtime-fetch';
-import { initializeRuntimeEndpoint, switchRuntimeEndpoint } from '@openchamber/ui/lib/runtime-switch';
-import { restoreDesktopRelayRuntime } from '@openchamber/ui/lib/desktopRelayRestore';
-import { getInjectedBootOutcome } from '@openchamber/ui/lib/desktopBoot';
-import { configureRuntimeUrlResolver } from '@openchamber/ui/lib/runtime-url';
-import type { EmbeddedSessionRuntimeBootstrap } from '@openchamber/ui/components/layout/contextPanelEmbeddedChat';
-import { opencodeClient } from '@openchamber/ui/lib/opencode/client';
+import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@ompchamber/ui/lib/runtime-auth';
+import { installRuntimeFetchBridge } from '@ompchamber/ui/lib/runtime-fetch';
+import { initializeRuntimeEndpoint, switchRuntimeEndpoint } from '@ompchamber/ui/lib/runtime-switch';
+import { restoreDesktopRelayRuntime } from '@ompchamber/ui/lib/desktopRelayRestore';
+import { getInjectedBootOutcome } from '@ompchamber/ui/lib/desktopBoot';
+import { configureRuntimeUrlResolver } from '@ompchamber/ui/lib/runtime-url';
+import type { EmbeddedSessionRuntimeBootstrap } from '@ompchamber/ui/components/layout/contextPanelEmbeddedChat';
+import { opencodeClient } from '@ompchamber/ui/lib/opencode/client';
 import { createWebAPIs } from './api';
 
 const sameOrigin = (left: string, right: string): boolean => {

@@ -93,7 +93,7 @@
       },
     },
     "packages/electron": {
-      "name": "@openchamber/electron",
+      "name": "@ompchamber/electron",
       "version": "1.19.1",
       "dependencies": {
         "electron-context-menu": "^4.1.2",
@@ -109,7 +109,7 @@
       },
     },
     "packages/mobile": {
-      "name": "@openchamber/mobile",
+      "name": "@ompchamber/mobile",
       "version": "1.13.2",
       "dependencies": {
         "@aparajita/capacitor-secure-storage": "^8.0.0",
@@ -130,7 +130,7 @@
       },
     },
     "packages/ui": {
-      "name": "@openchamber/ui",
+      "name": "@ompchamber/ui",
       "version": "1.19.1",
       "dependencies": {
         "@aparajita/capacitor-secure-storage": "^8.0.0",
@@ -235,7 +235,7 @@
       "name": "openchamber",
       "version": "1.19.1",
       "dependencies": {
-        "@openchamber/ui": "workspace:*",
+        "@ompchamber/ui": "workspace:*",
         "adm-zip": "^0.6.0",
         "jsonc-parser": "^3.3.1",
         "react": "^19.1.1",
@@ -862,11 +862,11 @@
 
     "@oh-my-pi/snapcompact": ["@oh-my-pi/snapcompact@18.0.4", "https://mirrors.tencent.com/npm/@oh-my-pi/snapcompact/-/snapcompact-18.0.4.tgz", { "dependencies": { "@oh-my-pi/pi-ai": "18.0.4", "@oh-my-pi/pi-catalog": "18.0.4", "@oh-my-pi/pi-natives": "18.0.4", "@oh-my-pi/pi-utils": "18.0.4", "@oh-my-pi/pi-wire": "18.0.4" } }, "sha512-S8isTLawvtT+xr8NuaLI7mww6VHf171S+WuLDoLVA0kccqZLOD9YM9DMCf3VyS85ZRA/UZCamVGwxCXPBMgQkQ=="],
 
-    "@openchamber/electron": ["@openchamber/electron@workspace:packages/electron"],
+    "@ompchamber/electron": ["@ompchamber/electron@workspace:packages/electron"],
 
-    "@openchamber/mobile": ["@openchamber/mobile@workspace:packages/mobile"],
+    "@ompchamber/mobile": ["@ompchamber/mobile@workspace:packages/mobile"],
 
-    "@openchamber/ui": ["@openchamber/ui@workspace:packages/ui"],
+    "@ompchamber/ui": ["@ompchamber/ui@workspace:packages/ui"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "https://mirrors.tencent.com/npm/@opentelemetry/api/-/api-1.9.1.tgz", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 

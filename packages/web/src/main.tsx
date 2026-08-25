@@ -1,14 +1,14 @@
 import { createConfiguredWebAPIs, getDesktopRelayRestoreReady } from './runtimeConfig';
 import { Workbox } from 'workbox-window';
 
-import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
-import { resolveHostedSurface, type HostedSurface } from '@openchamber/ui/lib/runtimeSurface';
+import type { RuntimeAPIs } from '@ompchamber/ui/lib/api/types';
+import { resolveHostedSurface, type HostedSurface } from '@ompchamber/ui/lib/runtimeSurface';
 import {
   isEmbeddedSessionChat,
   requestEmbeddedSessionRuntimeBootstrap,
-} from '@openchamber/ui/components/layout/contextPanelEmbeddedChat';
-import '@openchamber/ui/index.css';
-import '@openchamber/ui/styles/fonts';
+} from '@ompchamber/ui/components/layout/contextPanelEmbeddedChat';
+import '@ompchamber/ui/index.css';
+import '@ompchamber/ui/styles/fonts';
 
 declare global {
   interface Window {
@@ -93,14 +93,14 @@ const start = async (): Promise<void> => {
   window.__OMPCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs(embeddedBootstrap);
 
   if (hostedSurface === 'mobile') {
-    const { renderMobileApp } = await import('@openchamber/ui/apps/renderMobileApp');
+    const { renderMobileApp } = await import('@ompchamber/ui/apps/renderMobileApp');
     renderMobileApp(window.__OMPCHAMBER_RUNTIME_APIS__);
     return;
   }
 
   // Hold the render until a desktop relay-host restore has picked its transport.
   await getDesktopRelayRestoreReady();
-  await import('@openchamber/ui/main');
+  await import('@ompchamber/ui/main');
 };
 
 void start();

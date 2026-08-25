@@ -13,7 +13,7 @@ Load `ui-api-decoupling` when a native change adds or alters a renderer-facing c
 
 ## Runtime Boundary
 
-- Electron boots `@openchamber/web` in the same Node process and loads the UI over loopback. Do not introduce a sidecar server process.
+- Electron boots `@ompchamber/web` in the same Node process and loads the UI over loopback. Do not introduce a sidecar server process.
 - Keep renderer contracts and domain logic in `packages/ui`, server behavior in `packages/web`, and Electron focused on inherently native behavior: windows, menus, dialogs, notifications, updater, deep links, runtime host switching, privileged IPC, SSH, and tunnel lifecycle.
 - Electron is the desktop release target.
 

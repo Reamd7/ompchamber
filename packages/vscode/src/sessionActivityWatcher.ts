@@ -1,4 +1,4 @@
-import { createOpencodeClient } from '@openchamber/ui/lib/opencode/wire';
+import { createOpencodeClient } from '@ompchamber/ui/lib/opencode/wire';
 import type { OpenCodeManager } from './opencode';
 
 // Session activity tracking (mirrors web server and desktop behavior)
