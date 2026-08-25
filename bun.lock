@@ -92,7 +92,7 @@
     },
     "packages/electron": {
       "name": "@openchamber/electron",
-      "version": "1.19.0",
+      "version": "1.19.1",
       "dependencies": {
         "electron-context-menu": "^4.1.2",
         "electron-log": "^5.4.3",
@@ -129,7 +129,7 @@
     },
     "packages/ui": {
       "name": "@openchamber/ui",
-      "version": "1.19.0",
+      "version": "1.19.1",
       "dependencies": {
         "@aparajita/capacitor-secure-storage": "^8.0.0",
         "@base-ui/react": "^1.4.0",
@@ -231,7 +231,7 @@
     },
     "packages/vscode": {
       "name": "openchamber",
-      "version": "1.19.0",
+      "version": "1.19.1",
       "dependencies": {
         "@openchamber/ui": "workspace:*",
         "adm-zip": "^0.6.0",
@@ -253,7 +253,7 @@
     },
     "packages/web": {
       "name": "ompchamber",
-      "version": "1.19.0",
+      "version": "1.19.1",
       "bin": {
         "ompchamber": "./bin/cli.js",
       },
