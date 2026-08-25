@@ -1,4 +1,5 @@
 ## [Unreleased]
+
 - Startup: engine processes left behind by a crash or force-quit are now identified and cleaned up on the next start — the cleanup only recognized the old engine's name (opencode) and never matched the current omp engine, so orphans accumulated. The engine host also now runs the background workers the engine relaunches itself for (the browser tool's helper, local models) instead of turning every relaunch into another idle server process.
 - Chat: the per-session thinking-level selector works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the crash answered the request with a server error. "Inherit" now genuinely clears the explicit level.
 - Sessions: deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.
@@ -12,8 +13,6 @@
 - Settings: the Engine Settings page edits the omp engine's own configuration with typed controls, masked credentials, per-key validation, and an Approvals section; the Defaults page becomes a model-roles editor and can import an old default model as the default role (never overwriting an existing one).
 - Chat: `/tree` shows session forks and loads a branch's timeline; `/undo` rewinds before your last message and refills the composer; engine commands list in the slash menu with an override badge, and `/troubleshoot` takes over when the engine owns `/debug`.
 - Chat: `local://` links in transcripts open an in-app viewer instead of rendering as plain text.
-
-
 - Chat: fixed user messages disappearing after a reload — prompts are now persisted with their text and attachments instead of an empty body.
 - Chat: sessions started from the app generate titles again, following the TUI's semantics (attempted during the first turn, retried on later messages).
 - Chat: sending while the agent is already working now steers the running turn (or queues when requested) instead of failing, and new sessions use the configured default model from agent settings.
@@ -23,8 +22,39 @@
 - Chat: tool rows show the agent's stated intent instead of a truncated command line.
 - Chat: harness-injected transcript notes (advisor nudges, late diagnostics) from omp sessions now appear in history instead of being dropped.
 - Engine: the extension's managed coding sessions now run on Oh My Pi (omp) instead of the OpenCode CLI, so the OpenCode CLI no longer needs to be installed; the engine starts from the OpenChamber workspace checkout with a Bun runtime.
+- **Chat context attachments:** diff and file comments, terminal selections, and linked issues/PRs now show in the conversation as compact context cards — source header, captured content behind an expander, your comment below — instead of raw text inside the message.
+- **Chat: comment on a reply.** Select text in a chat message and choose Comment to attach that quote with your note to the next message; the selection stays highlighted while you type. Add to chat is now Add to input.
+- Diff: hovering a line shows a + button that opens a comment for the line; clicking a line or dragging across lines opens the editor for that range. The comment editor and saved-comment cards match the chat's comment style.
+- Composer: hovering a context chip above the input opens a stacked preview of everything attached, where comments can be edited in place or items removed before sending.
+- Chat: OpenCode notices now share one style.
+- The timeline dialog now fits small windows instead of squeezing the message list to a couple of rows (thanks to @gaojunran).
+- Merged from upstream openchamber/openchamber v1.19.0–v1.20.0 plus their unreleased work:
+- **/btw side questions:** type `/btw` followed by your question to ask something off-topic in a temporary session forked from the current conversation. The answer streams into a panel above the composer; collapse it, keep it as a full session, or discard it without touching the chat (thanks to @jaygupta17).
+- **Skills catalog:** browse curated GitHub skill collections in a card-based catalog with cross-source search and direct links to each skill's repository.
+- Settings: the workspace selector on Providers, Agents, MCP, Commands and Skills now only changes what those pages show instead of moving the chat, session list and file tree to another workspace.
+- Settings/Projects: a project can now pin a thinking level next to its model, for models that offer levels.
+- Settings/General: changing the default model, variant or agent no longer repoints an open chat that already carries a model you picked for it. Chats following the default still switch immediately.
+- Settings/Providers: the provider you select no longer jumps to a different one when the chat selection or provider data changes.
+- Settings/Integrations: the experimental page now only lists integrations that can be installed; unavailable and Coming soon entries were removed.
+- Providers: expanded support for custom providers.
+- Sessions created outside OpenChamber now appear in the sidebar and Recent list without a page refresh (thanks to @tomzx).
+- If OpenCode restarts while a response is still running, the chat now stops with an interrupted state and a notification to continue instead of hanging silently (thanks to @sum117).
+- Usage: Z.ai credit limits now appear alongside its other quota windows.
+- Chat: file paths in messages now open from the session's workspace, even if you last browsed files in another workspace (thanks to @tomzx).
+- Chat: app links such as `spotify://` now ask for confirmation before opening another app. You can trust an app link type on one device and manage trusted links in Settings.
+- While a reply streams, the model status line under the last message now turns into the finished message's info row in place, instead of jumping when the reply completes.
+- Chat: newly sent messages and syntax-highlighted code blocks no longer briefly flicker. Bash output can also grow with its content instead of being cut off.
+- Chat: long user messages can be expanded even when their final layout finishes after they first appear.
+- UI: the default dialog close button is easier to click or tap (thanks to @rockinrimmer).
+- **Settings/Integrations:** a new Integrations settings page lists Claude Code, Command Code, and Cursor plugins with install, update, setup, and remove actions, plus Discord and Telegram Coming soon placeholders.
+- **Chat:** an open conversation no longer keeps re-coloring the same code blocks in the background, preventing high CPU use while the chat is idle (thanks to @makeittech).
+- Settings: OpenChamber no longer replaces a full OpenCode config with an empty `$schema`-only stub when the file uses JSON5-style unquoted keys; Settings changes now fail instead of wiping plugins, MCP servers, and providers (thanks to @makeittech).
+- Usage: Command Code plan limits now appear in the Usage page and work status panel.
 - Chat: new chats no longer start against a deleted last worktree directory; they fall back to the active project instead of saving the first message and never starting.
-- Chat: opening a busy subagent in the context panel now shows its history instead of only the working-status line (thanks to @makeittech).
+- Chat: typing with Chinese, Japanese, or Korean input methods no longer interrupts composition or jumps the cursor to the end of the composer (thanks to @makeittech).
+- The context usage readout no longer climbs over 100% after turns with many tool calls and no longer jumps when reopening an older session; it now shows what the window actually holds (thanks to @pocharlies).
+- Usage: the context usage readout in the chat header now also shows the session's cost in its tooltip (thanks to @YunFeng0817).
+- Attachments: extracted Office and OpenDocument content is now capped and presented more compactly, preventing large documents and their images from overwhelming the message context.
 - Projects: project names now match the folder name exactly, so `.ssh` and `opencode-claude` are no longer shown as `.Ssh` and `Opencode Claude`; names you renamed yourself are kept.
 - Skills Catalog: the source is now named ClawHub instead of "ClawdHub" (thanks to @makeittech).
 

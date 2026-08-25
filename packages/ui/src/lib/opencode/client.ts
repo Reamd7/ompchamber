@@ -1,3 +1,4 @@
+import type { ContextPartMetadata } from '@/lib/messages/contextParts';
 import { createOpencodeClient, OpencodeClient } from '@/lib/opencode/wire'
 import type { PermissionV2Request, PermissionV2Effect, PermissionV2Source } from '@/lib/opencode/wire'
 import type { FilesAPI } from "../api/types";
@@ -610,10 +611,11 @@ class OpencodeService {
     return unwrapSdkData(response, 'session.update');
   }
 
-  async getSessionMessages(id: string, limit?: number): Promise<{ info: Message; parts: Part[] }[]> {
+  async getSessionMessages(id: string, limit?: number, directory?: string | null): Promise<{ info: Message; parts: Part[] }[]> {
+    const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
     const response = await this.client.session.messages({
       sessionID: id,
-      ...(this.currentDirectory ? { directory: this.currentDirectory } : {}),
+      ...(requestDirectory ? { directory: requestDirectory } : {}),
       ...(typeof limit === 'number' ? { limit } : {}),
     });
     return unwrapSdkData(response, 'session.messages');
@@ -799,6 +801,7 @@ class OpencodeService {
     additionalParts?: Array<{
       text: string;
       synthetic?: boolean;
+      metadata?: ContextPartMetadata;
       files?: Array<FileInputLite>;
     }>;
     messageId?: string;
@@ -853,11 +856,10 @@ class OpencodeService {
     if (params.additionalParts && params.additionalParts.length > 0) {
       for (const additional of params.additionalParts) {
         if (additional.text && additional.text.trim()) {
-          parts.push({
-            type: 'text',
-            text: additional.text,
-            ...(additional.synthetic ? { synthetic: true } : {}),
-          });
+          const additionalTextPart: TextPartInput = { type: 'text', text: additional.text };
+          if (additional.synthetic) additionalTextPart.synthetic = true;
+          if (additional.metadata) additionalTextPart.metadata = additional.metadata;
+          parts.push(additionalTextPart);
         }
         if (additional.files && additional.files.length > 0) {
           for (const file of additional.files) {
@@ -1211,7 +1213,7 @@ class OpencodeService {
     options?: {
       id?: string;
       save?: string[];
-      metadata?: Record<string, unknown>;
+      metadata?: ContextPartMetadata;
       source?: PermissionV2Source;
       agent?: string;
     }

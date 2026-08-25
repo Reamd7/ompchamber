@@ -43,6 +43,19 @@ const getCurrentDirectory = (): string | null => {
   return null;
 };
 
+/**
+ * Directory a call operates on. Settings can browse another project without
+ * moving the app, so every entry point takes one; omitting it means the project
+ * the app is currently on.
+ */
+const resolveDirectory = (directory?: string | null): string | null => {
+  if (directory !== undefined) {
+    const trimmed = directory?.trim();
+    return trimmed ? trimmed : null;
+  }
+  return getConfigDirectory();
+};
+
 export const getConfigDirectory = (): string | null => {
   try {
     const projectsStore = useProjectsStore.getState();
@@ -354,19 +367,22 @@ export interface AgentDraft {
 interface AgentsStore {
 
   selectedAgentName: string | null;
+  /** Agents of the project the app is on. Chat and pickers read this one. */
   agents: Agent[];
+  /** Every directory loaded so far, including the ambient one. */
+  agentsByDirectory: Record<string, Agent[]>;
   isLoading: boolean;
   agentDraft: AgentDraft | null;
 
   setSelectedAgent: (name: string | null) => void;
   setAgentDraft: (draft: AgentDraft | null) => void;
-  loadAgents: () => Promise<boolean>;
-  createAgent: (config: AgentConfig) => Promise<AgentMutationResult>;
-  updateAgent: (name: string, config: Partial<AgentConfig>) => Promise<AgentMutationResult>;
-  deleteAgent: (name: string, scope?: AgentScope) => Promise<AgentMutationResult>;
-  getAgentByName: (name: string) => Agent | undefined;
+  loadAgents: (directory?: string | null) => Promise<boolean>;
+  createAgent: (config: AgentConfig, directory?: string | null) => Promise<AgentMutationResult>;
+  updateAgent: (name: string, config: Partial<AgentConfig>, directory?: string | null) => Promise<AgentMutationResult>;
+  deleteAgent: (name: string, scope?: AgentScope, directory?: string | null) => Promise<AgentMutationResult>;
+  getAgentByName: (name: string, directory?: string | null) => Agent | undefined;
   // Returns only visible agents (excludes hidden internal agents)
-  getVisibleAgents: () => Agent[];
+  getVisibleAgents: (directory?: string | null) => Agent[];
 }
 
 declare global {
@@ -375,6 +391,20 @@ declare global {
   }
 }
 
+const EMPTY_AGENTS: Agent[] = [];
+
+/**
+ * Agents of one project. Returns a stored array so components can select it
+ * directly; an omitted directory means the project the app is on.
+ */
+export const selectAgentsForDirectory = (
+  state: Pick<AgentsStore, 'agentsByDirectory'>,
+  directory?: string | null,
+): Agent[] => {
+  const cacheKey = getAgentsCacheKey(resolveDirectory(directory));
+  return state.agentsByDirectory[cacheKey] ?? EMPTY_AGENTS;
+};
+
 export const useAgentsStore = create<AgentsStore>()(
   devtools(
     persist(
@@ -382,6 +412,7 @@ export const useAgentsStore = create<AgentsStore>()(
 
         selectedAgentName: null,
         agents: [],
+        agentsByDirectory: {},
         isLoading: false,
         agentDraft: null,
 
@@ -393,12 +424,13 @@ export const useAgentsStore = create<AgentsStore>()(
           set({ agentDraft: draft });
         },
 
-        loadAgents: async () => {
-          const configDirectory = getConfigDirectory();
+        loadAgents: async (requestedDirectory?: string | null) => {
+          const configDirectory = resolveDirectory(requestedDirectory);
           const cacheKey = getAgentsCacheKey(configDirectory);
+          const isAmbient = cacheKey === getAgentsCacheKey(getConfigDirectory());
           const now = Date.now();
           const loadedAt = agentsLastLoadedAt.get(cacheKey) ?? 0;
-          const hasCachedAgents = get().agents.length > 0;
+          const hasCachedAgents = (get().agentsByDirectory[cacheKey] ?? (isAmbient ? get().agents : [])).length > 0;
 
           if (hasCachedAgents && now - loadedAt < AGENTS_LOAD_CACHE_TTL_MS) {
             return true;
@@ -411,7 +443,9 @@ export const useAgentsStore = create<AgentsStore>()(
 
           const request = (async () => {
             set({ isLoading: true });
-            const previousAgents = get().agents;
+            // Failure must never look like an empty project. The mirror is the
+            // fallback so a directory loaded before this map existed still counts.
+            const previousAgents = get().agentsByDirectory[cacheKey] ?? (isAmbient ? get().agents : []);
             const previousSignature = buildAgentsSignature(previousAgents);
 
             // omp mode (02 §5.2): authoritative list comes from the
@@ -425,7 +459,14 @@ export const useAgentsStore = create<AgentsStore>()(
               }
               const ompAgents = result.data.map(ompDefinitionToAgent);
               if (previousSignature !== buildAgentsSignature(ompAgents)) {
-                set({ agents: ompAgents, isLoading: false });
+                set((state) => {
+                  const next: Partial<AgentsStore> = {
+                    agentsByDirectory: { ...state.agentsByDirectory, [cacheKey]: ompAgents },
+                    isLoading: false,
+                  };
+                  if (isAmbient) next.agents = ompAgents;
+                  return next;
+                });
               } else {
                 set({ isLoading: false });
               }
@@ -488,7 +529,14 @@ export const useAgentsStore = create<AgentsStore>()(
 
                 const nextSignature = buildAgentsSignature(agentsWithScope);
                 if (previousSignature !== nextSignature) {
-                  set({ agents: agentsWithScope, isLoading: false });
+                  set((state) => {
+                    const next: Partial<AgentsStore> = {
+                      agentsByDirectory: { ...state.agentsByDirectory, [cacheKey]: agentsWithScope },
+                      isLoading: false,
+                    };
+                    if (isAmbient) next.agents = agentsWithScope;
+                    return next;
+                  });
                 } else {
                   set({ isLoading: false });
                 }
@@ -510,11 +558,12 @@ export const useAgentsStore = create<AgentsStore>()(
             agentsLoadInFlight.delete(cacheKey);
           }
         },
-        createAgent: async (config: AgentConfig) => {
+        createAgent: async (config: AgentConfig, requestedDirectory?: string | null) => {
           // omp mode (02 §5.2): create writes the agent-definitions resource;
           // the selected project directory decides where a project-scoped
           // definition file lands.
           if (await ompDefinitionsEnabled()) {
+            const configDirectory = resolveDirectory(requestedDirectory);
             const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.create({
               name: config.name,
               description: config.description ?? config.name,
@@ -527,11 +576,11 @@ export const useAgentsStore = create<AgentsStore>()(
               ...(config.advisor !== undefined ? { advisor: config.advisor } : {}),
               ...(config.readSummarize !== undefined ? { readSummarize: config.readSummarize } : {}),
               ...(config.scope ? { scope: config.scope } : {}),
-            }, getConfigDirectory() ?? undefined);
+            }, configDirectory ?? undefined);
             if (result?.ok) {
-              invalidateAgentsLoadCache(getConfigDirectory());
+              invalidateAgentsLoadCache(configDirectory);
               upsertOptimisticAgentLocal(set, get, config.name, config);
-              const loaded = await get().loadAgents();
+              const loaded = await get().loadAgents(configDirectory);
               if (loaded) {
                 emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
               }
@@ -558,7 +607,7 @@ export const useAgentsStore = create<AgentsStore>()(
 
             console.log('[AgentsStore] Agent config to save:', agentConfig);
 
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(config.name)}${queryParams}`, {
@@ -601,7 +650,7 @@ export const useAgentsStore = create<AgentsStore>()(
               return { ok: true };
             }
 
-            const loaded = await get().loadAgents();
+            const loaded = await get().loadAgents(configDirectory);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
@@ -614,10 +663,10 @@ export const useAgentsStore = create<AgentsStore>()(
           }
         },
 
-        updateAgent: async (name: string, config: Partial<AgentConfig>) => {
+        updateAgent: async (name: string, config: Partial<AgentConfig>, requestedDirectory?: string | null) => {
           // omp mode (02 §5.2): update patches the agent-definitions resource.
           if (await ompDefinitionsEnabled()) {
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.update(name, {
               definition: {
                 ...(config.prompt !== undefined ? { systemPrompt: (config.prompt ?? '').trim() } : {}),
@@ -634,9 +683,9 @@ export const useAgentsStore = create<AgentsStore>()(
               ...(config.renameTo ? { renameTo: config.renameTo } : {}),
             }, configDirectory ?? undefined);
             if (result?.ok) {
-              invalidateAgentsLoadCache(getConfigDirectory());
+              invalidateAgentsLoadCache(configDirectory);
               upsertOptimisticAgentLocal(set, get, name, config);
-              const loaded = await get().loadAgents();
+              const loaded = await get().loadAgents(configDirectory);
               if (loaded) {
                 emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
               }
@@ -657,7 +706,7 @@ export const useAgentsStore = create<AgentsStore>()(
             if (config.permission !== undefined) agentConfig.permission = config.permission;
             if (config.disable !== undefined) agentConfig.disable = config.disable;
 
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(name)}${queryParams}`, {
@@ -700,7 +749,7 @@ export const useAgentsStore = create<AgentsStore>()(
               return { ok: true };
             }
 
-            const loaded = await get().loadAgents();
+            const loaded = await get().loadAgents(configDirectory);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
@@ -713,12 +762,13 @@ export const useAgentsStore = create<AgentsStore>()(
           }
         },
 
-        deleteAgent: async (name: string, scope?: AgentScope) => {
+        deleteAgent: async (name: string, scope?: AgentScope, requestedDirectory?: string | null) => {
           // omp mode (02 §5.2): delete removes the definition file server-side.
           if (await ompDefinitionsEnabled()) {
-            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.remove(name, getConfigDirectory() ?? undefined);
+            const configDirectory = resolveDirectory(requestedDirectory);
+            const result = await getRegisteredRuntimeAPIs()?.ompAgentDefinitions?.remove(name, configDirectory ?? undefined);
             if (result?.ok) {
-              invalidateAgentsLoadCache(getConfigDirectory());
+              invalidateAgentsLoadCache(configDirectory);
               if (get().selectedAgentName === name) {
                 set({ selectedAgentName: null });
               }
@@ -732,7 +782,7 @@ export const useAgentsStore = create<AgentsStore>()(
             return ompRejection(result);
           }
           try {
-            const configDirectory = getConfigDirectory();
+            const configDirectory = resolveDirectory(requestedDirectory);
             const queryParams = configDirectory ? `?directory=${encodeURIComponent(configDirectory)}` : '';
 
             const response = await runtimeFetch(`/api/config/agents/${encodeURIComponent(name)}${queryParams}`, {
@@ -783,7 +833,7 @@ export const useAgentsStore = create<AgentsStore>()(
               return { ok: true };
             }
 
-            const loaded = await get().loadAgents();
+            const loaded = await get().loadAgents(configDirectory);
             if (loaded) {
               emitConfigChange("agents", { source: CONFIG_EVENT_SOURCE });
             }
@@ -798,14 +848,12 @@ export const useAgentsStore = create<AgentsStore>()(
         },
 
 
-        getAgentByName: (name: string) => {
-          const { agents } = get();
-          return agents.find((a) => a.name === name);
+        getAgentByName: (name: string, requestedDirectory?: string | null) => {
+          return selectAgentsForDirectory(get(), requestedDirectory).find((agent) => agent.name === name);
         },
 
-        getVisibleAgents: () => {
-          const { agents } = get();
-          return filterVisibleAgents(agents);
+        getVisibleAgents: (requestedDirectory?: string | null) => {
+          return filterVisibleAgents(selectAgentsForDirectory(get(), requestedDirectory));
         },
       }),
       {

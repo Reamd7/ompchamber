@@ -1,10 +1,43 @@
 import { describe, expect, mock, test } from 'bun:test';
 
+type SanitizeAttribute = {
+  attrName: string;
+  attrValue: string;
+  forceKeepAttr?: boolean;
+};
+
+class TestAnchorElement {
+  target = '';
+
+  setAttribute(name: string, value: string): void {
+    if (name === 'target') this.target = value;
+  }
+}
+
+const sanitizeHooks: {
+  uponSanitizeAttribute?: (node: unknown, data: SanitizeAttribute) => void;
+  afterSanitizeAttributes?: (node: unknown) => void;
+} = {};
+
+Object.assign(globalThis, {
+  window: {},
+  HTMLAnchorElement: TestAnchorElement,
+});
+
 mock.module('dompurify', () => ({
   default: {
     isSupported: true,
-    addHook: () => undefined,
-    sanitize: (html: string) => html,
+    addHook: (name: keyof typeof sanitizeHooks, hook: never) => {
+      sanitizeHooks[name] = hook;
+    },
+    sanitize: (html: string) => html.replace(/ href="([^"]*)"/g, (attribute, href: string) => {
+      const anchor = new TestAnchorElement();
+      const data: SanitizeAttribute = { attrName: 'href', attrValue: href };
+      sanitizeHooks.uponSanitizeAttribute?.(anchor, data);
+      sanitizeHooks.afterSanitizeAttributes?.(anchor);
+
+      return data.forceKeepAttr || /^(?:https?|mailto|tel):/i.test(href) ? attribute : '';
+    }),
   },
 }));
 mock.module('./markdown-worker', () => ({
@@ -42,6 +75,21 @@ describe('markdown sanitization', () => {
     expect(isLocalFileUrl('file://remote-host/share/report.html')).toBe(false);
     expect(isLocalFileUrl('javascript:alert(1)')).toBe(false);
   });
+
+  test('keeps app and local file links while stripping blocked schemes', () => {
+    const html = renderMarkdownSync([
+      '[app](obsidian://open?vault=Notebook)',
+      '[file](file:///workspace/notes.md)',
+      '[script](javascript:alert(1))',
+      '[diagnostic](ms-msdt:/id%20PCWDiagnostic)',
+    ].join('\n\n'), 'inline');
+
+    expect(html).toContain('href="obsidian://open?vault=Notebook"');
+    expect(html).toContain('href="file:///workspace/notes.md"');
+    expect(html).not.toContain('href="javascript:alert(1)"');
+    expect(html).not.toContain('href="ms-msdt:/id%20PCWDiagnostic"');
+  });
+
 });
 
 describe('internal URI links (spec 04 §5.2.5, uri.v1 capability gate)', () => {
@@ -231,19 +279,19 @@ describe('Markdown images', () => {
 describe('cached markdown blocks', () => {
   test('returns null before the async pipeline has rendered the content', async () => {
     const text = 'first **visit** with a code block:\n\n```js\nconst a = 1;\n```';
-    expect(readCachedMarkdownBlocks(text, false, 'markdown-part-1', 'label')).toBeNull();
+    expect(readCachedMarkdownBlocks(text, false, 'label')).toBeNull();
   });
 
   test('returns the identical blocks after renderMarkdownBlocks has populated the cache', async () => {
     const text = 'second **visit** with a code block:\n\n```js\nconst b = 2;\n```';
-    const rendered = await renderMarkdownBlocks(text, false, 'markdown-part-2', 'label');
-    const peeked = readCachedMarkdownBlocks(text, false, 'markdown-part-2', 'label');
+    const rendered = await renderMarkdownBlocks(text, false, 'label');
+    const peeked = readCachedMarkdownBlocks(text, false, 'label');
     expect(peeked).not.toBeNull();
     expect(peeked).toEqual(rendered);
   });
 
   test('returns null again once the content changed under the same cache key', async () => {
-    await renderMarkdownBlocks('original body', false, 'markdown-part-3', 'label');
-    expect(readCachedMarkdownBlocks('edited body', false, 'markdown-part-3', 'label')).toBeNull();
+    await renderMarkdownBlocks('original body', false, 'label');
+    expect(readCachedMarkdownBlocks('edited body', false, 'label')).toBeNull();
   });
 });

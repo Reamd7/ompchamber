@@ -7,8 +7,10 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/sonner';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { AppLinkConfirmDialog } from '@/components/chat/AppLinkConfirmDialog';
 import { VSCodeLayout } from '@/components/layout/VSCodeLayout';
 import { usePushVisibilityBeacon } from '@/hooks/usePushVisibilityBeacon';
+import { useGlobalSessionsPolling } from '@/hooks/useGlobalSessionsPolling';
 import { useRouter } from '@/hooks/useRouter';
 import { useWindowTitle } from '@/hooks/useWindowTitle';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -55,6 +57,7 @@ export function VSCodeApp({ apis }: VSCodeAppProps) {
   usePushVisibilityBeacon({ enabled: true });
   useWindowTitle();
   useRouter();
+  useGlobalSessionsPolling(panelType !== 'agentManager');
 
   React.useEffect(() => {
     document.documentElement.classList.toggle('wide-chat-layout', wideChatLayoutEnabled);
@@ -107,6 +110,7 @@ export function VSCodeApp({ apis }: VSCodeAppProps) {
               <div className="h-full text-foreground bg-background">
                 <SyncAppEffects embeddedBackgroundWorkEnabled={true} />
                 <AgentManagerView />
+                <AppLinkConfirmDialog />
                 <Toaster position="top-center" />
               </div>
             </TooltipProvider>
@@ -125,6 +129,7 @@ export function VSCodeApp({ apis }: VSCodeAppProps) {
               <div className="h-full text-foreground bg-background">
                 <SyncAppEffects embeddedBackgroundWorkEnabled={true} />
                 <VSCodeLayout />
+                <AppLinkConfirmDialog />
                 <Toaster position="top-center" />
                 <ConfigUpdateOverlay />
               </div>

@@ -70,6 +70,9 @@ workspaces/
 *.pid
 .worktrees/
 .dev-ports.json
+
+# Marks a disposable clone dedicated to unattended maintenance tasks.
+.maintenance-clone
 test-results/
 artifacts/
 

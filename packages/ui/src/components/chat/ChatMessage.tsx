@@ -14,6 +14,7 @@ import { isOmpModelRolesEnabled } from '@/lib/omp/capabilityGate';
 import { useDeviceInfo } from '@/lib/device';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
+import { useChatSurfaceMode } from './useChatSurfaceMode';
 
 import type { AnimationHandlers, ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import MessageBody from './message/MessageBody';
@@ -204,8 +205,8 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [message.info.id]);
 
 
-     const messageRole = React.useMemo(() => deriveMessageRole(message.info), [message.info]);
-     const isUser = messageRole.isUser;
+    const messageRole = React.useMemo(() => deriveMessageRole(message.info), [message.info]);
+    const isUser = messageRole.isUser;
 
     // Retry supersession overlay (spec 05 §5.3.2 P1): pure presentation keyed
     // by supersededMessageID from the omp event stream — zero wire mutation.
@@ -215,6 +216,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const retryRecoveryNoteValue = useOmpRetryNote(message.info.id);
     const supersededByRetry = !isUser && supersededByRetryFlag;
     const retryRecoveryNote = !isUser ? retryRecoveryNoteValue : undefined;
+    const chatSurfaceMode = useChatSurfaceMode();
     const useExternalUserActionsRow = isUser && (isMobile || !stickyUserHeader);
     const showStickyInlineHoverRow = isUser && !isMobile && stickyUserHeader && !useExternalUserActionsRow;
 
@@ -755,30 +757,25 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         }
         if (errorName === 'SessionRetry') {
             return {
-                text: `Opencode failed to send a message. Retry attempt info: \n\`${detail}\``,
-                variant: 'info' as const,
+                text: `Opencode failed to send a message. Retry attempt info: ${detail}`,
             };
         }
         if (isLikelyProviderAuthFailure(detail)) {
             return {
                 text: PROVIDER_AUTH_FAILURE_MESSAGE,
-                variant: 'error' as const,
             };
         }
         if (detail.trim().toLowerCase() === 'aborted') {
             return {
                 text: 'The running turn was stopped before OpenCode could send the next message.',
-                variant: 'info' as const,
             };
         }
         return {
-            text: `Opencode failed to send message with error:\n\`${detail}\``,
-            variant: 'error' as const,
+            text: `Opencode failed to send message with error: ${detail}`,
         };
     }, [isUser, message.info]);
 
     const assistantErrorText = assistantError?.text;
-    const assistantErrorVariant = assistantError?.variant;
 
     const messageTextContent = React.useMemo(() => {
         if (isUser) {
@@ -1102,7 +1099,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 respectReducedMotion
                             >
                                 <div className={cn('relative flex justify-end', !isMobile ? 'group/user-shell' : undefined)}>
-                                    <div className={cn('max-w-[85%]', showStickyInlineHoverRow ? 'pb-5' : undefined)}>
+                                    {/* peek: the action row under the bubble is suppressed, so
+                                        reserve its gap to the next message here, OUTSIDE the
+                                        bubble background. */}
+                                    <div className={cn('max-w-[85%]', showStickyInlineHoverRow ? 'pb-5' : undefined, chatSurfaceMode === 'peek' ? 'pb-3' : undefined)}>
                                         <div
                                             style={{
                                                 backgroundColor: 'var(--chat-user-message-bg)',
@@ -1142,7 +1142,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 contextPinPending={pinPending}
                                                 onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined}
                                                 errorMessage={assistantErrorText}
-                                                errorVariant={assistantErrorVariant}
                                                 userActionsMode={useExternalUserActionsRow ? 'external-content' : 'inline'}
                                                 stickyUserHeaderEnabled={stickyUserHeader}
                                             />
@@ -1179,7 +1178,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 contextPinPending={pinPending}
                                                 onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined}
                                                 errorMessage={assistantErrorText}
-                                                errorVariant={assistantErrorVariant}
                                                 userActionsMode="external-actions"
                                                 stickyUserHeaderEnabled={stickyUserHeader}
                                             />
@@ -1243,7 +1241,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 agentMention={agentMention}
                                 turnGroupingContext={turnGroupingContext}
                                 errorMessage={assistantErrorText}
-                                errorVariant={assistantErrorVariant}
                                 reviewTransferDirection={reviewTransferDirection}
                                 footerProviderID={headerProviderID}
                                 footerModelName={headerModelName}
