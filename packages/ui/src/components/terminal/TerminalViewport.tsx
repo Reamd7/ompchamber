@@ -3,7 +3,7 @@ import type { FitAddon, Ghostty, Terminal as GhosttyTerminal } from 'ghostty-web
 
 import { cn } from '@/lib/utils';
 import type { TerminalTheme } from '@/lib/terminalTheme';
-import { getGhosttyTerminalOptions } from '@/lib/terminalTheme';
+import { TERMINAL_TYPOGRAPHY, getGhosttyTerminalOptions } from '@/lib/terminalTheme';
 import {
   getGhosttySafeResetSequence,
   rewriteGhosttyDefaultBackgroundResets,
@@ -55,13 +55,19 @@ const getProvisionalTerminalSize = (
   const context = document.createElement('canvas').getContext('2d');
   if (!context || container.clientWidth < 24 || container.clientHeight < 24) return null;
 
-  context.font = `${fontSize}px ${fontFamily}`;
+  // Mirror the renderer's measureFont exactly (weight in the font string,
+  // lineHeight scaling over ascent+descent). A mismatch here spawns the PTY
+  // with more rows than fit; the post-mount fit then shrinks the grid and
+  // full-screen TUIs (btop, fresh) redraw misaligned — their top row ends up
+  // covered by the pane header.
+  context.font = `${TERMINAL_TYPOGRAPHY.fontWeight} ${fontSize}px ${fontFamily}`;
   const metrics = context.measureText('M');
   const cellWidth = Math.ceil(metrics.width);
-  const cellHeight = Math.ceil(
+  const naturalHeight = Math.ceil(
     (metrics.actualBoundingBoxAscent || fontSize * 0.8) +
     (metrics.actualBoundingBoxDescent || fontSize * 0.2),
-  ) + 2;
+  );
+  const cellHeight = Math.max(1, Math.ceil(naturalHeight * TERMINAL_TYPOGRAPHY.lineHeight));
   if (cellWidth < 1 || cellHeight < 1) return null;
 
   const style = window.getComputedStyle(container);
