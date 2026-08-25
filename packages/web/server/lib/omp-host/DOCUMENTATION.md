@@ -113,7 +113,7 @@ sync engine, and web server call; everything else answers 404.
   `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)
   enforces: SDK union == manifest keys, engine switch covers every member,
   omp names registered, durable events' snapshot endpoints covered by the
-  bootstrap matrix, and no parallel `openchamber:omp` channels (R1).
+  bootstrap matrix, and no parallel `ompchamber:omp` channels (R1).
 
 ## Invariants
 

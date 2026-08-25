@@ -96,7 +96,7 @@ describe('createEventPipeline — system resume reconnect', () => {
       // Wait for first SSE attempt to start and deliver the event, then
       // simulate OS resume by invoking the registered handler directly.
       setTimeout(() => {
-        const handler = winListeners['openchamber:system-resume'];
+        const handler = winListeners['ompchamber:system-resume'];
         if (handler) handler();
       }, 80);
     });

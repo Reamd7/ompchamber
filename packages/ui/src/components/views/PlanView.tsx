@@ -234,7 +234,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, projectPl
   const editorViewRef = React.useRef<EditorView | null>(null);
   const editorWrapperRef = React.useRef<HTMLDivElement | null>(null);
 
-  const MD_VIEWER_MODE_KEY = 'openchamber:plan:md-viewer-mode';
+  const MD_VIEWER_MODE_KEY = 'ompchamber:plan:md-viewer-mode';
 
   React.useEffect(() => {
     try {

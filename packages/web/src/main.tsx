@@ -112,8 +112,8 @@ void start();
 // throws a TypeError that also swallowed the PWA registration below, so
 // check for the function itself, never just the hot object.
 if (import.meta.env.DEV && typeof import.meta.webpackHot?.on === 'function') {
-  import.meta.webpackHot.on('openchamber:theme-updated', (theme: unknown) => {
-    window.dispatchEvent(new CustomEvent('openchamber:theme-hmr', { detail: theme }));
+  import.meta.webpackHot.on('ompchamber:theme-updated', (theme: unknown) => {
+    window.dispatchEvent(new CustomEvent('ompchamber:theme-hmr', { detail: theme }));
   });
 }
 

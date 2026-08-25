@@ -45,7 +45,7 @@ describe('managed OpenCode restart session recovery', () => {
       expect(sessionRuntime.getActiveSessionCount()).toBe(0);
       expect(Object.values(sessionRuntime.getSessionStateSnapshot()).map((state) => state.status))
         .toEqual(['idle', 'idle', 'idle']);
-      expect(events.filter((event) => event.type === 'openchamber:session-status')).toHaveLength(3);
+      expect(events.filter((event) => event.type === 'ompchamber:session-status')).toHaveLength(3);
       expect(events.filter((event) => event.type === 'session.error')).toHaveLength(3);
       expect(broadcastUiNotification).toHaveBeenCalledOnce();
       expect(broadcastUiNotification).toHaveBeenCalledWith(expect.objectContaining({

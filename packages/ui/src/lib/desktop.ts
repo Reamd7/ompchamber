@@ -754,7 +754,7 @@ export const downloadDesktopUpdate = async (
 
   try {
     if (typeof onProgress === 'function' && bridge?.listen) {
-      unlisten = await bridge.listen('openchamber:update-progress', (evt) => {
+      unlisten = await bridge.listen('ompchamber:update-progress', (evt) => {
         const payload = evt?.payload;
         if (!payload || typeof payload !== 'object') return;
         const data = payload as { event?: unknown; data?: unknown };

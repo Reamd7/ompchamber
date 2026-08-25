@@ -640,8 +640,8 @@ function App({ apis }: AppProps) {
       void useSessionUIStore.getState().setCurrentSession(sessionId, directory);
     };
 
-    window.addEventListener('openchamber:open-session', handler as EventListener);
-    return () => window.removeEventListener('openchamber:open-session', handler as EventListener);
+    window.addEventListener('ompchamber:open-session', handler as EventListener);
+    return () => window.removeEventListener('ompchamber:open-session', handler as EventListener);
   }, []);
 
   // Open a draft Mini Chat window from the native File menu / tray. Uses a
@@ -655,8 +655,8 @@ function App({ apis }: AppProps) {
         projectId: null,
       });
     };
-    window.addEventListener('openchamber:open-mini-chat', onOpenMiniChat);
-    return () => window.removeEventListener('openchamber:open-mini-chat', onOpenMiniChat);
+    window.addEventListener('ompchamber:open-mini-chat', onOpenMiniChat);
+    return () => window.removeEventListener('ompchamber:open-mini-chat', onOpenMiniChat);
   }, []);
 
   // When the window regains focus, mark the currently-selected session as seen.
@@ -695,8 +695,8 @@ function App({ apis }: AppProps) {
       });
     };
 
-    window.addEventListener('openchamber:open-draft-session', handler as EventListener);
-    return () => window.removeEventListener('openchamber:open-draft-session', handler as EventListener);
+    window.addEventListener('ompchamber:open-draft-session', handler as EventListener);
+    return () => window.removeEventListener('ompchamber:open-draft-session', handler as EventListener);
   }, []);
 
   React.useEffect(() => {
@@ -705,7 +705,7 @@ function App({ apis }: AppProps) {
     if (appReadyDispatchedRef.current) return;
     appReadyDispatchedRef.current = true;
     (window as unknown as { __openchamberAppReady?: boolean }).__openchamberAppReady = true;
-    window.dispatchEvent(new Event('openchamber:app-ready'));
+    window.dispatchEvent(new Event('ompchamber:app-ready'));
   }, [isInitialized, isSwitchingDirectory]);
 
   // useEventStream replaced by SyncProvider + SyncBridge

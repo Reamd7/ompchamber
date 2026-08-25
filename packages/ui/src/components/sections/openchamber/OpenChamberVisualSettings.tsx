@@ -568,7 +568,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const handleFileViewerPreviewChange = React.useCallback((enabled: boolean) => {
         setSettingsDefaultFileViewerPreview(enabled);
         void updateDesktopSettings({ defaultFileViewerPreview: enabled });
-        window.dispatchEvent(new CustomEvent('openchamber:file-viewer-preview-mode-changed', { detail: { enabled } }));
+        window.dispatchEvent(new CustomEvent('ompchamber:file-viewer-preview-mode-changed', { detail: { enabled } }));
     }, [setSettingsDefaultFileViewerPreview]);
 
     const handleShowExpandedBashToolsChange = React.useCallback((enabled: boolean) => {

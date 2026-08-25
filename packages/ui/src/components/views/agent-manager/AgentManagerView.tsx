@@ -60,8 +60,8 @@ export const AgentManagerView: React.FC<AgentManagerViewProps> = ({ className })
         setConnectionStatus(status);
       }
     };
-    window.addEventListener('openchamber:connection-status', handler as EventListener);
-    return () => window.removeEventListener('openchamber:connection-status', handler as EventListener);
+    window.addEventListener('ompchamber:connection-status', handler as EventListener);
+    return () => window.removeEventListener('ompchamber:connection-status', handler as EventListener);
   }, [isVSCodeRuntime]);
 
   React.useEffect(() => {

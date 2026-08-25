@@ -1563,11 +1563,11 @@ export const Header: React.FC<HeaderProps> = ({
     };
 
     void syncFullscreenState();
-    window.addEventListener('openchamber:window-resized', onResize);
+    window.addEventListener('ompchamber:window-resized', onResize);
 
     return () => {
       disposed = true;
-      window.removeEventListener('openchamber:window-resized', onResize);
+      window.removeEventListener('ompchamber:window-resized', onResize);
     };
   }, [isDesktopApp, isMacPlatform]);
 

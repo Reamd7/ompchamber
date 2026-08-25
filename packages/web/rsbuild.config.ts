@@ -17,7 +17,7 @@ const { publicVars } = loadEnv({ prefixes: ['VITE_'] });
 /**
  * Live theme editing without a page reload. Built-in theme JSONs live in the
  * shared UI package; edits there are pushed to the dev server's clients as the
- * `openchamber:theme-updated` HMR event, which `src/main.tsx` forwards to the
+ * `ompchamber:theme-updated` HMR event, which `src/main.tsx` forwards to the
  * theme system. The theme directory is excluded from Rspack's watcher so an
  * edit never falls back to a full rebuild + reload.
  */
@@ -32,7 +32,7 @@ const themeJsonHmrPlugin = (): RsbuildPlugin => ({
 
         try {
           const theme = JSON.parse(fs.readFileSync(path.join(themeDirectory, file), 'utf-8'));
-          server.environments.web.hot.send('custom', { event: 'openchamber:theme-updated', data: theme });
+          server.environments.web.hot.send('custom', { event: 'ompchamber:theme-updated', data: theme });
         } catch {
           // Leave the previous valid theme active while an editor writes
           // invalid or incomplete JSON; the next valid save replaces it.

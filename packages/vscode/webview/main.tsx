@@ -83,12 +83,12 @@ const handleConnectionMessage = (event: MessageEvent) => {
     const error: string | undefined = msg.error;
     const prevCliAvailable = window.__OMPCHAMBER_CONNECTION__?.cliAvailable ?? true;
     window.__OMPCHAMBER_CONNECTION__ = { status: payload, error, cliAvailable: prevCliAvailable };
-    window.dispatchEvent(new CustomEvent('openchamber:connection-status', { detail: { status: payload, error } }));
+    window.dispatchEvent(new CustomEvent('ompchamber:connection-status', { detail: { status: payload, error } }));
   }
 };
 
 window.addEventListener('message', handleConnectionMessage);
-window.addEventListener('openchamber:connection-status', () => {
+window.addEventListener('ompchamber:connection-status', () => {
   maybeHideLoadingOverlay();
 });
 
@@ -208,7 +208,7 @@ const emitVSCodeTheme = (preferredKind?: VSCodeThemeKind) => {
   const theme = buildVSCodeThemeFromPalette(palette);
   window.__OMPCHAMBER_VSCODE_THEME__ = theme;
    applyInitialTheme(theme);
-  window.dispatchEvent(new CustomEvent<VSCodeThemePayload>('openchamber:vscode-theme', {
+  window.dispatchEvent(new CustomEvent<VSCodeThemePayload>('ompchamber:vscode-theme', {
     detail: { theme, palette },
   }));
 };
@@ -234,7 +234,7 @@ onThemeChange((payload) => {
   if (typeof payload === 'object' && payload?.shikiThemes !== undefined) {
     window.__OMPCHAMBER_VSCODE_SHIKI_THEMES__ = payload.shikiThemes;
     window.dispatchEvent(
-      new CustomEvent('openchamber:vscode-shiki-themes', {
+      new CustomEvent('ompchamber:vscode-shiki-themes', {
         detail: { shikiThemes: payload.shikiThemes },
       }),
     );
@@ -1443,13 +1443,13 @@ onCommand('newSession', (payload) => {
   });
 
   // Also dispatch event to navigate to chat view in VSCodeLayout
-  window.dispatchEvent(new CustomEvent('openchamber:navigate', { detail: { view: 'chat' } }));
+  window.dispatchEvent(new CustomEvent('ompchamber:navigate', { detail: { view: 'chat' } }));
 });
 
 // Listen for showSettings command from extension title bar button
 onCommand('showSettings', () => {
   // Dispatch event to navigate to settings view in VSCodeLayout
-  window.dispatchEvent(new CustomEvent('openchamber:navigate', { detail: { view: 'settings' } }));
+  window.dispatchEvent(new CustomEvent('ompchamber:navigate', { detail: { view: 'settings' } }));
 });
 
 // Run the same full OpenCode reload flow the app uses after an update: shows the
@@ -1513,7 +1513,7 @@ const showOpenChamberNotification = (payload: { title?: unknown; body?: unknown;
           useSessionUIStore.getState().setCurrentSession(sessionId);
         });
       }
-      window.dispatchEvent(new CustomEvent('openchamber:navigate', { detail: { view: 'chat' } }));
+      window.dispatchEvent(new CustomEvent('ompchamber:navigate', { detail: { view: 'chat' } }));
     };
     return true;
   };
@@ -1711,7 +1711,7 @@ const getNotificationDirectory = (payload: Record<string, unknown>): string | nu
   return getPayloadString(properties.directory ?? info?.directory) || null;
 };
 
-window.addEventListener('openchamber:vscode-notification-event', (event) => {
+window.addEventListener('ompchamber:vscode-notification-event', (event) => {
   const detail = (event as CustomEvent<{ directory?: string; payload?: unknown }>).detail;
   const payload = detail?.payload;
   if (!payload || typeof payload !== 'object') {

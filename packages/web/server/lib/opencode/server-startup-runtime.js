@@ -97,7 +97,7 @@ export const createServerStartupRuntime = (dependencies) => {
 
             await new Promise((resolveReadyNotification, rejectReadyNotification) => {
               try {
-                process.send({ type: 'openchamber:ready', port: activePort }, (error) => {
+                process.send({ type: 'ompchamber:ready', port: activePort }, (error) => {
                   if (error) {
                     rejectReadyNotification(error);
                     return;

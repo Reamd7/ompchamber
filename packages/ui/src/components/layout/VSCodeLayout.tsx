@@ -350,8 +350,8 @@ export const VSCodeLayout: React.FC = () => {
         setConnectionStatus(status);
       }
     };
-    window.addEventListener('openchamber:connection-status', handler as EventListener);
-    return () => window.removeEventListener('openchamber:connection-status', handler as EventListener);
+    window.addEventListener('ompchamber:connection-status', handler as EventListener);
+    return () => window.removeEventListener('ompchamber:connection-status', handler as EventListener);
   }, []);
 
   // Listen for navigation events from VS Code extension title bar buttons
@@ -370,8 +370,8 @@ export const VSCodeLayout: React.FC = () => {
         setCurrentView('sessions');
       }
     };
-    window.addEventListener('openchamber:navigate', handler as EventListener);
-    return () => window.removeEventListener('openchamber:navigate', handler as EventListener);
+    window.addEventListener('ompchamber:navigate', handler as EventListener);
+    return () => window.removeEventListener('ompchamber:navigate', handler as EventListener);
   }, []);
 
   // Bootstrap config and sessions when connected

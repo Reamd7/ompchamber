@@ -152,18 +152,18 @@ P0/P1 分期对应总纲 D4 + D6-R6:P1 = 全部 24 成员的显式处置(D2 强�
 
 判据的边界案例:compaction 的**分隔线条目**是 transcript 数据(message 轨,wire 投影),compaction 的**进度与死端警告**是 omp 原生(omp 轨);retry 的**loader**用 wire `session.status{retry}`(OpenCode 已定义该状态,R12/总纲 §7.6 复用裁决),retry 的**恢复注记与取代标注**用 omp 轨(`omp.retry.ended.retryErrors` / `omp.retry.started.supersededMessageID`,wire 无字段可放;§5.3.2);破坏性 tool part 回收 = P2 门控,不属 P1(§5.3.4)。
 
-**REVISED(R1)—— 被废止的并行通道设计**:01 v1 §5.6 备选(c)「复用 wire `/event` 发 `omp.*`」、03 v1 §5.2 `openchamber:omp-dialog-*`(全局广播器 SSE+WS fan-out)、04 v1 §5.0 `openchamber:omp-agents/tree/jobs`(WireEventBus emit)一律废止;各章修订版只登记名称/payload 并引用本章(01/02 修订版已按此对齐)。`openchamber:` 前缀的 OpenChamber 原生合成事件(`openchamber:notification` 等)不受影响——它们不是 omp 概念,不属本注册表。
+**REVISED(R1)—— 被废止的并行通道设计**:01 v1 §5.6 备选(c)「复用 wire `/event` 发 `omp.*`」、03 v1 §5.2 `ompchamber:omp-dialog-*`(全局广播器 SSE+WS fan-out)、04 v1 §5.0 `ompchamber:omp-agents/tree/jobs`(WireEventBus emit)一律废止;各章修订版只登记名称/payload 并引用本章(01/02 修订版已按此对齐)。`openchamber:` 前缀的 OpenChamber 原生合成事件(`ompchamber:notification` 等)不受影响——它们不是 omp 概念,不属本注册表。
 
 #### 5.0.2 命名归一(R1/R3,REVISED)
 
-统一 `omp.<域>.<事件>`(域名词 + 过去式动词),禁止 `openchamber:omp-*` 与下划线事件名。v1 草案名的归一映射(各章修订已按此对齐):
+统一 `omp.<域>.<事件>`(域名词 + 过去式动词),禁止 `ompchamber:omp-*` 与下划线事件名。v1 草案名的归一映射(各章修订已按此对齐):
 
 | 原草案名(出处) | 归一名 |
 |---|---|
 | `omp.model.fallback {phase}`(01 v1) | `omp.fallback.applied` / `omp.fallback.succeeded` |
 | `omp.session.model_changed` / `omp.session.thinking_level` / `omp.session.goal`(05 v1) | `omp.model.changed` / `omp.thinking.changed` / `omp.goal.updated`(01/02 定名) |
-| `openchamber:omp-dialog-requested/-settled`(03 v1) | `omp.dialog.requested` / `omp.dialog.settled` |
-| `openchamber:omp-agents/-tree/-jobs`(04 v1) | `omp.agents.updated` / `omp.tree.updated` / `omp.jobs.updated`(名从 04 修订版;04 v1 名违反 D1 命名规约) |
+| `ompchamber:omp-dialog-requested/-settled`(03 v1) | `omp.dialog.requested` / `omp.dialog.settled` |
+| `ompchamber:omp-agents/-tree/-jobs`(04 v1) | `omp.agents.updated` / `omp.tree.updated` / `omp.jobs.updated`(名从 04 修订版;04 v1 名违反 D1 命名规约) |
 | `omp:queue_changed`(08 v1) | `omp.queue.changed` |
 | `omp.session.compaction/retry/retry_fallback/ttsr/custom_message/notice/agent_settled/turn_usage`、`omp.resync`(05 v1) | `omp.compaction.started/ended`、`omp.retry.started/ended`、`omp.fallback.applied/succeeded`、`omp.ttsr.triggered`、`omp.custom.appended`、`omp.notice.raised`、`omp.session.settled`、`omp.usage.turn`、`omp.stream.resync` |
 
@@ -289,7 +289,7 @@ P0/P1 分期对应总纲 D4 + D6-R6:P1 = 全部 24 成员的显式处置(D2 强�
    c. 断言 `engine.js #handleEngineEvent` 的 switch case 集 ⊆ manifest(ignore 成员也必须有显式 case);
    d. 断言 manifest 中 track 含 omp 的成员在 `omp-event-registry.json` 有对应条目。
    e. **durable→快照矩阵覆盖(二轮 H5)**:断言每个 `durable:true` 条目的 `snapshotEndpoints[]` ⊆ `omp-bootstrap-matrix.json`(§5.2.4 表的机器镜像,有序端点清单);任一缺失 → exit 1。只校验事件名 union 覆盖不算通过——durable 事件登记了却无 bootstrap 恢复步骤即违 D2。
-4. `scripts/check-omp-event-names.mjs`(并入上脚本亦可):全仓(含 `docs/omp-parity/*` 与 `packages/`)grep `omp\.[a-z]+\.[a-z_]+` 的每个名字必须 ∈ `omp-event-registry.json`;`openchamber:omp` 前缀零命中 —— 防并行命名回潮(R1)。
+4. `scripts/check-omp-event-names.mjs`(并入上脚本亦可):全仓(含 `docs/omp-parity/*` 与 `packages/`)grep `omp\.[a-z]+\.[a-z_]+` 的每个名字必须 ∈ `omp-event-registry.json`;`ompchamber:omp` 前缀零命中 —— 防并行命名回潮(R1)。
 5. SDK 升级流程:bump 依赖 → CI 红 → 在本表 + manifest + 注册表登记处置并 bump `eventSchema`(§5.2.3)→ 绿。**禁止先合代码后补登记。**
 
 ### 5.2 GAP-E15/E16:omp 事件通道设计(REVISED,R1/R2/R3/R4/R12)

@@ -26,10 +26,10 @@ export type EmbeddedSessionRuntimeBootstrap = {
   relay?: Omit<RelayRuntimeDescriptor, 'grant'>;
 };
 
-export const EMBEDDED_RUNTIME_BOOTSTRAP_REQUEST = 'openchamber:embedded-runtime-bootstrap-request';
-export const EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE = 'openchamber:embedded-runtime-bootstrap-response';
-export const EMBEDDED_VISIBILITY_REQUEST = 'openchamber:embedded-visibility-request';
-export const EMBEDDED_VISIBILITY_UPDATE = 'openchamber:embedded-visibility';
+export const EMBEDDED_RUNTIME_BOOTSTRAP_REQUEST = 'ompchamber:embedded-runtime-bootstrap-request';
+export const EMBEDDED_RUNTIME_BOOTSTRAP_RESPONSE = 'ompchamber:embedded-runtime-bootstrap-response';
+export const EMBEDDED_VISIBILITY_REQUEST = 'ompchamber:embedded-visibility-request';
+export const EMBEDDED_VISIBILITY_UPDATE = 'ompchamber:embedded-visibility';
 const EMBEDDED_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 5_000;
 const EMBEDDED_RUNTIME_BOOTSTRAP_RETRY_MS = 100;
 

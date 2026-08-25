@@ -12,7 +12,7 @@
 //   4. bootstrap matrix — every durable registry entry's snapshotEndpoints
 //      are covered by omp-bootstrap-matrix.json (断流不是空状态, D2).
 //   5. naming discipline — every standalone `omp.<domain>.<event>` literal
-//      in packages/ is registered and the `openchamber:omp` prefix never
+//      in packages/ is registered and the `ompchamber:omp` prefix never
 //      appears in code (master R1). Namespaced non-event strings such as
 //      i18n keys `dialogs.omp.ask.title` are intentionally excluded. Docs
 //      under docs/omp-parity are scanned too, but lines that quote deprecated
@@ -211,8 +211,8 @@ if (!args.includes('--skip-name-scan')) {
           fail(`unregistered omp event name "${match[0]}" in ${relLabel}:${i + 1}`);
         }
       }
-      if (/openchamber:omp/.test(line) && (!isDoc || !historicalLine.test(line))) {
-        fail(`parallel channel prefix "openchamber:omp" in ${relLabel}:${i + 1} (master R1)`);
+      if (/(?:open|omp)chamber:omp/.test(line) && (!isDoc || !historicalLine.test(line))) {
+        fail(`parallel channel prefix "openchamber:omp"/"ompchamber:omp" in ${relLabel}:${i + 1} (master R1)`);
       }
     }
   };

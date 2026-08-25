@@ -168,7 +168,7 @@ Renderer code should call the desktop bridge exposed by `preload.mjs`. Do not im
 Add new native capabilities in this order:
 
 1. Add or update the `preload.mjs` bridge only if a new renderer-facing shape is needed.
-2. Add the real command handling in `main.mjs` under `openchamber:invoke`.
+2. Add the real command handling in `main.mjs` under `ompchamber:invoke`.
 3. Gate privileged commands in main process logic so remote pages cannot access local filesystem or shell capabilities.
 4. Keep shared UI runtime contracts in `packages/ui` and server/runtime APIs in `packages/web` when the behavior is not inherently native.
 

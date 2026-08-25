@@ -131,16 +131,16 @@ const getEventProperties = (properties: unknown): Record<string, unknown> | null
 };
 
 const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) => {
-  if (envelope.type === 'openchamber:event-stream-ready') {
+  if (envelope.type === 'ompchamber:event-stream-ready') {
     reconnectAttempt = 0;
     return;
   }
 
-  if (envelope.type === 'openchamber:heartbeat') {
+  if (envelope.type === 'ompchamber:heartbeat') {
     return;
   }
 
-  if (envelope.type === 'openchamber:agent-memory-changed') {
+  if (envelope.type === 'ompchamber:agent-memory-changed') {
     const properties = getEventProperties(envelope.properties);
     const scope = properties?.scope === 'project' ? 'project' : 'global';
     const nextEvent: AgentMemoryChangedEvent = {
@@ -156,7 +156,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
     return;
   }
 
-  if (envelope.type === 'openchamber:session-created') {
+  if (envelope.type === 'ompchamber:session-created') {
     const properties = getEventProperties(envelope.properties);
     const sessionId = typeof properties?.sessionId === 'string' ? properties.sessionId : '';
     const directory = typeof properties?.directory === 'string' ? properties.directory : '';
@@ -181,7 +181,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
     return;
   }
 
-  if (envelope.type === 'openchamber:browser-control-request') {
+  if (envelope.type === 'ompchamber:browser-control-request') {
     const properties = getEventProperties(envelope.properties);
     const requestId = typeof properties?.requestId === 'string' ? properties.requestId : '';
     const action = typeof properties?.action === 'string' ? properties.action : '';
@@ -204,7 +204,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
     return;
   }
 
-  if (envelope.type === 'openchamber:worktrees-changed') {
+  if (envelope.type === 'ompchamber:worktrees-changed') {
     const properties = getEventProperties(envelope.properties);
     const rawDirectories = properties?.directories;
     const directories = Array.isArray(rawDirectories)
@@ -224,7 +224,7 @@ const dispatchFromEnvelope = (envelope: { type: string; properties: unknown }) =
     return;
   }
 
-  if (envelope.type !== 'openchamber:scheduled-task-ran') {
+  if (envelope.type !== 'ompchamber:scheduled-task-ran') {
     return;
   }
 

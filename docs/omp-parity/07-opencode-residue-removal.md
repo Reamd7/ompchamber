@@ -52,7 +52,7 @@ OpenCode 残留以三种形态存在,删除动作各不相同:
 ### 2.3 与原创面的纠缠(删除时的保护名单)
 
 - `WorkStatusSubagentsSection` 是 OC 原创面板,但其 "needs permission / asked question" 读出(WorkStatusSubagentsSection.tsx:19-38,86-101)挂在 R3/R4 的 state 上 —— 只删读出与 state,不删面板。
-- 通知系统的 completion/error 触发是 OC 原创能力(notifications/DOCUMENTATION.md:48),但其 permission 抑制逻辑与 `openchamber:permission-auto-accept.updated` 广播(runtime.js:65-68)随 R3 删除。
+- 通知系统的 completion/error 触发是 OC 原创能力(notifications/DOCUMENTATION.md:48),但其 permission 抑制逻辑与 `ompchamber:permission-auto-accept.updated` 广播(runtime.js:65-68)随 R3 删除。
 - `usePendingOpenCodeRestartStore`、`reloadOpenCodeConfiguration`、`deferredRestart` 被 R2/R12/R13 三组共享,删除顺序需协调(见 5.14 DAG)。
 
 ---

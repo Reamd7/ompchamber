@@ -38,7 +38,7 @@ import type { QuestionRequest } from '@/types/question';
 // Only meaningful on desktop platforms with a native tray/menu bar — main.mjs
 // no-ops the command elsewhere, but we still gate here to avoid pointless work.
 
-const TRAY_ACTION_EVENT = 'openchamber:tray-action';
+const TRAY_ACTION_EVENT = 'ompchamber:tray-action';
 // Event-driven updates do the real work; this is just a slow safety net.
 const POLL_INTERVAL_MS = 5000;
 const FLUSH_DEBOUNCE_MS = 500;
@@ -104,7 +104,7 @@ type TraySnapshot = {
 };
 
 // focus-session / new-session are routed natively by the main process through
-// the existing `openchamber:open-session` / `openchamber:open-draft-session`
+// the existing `ompchamber:open-session` / `ompchamber:open-draft-session`
 // events (handled in App.tsx). respond-permission and respond-omp-dialog are
 // delivered back here over the tray-action channel instead.
 export type TrayAction =

@@ -26,7 +26,7 @@ OpenChamber 现状 = **OpenCode 产品骨架 + omp 引擎**,概念层三类错�
 
 ### D1 双轨契约策略
 - **OpenCode wire 契约**(`packages/ui/src/lib/opencode/wire/`,vendored 生成代码)**不再扩张**。omp-host 继续用它承载与 OpenCode 语义重合的部分(session/message/todo/SSE 基础面),残留面按第 07 章清单停用。唯一例外:`message.part.removed` 由 05 章首次投产(retry 超越撤回),07 章删除守卫不含它;`message.removed` 仍按残留清理。
-- **omp 原生概念**(model roles、会话树、Agent Hub、URI schemes、模式、jobs、审批)一律走 **OpenChamber 自有面**:`RuntimeAPIs` + `runtimeFetch`(`packages/ui/src/lib/api/`)新增 omp-parity 端点组(前缀 `/api/omp/...`),**事件一律走 05 章定义的唯一 `OmpEventBus → /api/omp/events` SSE 通道**(envelope/事件 ID/directory 作用域/`Last-Event-ID` 重放/schema 版本以 05 章为唯一权威),不硬塞进 OpenCode wire 生成类型。事件命名统一 `omp.<域>.<事件>`(如 `omp.model.changed`、`omp.dialog.requested`、`omp.mode.changed`);**禁止** `openchamber:omp-*` 等并行命名。
+- **omp 原生概念**(model roles、会话树、Agent Hub、URI schemes、模式、jobs、审批)一律走 **OpenChamber 自有面**:`RuntimeAPIs` + `runtimeFetch`(`packages/ui/src/lib/api/`)新增 omp-parity 端点组(前缀 `/api/omp/...`),**事件一律走 05 章定义的唯一 `OmpEventBus → /api/omp/events` SSE 通道**(envelope/事件 ID/directory 作用域/`Last-Event-ID` 重放/schema 版本以 05 章为唯一权威),不硬塞进 OpenCode wire 生成类型。事件命名统一 `omp.<域>.<事件>`(如 `omp.model.changed`、`omp.dialog.requested`、`omp.mode.changed`);**禁止** `ompchamber:omp-*` 等并行命名。
 - 理由:wire gen 是 vendored 生成物,手改不可维护;RuntimeAPIs 是 OpenChamber 已有的自有 API 通道(ui-api-decoupling skill 管辖)。
 
 ### D2 投影与状态权威

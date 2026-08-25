@@ -742,7 +742,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     const now = Date.now();
     if (now - lastNativeResumeSyncEventAtRef.current >= NATIVE_RESUME_SYNC_EVENT_THROTTLE_MS) {
       lastNativeResumeSyncEventAtRef.current = now;
-      window.dispatchEvent(new Event('openchamber:system-resume'));
+      window.dispatchEvent(new Event('ompchamber:system-resume'));
     }
   }, [agentsCount, apis.github, initializeApp, loadAgents, loadProviders, providersCount, refreshGitHubAuthStatus]);
 

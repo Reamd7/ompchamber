@@ -441,7 +441,7 @@ export const listenDesktopSshStatus = async (
     return async () => {};
   }
 
-  const unlisten = await listen('openchamber:ssh-instance-status', (event) => {
+  const unlisten = await listen('ompchamber:ssh-instance-status', (event) => {
     const status = parseStatus(event?.payload);
     if (!status) return;
     listener(status);

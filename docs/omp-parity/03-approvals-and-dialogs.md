@@ -91,8 +91,8 @@ agent 权限编辑器:
 ### 2.4 事件通道现状(基础设施已具备;v1 挂靠方案作废)[REVISED v2]
 
 - omp-host `WireEventBus`:2048 条环形重放缓冲、单调 id、`Last-Event-ID` 续订(`packages/web/server/lib/omp-host/events.js:8-58`;SSE 入口 `endpoints.js:553-593` 读 `last-event-id` 头后 `subscribeSince`)—— 这是 wire 轨基础设施,dialog 事件**不进**此轨(D1/R1)。
-- OpenChamber 自有合成事件:`openchamber:session-status/session-activity/notification/heartbeat` 经 `createGlobalUiEventBroadcaster` fan-out 到 SSE 与 WS 客户端(`packages/web/server/lib/event-stream/DOCUMENTATION.md:47-48`;广播行为测试 `runtime.test.js:86-99`);通知先例 `notifications/emitter-runtime.js:68-72`;UI 侧消费先例 `hooks/useWebNotificationStream.ts:21/37`。
-- **命名沿革**:v1 曾设计 dialog 事件沿用 `openchamber:omp-dialog-*` 命名挂靠该广播器;**R1 裁决后作废** —— omp 原生事件一律走 05 章 `OmpEventBus → /api/omp/events` 唯一通道、命名 `omp.<域>.<事件>`(本章 §5.2 落实)。`openchamber:notification` 是 OpenChamber 原创通知面(Ch08)的数据载体,**非 omp 原生事件**,不受 R1 约束,继续走广播器(§5.3.4)。
+- OpenChamber 自有合成事件:`ompchamber:session-status/session-activity/notification/heartbeat` 经 `createGlobalUiEventBroadcaster` fan-out 到 SSE 与 WS 客户端(`packages/web/server/lib/event-stream/DOCUMENTATION.md:47-48`;广播行为测试 `runtime.test.js:86-99`);通知先例 `notifications/emitter-runtime.js:68-72`;UI 侧消费先例 `hooks/useWebNotificationStream.ts:21/37`。
+- **命名沿革**:v1 曾设计 dialog 事件沿用 `ompchamber:omp-dialog-*` 命名挂靠该广播器;**R1 裁决后作废** —— omp 原生事件一律走 05 章 `OmpEventBus → /api/omp/events` 唯一通道、命名 `omp.<域>.<事件>`(本章 §5.2 落实)。`ompchamber:notification` 是 OpenChamber 原创通知面(Ch08)的数据载体,**非 omp 原生事件**,不受 R1 约束,继续走广播器(§5.3.4)。
 
 ### 2.5 进程归属、认证与宿主生命周期现状(R4/R11 的地基)[NEW v2]
 
@@ -280,7 +280,7 @@ POST /api/omp/dialogs/:dialogId/respond   → 200 {ok:true} | 404 | 409 | 403   
 
 **respond / presented 作用域绑定(R11,两者同规)**:registry 登记时绑定 `(directory, sessionId, dialogId)` 三元组;校验**以 registry 绑定为权威** —— `dialogId` 未知/已淘汰 → 404;已 settle → 409(幂等丢弃,UI 据此丢弃陈旧卡);body `directory` 与绑定不符 → 403(**客户端提交的 directory 仅用于校验,不用于路由**;ID 不可猜使存在性探测无收益,见下)。**两个动作均不要求持 UI 租约**(§5.1 D-C1b:对话框存在性已由创建时租约门槛保证;重连中客户端不得因租约握手竞态被拒)。lease 端点按 `(directory, sessionId, clientId)` 幂等,校验目录一致性后写租约表。
 
-**事件(R1:走 05 章唯一通道;v1 的 `openchamber:omp-dialog-requested/-settled` 命名与全局广播器挂靠方案作废,沿革见 §2.4)**:
+**事件(R1:走 05 章唯一通道;v1 的 `ompchamber:omp-dialog-requested/-settled` 命名与全局广播器挂靠方案作废,沿革见 §2.4)**:
 
 事件经 05 章 `OmpEventBus → /api/omp/events` SSE 下发;envelope、事件 ID、durable/volatile、directory 作用域、`Last-Event-ID` 重放、schema 版本**以 05 章为唯一权威**,本章不自建通道、不定义 envelope。本章在 05 章事件注册表登记两行:
 
@@ -362,7 +362,7 @@ TUI 没有会话级开关 —— `approvalMode` 是全局设置(wrapper.ts:191 �
 
 #### 5.3.4 后台会话可见性
 
-非当前会话的审批/ask 到达 → 复用第 08 章通知系统:`openchamber:notification` 合成事件(emitter-runtime.js:68-72 通道;**OpenChamber 原创通知面,非 omp 原生事件,不受 R1 约束**)+ Web Notification + tray 菜单项("会话 X 等待批准 → Approve/Deny")。替换 useTraySync 的 permission 菜单(§5.8 P1-1);toast 的"打开会话"动作保留语义,数据源换轨。
+非当前会话的审批/ask 到达 → 复用第 08 章通知系统:`ompchamber:notification` 合成事件(emitter-runtime.js:68-72 通道;**OpenChamber 原创通知面,非 omp 原生事件,不受 R1 约束**)+ Web Notification + tray 菜单项("会话 X 等待批准 → Approve/Deny")。替换 useTraySync 的 permission 菜单(§5.8 P1-1);toast 的"打开会话"动作保留语义,数据源换轨。
 
 ### 5.4 ask 对话框
 
@@ -538,7 +538,7 @@ ask 是 turn 内工具调用:弹窗未答 = agent turn 挂起(会话 busy,sideba
 | OQ-2 | 弹窗 Deny 是否附理由输入 | P1 不做(TUI 无);模型可随后续 turn 用 ask 追问。若反馈强烈,加可选折叠输入框,注入 deny 后的合成 tool result 文本 |
 | OQ-3 | 定时任务/无人值守会话的审批策略 | **R10 已裁决基线**:fail-closed,不改全局审批设置(§5.3.3);任务编辑器警告已定。会话级 settings 注入是唯一增强路径 —— **注入口已存在**(`createAgentSession` 的 `options.settings`/`settingsManager`,sdk.ts:554-560、消费点 :1273-1275,第二轮评审核实),但 omp-host 现以进程级 `Settings.init` 单例运行,全局/目录层 Settings 的权威模型归第 06 章(R2-3)裁决;其定稿前不提供任何任务侧审批改写(v1"任务模板写 allow 快照"建议作废) |
 | OQ-4 | 并行工具多弹窗策略 | 队列 + 计数徽标(§5.6.3);若上游 TUI 后续引入并行 dialog 交互再对齐 |
-| OQ-5 | ~~`openchamber:omp-dialog-*` 命名与作用域~~ **已裁决(R1)** | 事件定名 `omp.dialog.requested`/`omp.dialog.settled`,走 05 章唯一 `/api/omp/events` 通道,directory 作用域(§5.2 注册表行);v1 命名留作沿革记录(§2.4)。本章无残留动作 |
+| OQ-5 | ~~`ompchamber:omp-dialog-*` 命名与作用域~~ **已裁决(R1)** | 事件定名 `omp.dialog.requested`/`omp.dialog.settled`,走 05 章唯一 `/api/omp/events` 通道,directory 作用域(§5.2 注册表行);v1 命名留作沿革记录(§2.4)。本章无残留动作 |
 | OQ-6 | approval 弹窗与 tool part 的关联精度 | P1 尽力关联(§5.3.1);精准方案是上游在 `select()` 调用点携带 toolCallId(wrapper.ts:332 签名扩展)—— 建议向上游提 issue,落地后 dialog 结构体加必填 `toolCallId` |
 | OQ-7 | ~~vendored wire 中 permission/question 类型裁剪~~ **已冻结(R2-M8)** | 冻结裁决与 00 D1/07 §5.0 一致:**gen 文件不动,仅删消费引用**(P3-4..13 引用清零即完成,类型随上游重生成自然消失,§5.8 P3-14);不再是开放问题,本域无待决动作 |
 | OQ-8 | 扩展生态 UI(`custom()` overlay、registerShortcut 等)在 web 的边界 | 本章明确只桥五方法 + editor;`custom()` 等维持 no-op。若未来要 web 化扩展 UI,是独立设计域(不属域 C) |

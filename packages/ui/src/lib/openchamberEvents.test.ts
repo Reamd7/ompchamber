@@ -48,7 +48,7 @@ describe('openchamber events', () => {
 
     source.onmessage?.({
       data: JSON.stringify({
-        type: 'openchamber:session-created',
+        type: 'ompchamber:session-created',
         properties: {
           sessionId: 'ses_123',
           directory: '/repo/worktrees/research',
@@ -83,7 +83,7 @@ describe('openchamber events', () => {
 
     source.onmessage?.({
       data: JSON.stringify({
-        type: 'openchamber:worktrees-changed',
+        type: 'ompchamber:worktrees-changed',
         properties: {
           directories: ['C:\\repo\\main', '/repo/other'],
         },
@@ -92,13 +92,13 @@ describe('openchamber events', () => {
     // Malformed payloads are dropped, not dispatched.
     source.onmessage?.({
       data: JSON.stringify({
-        type: 'openchamber:worktrees-changed',
+        type: 'ompchamber:worktrees-changed',
         properties: { directories: [42, ''] },
       }),
     });
     source.onmessage?.({
       data: JSON.stringify({
-        type: 'openchamber:worktrees-changed',
+        type: 'ompchamber:worktrees-changed',
         properties: { directories: [] },
       }),
     });

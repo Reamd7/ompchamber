@@ -216,7 +216,7 @@
 
 ### 6.7 批次 3-5 门禁汇总
 - UI 隔离套件 **293/293** 文件;tsc 五包 0 错误;omp-host **237/237**;VS Code 23/23;Electron 15/15;`check:events` OK(24/24/25);web vitest 34 失败=文档化基线(无新增)。
-- 验收修复:角色 Clear 按钮 onClick 缺失;`openchamber:omp` localStorage 前缀违例(check:events 抓获 → `oc-omp-`);并发代理编辑丢 `setGitChangesViewMode`/`useChatTimelineController`/`ompModes` 工厂行(逐一恢复,类型 0 错)。
+- 验收修复:角色 Clear 按钮 onClick 缺失;`ompchamber:omp` localStorage 前缀违例(check:events 抓获 → `oc-omp-`);并发代理编辑丢 `setGitChangesViewMode`/`useChatTimelineController`/`ompModes` 工厂行(逐一恢复,类型 0 错)。
 - live 验收覆盖:settings 页三区渲染+两处写落盘、commands 101 条两 tier、definitions/personas CRUD 往返、tree 真谱系、mode selector DOM 在场;persona 菜单交互/plan overlay/goal 指示器因无头 palette 覆盖层与需活动 plan/goal 状态未做点击级驱动——组件级单测背书,列为待真机项(对齐 §5.4 遗留口径)。
 
 ### 6.8 观察门计时起点登记(总纲 §8 07 章观察期)

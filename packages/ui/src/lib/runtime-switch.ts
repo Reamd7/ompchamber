@@ -13,8 +13,8 @@ export type RuntimeEndpointChangedDetail = {
   previousRuntimeKey: string;
 };
 
-const RUNTIME_ENDPOINT_CHANGED_EVENT = 'openchamber:runtime-endpoint-changed';
-const RUNTIME_ENDPOINT_WILL_CHANGE_EVENT = 'openchamber:runtime-endpoint-will-change';
+const RUNTIME_ENDPOINT_CHANGED_EVENT = 'ompchamber:runtime-endpoint-changed';
+const RUNTIME_ENDPOINT_WILL_CHANGE_EVENT = 'ompchamber:runtime-endpoint-will-change';
 
 let activeApiBaseUrl = '';
 let activeRuntimeKey = '';

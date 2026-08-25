@@ -52,8 +52,8 @@ export const PluginsSidebar: React.FC<PluginsSidebarProps> = ({ onItemSelect }) 
 
   React.useEffect(() => {
     const handleOpenAdd = () => setInstallOpen(true);
-    window.addEventListener('openchamber:settings-open-plugin-add', handleOpenAdd);
-    return () => window.removeEventListener('openchamber:settings-open-plugin-add', handleOpenAdd);
+    window.addEventListener('ompchamber:settings-open-plugin-add', handleOpenAdd);
+    return () => window.removeEventListener('ompchamber:settings-open-plugin-add', handleOpenAdd);
   }, []);
 
   const select = (id: string) => {

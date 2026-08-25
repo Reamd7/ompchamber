@@ -559,7 +559,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     }
     if (result.id === 'plugins.create' && typeof window !== 'undefined') {
       window.setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('openchamber:settings-open-plugin-add'));
+        window.dispatchEvent(new CustomEvent('ompchamber:settings-open-plugin-add'));
       }, 50);
     }
   }, [isMobile, openPage, prepareSettingsSearchTarget]);

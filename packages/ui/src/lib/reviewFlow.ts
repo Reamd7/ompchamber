@@ -406,7 +406,7 @@ const sendPlainMessage = async (
 
 const requestChatForceScrollBottom = (sessionId: string): void => {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent('openchamber:chat-force-scroll-bottom', {
+  window.dispatchEvent(new CustomEvent('ompchamber:chat-force-scroll-bottom', {
     detail: { sessionId },
   }));
 };

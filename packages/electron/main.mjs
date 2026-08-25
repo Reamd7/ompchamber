@@ -1377,7 +1377,7 @@ const maybeShowNativeNotification = (rawInput) => {
   notification.on('click', () => {
     focusForegroundWindow();
     if (sessionId) {
-      emitToAllWindows('openchamber:open-session', { sessionId, directory });
+      emitToAllWindows('ompchamber:open-session', { sessionId, directory });
     }
     release();
   });
@@ -1996,7 +1996,7 @@ const loginRemoteAndIssueClientToken = async ({ url, password, trustDevice, requ
 
 const emitToWindow = (browserWindow, event, detail) => {
   if (!browserWindow || browserWindow.isDestroyed()) return;
-  browserWindow.webContents.send('openchamber:emit', { event, detail });
+  browserWindow.webContents.send('ompchamber:emit', { event, detail });
 };
 
 const emitToAllWindows = (event, detail) => {
@@ -2281,12 +2281,12 @@ const dispatchDeepLink = (link) => {
       target.show();
       target.focus();
     }
-    emitToAllWindows('openchamber:deep-link-focus', { reason: link.value || null });
+    emitToAllWindows('ompchamber:deep-link-focus', { reason: link.value || null });
     return;
   }
 
   if (link.type === 'session' && link.value) {
-    emitToAllWindows('openchamber:open-session', { sessionId: link.value });
+    emitToAllWindows('ompchamber:open-session', { sessionId: link.value });
     return;
   }
   if (link.type === 'host' && link.value) {
@@ -2343,15 +2343,15 @@ const getMenuTargetWindow = () => {
 
 const dispatchMenuAction = (action) => {
   const target = getMenuTargetWindow();
-  emitToWindow(target, 'openchamber:menu-action', action);
-  dispatchDomEventToWindow(target, 'openchamber:menu-action', action);
+  emitToWindow(target, 'ompchamber:menu-action', action);
+  dispatchDomEventToWindow(target, 'ompchamber:menu-action', action);
 };
 
 // Append-style menu actions must reach the renderer exactly once. Dual IPC+DOM
 // delivery (dispatchMenuAction) would insert the selection twice.
 const dispatchAddSelectionToChat = () => {
   const target = getMenuTargetWindow();
-  if (target) emitToWindow(target, 'openchamber:menu-action', 'add-selection-to-chat');
+  if (target) emitToWindow(target, 'ompchamber:menu-action', 'add-selection-to-chat');
 };
 
 // Mini-chat draft windows are not deduplicated, so this must reach the renderer
@@ -2359,13 +2359,13 @@ const dispatchAddSelectionToChat = () => {
 // resolves the active directory/project and opens the window.
 const dispatchOpenMiniChat = (browserWindow) => {
   const target = browserWindow && !browserWindow.isDestroyed() ? browserWindow : getMenuTargetWindow();
-  if (target) emitToWindow(target, 'openchamber:open-mini-chat');
+  if (target) emitToWindow(target, 'ompchamber:open-mini-chat');
 };
 
 const dispatchCheckForUpdates = () => {
-  emitToAllWindows('openchamber:check-for-updates');
+  emitToAllWindows('ompchamber:check-for-updates');
   for (const browserWindow of BrowserWindow.getAllWindows()) {
-    dispatchDomEventToWindow(browserWindow, 'openchamber:check-for-updates');
+    dispatchDomEventToWindow(browserWindow, 'ompchamber:check-for-updates');
   }
 };
 
@@ -2529,16 +2529,16 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
 
   browserWindow.on('resize', () => {
     if (process.platform === 'darwin') {
-      emitToWindow(browserWindow, 'openchamber:window-resized');
+      emitToWindow(browserWindow, 'ompchamber:window-resized');
     }
     debounceWindowStatePersist(browserWindow, false);
   });
   browserWindow.on('maximize', () => {
-    emitToWindow(browserWindow, 'openchamber:window-maximized-changed', { maximized: true });
+    emitToWindow(browserWindow, 'ompchamber:window-maximized-changed', { maximized: true });
     debounceWindowStatePersist(browserWindow, false);
   });
   browserWindow.on('unmaximize', () => {
-    emitToWindow(browserWindow, 'openchamber:window-maximized-changed', { maximized: false });
+    emitToWindow(browserWindow, 'ompchamber:window-maximized-changed', { maximized: false });
     debounceWindowStatePersist(browserWindow, false);
   });
   browserWindow.on('move', () => {
@@ -3097,7 +3097,7 @@ const setupAutoUpdater = () => {
     const total = Number(progress.total || 0);
     const transferred = Number(progress.transferred || 0);
     setTaskbarProgress(total > 0 ? Math.max(0, Math.min(1, transferred / total)) : 0.01);
-    emitToAllWindows('openchamber:update-progress', mapUpdaterProgressEvent({
+    emitToAllWindows('ompchamber:update-progress', mapUpdaterProgressEvent({
       event: 'Progress',
       data: {
         chunkLength: Math.max(0, Math.round(progress.bytesPerSecond || 0)),
@@ -4316,7 +4316,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         const apps = await buildPlatformInstalledApps(Array.isArray(args.apps) ? args.apps : []);
         await fsp.mkdir(path.dirname(cachePath), { recursive: true });
         await fsp.writeFile(cachePath, JSON.stringify({ updatedAt: now, apps }, null, 2));
-        emitToAllWindows('openchamber:installed-apps-updated', apps);
+        emitToAllWindows('ompchamber:installed-apps-updated', apps);
       };
       if (process.platform !== 'darwin' && process.platform !== 'win32' && process.platform !== 'linux') {
         return { apps: [], hasCache: false, isCacheStale: false, supported: false };
@@ -4431,7 +4431,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         throw new Error('No pending update');
       }
       setTaskbarProgress(0.01);
-      emitToAllWindows('openchamber:update-progress', mapUpdaterProgressEvent({
+      emitToAllWindows('ompchamber:update-progress', mapUpdaterProgressEvent({
         event: 'Started',
         data: {
           contentLength: null,
@@ -4461,7 +4461,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
             Promise.resolve(autoUpdater.downloadUpdate()).catch((error) => finish(reject, error));
           });
         }
-        emitToAllWindows('openchamber:update-progress', mapUpdaterProgressEvent({
+        emitToAllWindows('ompchamber:update-progress', mapUpdaterProgressEvent({
           event: 'Finished',
           data: {},
         }));
@@ -4636,9 +4636,9 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       state.mainWindow.show();
       state.mainWindow.focus();
       if (sessionId) {
-        emitToWindow(state.mainWindow, 'openchamber:open-session', { sessionId, directory });
+        emitToWindow(state.mainWindow, 'ompchamber:open-session', { sessionId, directory });
       } else if (mode === 'draft') {
-        emitToWindow(state.mainWindow, 'openchamber:open-draft-session', { directory, projectId });
+        emitToWindow(state.mainWindow, 'ompchamber:open-draft-session', { directory, projectId });
       }
       return { focused: true };
     }
@@ -5037,7 +5037,7 @@ const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_tray_update',
 ]);
 
-ipcMain.handle('openchamber:invoke', async (event, command, args) => {
+ipcMain.handle('ompchamber:invoke', async (event, command, args) => {
   if (!isLocalSender(event.sender) && !COMMANDS_SAFE_FOR_REMOTE.has(command)) {
     log.warn(`[ipc] rejected ${command} from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
@@ -5046,7 +5046,7 @@ ipcMain.handle('openchamber:invoke', async (event, command, args) => {
   return handleInvoke(browserWindow, command, args);
 });
 
-ipcMain.handle('openchamber:dialog:open', async (event, options) => {
+ipcMain.handle('ompchamber:dialog:open', async (event, options) => {
   // Native file dialogs expose absolute local paths; never grant to remote.
   if (!isLocalSender(event.sender)) {
     log.warn(`[ipc] rejected dialog:open from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
@@ -5095,7 +5095,7 @@ ipcMain.handle('openchamber:dialog:open', async (event, options) => {
   return result.filePaths[0] || null;
 });
 
-ipcMain.handle('openchamber:file:grant-existing', async (event, filePath) => {
+ipcMain.handle('ompchamber:file:grant-existing', async (event, filePath) => {
   if (!isLocalSender(event.sender)) {
     log.warn(`[ipc] rejected file:grant-existing from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
@@ -5230,7 +5230,7 @@ const focusMainWindowWithSession = async (sessionId, directory) => {
     state.mainWindow.show();
     state.mainWindow.focus();
     if (sessionId) {
-      emitToWindow(state.mainWindow, 'openchamber:open-session', { sessionId, directory: directory || '' });
+      emitToWindow(state.mainWindow, 'ompchamber:open-session', { sessionId, directory: directory || '' });
     }
     return;
   }
@@ -5276,7 +5276,7 @@ const dispatchTrayAction = async (action) => {
     const target = (state.mainWindow && !state.mainWindow.isDestroyed())
       ? state.mainWindow
       : await revealMainWindow();
-    emitToWindow(target, 'openchamber:tray-action', action);
+    emitToWindow(target, 'ompchamber:tray-action', action);
     return;
   }
 
@@ -5298,7 +5298,7 @@ const dispatchTrayAction = async (action) => {
       if (surface.isMinimized()) surface.restore();
       surface.show();
       surface.focus();
-      emitToWindow(surface, 'openchamber:open-session', {
+      emitToWindow(surface, 'ompchamber:open-session', {
         sessionId: action.sessionId,
         directory: action.directory || '',
       });
@@ -5312,7 +5312,7 @@ const dispatchTrayAction = async (action) => {
   if (!target || target.isDestroyed()) return;
 
   if (action.type === 'new-session') {
-    emitToWindow(target, 'openchamber:open-draft-session', { directory: '', projectId: '' });
+    emitToWindow(target, 'ompchamber:open-draft-session', { directory: '', projectId: '' });
   }
   // show-main-window: revealing the window above is the whole action.
 };
@@ -5472,7 +5472,7 @@ app.whenReady().then(async () => {
   // Notify renderer on OS wake-from-sleep so the SSE event pipeline can
   // reconnect immediately instead of waiting for the heartbeat watchdog.
   powerMonitor.on('resume', () => {
-    emitToAllWindows('openchamber:system-resume', { timestamp: Date.now() });
+    emitToAllWindows('ompchamber:system-resume', { timestamp: Date.now() });
   });
 }).catch((error) => {
   log.error('[electron] startup failed:', error);

@@ -925,7 +925,7 @@ const processForwardedEventPayload = (payload, emitSyntheticEvent) => {
   }
 
   emitSyntheticEvent({
-    type: 'openchamber:session-status',
+    type: 'ompchamber:session-status',
     properties: {
       sessionID: sessionId,
       status,
@@ -946,7 +946,7 @@ const processForwardedEventPayload = (payload, emitSyntheticEvent) => {
   });
 
   emitSyntheticEvent({
-    type: 'openchamber:session-activity',
+    type: 'ompchamber:session-activity',
     properties: {
       sessionId,
       phase: status === 'busy' || status === 'retry' ? 'busy' : 'idle',
@@ -1223,7 +1223,7 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
     for (const client of uiOpenChamberEventClients) {
       try {
         writeSseEvent(client, {
-          type: 'openchamber:scheduled-task-ran',
+          type: 'ompchamber:scheduled-task-ran',
           properties: {
             projectId: event.projectID,
             taskId: event.taskID,
@@ -1243,7 +1243,7 @@ const emitSessionCreatedEvent = (event) => {
   for (const client of uiOpenChamberEventClients) {
     try {
       writeSseEvent(client, {
-        type: 'openchamber:session-created',
+        type: 'ompchamber:session-created',
         properties: {
           sessionId: event.sessionID,
           directory: event.directory,
@@ -1268,7 +1268,7 @@ const emitWorktreesChangedEvent = (directories) => {
   for (const client of uiOpenChamberEventClients) {
     try {
       writeSseEvent(client, {
-        type: 'openchamber:worktrees-changed',
+        type: 'ompchamber:worktrees-changed',
         properties: {
           directories,
         },
@@ -1300,7 +1300,7 @@ const emitAgentMemoryChangedEvent = (event) => {
   for (const client of uiOpenChamberEventClients) {
     try {
       writeSseEvent(client, {
-        type: 'openchamber:agent-memory-changed',
+        type: 'ompchamber:agent-memory-changed',
         properties: {
           scope: event.scope,
           ...(event.projectId ? { projectId: event.projectId } : {}),
@@ -1351,7 +1351,7 @@ const browserControlBroker = createBrowserControlBroker({
       if (needsBrowserView && client.openchamberBrowserCapable !== true) continue;
       try {
         writeSseEvent(client, {
-          type: 'openchamber:browser-control-request',
+          type: 'ompchamber:browser-control-request',
           properties: {
             requestId: request.requestId,
             action: request.action,

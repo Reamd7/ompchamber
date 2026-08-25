@@ -207,7 +207,7 @@ omp.tree.updated    { directory, sessionID, leafId, kind: 'navigate'|'label'|'su
 omp.jobs.updated    { directory, sessionID, snapshot: OmpJobSnapshot }  // 仅 capabilities.jobs=true(§5.6)
 ```
 
-(`omp.queue.changed` 若 08 章方案 B 落地,同样经 05 注册表;本章不定义。)`openchamber:omp-*` 并行命名空间**废止**(评审 R1),wire `/event` 只承载既有 wire 事件。快照式(agents/jobs)而非增量式:行数小(≤ 数十)、权威状态在服务端、重连对账只需"最后一次快照全量替换",符合 sync-state-invariants 的权威状态原则;tree 用轻量 delta + 客户端重拉 `getTree`。
+(`omp.queue.changed` 若 08 章方案 B 落地,同样经 05 注册表;本章不定义。)`ompchamber:omp-*` 并行命名空间**废止**(评审 R1),wire `/event` 只承载既有 wire 事件。快照式(agents/jobs)而非增量式:行数小(≤ 数十)、权威状态在服务端、重连对账只需"最后一次快照全量替换",符合 sync-state-invariants 的权威状态原则;tree 用轻量 delta + 客户端重拉 `getTree`。
 
 **capabilities 门控(R2;R2-M11 修订为 scheme × 读/写矩阵)**:本章 feature 键(协商端点 `GET /api/omp/capabilities` 的全局定义见总纲 D6-R2,本章只消费):`uri.schemes`(string[] —— 宿主侧 READ 解析允许的 scheme 清单;**P1 = `['local']`**,`agent/history/artifact` 不在列,R2-H2)、`uri.write.<scheme>`(逐 scheme 写开关;P1 仅 `uri.write.local=true`;`uri.write.ssh|vault|xd` 威胁评审前恒 false,§5.2.1)、`tree.read`、`tree.navigate`(P1)、`agentRuns`、`jobs`(上游注入前恒 false,R12)、`drafts`、`artifacts`、`export`。**读侧评审规则(R2-M11)**:`ssh/vault/security/mcp` 四 scheme 的 READ 纳入 `uri.schemes` 前,须通过与写能力同级的威胁评审(§5.2.1 维度 + 读侧特有:宿主凭据与内网可达面、外部敏感内容向浏览器暴露、审计日志、大小/速率限制、principal 作用域)——P2 默认不透传这四个 scheme 的读。服务端裁决;UI 不得以本地 flag 判定(§6.1)。
 
@@ -543,7 +543,7 @@ PUT /api/omp/sessions/{sessionID}/draft  { text }    → { ok }     // saveDraft
 | endpoints.js | `/api/omp/*` 路由组(§5.0,R3 复数规约);全部注册于 omp-host、经既有 Basic auth(R4);复用 `directoryFromRequest`(endpoints:85-93) |
 | 新文件 `omp-host/uri-bridge.js` | §5.2.3 目录台账 + `local://` 会话钉扎解析(零 SDK 全局态变更,R2-H2);§5.2.4 令牌服务 |
 | 新文件 `omp-host/agent-runs-aggregator.js`(原 HubAggregator 更名) | §5.5.1 聚合 + 快照事件 + 磁盘恢复(historical 行,按目录台账,R2-M5) |
-| 事件(经 Ch05 `OmpEventBus → /api/omp/events`) | `omp.agents.updated` / `omp.tree.updated` / `omp.jobs.updated`(名称+注册表归 05,R1);废止 `openchamber:omp-*` |
+| 事件(经 Ch05 `OmpEventBus → /api/omp/events`) | `omp.agents.updated` / `omp.tree.updated` / `omp.jobs.updated`(名称+注册表归 05,R1);废止 `ompchamber:omp-*` |
 | packages/ui `lib/api/types.ts` | `OmpParityAPI` 接口 + `RuntimeAPIs` 新增 `omp` 键(types.ts:1225-1241 扩展)(§5.0) |
 | packages/ui `lib/ompParity/` | runtimeFetch 客户端封装(jobs 501 → `{available:false, ownerSessionID}` 映射,§5.6) |
 | packages/ui stores | `useOmpAgentRunsStore` / `useSessionTreeStore` / `useOmpJobsStore`(sync-state-invariants:权威快照 + 乐观动作;jobs 挂 capabilities 门控) |

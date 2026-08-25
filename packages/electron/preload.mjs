@@ -145,7 +145,7 @@ const dispatchNativeEvent = (event, detail) => {
 // Main-process events are read-only notifications (update progress,
 // window focus, etc.) — safe to deliver to any page rendered in this
 // webContents. The events themselves don't grant capability.
-ipcRenderer.on('openchamber:emit', (_evt, payload) => {
+ipcRenderer.on('ompchamber:emit', (_evt, payload) => {
   if (!payload || typeof payload !== 'object') {
     return;
   }
@@ -159,13 +159,13 @@ ipcRenderer.on('openchamber:emit', (_evt, payload) => {
 });
 
 // The desktop bridge is exposed on all pages; the main-process gate in
-// ipcMain.handle('openchamber:invoke') decides per-command what is safe
+// ipcMain.handle('ompchamber:invoke') decides per-command what is safe
 // for non-local callers (window/host-switcher ops yes, file/shell ops
 // no). See COMMANDS_SAFE_FOR_REMOTE in main.mjs.
 contextBridge.exposeInMainWorld('__OMPCHAMBER_DESKTOP__', {
-  invoke: (cmd, args) => ipcRenderer.invoke('openchamber:invoke', cmd, args || {}),
-  openDialog: (options) => ipcRenderer.invoke('openchamber:dialog:open', options || {}),
-  grantFileAccess: (filePath) => ipcRenderer.invoke('openchamber:file:grant-existing', filePath),
-  openExternal: (url) => ipcRenderer.invoke('openchamber:invoke', 'desktop_open_external_url', { url }),
+  invoke: (cmd, args) => ipcRenderer.invoke('ompchamber:invoke', cmd, args || {}),
+  openDialog: (options) => ipcRenderer.invoke('ompchamber:dialog:open', options || {}),
+  grantFileAccess: (filePath) => ipcRenderer.invoke('ompchamber:file:grant-existing', filePath),
+  openExternal: (url) => ipcRenderer.invoke('ompchamber:invoke', 'desktop_open_external_url', { url }),
   listen: async (event, handler) => addListener(event, handler),
 });

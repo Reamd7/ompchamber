@@ -3,7 +3,7 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 
-export const CHAT_DRAFT_PROJECT_ID = 'openchamber:chats';
+export const CHAT_DRAFT_PROJECT_ID = 'ompchamber:chats';
 const MANAGED_CHATS_PATH_SEGMENT = '/.config/openchamber/chats/';
 const chatsRootByRuntime = new Map<string, Promise<string>>();
 

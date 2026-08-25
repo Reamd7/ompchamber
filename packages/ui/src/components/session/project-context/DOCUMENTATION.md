@@ -101,7 +101,7 @@ trying to read them. Each project keeps its own mark, so opening one project
 cannot silently clear another's badges.
 
 The store is loaded by `useAgentMemorySync` in `App.tsx` and reloads on
-`openchamber:agent-memory-changed`, because the agent writes mid-turn through
+`ompchamber:agent-memory-changed`, because the agent writes mid-turn through
 its own tool. It feeds this panel only — what a session is told about memory is
 decided server-side by `packages/web/server/lib/session-knowledge`, so it
 reaches sessions that have no UI at all and survives compaction.
@@ -135,7 +135,7 @@ useProjectContextStore  ->  ProjectNotesTodoPanel  ->  sections
 ```
 
 There is deliberately no cross-panel event. An earlier version broadcast
-`openchamber:project-notes-updated` / `openchamber:project-plan-saved` on the
+`ompchamber:project-notes-updated` / `ompchamber:project-plan-saved` on the
 window and every mounted panel re-read the whole config in response. Writers now
 mutate the store and readers re-render from it.
 

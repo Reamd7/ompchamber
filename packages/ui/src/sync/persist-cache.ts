@@ -17,7 +17,7 @@ import { isVSCodeRuntime } from "@/lib/desktop"
 const PERSISTED_SESSION_LIMIT = 50
 const SESSION_CACHE_FALLBACK_LIMITS = [PERSISTED_SESSION_LIMIT, 25, 10, 5, 1] as const
 const SESSION_PERSIST_DEBOUNCE_MS = 50
-const MANAGED_CHATS_CACHE_SCOPE = "openchamber:managed-chats"
+const MANAGED_CHATS_CACHE_SCOPE = "ompchamber:managed-chats"
 
 type PendingSessionWrite = {
   runtimeKey: string

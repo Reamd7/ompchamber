@@ -156,7 +156,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
 
     try {
       writeSseEvent(res, {
-        type: 'openchamber:event-stream-ready',
+        type: 'ompchamber:event-stream-ready',
         properties: {
           connectedAt: Date.now(),
         },
@@ -167,7 +167,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     const heartbeat = setInterval(() => {
       try {
         writeSseEvent(res, {
-          type: 'openchamber:heartbeat',
+          type: 'ompchamber:heartbeat',
           properties: {
             timestamp: Date.now(),
           },

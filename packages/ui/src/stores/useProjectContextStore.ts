@@ -1,7 +1,7 @@
 /**
  * Project context store: notes, todos, and plan links, keyed by project.
  *
- * Replaces the `openchamber:project-notes-updated` / `openchamber:project-plan-saved`
+ * Replaces the `ompchamber:project-notes-updated` / `ompchamber:project-plan-saved`
  * window events that previously forced every mounted panel to re-read the whole
  * config. Writers now mutate the store and every reader re-renders from it.
  *

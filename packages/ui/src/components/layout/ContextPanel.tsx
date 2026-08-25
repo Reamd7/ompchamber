@@ -785,7 +785,7 @@ export const ContextPanel: React.FC = () => {
 
       frameWindow.postMessage(
         {
-          type: 'openchamber:theme-sync',
+          type: 'ompchamber:theme-sync',
           payload,
         },
         window.location.origin,
@@ -801,7 +801,7 @@ export const ContextPanel: React.FC = () => {
       const frameWindow = frame.contentWindow;
       if (!frameWindow) continue;
 
-      frameWindow.postMessage({ type: 'openchamber:chat-settings-sync', payload }, window.location.origin);
+      frameWindow.postMessage({ type: 'ompchamber:chat-settings-sync', payload }, window.location.origin);
     }
   }, [allowPromptingSubagentSessions]);
 
@@ -876,15 +876,15 @@ export const ContextPanel: React.FC = () => {
         }, event.origin);
         return;
       }
-      if (data?.type === 'openchamber:theme-sync-request') {
+      if (data?.type === 'ompchamber:theme-sync-request') {
         postThemeSyncToEmbeddedChat();
         return;
       }
-      if (data?.type === 'openchamber:chat-settings-request') {
+      if (data?.type === 'ompchamber:chat-settings-request') {
         postChatSettingsSyncToEmbeddedChat();
         return;
       }
-      if (data?.type !== 'openchamber:cycle-theme-request') {
+      if (data?.type !== 'ompchamber:cycle-theme-request') {
         return;
       }
 
