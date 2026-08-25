@@ -53,7 +53,7 @@ export function isFreePort(port, host = '127.0.0.1') {
   });
 }
 
-function recordedWorktreePorts(repoRoot) {
+function recordedWorktreeEntries(repoRoot) {
   let entries;
   try {
     entries = fs.readdirSync(path.join(repoRoot, WORKTREES_DIRNAME), { withFileTypes: true });
@@ -64,7 +64,7 @@ function recordedWorktreePorts(repoRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const ports = readDevPorts(path.join(repoRoot, WORKTREES_DIRNAME, entry.name));
-    if (ports) recorded.push(ports);
+    if (ports) recorded.push({ name: entry.name, ports });
   }
   return recorded;
 }
@@ -85,9 +85,9 @@ async function findFreePortAbove(start, taken, host) {
  */
 export async function allocateDevPorts({ repoRoot, host = '127.0.0.1' }) {
   const taken = new Set([DEFAULT_UI_PORT, DEFAULT_API_PORT]);
-  for (const recorded of recordedWorktreePorts(repoRoot)) {
-    taken.add(recorded.uiPort);
-    taken.add(recorded.apiPort);
+  for (const { ports } of recordedWorktreeEntries(repoRoot)) {
+    taken.add(ports.uiPort);
+    taken.add(ports.apiPort);
   }
   const uiPort = await findFreePortAbove(DEFAULT_UI_PORT + 1, taken, host);
   if (!uiPort) return null;
@@ -95,4 +95,28 @@ export async function allocateDevPorts({ repoRoot, host = '127.0.0.1' }) {
   const apiPort = await findFreePortAbove(DEFAULT_API_PORT + 1, taken, host);
   if (!apiPort) return null;
   return { uiPort, apiPort };
+}
+
+/**
+ * Every dev port `bun run stop` should free: the shared defaults, this
+ * checkout's own pair, and every worktree's recorded pair. Returns
+ * `{ port, origin }` targets ordered by allocation order; a port seen twice
+ * (impossible after `worktree init`, defensive anyway) keeps its first origin.
+ */
+export function collectDevPorts(rootDir) {
+  const targets = new Map([
+    [DEFAULT_UI_PORT, 'default'],
+    [DEFAULT_API_PORT, 'default'],
+  ]);
+  const own = readDevPorts(rootDir);
+  if (own) {
+    if (!targets.has(own.uiPort)) targets.set(own.uiPort, DEV_PORTS_FILENAME);
+    if (!targets.has(own.apiPort)) targets.set(own.apiPort, DEV_PORTS_FILENAME);
+  }
+  for (const { name, ports } of recordedWorktreeEntries(rootDir)) {
+    const origin = `${WORKTREES_DIRNAME}/${name}/${DEV_PORTS_FILENAME}`;
+    if (!targets.has(ports.uiPort)) targets.set(ports.uiPort, origin);
+    if (!targets.has(ports.apiPort)) targets.set(ports.apiPort, origin);
+  }
+  return Array.from(targets, ([port, origin]) => ({ port, origin }));
 }

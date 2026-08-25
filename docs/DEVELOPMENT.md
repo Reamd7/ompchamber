@@ -40,6 +40,7 @@ scripts/     根工具:check:events 事件门禁、run-isolated-tests.mjs 等
 
 ```bash
 bun run dev            # 根目录:web HMR(web:rsbuild --watch + 服务器)
+bun run stop           # 杀掉所有 dev 端口上的进程(默认 5180/3902、本仓 .dev-ports.json、各 worktree 的口)
 # 或分开两个终端:
 cd packages/web && bun run dev          # 构建 UI,变更热更
 cd packages/web && bun run dev:server   # bun server/index.js

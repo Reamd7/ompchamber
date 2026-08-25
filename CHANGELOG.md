@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Dev: new `bun run stop` clears every leftover dev server in one command — it targets all dev ports the repo can use (the shared pair plus each worktree's own), so a backgrounded or crashed dev session no longer leaves you hunting listeners by PID.
+
 ## [1.19.1] - 2026-08-25
 
 - **Desktop:** fixed hundreds of omp-host.exe processes piling up in Task Manager (tens of GB of memory) — the engine relaunches its own binary as background helpers (the browser tool's helper, local speech/title models), but the bundled engine treated every relaunch as another server start, so each one came up as an idle engine that never exited; roughly one leaked per 10-second retry while the browser tool kept trying. Helpers now run as the intended worker, and any relaunch the host doesn't recognize exits immediately instead of serving.

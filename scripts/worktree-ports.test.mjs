@@ -7,6 +7,7 @@ import test from 'node:test'
 
 import {
   allocateDevPorts,
+  collectDevPorts,
   DEFAULT_API_PORT,
   DEFAULT_UI_PORT,
   DEV_PORTS_FILENAME,
@@ -73,4 +74,45 @@ test('allocateDevPorts skips a live listener even when unrecorded', async () => 
   } finally {
     await new Promise((resolve) => server.close(resolve))
   }
+})
+
+test('collectDevPorts lists defaults, the checkout pair, and every worktree pair once', () => {
+  const repoRoot = tmpRepo()
+  assert.deepEqual(collectDevPorts(repoRoot), [
+    { port: DEFAULT_UI_PORT, origin: 'default' },
+    { port: DEFAULT_API_PORT, origin: 'default' },
+  ])
+
+  writeDevPorts(repoRoot, { uiPort: 5191, apiPort: 3911 })
+  const wtA = path.join(repoRoot, '.worktrees', 'a')
+  const wtB = path.join(repoRoot, '.worktrees', 'b')
+  fs.mkdirSync(wtA, { recursive: true })
+  fs.mkdirSync(wtB, { recursive: true })
+  writeDevPorts(wtA, { uiPort: 5181, apiPort: 3903 })
+  writeDevPorts(wtB, { uiPort: 5182, apiPort: 3904 })
+  // Not a directory and malformed entries contribute nothing.
+  fs.writeFileSync(path.join(repoRoot, '.worktrees', 'stray.txt'), '')
+  fs.mkdirSync(path.join(repoRoot, '.worktrees', 'broken'), { recursive: true })
+  fs.writeFileSync(path.join(repoRoot, '.worktrees', 'broken', DEV_PORTS_FILENAME), '{oops')
+
+  assert.deepEqual(collectDevPorts(repoRoot), [
+    { port: DEFAULT_UI_PORT, origin: 'default' },
+    { port: DEFAULT_API_PORT, origin: 'default' },
+    { port: 5191, origin: DEV_PORTS_FILENAME },
+    { port: 3911, origin: DEV_PORTS_FILENAME },
+    { port: 5181, origin: `.worktrees/a/${DEV_PORTS_FILENAME}` },
+    { port: 3903, origin: `.worktrees/a/${DEV_PORTS_FILENAME}` },
+    { port: 5182, origin: `.worktrees/b/${DEV_PORTS_FILENAME}` },
+    { port: 3904, origin: `.worktrees/b/${DEV_PORTS_FILENAME}` },
+  ])
+})
+
+test('collectDevPorts keeps the first origin when a port repeats', () => {
+  const repoRoot = tmpRepo()
+  writeDevPorts(repoRoot, { uiPort: DEFAULT_UI_PORT, apiPort: 3911 })
+  assert.deepEqual(collectDevPorts(repoRoot), [
+    { port: DEFAULT_UI_PORT, origin: 'default' },
+    { port: DEFAULT_API_PORT, origin: 'default' },
+    { port: 3911, origin: DEV_PORTS_FILENAME },
+  ])
 })
