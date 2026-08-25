@@ -60,6 +60,7 @@ export const resolveDefaultAgentModelSelection = ({
     agents,
     providers,
     projectDefaultModel,
+    projectDefaultVariant,
     settingsDefaultAgent,
     settingsDefaultModel,
     settingsDefaultVariant,
@@ -70,6 +71,7 @@ export const resolveDefaultAgentModelSelection = ({
     agents: Agent[];
     providers: ProviderWithModelList[];
     projectDefaultModel?: string;
+    projectDefaultVariant?: string;
     settingsDefaultAgent?: string;
     settingsDefaultModel?: string;
     settingsDefaultVariant?: string;
@@ -145,7 +147,9 @@ export const resolveDefaultAgentModelSelection = ({
         if (parsed && hasProviderModel(providers, parsed.providerId, parsed.modelId)) {
             providerId = parsed.providerId;
             modelId = parsed.modelId;
-            variant = resolveVariant(providerId, modelId, projectDefaultModel ? undefined : settingsDefaultVariant);
+            // A project default carries its own variant; the settings variant
+            // belongs to the settings model and must not leak onto it.
+            variant = resolveVariant(providerId, modelId, projectDefaultModel ? projectDefaultVariant : settingsDefaultVariant);
         }
     }
     if (!providerId

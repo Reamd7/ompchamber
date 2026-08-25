@@ -4,7 +4,7 @@
       "@openchamber/ui/*": ["../ui/src/*"]
     },
     "target": "ES2022",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "ES2024.Promise"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "moduleDetection": "force",

@@ -4,7 +4,8 @@ import { Input } from '@/components/ui/input';
 import { NumberInput } from '@/components/ui/number-input';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
-import { useAgentsStore, getConfigDirectory, type AgentConfig, type AgentMutationResult, type AgentScope, type AgentWithExtras } from '@/stores/useAgentsStore';
+import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
+import { getConfigDirectory, selectAgentsForDirectory, useAgentsStore, type AgentConfig, type AgentMutationResult, type AgentScope, type AgentWithExtras } from '@/stores/useAgentsStore';
 import { useShallow } from 'zustand/react/shallow';
 import { ModelSelector } from './ModelSelector';
 import { useI18n } from '@/lib/i18n';
@@ -315,7 +316,6 @@ export const AgentsPage: React.FC = () => {
     getAgentByName,
     createAgent,
     updateAgent,
-    agents,
     agentDraft,
     setAgentDraft,
   } = useAgentsStore(useShallow((s) => ({
@@ -323,12 +323,15 @@ export const AgentsPage: React.FC = () => {
     getAgentByName: s.getAgentByName,
     createAgent: s.createAgent,
     updateAgent: s.updateAgent,
-    agents: s.agents,
     agentDraft: s.agentDraft,
     setAgentDraft: s.setAgentDraft,
   })));
 
-  const selectedAgent = selectedAgentName ? getAgentByName(selectedAgentName) : null;
+  // Settings browses whichever project its own selector points at; the app
+  // stays where it is.
+  const settingsDirectory = useSettingsDirectory();
+  const agents = useAgentsStore((state) => selectAgentsForDirectory(state, settingsDirectory));
+  const selectedAgent = selectedAgentName ? getAgentByName(selectedAgentName, settingsDirectory) : null;
   const isNewAgent = Boolean(agentDraft && agentDraft.name === selectedAgentName && !selectedAgent);
 
   // omp mode: the agent row carries the discovery contract (02 §5.2/§5.3);
@@ -542,12 +545,12 @@ export const AgentsPage: React.FC = () => {
           ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
         };
         if (isNewAgent) {
-          result = await createAgent(config);
+          result = await createAgent(config, settingsDirectory);
           if (result.ok) {
             setAgentDraft(null); // Clear draft after successful creation
           }
         } else {
-          result = await updateAgent(agentName, config);
+          result = await updateAgent(agentName, config, settingsDirectory);
         }
       } else {
         const trimmedModel = model.trim();
@@ -567,12 +570,12 @@ export const AgentsPage: React.FC = () => {
           ...(isNewAgent && draftScope ? { scope: draftScope } : {}),
         };
         if (isNewAgent) {
-          result = await createAgent(config);
+          result = await createAgent(config, settingsDirectory);
           if (result.ok) {
             setAgentDraft(null); // Clear draft after successful creation
           }
         } else {
-          result = await updateAgent(agentName, config);
+          result = await updateAgent(agentName, config, settingsDirectory);
         }
       }
 

@@ -43,6 +43,7 @@ import { getSessionGoal } from '@/lib/sessionGoalMetadata';
 import { sessionGoalStatusColor, sessionGoalStatusLabelKey } from '@/lib/sessionGoalPresentation';
 import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getChatsRootFromDirectory, isChatDirectoryPath } from '@/lib/chatDirectories';
 import { parseMultiRunSessionTitle } from '@/lib/multirun/title';
 import { MultiRunFusionDialog } from '@/components/multirun/MultiRunFusionDialog';
 import { FusionIcon } from '@/components/icons/FusionIcon';
@@ -220,7 +221,7 @@ const QuickSessionAction = React.memo(function QuickSessionAction({
   };
 
   return (
-    <Tooltip>
+    <Tooltip delayDuration={500}>
       <TooltipTrigger asChild>
         <button
           type="button"
@@ -928,7 +929,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
         {isPinnedSession ? t('sessions.sidebar.session.menu.unpin') : t('sessions.sidebar.session.menu.pin')}
       </Item>
 
-      {!isSubtaskSession && !archivedBucket && !isVSCode ? (
+      {!isSubtaskSession && !archivedBucket && !isVSCode && !isChatDirectoryPath(sessionDirectory) ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="block">
@@ -986,6 +987,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
               .forEach((worktree) => pushScope(worktree.path));
           }
         }
+        pushScope(getChatsRootFromDirectory(sessionDirectory));
         pushScope(sessionDirectory);
         const folderEntries = scopes.flatMap((scope) =>
           getFoldersForScope(scope).map((folder) => ({ scope, folder })));

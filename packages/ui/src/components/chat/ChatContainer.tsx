@@ -65,11 +65,14 @@ import { findShellCommandForMessage, isUserShellMarkerMessage } from './lib/shel
 import { resolveChatPromptReadOnly } from './chatPromptReadOnly';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { createFirstVisibleSessionPerformanceTracker } from '@/sync/session-load-performance';
+import { isChatDirectoryPath } from '@/lib/chatDirectories';
 
 const EMPTY_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
 const IDLE_SESSION_STATUS = { type: 'idle' as const };
 const CHAT_FORCE_SCROLL_BOTTOM_EVENT = 'openchamber:chat-force-scroll-bottom';
 const DEFAULT_RETRY_MESSAGE = 'Quota limit reached. Retrying automatically.';
+const DRAFT_EXIT_DURATION_MS = 120;
+const COMPOSER_MOVE_DURATION_MS = 180;
 const CHAT_SCROLL_STYLE = {
     overflowAnchor: 'none',
     overscrollBehavior: 'contain',
@@ -480,9 +483,11 @@ const ReadOnlyPromptBanner: React.FC = () => {
     const { t } = useI18n();
 
     return (
-        <div className="p-3">
-            <div className="rounded-2xl border border-border/70 bg-[var(--surface-background)] px-4 py-3 typography-ui-label text-muted-foreground">
-                {t('chat.container.readOnlySubagentPromptBanner')}
+        <div className="w-full py-3">
+            <div className="chat-input-column">
+                <div className="rounded-2xl border border-border/70 bg-[var(--surface-background)] px-4 py-3 text-center typography-ui-label text-muted-foreground">
+                    {t('chat.container.readOnlySubagentPromptBanner')}
+                </div>
             </div>
         </div>
     );
@@ -507,19 +512,24 @@ const renderDraftTitle = (title: string, projectLabel: string | null): React.Rea
     );
 };
 
-const DraftWelcome: React.FC = () => {
+const DraftWelcome: React.FC<{ exiting?: boolean }> = ({ exiting = false }) => {
     const { t } = useI18n();
+    const draftTarget = useSessionUIStore((state) => state.newSessionDraft.target);
     const selectedProjectId = useSessionUIStore((state) => state.newSessionDraft.selectedProjectId ?? null);
     const projectLabel = useProjectsStore(React.useCallback((state) => {
+        if (draftTarget === 'chat') return null;
         const projectId = selectedProjectId ?? state.activeProjectId;
         const project = (projectId
             ? state.projects.find((candidate) => candidate.id === projectId)
             : null) ?? state.projects[0] ?? null;
         return project ? getProjectDisplayLabel(project) : null;
-    }, [selectedProjectId]));
+    }, [draftTarget, selectedProjectId]));
 
     return (
-        <div className="oc-draft-center flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
+        <div className={cn(
+            'oc-draft-center flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center transition-opacity duration-[120ms] ease-out motion-reduce:transition-none',
+            exiting && 'pointer-events-none opacity-0',
+        )}>
             <h1 className="text-balance text-3xl font-normal tracking-tight text-foreground">
                 {renderDraftTitle(
                     projectLabel
@@ -563,6 +573,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     // Session UI state
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const currentSessionDirectory = useSessionUIStore((s) => s.currentSessionDirectory);
+    const materializedDraftSessionId = useSessionUIStore((s) => s.materializedDraftSessionId);
+    const clearMaterializedDraftSession = useSessionUIStore((s) => s.clearMaterializedDraftSession);
     const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
     const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
@@ -738,12 +750,15 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const isVSCode = isVSCodeRuntime();
     const chatSurfaceMode = useChatSurfaceMode();
     const draftOpen = Boolean(newSessionDraft?.open);
+    const isManagedChatContext = draftOpen
+        ? newSessionDraft?.target === 'chat'
+        : isChatDirectoryPath(effectiveSessionDirectory);
     // A draft can target another project or a pending worktree before it has a
     // session. Keep the panel on that same directory so its project, MCP, and
     // usage readouts describe where the draft will run rather than the project
     // the user came from.
     const workStatusDirectory = draftOpen
-        ? newSessionDraft?.bootstrapPendingDirectory ?? newSessionDraft?.directoryOverride ?? effectiveSessionDirectory
+        ? (isManagedChatContext ? null : newSessionDraft?.bootstrapPendingDirectory ?? newSessionDraft?.directoryOverride ?? effectiveSessionDirectory)
         : effectiveSessionDirectory;
     const initError = useGlobalSyncStore((s) => s.error);
     // Despite the historical name, this now covers mobile too: the mobile
@@ -755,7 +770,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     // row that holds both columns, so its width never depends on the panel's
     // own visibility.
     const { rowRef: workStatusRowRef, visible: workStatusVisible, fits: workStatusFits } = useWorkStatusVisibility({
-        directory: workStatusDirectory,
         isMobile,
         isVSCode,
     });
@@ -1106,11 +1120,75 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         void ensureSessionRenderable(currentSessionId);
     }, [currentSessionId, ensureSessionRenderable, hasRenderableSessionSnapshot, messagesEnabled]);
 
+    const composerSlotRef = React.useRef<HTMLDivElement | null>(null);
+    const previousComposerRectRef = React.useRef<DOMRect | null>(null);
+    const previousDraftOpenRef = React.useRef(draftOpen);
+    const previousDraftLayoutVisibleRef = React.useRef(draftOpen);
+    const [draftExitAnimating, setDraftExitAnimating] = React.useState(false);
+    const shouldAnimateDraftTransition = Boolean(
+        currentSessionId && materializedDraftSessionId === currentSessionId,
+    );
+    const draftPresentationExiting = draftExitAnimating
+        || (previousDraftOpenRef.current && !draftOpen && shouldAnimateDraftTransition);
+    const draftLayoutVisible = draftOpen || draftPresentationExiting;
+
+    React.useLayoutEffect(() => {
+        if (draftOpen) {
+            setDraftExitAnimating(false);
+            return;
+        }
+        if (!previousDraftOpenRef.current || !shouldAnimateDraftTransition) return;
+
+        setDraftExitAnimating(true);
+        const timeoutId = window.setTimeout(() => setDraftExitAnimating(false), DRAFT_EXIT_DURATION_MS);
+        return () => window.clearTimeout(timeoutId);
+    }, [draftOpen, shouldAnimateDraftTransition]);
+
+    React.useLayoutEffect(() => {
+        previousDraftOpenRef.current = draftOpen;
+    }, [draftOpen]);
+
+    React.useLayoutEffect(() => {
+        const composerSlot = composerSlotRef.current;
+        if (!composerSlot) return;
+
+        const composerEditor = composerSlot.querySelector('[data-testid="chat-input"]');
+        const currentRect = composerEditor?.getBoundingClientRect() ?? composerSlot.getBoundingClientRect();
+        const previousRect = previousComposerRectRef.current;
+        const leftDraftLayout = previousDraftLayoutVisibleRef.current
+            && !draftLayoutVisible
+            && Boolean(currentSessionId);
+        const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+        const shouldMoveComposer = leftDraftLayout && shouldAnimateDraftTransition;
+        if (shouldMoveComposer && previousRect && !reduceMotion && !useCompactDraftLayout && !isDesktopExpandedInput) {
+            const deltaX = previousRect.left - currentRect.left;
+            const deltaY = previousRect.top - currentRect.top;
+            composerSlot.animate(
+                [
+                    { transform: `translate(${deltaX}px, ${deltaY}px)` },
+                    { transform: 'translate(0, 0)' },
+                ],
+                { duration: COMPOSER_MOVE_DURATION_MS, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+            );
+        }
+        previousComposerRectRef.current = currentRect;
+        previousDraftLayoutVisibleRef.current = draftLayoutVisible;
+        if (leftDraftLayout && currentSessionId) {
+            clearMaterializedDraftSession(currentSessionId);
+        }
+    }, [
+        clearMaterializedDraftSession,
+        currentSessionId,
+        draftLayoutVisible,
+        isDesktopExpandedInput,
+        shouldAnimateDraftTransition,
+        useCompactDraftLayout,
+    ]);
+
 	if (!currentSessionId && !draftOpen) {
-		// With auto-open, the draft welcome opens on the next tick (effect below),
-		// so the empty state is only ever transient here — render a neutral
-		// background instead of flashing the logo / "start a new chat" on refresh.
-		// Keep the empty state when there's nothing to auto-open or an init error to show.
+		// The auto-open effect runs on the next tick. Use a neutral background
+		// until then instead of flashing the standard empty state.
 		if (autoOpenDraft && !initError) {
 			return <div className="flex h-full flex-col bg-background" />;
 		}
@@ -1121,65 +1199,17 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
 		);
 	}
 
-	if (!currentSessionId && draftOpen) {
-		return (
-			// No transform on this root: it would become the containing block for
-			// the fullscreen composer's position:fixed visual-viewport pinning in
-			// mobile browsers (see ChatInput's composerFormRef effect).
-			<div ref={workStatusRowRef} className="flex h-full min-h-0 bg-background">
-				<div data-composer-bound className="relative flex min-w-0 flex-1 flex-col bg-background">
-					{useCompactDraftLayout && !isDesktopExpandedInput ? <DraftWelcome /> : null}
-					<div
-						className={cn(
-							'relative z-10 flex min-h-0',
-							isDesktopExpandedInput
-								? 'flex-1 bg-background'
-								: useCompactDraftLayout
-									? 'bg-background px-0'
-									: 'flex-1 items-center justify-center bg-background px-0 pb-[6vh]'
-						)}
-					>
-                          {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
-{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-					</div>
-					{workStatusOverlayMountable ? (
-						<WorkStatusPanel
-							overlay
-							visible={showWorkStatusOverlay}
-							sessionId={null}
-							directory={workStatusDirectory ?? null}
-						/>
-					) : null}
-				</div>
-				{workStatusPanelMountable ? (
-					<WorkStatusPanel
-						visible={showWorkStatusPanel}
-						sessionId={null}
-						directory={workStatusDirectory ?? null}
-					/>
-				) : null}
-			</div>
-        );
-    }
+    const sessionSurface = (() => {
+        if (draftOpen || draftPresentationExiting) {
+            if (!useCompactDraftLayout || isDesktopExpandedInput) {
+                return null;
+            }
+            return <DraftWelcome exiting={draftPresentationExiting} />;
+        }
 
-    if (!currentSessionId) {
-        return null;
-    }
-
-    const withOmpDialogLayer = (content: React.ReactNode): React.ReactNode => (
-        <>
-            {content}
-            <OmpDialogLayer directory={effectiveSessionDirectory} sessionId={currentSessionId} />
-            <InternalUriViewer directory={effectiveSessionDirectory} sessionId={currentSessionId} />
-            <OmpPlanReviewOverlay directory={effectiveSessionDirectory} sessionId={currentSessionId} />
-        </>
-    );
-
-	if (isSessionHydrating && sessionMessages.length === 0 && !sessionIsWorking) {
-		if (sessionMessageLoadState.status === 'error') {
-            return withOmpDialogLayer(
-                <div data-composer-bound className="relative flex h-full flex-col bg-background">
-                    {returnToParentButton}
+        if (isSessionHydrating && sessionMessages.length === 0 && !sessionIsWorking) {
+            if (sessionMessageLoadState.status === 'error') {
+                return (
                     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
                         <div className="max-w-sm text-center">
                             <div className="mx-auto mb-3 flex size-9 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--status-error)_10%,transparent)] text-[var(--status-error)]">
@@ -1192,22 +1222,14 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                             </Button>
                         </div>
                     </div>
-                    <div className="relative z-10 bg-background">
-                        {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
-{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-                    </div>
-                </div>,
-            );
-		}
-        return withOmpDialogLayer(
-            <div data-composer-bound className="relative flex flex-col h-full bg-background">
-                {returnToParentButton}
+                );
+            }
+
+            return (
                 <div
                     className={cn(
                         'relative min-h-0',
-                        isDesktopExpandedInput
-                            ? 'absolute inset-0 opacity-0 pointer-events-none'
-                            : 'flex-1'
+                        isDesktopExpandedInput ? 'pointer-events-none absolute inset-0 opacity-0' : 'flex-1',
                     )}
                     aria-hidden={isDesktopExpandedInput}
                 >
@@ -1220,16 +1242,16 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                                             <div className="space-y-1.5">
                                                 {item.toolRows.map((row) => (
                                                     <div key={`${item.id}-${row.id}`} className="flex items-center gap-2">
-                                                        <Skeleton className="h-3.5 w-3.5 rounded-full flex-shrink-0" />
+                                                        <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-full" />
                                                         <Skeleton className={cn('h-4 rounded-md', row.titleWidth)} />
                                                         <Skeleton className={cn('h-4 rounded-md', row.detailWidth)} />
                                                     </div>
                                                 ))}
                                             </div>
                                             <div className="space-y-1.5 pt-1">
-                                                <Skeleton className={cn('h-4 rounded-md', item.textWidths[0])} />
-                                                <Skeleton className={cn('h-4 rounded-md', item.textWidths[1])} />
-                                                <Skeleton className={cn('h-4 rounded-md', item.textWidths[2])} />
+                                                {item.textWidths.map((width, index) => (
+                                                    <Skeleton key={`${item.id}-text-${index}`} className={cn('h-4 rounded-md', width)} />
+                                                ))}
                                             </div>
                                         </div>
                                     </div>
@@ -1238,24 +1260,15 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         </div>
                     </div>
                 </div>
-                <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
-                    {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
-{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-                </div>
-            </div>,
-        );
-    }
+            );
+        }
 
-	if (sessionMessages.length === 0 && !sessionIsWorking) {
-        return withOmpDialogLayer(
-            <div data-composer-bound className="relative flex flex-col h-full bg-background">
-                {returnToParentButton}
+        if (sessionMessages.length === 0 && !sessionIsWorking) {
+            return (
                 <div
                     className={cn(
                         'relative min-h-0',
-                        isDesktopExpandedInput
-                            ? 'absolute inset-0 opacity-0 pointer-events-none'
-                            : 'flex-1'
+                        isDesktopExpandedInput ? 'pointer-events-none absolute inset-0 opacity-0' : 'flex-1',
                     )}
                     aria-hidden={isDesktopExpandedInput}
                 >
@@ -1265,21 +1278,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                         </div>
                     ) : null}
                 </div>
-                <div className={cn('relative z-10', isDesktopExpandedInput ? 'flex-1 min-h-0 bg-background' : 'bg-background')}>
-                    {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
-{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
-                </div>
-            </div>,
-        );
-    }
+            );
+        }
 
-    return withOmpDialogLayer(
-        <div ref={workStatusRowRef} className="flex h-full min-h-0 bg-background">
-        <div data-composer-bound className="relative flex min-w-0 flex-1 flex-col h-full bg-background">
-			{returnToParentButton}
-			<ChatViewport
-				currentSessionId={currentSessionId}
-                currentSessionKey={currentSessionKey ?? currentSessionId}
+        return (
+            <ChatViewport
+                currentSessionId={currentSessionId ?? ''}
+                currentSessionKey={currentSessionKey ?? currentSessionId ?? ''}
                 isDesktopExpandedInput={isDesktopExpandedInput}
                 isMobile={isMobile}
                 stickyUserHeader={stickyUserHeader}
@@ -1310,23 +1315,43 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                 isLoadingOlderPrompts={timelineController.isLoadingOlder}
                 onLoadEarlierPrompts={handleLoadOlderClick}
             />
+        );
+    })();
+
+	return (
+		<>
+		<div ref={workStatusRowRef} className="flex h-full min-h-0 bg-background">
+		<div data-composer-bound className="relative flex min-w-0 flex-1 flex-col h-full bg-background">
+			{returnToParentButton}
+			{sessionSurface}
 
             <div
+                ref={composerSlotRef}
                 className={cn(
-                    'relative z-10',
+                    'relative z-10 flex min-h-0',
                     isDesktopExpandedInput
                         ? 'flex-1 min-h-0 bg-background'
+                        : draftLayoutVisible && !useCompactDraftLayout
+                            ? 'flex-1 items-center justify-center bg-background pb-[6vh]'
                         : 'bg-background'
                 )}
             >
-                {!isDesktopExpandedInput && sessionMessages.length > 0 && (
+                {!draftLayoutVisible && !isDesktopExpandedInput && sessionMessages.length > 0 && (
                     <ScrollToBottomButton
                         visible={timelineController.showScrollToBottom}
                         onClick={navigation.resumeToLatest}
                     />
                 )}
                 {workStatusDirectory ? <OmpExtensionWidgetBar directory={workStatusDirectory} placement="aboveEditor" /> : null}
-{promptReadOnly ? <ReadOnlyPromptBanner /> : <ChatInput active={active} scrollToBottom={scrollToBottomOnSend} />}
+                {promptReadOnly ? (
+                    <ReadOnlyPromptBanner />
+                ) : (
+                    <ChatInput
+                        active={active}
+                        scrollToBottom={scrollToBottomOnSend}
+                        draftPresentationExiting={draftPresentationExiting}
+                    />
+                )}
             </div>
 
             {/* Inside the chat column, not beside it: as a row sibling it took
@@ -1338,6 +1363,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     visible={showWorkStatusOverlay}
                     sessionId={currentSessionId ?? null}
                     directory={workStatusDirectory ?? null}
+                    repositoryEnabled={!isManagedChatContext}
                 />
             ) : null}
 
@@ -1366,8 +1392,21 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                 visible={showWorkStatusPanel}
                 sessionId={currentSessionId ?? null}
                 directory={workStatusDirectory ?? null}
+                repositoryEnabled={!isManagedChatContext}
             />
         ) : null}
-        </div>,
+        </div>
+        {/* omp engine surfaces (fork): dialogs, the internal URI viewer, and
+            plan review overlay — mounted once here instead of per render
+            branch. Skipped for the un-materialized draft exactly where the
+            fork's former draft early-return had no layers. */}
+        {currentSessionId || !draftOpen ? (
+            <>
+                <OmpDialogLayer directory={effectiveSessionDirectory} sessionId={currentSessionId ?? undefined} />
+                <InternalUriViewer directory={effectiveSessionDirectory} sessionId={currentSessionId ?? undefined} />
+                <OmpPlanReviewOverlay directory={effectiveSessionDirectory} sessionId={currentSessionId ?? undefined} />
+            </>
+        ) : null}
+        </>
     );
 };

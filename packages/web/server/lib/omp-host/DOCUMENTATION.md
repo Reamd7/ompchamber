@@ -16,7 +16,20 @@ The wire contract itself is owned by OpenChamber and lives in
 route table implemented here is exactly the subset of that contract the UI,
 sync engine, and web server call; everything else answers 404.
 
-- `host.js` — entrypoint, route dispatch, Basic auth, SSE writer, shutdown.
+- `worker-dispatch.js` — `__omp_worker_*` selector dispatch, run by the
+  entrypoint BEFORE serving. The embedded SDK relaunches its own executable
+  (`process.execPath` = omp-host itself in packaged builds) into worker modes
+  (daemon broker, LSP mux, blob broker, ONNX inference workers, the JS-eval
+  kernel). Without this dispatch every such spawn booted a second full HTTP
+  host on a random port that nothing tore down — the "hundreds of
+  omp-host.exe processes" leak (~1 zombie per failed 10s daemon-broker
+  connect while the browser tool retried). Known selectors map to the SDK's
+  worker entries via literal `import()` thunks (required for
+  `bun build --compile` to embed them); thread-only selectors, the omp stats
+  worker, and `browser-relay` are explicit no-serve exits (exit 1), so an
+  unrecognized self-spawn can never become a zombie host. The table must be
+  re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
+  `worker-dispatch.test.js` pins the full selector list.
 - `engine.js` — `OmpHostEngine`: model/auth boot, session materialization
   (cold reads via `SessionManager` transcript projection, live turns via
   `createAgentSession` + event pump), session operations, idle sweeping.
@@ -153,6 +166,19 @@ sync engine, and web server call; everything else answers 404.
   rule came from).
 - Sessions are persisted by omp's `SessionManager` under the cwd-derived
   session directory; OpenChamber metadata lives only in the sidecar registry.
+- Session updates are directory-owned: `engine.updateSession` writes the
+  sidecar registry under the directory that owns the session (a live
+  session's own directory; an idle session's transcript directory) and
+  returns `null` — the route answers 404 — when the addressed directory owns
+  neither the transcript nor a registry entry. Fabricating a synthesized
+  session for an unknown directory answered 200 while no listing (keyed by
+  the transcript's own cwd) could observe the write, which is how a
+  mis-addressed archive once "succeeded" without taking effect.
+  `GET /experimental/session` honors its `directory` query param the same
+  way external OpenCode runtimes do: a scoped request returns only that
+  directory's sessions, because directory child stores seed their session
+  lists from scoped requests and foreign records poison client-side
+  containment lookups.
 - SDK usage follows the TUI's semantics wherever both exist; when omp-host
   behavior diverges from the TUI, the TUI is wrong-by-default and the change
   needs an explicit reason. Currently aligned: submission dispatch always

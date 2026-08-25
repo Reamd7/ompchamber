@@ -59,6 +59,13 @@ The following functions are exported and used by the web server:
 - Watches `<common git dir>/worktrees` directly when it exists and always watches the common git dir filtered to the `worktrees` name, so the registry's first appearance and last removal are also observed. Events are debounced per repository and never carry topology — clients re-list via `getWorktrees`/`git worktree list` authoritatively.
 - Watch failures close that repository's watchers and retry a bounded number of times before giving up until the project list changes; the client's pull-based listing remains the fallback. A worktree checkout deleted without `git worktree remove`/`prune` leaves metadata in place and fires no event (the existing "missing folder" status covers it).
 - Wired in `packages/web/server/index.js`: events are broadcast to OpenChamber clients as `openchamber:worktrees-changed` on `/api/openchamber/events`; the shared UI consumes them in `packages/ui/src/lib/worktrees/worktreeEventSync.ts`.
+### Worktree creation from a GitHub pull request
+The UI provisions `pr-<owner>` via `ensureRemoteName`/`ensureRemoteUrl`
+(HTTPS clone URL preferred over SSH) and checks out
+`remotes/pr-<owner>/<head>`. A missing head URL or unreachable fork fails with
+a clear error before a worktree is kept. If upstream fetch fails during
+bootstrap, tracking is left unset rather than writing `branch.*.remote` /
+`branch.*.merge` for a ref that was never fetched.
 
 ### Commit and Remote Operations
 - `commit(directory, message, options)`: Create a commit from the current index. `options.stageFiles` may be provided with `options.files` by older callers to stage only selected unstaged rows before committing, but the shared Git panel now stages/unstages explicitly before commit.
