@@ -1620,7 +1620,7 @@ async function main(options = {}) {
   const app = express();
   const serverStartedAt = new Date().toISOString();
   const packagedClientOrigins = new Set([
-    'openchamber-ui://app',
+    'ompchamber-ui://app',
     'capacitor://localhost',
     'http://localhost',
     'https://localhost',

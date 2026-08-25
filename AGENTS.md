@@ -31,7 +31,7 @@ read. Skill loading is a required part of the task, not optional guidance.
 
 Shared UI consumes the OpenCode-compatible wire contract owned by OpenChamber (`packages/ui/src/lib/opencode/wire`, vendored client + types) through `opencodeClient`. The engine implementing that contract is the omp host (`packages/web/server/lib/omp-host`), which embeds `@oh-my-pi/pi-coding-agent`. OpenChamber-owned capabilities use `RuntimeAPIs`, `runtimeFetch`, and shared browser/realtime transport helpers. Server-side upstream integrations may use their owning runtime modules.
 
-Electron starts the OpenChamber backend in-process, never as a sidecar. Development may load loopback/HMR UI; packaged builds load staged assets through `openchamber-ui://` while the loopback server remains the API backend. Keep domain backends in web/runtime modules unless behavior is inherently native.
+Electron starts the OpenChamber backend in-process, never as a sidecar. Development may load loopback/HMR UI; packaged builds load staged assets through `ompchamber-ui://` while the loopback server remains the API backend. Keep domain backends in web/runtime modules unless behavior is inherently native.
 
 Shared contracts must define intentional behavior for every applicable runtime: web, desktop, VS Code, hosted mobile, and Capacitor mobile.
 

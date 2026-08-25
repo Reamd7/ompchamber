@@ -86,7 +86,7 @@ iOS Simulator helpers: `mobile:sim:{boot,install,launch,run,serve,list,kill}` (s
   without Google Play Services. iOS uses the plugin's native scanner. CAMERA permission +
   `NSCameraUsageDescription` declared.
 - **Secure storage** — `@aparajita/capacitor-secure-storage` for connection tokens.
-- **Deep links** — `openchamber://` URL scheme; a reusable intent vocabulary (`apps/deepLinks.ts`)
+- **Deep links** — `ompchamber://` URL scheme; a reusable intent vocabulary (`apps/deepLinks.ts`)
   used by notification taps, widgets, and Control Center. Cold-launch intents are stashed.
 - **Push notifications** — iOS APNs + Android FCM (see below). Presence-aware routing suppresses a
   device's push when an interactive (desktop/web) client is visible.

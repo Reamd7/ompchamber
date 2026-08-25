@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ui-auth-test-'));
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-ui-auth-test-'));
 process.env.OMPCHAMBER_DATA_DIR = dataDir;
 
 afterAll(() => {

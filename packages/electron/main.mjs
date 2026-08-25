@@ -42,8 +42,8 @@ const __dirname = path.dirname(__filename);
 const isDev = process.env.OMPCHAMBER_ELECTRON_DEV === '1' || !app.isPackaged;
 const electronStartupStartedAt = performance.now();
 
-const DEEP_LINK_PROTOCOL = 'openchamber';
-const UI_PROTOCOL = 'openchamber-ui';
+const DEEP_LINK_PROTOCOL = 'ompchamber';
+const UI_PROTOCOL = 'ompchamber-ui';
 const PACKAGED_APP_USER_MODEL_ID = 'dev.ompchamber.desktop';
 const DEV_APP_USER_MODEL_ID = 'dev.ompchamber.desktop.dev';
 const APP_USER_MODEL_ID = app.isPackaged ? PACKAGED_APP_USER_MODEL_ID : DEV_APP_USER_MODEL_ID;

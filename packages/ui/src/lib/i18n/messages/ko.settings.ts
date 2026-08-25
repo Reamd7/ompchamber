@@ -283,7 +283,7 @@ export const settingsDict = {
   'settings.remoteInstances.direct.headers.removeAria': 'Remove header',
   'settings.remoteInstances.direct.actions.add': '서버 추가',
   'settings.remoteInstances.direct.import.description': '다른 OpenChamber 서버에서 만든 연결 링크를 붙여넣으세요.',
-  'settings.remoteInstances.direct.import.placeholder': 'openchamber://connect?...',
+  'settings.remoteInstances.direct.import.placeholder': 'ompchamber://connect?...',
   'settings.remoteInstances.direct.import.action': '링크 가져오기',
   'settings.remoteInstances.direct.error.invalidConnectLink': '잘못된 OpenChamber 연결 링크입니다.',
   'settings.remoteInstances.direct.state.loading': '서버를 불러오는 중...',

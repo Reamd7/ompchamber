@@ -83,7 +83,7 @@ export const resolveCurrentDesktopHost = (hosts: DesktopHost[]): ResolvedDesktop
     return { id: match.id, label: match.label, url: normalizeHostUrl(match.url) || match.url };
   }
 
-  if (currentHref.startsWith('openchamber-ui://')) {
+  if (currentHref.startsWith('ompchamber-ui://')) {
     return { id: LOCAL_HOST_ID, label: 'Local', url: normalizedLocal };
   }
 

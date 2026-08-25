@@ -200,7 +200,7 @@ describe('dev tunnel end to end', () => {
     // ignores it), so `new WebSocket(...)` used to throw inside the connection
     // handler and take the whole process down.
     const client = createDevTunnelClient({ logger: { warn: () => {} } });
-    await expect(client.open({ baseUrl: 'openchamber-ui://index', port: 5173 })).rejects.toThrow('must be http(s)');
+    await expect(client.open({ baseUrl: 'ompchamber-ui://index', port: 5173 })).rejects.toThrow('must be http(s)');
     expect(client.list()).toEqual([]);
   });
 

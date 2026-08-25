@@ -295,7 +295,7 @@ describe('embedded runtime bootstrap handshake', () => {
               payload: {
                 apiBaseUrl: 'https://remote.example.com',
                 clientToken: 'client-token',
-                localOrigin: 'openchamber-ui://app',
+                localOrigin: 'ompchamber-ui://app',
                 runtimeHeaders: { 'x-runtime': 'value' },
                 relayHostId: 'host-1',
                 relay: {
@@ -309,7 +309,7 @@ describe('embedded runtime bootstrap handshake', () => {
         });
       },
     };
-    const url = new URL('openchamber-ui://app/index.html?ocPanel=session-chat&sessionId=ses_1');
+    const url = new URL('ompchamber-ui://app/index.html?ocPanel=session-chat&sessionId=ses_1');
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {
@@ -336,7 +336,7 @@ describe('embedded runtime bootstrap handshake', () => {
     expect(result).toEqual({
       apiBaseUrl: 'https://remote.example.com',
       clientToken: 'client-token',
-      localOrigin: 'openchamber-ui://app',
+      localOrigin: 'ompchamber-ui://app',
       runtimeHeaders: { 'x-runtime': 'value' },
       relayHostId: 'host-1',
       relay: {
@@ -358,7 +358,7 @@ describe('embedded runtime bootstrap handshake', () => {
     let timeoutCleared = false;
     let retryCleared = false;
     const parent = { postMessage() {} };
-    const url = new URL('openchamber-ui://app/index.html?ocPanel=session-chat&sessionId=ses_1');
+    const url = new URL('ompchamber-ui://app/index.html?ocPanel=session-chat&sessionId=ses_1');
     Object.defineProperty(globalThis, 'window', {
       configurable: true,
       value: {

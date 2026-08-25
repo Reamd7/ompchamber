@@ -299,7 +299,7 @@ export const settingsDict = {
   'settings.remoteInstances.direct.headers.removeAria': 'Header entfernen',
   'settings.remoteInstances.direct.actions.add': 'Server hinzufügen',
   'settings.remoteInstances.direct.import.description': 'Füge einen Verbindungslink von einem anderen OpenChamber-Server ein.',
-  'settings.remoteInstances.direct.import.placeholder': 'openchamber://connect?...',
+  'settings.remoteInstances.direct.import.placeholder': 'ompchamber://connect?...',
   'settings.remoteInstances.direct.import.action': 'Link importieren',
   'settings.remoteInstances.direct.error.invalidConnectLink': 'Ungültiger OpenChamber-Verbindungslink.',
   'settings.remoteInstances.direct.state.loading': 'Instanzen werden geladen...',

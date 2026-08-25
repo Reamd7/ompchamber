@@ -892,7 +892,7 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
                 <div className="relative flex-1">
                   <Icon name="lock" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/60" />
                   <Input
-                    id="openchamber-ui-password"
+                    id="ompchamber-ui-password"
                     ref={passwordInputRef}
                     type="password"
                     autoComplete="current-password"

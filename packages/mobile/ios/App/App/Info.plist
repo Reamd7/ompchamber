@@ -46,7 +46,7 @@
 			<string>com.openchamber.app.deeplink</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>openchamber</string>
+				<string>ompchamber</string>
 			</array>
 		</dict>
 	</array>

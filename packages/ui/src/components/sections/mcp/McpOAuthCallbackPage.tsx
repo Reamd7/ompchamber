@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils';
 const returnToApp = (startedFromDesktop: boolean): void => {
   if (typeof window === 'undefined') return;
   if (startedFromDesktop) {
-    window.location.href = 'openchamber://focus/mcp-auth';
+    window.location.href = 'ompchamber://focus/mcp-auth';
     return;
   }
   window.location.replace('/');

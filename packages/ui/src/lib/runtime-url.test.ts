@@ -67,7 +67,7 @@ describe('createRuntimeUrlResolver', () => {
 
   test('uses injected desktop API base URL for packaged WebSocket URLs', () => {
     withWindow({
-      location: { origin: 'openchamber-ui://app', href: 'openchamber-ui://app/index.html' },
+      location: { origin: 'ompchamber-ui://app', href: 'ompchamber-ui://app/index.html' },
       __OMPCHAMBER_API_BASE_URL__: 'http://127.0.0.1:57123',
     }, () => {
       const urls = createRuntimeUrlResolver({});
@@ -80,7 +80,7 @@ describe('createRuntimeUrlResolver', () => {
     setRuntimeExtraHeaders({ 'CF-Access-Client-Id': 'client-id' });
     try {
       withWindow({
-        location: { origin: 'openchamber-ui://app', href: 'openchamber-ui://app/index.html' },
+        location: { origin: 'ompchamber-ui://app', href: 'ompchamber-ui://app/index.html' },
         __OMPCHAMBER_API_BASE_URL__: 'https://remote.example',
         __OMPCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:57123',
       }, () => {
@@ -106,7 +106,7 @@ describe('createRuntimeUrlResolver', () => {
     setLocalRuntimeUrlAuthToken('local-url-token', Date.now() + 60_000, 'http://127.0.0.1:57123');
     try {
       withWindow({
-        location: { origin: 'openchamber-ui://app', href: 'openchamber-ui://app/index.html' },
+        location: { origin: 'ompchamber-ui://app', href: 'ompchamber-ui://app/index.html' },
         __OMPCHAMBER_API_BASE_URL__: 'https://remote.example',
         __OMPCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:57123',
       }, () => {
@@ -126,7 +126,7 @@ describe('createRuntimeUrlResolver', () => {
 
   test('reads injected desktop API base URL at call time', () => {
     withWindow({
-      location: { origin: 'openchamber-ui://app', href: 'openchamber-ui://app/index.html' },
+      location: { origin: 'ompchamber-ui://app', href: 'ompchamber-ui://app/index.html' },
     }, () => {
       const urls = createRuntimeUrlResolver({});
       (window as typeof window & { __OMPCHAMBER_API_BASE_URL__?: string }).__OMPCHAMBER_API_BASE_URL__ = 'http://127.0.0.1:57123';
