@@ -1702,9 +1702,15 @@ export class OmpHostEngine {
       this.registry.update(directoryKey, sessionID, { model: modelSelector(target) });
     }
     if (thinkingLevel !== undefined && typeof session.setThinkingLevel === 'function') {
-      await session.setThinkingLevel(thinkingLevel).catch((error) => {
+      // SDK contract: setThinkingLevel returns void (agent-session.d.ts:736)
+      // — the change is observed through the thinking_level_changed event,
+      // never a return value. 'inherit' is OpenChamber's wire sentinel for
+      // clearing the explicit level; the SDK clears via undefined.
+      try {
+        session.setThinkingLevel(thinkingLevel === 'inherit' ? undefined : thinkingLevel);
+      } catch (error) {
         console.error('[omp-host] thinking level switch failed:', error?.message ?? error);
-      });
+      }
     }
     return { ok: true, model: modelSelector(session.model) ?? modelSelector(target) };
   }

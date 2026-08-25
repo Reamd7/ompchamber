@@ -393,7 +393,8 @@ export interface OmpModelsAPI {
   /** Session-only model switch; prompts remain model-free under modelRoles.v1.
    * `thinkingLevel` applies an in-session thinking change (GAP-06); when the
    * model matches the session's current model the engine only calls
-   * setThinkingLevel. */
+   * setThinkingLevel. `'inherit'` is the wire sentinel that clears the
+   * explicit level (engine maps it to setThinkingLevel(undefined)). */
   setSessionModel(
     sessionID: string,
     model: { providerID: string; modelID: string },
