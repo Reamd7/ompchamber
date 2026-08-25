@@ -1068,7 +1068,7 @@ export class ElectronSshManager {
     // ompchamber ships as a GitHub release tarball (not on the npm registry).
     // bun's global install already targets ~/.bun; npm is pinned to a prefix in
     // the user's home so it never touches the root-owned global directory.
-    const tarball = `https://github.com/Reamd7/openchamber/releases/download/v${version}/ompchamber-${version}.tgz`;
+    const tarball = `https://github.com/Reamd7/openchamber/releases/download/v${version}/ompchamber-web-${version}.tgz`;
     const bunCommand = bunPath ? `${shellQuote(bunPath)} add -g ${tarball}` : null;
     const npmCommand = npmPath
       ? `mkdir -p "${REMOTE_USER_PREFIX}" && ${shellQuote(npmPath)} install -g --prefix "${REMOTE_USER_PREFIX}" ${tarball}`

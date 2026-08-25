@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/inst
 Or install manually from a GitHub release tarball (npm, pnpm, and bun all accept the URL):
 
 ```bash
-npm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-latest.tgz
+npm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-web-latest.tgz
 ```
 
 > **Prerequisites:** Node.js 22+ and the [Bun](https://bun.sh) runtime — the embedded omp engine runs under Bun; no separate agent CLI is needed.

@@ -18,7 +18,7 @@
       "@/*": ["../ui/src/*", "./src/*"],
       "@web/*": ["./src/*"],
       "@ompchamber/ui/*": ["../ui/src/*"],
-      "ompchamber/*": ["./src/*"]
+      "@ompchamber/web/*": ["./src/*"]
     }
   },
   "include": ["src", "../ui/src", "../ui/src/types/**/*"]

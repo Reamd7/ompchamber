@@ -100,7 +100,7 @@ jobs:
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
-          TARBALL="$GITHUB_WORKSPACE/packages/web/ompchamber-${VERSION}.tgz"
+          TARBALL="$GITHUB_WORKSPACE/packages/web/ompchamber-web-${VERSION}.tgz"
           PREFIX="$RUNNER_TEMP/cli-smoke"
           npm install -g --prefix "$PREFIX" "$TARBALL"
           export PATH="$PREFIX/bin:$PATH"
@@ -119,9 +119,9 @@ jobs:
           # the installed optional dependency, then boot the omp host from
           # source under bun exactly as the server would.
           rm -rf "$HOME/.omp/natives"
-          node -e "import('$PREFIX/lib/node_modules/ompchamber/server/lib/opencode/omp-host-natives.js').then((m) => m.ensureOmpHostNatives())"
+          node -e "import('$PREFIX/lib/node_modules/@ompchamber/web/server/lib/opencode/omp-host-natives.js').then((m) => m.ensureOmpHostNatives())"
           ls "$HOME"/.omp/natives/*/pi_natives.linux-x64-*.node
-          (bun "$PREFIX/lib/node_modules/ompchamber/server/lib/omp-host/host.js" serve --hostname 127.0.0.1 --port 3941 > "$RUNNER_TEMP/host.log" 2>&1 &)
+          (bun "$PREFIX/lib/node_modules/@ompchamber/web/server/lib/omp-host/host.js" serve --hostname 127.0.0.1 --port 3941 > "$RUNNER_TEMP/host.log" 2>&1 &)
           for i in $(seq 1 20); do
             if curl -sf --max-time 2 http://127.0.0.1:3941/global/health > /dev/null; then break; fi
             sleep 2
@@ -133,14 +133,14 @@ jobs:
       - name: Stage latest alias
         env:
           VERSION: ${{ needs.create-release.outputs.version }}
-        run: cp "packages/web/ompchamber-${VERSION}.tgz" packages/web/ompchamber-latest.tgz
+        run: cp "packages/web/ompchamber-web-${VERSION}.tgz" packages/web/ompchamber-web-latest.tgz
 
       - name: Upload CLI tarballs to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: |
-            packages/web/ompchamber-*.tgz
+            packages/web/ompchamber-web-*.tgz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -600,8 +600,8 @@ jobs:
         run: |
           set -euo pipefail
           expected=(
-            "ompchamber-${VERSION}.tgz"
-            "ompchamber-latest.tgz"
+            "ompchamber-web-${VERSION}.tgz"
+            "ompchamber-web-latest.tgz"
             "OMPChamber-${VERSION}-linux-x86_64.AppImage"
             "latest-linux.yml"
             "OMPChamber-${VERSION}-linux-arm64.AppImage"
