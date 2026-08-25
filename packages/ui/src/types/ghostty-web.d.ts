@@ -1,11 +1,4 @@
 export {};
 
-declare module 'ghostty-web' {
-  export interface ITerminalOptions {
-    lineHeight?: number;
-  }
-
-  export interface RendererOptions {
-    lineHeight?: number;
-  }
-}
+// ghostty-web now declares fontWeight/fontWeightBold/lineHeight natively
+// (references/ghostty-web lib/interfaces.ts); no local augmentation needed.

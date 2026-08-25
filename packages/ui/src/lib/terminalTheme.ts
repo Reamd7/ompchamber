@@ -82,6 +82,13 @@ export function getGhosttyTerminalOptions(
     cursorStyle: 'bar' as const,
     fontSize,
     fontFamily: augmentedFontFamily,
+    // Orca-style typography: light regular + medium bold reads crisper than
+    // 400/700 at small sizes, and the taller line box gives TUI output room
+    // to breathe. Requires the ghostty-web fontWeight/fontWeightBold/
+    // lineHeight options added in references/ghostty-web.
+    fontWeight: 300,
+    fontWeightBold: 500,
+    lineHeight: 1.2,
     allowTransparency: false,
     theme: {
       background: theme.background,
