@@ -1,5 +1,5 @@
 import React from 'react';
-import type { Message, Part } from '@opencode-ai/sdk/v2';
+import type { Message, Part } from '@/lib/opencode/wire';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/ui';

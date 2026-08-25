@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { Message, Part, Session } from '@opencode-ai/sdk/v2';
+import type { Message, Part, Session } from '@/lib/opencode/wire';
 
 let forkSessionImpl: (sessionId: string, messageId?: string, directory?: string | null) => Promise<Session>;
 let getSessionMessagesImpl: (id: string, limit?: number, directory?: string | null) => Promise<Array<{ info: Message; parts: Part[] }>>;

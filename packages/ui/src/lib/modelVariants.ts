@@ -1,4 +1,4 @@
-import type { Provider } from '@opencode-ai/sdk/v2';
+import type { Provider } from '@/lib/opencode/wire';
 
 type ProviderModel = Provider['models'][string];
 

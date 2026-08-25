@@ -15,7 +15,7 @@
  */
 
 import { z } from 'zod';
-import type { TextPart } from '@opencode-ai/sdk/v2';
+import type { TextPart } from '@/lib/opencode/wire';
 import type { InlineCommentDraft } from '@/stores/useInlineCommentDraftStore';
 import { appendTerminalContexts } from './terminalContext';
 

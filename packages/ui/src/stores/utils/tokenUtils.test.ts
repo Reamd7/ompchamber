@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Message, Part } from "@opencode-ai/sdk/v2"
+import type { Message, Part } from "@/lib/opencode/wire"
 import { computeCacheHitRate, contextTokensFromBreakdown, extractTokensFromMessage, sumTokenBreakdown } from "./tokenUtils"
 
 const assistantMessage = (tokens: unknown): { info: Message; parts: Part[] } => ({
