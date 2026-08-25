@@ -44,7 +44,7 @@
     "clean": "bun run --filter '*' clean",
     "changelog-card": "node scripts/changelog-card/generate.mjs",
     "check:events": "node scripts/check-event-coverage.mjs",
-    "postinstall": "node ./fix-deprecation.js && patch-package && node ./packages/electron/scripts/ensure-electron.mjs --best-effort",
+    "postinstall": "node ./fix-deprecation.js && patch-package && node ./packages/electron/scripts/ensure-electron.mjs --best-effort && node ./scripts/install-git-hooks.mjs",
     "dev:web": "bun run --cwd packages/web build:watch",
     "dev:web:server": "bun run --cwd packages/web dev:server:watch",
     "dev:web:full": "node ./scripts/dev-web-full.mjs",
