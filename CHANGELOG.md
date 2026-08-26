@@ -4,11 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Dev: new `bun run stop` clears every leftover dev server in one command — it targets all dev ports the repo can use (the shared pair plus each worktree's own), so a backgrounded or crashed dev session no longer leaves you hunting listeners by PID.
-- **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. Existing data is moved there automatically on first launch, so logins, paired devices, themes, and project settings carry over; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.
+## [1.20.0] - 2026-08-26
+
+- **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. The old directory is not migrated — back it up and copy anything you need before upgrading; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.
 - **Desktop/Mobile: the deep-link scheme is now `ompchamber://` (was `openchamber://`).** Links and QR codes created by older versions no longer open the app; regenerate them from the current version. The embedded browser panel also moves to a renamed storage partition, so sites logged in there ask for login once more.
 - VS Code: the extension's commands, views, and settings now live under the `ompchamber.*` namespace — custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once.
-- **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. The old directory is not migrated — back it up and copy anything you need before upgrading; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.
 - **Chat:** changing the thinking level from the composer works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the resulting crash answered the request with a server error. Picking "Inherit" now genuinely clears the session's explicit level instead of being dropped.
 - Merged from upstream openchamber/openchamber v1.19.0–v1.20.0 plus their unreleased work:
 - **Chat context attachments:** everything you attach to a message — diff/file/plan comments, terminal selections, browser annotations, PR comments and failed checks, linked issues and PRs — now shows up in the conversation as a compact context card: a header naming the source, the captured content behind an expander, and your comment below it. Previously most of these arrived as a wall of raw text inside your message.
