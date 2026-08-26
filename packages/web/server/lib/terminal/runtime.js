@@ -239,6 +239,30 @@ export function createTerminalRuntime({
     finally { if (pendingSessionCreates.get(id) === pendingEntry) pendingSessionCreates.delete(id); }
   };
 
+  const collectViewportSizes = (sessionId) => {
+    const sizes = [];
+    for (const connection of connections) {
+      const attachment = connection.attachments.get(sessionId);
+      if (attachment && attachment.cols > 0 && attachment.rows > 0) {
+        sizes.push({ cols: attachment.cols, rows: attachment.rows });
+      }
+    }
+    return sizes;
+  };
+
+  const recomputeGrid = (session) => {
+    const sizes = collectViewportSizes(session.id);
+    if (sizes.length === 0) return;
+    const cols = Math.max(1, Math.min(...sizes.map((s) => s.cols)));
+    const rows = Math.max(1, Math.min(...sizes.map((s) => s.rows)));
+    if (cols === session.cols && rows === session.rows) return;
+    session.cols = cols; session.rows = rows;
+    if (session.status === 'running' && session.process) {
+      try { session.process.resize(cols, rows); } catch { /* process exited */ }
+    }
+    publish(session, { t: 'resized', v: 3, s: session.id, q: session.sequence, cols, rows });
+  };
+
   wsServer.on('connection', (socket) => {
     const connection = { socket, attachments: new Map() };
     connections.add(connection);
@@ -252,16 +276,33 @@ export function createTerminalRuntime({
       if (message.t === 'hello') return;
       const id = typeof message.s === 'string' ? message.s : '';
       if (!id) { send(socket, { t: 'error', v: 3, code: 'BAD_FRAME', message: 'Session id required', fatal: false }); return; }
-      if (message.t === 'detach') { connection.attachments.delete(id); return; }
+      if (message.t === 'detach') {
+        connection.attachments.delete(id);
+        const session = sessions.get(id);
+        if (session) recomputeGrid(session);
+        return;
+      }
       const session = sessions.get(id);
       if (!session) { send(socket, { t: 'error', v: 3, s: id, code: 'SESSION_NOT_FOUND', message: 'Terminal session not found', fatal: true }); return; }
       if (message.t === 'attach') {
-        const attachment = { initializing: true, pending: [] };
+        const attachment = { initializing: true, pending: [], cols: 0, rows: 0 };
+        if (typeof message.cols === 'number' && message.cols > 0) attachment.cols = Math.min(message.cols, 1000);
+        if (typeof message.rows === 'number' && message.rows > 0) attachment.rows = Math.min(message.rows, 500);
         connection.attachments.set(id, attachment);
         const initial = snapshot(session);
         send(socket, initial);
         for (const event of attachment.pending) if (event.q > initial.q) send(socket, event);
         attachment.pending.length = 0; attachment.initializing = false;
+        recomputeGrid(session);
+        return;
+      }
+      if (message.t === 'viewport') {
+        const attachment = connection.attachments.get(id);
+        if (attachment) {
+          if (typeof message.cols === 'number' && message.cols > 0) attachment.cols = Math.min(message.cols, 1000);
+          if (typeof message.rows === 'number' && message.rows > 0) attachment.rows = Math.min(message.rows, 500);
+          recomputeGrid(session);
+        }
         return;
       }
       if (message.t === 'write') {
@@ -270,7 +311,16 @@ export function createTerminalRuntime({
         try { session.process.write(message.d); session.lastActivity = Date.now(); } catch { send(socket, { t: 'error', v: 3, s: id, code: 'WRITE_FAILED', message: 'Failed to write to terminal', fatal: false }); }
       }
     });
-    const cleanup = () => { clearInterval(heartbeat); connection.attachments.clear(); connections.delete(connection); };
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      const attached = [...connection.attachments.keys()];
+      connection.attachments.clear();
+      connections.delete(connection);
+      for (const sid of attached) {
+        const session = sessions.get(sid);
+        if (session) recomputeGrid(session);
+      }
+    };
     socket.on('close', cleanup); socket.on('error', () => {});
   });
 

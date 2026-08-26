@@ -77,6 +77,7 @@ export class TerminalTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly viewports = new Map<string, { cols: number; rows: number }>();
   private failures = 0;
   private wakeCleanup: (() => void) | null = null;
   private generation = 0;
@@ -88,13 +89,14 @@ export class TerminalTransport {
     clearUrlAuthToken: clearRuntimeUrlAuthToken,
   }) {}
 
-  subscribe(sessionId: string, handlers: TerminalHandlers): () => void {
+  subscribe(sessionId: string, handlers: TerminalHandlers, viewport?: { cols: number; rows: number }): () => void {
     this.cancelIdleClose();
     const subscriber = { handlers, lastSequence: -1 };
     const set = this.subscribers.get(sessionId) ?? new Set<Subscriber>();
     const first = set.size === 0;
     set.add(subscriber);
     this.subscribers.set(sessionId, set);
+    if (viewport) this.viewports.set(sessionId, { ...viewport });
     const projection = this.projections.get(sessionId);
     if (projection) {
       subscriber.lastSequence = projection.sequence;
@@ -104,7 +106,8 @@ export class TerminalTransport {
     this.ensureConnected().then(() => {
       const current = this.subscribers.get(sessionId);
       if (first && socketWasOpen && current === set && current.size > 0) {
-        this.send({ t: 'attach', v: 3, s: sessionId });
+        const vp = this.viewports.get(sessionId);
+        this.send({ t: 'attach', v: 3, s: sessionId, ...(vp ? { cols: vp.cols, rows: vp.rows } : {}) });
       }
     }).catch((error) => {
       if (!set.has(subscriber)) return;
@@ -212,7 +215,10 @@ export class TerminalTransport {
             opened = true;
             this.failures = 0;
             this.send({ t: 'hello', v: 3 });
-            for (const sessionId of this.subscribers.keys()) this.send({ t: 'attach', v: 3, s: sessionId });
+            for (const sessionId of this.subscribers.keys()) {
+              const vp = this.viewports.get(sessionId);
+              this.send({ t: 'attach', v: 3, s: sessionId, ...(vp ? { cols: vp.cols, rows: vp.rows } : {}) });
+            }
             this.startKeepalive();
             finish();
           };
@@ -294,8 +300,13 @@ export class TerminalTransport {
       sub.lastSequence = message.q;
       if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '', replayData: typeof message.r === 'string' ? message.r : undefined });
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
-      else if (message.t === 'restarted') sub.handlers.onEvent({ type: 'snapshot', sequence: message.q, data: typeof message.history === 'string' ? message.history : '', status: 'running' });
+      else if (message.t === 'resized') sub.handlers.onEvent({ type: 'resized', sequence: message.q, cols: typeof message.cols === 'number' ? message.cols : undefined, rows: typeof message.rows === 'number' ? message.rows : undefined });
     }
+  }
+
+  sendViewport(sessionId: string, cols: number, rows: number): void {
+    this.viewports.set(sessionId, { cols, rows });
+    this.send({ t: 'viewport', v: 3, s: sessionId, cols, rows });
   }
 
   private send(message: Message): boolean {
@@ -385,6 +396,7 @@ export async function listTerminalShells(): Promise<TerminalShellOption[]> {
 }
 export function connectTerminalStream(sessionId: string, onEvent: TerminalHandlers['onEvent'], onError?: TerminalHandlers['onError']): () => void { return transport.subscribe(sessionId, { onEvent, onError }); }
 export async function sendTerminalInput(sessionId: string, data: string): Promise<void> { await transport.write(sessionId, data); }
+export function sendTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.sendViewport(sessionId, cols, rows); }
 
 async function command(path: string, method: string, body?: unknown): Promise<Response> {
   const options: RequestInit = { method };

@@ -47,7 +47,7 @@ export interface TerminalShellOption {
 }
 
 export interface TerminalStreamEvent {
-  type: 'snapshot' | 'data' | 'exit' | 'reconnecting';
+  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized';
   sequence?: number;
   data?: string;
   replayData?: string;
@@ -56,6 +56,8 @@ export interface TerminalStreamEvent {
   signal?: number | null;
   attempt?: number;
   maxAttempts?: number;
+  cols?: number;
+  rows?: number;
 
   runtime?: 'node' | 'bun';
   ptyBackend?: string;

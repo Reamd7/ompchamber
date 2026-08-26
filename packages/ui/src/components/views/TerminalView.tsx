@@ -20,6 +20,7 @@ import { extractTerminalPreviewUrl, isTerminalPreviewUrlAvailable } from '@/lib/
 import { useI18n } from '@/lib/i18n';
 import { PROJECT_ACTION_ICON_MAP, type ProjectActionIconKey } from '@/lib/projectActions';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
+import { sendTerminalViewport } from '@/lib/terminalApi';
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 
 type TerminalViewProps = {
@@ -292,6 +293,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                     appendToBuffer(directory, tabId, event.data, event.sequence, event.replayData);
                                     scanTerminalPreviewOutput(directory, tabId, event.data);
                                 }
+                                break;
+                            }
+                            case 'resized': {
+                                // Multi-device grid sync: another attachment changed
+                                // the shared PTY dimensions. No action needed here —
+                                // the TerminalViewport reads the new cols/rows from
+                                // the ghostty-web terminal's own resize event chain.
                                 break;
                             }
                             case 'exit': {
@@ -742,9 +750,11 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             }
             const terminalId = terminalIdRef.current;
             if (!terminalId) return;
-            void terminal.resize({ sessionId: terminalId, cols, rows }).catch(() => {});
+            // Multi-device grid sync: send the viewport frame so the server can
+            // negotiate the minimum grid across all attached clients.
+            sendTerminalViewport(terminalId, cols, rows);
         },
-        [isTerminalVisible, terminal]
+        [isTerminalVisible]
     );
 
     const handleModifierToggle = React.useCallback(
