@@ -199,7 +199,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
     function getBootstrapMessages() {
       var locale = 'en';
       try {
-        var rawLocale = window.localStorage.getItem('openchamber.i18n.v1');
+        var rawLocale = window.localStorage.getItem('ompchamber.i18n.v1');
         if (rawLocale) {
           var parsedLocale = JSON.parse(rawLocale);
           if (parsedLocale && typeof parsedLocale.locale === 'string' && parsedLocale.locale.toLowerCase().indexOf('fr') === 0) {
@@ -280,7 +280,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       const statusEl = document.getElementById('loading-status');
       const getDevMessages = () => {
         try {
-          const rawLocale = window.localStorage.getItem('openchamber.i18n.v1');
+          const rawLocale = window.localStorage.getItem('ompchamber.i18n.v1');
           if (rawLocale) {
             const parsedLocale = JSON.parse(rawLocale);
             if (parsedLocale && typeof parsedLocale.locale === 'string' && parsedLocale.locale.toLowerCase().indexOf('fr') === 0) {

@@ -1,13 +1,13 @@
 {
-  "name": "openchamber",
-  "displayName": "OpenChamber",
+  "name": "ompchamber-vscode",
+  "displayName": "OMPChamber",
   "description": "%extension.description%",
   "version": "1.19.1",
   "publisher": "fedaykindev",
   "private": true,
   "repository": {
     "type": "git",
-    "url": "https://github.com/openchamber/openchamber.git"
+    "url": "https://github.com/Reamd7/ompchamber.git"
   },
   "qna": "https://discord.gg/ZYRSdnwwKA",
   "license": "MIT",
@@ -29,38 +29,38 @@
     "groq",
     "assistant",
     "opencode",
-    "openchamber"
+    "ompchamber"
   ],
   "icon": "assets/app-icon.png",
   "main": "./dist/extension.js",
   "l10n": "./l10n",
   "activationEvents": [
-    "onCommand:openchamber.openSidebar",
-    "onCommand:openchamber.attachExplorerToChat",
-    "onView:openchamber.chatView"
+    "onCommand:ompchamber.openSidebar",
+    "onCommand:ompchamber.attachExplorerToChat",
+    "onView:ompchamber.chatView"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "openchamber",
+          "id": "ompchamber",
           "title": "OpenChamber",
           "icon": "assets/icon.svg"
         }
       ]
     },
     "views": {
-      "openchamber": [
+      "ompchamber": [
         {
           "type": "webview",
-          "id": "openchamber.chatView",
+          "id": "ompchamber.chatView",
           "name": "%views.chat.name%"
         }
       ]
     },
     "commands": [
       {
-        "command": "openchamber.openSidebar",
+        "command": "ompchamber.openSidebar",
         "category": "OpenChamber",
         "title": "%command.openSidebar.title%",
         "icon": {
@@ -69,34 +69,34 @@
         }
       },
       {
-        "command": "openchamber.focusChat",
+        "command": "ompchamber.focusChat",
         "category": "OpenChamber",
         "title": "%command.focusChat.title%"
       },
       {
-        "command": "openchamber.restartApi",
+        "command": "ompchamber.restartApi",
         "category": "OpenChamber",
         "title": "%command.restartApi.title%"
       },
       {
-        "command": "openchamber.showOpenCodeStatus",
+        "command": "ompchamber.showOpenCodeStatus",
         "category": "OpenChamber",
         "title": "%command.showOpenCodeStatus.title%"
       },
       {
-        "command": "openchamber.openAgentManager",
+        "command": "ompchamber.openAgentManager",
         "category": "OpenChamber",
         "title": "%command.openAgentManager.title%",
         "icon": "$(circuit-board)"
       },
       {
-        "command": "openchamber.openActiveSessionInEditor",
+        "command": "ompchamber.openActiveSessionInEditor",
         "category": "OpenChamber",
         "title": "%command.openActiveSessionInEditor.title%",
         "icon": "$(link-external)"
       },
       {
-        "command": "openchamber.openNewSessionInEditor",
+        "command": "ompchamber.openNewSessionInEditor",
         "category": "OpenChamber",
         "title": "%command.openNewSessionInEditor.title%",
         "icon": {
@@ -105,113 +105,113 @@
         }
       },
       {
-        "command": "openchamber.openCurrentOrNewSessionInEditor",
+        "command": "ompchamber.openCurrentOrNewSessionInEditor",
         "category": "OpenChamber",
         "title": "%command.openCurrentOrNewSessionInEditor.title%",
         "icon": "$(link-external)"
       },
       {
-        "command": "openchamber.addToContext",
+        "command": "ompchamber.addToContext",
         "category": "OpenChamber",
         "title": "%command.addToContext.title%"
       },
       {
-        "command": "openchamber.explain",
+        "command": "ompchamber.explain",
         "category": "OpenChamber",
         "title": "%command.explain.title%"
       },
       {
-        "command": "openchamber.improveCode",
+        "command": "ompchamber.improveCode",
         "category": "OpenChamber",
         "title": "%command.improveCode.title%"
       },
       {
-        "command": "openchamber.newSession",
+        "command": "ompchamber.newSession",
         "category": "OpenChamber",
         "title": "%command.newSession.title%",
         "icon": "$(add)"
       },
       {
-        "command": "openchamber.showSettings",
+        "command": "ompchamber.showSettings",
         "category": "OpenChamber",
         "title": "%command.showSettings.title%",
         "icon": "$(settings-gear)"
       },
       {
-        "command": "openchamber.attachExplorerToChat",
+        "command": "ompchamber.attachExplorerToChat",
         "category": "OpenChamber",
         "title": "%command.attachExplorerToChat.title%"
       }
     ],
     "submenus": [
       {
-        "id": "openchamber.submenu",
+        "id": "ompchamber.submenu",
         "label": "OpenChamber"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "submenu": "openchamber.submenu",
+          "submenu": "ompchamber.submenu",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
-          "command": "openchamber.attachExplorerToChat",
+          "command": "ompchamber.attachExplorerToChat",
           "when": "resourceScheme == file && explorerResourceIsFolder == false",
           "group": "navigation@50"
         }
       ],
       "editor/title": [
         {
-          "command": "openchamber.openNewSessionInEditor",
+          "command": "ompchamber.openNewSessionInEditor",
           "group": "navigation@1"
         }
       ],
       "view/title": [
         {
-          "command": "openchamber.newSession",
-          "when": "view == openchamber.chatView",
+          "command": "ompchamber.newSession",
+          "when": "view == ompchamber.chatView",
           "group": "navigation@1"
         },
         {
-          "command": "openchamber.openCurrentOrNewSessionInEditor",
-          "when": "view == openchamber.chatView",
+          "command": "ompchamber.openCurrentOrNewSessionInEditor",
+          "when": "view == ompchamber.chatView",
           "group": "navigation@2"
         },
         {
-          "command": "openchamber.openAgentManager",
-          "when": "view == openchamber.chatView",
+          "command": "ompchamber.openAgentManager",
+          "when": "view == ompchamber.chatView",
           "group": "navigation@3"
         },
         {
-          "command": "openchamber.showSettings",
-          "when": "view == openchamber.chatView",
+          "command": "ompchamber.showSettings",
+          "when": "view == ompchamber.chatView",
           "group": "navigation@4"
         }
       ],
-      "openchamber.submenu": [
+      "ompchamber.submenu": [
         {
-          "command": "openchamber.explain"
+          "command": "ompchamber.explain"
         },
         {
-          "command": "openchamber.improveCode"
+          "command": "ompchamber.improveCode"
         },
         {
-          "command": "openchamber.addToContext"
+          "command": "ompchamber.addToContext"
         }
       ]
     },
     "configuration": {
       "title": "OpenChamber",
       "properties": {
-        "openchamber.apiUrl": {
+        "ompchamber.apiUrl": {
           "type": "string",
           "default": "",
           "description": "%configuration.apiUrl.description%"
         },
-        "openchamber.opencodeBinary": {
+        "ompchamber.opencodeBinary": {
           "type": "string",
           "default": "",
           "description": "%configuration.opencodeBinary.description%"

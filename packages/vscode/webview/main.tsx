@@ -1014,7 +1014,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
       const arch = url.searchParams.get('arch') || window.__VSCODE_CONFIG__?.arch || undefined;
       const reportUsageRaw = (url.searchParams.get('reportUsage') || 'true').toLowerCase();
       const reportUsage = !(reportUsageRaw === 'false' || reportUsageRaw === '0' || reportUsageRaw === 'no');
-      const data = await sendBridgeMessage('api:openchamber:update-check', {
+      const data = await sendBridgeMessage('api:ompchamber:update-check', {
         currentVersion,
         instanceMode,
         deviceClass,

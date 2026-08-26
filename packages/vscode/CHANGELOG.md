@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- The extension now presents itself as OMPChamber — its commands, views, and settings moved to the `ompchamber.*` namespace, so custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once. Installing or updating shows the new name.
 - Startup: engine processes left behind by a crash or force-quit are now identified and cleaned up on the next start — the cleanup only recognized the old engine's name (opencode) and never matched the current omp engine, so orphans accumulated. The engine host also now runs the background workers the engine relaunches itself for (the browser tool's helper, local models) instead of turning every relaunch into another idle server process.
 - Chat: the per-session thinking-level selector works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the crash answered the request with a server error. "Inherit" now genuinely clears the explicit level.
 - Sessions: deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.

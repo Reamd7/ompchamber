@@ -69,7 +69,7 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
       ctx?.context,
       {
         broadcast: (snapshot) => vscode.commands.executeCommand(
-          'openchamber.internal.permissionAutoAcceptSynced',
+          'ompchamber.internal.permissionAutoAcceptSynced',
           snapshot,
         ),
       },

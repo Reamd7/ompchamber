@@ -8,7 +8,7 @@ export const createVSCodeActionsAPI = (): VSCodeAPI => ({
   },
 
   async openAgentManager(): Promise<void> {
-    await executeVSCodeCommand('openchamber.openAgentManager');
+    await executeVSCodeCommand('ompchamber.openAgentManager');
   },
 
   async openExternalUrl(url: string): Promise<void> {
