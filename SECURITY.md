@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in OMPChamber, please report it responsibly.
 
-**GitHub:** use [private security advisories](https://github.com/Reamd7/openchamber/security/advisories/new) on this repository.
+**GitHub:** use [private security advisories](https://github.com/Reamd7/ompchamber/security/advisories/new) on this repository.
 
 Please include:
 - Description of the vulnerability

@@ -163,7 +163,7 @@
     "publish": {
       "provider": "github",
       "owner": "Reamd7",
-      "repo": "openchamber"
+      "repo": "ompchamber"
     }
   }
 }

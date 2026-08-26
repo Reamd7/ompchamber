@@ -2,8 +2,8 @@
 
 [English](README.md) | 简体中文
 
-[![GitHub stars](https://img.shields.io/github/stars/Reamd7/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/openchamber/stargazers)
-[![GitHub release](https://img.shields.io/github/v/release/Reamd7/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/openchamber/releases/latest)
+[![GitHub stars](https://img.shields.io/github/stars/Reamd7/ompchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/ompchamber/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/Reamd7/ompchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/ompchamber/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
 [![Support the project](https://img.shields.io/badge/Support-Project-black?style=flat&labelColor=100F0F&color=EC8B49&logo=ko-fi&logoColor=FFFCF0)](https://ko-fi.com/G2G41SAWNS)
 
@@ -85,7 +85,7 @@ OMPChamber 为你提供一个统一的地方来指挥 agent 工作、理解变�
 
 ### 桌面 — macOS、Windows 和 Linux
 
-从 [GitHub Releases](https://github.com/Reamd7/openchamber/releases/latest) 下载最新版本。桌面版自带独立完整的 omp host 引擎，无需单独安装 OpenCode。
+从 [GitHub Releases](https://github.com/Reamd7/ompchamber/releases/latest) 下载最新版本。桌面版自带独立完整的 omp host 引擎，无需单独安装 OpenCode。
 
 Linux 提供 x86_64 和 ARM64 的 AppImage。为下载的 AppImage 添加可执行权限，并保存在可写位置以支持应用内更新：
 
@@ -105,7 +105,7 @@ Linux AppImage 需要 FUSE（`libfuse.so.2`）。没有 FUSE 时，使用 `APPIM
 需要 Node.js 22+ 和 [Bun](https://bun.sh) 运行时（omp 引擎运行在 Bun 之上；无需单独安装任何 agent CLI）。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/install.sh | bash
 ompchamber --ui-password be-creative-here
 ```
 

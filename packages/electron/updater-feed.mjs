@@ -1,7 +1,7 @@
 export const PRODUCTION_UPDATER_FEED = Object.freeze({
   provider: 'github',
   owner: 'Reamd7',
-  repo: 'openchamber',
+  repo: 'ompchamber',
 });
 
 const isLoopbackHostname = (hostname) => {

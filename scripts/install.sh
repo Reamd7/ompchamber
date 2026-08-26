@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # OMPChamber Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/install.sh | bash
 
 set -euo pipefail
 
 PACKAGE_NAME="ompchamber"
 BIN_NAME="ompchamber"
 MIN_NODE_VERSION=22
-GITHUB_REPO="Reamd7/openchamber"
+GITHUB_REPO="Reamd7/ompchamber"
 # ompchamber ships as GitHub release tarballs, not on the npm registry; the
 # version-less URL always resolves to the newest published release.
 TARBALL_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/ompchamber-latest.tgz"

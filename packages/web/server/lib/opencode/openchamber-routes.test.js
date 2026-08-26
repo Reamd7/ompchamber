@@ -61,7 +61,7 @@ beforeEach(() => {
   packageManager.detectPackageManagerDetails.mockReturnValue({
     packageManager: 'npm',
   });
-  packageManager.getUpdateCommand.mockReturnValue('npm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-latest.tgz');
+  packageManager.getUpdateCommand.mockReturnValue('npm install -g https://github.com/Reamd7/ompchamber/releases/latest/download/ompchamber-latest.tgz');
 });
 
 afterEach(() => {
@@ -131,7 +131,7 @@ describe('OpenChamber foreground update route', () => {
       '--setenv=PATH=/home/syu/.npm-global/bin:/usr/bin:/bin',
       '/bin/sh',
       '-c',
-      "set -eu\nnpm install -g https://github.com/Reamd7/openchamber/releases/latest/download/ompchamber-latest.tgz\nsystemctl --user restart 'ompchamber@wsl.service'",
+      "set -eu\nnpm install -g https://github.com/Reamd7/ompchamber/releases/latest/download/ompchamber-latest.tgz\nsystemctl --user restart 'ompchamber@wsl.service'",
     ], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],

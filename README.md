@@ -2,8 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
-[![GitHub stars](https://img.shields.io/github/stars/Reamd7/openchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/openchamber/stargazers)
-[![GitHub release](https://img.shields.io/github/v/release/Reamd7/openchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/openchamber/releases/latest)
+[![GitHub stars](https://img.shields.io/github/stars/Reamd7/ompchamber?style=flat&labelColor=100F0F&color=66800B)](https://github.com/Reamd7/ompchamber/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/Reamd7/ompchamber?style=flat&labelColor=100F0F&color=205EA6)](https://github.com/Reamd7/ompchamber/releases/latest)
 [![Discord](https://img.shields.io/badge/Discord-join.svg?style=flat&labelColor=100F0F&color=8B7EC8&logo=discord&logoColor=FFFCF0)](https://discord.gg/ZYRSdnwwKA)
 [![Support the project](https://img.shields.io/badge/Support-Project-black?style=flat&labelColor=100F0F&color=EC8B49&logo=ko-fi&logoColor=FFFCF0)](https://ko-fi.com/G2G41SAWNS)
 
@@ -85,7 +85,7 @@ Run a prompt once, daily, weekly, or on a cron schedule. Scheduled tasks can use
 
 ### Desktop — macOS, Windows, and Linux
 
-Download the latest release from [GitHub Releases](https://github.com/Reamd7/openchamber/releases/latest). Desktop bundles a self-contained omp host engine, so no separate OpenCode installation is required.
+Download the latest release from [GitHub Releases](https://github.com/Reamd7/ompchamber/releases/latest). Desktop bundles a self-contained omp host engine, so no separate OpenCode installation is required.
 
 Linux releases are available as x86_64 and ARM64 AppImages. Make the downloaded AppImage executable and keep it in a writable location for in-app updates:
 
@@ -105,7 +105,7 @@ Install [OpenChamber from the Visual Studio Marketplace](https://marketplace.vis
 Requires Node.js 22+ and the [Bun](https://bun.sh) runtime (the omp engine runs under Bun; no separate agent CLI is needed).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Reamd7/openchamber/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/install.sh | bash
 ompchamber --ui-password be-creative-here
 ```
 

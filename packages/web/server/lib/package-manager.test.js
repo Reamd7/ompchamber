@@ -52,7 +52,7 @@ describe('checkForUpdates', () => {
     delete process.env.OMPCHAMBER_UPDATE_API_URL;
   });
 
-  const latestRelease = (tag) => fetchMock.when('api.github.com/repos/Reamd7/openchamber/releases/latest', {
+  const latestRelease = (tag) => fetchMock.when('api.github.com/repos/Reamd7/ompchamber/releases/latest', {
     ok: true,
     json: async () => ({ tag_name: tag }),
   });
@@ -121,7 +121,7 @@ describe('checkForUpdates', () => {
           downloadUrl: 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OpenChamber-1.10.0-42-android.aab',
         }),
       })
-      .when('api.github.com/repos/Reamd7/openchamber/releases/tags/v1.10.0', {
+      .when('api.github.com/repos/Reamd7/ompchamber/releases/tags/v1.10.0', {
         ok: true,
         json: async () => ({
           assets: [

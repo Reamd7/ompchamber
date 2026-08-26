@@ -82,7 +82,7 @@ Build output goes to `packages/electron/dist`.
 
 macOS builds produce `dmg` and `zip` artifacts. Windows builds produce an NSIS installer. Linux builds produce an AppImage for the native x64 or arm64 host.
 
-Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners (macOS, Windows, Linux) and published to GitHub Releases. The in-app updater reads those releases through the GitHub provider configured in `build.publish` and `updater-feed.mjs` (`Reamd7/openchamber`); keep both in sync. Bump `packages/electron/package.json` `version` to match the release tag before pushing it — the workflow fails early on a mismatch. macOS signing and notarization run only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are configured; without them the workflow produces unsigned macOS artifacts and in-app updates only work on Windows and Linux (macOS Squirrel updates require a signed app).
+Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners (macOS, Windows, Linux) and published to GitHub Releases. The in-app updater reads those releases through the GitHub provider configured in `build.publish` and `updater-feed.mjs` (`Reamd7/ompchamber`); keep both in sync. Bump `packages/electron/package.json` `version` to match the release tag before pushing it — the workflow fails early on a mismatch. macOS signing and notarization run only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are configured; without them the workflow produces unsigned macOS artifacts and in-app updates only work on Windows and Linux (macOS Squirrel updates require a signed app).
 
 ## Platform Notes
 

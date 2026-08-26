@@ -8,15 +8,15 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PACKAGE_NAME = 'ompchamber';
+const PACKAGE_NAME = '@ompchamber/web';
 const PACKAGE_PATH_SEGMENTS = PACKAGE_NAME.split('/');
-const GITHUB_REPO = 'Reamd7/openchamber';
+const GITHUB_REPO = 'Reamd7/ompchamber';
 const CHANGELOG_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/CHANGELOG.md`;
 const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`;
 const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases`;
 // OMPChamber is distributed as release tarballs, not on the npm registry;
 // the version-less URL always resolves to the newest published release.
-const RELEASE_TARBALL_LATEST_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/ompchamber-latest.tgz`;
+const RELEASE_TARBALL_LATEST_URL = `https://github.com/${GITHUB_REPO}/releases/latest/download/ompchamber-web-latest.tgz`;
 let cachedDetectedPm = null;
 
 function getSpawnSyncBaseOptions() {
@@ -663,7 +663,7 @@ function isPackageInstalledWith(pm) {
 export function getUpdateCommand(pm = detectPackageManager(), version = null) {
   const pmCommand = quoteCommand(resolvePackageManagerCommand(pm));
   const tarballUrl = typeof version === 'string' && version.trim()
-    ? `https://github.com/${GITHUB_REPO}/releases/download/v${version.trim()}/ompchamber-${version.trim()}.tgz`
+    ? `https://github.com/${GITHUB_REPO}/releases/download/v${version.trim()}/ompchamber-web-${version.trim()}.tgz`
     : RELEASE_TARBALL_LATEST_URL;
   switch (pm) {
     case 'pnpm':

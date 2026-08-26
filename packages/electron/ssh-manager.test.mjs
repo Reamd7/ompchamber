@@ -393,7 +393,7 @@ describe('ElectronSshManager', () => {
 
     await manager.installOpenChamberManaged({ destination: 'user@example.test', args: [] }, '/tmp/control.sock', '1.2.3', 'auto');
 
-    expect(commands).toEqual(["'/home/pi/.bun/bin/bun' add -g https://github.com/Reamd7/openchamber/releases/download/v1.2.3/ompchamber-web-1.2.3.tgz"]);
+    expect(commands).toEqual(["'/home/pi/.bun/bin/bun' add -g https://github.com/Reamd7/ompchamber/releases/download/v1.2.3/ompchamber-web-1.2.3.tgz"]);
   });
   test('stops a remote server it started through the CLI, not the authenticated HTTP route', async () => {
     const scripts = [];

@@ -14,7 +14,7 @@
 | omp 引擎 | 自动 | web 服务器会自行 spawn `packages/web/server/lib/omp-host/host.js` 子进程,无需手动启动 |
 
 ```bash
-git clone https://github.com/Reamd7/openchamber
+git clone https://github.com/Reamd7/ompchamber
 cd openchamber
 bun install        # workspace 安装(packages/* 全部就位)
 ```
