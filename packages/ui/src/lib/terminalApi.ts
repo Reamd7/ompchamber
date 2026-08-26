@@ -356,6 +356,23 @@ export async function createTerminalSession(options: CreateTerminalOptions): Pro
   if (!response.ok) throw await responseError(response, 'Failed to create terminal session');
   return response.json() as Promise<TerminalSession>;
 }
+
+export interface TerminalSessionInfo {
+  sessionId: string;
+  cwd: string;
+  status: string;
+  cols: number;
+  rows: number;
+  shell?: string;
+}
+
+export async function listTerminalSessions(): Promise<TerminalSessionInfo[]> {
+  const response = await runtimeFetch('/api/terminal/list');
+  if (!response.ok) return [];
+  const payload = await response.json().catch(() => []);
+  return Array.isArray(payload) ? payload.filter((s) => s && typeof s.sessionId === 'string') : [];
+}
+
 export async function listTerminalShells(): Promise<TerminalShellOption[]> {
   const response = await runtimeFetch('/api/terminal/shells');
   if (!response.ok) throw await responseError(response, 'Failed to list terminal shells');

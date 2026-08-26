@@ -297,6 +297,13 @@ export function createTerminalRuntime({
       res.status(500).json({ error: error?.message || 'Failed to list terminal shells' });
     }
   });
+  app.get('/api/terminal/list', (_req, res) => {
+    const list = [];
+    for (const [id, s] of sessions) {
+      list.push({ sessionId: id, cwd: s.cwd, status: s.status, cols: s.cols, rows: s.rows, shell: s.shell });
+    }
+    res.json(list);
+  });
   app.post('/api/terminal/create', async (req, res) => {
     try { const session = await createSession(req.body ?? {}); res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status }); }
     catch (error) { res.status(error?.message === 'Maximum terminal sessions reached' ? 429 : 400).json({ error: error?.message || 'Failed to create terminal session' }); }

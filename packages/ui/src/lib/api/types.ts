@@ -94,6 +94,7 @@ export interface ForceKillOptions {
 }
 
 export interface TerminalAPI {
+  listSessions?(): Promise<Array<{ sessionId: string; cwd: string; status: string; cols: number; rows: number; shell?: string }>>;
   listShells?(): Promise<TerminalShellOption[]>;
   createSession(options: CreateTerminalOptions): Promise<TerminalSession>;
   connect(sessionId: string, handlers: TerminalHandlers): Subscription;

@@ -454,15 +454,33 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                 setIsReconnectPending(false);
                 setConnecting(directory, tabId, true);
                 try {
-                    const session = await terminal.createSession({
-                        cwd: directory,
-                        sessionId: tabId,
-                        cols: initialSize.cols,
-                        rows: initialSize.rows,
-                        shell: terminalShell,
-                        loginShell: terminalLoginShell,
-                        ...terminalAppearanceRef.current,
-                    });
+                    // Session sync: reuse an already-running session for this
+                    // directory instead of spawning a second PTY. Multiple
+                    // tabs/devices attaching the same sessionId share output
+                    // via the WS fan-out in the terminal runtime.
+                    let session;
+                    if (terminal.listSessions) {
+                        const running = await terminal.listSessions();
+                        const normalizedCwd = directory.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+                        const match = running.find(
+                            (s) => s.status === 'running' &&
+                            s.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalizedCwd
+                        );
+                        if (match) {
+                            session = { sessionId: match.sessionId, cols: match.cols, rows: match.rows, status: match.status };
+                        }
+                    }
+                    if (!session) {
+                        session = await terminal.createSession({
+                            cwd: directory,
+                            sessionId: tabId,
+                            cols: initialSize.cols,
+                            rows: initialSize.rows,
+                            shell: terminalShell,
+                            loginShell: terminalLoginShell,
+                            ...terminalAppearanceRef.current,
+                        });
+                    }
 
                     const stillActive =
                         !cancelled &&
