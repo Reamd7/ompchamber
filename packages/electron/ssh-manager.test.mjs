@@ -305,7 +305,7 @@ describe('ElectronSshManager', () => {
     await manager.installOpenChamberManaged({ destination: 'user@example.test', args: [] }, '/tmp/control.sock', '1.2.3', 'auto');
 
     expect(commands).toHaveLength(1);
-    expect(commands[0]).toContain('--prefix "$HOME/.openchamber/npm-global"');
+    expect(commands[0]).toContain('--prefix "$HOME/.ompchamber/npm-global"');
     expect(commands[0]).not.toMatch(/npm install -g @ompchamber/);
   });
 
@@ -316,7 +316,7 @@ describe('ElectronSshManager', () => {
       emit: () => undefined,
     });
     manager.runRemoteCommand = async () => [
-      '/home/pi/.openchamber/npm-global/bin/openchamber\t1.2.3',
+      '/home/pi/.ompchamber/npm-global/bin/openchamber\t1.2.3',
       '/usr/bin/openchamber\t0.9.0',
       '',
     ].join('\n');
@@ -324,7 +324,7 @@ describe('ElectronSshManager', () => {
     const candidates = await manager.remoteOpenChamberCandidates({ destination: 'user@example.test', args: [] }, '/tmp/control.sock');
 
     expect(candidates).toEqual([
-      { binPath: '/home/pi/.openchamber/npm-global/bin/openchamber', version: '1.2.3' },
+      { binPath: '/home/pi/.ompchamber/npm-global/bin/openchamber', version: '1.2.3' },
       { binPath: '/usr/bin/openchamber', version: '0.9.0' },
     ]);
   });
@@ -348,11 +348,11 @@ describe('ElectronSshManager', () => {
       '/tmp/control.sock',
       instance,
       4321,
-      '/home/pi/.openchamber/npm-global/bin/openchamber',
+      '/home/pi/.ompchamber/npm-global/bin/openchamber',
     );
 
     expect(port).toBe(4321);
-    expect(started).toContain("'/home/pi/.openchamber/npm-global/bin/openchamber' serve");
+    expect(started).toContain("'/home/pi/.ompchamber/npm-global/bin/openchamber' serve");
     expect(started).toContain("OPENCODE_BINARY='/home/pi/.opencode/bin/opencode'");
     expect(started).toContain('$HOME/.opencode/bin:');
   });
