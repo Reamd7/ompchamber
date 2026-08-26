@@ -413,6 +413,12 @@ export const useOmpCustomDetails = (directory: string, wireMessageID: string | u
 export const useOmpSessionModelBadge = (directory: string, sessionID: string | undefined) =>
   useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.sessionModel[sessionID] ?? null : null));
 
+/** Settings revision (omp.settings.updated {revision}) — the live signal that
+ * role assignments/engine settings changed and dependent snapshots (e.g. the
+ * composer's models snapshot) must refetch. */
+export const useOmpSettingsRevision = (directory: string) =>
+  useOmpSessionStore((state) => state.directories[directory]?.domains.settingsRevision ?? 0);
+
 export const useOmpFallbackState = (directory: string, sessionID: string | undefined) =>
   useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.fallback[sessionID] ?? null : null));
 

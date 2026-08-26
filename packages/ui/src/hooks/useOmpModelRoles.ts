@@ -25,6 +25,7 @@ import {
 } from '@/lib/omp/capabilityGate';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useOmpSettingsRevision } from '@/sync/useOmpSessionStore';
 
 export interface OmpFeatureFlagsState {
   /** The capability probe settled (either answer). */
@@ -171,6 +172,12 @@ export const useOmpModelRoles = (directory: string | null | undefined): OmpModel
   const directoryKey = directory ?? null;
   const featureOn = flags.modelRoles;
 
+  // Live refresh signal: every settings write (engine settings page,
+  // "Set as role" in this picker, omp CLI) broadcasts omp.settings.updated;
+  // the reducer stores the revision here. A jump refetches the models
+  // snapshot so role chips follow settings changes without remounting.
+  const settingsRevision = useOmpSettingsRevision(directoryKey ?? '');
+
   React.useEffect(() => {
     if (!featureOn || !directoryKey) {
       setSnapshot(null);
@@ -178,19 +185,27 @@ export const useOmpModelRoles = (directory: string | null | undefined): OmpModel
       return;
     }
     let cancelled = false;
-    setSnapshot(null);
     setPending(true);
     void ompModels.getModels({ directory: directoryKey }).then((result) => {
       if (cancelled) return;
-      // Fetch failure / malformed payload / surface absent → keep the legacy
-      // picker; never render roles from a non-authoritative answer.
-      setSnapshot(result.ok ? result.data : null);
+      // Fetch failure / malformed payload → keep the legacy picker when
+      // nothing authoritative exists yet, and keep the previous snapshot
+      // when one does (a failed refresh must not blank valid role chips);
+      // never render roles from a non-authoritative answer.
+      setSnapshot((previous) => (result.ok ? result.data : previous));
       setPending(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [ompModels, featureOn, directoryKey, reloadEpoch]);
+  }, [ompModels, featureOn, directoryKey, reloadEpoch, settingsRevision]);
+
+  // Scope changes invalidate everything; a settings-driven refresh keeps
+  // the previous slots rendered until the fresh snapshot lands (no
+  // legacy-picker flicker on every settings write).
+  React.useEffect(() => {
+    setSnapshot(null);
+  }, [featureOn, directoryKey]);
 
 
 
