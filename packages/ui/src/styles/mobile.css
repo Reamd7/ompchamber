@@ -725,3 +725,33 @@
 .oc-composer-morph-content-fade > * {
   animation: oc-composer-morph-fade 0.18s ease-out 0.26s both;
 }
+
+/* ── iOS hardware-keyboard viewport clamp ──────────────────────────────────
+   With a hardware keyboard attached, focusing a text field on iOS/iPadOS
+   reserves a bottom strip for the minimized on-screen keyboard widget.
+   WebKit takes the strip only from the visual viewport — the layout
+   viewport (and 100dvh) keep full height — so a full-height shell runs
+   under the strip: the strip renders as dead non-page space and the
+   window stays scrollable into it (the stray scrollbar). While
+   `oc-vv-clamp` is set (see lib/iosKeyboardViewportClamp.ts), size the
+   shells to the measured visible height instead; the strip keeps the
+   page background, the document fits, and the scrollbar disappears.
+   The clamp only engages for widget-band strips (shorter than a real
+   software keyboard), so the dvh / interactive-widget keyboard flows
+   elsewhere in this file are untouched. */
+:root.oc-vv-clamp .oc-app-shell {
+  height: var(--oc-vv-clamp-height);
+}
+
+/* Outranks the standalone 100lvh pin above (equal specificity, later
+   source order): the clamp is measured, not a heuristic. */
+:root.oc-vv-clamp .oc-mobile-app-shell {
+  height: var(--oc-vv-clamp-height);
+}
+
+/* Capacitor: the keyboard choreography already shrinks the shell by
+   --oc-kb-layout when the plugin reports a keyboard. Take whichever
+   height is smaller so the two mechanisms never double-count the strip. */
+:root.oc-vv-clamp.oc-capacitor-app .oc-mobile-app-shell {
+  height: min(var(--oc-vv-clamp-height), calc(100dvh - var(--oc-kb-layout, 0px)));
+}
