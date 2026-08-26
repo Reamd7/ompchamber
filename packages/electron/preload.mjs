@@ -11,14 +11,14 @@ const readArgValue = (name) => {
   return entry.slice(prefix.length);
 };
 
-const localOrigin = readArgValue('--openchamber-local-origin');
-const apiBaseUrl = readArgValue('--openchamber-api-base-url');
-const clientToken = readArgValue('--openchamber-client-token');
-const runtimeHeadersRaw = readArgValue('--openchamber-runtime-headers');
-const homeDirectory = readArgValue('--openchamber-home');
-const macosMajorRaw = readArgValue('--openchamber-macos-major');
+const localOrigin = readArgValue('--ompchamber-local-origin');
+const apiBaseUrl = readArgValue('--ompchamber-api-base-url');
+const clientToken = readArgValue('--ompchamber-client-token');
+const runtimeHeadersRaw = readArgValue('--ompchamber-runtime-headers');
+const homeDirectory = readArgValue('--ompchamber-home');
+const macosMajorRaw = readArgValue('--ompchamber-macos-major');
 const macosMajor = Number.parseInt(macosMajorRaw, 10);
-const trayEnabled = process.platform !== 'darwin' || readArgValue('--openchamber-tray-enabled') !== '0';
+const trayEnabled = process.platform !== 'darwin' || readArgValue('--ompchamber-tray-enabled') !== '0';
 
 // Preload re-executes on every cross-origin navigation (we run with
 // sandbox:false, per-document). Two separate concerns to balance:
@@ -62,7 +62,7 @@ if (clientToken && isLocalPage) {
 // Which saved host this window should connect to over the relay-capable path
 // (direct probe first, E2EE tunnel fallback). Local pages only — the id is
 // only useful together with the desktop IPC channel anyway.
-const relayHostId = readArgValue('--openchamber-relay-host-id');
+const relayHostId = readArgValue('--ompchamber-relay-host-id');
 if (relayHostId && isLocalPage) {
   contextBridge.exposeInMainWorld('__OMPCHAMBER_RELAY_HOST_ID__', relayHostId);
 }

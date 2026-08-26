@@ -1154,7 +1154,7 @@ const injectRuntimeConfigIntoHtml = (html) => {
  * lets a dev-server login persist between sessions without touching the app's
  * own storage.
  */
-const BROWSER_PANEL_PARTITION = 'persist:openchamber-browser';
+const BROWSER_PANEL_PARTITION = 'persist:ompchamber-browser';
 
 /**
  * Denies device and location access to pages shown in the browser panel.
@@ -2459,15 +2459,15 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
     trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 17 } : undefined,
     webPreferences: {
       additionalArguments: [
-        `--openchamber-local-origin=${desktopLocalOrigin}`,
-        `--openchamber-api-base-url=${desktopApiBaseUrl}`,
-        `--openchamber-client-token=${desktopClientToken}`,
-        `--openchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
-        `--openchamber-home=${desktopHome}`,
-        `--openchamber-macos-major=${desktopMacosMajor}`,
-        `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
-        `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
-        `--openchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
+        `--ompchamber-local-origin=${desktopLocalOrigin}`,
+        `--ompchamber-api-base-url=${desktopApiBaseUrl}`,
+        `--ompchamber-client-token=${desktopClientToken}`,
+        `--ompchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
+        `--ompchamber-home=${desktopHome}`,
+        `--ompchamber-macos-major=${desktopMacosMajor}`,
+        `--ompchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
+        `--ompchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
+        `--ompchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: false,
@@ -2857,13 +2857,13 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 17 } : undefined,
     webPreferences: {
       additionalArguments: [
-        `--openchamber-local-origin=${desktopLocalOrigin}`,
-        `--openchamber-api-base-url=${desktopApiBaseUrl}`,
-        `--openchamber-client-token=${desktopClientToken}`,
-        `--openchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
-        `--openchamber-home=${desktopHome}`,
-        `--openchamber-macos-major=${desktopMacosMajor}`,
-        `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
+        `--ompchamber-local-origin=${desktopLocalOrigin}`,
+        `--ompchamber-api-base-url=${desktopApiBaseUrl}`,
+        `--ompchamber-client-token=${desktopClientToken}`,
+        `--ompchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
+        `--ompchamber-home=${desktopHome}`,
+        `--ompchamber-macos-major=${desktopMacosMajor}`,
+        `--ompchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: false,

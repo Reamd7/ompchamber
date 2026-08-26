@@ -68,7 +68,7 @@ const DEV_SERVER_WAIT_MS = 40_000;
 const ZOOM_STEP = 0.5;
 const ZOOM_MIN = -3;
 const ZOOM_MAX = 4;
-const BROWSER_PARTITION = 'persist:openchamber-browser';
+const BROWSER_PARTITION = 'persist:ompchamber-browser';
 /** Kept small: this rides along with every snapshot. */
 const CONSOLE_PROBLEM_LIMIT = 20;
 const DEV_SERVER_RETRY_DELAY_MS = 600;
@@ -754,7 +754,7 @@ const WebviewBrowser: React.FC<BrowserPaneProps> = ({ initialUrl, directory, tab
           <webview
             ref={attachWebview}
             src={initialSrc}
-            partition="persist:openchamber-browser"
+            partition="persist:ompchamber-browser"
             allowpopups
             style={layout
               ? {

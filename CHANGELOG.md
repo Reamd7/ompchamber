@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Desktop/Mobile: the deep-link scheme is now `ompchamber://` (was `openchamber://`).** Links and QR codes created by older versions no longer open the app; regenerate them from the current version. The embedded browser panel also moves to a renamed storage partition, so sites logged in there ask for login once more.
+- VS Code: the extension's commands, views, and settings now live under the `ompchamber.*` namespace — custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once.
 - **Desktop: the Windows installer is now an assisted setup wizard.** Choose installing for the current user or all users, browse to a different installation folder, and see the required disk space before installing. New installs land in `Programs\OMPChamber`; updating an existing install keeps its current folder.
 - **Chat:** changing the thinking level from the composer works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the resulting crash answered the request with a server error. Picking "Inherit" now genuinely clears the session's explicit level instead of being dropped.
 - Merged from upstream openchamber/openchamber v1.19.0–v1.20.0 plus their unreleased work:

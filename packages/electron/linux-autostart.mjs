@@ -3,7 +3,10 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const AUTOSTART_FILE_NAME = 'openchamber.desktop';
+const AUTOSTART_FILE_NAME = 'ompchamber.desktop';
+// Entries written before the ompchamber rename; removed so an upgrade cannot
+// leave two autostart entries pointing at the same app.
+const LEGACY_AUTOSTART_FILE_NAMES = ['openchamber.desktop'];
 
 const resolveLinuxAutostartDirectory = ({
   env = process.env,
@@ -81,6 +84,10 @@ export const setLinuxAutostartEnabled = async ({
 } = {}) => {
   const directory = resolveLinuxAutostartDirectory({ env, homeDir });
   const filePath = path.join(directory, AUTOSTART_FILE_NAME);
+
+  for (const legacyName of LEGACY_AUTOSTART_FILE_NAMES) {
+    await fsp.rm(path.join(directory, legacyName), { force: true });
+  }
 
   if (!enabled) {
     await fsp.rm(filePath, { force: true });
