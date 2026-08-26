@@ -293,7 +293,7 @@ export const MainLayout: React.FC = () => {
             <div
                 data-page-scroll-lock="true"
                 className={cn(
-                    'main-content-safe-area',
+                    'main-content-safe-area oc-app-shell',
                     isMobile ? 'flex h-[100dvh] flex-col' : 'relative flex h-[100dvh]',
                     'bg-background'
                 )}

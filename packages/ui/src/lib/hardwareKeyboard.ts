@@ -26,7 +26,7 @@
 import React from 'react';
 
 /** Below this the "keyboard" is only iOS' shortcut bar, not a real keyboard. */
-const SOFTWARE_KEYBOARD_MIN_HEIGHT_PX = 120;
+export const SOFTWARE_KEYBOARD_MIN_HEIGHT_PX = 120;
 /** iOS starts its keyboard animation well inside this window after focus. */
 const KEYBOARD_EVENT_GRACE_MS = 600;
 

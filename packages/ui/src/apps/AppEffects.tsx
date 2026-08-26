@@ -7,6 +7,7 @@ import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlay
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
+import { useIOSKeyboardViewportClamp } from '@/lib/iosKeyboardViewportClamp';
 import { useSync } from '@/sync/use-sync';
 import { useWorktreeEventSync } from '@/lib/worktrees/worktreeEventSync';
 
@@ -79,6 +80,9 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
   usePwaManifestSync();
   useWindowControlsOverlayLayout();
   useKeyboardShortcuts();
+  // Shared by every app root (desktop web, mobile browser/PWA, Capacitor,
+  // VS Code): no-ops off iOS WebKit, where the shell already fits.
+  useIOSKeyboardViewportClamp();
 
   return (
     <>
