@@ -90,7 +90,7 @@ describe('annotation session', () => {
     const { host, calls } = createHost({ overlayResult: { id: 'x', elements: 'not-an-array' } });
     const result = await runAnnotationSession({ host, theme, labels });
     expect(result).toBeNull();
-    expect(calls.some((call) => call.code.includes('data-openchamber-annotation'))).toBe(true);
+    expect(calls.some((call) => call.code.includes('data-ompchamber-annotation'))).toBe(true);
   });
 
   test('returns the annotation when the capture succeeds', async () => {

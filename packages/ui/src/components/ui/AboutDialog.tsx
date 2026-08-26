@@ -3,7 +3,7 @@ import {
   Dialog,
   DialogContent,
 } from '@/components/ui/dialog';
-import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { OMPChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { debugUtils } from '@/lib/debug';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/ui';
@@ -68,8 +68,8 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
         const response = await runtimeFetch('/api/system/info');
         if (response.ok) {
           const data = await response.json();
-          if (typeof data.openchamberVersion === 'string' && data.openchamberVersion.trim()) {
-            setVersion(data.openchamberVersion);
+          if (typeof data.ompchamberVersion === 'string' && data.ompchamberVersion.trim()) {
+            setVersion(data.ompchamberVersion);
             return;
           }
         }
@@ -144,10 +144,10 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xs p-6">
         <div className="flex flex-col items-center text-center space-y-4">
-          <OpenChamberLogo width={64} height={64} />
+          <OMPChamberLogo width={64} height={64} />
 
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold">OpenChamber</h2>
+            <h2 className="text-lg font-semibold">OMPChamber</h2>
             <div className="space-y-0.5 typography-meta text-muted-foreground">
               {displayVersion && (
                 <p>{t('aboutDialog.openChamberVersionLabel', { version: displayVersion })}</p>
@@ -203,13 +203,13 @@ export const AboutDialog: React.FC<AboutDialogProps> = ({
               </a>
             </div>
             <a
-              href="https://x.com/openchamber_dev"
+              href="https://x.com/ompchamber_dev"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1.5 typography-meta text-muted-foreground hover:text-foreground transition-colors"
             >
               <Icon name="twitter-xfill" className="h-4 w-4" />
-              <span>@openchamber_dev</span>
+              <span>@ompchamber_dev</span>
             </a>
           </div>
 

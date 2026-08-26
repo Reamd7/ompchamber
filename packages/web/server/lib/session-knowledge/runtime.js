@@ -60,7 +60,7 @@ const buildMemoryBlock = ({ global, project }) => {
   return [
     'You have stored memory from earlier sessions. Only the titles are listed below.',
     'A title is an abbreviation, not the memory. Read the entry with the'
-      + ' openchamber_memory tool before you act on it: titles routinely leave out'
+      + ' ompchamber_memory tool before you act on it: titles routinely leave out'
       + ' the conditions, exceptions and reasons that decide how the memory'
       + ' applies, and a title that looks self-explanatory is the most likely to'
       + ' be hiding them. Read every title that could bear on the task at hand;'
@@ -122,8 +122,8 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    */
   const readPins = (session) => {
     const metadata = isRecord(session?.metadata) ? session.metadata : {};
-    const openchamber = isRecord(metadata.openchamber) ? metadata.openchamber : {};
-    const pins = isRecord(openchamber[PINS_METADATA_KEY]) ? openchamber[PINS_METADATA_KEY] : {};
+    const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
+    const pins = isRecord(ompchamber[PINS_METADATA_KEY]) ? ompchamber[PINS_METADATA_KEY] : {};
     const strings = (value) => Array.isArray(value)
       ? [...new Set(value.filter((entry) => typeof entry === 'string' && entry.trim()).map((entry) => entry.trim()))]
       : [];
@@ -229,8 +229,8 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
 
   const readDeliveredSignature = (session) => {
     const metadata = isRecord(session?.metadata) ? session.metadata : {};
-    const openchamber = isRecord(metadata.openchamber) ? metadata.openchamber : {};
-    const delivered = openchamber[KNOWLEDGE_METADATA_KEY];
+    const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
+    const delivered = ompchamber[KNOWLEDGE_METADATA_KEY];
     return typeof delivered === 'string' ? delivered : '';
   };
 
@@ -267,7 +267,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
   const setPin = async (sessionId, directory, kind, id, pinned) => {
     const fresh = await readSession(sessionId, directory);
     const metadata = isRecord(fresh?.metadata) ? fresh.metadata : {};
-    const openchamber = isRecord(metadata.openchamber) ? metadata.openchamber : {};
+    const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
     const pins = readPins(fresh);
     const key = kind === 'note' ? 'notes' : 'plans';
     const next = new Set(pins[key]);
@@ -279,8 +279,8 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
       body: {
         metadata: {
           ...metadata,
-          openchamber: {
-            ...openchamber,
+          ompchamber: {
+            ...ompchamber,
             [PINS_METADATA_KEY]: { ...pins, [key]: [...next] },
             [KNOWLEDGE_METADATA_KEY]: '',
           },
@@ -296,20 +296,20 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * agent had context it never received.
    *
    * Merged onto a fresh read, because the session's metadata holds other
-   * OpenChamber state — pinned messages among it — and a blind write would
+   * OMPChamber state — pinned messages among it — and a blind write would
    * drop whatever changed in between.
    */
   const recordDelivered = async (sessionId, directory, signature) => {
     const fresh = await readSession(sessionId, directory);
     const metadata = isRecord(fresh?.metadata) ? fresh.metadata : {};
-    const openchamber = isRecord(metadata.openchamber) ? metadata.openchamber : {};
+    const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
     await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, {
       directory,
       method: 'PATCH',
       body: {
         metadata: {
           ...metadata,
-          openchamber: { ...openchamber, [KNOWLEDGE_METADATA_KEY]: signature },
+          ompchamber: { ...ompchamber, [KNOWLEDGE_METADATA_KEY]: signature },
         },
       },
     });

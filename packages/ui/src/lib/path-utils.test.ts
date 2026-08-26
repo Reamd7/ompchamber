@@ -11,7 +11,7 @@ import {
 
 describe('path-utils', () => {
   test('normalizes Windows paths without losing drive roots', () => {
-    expect(normalizeFilePath('C:\\Users\\Bohdan Triapitsyn\\projects\\openchamber\\')).toBe('C:/Users/Bohdan Triapitsyn/projects/openchamber');
+    expect(normalizeFilePath('C:\\Users\\Bohdan Triapitsyn\\projects\\ompchamber\\')).toBe('C:/Users/Bohdan Triapitsyn/projects/ompchamber');
     expect(normalizeFilePath('C:/')).toBe('C:/');
     expect(normalizeFilePath('\\\\server\\share\\project')).toBe('//server/share/project');
   });

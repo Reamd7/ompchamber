@@ -11,7 +11,7 @@ import { GitHubSettings } from './GitHubSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { TunnelSettings } from './TunnelSettings';
 import { OpenCodeCliSettings } from './OpenCodeCliSettings';
-import { OpenChamberToolsSettings } from './OpenChamberToolsSettings';
+import { OMPChamberToolsSettings } from './OpenChamberToolsSettings';
 import { DesktopNetworkSettings } from './DesktopNetworkSettings';
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
@@ -20,7 +20,7 @@ import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, isWebRunti
 import { isCapacitorApp } from '@/lib/platform';
 import { useI18n } from '@/lib/i18n';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
-import type { OpenChamberSection } from './types';
+import type { OMPChamberSection } from './types';
 
 const useRuntimeEndpointEpoch = (): number => {
     const [epoch, setEpoch] = React.useState(0);
@@ -32,12 +32,12 @@ const useRuntimeEndpointEpoch = (): number => {
     return epoch;
 };
 
-interface OpenChamberPageProps {
+interface OMPChamberPageProps {
     /** Which section to display. If undefined, shows all sections (mobile/legacy behavior) */
-    section?: OpenChamberSection;
+    section?: OMPChamberSection;
 }
 
-export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => {
+export const OMPChamberPage: React.FC<OMPChamberPageProps> = ({ section }) => {
     const { t } = useI18n();
     const { isMobile } = useDeviceInfo();
     const runtimeEndpointEpoch = useRuntimeEndpointEpoch();
@@ -49,12 +49,12 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
     // If no section specified, show all (mobile/legacy behavior)
     if (!section) {
         return (
-            <SettingsPageLayout showSaveStatus className="openchamber-page-body space-y-3 sm:space-y-6">
+            <SettingsPageLayout showSaveStatus className="ompchamber-page-body space-y-3 sm:space-y-6">
                 <OpenChamberVisualSettings />
                 <DefaultsSettings />
                 {showDesktopNetworkSettings && <DesktopNetworkSettings />}
                 {!isVSCode && <OpenCodeCliSettings />}
-                {!isVSCode && <OpenChamberToolsSettings />}
+                {!isVSCode && <OMPChamberToolsSettings />}
                 <SessionRetentionSettings />
                 <AppLinkSecuritySettings />
                 {isWebRuntime() && !isDesktopShell() && !isVSCode && !isCapacitorApp() && <PasskeySettings />}
@@ -122,7 +122,7 @@ export const OpenChamberPage: React.FC<OpenChamberPageProps> = ({ section }) => 
             title={pageTitle}
             description={pageDescription}
             showSaveStatus
-            className="openchamber-page-body"
+            className="ompchamber-page-body"
         >
             {renderSectionContent()}
         </SettingsPageLayout>
@@ -149,7 +149,7 @@ const GeneralSectionContent: React.FC = () => {
             {showPasskeySettings && <PasskeySettings />}
             <AppLinkSecuritySettings />
             {!isVSCode && <OpenCodeCliSettings />}
-            {!isVSCode && <OpenChamberToolsSettings />}
+            {!isVSCode && <OMPChamberToolsSettings />}
             <OpenChamberVisualSettings visibleSettings={[
                 'fileEditorKeymap',
                 'autoSaveEnabled',

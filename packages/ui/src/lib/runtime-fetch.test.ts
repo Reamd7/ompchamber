@@ -52,7 +52,7 @@ describe('addRuntimeProxyHeaders', () => {
   test('bypasses the ngrok browser interstitial for official ngrok hosts', () => {
     const headers = addRuntimeProxyHeaders('https://demo.ngrok-free.app/health', new Headers());
 
-    expect(headers.get('ngrok-skip-browser-warning')).toBe('openchamber');
+    expect(headers.get('ngrok-skip-browser-warning')).toBe('ompchamber');
   });
 
   test('does not add proxy headers to non-ngrok or lookalike hosts', () => {
@@ -74,7 +74,7 @@ describe('runtimeFetch transport contract', () => {
 
       await runtimeFetch('/health');
 
-      expect(capturedHeaders.get('ngrok-skip-browser-warning')).toBe('openchamber');
+      expect(capturedHeaders.get('ngrok-skip-browser-warning')).toBe('ompchamber');
     } finally {
       setRuntimeUrlResolver(previous);
       globalThis.fetch = originalFetch;

@@ -16,7 +16,7 @@ const findLink = (event: MouseEvent | DragEvent): HTMLAnchorElement | null => {
   if (!(target instanceof Element)) return null;
   const anchor = target.closest('a[href]');
   if (!(anchor instanceof HTMLAnchorElement)) return null;
-  if (anchor.getAttribute('data-openchamber-file-link') === 'true') return null;
+  if (anchor.getAttribute('data-ompchamber-file-link') === 'true') return null;
   return anchor;
 };
 

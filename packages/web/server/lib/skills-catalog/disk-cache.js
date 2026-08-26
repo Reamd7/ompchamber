@@ -17,7 +17,7 @@ const readJsonFile = (filePath) => {
 };
 
 /**
- * Read a persisted cache object from the OpenChamber data directory.
+ * Read a persisted cache object from the OMPChamber data directory.
  * Returns null when the file is missing, unreadable, or malformed.
  */
 export const readDiskCache = (fileName) => {
@@ -29,7 +29,7 @@ export const readDiskCache = (fileName) => {
 };
 
 /**
- * Persist a cache object to the OpenChamber data directory with an atomic
+ * Persist a cache object to the OMPChamber data directory with an atomic
  * temp-file rename. Failures are ignored: the in-memory cache stays
  * authoritative and the next successful write retries persistence.
  */

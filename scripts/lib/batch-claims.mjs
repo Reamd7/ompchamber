@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SHARED_CLAIMS_ENV = "OMPCHAMBER_BATCH_CLAIMS_DIR";
-const DEFAULT_CLAIMS_DIR = join(homedir(), ".openchamber", "maintenance-claims");
+const DEFAULT_CLAIMS_DIR = join(homedir(), ".ompchamber", "maintenance-claims");
 
 function expandHome(path) {
   if (path === "~") return homedir();

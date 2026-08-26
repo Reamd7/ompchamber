@@ -79,16 +79,16 @@ export const OMPCHAMBER_MEMORY_ACTIONS = Object.freeze(
  * Which actions each managed tool may ask for.
  *
  * The callback needs this because models routinely drop the namespace: asked
- * for `memory.read` from a tool already called `openchamber_memory`, they send
+ * for `memory.read` from a tool already called `ompchamber_memory`, they send
  * `read`, since the tool's own name appears to have said "memory" already. The
  * name is unambiguous inside one tool's action set even when it is not across
  * all of them (`delete` belongs to both schedule and memory), so resolution
  * starts from the tool that asked.
  */
 const ACTIONS_BY_TOOL = Object.freeze({
-  openchamber: OMPCHAMBER_AGENT_TOOL_ACTIONS,
-  openchamber_web: OMPCHAMBER_WEB_ACTIONS,
-  openchamber_memory: OMPCHAMBER_MEMORY_ACTIONS,
+  ompchamber: OMPCHAMBER_AGENT_TOOL_ACTIONS,
+  ompchamber_web: OMPCHAMBER_WEB_ACTIONS,
+  ompchamber_memory: OMPCHAMBER_MEMORY_ACTIONS,
 });
 
 const bareName = (action) => {
@@ -126,7 +126,7 @@ export const resolveAgentToolAction = (requested, toolName) => {
   }
 
   return {
-    error: `Unsupported OpenChamber action: ${value || 'missing'}. Use one of: ${known.join(', ')}`,
+    error: `Unsupported OMPChamber action: ${value || 'missing'}. Use one of: ${known.join(', ')}`,
   };
 };
 

@@ -3,7 +3,7 @@
  *
  * Tier A/B omp commands come from `GET /api/omp/commands?directory=` and feed
  * the three-layer composer pipeline: omp commands → project/user custom
- * commands → OpenChamber magic prompts. The cache is keyed by
+ * commands → OMPChamber magic prompts. The cache is keyed by
  * `runtimeKey:directory` (command sets are directory-scoped and must not
  * survive a runtime switch), filled on demand by the autocomplete, and read
  * synchronously by the submit path (`routeMessage` decides command-channel vs

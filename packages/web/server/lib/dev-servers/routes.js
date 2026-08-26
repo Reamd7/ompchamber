@@ -50,7 +50,7 @@ const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) =>
 
 /**
  * Reads the kernel's socket tables. Containers routinely ship without `lsof`,
- * and a deployed OpenChamber is precisely where discovery has to work, so this
+ * and a deployed OMPChamber is precisely where discovery has to work, so this
  * is tried whenever the command is unavailable.
  */
 const readProcListeners = async (readFile) => {

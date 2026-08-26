@@ -380,7 +380,7 @@ const waitLocalForwardReady = async (localPort) => {
     await new Promise((resolve) => setTimeout(resolve, pollMs));
     pollMs = Math.min(pollMs * 2, 2000);
   }
-  throw new Error('Timed out waiting for forwarded OpenChamber health');
+  throw new Error('Timed out waiting for forwarded OMPChamber health');
 };
 
 const parseVersionToken = (raw) => {
@@ -826,15 +826,15 @@ export class ElectronSshManager {
       connectionTimeoutSec: Number.isFinite(instance?.connectionTimeoutSec) && Number(instance.connectionTimeoutSec) > 0
         ? Number(instance.connectionTimeoutSec)
         : DEFAULT_CONNECTION_TIMEOUT_SEC,
-      remoteOpenchamber: {
-        mode: instance?.remoteOpenchamber?.mode === 'external' ? 'external' : 'managed',
-        keepRunning: instance?.remoteOpenchamber?.keepRunning !== false,
-        ...(Number.isFinite(instance?.remoteOpenchamber?.preferredPort) ? { preferredPort: Number(instance.remoteOpenchamber.preferredPort) } : {}),
-        installMethod: ['auto', 'npm', 'bun'].includes(instance?.remoteOpenchamber?.installMethod)
-          ? instance.remoteOpenchamber.installMethod
+      remoteOmpchamber: {
+        mode: instance?.remoteOmpchamber?.mode === 'external' ? 'external' : 'managed',
+        keepRunning: instance?.remoteOmpchamber?.keepRunning !== false,
+        ...(Number.isFinite(instance?.remoteOmpchamber?.preferredPort) ? { preferredPort: Number(instance.remoteOmpchamber.preferredPort) } : {}),
+        installMethod: ['auto', 'npm', 'bun'].includes(instance?.remoteOmpchamber?.installMethod)
+          ? instance.remoteOmpchamber.installMethod
           : 'auto',
-        bindHost: instance?.remoteOpenchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
-        uploadBundleOverSsh: Boolean(instance?.remoteOpenchamber?.uploadBundleOverSsh),
+        bindHost: instance?.remoteOmpchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
+        uploadBundleOverSsh: Boolean(instance?.remoteOmpchamber?.uploadBundleOverSsh),
       },
       localForward: {
         bindHost: sanitizeBindHost(instance?.localForward?.bindHost),
@@ -842,7 +842,7 @@ export class ElectronSshManager {
       },
       auth: {
         ...(this.sanitizeStoredSecret(instance?.auth?.sshPassword) ? { sshPassword: this.sanitizeStoredSecret(instance.auth.sshPassword) } : {}),
-        ...(this.sanitizeStoredSecret(instance?.auth?.openchamberPassword) ? { openchamberPassword: this.sanitizeStoredSecret(instance.auth.openchamberPassword) } : {}),
+        ...(this.sanitizeStoredSecret(instance?.auth?.ompchamberPassword) ? { ompchamberPassword: this.sanitizeStoredSecret(instance.auth.ompchamberPassword) } : {}),
       },
       portForwards,
     };
@@ -869,8 +869,8 @@ export class ElectronSshManager {
     await writeJsonRoot(this.settingsFilePath, root);
   }
 
-  async issueClientToken(localUrl, openchamberPassword) {
-    const password = typeof openchamberPassword === 'string' ? openchamberPassword.trim() : '';
+  async issueClientToken(localUrl, ompchamberPassword) {
+    const password = typeof ompchamberPassword === 'string' ? ompchamberPassword.trim() : '';
     if (!password) return '';
 
     const loginResponse = await fetch(new URL('/auth/session', `${localUrl}/`).toString(), {
@@ -888,7 +888,7 @@ export class ElectronSshManager {
       }),
     });
     if (!loginResponse.ok) {
-      throw new Error(`Configured OpenChamber UI password was rejected by forwarded server (status ${loginResponse.status})`);
+      throw new Error(`Configured OMPChamber UI password was rejected by forwarded server (status ${loginResponse.status})`);
     }
 
     const payload = await loginResponse.json().catch(() => null);
@@ -1003,8 +1003,8 @@ export class ElectronSshManager {
     throw new Error('SSH ControlMaster connection timed out');
   }
 
-  configuredOpenChamberPassword(instance) {
-    const secret = instance?.auth?.openchamberPassword;
+  configuredOMPChamberPassword(instance) {
+    const secret = instance?.auth?.ompchamberPassword;
     return secret?.enabled && typeof secret.value === 'string' && secret.value.trim() ? secret.value.trim() : null;
   }
 
@@ -1030,10 +1030,10 @@ export class ElectronSshManager {
     }
   }
 
-  // Every place OpenChamber may live on the remote host, with the version each
+  // Every place OMPChamber may live on the remote host, with the version each
   // one reports. Installs land in the user prefix while an older copy can still
   // sit on PATH, so the caller picks by version instead of trusting PATH order.
-  async remoteOpenChamberCandidates(parsed, controlPath) {
+  async remoteOMPChamberCandidates(parsed, controlPath) {
     const script = [
       `for candidate in ${REMOTE_BIN_CANDIDATES.join(' ')} "$(command -v ompchamber 2>/dev/null)"; do`,
       '  [ -n "$candidate" ] || continue;',
@@ -1061,7 +1061,7 @@ export class ElectronSshManager {
     return candidates;
   }
 
-  async installOpenChamberManaged(parsed, controlPath, version, preferred) {
+  async installOMPChamberManaged(parsed, controlPath, version, preferred) {
     const bunPath = await this.resolveRemoteTool(parsed, controlPath, 'bun', [REMOTE_BUN_CANDIDATE]);
     const npmPath = await this.resolveRemoteTool(parsed, controlPath, 'npm');
 
@@ -1096,12 +1096,12 @@ export class ElectronSshManager {
         lastError = error;
       }
     }
-    throw lastError || new Error('Failed to install OpenChamber on remote host');
+    throw lastError || new Error('Failed to install OMPChamber on remote host');
   }
 
-  async probeRemoteSystemInfo(parsed, controlPath, port, openchamberPassword) {
-    const authPayload = openchamberPassword ? JSON.stringify({ password: openchamberPassword }) : '{}';
-    const authEnabled = openchamberPassword ? '1' : '0';
+  async probeRemoteSystemInfo(parsed, controlPath, port, ompchamberPassword) {
+    const authPayload = ompchamberPassword ? JSON.stringify({ password: ompchamberPassword }) : '{}';
+    const authEnabled = ompchamberPassword ? '1' : '0';
     const script = `AUTH_STATUS=0; INFO_STATUS=0; HEALTH_STATUS=0; BODY_FILE="$(mktemp)"; COOKIE_FILE="$(mktemp)"; cleanup(){ rm -f "$BODY_FILE" "$COOKIE_FILE"; }; trap cleanup EXIT; if command -v curl >/dev/null 2>&1; then if [ "${authEnabled}" = "1" ]; then AUTH_STATUS="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' -c "$COOKIE_FILE" -H 'content-type: application/json' --data ${shellQuote(authPayload)} http://127.0.0.1:${port}/auth/session || true)"; if [ "$AUTH_STATUS" = "200" ]; then INFO_STATUS="$(curl -sS --max-time 3 -b "$COOKIE_FILE" -o "$BODY_FILE" -w '%{http_code}' http://127.0.0.1:${port}/api/system/info || true)"; else INFO_STATUS="$(curl -sS --max-time 3 -o "$BODY_FILE" -w '%{http_code}' http://127.0.0.1:${port}/api/system/info || true)"; fi; else INFO_STATUS="$(curl -sS --max-time 3 -o "$BODY_FILE" -w '%{http_code}' http://127.0.0.1:${port}/api/system/info || true)"; fi; HEALTH_STATUS="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:${port}/health || true)"; elif command -v wget >/dev/null 2>&1; then wget -qO "$BODY_FILE" http://127.0.0.1:${port}/api/system/info >/dev/null 2>&1; if [ $? -eq 0 ]; then INFO_STATUS=200; fi; wget -qO- http://127.0.0.1:${port}/health >/dev/null 2>&1; if [ $? -eq 0 ]; then HEALTH_STATUS=200; fi; else exit 127; fi; printf 'INFO_STATUS=%s\\nAUTH_STATUS=%s\\nHEALTH_STATUS=%s\\n' "$INFO_STATUS" "$AUTH_STATUS" "$HEALTH_STATUS"; cat "$BODY_FILE" 2>/dev/null || true`;
     const output = await this.runRemoteCommand(parsed, controlPath, script);
     const lines = output.split(/\r?\n/);
@@ -1112,16 +1112,16 @@ export class ElectronSshManager {
 
     if (isLivenessHttpStatus(infoStatus)) {
       if (isAuthHttpStatus(infoStatus)) {
-        if (openchamberPassword && authStatus !== 200) {
-          throw new Error(`Remote OpenChamber requires UI authentication and configured password was rejected (auth status ${authStatus})`);
+        if (ompchamberPassword && authStatus !== 200) {
+          throw new Error(`Remote OMPChamber requires UI authentication and configured password was rejected (auth status ${authStatus})`);
         }
         if (isLivenessHttpStatus(healthStatus)) return {};
-        throw new Error('Remote OpenChamber requires UI authentication on /api/system/info; configure OpenChamber UI password');
+        throw new Error('Remote OMPChamber requires UI authentication on /api/system/info; configure OMPChamber UI password');
       }
     } else if (isLivenessHttpStatus(healthStatus)) {
       return {};
     } else {
-      throw new Error(`Remote OpenChamber probe failed (info status ${infoStatus}, health status ${healthStatus})`);
+      throw new Error(`Remote OMPChamber probe failed (info status ${infoStatus}, health status ${healthStatus})`);
     }
 
     try {
@@ -1131,9 +1131,9 @@ export class ElectronSshManager {
     }
   }
 
-  async remoteServerRunning(parsed, controlPath, port, openchamberPassword) {
+  async remoteServerRunning(parsed, controlPath, port, ompchamberPassword) {
     try {
-      await this.probeRemoteSystemInfo(parsed, controlPath, port, openchamberPassword);
+      await this.probeRemoteSystemInfo(parsed, controlPath, port, ompchamberPassword);
       return true;
     } catch {
       return false;
@@ -1146,8 +1146,8 @@ export class ElectronSshManager {
       throw new Error('The opencode CLI is not installed on the remote machine. Install it there, then connect again');
     }
 
-    const secret = this.configuredOpenChamberPassword(instance);
-    const remoteBindHost = instance.remoteOpenchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+    const secret = this.configuredOMPChamberPassword(instance);
+    const remoteBindHost = instance.remoteOmpchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
     // Binding the remote server to every interface publishes its UI to the
     // remote machine's whole network, so it may not run without a password.
     if (remoteBindHost === '0.0.0.0' && !secret) {
@@ -1163,7 +1163,7 @@ export class ElectronSshManager {
     return port || desiredPort;
   }
 
-  // `openchamber stop` owns the daemon lifecycle. The HTTP shutdown route sits
+  // `ompchamber stop` owns the daemon lifecycle. The HTTP shutdown route sits
   // behind UI authentication, so it cannot stop a password-protected server.
   async stopRemoteServerBestEffort(parsed, controlPath, remotePort, remoteBinPath) {
     if (!remoteBinPath) return;
@@ -1215,50 +1215,50 @@ export class ElectronSshManager {
   }
 
   async ensureRemoteServer(instance, parsed, controlPath) {
-    if (instance.remoteOpenchamber.mode === 'external') {
-      if (!instance.remoteOpenchamber.preferredPort) {
-        throw new Error('External mode requires a preferred remote OpenChamber port');
+    if (instance.remoteOmpchamber.mode === 'external') {
+      if (!instance.remoteOmpchamber.preferredPort) {
+        throw new Error('External mode requires a preferred remote OMPChamber port');
       }
-      const port = instance.remoteOpenchamber.preferredPort;
-      this.setStatus(instance.id, 'server_detecting', 'Probing external OpenChamber server', null, null, port, false, 0, false);
-      await this.probeRemoteSystemInfo(parsed, controlPath, port, this.configuredOpenChamberPassword(instance));
+      const port = instance.remoteOmpchamber.preferredPort;
+      this.setStatus(instance.id, 'server_detecting', 'Probing external OMPChamber server', null, null, port, false, 0, false);
+      await this.probeRemoteSystemInfo(parsed, controlPath, port, this.configuredOMPChamberPassword(instance));
       return { remotePort: port, startedByUs: false, remoteBinPath: null };
     }
 
-    this.setStatus(instance.id, 'remote_probe', 'Checking remote OpenChamber installation');
-    const installed = await this.remoteOpenChamberCandidates(parsed, controlPath);
+    this.setStatus(instance.id, 'remote_probe', 'Checking remote OMPChamber installation');
+    const installed = await this.remoteOMPChamberCandidates(parsed, controlPath);
     let binary = installed.find((candidate) => candidate.version === this.appVersion) || null;
 
     if (!binary) {
       const existing = installed[0] || null;
       if (existing) {
-        this.setStatus(instance.id, 'updating', `Updating remote OpenChamber from ${existing.version || 'unknown'} to ${this.appVersion}`);
+        this.setStatus(instance.id, 'updating', `Updating remote OMPChamber from ${existing.version || 'unknown'} to ${this.appVersion}`);
       } else {
-        this.setStatus(instance.id, 'installing', 'Installing OpenChamber on remote host');
+        this.setStatus(instance.id, 'installing', 'Installing OMPChamber on remote host');
       }
-      await this.installOpenChamberManaged(parsed, controlPath, this.appVersion, instance.remoteOpenchamber.installMethod);
+      await this.installOMPChamberManaged(parsed, controlPath, this.appVersion, instance.remoteOmpchamber.installMethod);
 
-      const afterInstall = await this.remoteOpenChamberCandidates(parsed, controlPath);
+      const afterInstall = await this.remoteOMPChamberCandidates(parsed, controlPath);
       binary = afterInstall.find((candidate) => candidate.version === this.appVersion) || afterInstall[0] || existing;
       if (!binary) {
-        throw new Error('OpenChamber was installed on the remote host but no openchamber binary could be found');
+        throw new Error('OMPChamber was installed on the remote host but no ompchamber binary could be found');
       }
     }
 
-    this.setStatus(instance.id, 'server_detecting', 'Detecting managed OpenChamber server');
-    let remotePort = instance.remoteOpenchamber.preferredPort || null;
+    this.setStatus(instance.id, 'server_detecting', 'Detecting managed OMPChamber server');
+    let remotePort = instance.remoteOmpchamber.preferredPort || null;
     let startedByUs = false;
-    if (remotePort && !(await this.remoteServerRunning(parsed, controlPath, remotePort, this.configuredOpenChamberPassword(instance)))) {
+    if (remotePort && !(await this.remoteServerRunning(parsed, controlPath, remotePort, this.configuredOMPChamberPassword(instance)))) {
       remotePort = null;
     }
     if (!remotePort) {
-      this.setStatus(instance.id, 'server_starting', 'Starting managed OpenChamber server');
-      const desiredPort = instance.remoteOpenchamber.preferredPort || randomPortCandidate(instance.id);
+      this.setStatus(instance.id, 'server_starting', 'Starting managed OMPChamber server');
+      const desiredPort = instance.remoteOmpchamber.preferredPort || randomPortCandidate(instance.id);
       remotePort = await this.startRemoteServerManaged(parsed, controlPath, instance, desiredPort, binary.binPath);
       startedByUs = true;
     }
-    if (!(await this.remoteServerRunning(parsed, controlPath, remotePort, this.configuredOpenChamberPassword(instance)))) {
-      throw new Error('Managed OpenChamber server failed to become reachable');
+    if (!(await this.remoteServerRunning(parsed, controlPath, remotePort, this.configuredOMPChamberPassword(instance)))) {
+      throw new Error('Managed OMPChamber server failed to become reachable');
     }
     return { remotePort, startedByUs, remoteBinPath: binary.binPath };
   }
@@ -1274,7 +1274,7 @@ export class ElectronSshManager {
     this.sessions.delete(id);
 
     if (session) {
-      if (session.startedByUs && session.remotePort && session.instance.remoteOpenchamber.mode === 'managed' && !session.instance.remoteOpenchamber.keepRunning) {
+      if (session.startedByUs && session.remotePort && session.instance.remoteOmpchamber.mode === 'managed' && !session.instance.remoteOmpchamber.keepRunning) {
         await this.stopRemoteServerBestEffort(session.parsed, session.controlPath, session.remotePort, session.remoteBinPath);
       }
       await this.stopControlMasterBestEffort(session.parsed, session.controlPath);
@@ -1400,7 +1400,7 @@ export class ElectronSshManager {
 
     const localUrl = `http://127.0.0.1:${localPort}`;
     const label = instance.nickname?.trim() || parsed.destination || id;
-    const clientToken = await this.issueClientToken(localUrl, this.configuredOpenChamberPassword(instance));
+    const clientToken = await this.issueClientToken(localUrl, this.configuredOMPChamberPassword(instance));
     await this.updateHostRuntime(id, label, localUrl, clientToken);
     if (instance.localForward?.preferredLocalPort !== localPort) {
       await this.persistLocalPort(id, localPort);

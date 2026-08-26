@@ -48,13 +48,13 @@ type AgentMemoryChangedEvent = {
   projectId?: string;
 };
 
-type OpenChamberEvent =
+type OMPChamberEvent =
   | ScheduledTaskRanEvent
   | SessionCreatedEvent
   | WorktreesChangedEvent
   | BrowserControlRequestEvent
   | AgentMemoryChangedEvent;
-type Listener = (event: OpenChamberEvent) => void;
+type Listener = (event: OMPChamberEvent) => void;
 
 let eventSource: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -310,7 +310,7 @@ const cleanupRuntimeChangeSubscription = () => {
   runtimeChangeUnsubscribe = null;
 };
 
-export const subscribeOpenchamberEvents = (listener: Listener): (() => void) => {
+export const subscribeOmpchamberEvents = (listener: Listener): (() => void) => {
   listeners.add(listener);
   ensureRuntimeChangeSubscription();
   connect();

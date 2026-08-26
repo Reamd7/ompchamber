@@ -3,7 +3,7 @@
 //
 // Layers (outermost first):
 //   1. In-memory copy, fresh within ttlMs (shared by every consumer).
-//   2. On-disk cache in the OpenChamber data dir (`models-dev.catalog.json`)
+//   2. On-disk cache in the OMPChamber data dir (`models-dev.catalog.json`)
 //      — survives restarts, seeds the in-memory copy on boot, and serves as
 //      the stale fallback when the network (and proxy) are unreachable.
 //   3. Network: conditional GET with If-None-Match (models.dev/Cloudflare

@@ -1,5 +1,5 @@
 /**
- * OpenChamber deep-link vocabulary — the single source of truth for the `ompchamber://`
+ * OMPChamber deep-link vocabulary — the single source of truth for the `ompchamber://`
  * URL scheme used across every native entry point: notification taps, home-screen / lock-
  * screen widgets, and (later) Live Activities. Anything that wants to drive navigation
  * builds a URL with {@link buildDeepLink} and anything that receives one parses it with
@@ -33,7 +33,7 @@ const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
 
 const segmentsOf = (url: URL): string[] => {
   // Custom-scheme URLs put the first route token in `host` (ompchamber://session/<id>),
-  // but be tolerant of authority-less forms (openchamber:/session/<id>) where it lands in
+  // but be tolerant of authority-less forms (ompchamber:/session/<id>) where it lands in
   // the pathname instead.
   const pathSegments = trimSlashes(url.pathname).split('/').filter(Boolean);
   if (url.host) {
@@ -44,7 +44,7 @@ const segmentsOf = (url: URL): string[] => {
 
 /**
  * Parse a raw `ompchamber://…` string into a typed intent, or `null` if it isn't a
- * recognised OpenChamber deep link. Tolerant by design: unknown routes return `null`
+ * recognised OMPChamber deep link. Tolerant by design: unknown routes return `null`
  * rather than throwing, so callers can fall back without a try/catch.
  */
 export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | null {

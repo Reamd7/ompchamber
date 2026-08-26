@@ -5,7 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const createWorktreeMock = vi.fn(async () => ({
   head: 'abc123',
   name: 'side-task',
-  branch: 'openchamber/side-task',
+  branch: 'ompchamber/side-task',
   path: '/repo/worktrees/side-task',
 }));
 const getWorktreeBootstrapStatusMock = vi.fn(async () => ({
@@ -66,10 +66,10 @@ const selectionInputResponse = (url) => {
 };
 const sessionCommandMock = vi.fn(async () => ({ data: {} }));
 const commandListMock = vi.fn(async () => ({ data: [] }));
-globalThis.__openchamberCreateWorktreeMock = createWorktreeMock;
-globalThis.__openchamberGetWorktreeBootstrapStatusMock = getWorktreeBootstrapStatusMock;
+globalThis.__ompchamberCreateWorktreeMock = createWorktreeMock;
+globalThis.__ompchamberGetWorktreeBootstrapStatusMock = getWorktreeBootstrapStatusMock;
 
-let registerOpenChamberSessionRoutes;
+let registerOMPChamberSessionRoutes;
 
 vi.mock('../opencode/local-engine-client.js', () => ({
   createLocalEngineClient: () => ({
@@ -86,8 +86,8 @@ vi.mock('../opencode/local-engine-client.js', () => ({
 }));
 
 vi.mock('../git/index.js', () => ({
-  createWorktree: (...args) => globalThis.__openchamberCreateWorktreeMock(...args),
-  getWorktreeBootstrapStatus: (...args) => globalThis.__openchamberGetWorktreeBootstrapStatusMock(...args),
+  createWorktree: (...args) => globalThis.__ompchamberCreateWorktreeMock(...args),
+  getWorktreeBootstrapStatus: (...args) => globalThis.__ompchamberGetWorktreeBootstrapStatusMock(...args),
 }));
 
 const createApp = (overrides = {}, options = {}) => {
@@ -96,7 +96,7 @@ const createApp = (overrides = {}, options = {}) => {
     app.use(express.json());
   }
   const calls = [];
-  registerOpenChamberSessionRoutes(app, {
+  registerOMPChamberSessionRoutes(app, {
     readSettingsFromDiskMigrated: async () => ({ projects: [{ id: 'proj_1', path: '/repo/app' }] }),
     sanitizeProjects: (projects) => projects,
     validateDirectoryPath: async (directory) => ({ ok: true, directory }),
@@ -108,9 +108,9 @@ const createApp = (overrides = {}, options = {}) => {
   return { app, calls };
 };
 
-describe('openchamber session routes', () => {
+describe('ompchamber session routes', () => {
   beforeAll(async () => {
-    ({ registerOpenChamberSessionRoutes } = await import('./routes.js'));
+    ({ registerOMPChamberSessionRoutes } = await import('./routes.js'));
   });
 
   beforeEach(() => {
@@ -356,7 +356,7 @@ describe('openchamber session routes', () => {
         .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
-          worktree: { name: 'side-task', branchName: 'openchamber/side-task', startRef: 'main' },
+          worktree: { name: 'side-task', branchName: 'ompchamber/side-task', startRef: 'main' },
           setUpstream: false,
           prompt: 'Run this',
           model: 'openai/gpt-5.5',
@@ -366,7 +366,7 @@ describe('openchamber session routes', () => {
       expect(createWorktreeMock).toHaveBeenCalledWith('/repo/app', {
         mode: 'new',
         name: 'side-task',
-        branchName: 'openchamber/side-task',
+        branchName: 'ompchamber/side-task',
         startRef: 'main',
         setUpstream: false,
       });

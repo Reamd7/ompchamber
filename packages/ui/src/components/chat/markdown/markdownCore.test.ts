@@ -96,7 +96,7 @@ describe('internal URI links (spec 04 §5.2.5, uri.v1 capability gate)', () => {
   test('renders an enabled local:// link as a viewer anchor', () => {
     const html = renderMarkdownSync('see [notes](local://scratch/notes.md)', 'inline', ['local']);
 
-    expect(html).toContain('data-openchamber-internal-uri="local://scratch/notes.md"');
+    expect(html).toContain('data-ompchamber-internal-uri="local://scratch/notes.md"');
     expect(html).toContain('href="local://scratch/notes.md"');
     expect(html).toContain('class="text-primary hover:underline"');
     expect(html).not.toContain('target="_blank"');
@@ -116,9 +116,9 @@ describe('internal URI links (spec 04 §5.2.5, uri.v1 capability gate)', () => {
     const html = renderMarkdownSync('[h](history://Anna) and [l](local://a.md)', 'inline', ['local']);
 
     expect(html).not.toContain('history');
-    expect(html).toContain('data-openchamber-internal-uri="local://a.md"');
+    expect(html).toContain('data-ompchamber-internal-uri="local://a.md"');
     // The disabled link degrades to its bare label text — no anchor at all.
-    expect(html.trim()).toBe('<p>h and <a href="local://a.md" data-openchamber-internal-uri="local://a.md" class="text-primary hover:underline">l</a></p>');
+    expect(html.trim()).toBe('<p>h and <a href="local://a.md" data-ompchamber-internal-uri="local://a.md" class="text-primary hover:underline">l</a></p>');
   });
 
   test('external http links keep their existing external-link anchor', () => {
@@ -126,7 +126,7 @@ describe('internal URI links (spec 04 §5.2.5, uri.v1 capability gate)', () => {
 
     expect(html).toContain('class="external-link"');
     expect(html).toContain('target="_blank"');
-    expect(html).not.toContain('data-openchamber-internal-uri');
+    expect(html).not.toContain('data-ompchamber-internal-uri');
   });
 });
 
@@ -137,7 +137,7 @@ describe('Markdown images', () => {
       '![image syntax](packages/vscode/extension.jpg)',
     ].join('\n\n'), 'label');
 
-    expect(html).toContain('data-openchamber-markdown-image-label="true"');
+    expect(html).toContain('data-ompchamber-markdown-image-label="true"');
     expect(html).toContain('extension.jpg');
     expect(html).not.toContain('image syntax');
     expect(html).not.toContain('<img');
@@ -152,7 +152,7 @@ describe('Markdown images', () => {
 
     expect(html).toContain('<a href="https://example.test/image.png"');
     expect(html).toContain('<img src="https://example.test/image.png" alt="remote image">');
-    expect(html).not.toContain('data-openchamber-markdown-image-label');
+    expect(html).not.toContain('data-ompchamber-markdown-image-label');
   });
 
   test('collects image syntax across mixed Markdown and ignores links and code', () => {
@@ -272,7 +272,7 @@ describe('Markdown images', () => {
     const html = renderMarkdownSync('![tool image](https://example.test/image.png)');
 
     expect(html).toContain('<img src="https://example.test/image.png"');
-    expect(html).not.toContain('data-openchamber-markdown-image');
+    expect(html).not.toContain('data-ompchamber-markdown-image');
   });
 });
 

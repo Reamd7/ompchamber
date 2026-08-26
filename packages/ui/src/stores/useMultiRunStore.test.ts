@@ -36,7 +36,7 @@ mock.module('@/sync/session-ui-store', () => ({
   routeMessage: mock(() => Promise.resolve()),
   useSessionUIStore: {
     getState: () => ({
-      markSessionAsOpenChamberCreated: mock(() => undefined),
+      markSessionAsOMPChamberCreated: mock(() => undefined),
       setWorktreeMetadata: (sessionId: string, metadata: { path: string }) => {
         worktreeMetadataCalls.push({ sessionId, path: metadata.path });
       },

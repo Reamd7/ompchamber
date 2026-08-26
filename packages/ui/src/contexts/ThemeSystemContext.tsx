@@ -544,18 +544,18 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
     }
 
     const scopedWindow = window as unknown as {
-      __openchamberApplyThemeSync?: (payload: ThemeSyncPayload) => void;
+      __ompchamberApplyThemeSync?: (payload: ThemeSyncPayload) => void;
     };
 
-    scopedWindow.__openchamberApplyThemeSync = applyIncomingThemeSync;
+    scopedWindow.__ompchamberApplyThemeSync = applyIncomingThemeSync;
 
     if (receivesParentThemeSync && window.parent !== window) {
       window.parent.postMessage({ type: 'ompchamber:theme-sync-request' }, window.location.origin);
     }
 
     return () => {
-      if (scopedWindow.__openchamberApplyThemeSync === applyIncomingThemeSync) {
-        delete scopedWindow.__openchamberApplyThemeSync;
+      if (scopedWindow.__ompchamberApplyThemeSync === applyIncomingThemeSync) {
+        delete scopedWindow.__ompchamberApplyThemeSync;
       }
     };
   }, [applyIncomingThemeSync, receivesParentThemeSync]);

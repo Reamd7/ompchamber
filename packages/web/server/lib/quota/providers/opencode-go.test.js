@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 const previousDataDirectory = process.env.OMPCHAMBER_DATA_DIR;
-const temporaryDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-opencode-go-'));
+const temporaryDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-opencode-go-'));
 process.env.OMPCHAMBER_DATA_DIR = temporaryDataDirectory;
 
 vi.mock('../../opencode/auth.js', () => ({

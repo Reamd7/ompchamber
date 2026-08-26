@@ -8,7 +8,7 @@ export interface CommandAutocompleteSearchItem {
   isSkill?: boolean;
   /** omp discovery layer (GET /api/omp/commands — spec 08 §5.4). */
   isOmp?: boolean;
-  /** The omp layer displaced a lower OpenChamber layer with this name (collision notice). */
+  /** The omp layer displaced a lower OMPChamber layer with this name (collision notice). */
   ompOverrides?: boolean;
 }
 

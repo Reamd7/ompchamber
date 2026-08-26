@@ -17,13 +17,13 @@ export const AppLinkSecuritySettings: React.FC = () => {
 
   return (
     <SettingsSection
-      title={t('settings.openchamber.appLinks.title')}
-      description={t('settings.openchamber.appLinks.info')}
+      title={t('settings.ompchamber.appLinks.title')}
+      description={t('settings.ompchamber.appLinks.info')}
     >
       <div className="space-y-1" data-settings-item="general.app-links">
         {trustedSchemes.length === 0 ? (
           <p className="typography-meta text-muted-foreground">
-            {t('settings.openchamber.appLinks.empty')}
+            {t('settings.ompchamber.appLinks.empty')}
           </p>
         ) : (
           trustedSchemes.map((scheme) => (
@@ -35,7 +35,7 @@ export const AppLinkSecuritySettings: React.FC = () => {
                 size="xs"
                 onClick={() => removeTrustedScheme(scheme)}
                 className="!font-normal text-muted-foreground hover:text-foreground"
-                aria-label={t('settings.openchamber.appLinks.removeAria', { scheme: `${scheme}://` })}
+                aria-label={t('settings.ompchamber.appLinks.removeAria', { scheme: `${scheme}://` })}
               >
                 {t('settings.common.actions.delete')}
               </Button>

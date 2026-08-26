@@ -870,7 +870,7 @@ export const createSettingsRuntime = (deps) => {
     return { settings: next, changed: true };
   };
 
-  // OpenCode updates now ship only with OpenChamber. Remove the retired
+  // OpenCode updates now ship only with OMPChamber. Remove the retired
   // notification preference and dismissed-version marker from disk so stale
   // clients cannot keep reintroducing a dead UI contract.
   const migrateSettingsRemoveOpenCodeUpdateState = (current) => {

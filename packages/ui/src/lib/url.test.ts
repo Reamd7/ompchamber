@@ -49,7 +49,7 @@ describe('isAppLinkUrl', () => {
     expect(isAppLinkUrl('shell:AppsFolder')).toBe(false);
   });
 
-  test('rejects OpenChamber and Capacitor self-deep-links', () => {
+  test('rejects OMPChamber and Capacitor self-deep-links', () => {
     expect(isAppLinkUrl('ompchamber://connect?host=x')).toBe(false);
     expect(isAppLinkUrl('ompchamber-ui://app/index.html')).toBe(false);
     expect(isAppLinkUrl('capacitor://localhost/index.html')).toBe(false);

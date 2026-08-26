@@ -7,7 +7,7 @@
 //     reserved by the engine (the full BUILTIN_SLASH_COMMANDS_INTERNAL
 //     registry, including TUI-only handlers, because collision resolution is
 //     about NAMES — /debug /compact /review must never silently resolve to an
-//     OpenChamber layer).
+//     OMPChamber layer).
 //   Tier B (`tier: 'engine'`) — commands the engine expands itself when the
 //     text reaches a materialized session: file markdown commands (loaded
 //     from the directory), skills, and (on live sessions) extension/custom

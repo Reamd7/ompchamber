@@ -1,5 +1,5 @@
 import React from 'react';
-import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import { subscribeOmpchamberEvents } from '@/lib/openchamberEvents';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { normalizePath } from '@/lib/pathNormalization';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
@@ -116,7 +116,7 @@ export const acquireWorktreeEventSync = (options?: { coalesceMs?: number }): (()
   }
   activeCount += 1;
   if (!unsubscribe) {
-    unsubscribe = subscribeOpenchamberEvents((event) => {
+    unsubscribe = subscribeOmpchamberEvents((event) => {
       if (event.type === 'worktrees-changed') {
         scheduleRefresh(event.directories);
       }

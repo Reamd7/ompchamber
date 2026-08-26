@@ -1,16 +1,16 @@
-export class OpenChamberControlError extends Error {
+export class OMPChamberControlError extends Error {
   constructor(message, statusCode = 500, details = {}) {
     super(message);
-    this.name = 'OpenChamberControlError';
+    this.name = 'OMPChamberControlError';
     this.statusCode = statusCode;
     Object.assign(this, details);
   }
 }
 
 export const asControlError = (error, fallbackMessage, fallbackStatus = 500) => {
-  if (error instanceof OpenChamberControlError) return error;
+  if (error instanceof OMPChamberControlError) return error;
   const message = error instanceof Error ? error.message : fallbackMessage;
-  return new OpenChamberControlError(message || fallbackMessage, Number(error?.statusCode) || fallbackStatus, {
+  return new OMPChamberControlError(message || fallbackMessage, Number(error?.statusCode) || fallbackStatus, {
     ...(error?.goalConfigured === true ? { goalConfigured: true } : {}),
   });
 };

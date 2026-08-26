@@ -2513,7 +2513,7 @@ export const useUIStore = create<UIStore>()(
           }
           const state = persistedState as Record<string, unknown>;
 
-          // v14 -> v15: OpenCode upgrades are owned by the OpenChamber
+          // v14 -> v15: OpenCode upgrades are owned by the OMPChamber
           // release; remove the retired notification preference.
           if (version < 15) {
             delete state.showOpenCodeUpdateNotifications;

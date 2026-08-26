@@ -16,7 +16,7 @@ vi.mock('../package-manager.js', () => ({
 
 const childProcess = await import('child_process');
 const packageManager = await import('../package-manager.js');
-const { registerOpenChamberRoutes } = await import('./openchamber-routes.js');
+const { registerOMPChamberRoutes } = await import('./openchamber-routes.js');
 
 const createApp = ({ environment = {}, storedOptions = {} } = {}) => {
   const app = express();
@@ -40,8 +40,8 @@ const createApp = ({ environment = {}, storedOptions = {} } = {}) => {
     server: {
       address: () => ({ port: 7897 }),
     },
-    __dirname: '/opt/openchamber/server',
-    openchamberDataDir: '/tmp/openchamber',
+    __dirname: '/opt/ompchamber/server',
+    ompchamberDataDir: '/tmp/ompchamber',
     modelsDevApiUrl: 'https://models.example.test',
     modelsMetadataCacheTtl: 0,
     readSettingsFromDiskMigrated: vi.fn(),
@@ -49,7 +49,7 @@ const createApp = ({ environment = {}, storedOptions = {} } = {}) => {
     getCachedZenModels: vi.fn(),
   };
 
-  registerOpenChamberRoutes(app, dependencies);
+  registerOMPChamberRoutes(app, dependencies);
   return { app, dependencies };
 };
 
@@ -69,14 +69,14 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('OpenChamber foreground update route', () => {
+describe('OMPChamber foreground update route', () => {
   it('rejects a foreground update when the server is not owned by systemd', async () => {
     const { app } = createApp();
 
     await request(app)
       .post('/api/ompchamber/update-install')
       .expect(409, {
-        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run ompchamber update and restart the service.',
       });
 
     expect(childProcess.spawnSync).not.toHaveBeenCalled();
@@ -86,14 +86,14 @@ describe('OpenChamber foreground update route', () => {
     const { app } = createApp({
       environment: {
         INVOCATION_ID: 'systemd-invocation',
-        OMPCHAMBER_SYSTEMD_UNIT: 'openchamber.service; rm -rf /',
+        OMPCHAMBER_SYSTEMD_UNIT: 'ompchamber.service; rm -rf /',
       },
     });
 
     await request(app)
       .post('/api/ompchamber/update-install')
       .expect(409, {
-        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+        error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run ompchamber update and restart the service.',
       });
 
     expect(childProcess.spawnSync).not.toHaveBeenCalled();
@@ -114,7 +114,7 @@ describe('OpenChamber foreground update route', () => {
       .post('/api/ompchamber/update-install')
       .expect(200, {
         success: true,
-        message: 'Update queued; OpenChamber will restart after installation completes',
+        message: 'Update queued; OMPChamber will restart after installation completes',
         version: '1.17.1',
         packageManager: 'npm',
         autoRestart: true,

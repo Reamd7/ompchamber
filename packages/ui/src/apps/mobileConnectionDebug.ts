@@ -18,7 +18,7 @@ const MAX_ENTRIES = 300;
 // Days of accumulated history would bury the failure the panel exists to
 // expose. (An earlier revision persisted the log across launches; the storage
 // key is removed here so installs that ran it don't keep a stale blob around.)
-const LEGACY_STORAGE_KEY = 'openchamber.mobile.connectLog.v1';
+const LEGACY_STORAGE_KEY = 'ompchamber.mobile.connectLog.v1';
 
 const entries: MobileConnectDebugEntry[] = [];
 

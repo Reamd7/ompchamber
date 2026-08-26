@@ -67,7 +67,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} — OpenChamber</title>
+<title>${escapeHtml(title)} — OMPChamber</title>
 <style>
   :root { color-scheme: light dark; }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
@@ -84,7 +84,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 <main>
 <h1>${escapeHtml(title)}</h1>
 <p>${escapeHtml(message)}</p>
-${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return to OpenChamber</a>
+${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return to OMPChamber</a>
 <script>window.location.href = 'ompchamber://focus/mcp-auth';</script>` : ''}
 </main>
 </body>
@@ -261,7 +261,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
   // Browser return leg of the MCP OAuth flow, completed entirely server-side.
   //
   // The provider redirects the SYSTEM browser here, and that browser has no
-  // OpenChamber UI session — the SPA route this path used to land on sits
+  // OMPChamber UI session — the SPA route this path used to land on sits
   // behind the client-side auth gate, so the user saw a login page instead of
   // a finished authorization. No session can be required on this path.
   //
@@ -310,7 +310,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
     if (!context?.name) {
       return finish(400, {
         title: 'Authorization Failed',
-        message: 'This authorization session has expired or is unknown to the running app. Return to OpenChamber and click Authorize again.',
+        message: 'This authorization session has expired or is unknown to the running app. Return to OMPChamber and click Authorize again.',
       });
     }
 
@@ -331,7 +331,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
       }
       return finish(200, {
         title: 'Authorization Complete',
-        message: 'You can close this tab and return to OpenChamber.',
+        message: 'You can close this tab and return to OMPChamber.',
       });
     } catch (error) {
       return finish(502, {

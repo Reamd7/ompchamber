@@ -23,7 +23,7 @@ export const THIRD_PARTY_PLUGINS: readonly ThirdPartyPluginDefinition[] = [
     brandClassName: 'text-[#D97757]',
     nameKey: 'settings.integrations.thirdParty.opencodeClaude.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeClaude.description',
-    homepage: 'https://github.com/openchamber/opencode-claude',
+    homepage: 'https://github.com/ompchamber/opencode-claude',
   },
   {
     id: 'opencode-cursor-oauth',
@@ -33,7 +33,7 @@ export const THIRD_PARTY_PLUGINS: readonly ThirdPartyPluginDefinition[] = [
     brandClassName: 'text-foreground',
     nameKey: 'settings.integrations.thirdParty.opencodeCursorOauth.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeCursorOauth.description',
-    homepage: 'https://github.com/openchamber/opencode-cursor',
+    homepage: 'https://github.com/ompchamber/opencode-cursor',
   },
 ] as const;
 

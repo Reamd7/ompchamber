@@ -11,7 +11,7 @@
  * tab rendering so there is exactly one owner per key).
  *
  * GAP-11 (spec 01 §5.8 REVISED R12): when the models snapshot carries a
- * detected legacy OpenChamber `defaultModel`, an import banner offers the
+ * detected legacy OMPChamber `defaultModel`, an import banner offers the
  * explicit one-click import while the `default` role is unconfigured; a
  * configured role only ever gets the neutral side-by-side. No code path here
  * auto-writes or overwrites a configured role.

@@ -3,7 +3,7 @@ import { commandMatchesSearch, mergeCommandAutocompleteItems } from '../commandA
 
 interface Item {
   name: string;
-  source: 'openchamber' | 'opencode' | 'skill' | 'omp';
+  source: 'ompchamber' | 'opencode' | 'skill' | 'omp';
   description?: string;
   searchAliases?: string[];
   isBuiltIn?: boolean;
@@ -39,7 +39,7 @@ describe('mergeCommandAutocompleteItems', () => {
   test('built-ins win collisions with commands and skills without losing search aliases', () => {
     const builtIn: Item = {
       name: 'summary',
-      source: 'openchamber',
+      source: 'ompchamber',
       description: 'Summarize this session',
       isBuiltIn: true,
     };
@@ -82,7 +82,7 @@ describe('mergeCommandAutocompleteItems', () => {
   });
 
   test('deduplicates every pairwise source collision by executable precedence', () => {
-    const builtIn: Item = { name: 'compact', source: 'openchamber', isBuiltIn: true };
+    const builtIn: Item = { name: 'compact', source: 'ompchamber', isBuiltIn: true };
     const command: Item = { name: 'compact', source: 'opencode' };
     const skill: Item = { name: 'compact', source: 'skill', isSkill: true };
 
@@ -117,7 +117,7 @@ describe('mergeCommandAutocompleteItems', () => {
   });
 
   test('keeps a case-distinct command when the built-in is disabled', () => {
-    const builtIn: Item = { name: 'init', source: 'openchamber', isBuiltIn: true };
+    const builtIn: Item = { name: 'init', source: 'ompchamber', isBuiltIn: true };
     const command: Item = { name: 'Init', source: 'opencode', description: 'Custom init' };
     const merged = mergeCommandAutocompleteItems([builtIn], [command], []);
 
@@ -126,7 +126,7 @@ describe('mergeCommandAutocompleteItems', () => {
   });
 
   test('keeps first-seen ordering and unrelated commands', () => {
-    const builtIns: Item[] = [{ name: 'undo', source: 'openchamber' }];
+    const builtIns: Item[] = [{ name: 'undo', source: 'ompchamber' }];
     const commands: Item[] = [
       { name: 'test', source: 'opencode' },
       { name: 'deploy', source: 'opencode' },
@@ -159,7 +159,7 @@ describe('mergeCommandAutocompleteItems', () => {
 
   test('omp layer wins collisions, flags the override, and keeps search aliases', () => {
     const builtIns: Item[] = [
-      { name: 'compact', source: 'openchamber', description: 'OC compact' },
+      { name: 'compact', source: 'ompchamber', description: 'OC compact' },
     ];
     const omp: Item[] = [
       { name: 'compact', source: 'omp', description: 'omp compact', isOmp: true },
@@ -180,7 +180,7 @@ describe('mergeCommandAutocompleteItems', () => {
 
   test('omp rows lead the merged list; three-arg calls stay backward compatible', () => {
     const merged = mergeCommandAutocompleteItems(
-      [{ name: 'undo', source: 'openchamber' }],
+      [{ name: 'undo', source: 'ompchamber' }],
       [],
       [],
       [{ name: 'model', source: 'omp', isOmp: true }],

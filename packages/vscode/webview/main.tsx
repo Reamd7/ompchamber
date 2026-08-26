@@ -49,12 +49,12 @@ declare global {
   }
 }
 
-console.log('[OpenChamber] VS Code webview starting...');
-console.log('[OpenChamber] VS Code webview build:', __OMPCHAMBER_WEBVIEW_BUILD_TIME__);
-console.log('[OpenChamber] Config:', window.__VSCODE_CONFIG__);
+console.log('[OMPChamber] VS Code webview starting...');
+console.log('[OMPChamber] VS Code webview build:', __OMPCHAMBER_WEBVIEW_BUILD_TIME__);
+console.log('[OMPChamber] Config:', window.__VSCODE_CONFIG__);
 try {
-  if (window.localStorage.getItem('openchamber_stream_debug') === '1') {
-    console.log('[OpenChamber] Debug: openchamber_stream_debug=1');
+  if (window.localStorage.getItem('ompchamber_stream_debug') === '1') {
+    console.log('[OMPChamber] Debug: ompchamber_stream_debug=1');
   }
 } catch {
   // ignore
@@ -369,7 +369,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
   if (normalizedPathname === '/api/system/info' && method === 'GET') {
     const config = window.__VSCODE_CONFIG__;
     return jsonResponse({
-      openchamberVersion: config?.extensionVersion || 'VS Code Extension',
+      ompchamberVersion: config?.extensionVersion || 'VS Code Extension',
       runtime: 'vscode',
       platform: config?.platform || '',
       arch: config?.arch || '',
@@ -533,7 +533,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     });
   }
 
-  // Dictation runs on the OpenChamber web server (WebSocket + worker); the VS
+  // Dictation runs on the OMPChamber web server (WebSocket + worker); the VS
   // Code bridge has no server process, so report it deterministically
   // unavailable. The mic button hides itself when capture is unsupported.
   if (normalizedPathname === '/api/dictation/status' && method === 'GET') {
@@ -971,7 +971,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
       const data = await sendBridgeMessage('api:models/metadata');
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
-      console.warn('[OpenChamber] Failed to fetch models metadata via bridge, returning empty set:', error);
+      console.warn('[OMPChamber] Failed to fetch models metadata via bridge, returning empty set:', error);
       return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
   }
@@ -1275,7 +1275,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const data = await sendBridgeMessage('api:models/metadata');
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
-      console.warn('[OpenChamber] models.dev request failed via bridge, returning empty metadata:', error);
+      console.warn('[OMPChamber] models.dev request failed via bridge, returning empty metadata:', error);
       return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
   }
@@ -1384,7 +1384,7 @@ onCommand('createSessionWithPrompt', (payload) => {
         undefined, // agentMentionName
         undefined  // additionalParts
       ).catch((error: unknown) => {
-        console.error('[OpenChamber] Failed to send prompt:', error);
+        console.error('[OMPChamber] Failed to send prompt:', error);
       });
     } else {
       // If no provider/model configured, just set the text and let user send manually
@@ -1470,7 +1470,7 @@ const getNotificationClaimKey = (payload: { title?: unknown; body?: unknown; ses
     .join('|');
 };
 
-const claimOpenChamberNotification = async (payload: { title?: unknown; body?: unknown; sessionId?: unknown; tag?: unknown } | undefined): Promise<boolean> => {
+const claimOMPChamberNotification = async (payload: { title?: unknown; body?: unknown; sessionId?: unknown; tag?: unknown } | undefined): Promise<boolean> => {
   const key = getNotificationClaimKey(payload);
   if (!key) return true;
   try {
@@ -1481,7 +1481,7 @@ const claimOpenChamberNotification = async (payload: { title?: unknown; body?: u
   }
 };
 
-const showOpenChamberNotification = (payload: { title?: unknown; body?: unknown; sessionId?: unknown; tag?: unknown; requireHidden?: unknown } | undefined) => {
+const showOMPChamberNotification = (payload: { title?: unknown; body?: unknown; sessionId?: unknown; tag?: unknown; requireHidden?: unknown } | undefined) => {
   if (typeof Notification === 'undefined') {
     return false;
   }
@@ -1497,12 +1497,12 @@ const showOpenChamberNotification = (payload: { title?: unknown; body?: unknown;
 
     const title = typeof payload?.title === 'string' && payload.title.trim().length > 0
       ? payload.title.trim()
-      : 'OpenChamber';
+      : 'OMPChamber';
     const body = typeof payload?.body === 'string' ? payload.body : '';
     const sessionId = typeof payload?.sessionId === 'string' && payload.sessionId.trim().length > 0
       ? payload.sessionId.trim()
       : '';
-    if (!await claimOpenChamberNotification({ ...payload, title, body, sessionId })) {
+    if (!await claimOMPChamberNotification({ ...payload, title, body, sessionId })) {
       return false;
     }
 
@@ -1532,7 +1532,7 @@ const showOpenChamberNotification = (payload: { title?: unknown; body?: unknown;
 };
 
 onCommand('showNotification', (payload) => {
-  showOpenChamberNotification(payload as { title?: unknown; body?: unknown; sessionId?: unknown; requireHidden?: unknown } | undefined);
+  showOMPChamberNotification(payload as { title?: unknown; body?: unknown; sessionId?: unknown; requireHidden?: unknown } | undefined);
 });
 
 onCommand('windowFocusChanged', (payload) => {
@@ -1577,7 +1577,7 @@ const ensureNotificationSettingsSynced = async () => {
       .then(({ syncDesktopSettings }) => syncDesktopSettings())
       .catch((error) => {
         notificationSettingsSyncPromise = null;
-        console.warn('[OpenChamber] Failed to sync notification settings:', error);
+        console.warn('[OMPChamber] Failed to sync notification settings:', error);
       });
   }
   await notificationSettingsSyncPromise;
@@ -1769,7 +1769,7 @@ window.addEventListener('ompchamber:vscode-notification-event', (event) => {
       const template = getNotificationTemplate(settings, isSubtask ? 'subtask' : 'completion', { title: '{agent_name} is ready', message: '{model_name} completed the task' });
       const title = resolveTemplate(template.title, variables) || 'Agent is ready';
       const body = resolveTemplate(template.message, variables);
-      showOpenChamberNotification({
+      showOMPChamberNotification({
         title,
         body: shouldApplyTemplateMessage(template.message, body, variables) ? body : `${variables.model_name} completed the task`,
         sessionId,
@@ -1787,7 +1787,7 @@ window.addEventListener('ompchamber:vscode-notification-event', (event) => {
       const template = getNotificationTemplate(settings, 'error', { title: 'Tool error', message: '{last_message}' });
       const title = resolveTemplate(template.title, variables) || 'Tool error';
       const body = resolveTemplate(template.message, variables);
-      showOpenChamberNotification({
+      showOMPChamberNotification({
         title,
         body: shouldApplyTemplateMessage(template.message, body, variables) ? body : 'An error occurred',
         sessionId,
@@ -1806,7 +1806,7 @@ window.addEventListener('ompchamber:vscode-notification-event', (event) => {
       const template = getNotificationTemplate(settings, 'question', { title: 'Input needed', message: '{last_message}' });
       const title = resolveTemplate(template.title, questionVariables) || (/plan\s*mode/i.test(header) ? 'Switch to plan mode' : /build\s*agent/i.test(header) ? 'Switch to build mode' : header || 'Input needed');
       const body = resolveTemplate(template.message, questionVariables);
-      showOpenChamberNotification({
+      showOMPChamberNotification({
         title,
         body: shouldApplyTemplateMessage(template.message, body, questionVariables) ? body : questionText || 'Agent is waiting for your response',
         sessionId,
@@ -1832,7 +1832,7 @@ window.addEventListener('ompchamber:vscode-notification-event', (event) => {
       const template = getNotificationTemplate(settings, 'question', { title: 'Permission required', message: '{last_message}' });
       const title = resolveTemplate(template.title, permissionVariables) || 'Permission required';
       const body = resolveTemplate(template.message, permissionVariables);
-      showOpenChamberNotification({
+      showOMPChamberNotification({
         title,
         body: shouldApplyTemplateMessage(template.message, body, permissionVariables) ? body : fallbackMessage,
         sessionId,
@@ -1875,7 +1875,7 @@ import('@ompchamber/ui/apps/renderVSCodeApp')
     maybeHideLoadingOverlay();
   })
   .catch((error) => {
-    console.error('[OpenChamber] Failed to bootstrap UI:', error);
+    console.error('[OMPChamber] Failed to bootstrap UI:', error);
     // If the UI bundle fails to load, remove the overlay so the user at least sees errors in the root.
     uiMounted = true;
     fadeOutLoadingScreen();

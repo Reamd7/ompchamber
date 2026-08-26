@@ -1,5 +1,5 @@
 /**
- * Resolves OpenChamber theme tokens into concrete color strings.
+ * Resolves OMPChamber theme tokens into concrete color strings.
  *
  * The annotation overlay renders inside a page we do not control, so it cannot
  * reference our CSS variables — that page has its own `:root`. Theme tokens can

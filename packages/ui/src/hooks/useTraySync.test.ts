@@ -63,7 +63,7 @@ describe('useTraySync buildSnapshot omp dialogs', () => {
       ],
     });
 
-    const snapshot = buildSnapshot('Local OpenChamber');
+    const snapshot = buildSnapshot('Local OMPChamber');
 
     expect(snapshot.ompDialogs.map((d) => d.dialogId)).toEqual(['dlg_a1', 'dlg_b1', 'dlg_b2', 'dlg_a2']);
     expect(snapshot.ompDialogs.map((d) => d.kind)).toEqual(['ask', 'approval', 'approval', 'approval']);
@@ -85,10 +85,10 @@ describe('useTraySync buildSnapshot omp dialogs', () => {
   });
 
   test('empty dialog store yields no omp tray rows without disturbing the rest of the snapshot', () => {
-    const snapshot = buildSnapshot('Local OpenChamber');
+    const snapshot = buildSnapshot('Local OMPChamber');
     expect(snapshot.sessions).toEqual([]);
     expect(snapshot.approvals).toEqual([]);
-    expect(snapshot.instanceName).toBe('Local OpenChamber');
+    expect(snapshot.instanceName).toBe('Local OMPChamber');
     expect(snapshot.dockBadgeCount).toBe(0);
   });
 });

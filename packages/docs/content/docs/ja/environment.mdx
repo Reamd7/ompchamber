@@ -1,17 +1,17 @@
 ---
 title: 環境変数
-description: 環境変数で OpenChamber と OpenCode 連携を設定します。
+description: 環境変数で OMPChamber と OpenCode 連携を設定します。
 ---
 
 # 環境変数
 
-OpenChamber は起動時にこれらの環境変数を読み取ります。スタートアップサービスでは、`openchamber startup enable` がデフォルトで現在の環境をスナップショットするため、サービスに使わせたい変数を変更した後は再実行してください。
+OMPChamber は起動時にこれらの環境変数を読み取ります。スタートアップサービスでは、`ompchamber startup enable` がデフォルトで現在の環境をスナップショットするため、サービスに使わせたい変数を変更した後は再実行してください。
 
-## OpenChamber サーバー
+## OMPChamber サーバー
 
 ### `OMPCHAMBER_HOST`
 
-OpenChamber Web サーバーのバインドアドレスです。他のマシンからアクセスできるようにするには `0.0.0.0` を使います。
+OMPChamber Web サーバーのバインドアドレスです。他のマシンからアクセスできるようにするには `0.0.0.0` を使います。
 
 ### `OMPCHAMBER_UI_PASSWORD`
 
@@ -19,11 +19,11 @@ OpenChamber Web サーバーのバインドアドレスです。他のマシン�
 
 ### `OMPCHAMBER_API_ONLY`
 
-`true` または `1` に設定すると、OpenChamber をヘッドレスモードで起動します。デスクトップおよびモバイルクライアント向けの API ルートは利用できますが、ブラウザ UI は配信されません。
+`true` または `1` に設定すると、OMPChamber をヘッドレスモードで起動します。デスクトップおよびモバイルクライアント向けの API ルートは利用できますが、ブラウザ UI は配信されません。
 
 ### `OMPCHAMBER_DATA_DIR`
 
-OpenChamber のデータディレクトリを上書きします。デフォルトは `~/.config/ompchamber` です。
+OMPChamber のデータディレクトリを上書きします。デフォルトは `~/.config/ompchamber` です。
 
 ### `OMPCHAMBER_COMPRESS_API`
 
@@ -49,7 +49,7 @@ API レスポンス圧縮を制御します。`true` または `1` で強制的�
 
 ### `OPENCODE_HOST`
 
-OpenChamber を既存の OpenCode サーバーに接続します。値は明示的なポートを含み、パス、クエリ、ハッシュを含まない `http` または `https` の origin である必要があります。`OPENCODE_HOST` は `OPENCODE_PORT` より優先されます。
+OMPChamber を既存の OpenCode サーバーに接続します。値は明示的なポートを含み、パス、クエリ、ハッシュを含まない `http` または `https` の origin である必要があります。`OPENCODE_HOST` は `OPENCODE_PORT` より優先されます。
 
 ### `OPENCODE_PORT`
 
@@ -57,15 +57,15 @@ OpenCode サーバーのポートを設定します。管理対象 OpenCode で�
 
 ### `OPENCODE_SKIP_START`
 
-`true` に設定すると、OpenChamber が独自の OpenCode サーバーを起動しません。
+`true` に設定すると、OMPChamber が独自の OpenCode サーバーを起動しません。
 
 ### `OMPCHAMBER_OPENCODE_HOSTNAME`
 
-OpenChamber が管理する OpenCode サーバーのバインドホスト名です。デフォルトは `127.0.0.1` です。
+OMPChamber が管理する OpenCode サーバーのバインドホスト名です。デフォルトは `127.0.0.1` です。
 
 ### `OPENCODE_BINARY`
 
-OpenChamber が実行する `opencode` 実行ファイルへのパスです。
+OMPChamber が実行する `opencode` 実行ファイルへのパスです。
 
 ### `OPENCODE_CONFIG`
 
@@ -85,7 +85,7 @@ Windows 上の OpenCode 連携に使う WSL ディストリビューションを
 
 ### `OMPCHAMBER_OPENCODE_WSL_DISTRO`
 
-WSL ディストリビューション選択用の OpenChamber 固有エイリアスです。両方が設定されている場合は `OPENCODE_WSL_DISTRO` が優先されます。
+WSL ディストリビューション選択用の OMPChamber 固有エイリアスです。両方が設定されている場合は `OPENCODE_WSL_DISTRO` が優先されます。
 
 ### `OPENCODE_JWT_SECRET`
 
@@ -95,15 +95,15 @@ UI 認証トークンの署名に使うシークレットです。永続的な�
 
 ### `OMPCHAMBER_TERMINAL_SHELL`
 
-OpenChamber のターミナルセッションで使うシェル実行ファイルです。
+OMPChamber のターミナルセッションで使うシェル実行ファイルです。
 
 ### `OMPCHAMBER_GIT_BINARY`
 
-OpenChamber の Git 機能で使う Git 実行ファイルです。
+OMPChamber の Git 機能で使う Git 実行ファイルです。
 
 ### `GIT_BINARY`
 
-代替の Git 実行ファイル上書きです。OpenChamber 固有の設定には `OMPCHAMBER_GIT_BINARY` を推奨します。
+代替の Git 実行ファイル上書きです。OMPChamber 固有の設定には `OMPCHAMBER_GIT_BINARY` を推奨します。
 
 ### `OMPCHAMBER_GIT_READ_CACHE_TTL_MS`
 
@@ -113,7 +113,7 @@ Git に基づくファイル読み取りキャッシュの有効期間（ミリ�
 
 ### `OPENAI_API_KEY`
 
-OpenAI 互換サービスを呼び出す OpenChamber の音声機能で使う API キーです。
+OpenAI 互換サービスを呼び出す OMPChamber の音声機能で使う API キーです。
 
 ### `OMPCHAMBER_ALLOW_REMOTE_OPENAI_COMPAT_URLS`
 
@@ -121,17 +121,17 @@ OpenAI 互換サービスを呼び出す OpenChamber の音声機能で使う AP
 
 ### `NGROK_AUTHTOKEN`
 
-OpenChamber のトンネルコマンドで使う ngrok 認証トークンです。`ngrok config add-authtoken <token>` で ngrok 側に設定することもできます。
+OMPChamber のトンネルコマンドで使う ngrok 認証トークンです。`ngrok config add-authtoken <token>` で ngrok 側に設定することもできます。
 
 ## ランタイムヘルパー
 
 ### `BUN_BINARY`
 
-デーモンプロセスを起動するときに OpenChamber が使う Bun 実行ファイルです。
+デーモンプロセスを起動するときに OMPChamber が使う Bun 実行ファイルです。
 
 ### `BUN_INSTALL`
 
-Bun のインストールルートです。OpenChamber はデーモン起動と更新のために `bin/bun` を探す際に使います。
+Bun のインストールルートです。OMPChamber はデーモン起動と更新のために `bin/bun` を探す際に使います。
 
 ### `VITE_OPENCODE_URL`
 

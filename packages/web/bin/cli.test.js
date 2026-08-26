@@ -37,8 +37,8 @@ import {
   generateUiPassword,
   getInstanceFilePath,
   getPidFilePath,
-  isOpenchamberCmdline,
-  isOpenchamberProcessRunning,
+  isOmpchamberCmdline,
+  isOmpchamberProcessRunning,
   parseArgs,
   resolveServeHost,
   resolveServeUiPassword,
@@ -552,9 +552,9 @@ describe('cli args', () => {
   it('formats projects compactly', () => {
     expect(formatProjectLine({
       id: 'path_repo',
-      label: 'Openchamber',
+      label: 'Ompchamber',
       path: '/repo/ompchamber',
-    })).toBe('- `Openchamber` — `path_repo` — `/repo/ompchamber`');
+    })).toBe('- `Ompchamber` — `path_repo` — `/repo/ompchamber`');
   });
 
   it('formats model defaults and favorites compactly', () => {
@@ -994,29 +994,29 @@ describe('cli entry detection', () => {
   });
 });
 
-describe('isOpenchamberCmdline', () => {
+describe('isOmpchamberCmdline', () => {
   it('accepts OMPChamber CLI and daemon cmdlines', () => {
-    expect(isOpenchamberCmdline('node /x/@ompchamber/web/bin/cli.js serve')).toBe(true);
-    expect(isOpenchamberCmdline('node /x/@ompchamber/web/server/index.js --port 9090')).toBe(true);
-    expect(isOpenchamberCmdline('bun /home/u/projects/ompchamber/packages/web/server/index.js --port 3001')).toBe(true);
-    expect(isOpenchamberCmdline('node /x/node_modules/ompchamber/bin/cli.js --port 3000')).toBe(true);
-    // Legacy @openchamber/web installs and openchamber-named source
+    expect(isOmpchamberCmdline('node /x/@ompchamber/web/bin/cli.js serve')).toBe(true);
+    expect(isOmpchamberCmdline('node /x/@ompchamber/web/server/index.js --port 9090')).toBe(true);
+    expect(isOmpchamberCmdline('bun /home/u/projects/ompchamber/packages/web/server/index.js --port 3001')).toBe(true);
+    expect(isOmpchamberCmdline('node /x/node_modules/ompchamber/bin/cli.js --port 3000')).toBe(true);
+    // Legacy @openchamber/web installs and ompchamber-named source
     // checkouts must keep matching during the rename transition.
-    expect(isOpenchamberCmdline('node /x/@openchamber/web/bin/cli.js serve')).toBe(true);
-    expect(isOpenchamberCmdline('bun /home/u/projects/openchamber/packages/web/server/index.js --port 3001')).toBe(true);
+    expect(isOmpchamberCmdline('node /x/@openchamber/web/bin/cli.js serve')).toBe(true);
+    expect(isOmpchamberCmdline('bun /home/u/projects/openchamber/packages/web/server/index.js --port 3001')).toBe(true);
   });
 
   it('rejects recycled and unrelated processes (issue #1721)', () => {
-    expect(isOpenchamberCmdline('node /home/herjarsa/npm-global/bin/agentmemory')).toBe(false);
-    expect(isOpenchamberCmdline('node /usr/lib/node_modules/npm/bin/npm-cli.js install')).toBe(false);
-    expect(isOpenchamberCmdline('')).toBe(false);
-    expect(isOpenchamberCmdline(null)).toBe(false);
+    expect(isOmpchamberCmdline('node /home/herjarsa/npm-global/bin/agentmemory')).toBe(false);
+    expect(isOmpchamberCmdline('node /usr/lib/node_modules/npm/bin/npm-cli.js install')).toBe(false);
+    expect(isOmpchamberCmdline('')).toBe(false);
+    expect(isOmpchamberCmdline(null)).toBe(false);
   });
 });
 
-describe('isOpenchamberProcessRunning', () => {
+describe('isOmpchamberProcessRunning', () => {
   it('returns false for a dead PID', () => {
-    expect(isOpenchamberProcessRunning(2147483646)).toBe(false);
+    expect(isOmpchamberProcessRunning(2147483646)).toBe(false);
   });
 
   // Identity verification is available on Linux (/proc) and macOS (ps); on those
@@ -1028,7 +1028,7 @@ describe('isOpenchamberProcessRunning', () => {
       const child = spawn('sleep', ['30'], { stdio: 'ignore' });
       try {
         await new Promise((resolve) => setTimeout(resolve, 150));
-        expect(isOpenchamberProcessRunning(child.pid)).toBe(false);
+        expect(isOmpchamberProcessRunning(child.pid)).toBe(false);
       } finally {
         child.kill('SIGKILL');
       }
@@ -1091,7 +1091,7 @@ describe('lifecycle instance discovery', () => {
 
       const instances = await discoverRunningInstances({
         fetchImpl: async () => createMockJsonResponse({ runtime: 'web', pid }),
-        getOpenchamberProcessState: () => 'mismatched',
+        getOmpchamberProcessState: () => 'mismatched',
       });
 
       expect(instances).toEqual([
@@ -1113,7 +1113,7 @@ describe('lifecycle instance discovery', () => {
 
       const instances = await discoverRunningInstances({
         fetchImpl: async () => createMockJsonResponse(null, false),
-        getOpenchamberProcessState: () => 'mismatched',
+        getOmpchamberProcessState: () => 'mismatched',
       });
 
       expect(instances).toEqual([]);
@@ -1133,7 +1133,7 @@ describe('lifecycle instance discovery', () => {
 
       const instances = await discoverRunningInstances({
         fetchImpl: async () => createMockJsonResponse(null, false),
-        getOpenchamberProcessState: () => 'matched',
+        getOmpchamberProcessState: () => 'matched',
       });
 
       expect(instances).toEqual([]);
@@ -1153,7 +1153,7 @@ describe('lifecycle instance discovery', () => {
 
       const instances = await discoverRunningInstances({
         fetchImpl: async () => createMockJsonResponse(null, false),
-        getOpenchamberProcessState: () => 'unknown',
+        getOmpchamberProcessState: () => 'unknown',
       });
 
       expect(instances).toEqual([]);
@@ -1174,7 +1174,7 @@ describe('lifecycle instance discovery', () => {
 
       const instances = await discoverRunningInstances({
         fetchImpl: async () => createMockJsonResponse({ runtime: 'web', pid: livePid }),
-        getOpenchamberProcessState: () => 'matched',
+        getOmpchamberProcessState: () => 'matched',
       });
 
       expect(instances).toEqual([
@@ -1199,7 +1199,7 @@ describe('lifecycle instance discovery', () => {
             urls.push(String(url));
             return createMockJsonResponse({ runtime: 'web', pid });
           },
-          getOpenchamberProcessState: () => 'matched',
+          getOmpchamberProcessState: () => 'matched',
         },
       );
 
@@ -1228,7 +1228,7 @@ describe('lifecycle instance discovery', () => {
               ? createMockJsonResponse({ runtime: 'web', pid })
               : createMockJsonResponse(null, false);
           },
-          getOpenchamberProcessState: () => 'matched',
+          getOmpchamberProcessState: () => 'matched',
         },
       );
 
@@ -1259,7 +1259,7 @@ describe('lifecycle instance discovery', () => {
               ? createMockJsonResponse({ runtime: 'web', pid: otherPid })
               : createMockJsonResponse(null, false);
           },
-          getOpenchamberProcessState: () => 'matched',
+          getOmpchamberProcessState: () => 'matched',
         },
       );
 

@@ -193,10 +193,10 @@ describe('reading what a session was told', () => {
     const runtime = createRuntime();
 
     expect(runtime.readPins({
-      metadata: { openchamber: { project_context_pins: { notes: ['n1'], plans: [] } } },
+      metadata: { ompchamber: { project_context_pins: { notes: ['n1'], plans: [] } } },
     })).toEqual({ notes: ['n1'], plans: [] });
     expect(runtime.readPins({
-      metadata: { openchamber: { project_context_pins: { notes: [], plans: ['p1'] } } },
+      metadata: { ompchamber: { project_context_pins: { notes: [], plans: ['p1'] } } },
     })).toEqual({ notes: [], plans: ['p1'] });
     expect(runtime.readPins({})).toEqual({ notes: [], plans: [] });
   });
@@ -208,7 +208,7 @@ describe('reading what a session was told', () => {
         requests.push({ path, options });
         if (options.method === 'PATCH') return {};
         return {
-          metadata: { openchamber: { project_context_pins: { notes: [], plans: [] }, knowledge_context_delivered: 'old' } },
+          metadata: { ompchamber: { project_context_pins: { notes: [], plans: [] }, knowledge_context_delivered: 'old' } },
         };
       },
     });
@@ -216,7 +216,7 @@ describe('reading what a session was told', () => {
     await runtime.setPin('ses_a', DIRECTORY, 'note', 'n1', true);
 
     expect(requests.map((request) => request.path)).toEqual(['/session/ses_a', '/session/ses_a']);
-    expect(requests[1].options.body.metadata.openchamber).toEqual({
+    expect(requests[1].options.body.metadata.ompchamber).toEqual({
       project_context_pins: { notes: ['n1'], plans: [] },
       knowledge_context_delivered: '',
     });
@@ -226,7 +226,7 @@ describe('reading what a session was told', () => {
     const runtime = createRuntime();
 
     expect(runtime.readDeliveredSignature({
-      metadata: { openchamber: { knowledge_context_delivered: 'sig' } },
+      metadata: { ompchamber: { knowledge_context_delivered: 'sig' } },
     })).toBe('sig');
   });
 

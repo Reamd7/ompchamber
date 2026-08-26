@@ -218,7 +218,7 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
 
   const isWebRuntime = runtimeType === 'web';
   const isMobileRuntime = runtimeType === 'mobile';
-  const updateCommand = info?.updateCommand || 'openchamber update';
+  const updateCommand = info?.updateCommand || 'ompchamber update';
 
   // Reset state when dialog closes
   useEffect(() => {

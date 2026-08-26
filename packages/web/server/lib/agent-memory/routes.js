@@ -1,5 +1,5 @@
 /**
- * OpenChamber agent memory routes.
+ * OMPChamber agent memory routes.
  *
  * The scope is a query parameter rather than part of the path, because global
  * and project memory are the same resource with two homes: one set of handlers
@@ -7,7 +7,7 @@
  * scope wrong must fail loudly, never silently write the user's global memory
  * from a project-scoped call.
  *
- * Memory is created by the agent through the `openchamber_memory` tool, so
+ * Memory is created by the agent through the `ompchamber_memory` tool, so
  * there is no create route here; the panel reads, corrects, and deletes.
  *
  * The body parser is attached per route rather than globally: the generic

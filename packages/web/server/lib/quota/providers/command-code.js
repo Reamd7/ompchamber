@@ -18,7 +18,7 @@ const requestJson = async (path, apiKey, fetchImpl) => {
     headers: {
       Accept: 'application/json',
       Authorization: `Bearer ${apiKey}`,
-      'User-Agent': 'OpenChamber quota provider',
+      'User-Agent': 'OMPChamber quota provider',
     },
     signal: AbortSignal.timeout(15_000),
   });

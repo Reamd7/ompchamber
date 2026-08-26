@@ -118,7 +118,7 @@ describe('checkForUpdates', () => {
         json: async () => ({
           latestVersion: '1.10.0',
           updateAvailable: true,
-          downloadUrl: 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OpenChamber-1.10.0-42-android.aab',
+          downloadUrl: 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OMPChamber-1.10.0-42-android.aab',
         }),
       })
       .when('api.github.com/repos/Reamd7/ompchamber/releases/tags/v1.10.0', {
@@ -126,12 +126,12 @@ describe('checkForUpdates', () => {
         json: async () => ({
           assets: [
             {
-              name: 'OpenChamber-1.10.0-42-android.aab',
-              browser_download_url: 'https://downloads.example/OpenChamber-1.10.0-42-android.aab',
+              name: 'OMPChamber-1.10.0-42-android.aab',
+              browser_download_url: 'https://downloads.example/OMPChamber-1.10.0-42-android.aab',
             },
             {
-              name: 'OpenChamber-1.10.0-42-android.apk',
-              browser_download_url: 'https://downloads.example/OpenChamber-1.10.0-42-android.apk',
+              name: 'OMPChamber-1.10.0-42-android.apk',
+              browser_download_url: 'https://downloads.example/OMPChamber-1.10.0-42-android.apk',
             },
           ],
         }),
@@ -143,14 +143,14 @@ describe('checkForUpdates', () => {
       currentVersion: '1.9.10',
     });
 
-    expect(result.downloadUrl).toBe('https://downloads.example/OpenChamber-1.10.0-42-android.apk');
+    expect(result.downloadUrl).toBe('https://downloads.example/OMPChamber-1.10.0-42-android.apk');
   });
 
   it('keeps a direct Android APK URL from an enabled update API', async () => {
     process.env.OMPCHAMBER_UPDATE_API_URL = 'https://api.openchamber.dev/v1/update/check';
     vi.resetModules();
     const { checkForUpdates: check } = await import('./package-manager.js');
-    const apkUrl = 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OpenChamber-1.10.0-42-android.apk';
+    const apkUrl = 'https://github.com/openchamber/openchamber/releases/download/v1.10.0/OMPChamber-1.10.0-42-android.apk';
     fetchMock.when('api.openchamber.dev', {
       ok: true,
       json: async () => ({

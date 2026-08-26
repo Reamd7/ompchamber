@@ -90,18 +90,18 @@ export const OpenCodeCliSettings: React.FC = () => {
 
 
   return (
-    <SettingsSection title={t('settings.openchamber.opencodeCli.title')}>
+    <SettingsSection title={t('settings.ompchamber.opencodeCli.title')}>
       <div className="space-y-0.5">
         <SettingsFieldRow
           settingsItem="sessions.opencode-binary"
-          label={t('settings.openchamber.opencodeCli.field.binaryPath')}
+          label={t('settings.ompchamber.opencodeCli.field.binaryPath')}
           info={(
             <>
-              {t('settings.openchamber.opencodeCli.tipPrefix')}
+              {t('settings.ompchamber.opencodeCli.tipPrefix')}
               {' '}
               <span className="font-mono">OPENCODE_BINARY</span>
               {' '}
-              {t('settings.openchamber.opencodeCli.tipMiddle')}
+              {t('settings.ompchamber.opencodeCli.tipMiddle')}
               {' '}
               <span className="font-mono">~/.config/ompchamber/settings.json</span>
               {'.'}
@@ -113,7 +113,7 @@ export const OpenCodeCliSettings: React.FC = () => {
           <Input
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder={t('settings.openchamber.opencodeCli.field.binaryPathPlaceholder')}
+            placeholder={t('settings.ompchamber.opencodeCli.field.binaryPathPlaceholder')}
             disabled={isLoading || isSaving}
             className="h-8 min-w-0 flex-1 font-mono text-xs"
           />
@@ -124,8 +124,8 @@ export const OpenCodeCliSettings: React.FC = () => {
             onClick={handleBrowse}
             disabled={isLoading || isSaving || !isDesktopShell()}
             className={SETTINGS_ICON_BUTTON_CLASS}
-            aria-label={t('settings.openchamber.opencodeCli.actions.browseAria')}
-            title={t('settings.openchamber.opencodeCli.actions.browse')}
+            aria-label={t('settings.ompchamber.opencodeCli.actions.browseAria')}
+            title={t('settings.ompchamber.opencodeCli.actions.browse')}
           >
             <Icon name="folder" className="h-4 w-4" />
           </Button>

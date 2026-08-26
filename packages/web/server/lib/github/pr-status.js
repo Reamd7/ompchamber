@@ -339,7 +339,7 @@ const repoPullsCache = new Map();
 // head, and while that one is open the open-PR path wins and never reads this
 // cache at all. "No history yet" is the volatile answer, since closing or
 // merging a PR elsewhere flips it, so it expires far sooner. Either way, doing
-// it from OpenChamber invalidates the entry immediately.
+// it from OMPChamber invalidates the entry immediately.
 const HISTORICAL_PR_FOUND_TTL_MS = 6 * 60 * 60 * 1000;
 const HISTORICAL_PR_ABSENT_TTL_MS = 10 * 60 * 1000;
 const HISTORICAL_PR_CACHE_MAX_ENTRIES = 500;

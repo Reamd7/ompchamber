@@ -1,5 +1,5 @@
 /**
- * Client for the OpenChamber agent memory routes.
+ * Client for the OMPChamber agent memory routes.
  *
  * The store is owned by the server (`packages/web/server/lib/agent-memory`).
  * This module only speaks HTTP and resolves no storage paths.

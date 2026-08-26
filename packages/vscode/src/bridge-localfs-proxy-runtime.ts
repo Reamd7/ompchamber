@@ -56,7 +56,7 @@ export const tryHandleLocalFsProxy = async (method: string, requestPath: string)
   }
 
   const fsProxyPath = normalizeFsProxyPath(parsed.pathname);
-  if (/^\/api\/openchamber\/sessions\/[^/]+\/markdown-image-grants$/.test(parsed.pathname)) {
+  if (/^\/api\/ompchamber\/sessions\/[^/]+\/markdown-image-grants$/.test(parsed.pathname)) {
     return buildProxyJsonError(501, 'Markdown image grants are not supported in the VS Code runtime');
   }
   if (!fsProxyPath) {

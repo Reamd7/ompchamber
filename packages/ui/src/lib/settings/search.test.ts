@@ -28,7 +28,7 @@ describe('settings search', () => {
     expect(results.some((result) => result.id === 'integrations.third-party.opencode-claude')).toBe(true);
   });
 
-  test('finds third-party integrations by OpenChamber npm package names', () => {
+  test('finds third-party integrations by OMPChamber npm package names', () => {
     const results = buildSettingsSearchResults({
       query: '@ompchamber/opencode-cursor',
       runtimeCtx,

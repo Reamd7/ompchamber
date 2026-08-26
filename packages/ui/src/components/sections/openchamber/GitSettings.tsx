@@ -26,8 +26,8 @@ export const GitSettings: React.FC = () => {
   const [isLoading, setIsLoading] = React.useState(true);
   const viewOptions = React.useMemo(
     () => [
-      { id: 'flat' as const, label: t('settings.openchamber.git.option.flatList') },
-      { id: 'tree' as const, label: t('settings.openchamber.git.option.treeView') },
+      { id: 'flat' as const, label: t('settings.ompchamber.git.option.flatList') },
+      { id: 'tree' as const, label: t('settings.ompchamber.git.option.treeView') },
     ],
     [t]
   );
@@ -122,13 +122,13 @@ export const GitSettings: React.FC = () => {
   }
 
   return (
-    <SettingsSection title={t('settings.openchamber.git.title')}>
+    <SettingsSection title={t('settings.ompchamber.git.title')}>
       <div className={SETTINGS_OPTION_STACK_CLASS}>
         <SettingsControlGroup
           settingsItem="git.changes-view"
-          title={t('settings.openchamber.git.changesViewTitle')}
+          title={t('settings.ompchamber.git.changesViewTitle')}
         >
-          <SettingsRadioGroup aria-label={t('settings.openchamber.git.changesViewAria')}>
+          <SettingsRadioGroup aria-label={t('settings.ompchamber.git.changesViewAria')}>
             {viewOptions.map((option) => (
               <SettingsRadioOption
                 key={option.id}
@@ -137,7 +137,7 @@ export const GitSettings: React.FC = () => {
                   handleGitChangesViewModeChange(option.id);
                 }}
                 label={option.label}
-                ariaLabel={t('settings.openchamber.git.optionAria', { option: option.label })}
+                ariaLabel={t('settings.ompchamber.git.optionAria', { option: option.label })}
               />
             ))}
           </SettingsRadioGroup>
@@ -149,16 +149,16 @@ export const GitSettings: React.FC = () => {
           onChange={(checked) => {
             void handleGitmojiChange(checked);
           }}
-          label={t('settings.openchamber.git.enableGitmoji')}
-          ariaLabel={t('settings.openchamber.git.enableGitmojiAria')}
+          label={t('settings.ompchamber.git.enableGitmoji')}
+          ariaLabel={t('settings.ompchamber.git.enableGitmojiAria')}
         />
 
         <SettingsCheckboxRow
           settingsItem="git.gitignored-files"
           checked={showGitignored}
           onChange={setFilesViewShowGitignored}
-          label={t('settings.openchamber.git.showGitignored')}
-          ariaLabel={t('settings.openchamber.git.showGitignoredAria')}
+          label={t('settings.ompchamber.git.showGitignored')}
+          ariaLabel={t('settings.ompchamber.git.showGitignoredAria')}
         />
       </div>
     </SettingsSection>

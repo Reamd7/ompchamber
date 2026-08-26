@@ -102,7 +102,7 @@ describe('browser control broker', () => {
   test('fails everything in flight when the owning client disconnects', async () => {
     const { broker } = createBroker();
     const inflight = broker.request('browser.snapshot', {});
-    broker.rejectAll('The OpenChamber client disconnected');
+    broker.rejectAll('The OMPChamber client disconnected');
     await expect(inflight).rejects.toThrow('disconnected');
     expect(broker.pendingCount).toBe(0);
   });

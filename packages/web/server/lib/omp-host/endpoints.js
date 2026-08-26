@@ -1,6 +1,6 @@
 // OpenCode-compatible endpoint implementations for the omp host.
 //
-// Every route here exists because OpenChamber's vendored wire client calls it
+// Every route here exists because OMPChamber's vendored wire client calls it
 // (see packages/ui/src/lib/opencode/wire). Features with no omp equivalent
 // respond with stable, explicit errors instead of pretending success.
 
@@ -367,7 +367,7 @@ export const registerEndpoints = (route, engine, { version }) => {
   route('GET', '/session/{sessionID}/diff', async () => json([]));
 
   // ---- permissions / questions ----
-  // The omp engine runs tools with its own approval policy; OpenChamber's
+  // The omp engine runs tools with its own approval policy; OMPChamber's
   // permission/question protocol has no live producer yet, so these answer
   // authoritatively empty until the approval bridge lands.
   route('GET', '/permission', async () => json([]));

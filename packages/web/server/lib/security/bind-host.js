@@ -39,6 +39,6 @@ export const isDevelopmentServer = (env = process.env) =>
 
 
 export const getUnauthenticatedLanErrorMessage = (host) =>
-  `OpenChamber refuses to bind to ${host || 'a network-exposed host'} without UI authentication. `
+  `OMPChamber refuses to bind to ${host || 'a network-exposed host'} without UI authentication. `
   + 'Set --ui-password or OMPCHAMBER_UI_PASSWORD before exposing it over LAN, '
   + 'or set OMPCHAMBER_ALLOW_UNAUTHENTICATED_LAN=true to accept the risk.';

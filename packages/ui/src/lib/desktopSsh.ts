@@ -40,7 +40,7 @@ export type DesktopSshInstance = {
     args: string[];
   };
   connectionTimeoutSec: number;
-  remoteOpenchamber: {
+  remoteOmpchamber: {
     mode: DesktopSshRemoteMode;
     keepRunning: boolean;
     preferredPort?: number;
@@ -55,7 +55,7 @@ export type DesktopSshInstance = {
   };
   auth: {
     sshPassword?: DesktopSshStoredSecret;
-    openchamberPassword?: DesktopSshStoredSecret;
+    ompchamberPassword?: DesktopSshStoredSecret;
   };
   portForwards: DesktopSshPortForward[];
 };
@@ -181,10 +181,10 @@ const parseInstance = (value: unknown): DesktopSshInstance | null => {
       }
     : undefined;
 
-  const remoteRaw = isRecord(value.remoteOpenchamber)
-    ? value.remoteOpenchamber
-    : isRecord(value.remote_openchamber)
-      ? value.remote_openchamber
+  const remoteRaw = isRecord(value.remoteOmpchamber)
+    ? value.remoteOmpchamber
+    : isRecord(value.remote_ompchamber)
+      ? value.remote_ompchamber
       : {};
 
   const localRaw = isRecord(value.localForward)
@@ -228,7 +228,7 @@ const parseInstance = (value: unknown): DesktopSshInstance | null => {
   const preferredLocalPort =
     readNumber(localRaw, 'preferredLocalPort') ?? readNumber(localRaw, 'preferred_local_port');
   const sshPassword = parseStoredSecret(authRaw.sshPassword || authRaw.ssh_password);
-  const openchamberPassword = parseStoredSecret(authRaw.openchamberPassword || authRaw.openchamber_password);
+  const ompchamberPassword = parseStoredSecret(authRaw.ompchamberPassword || authRaw.ompchamber_password);
 
   return {
     id,
@@ -239,7 +239,7 @@ const parseInstance = (value: unknown): DesktopSshInstance | null => {
       readNumber(value, 'connectionTimeoutSec') ??
       readNumber(value, 'connection_timeout_sec') ??
       60,
-    remoteOpenchamber: {
+    remoteOmpchamber: {
       mode,
       keepRunning: readBoolean(remoteRaw, 'keepRunning') ?? readBoolean(remoteRaw, 'keep_running') ?? true,
       bindHost: remoteBindHost,
@@ -256,7 +256,7 @@ const parseInstance = (value: unknown): DesktopSshInstance | null => {
     },
     auth: {
       ...(sshPassword ? { sshPassword } : {}),
-      ...(openchamberPassword ? { openchamberPassword } : {}),
+      ...(ompchamberPassword ? { ompchamberPassword } : {}),
     },
     portForwards,
   };
@@ -328,7 +328,7 @@ export const createDesktopSshInstance = (id: string, sshCommand: string): Deskto
     id,
     sshCommand,
     connectionTimeoutSec: 60,
-    remoteOpenchamber: {
+    remoteOmpchamber: {
       mode: 'managed',
       keepRunning: true,
       bindHost: '127.0.0.1',

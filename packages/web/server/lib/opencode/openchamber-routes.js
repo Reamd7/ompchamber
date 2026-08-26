@@ -8,7 +8,7 @@ function resolveSystemdServiceUnit(environment) {
   const configuredUnit = typeof environment.OMPCHAMBER_SYSTEMD_UNIT === 'string'
     ? environment.OMPCHAMBER_SYSTEMD_UNIT.trim()
     : '';
-  const unit = configuredUnit || 'openchamber.service';
+  const unit = configuredUnit || 'ompchamber.service';
   return SYSTEMD_SERVICE_UNIT_PATTERN.test(unit) ? unit : null;
 }
 
@@ -16,14 +16,14 @@ function quotePosixShell(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-export const registerOpenChamberRoutes = (app, dependencies) => {
+export const registerOMPChamberRoutes = (app, dependencies) => {
   const {
     fs,
     path,
     process,
     server,
     __dirname,
-    openchamberDataDir,
+    ompchamberDataDir,
     modelsDevApiUrl,
     modelsMetadataCacheTtl,
     readSettingsFromDiskMigrated,
@@ -119,7 +119,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
       }
 
       const currentPort = server.address()?.port || 3000;
-      const instanceFilePath = path.join(openchamberDataDir, 'run', `openchamber-${currentPort}.json`);
+      const instanceFilePath = path.join(ompchamberDataDir, 'run', `ompchamber-${currentPort}.json`);
       let storedOptions = { port: currentPort, daemon: true };
       try {
         const content = await fs.promises.readFile(instanceFilePath, 'utf8');
@@ -133,7 +133,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
       if (isForegroundService) {
         if (!systemdServiceUnit) {
           return res.status(409).json({
-            error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
+            error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run ompchamber update and restart the service.',
           });
         }
 
@@ -168,7 +168,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
 
         return res.json({
           success: true,
-          message: 'Update queued; OpenChamber will restart after installation completes',
+          message: 'Update queued; OMPChamber will restart after installation completes',
           version: updateInfo.version,
           packageManager: pm,
           autoRestart: true,
@@ -194,7 +194,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
         String(storedOptions.port),
       ];
       let restartCmdPrimary = restartParts.join(' ');
-      let restartCmdFallback = `openchamber serve --port ${storedOptions.port}`;
+      let restartCmdFallback = `ompchamber serve --port ${storedOptions.port}`;
       if (storedOptions.host) {
         if (isWindows) {
           const escapedHost = storedOptions.host.replace(/"/g, '""');
@@ -222,10 +222,10 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
         restartCmdFallback += ' --api-only';
       }
       const restartCmd = isForegroundService ? '' : `(${restartCmdPrimary}) || (${restartCmdFallback})`;
-      const updateLogPath = path.join(openchamberDataDir, 'update-install.log');
+      const updateLogPath = path.join(ompchamberDataDir, 'update-install.log');
       const logPreamble = [
         '',
-        `=== OpenChamber update ${new Date().toISOString()} ===`,
+        `=== OMPChamber update ${new Date().toISOString()} ===`,
         `currentVersion=${updateInfo.currentVersion || 'unknown'}`,
         `targetVersion=${updateInfo.version || 'unknown'}`,
         `packageManager=${pm}`,
@@ -262,8 +262,8 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
             timeout /t 2 /nobreak >nul
             ${updateCmd}
             if %ERRORLEVEL% EQU 0 (
-              echo Update successful, restarting OpenChamber...
-              ${restartCmd || 'echo Service manager will restart OpenChamber.'}
+              echo Update successful, restarting OMPChamber...
+              ${restartCmd || 'echo Service manager will restart OMPChamber.'}
             ) else (
               echo Update failed
               exit /b 1
@@ -274,8 +274,8 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
             sleep 2
             ${updateCmd}
             if [ $? -eq 0 ]; then
-              echo "Update successful, restarting OpenChamber..."
-              ${restartCmd || 'echo "Service manager will restart OpenChamber."'}
+              echo "Update successful, restarting OMPChamber..."
+              ${restartCmd || 'echo "Service manager will restart OMPChamber."'}
             else
               echo "Update failed"
               exit 1

@@ -1,5 +1,5 @@
 /**
- * OpenChamber project-level configuration service.
+ * OMPChamber project-level configuration service.
  * Stores per-project settings in ~/.config/ompchamber/projects/<projectId>.json.
  *
  * Notes, todos, and plan files used to live here too. They are now server-owned
@@ -30,30 +30,30 @@ function getRuntimeFilesAPI(): FilesAPI | null {
   return null;
 }
 
-interface OpenChamberConfig {
+interface OMPChamberConfig {
   projectPath?: string;
   'setup-worktree'?: string[];
   'setup-worktree-wait'?: boolean;
-  projectActions?: OpenChamberProjectAction[];
+  projectActions?: OMPChamberProjectAction[];
   projectActionsPrimaryId?: string;
   draftStarters?: DraftStarterRef[];
 }
 
-type OpenChamberProjectActionPlatform = 'macos' | 'linux' | 'windows';
+type OMPChamberProjectActionPlatform = 'macos' | 'linux' | 'windows';
 
-export interface OpenChamberProjectAction {
+export interface OMPChamberProjectAction {
   id: string;
   name: string;
   command: string;
   icon?: string | null;
-  platforms?: OpenChamberProjectActionPlatform[];
+  platforms?: OMPChamberProjectActionPlatform[];
   autoOpenUrl?: boolean;
   openUrl?: string;
   desktopOpenSshForward?: string;
 }
 
-export interface OpenChamberProjectActionsState {
-  actions: OpenChamberProjectAction[];
+export interface OMPChamberProjectActionsState {
+  actions: OMPChamberProjectAction[];
   primaryActionId: string | null;
 }
 
@@ -62,7 +62,7 @@ const OMPCHAMBER_PROJECT_ACTION_COMMAND_MAX_LENGTH = 4000;
 const OMPCHAMBER_PROJECT_ACTION_OPEN_URL_MAX_LENGTH = 2000;
 const OMPCHAMBER_PROJECT_ACTION_DESKTOP_FORWARD_MAX_LENGTH = 300;
 
-const OMPCHAMBER_ACTION_PLATFORM_SET = new Set<OpenChamberProjectActionPlatform>(['macos', 'linux', 'windows']);
+const OMPCHAMBER_ACTION_PLATFORM_SET = new Set<OMPChamberProjectActionPlatform>(['macos', 'linux', 'windows']);
 
 const normalize = (value: string): string => {
   if (!value) return '';
@@ -233,18 +233,18 @@ const trimToMaxLength = (value: string, maxLength: number): string => {
   return value.slice(0, maxLength);
 };
 
-const sanitizeProjectActionPlatforms = (value: unknown): OpenChamberProjectActionPlatform[] => {
+const sanitizeProjectActionPlatforms = (value: unknown): OMPChamberProjectActionPlatform[] => {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const unique: OpenChamberProjectActionPlatform[] = [];
-  const seen = new Set<OpenChamberProjectActionPlatform>();
+  const unique: OMPChamberProjectActionPlatform[] = [];
+  const seen = new Set<OMPChamberProjectActionPlatform>();
   for (const entry of value) {
     if (typeof entry !== 'string') {
       continue;
     }
-    const normalized = entry.trim().toLowerCase() as OpenChamberProjectActionPlatform;
+    const normalized = entry.trim().toLowerCase() as OMPChamberProjectActionPlatform;
     if (!OMPCHAMBER_ACTION_PLATFORM_SET.has(normalized) || seen.has(normalized)) {
       continue;
     }
@@ -255,12 +255,12 @@ const sanitizeProjectActionPlatforms = (value: unknown): OpenChamberProjectActio
   return unique;
 };
 
-const sanitizeProjectActions = (value: unknown): OpenChamberProjectAction[] => {
+const sanitizeProjectActions = (value: unknown): OMPChamberProjectAction[] => {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const sanitized: OpenChamberProjectAction[] = [];
+  const sanitized: OMPChamberProjectAction[] = [];
   const seenIds = new Set<string>();
 
   for (const entry of value) {
@@ -319,7 +319,7 @@ const sanitizeProjectActions = (value: unknown): OpenChamberProjectAction[] => {
 const sanitizeProjectActionsState = (value: {
   actions?: unknown;
   primaryActionId?: unknown;
-} | null | undefined): OpenChamberProjectActionsState => {
+} | null | undefined): OMPChamberProjectActionsState => {
   const actions = sanitizeProjectActions(value?.actions);
   const primaryRaw = typeof value?.primaryActionId === 'string' ? value.primaryActionId.trim() : '';
   const primaryActionId = primaryRaw && actions.some((entry) => entry.id === primaryRaw)
@@ -336,7 +336,7 @@ const sanitizeProjectActionsState = (value: {
  * Read the config for a project.
  * Returns null if file doesn't exist or is invalid.
  */
-async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberConfig | null> {
+async function readOMPChamberConfig(project: ProjectRef): Promise<OMPChamberConfig | null> {
   const projectDirectory = typeof project?.path === 'string' ? project.path.trim() : '';
   if (!projectDirectory) {
     return null;
@@ -353,7 +353,7 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
     return text;
   };
 
-  const parseConfig = (text: string | null): OpenChamberConfig | null => {
+  const parseConfig = (text: string | null): OMPChamberConfig | null => {
     if (typeof text !== 'string') {
       return null;
     }
@@ -366,7 +366,7 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
       if (!parsed || typeof parsed !== 'object') {
         return null;
       }
-      return parsed as OpenChamberConfig;
+      return parsed as OMPChamberConfig;
     } catch {
       return null;
     }
@@ -390,9 +390,9 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
  * dedicated route and never round-trips them through this config write path to
  * avoid a read-then-write race clobbering a concurrent server update.
  */
-async function writeOpenChamberConfig(
+async function writeOMPChamberConfig(
   project: ProjectRef,
-  config: OpenChamberConfig
+  config: OMPChamberConfig
 ): Promise<boolean> {
   const projectDirectory = typeof project?.path === 'string' ? project.path.trim() : '';
   if (!projectDirectory) {
@@ -436,7 +436,7 @@ async function writeOpenChamberConfig(
     }, null, 2);
     return await writeTextFile(configPath, content);
   } catch (error) {
-    console.error('Failed to write openchamber config:', error);
+    console.error('Failed to write ompchamber config:', error);
     return false;
   }
 }
@@ -444,51 +444,51 @@ async function writeOpenChamberConfig(
 /**
  * Update specific keys in the config, preserving other values.
  */
-async function updateOpenChamberConfig(
+async function updateOMPChamberConfig(
   project: ProjectRef,
-  updates: Partial<OpenChamberConfig>
+  updates: Partial<OMPChamberConfig>
 ): Promise<boolean> {
-  const existing = await readOpenChamberConfig(project) || {};
+  const existing = await readOMPChamberConfig(project) || {};
   const merged = { ...existing, ...updates };
-  return writeOpenChamberConfig(project, merged);
+  return writeOMPChamberConfig(project, merged);
 }
 
 /**
  * Get worktree setup commands from config.
  */
 export async function getWorktreeSetupCommands(project: ProjectRef): Promise<string[]> {
-  const config = await readOpenChamberConfig(project);
+  const config = await readOMPChamberConfig(project);
   return config?.['setup-worktree'] ?? [];
 }
 
 export async function saveWorktreeSetupCommands(project: ProjectRef, commands: string[]): Promise<boolean> {
   const filtered = commands.filter((cmd) => cmd.trim().length > 0);
-  return updateOpenChamberConfig(project, { 'setup-worktree': filtered });
+  return updateOMPChamberConfig(project, { 'setup-worktree': filtered });
 }
 
 export async function getWorktreeSetupWaitEnabled(project: ProjectRef): Promise<boolean> {
-  const config = await readOpenChamberConfig(project);
+  const config = await readOMPChamberConfig(project);
   return config?.['setup-worktree-wait'] === true;
 }
 
 export async function saveWorktreeSetupWaitEnabled(project: ProjectRef, enabled: boolean): Promise<boolean> {
-  return updateOpenChamberConfig(project, { 'setup-worktree-wait': enabled });
+  return updateOMPChamberConfig(project, { 'setup-worktree-wait': enabled });
 }
 
 /**
  * Get this project's pinned draft welcome starters.
  */
 export async function getProjectDraftStarters(project: ProjectRef): Promise<DraftStarterRef[]> {
-  const config = await readOpenChamberConfig(project);
+  const config = await readOMPChamberConfig(project);
   return sanitizeStarterRefs(config?.draftStarters);
 }
 
 export async function saveProjectDraftStarters(project: ProjectRef, starters: DraftStarterRef[]): Promise<boolean> {
-  return updateOpenChamberConfig(project, { draftStarters: sanitizeStarterRefs(starters) });
+  return updateOMPChamberConfig(project, { draftStarters: sanitizeStarterRefs(starters) });
 }
 
-export async function getProjectActionsState(project: ProjectRef): Promise<OpenChamberProjectActionsState> {
-  const config = await readOpenChamberConfig(project);
+export async function getProjectActionsState(project: ProjectRef): Promise<OMPChamberProjectActionsState> {
+  const config = await readOMPChamberConfig(project);
   return sanitizeProjectActionsState({
     actions: config?.projectActions,
     primaryActionId: config?.projectActionsPrimaryId,
@@ -497,14 +497,14 @@ export async function getProjectActionsState(project: ProjectRef): Promise<OpenC
 
 export async function saveProjectActionsState(
   project: ProjectRef,
-  value: OpenChamberProjectActionsState
+  value: OMPChamberProjectActionsState
 ): Promise<boolean> {
   const sanitized = sanitizeProjectActionsState({
     actions: value.actions,
     primaryActionId: value.primaryActionId,
   });
 
-  return updateOpenChamberConfig(project, {
+  return updateOMPChamberConfig(project, {
     projectActions: sanitized.actions,
     projectActionsPrimaryId: sanitized.primaryActionId ?? undefined,
   });

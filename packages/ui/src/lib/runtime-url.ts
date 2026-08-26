@@ -101,7 +101,7 @@ const withUrlAuth = (urlValue: string): string => {
 
   const url = ABSOLUTE_URL_PATTERN.test(urlValue)
     ? new URL(urlValue)
-    : new URL(urlValue, 'http://openchamber.local');
+    : new URL(urlValue, 'http://ompchamber.local');
   url.searchParams.set('oc_url_token', token);
   if (ABSOLUTE_URL_PATTERN.test(urlValue)) return url.toString();
   return `${url.pathname}${url.search}${url.hash}`;

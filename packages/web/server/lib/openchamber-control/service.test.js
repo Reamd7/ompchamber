@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 
-import { createOpenChamberControlService } from './service.js';
+import { createOMPChamberControlService } from './service.js';
 
 const createService = (overrides = {}) => {
   const client = {
@@ -28,7 +28,7 @@ const createService = (overrides = {}) => {
     remove: vi.fn(),
     setEnabled: vi.fn(),
   };
-  const service = createOpenChamberControlService({
+  const service = createOMPChamberControlService({
     readSettingsFromDiskMigrated: vi.fn(async () => ({
       projects: [{ id: 'project-1', path: '/repo', label: 'Repo' }],
       defaultModel: 'provider/model',
@@ -47,7 +47,7 @@ const createService = (overrides = {}) => {
   return { service, client, sessionService, scheduledTaskService };
 };
 
-describe('OpenChamber control service', () => {
+describe('OMPChamber control service', () => {
   it('serves project and model projections without an HTTP or CLI round trip', async () => {
     const { service } = createService();
     await expect(service.execute('projects.list')).resolves.toEqual({
@@ -262,7 +262,7 @@ describe('OpenChamber control service', () => {
 
   it('rejects actions outside the fixed contract', async () => {
     const { service } = createService();
-    await expect(service.execute('session.delete')).rejects.toThrow('Unsupported OpenChamber action');
+    await expect(service.execute('session.delete')).rejects.toThrow('Unsupported OMPChamber action');
   });
 });
 

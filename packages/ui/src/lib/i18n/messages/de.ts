@@ -412,7 +412,7 @@ export const dict = {
   'sessions.sidebar.header.search.clear': 'Suche löschen',
   'sessions.sidebar.footer.actions.settings': 'Einstellungen',
   'sessions.sidebar.footer.actions.shortcuts': 'Tastenkürzel',
-  'sessions.sidebar.footer.actions.aboutOpenChamber': 'Über OMPChamber',
+  'sessions.sidebar.footer.actions.aboutOMPChamber': 'Über OMPChamber',
   'sessions.sidebar.footer.actions.update': 'Aktualisieren',
   'sessions.sidebar.empty.noSessions.title': 'Noch keine Sitzungen',
   'sessions.sidebar.empty.noSessions.description': 'Erstellen Sie Ihre erste Sitzung, um zu coden.',

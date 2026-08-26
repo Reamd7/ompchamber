@@ -86,7 +86,7 @@ function removeInstanceFile(instanceFilePath) {
 // PID is known to be ours (a child we just spawned, or a process we are
 // stopping). Do NOT use it to validate a PID read from a pid file: after an
 // ungraceful shutdown the pid file is stale and the kernel may have recycled
-// that PID to an unrelated process — see isOpenchamberProcessRunning.
+// that PID to an unrelated process — see isOmpchamberProcessRunning.
 function isProcessRunning(pid) {
   try {
     process.kill(pid, 0);
@@ -123,7 +123,7 @@ function readProcessCmdline(pid) {
   return null;
 }
 
-function isOpenchamberCmdline(cmdline) {
+function isOmpchamberCmdline(cmdline) {
   if (typeof cmdline !== 'string' || cmdline.length === 0) {
     return false;
   }
@@ -144,12 +144,12 @@ function isOpenchamberCmdline(cmdline) {
 // startup, which loops forever under systemd Restart=always (issue #1721).
 // Where identity can't be determined (Windows, unreadable /proc or ps), we fall
 // back to liveness so there are no false negatives on those platforms.
-function isOpenchamberProcessRunning(pid) {
-  const state = getOpenchamberProcessState(pid);
+function isOmpchamberProcessRunning(pid) {
+  const state = getOmpchamberProcessState(pid);
   return state === 'matched' || state === 'unknown';
 }
 
-function getOpenchamberProcessState(pid, options = {}) {
+function getOmpchamberProcessState(pid, options = {}) {
   const checkProcessRunning = typeof options.isProcessRunning === 'function'
     ? options.isProcessRunning
     : isProcessRunning;
@@ -164,10 +164,10 @@ function getOpenchamberProcessState(pid, options = {}) {
   if (cmdline === null) {
     return 'unknown';
   }
-  return isOpenchamberCmdline(cmdline) ? 'matched' : 'mismatched';
+  return isOmpchamberCmdline(cmdline) ? 'matched' : 'mismatched';
 }
 
-function hasOpenchamberRuntimeInfo(info) {
+function hasOmpchamberRuntimeInfo(info) {
   return Boolean(info && typeof info.runtime === 'string' && info.runtime.length > 0);
 }
 
@@ -284,10 +284,10 @@ export {
   writeInstanceOptions,
   removeInstanceFile,
   isProcessRunning,
-  isOpenchamberCmdline,
-  isOpenchamberProcessRunning,
-  getOpenchamberProcessState,
-  hasOpenchamberRuntimeInfo,
+  isOmpchamberCmdline,
+  isOmpchamberProcessRunning,
+  getOmpchamberProcessState,
+  hasOmpchamberRuntimeInfo,
   terminateProcessTree,
   stopInstanceProcess,
 };

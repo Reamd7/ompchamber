@@ -14,7 +14,7 @@
 import React from 'react';
 
 import { resolveProjectForSessionDirectory } from '@/lib/projectResolution';
-import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import { subscribeOmpchamberEvents } from '@/lib/openchamberEvents';
 import { useAgentMemoryStore } from '@/stores/useAgentMemoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -56,7 +56,7 @@ export const useAgentMemorySync = (directory: string | null): void => {
     if (!enabled) {
       return;
     }
-    return subscribeOpenchamberEvents((event) => {
+    return subscribeOmpchamberEvents((event) => {
       if (event.type === 'agent-memory-changed') {
         void load(projectPath);
       }

@@ -38,7 +38,7 @@ describe('listGlobalSessionPages', () => {
                 title: 'Alpha',
                 time: { created: 1, updated: 2 },
                 metadata: {
-                  openchamber: {
+                  ompchamber: {
                     kind: 'review',
                     originalSessionID: 'ses_original',
                   },
@@ -68,7 +68,7 @@ describe('listGlobalSessionPages', () => {
     }
 
     expect(session.metadata).toEqual({
-      openchamber: {
+      ompchamber: {
         kind: 'review',
         originalSessionID: 'ses_original',
       },

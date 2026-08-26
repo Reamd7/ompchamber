@@ -1,5 +1,5 @@
 /**
- * OpenChamber project context routes: notes, todos, and plan files.
+ * OMPChamber project context routes: notes, todos, and plan files.
  *
  * These replace the shared UI's direct `/api/fs/*` access to
  * `~/.config/ompchamber/projects/*`. The client no longer resolves the home

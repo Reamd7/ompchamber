@@ -100,11 +100,11 @@ describe('candidate selection', () => {
   const listeners = [
     { port: 5173, pid: 10, command: 'node' },
     { port: 5432, pid: 11, command: 'postgres' },
-    { port: 4096, pid: 12, command: 'openchamber' },
+    { port: 4096, pid: 12, command: 'ompchamber' },
     { port: 3000, pid: 13, command: 'node' },
   ];
 
-  test('drops OpenChamber own ports so the app never offers itself', () => {
+  test('drops OMPChamber own ports so the app never offers itself', () => {
     const ports = selectDevServerCandidates(listeners, { ownPorts: [4096] }).map((entry) => entry.port);
     expect(ports).toEqual([5173, 3000]);
   });

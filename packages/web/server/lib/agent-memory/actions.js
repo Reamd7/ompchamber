@@ -1,5 +1,5 @@
 /**
- * Dispatch for the `memory.*` actions the `openchamber_memory` tool calls.
+ * Dispatch for the `memory.*` actions the `ompchamber_memory` tool calls.
  *
  * Kept beside the store rather than inside the control service, because the
  * control service already owns sessions, schedules and the browser; memory
@@ -226,7 +226,7 @@ export const createAgentMemoryActions = (dependencies) => {
         enabled = false;
       }
       if (!enabled) {
-        return fail('Agent memory is switched off in OpenChamber settings', 403);
+        return fail('Agent memory is switched off in OMPChamber settings', 403);
       }
     }
 

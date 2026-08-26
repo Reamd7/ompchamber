@@ -605,7 +605,7 @@ export function createAgentDefinitionHandlers({
 
 /**
  * One-time sidecar → omp migration (02 §6.2): every
- * `openchamber-agents.json` record becomes a user-scope worker `.md` plus a
+ * `ompchamber-agents.json` record becomes a user-scope worker `.md` plus a
  * mirrored `OmpPersona`, so legacy `meta.agent` sessions keep resolving
  * (D-B2: the worker file and the top-level persona are separate resources).
  * A name that already exists in discovery is skipped (first-wins). Any

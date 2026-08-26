@@ -209,7 +209,7 @@ export const DefaultsSettings: React.FC = () => {
 
   const formatVariantLabel = React.useCallback((variant: string) => {
     if (variant === DEFAULT_VARIANT_VALUE) {
-      return t('settings.openchamber.defaults.option.default');
+      return t('settings.ompchamber.defaults.option.default');
     }
     return variant.charAt(0).toUpperCase() + variant.slice(1);
   }, [t]);
@@ -362,22 +362,22 @@ export const DefaultsSettings: React.FC = () => {
 
   return (
     <>
-      <SettingsSection title={t('settings.openchamber.defaults.title')} divider={false}>
+      <SettingsSection title={t('settings.ompchamber.defaults.title')} divider={false}>
         <div className="space-y-0">
           {ompEngineEnabled ? (
             <OmpModelRolesEditor directory={ompDirectory} />
           ) : (
           <>
           <div className="mt-0 mb-1 typography-meta text-muted-foreground">
-            {t('settings.openchamber.defaults.summaryPrefix')}
+            {t('settings.ompchamber.defaults.summaryPrefix')}
             {' '}
             {parsedModel.providerId ? (
               <span className="text-foreground">
                 {parsedModel.providerId}/{parsedModel.modelId}
-                {supportsVariants ? ` (${defaultVariant ?? t('settings.openchamber.defaults.option.defaultLowercase')})` : ''}
+                {supportsVariants ? ` (${defaultVariant ?? t('settings.ompchamber.defaults.option.defaultLowercase')})` : ''}
               </span>
             ) : (
-              <span className="text-foreground">{t('settings.openchamber.defaults.summaryOpenCodeDefault')}</span>
+              <span className="text-foreground">{t('settings.ompchamber.defaults.summaryOpenCodeDefault')}</span>
             )}
             {defaultAgent && (
               <>
@@ -390,7 +390,7 @@ export const DefaultsSettings: React.FC = () => {
           <div>
             <SettingsFieldRow
               settingsItem="sessions.default-model"
-              label={t('settings.openchamber.defaults.field.defaultModel')}
+              label={t('settings.ompchamber.defaults.field.defaultModel')}
             >
               <ModelSelector
                 providerId={parsedModel.providerId}
@@ -402,16 +402,16 @@ export const DefaultsSettings: React.FC = () => {
 
             <SettingsFieldRow
               settingsItem="sessions.default-thinking"
-              label={t('settings.openchamber.defaults.field.defaultThinking')}
+              label={t('settings.ompchamber.defaults.field.defaultThinking')}
             >
               <Select value={defaultVariant ?? DEFAULT_VARIANT_VALUE} onValueChange={handleVariantChange} disabled={!supportsVariants}>
                 <SelectTrigger size={SETTINGS_SELECT_SIZE} className={SETTINGS_SELECT_ROW_TRIGGER_CLASS}>
-                  <SelectValue placeholder={t('settings.openchamber.defaults.field.thinkingPlaceholder')}>
+                  <SelectValue placeholder={t('settings.ompchamber.defaults.field.thinkingPlaceholder')}>
                     {formatVariantLabel(defaultVariant ?? DEFAULT_VARIANT_VALUE)}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={DEFAULT_VARIANT_VALUE}>{t('settings.openchamber.defaults.option.default')}</SelectItem>
+                  <SelectItem value={DEFAULT_VARIANT_VALUE}>{t('settings.ompchamber.defaults.option.default')}</SelectItem>
                   {availableVariants.map((variant) => (
                     <SelectItem key={variant} value={variant}>
                       {formatVariantLabel(variant)}
@@ -423,7 +423,7 @@ export const DefaultsSettings: React.FC = () => {
 
             <SettingsFieldRow
               settingsItem="sessions.default-agent"
-              label={t('settings.openchamber.defaults.field.defaultAgent')}
+              label={t('settings.ompchamber.defaults.field.defaultAgent')}
             >
               <AgentSelector
                 agentName={defaultAgent || ''}
@@ -441,18 +441,18 @@ export const DefaultsSettings: React.FC = () => {
               settingsItem="sessions.deletion-dialog"
               checked={showDeletionDialog}
               onChange={setShowDeletionDialog}
-              label={t('settings.openchamber.defaults.field.showDeletionDialog')}
-              ariaLabel={t('settings.openchamber.defaults.field.showDeletionDialogAria')}
+              label={t('settings.ompchamber.defaults.field.showDeletionDialog')}
+              ariaLabel={t('settings.ompchamber.defaults.field.showDeletionDialogAria')}
             />
           </SettingsInset>
 
           <div className="space-y-3 pt-6">
             <div className="flex items-center gap-1.5">
               <SettingsGroupTitle>
-                {t('settings.openchamber.defaults.smallModel.title')}
+                {t('settings.ompchamber.defaults.smallModel.title')}
               </SettingsGroupTitle>
               <SettingsInfoHint>
-                {t('settings.openchamber.defaults.smallModel.description')}
+                {t('settings.ompchamber.defaults.smallModel.description')}
               </SettingsInfoHint>
             </div>
 
@@ -462,12 +462,12 @@ export const DefaultsSettings: React.FC = () => {
               onChange={(checked) => {
                 void handleSmallModelUseDefaultChange(checked);
               }}
-              label={t('settings.openchamber.defaults.smallModel.useDefault')}
-              ariaLabel={t('settings.openchamber.defaults.smallModel.useDefaultAria')}
+              label={t('settings.ompchamber.defaults.smallModel.useDefault')}
+              ariaLabel={t('settings.ompchamber.defaults.smallModel.useDefaultAria')}
             />
 
             {!smallModelUseDefault ? (
-              <SettingsFieldRow label={t('settings.openchamber.defaults.smallModel.overrideModel')}>
+              <SettingsFieldRow label={t('settings.ompchamber.defaults.smallModel.overrideModel')}>
                 <ModelSelector
                   providerId={parsedSmallModel.providerId}
                   modelId={parsedSmallModel.modelId}
@@ -481,16 +481,16 @@ export const DefaultsSettings: React.FC = () => {
             <SettingsInset className={SETTINGS_OPTION_STACK_CLASS}>
               <div className="flex items-center gap-1.5">
                 <SettingsGroupTitle>
-                  {t('settings.openchamber.defaults.walkthroughModel.title')}
+                  {t('settings.ompchamber.defaults.walkthroughModel.title')}
                 </SettingsGroupTitle>
                 <SettingsInfoHint>
-                  {t('settings.openchamber.defaults.walkthroughModel.description')}
+                  {t('settings.ompchamber.defaults.walkthroughModel.description')}
                 </SettingsInfoHint>
               </div>
 
               <SettingsFieldRow
                 settingsItem="sessions.walkthrough-model"
-                label={t('settings.openchamber.defaults.walkthroughModel.overrideModel')}
+                label={t('settings.ompchamber.defaults.walkthroughModel.overrideModel')}
               >
                 <ModelSelector
                   providerId={parsedWalkthroughModel.providerId}
@@ -498,7 +498,7 @@ export const DefaultsSettings: React.FC = () => {
                   onChange={handleWalkthroughModelOverrideChange}
                   allowedProviderIds={smallModelProviders}
                   isModelAllowed={isStructuredOutputCapable}
-                  placeholder={t('settings.openchamber.defaults.walkthroughModel.usesSmallModel')}
+                  placeholder={t('settings.ompchamber.defaults.walkthroughModel.usesSmallModel')}
                   className={SETTINGS_CUSTOM_TRIGGER_CLASS}
                 />
               </SettingsFieldRow>

@@ -13,7 +13,7 @@ import {
   runDirPath,
 } from "./lib/batch-claims.mjs";
 
-const PROJECT_NAME = "openchamber-monorepo";
+const PROJECT_NAME = "ompchamber-monorepo";
 // Pinned so unattended batch runs cannot change diagnostics or output shape
 // without an explicit update here.
 const REACT_DOCTOR_VERSION = "0.9.12";

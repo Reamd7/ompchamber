@@ -448,7 +448,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.header.search.clear': '검색 지우기',
   'sessions.sidebar.footer.actions.settings': '설정',
   'sessions.sidebar.footer.actions.shortcuts': '단축키',
-  'sessions.sidebar.footer.actions.aboutOpenChamber': 'OMPChamber 정보',
+  'sessions.sidebar.footer.actions.aboutOMPChamber': 'OMPChamber 정보',
   'sessions.sidebar.footer.actions.update': '업데이트',
   'sessions.sidebar.empty.noSessions.title': '아직 세션 없음',
   'sessions.sidebar.empty.noSessions.description': '첫 세션을 만들고 코딩을 시작하세요.',

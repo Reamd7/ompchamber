@@ -36,8 +36,8 @@ import { SnippetsSidebar } from '@/components/sections/snippets/SnippetsSidebar'
 import { SnippetsPage } from '@/components/sections/snippets/SnippetsPage';
 import { GitPage } from '@/components/sections/git-identities/GitPage';
 import { IntegrationsPage } from '@/components/sections/integrations/IntegrationsPage';
-import type { OpenChamberSection } from '@/components/sections/openchamber/types';
-import { OpenChamberPage } from '@/components/sections/openchamber/OpenChamberPage';
+import type { OMPChamberSection } from '@/components/sections/openchamber/types';
+import { OMPChamberPage } from '@/components/sections/openchamber/OpenChamberPage';
 import { OmpEngineSettingsPage } from '@/components/sections/omp/OmpEngineSettingsPage';
 import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
@@ -70,7 +70,7 @@ import { buildSettingsSearchResults, type SettingsSearchResult } from '@/lib/set
 // UI Kit: fixed settings navigation width
 const SETTINGS_NAV_WIDTH = 256;
 const SETTINGS_SPLIT_SIDEBAR_WIDTH = 280;
-const SETTINGS_DETAIL_HISTORY_KEY = '__openchamberSettingsDetail';
+const SETTINGS_DETAIL_HISTORY_KEY = '__ompchamberSettingsDetail';
 
 type MobileStage = 'nav' | 'page-sidebar' | 'page-content';
 type SettingsDetailHistoryEntry = {
@@ -90,7 +90,7 @@ interface SettingsViewProps {
 }
 
 const pageOrder: SettingsPageSlug[] = [
-  // 'general' group — OpenChamber
+  // 'general' group — OMPChamber
   'general',
   'appearance',
   'chat',
@@ -368,7 +368,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
 
   // Nav is always open (collapsed state removed)
 
-  const openChamberSectionBySlug: Partial<Record<SettingsPageSlug, OpenChamberSection>> = React.useMemo(() => ({
+  const openChamberSectionBySlug: Partial<Record<SettingsPageSlug, OMPChamberSection>> = React.useMemo(() => ({
     general: 'general',
     appearance: 'visual',
     chat: 'chat',
@@ -732,7 +732,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'voice':
       case 'tunnel': {
         const section = openChamberSectionBySlug[slug] ?? 'visual';
-        return <OpenChamberPage section={section} />;
+        return <OMPChamberPage section={section} />;
       }
       case 'home':
       default:

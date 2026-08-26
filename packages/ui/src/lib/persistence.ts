@@ -38,8 +38,8 @@ export const applyPersistedHomeDirectoryToWindow = (homeDirectory: string): void
   }
 };
 
-const SETTINGS_MIRROR_INDEX_KEY = 'openchamber.settingsMirror.v2.index';
-const SETTINGS_MIRROR_KEY_PREFIX = 'openchamber.settingsMirror.v2:';
+const SETTINGS_MIRROR_INDEX_KEY = 'ompchamber.settingsMirror.v2.index';
+const SETTINGS_MIRROR_KEY_PREFIX = 'ompchamber.settingsMirror.v2:';
 const MAX_SETTINGS_MIRROR_RUNTIMES = 5;
 
 export const getRuntimeSettingsMirrorStorageKey = (runtimeKey: string): string =>
@@ -164,12 +164,12 @@ const persistToLocalStorage = (settings: DesktopSettings) => {
   if (typeof settings.pwaAppName === 'string') {
     const normalized = settings.pwaAppName.trim().replace(/\s+/g, ' ').slice(0, 64);
     if (normalized.length > 0) {
-      localStorage.setItem('openchamber.pwaName', normalized);
+      localStorage.setItem('ompchamber.pwaName', normalized);
     } else {
-      localStorage.removeItem('openchamber.pwaName');
+      localStorage.removeItem('ompchamber.pwaName');
     }
   } else {
-    localStorage.removeItem('openchamber.pwaName');
+    localStorage.removeItem('ompchamber.pwaName');
   }
   setStoredMobileKeyboardMode(settings.mobileKeyboardMode);
   if (typeof settings.dictationEnabled === 'boolean') {

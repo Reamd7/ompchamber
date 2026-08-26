@@ -158,7 +158,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, projectPl
   const { t } = useI18n();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const createSession = useSessionUIStore((state) => state.createSession);
-  const initializeNewOpenChamberSession = useSessionUIStore((state) => state.initializeNewOpenChamberSession);
+  const initializeNewOMPChamberSession = useSessionUIStore((state) => state.initializeNewOMPChamberSession);
   const sendMessage = useSessionUIStore((state) => state.sendMessage);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const sessions = useSessions();
@@ -629,7 +629,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, projectPl
           }
           sessionId = sessionResult.id;
           directoryHint = sessionResult.directory ?? currentProjectRef.path;
-          initializeNewOpenChamberSession(sessionResult.id, useConfigStore.getState().agents ?? []);
+          initializeNewOMPChamberSession(sessionResult.id, useConfigStore.getState().agents ?? []);
         }
 
         if (!sessionId) {
@@ -689,7 +689,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, projectPl
         setIsPlanSendSubmitting(false);
       }
     },
-    [canCreateWorktree, content, createSession, currentProjectRef, initializeNewOpenChamberSession, pendingPlanSend, resolvedPath, routeToChat, sendMessage, sendPromptTitle, setCurrentSession]
+    [canCreateWorktree, content, createSession, currentProjectRef, initializeNewOMPChamberSession, pendingPlanSend, resolvedPath, routeToChat, sendMessage, sendPromptTitle, setCurrentSession]
   );
 
   const blockWidgets = React.useMemo(() => {

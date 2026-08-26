@@ -1,6 +1,6 @@
 /**
  * GAP-11 legacy default-model import state (spec 01 §5.8 REVISED R12, read by
- * the settings roles editor): the OpenChamber `defaultModel` from settings.json
+ * the settings roles editor): the OMPChamber `defaultModel` from settings.json
  * is detected read-only (the models snapshot carries `legacyDefaults`), and an
  * import is offered ONLY while the omp `default` role is unconfigured. A
  * configured role never gets an import action — the two values are shown

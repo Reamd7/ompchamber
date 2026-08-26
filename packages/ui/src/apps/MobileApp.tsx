@@ -4,7 +4,7 @@ import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
 import { MobileAppUpdateToast } from '@/components/update/MobileAppUpdateToast';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { Button } from '@/components/ui/button';
-import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { OMPChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { ChatView } from '@/components/views/ChatView';
 import { PlanView } from '@/components/views/PlanView';
 import { SettingsView } from '@/components/views/SettingsView';
@@ -178,10 +178,10 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
     setWorkspaceOpen(true);
   }, []);
 
-  const leftResize = useIpadSidebarResize('left', 'openchamber.ipad.leftSidebarWidth', IPAD_LEFT_SIDEBAR_WIDTH);
+  const leftResize = useIpadSidebarResize('left', 'ompchamber.ipad.leftSidebarWidth', IPAD_LEFT_SIDEBAR_WIDTH);
   const rightResize = useIpadSidebarResize(
     'right',
-    'openchamber.ipad.rightSidebarWidth',
+    'ompchamber.ipad.rightSidebarWidth',
     IPAD_RIGHT_SIDEBAR_WIDTH,
     IPAD_WORKSPACE_SIDEBAR_MAX_WIDTH,
   );
@@ -1142,7 +1142,7 @@ export function MobileApp({ apis }: MobileAppProps) {
   if (!fontsReady) {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-background text-foreground">
-        <OpenChamberLogo width={120} height={120} isAnimated />
+        <OMPChamberLogo width={120} height={120} isAnimated />
       </main>
     );
   }
@@ -1160,7 +1160,7 @@ export function MobileApp({ apis }: MobileAppProps) {
       return (
         <main className="flex min-h-dvh items-center justify-center bg-background px-6 text-center text-foreground">
           <div className="flex max-w-sm flex-col items-center gap-4">
-            <OpenChamberLogo width={120} height={120} isAnimated={!showConnectionRecovery} />
+            <OMPChamberLogo width={120} height={120} isAnimated={!showConnectionRecovery} />
             {showConnectionRecovery ? (
               <>
                 <div className="space-y-2">
@@ -1191,7 +1191,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     if (autoConnectPhase !== 'done') {
       return (
         <main className="relative flex min-h-dvh items-center justify-center bg-background text-foreground">
-          <OpenChamberLogo width={120} height={120} isAnimated />
+          <OMPChamberLogo width={120} height={120} isAnimated />
           {/* Absolutely positioned below the (still perfectly centered) logo so
               the text never pushes it up. 50% + half the 120px logo + a gap. */}
           {autoConnectLabel ? (
@@ -1223,7 +1223,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     if (!showConnectionRecovery) {
       return (
         <main className="flex min-h-dvh items-center justify-center bg-background text-foreground">
-          <OpenChamberLogo width={120} height={120} isAnimated />
+          <OMPChamberLogo width={120} height={120} isAnimated />
         </main>
       );
     }
@@ -1249,7 +1249,7 @@ export function MobileApp({ apis }: MobileAppProps) {
                   shell (and sync) still mounts and warms up underneath. */}
               {isNativeMobileApp && lastSessionRestorePending ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-                  <OpenChamberLogo width={120} height={120} isAnimated />
+                  <OMPChamberLogo width={120} height={120} isAnimated />
                 </div>
               ) : null}
               <SyncAppEffects embeddedBackgroundWorkEnabled={isInitialized} />

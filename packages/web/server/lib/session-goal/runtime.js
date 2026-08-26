@@ -1,5 +1,5 @@
 // Session goal: a persisted, self-continuing objective attached to a session
-// (metadata.openchamber.goal). While the goal is active, the server keeps the
+// (metadata.ompchamber.goal). While the goal is active, the server keeps the
 // session working toward it: after each busy→idle transition it accounts token
 // usage, asks the small model to audit progress (continue / complete /
 // blocked), and either re-prompts the session's own model with a continuation
@@ -188,7 +188,7 @@ const extractSessionUpdate = (payload) => {
 const parseGoalMetadata = (session) => {
   const metadata = session?.metadata;
   if (!metadata || typeof metadata !== 'object') return null;
-  const namespace = metadata.openchamber;
+  const namespace = metadata.ompchamber;
   if (!namespace || typeof namespace !== 'object') return null;
   const goal = namespace.goal;
   if (!goal || typeof goal !== 'object') return null;
@@ -318,8 +318,8 @@ export const createSessionGoalRuntime = ({
     if (!currentGoal || currentGoal.id !== expectedGoalId) return null;
     const nextGoal = { ...currentGoal, ...mutate(currentGoal), updatedAt: Date.now() };
     const currentMetadata = session?.metadata && typeof session.metadata === 'object' ? session.metadata : {};
-    const currentNamespace = currentMetadata.openchamber && typeof currentMetadata.openchamber === 'object'
-      ? currentMetadata.openchamber
+    const currentNamespace = currentMetadata.ompchamber && typeof currentMetadata.ompchamber === 'object'
+      ? currentMetadata.ompchamber
       : {};
     await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, {
       directory,
@@ -327,7 +327,7 @@ export const createSessionGoalRuntime = ({
       body: {
         metadata: {
           ...currentMetadata,
-          openchamber: { ...currentNamespace, goal: nextGoal },
+          ompchamber: { ...currentNamespace, goal: nextGoal },
         },
       },
     });
@@ -459,7 +459,7 @@ export const createSessionGoalRuntime = ({
     if (!goal || goal.status !== 'active') return;
 
     // File-backed objectives: the metadata carries only a flag; the objective
-    // TEXT lives under the OpenChamber data dir keyed by session id and is
+    // TEXT lives under the OMPChamber data dir keyed by session id and is
     // read fresh on every tick (live-editable). A missing file falls back to
     // whatever inline objective the metadata still has — the goal must never
     // die just because a file went away.

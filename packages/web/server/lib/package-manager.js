@@ -26,7 +26,7 @@ function getSpawnSyncBaseOptions() {
 // for this fork; set OMPCHAMBER_UPDATE_API_URL to use a custom one).
 const UPDATE_CHECK_URL = process.env.OMPCHAMBER_UPDATE_API_URL || '';
 
-function getOpenChamberConfigDir() {
+function getOMPChamberConfigDir() {
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA;
     if (appData) return path.join(appData, 'ompchamber');
@@ -41,7 +41,7 @@ function sanitizeInstallScope(scope) {
 }
 
 function getOrCreateInstallId(scope = 'web') {
-  const configDir = getOpenChamberConfigDir();
+  const configDir = getOMPChamberConfigDir();
   const normalizedScope = sanitizeInstallScope(scope);
   const idPath = path.join(configDir, `install-id-${normalizedScope}`);
 
@@ -104,7 +104,7 @@ async function resolveAndroidApkUrl(version, candidateUrl) {
     const response = await fetch(`${GITHUB_RELEASES_API_URL}/tags/v${version}`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'openchamber-update-check',
+        'User-Agent': 'ompchamber-update-check',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -118,7 +118,7 @@ async function resolveAndroidApkUrl(version, candidateUrl) {
         && typeof asset.browser_download_url === 'string'
       ))
       : [];
-    const canonicalAsset = apkAssets.find((asset) => /^OpenChamber-.+-android\.apk$/i.test(asset.name));
+    const canonicalAsset = apkAssets.find((asset) => /^OMPChamber-.+-android\.apk$/i.test(asset.name));
     return (canonicalAsset || apkAssets[0])?.browser_download_url;
   } catch {
     return undefined;
@@ -350,7 +350,7 @@ function getGlobalNodeModulesRoots(pm) {
 function getOwnedPackagePathsFromGlobalBins(pm) {
   const packagePaths = [];
   for (const binDir of getGlobalBinDirs(pm)) {
-    const binaryName = process.platform === 'win32' ? 'openchamber.cmd' : 'openchamber';
+    const binaryName = process.platform === 'win32' ? 'ompchamber.cmd' : 'ompchamber';
     const binaryPath = path.join(binDir, binaryName);
     if (!fs.existsSync(binaryPath)) continue;
 
@@ -651,7 +651,7 @@ function isPackageInstalledWith(pm) {
     });
 
     if (result.status !== 0) return false;
-    return result.stdout.includes(PACKAGE_NAME) || result.stdout.includes('openchamber');
+    return result.stdout.includes(PACKAGE_NAME) || result.stdout.includes('ompchamber');
   } catch {
     return false;
   }
@@ -795,7 +795,7 @@ export async function checkForUpdates(options = {}) {
       return {
         ...remote,
         packageManager: pm,
-        updateCommand: 'openchamber update',
+        updateCommand: 'ompchamber update',
       };
     }
   }
@@ -829,7 +829,7 @@ export async function checkForUpdates(options = {}) {
     downloadUrl,
     packageManager: pm,
     // Show our CLI command, not raw package manager command
-    updateCommand: 'openchamber update',
+    updateCommand: 'ompchamber update',
   };
 }
 export function executeUpdate(pm = detectPackageManager(), options = {}) {

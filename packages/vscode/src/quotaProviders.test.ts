@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const previousQuotaDataDirectory = process.env.OMPCHAMBER_DATA_DIR;
-const temporaryQuotaDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-quota-'));
+const temporaryQuotaDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-vscode-quota-'));
 process.env.OMPCHAMBER_DATA_DIR = temporaryQuotaDataDirectory;
 
 // readAuthFile reads ~/.local/share/opencode/auth.json via fs.readFileSync.

@@ -2,7 +2,7 @@
  * omp parity HTTP/SSE surface — shared runtime-agnostic factories (spec
  * docs/omp-parity/05 §5.2.2; skills ui-api-decoupling + relay-transport).
  *
- * All omp-native endpoints are explicit OpenChamber routes served by the omp
+ * All omp-native endpoints are explicit OMPChamber routes served by the omp
  * host and reached through `runtimeFetch` (including its SSE streaming
  * branch), so one implementation is correct for web, desktop, VS Code,
  * hosted mobile, and Capacitor mobile — the relay tunnel routes allowlisted
@@ -2116,7 +2116,7 @@ export const createOmpDialogsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpDial
 
 // ---------------------------------------------------------------------------
 // URI bridge API — internal-URI resolve + token redemption (spec 04 §5.2.1-
-// §5.2.4; P1 = 'C:\Users\reamd\.omp\agent\sessions\-Documents-experiment_area-openchamber\2026-08-20T03-54-19-322Z_01a01d4e-3339-7000-b114-20d6ff429062\local' read only, session-pinned, sourcePath never returned)
+// §5.2.4; P1 = 'C:\Users\reamd\.omp\agent\sessions\-Documents-experiment_area-ompchamber\2026-08-20T03-54-19-322Z_01a01d4e-3339-7000-b114-20d6ff429062\local' read only, session-pinned, sourcePath never returned)
 // ---------------------------------------------------------------------------
 
 /** Opaque resource token minted by resolve (04 §5.2.4; no path inside). */

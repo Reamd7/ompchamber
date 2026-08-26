@@ -5,7 +5,7 @@ import path from 'node:path';
 import { deleteLegacyOpenCodeGoCredential, deleteQuotaCredential, readQuotaCredential, writeQuotaCredential } from './store.js';
 
 const previousDataDir = process.env.OMPCHAMBER_DATA_DIR;
-const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-quota-store-'));
+const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-quota-store-'));
 process.env.OMPCHAMBER_DATA_DIR = temporaryDirectory;
 
 describe('quota credential store', () => {

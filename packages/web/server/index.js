@@ -65,7 +65,7 @@ import {
   registerCommonRequestMiddleware,
   registerServerStatusRoutes,
 } from './lib/opencode/core-routes.js';
-import { registerOpenChamberRoutes } from './lib/opencode/openchamber-routes.js';
+import { registerOMPChamberRoutes } from './lib/opencode/openchamber-routes.js';
 import { createServerUtilsRuntime } from './lib/opencode/server-utils-runtime.js';
 import { createStaticRoutesRuntime } from './lib/opencode/static-routes-runtime.js';
 import { createSettingsRuntime } from './lib/opencode/settings-runtime.js';
@@ -109,20 +109,20 @@ import { createBrowserControlBroker } from './lib/browser-control/broker.js';
 import { createDevServerScanner } from './lib/dev-servers/routes.js';
 import { createDevTunnelRuntime } from './lib/dev-tunnel/runtime.js';
 import { registerBrowserControlRoutes } from './lib/browser-control/routes.js';
-import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
+import { createOMPChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createScheduledTaskService } from './lib/scheduled-tasks/service.js';
-import { createOpenChamberControlService } from './lib/openchamber-control/service.js';
-import { OpenChamberControlError } from './lib/openchamber-control/error.js';
+import { createOMPChamberControlService } from './lib/openchamber-control/service.js';
+import { OMPChamberControlError } from './lib/openchamber-control/error.js';
 import webPush from 'web-push';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DEFAULT_PORT = 3000;
-const DESKTOP_NOTIFY_PREFIX = '[OpenChamberDesktopNotify] ';
+const DESKTOP_NOTIFY_PREFIX = '[OMPChamberDesktopNotify] ';
 const uiNotificationClients = new Set();
 const uiNotificationWsClients = new Set();
-const uiOpenChamberEventClients = new Set();
+const uiOMPChamberEventClients = new Set();
 const HEALTH_CHECK_INTERVAL = 15000;
 const SHUTDOWN_TIMEOUT = 10000;
 const MODELS_DEV_API_URL = 'https://models.dev/api.json';
@@ -514,7 +514,7 @@ const hmrStateRuntime = createHmrStateRuntime({
   globalThisLike: globalThis,
   os,
   processLike: process,
-  stateKey: '__openchamberHmrState',
+  stateKey: '__ompchamberHmrState',
 });
 const hmrState = hmrStateRuntime.getOrCreateHmrState();
 hmrStateRuntime.ensureUserProvidedOpenCodePassword(hmrState);
@@ -621,7 +621,7 @@ const ENV_DESKTOP_NOTIFY = (() => {
 
   const argv0 = typeof process.argv?.[0] === 'string' ? process.argv[0] : '';
   const argv1 = typeof process.argv?.[1] === 'string' ? process.argv[1] : '';
-  return /openchamber-server/i.test(argv0) || /openchamber-server/i.test(argv1);
+  return /ompchamber-server/i.test(argv0) || /ompchamber-server/i.test(argv1);
 })();
 const openCodeAuthStateRuntime = createOpenCodeAuthStateRuntime({
   crypto,
@@ -1038,7 +1038,7 @@ const bootstrapRuntime = createBootstrapRuntime({
   registerAuthAndAccessRoutes,
   registerTtsRoutes,
   registerNotificationRoutes,
-  registerOpenChamberRoutes,
+  registerOMPChamberRoutes,
   registerAgentToolRoutes: (app, options) => options.agentToolRuntime.registerRoutes(app, options.express),
   express,
 });
@@ -1220,7 +1220,7 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
   sessionKnowledgeRuntime,
   setSessionAutoAccept: (sessionId, enabled, directory) => permissionAutoAcceptRuntime.setSessionPolicy(sessionId, enabled, directory),
   emitTaskRunEvent: (event) => {
-    for (const client of uiOpenChamberEventClients) {
+    for (const client of uiOMPChamberEventClients) {
       try {
         writeSseEvent(client, {
           type: 'ompchamber:scheduled-task-ran',
@@ -1233,14 +1233,14 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
           },
         });
       } catch {
-        uiOpenChamberEventClients.delete(client);
+        uiOMPChamberEventClients.delete(client);
       }
     }
   },
   logger: console,
 });
 const emitSessionCreatedEvent = (event) => {
-  for (const client of uiOpenChamberEventClients) {
+  for (const client of uiOMPChamberEventClients) {
     try {
       writeSseEvent(client, {
         type: 'ompchamber:session-created',
@@ -1255,17 +1255,17 @@ const emitSessionCreatedEvent = (event) => {
         },
       });
     } catch {
-      uiOpenChamberEventClients.delete(client);
+      uiOMPChamberEventClients.delete(client);
     }
   }
 };
 
 // Linked-worktree topology changes for registered projects, observed via
 // `.git/worktrees` metadata regardless of which client created or removed
-// the worktree. Emitted to OpenChamber clients so they re-list authoritatively.
+// the worktree. Emitted to OMPChamber clients so they re-list authoritatively.
 const emitWorktreesChangedEvent = (directories) => {
   if (!Array.isArray(directories) || directories.length === 0) return;
-  for (const client of uiOpenChamberEventClients) {
+  for (const client of uiOMPChamberEventClients) {
     try {
       writeSseEvent(client, {
         type: 'ompchamber:worktrees-changed',
@@ -1274,7 +1274,7 @@ const emitWorktreesChangedEvent = (directories) => {
         },
       });
     } catch {
-      uiOpenChamberEventClients.delete(client);
+      uiOMPChamberEventClients.delete(client);
     }
   }
 };
@@ -1297,7 +1297,7 @@ const resolveMemoryProjectId = createMemoryProjectResolver({
  * stored is visible without reopening anything.
  */
 const emitAgentMemoryChangedEvent = (event) => {
-  for (const client of uiOpenChamberEventClients) {
+  for (const client of uiOMPChamberEventClients) {
     try {
       writeSseEvent(client, {
         type: 'ompchamber:agent-memory-changed',
@@ -1307,7 +1307,7 @@ const emitAgentMemoryChangedEvent = (event) => {
         },
       });
     } catch {
-      uiOpenChamberEventClients.delete(client);
+      uiOMPChamberEventClients.delete(client);
     }
   }
 };
@@ -1326,7 +1326,7 @@ const scheduledTaskService = createScheduledTaskService({
   projectConfigRuntime,
   scheduledTasksRuntime,
 });
-const openChamberSessionService = createOpenChamberSessionService({
+const openChamberSessionService = createOMPChamberSessionService({
   readSettingsFromDiskMigrated,
   sanitizeProjects,
   validateDirectoryPath,
@@ -1336,7 +1336,7 @@ const openChamberSessionService = createOpenChamberSessionService({
   emitSessionCreatedEvent,
   sessionKnowledgeRuntime,
 });
-// Browser actions are published to whichever OpenChamber clients are connected;
+// Browser actions are published to whichever OMPChamber clients are connected;
 // the one owning the browser panel answers. `emitRequest` returns the number of
 // clients reached so the broker can fail fast when nobody is listening.
 const browserControlBroker = createBrowserControlBroker({
@@ -1347,8 +1347,8 @@ const browserControlBroker = createBrowserControlBroker({
     // lets the broker say "not here" instead of timing out.
     const needsBrowserView = request.action !== 'browser.open';
     let delivered = 0;
-    for (const client of uiOpenChamberEventClients) {
-      if (needsBrowserView && client.openchamberBrowserCapable !== true) continue;
+    for (const client of uiOMPChamberEventClients) {
+      if (needsBrowserView && client.ompchamberBrowserCapable !== true) continue;
       try {
         writeSseEvent(client, {
           type: 'ompchamber:browser-control-request',
@@ -1360,14 +1360,14 @@ const browserControlBroker = createBrowserControlBroker({
         });
         delivered += 1;
       } catch {
-        uiOpenChamberEventClients.delete(client);
+        uiOMPChamberEventClients.delete(client);
       }
     }
     return delivered;
   },
 });
 
-const openChamberControlService = createOpenChamberControlService({
+const openChamberControlService = createOMPChamberControlService({
   readSettingsFromDiskMigrated,
   sanitizeProjects,
   buildOpenCodeUrl,
@@ -1378,7 +1378,7 @@ const openChamberControlService = createOpenChamberControlService({
   browserControl: browserControlBroker,
   agentMemoryActions: createAgentMemoryActions({
     agentMemoryRuntime,
-    createError: (message, status) => new OpenChamberControlError(message, status),
+    createError: (message, status) => new OMPChamberControlError(message, status),
     onMemoryChanged: emitAgentMemoryChangedEvent,
     isAgentMemoryEnabled,
     resolveProjectId: resolveMemoryProjectId,
@@ -1611,7 +1611,7 @@ async function main(options = {}) {
     ? options.getDesktopRuntimeConfig
     : null;
 
-  console.log(`Starting OpenChamber on port ${port === 0 ? 'auto' : port}`);
+  console.log(`Starting OMPChamber on port ${port === 0 ? 'auto' : port}`);
 
   // Voice enumeration is independent from route registration. Start it now,
   // but do not hold server listen or managed OpenCode startup on `say -v "?"`.
@@ -1676,7 +1676,7 @@ async function main(options = {}) {
 
   const bootstrapResult = bootstrapRuntime.setupBaseRoutes(app, {
     process,
-    openchamberVersion: OMPCHAMBER_VERSION,
+    ompchamberVersion: OMPCHAMBER_VERSION,
     runtimeName: process.env.OMPCHAMBER_RUNTIME || 'web',
     serverStartedAt,
     gracefulShutdown,
@@ -1749,9 +1749,9 @@ async function main(options = {}) {
     getServerLabel: () => {
       try {
         const name = os.hostname();
-        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : 'OpenChamber';
+        return typeof name === 'string' && name.trim().length > 0 ? name.trim() : 'OMPChamber';
       } catch {
-        return 'OpenChamber';
+        return 'OMPChamber';
       }
     },
     readSettingsFromDiskMigrated,
@@ -1778,7 +1778,7 @@ async function main(options = {}) {
     path,
     server,
     __dirname,
-    openchamberDataDir: OMPCHAMBER_DATA_DIR,
+    ompchamberDataDir: OMPCHAMBER_DATA_DIR,
     modelsDevApiUrl: MODELS_DEV_API_URL,
     modelsMetadataCacheTtl: MODELS_METADATA_CACHE_TTL,
     fetchFreeZenModels,
@@ -1874,8 +1874,8 @@ async function main(options = {}) {
     spawn,
     resolveGitBinaryForSpawn,
     createFsSearchRuntime: createFsSearchRuntimeFactory,
-    openchamberDataDir: OMPCHAMBER_DATA_DIR,
-    openchamberUserConfigRoot: OMPCHAMBER_USER_CONFIG_ROOT,
+    ompchamberDataDir: OMPCHAMBER_DATA_DIR,
+    ompchamberUserConfigRoot: OMPCHAMBER_USER_CONFIG_ROOT,
     normalizeDirectoryPath,
     resolveProjectDirectory,
     resolveOptionalProjectDirectory,
@@ -1893,7 +1893,7 @@ async function main(options = {}) {
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
     getOpenCodePort: () => openCodePort,
-    // Dev-server discovery must not offer OpenChamber's own listeners back to
+    // Dev-server discovery must not offer OMPChamber's own listeners back to
     // the user as something to preview.
     getOwnPorts: () => [port, openCodePort].filter((value) => Number.isInteger(value) && value > 0),
     devServerScanner,
@@ -1909,7 +1909,7 @@ async function main(options = {}) {
     openChamberControlService,
     waitForOpenCodeReady,
     emitSessionCreatedEvent,
-    getOpenChamberEventClients: () => uiOpenChamberEventClients,
+    getOMPChamberEventClients: () => uiOMPChamberEventClients,
     writeSseEvent,
     permissionAutoAcceptRuntime,
   });
@@ -1985,7 +1985,7 @@ async function main(options = {}) {
   // device/session exists, stop it (and clear a stale enabled flag) otherwise.
   void relayService.reconcile();
 
-  // Relay demand can change outside our routes: `openchamber connect-url
+  // Relay demand can change outside our routes: `ompchamber connect-url
   // --relay` writes a pending relay session straight to the on-disk store, and
   // pending sessions expire without any request hitting us. Poll reconcile so a
   // headless instance picks the relay up (or drops it) within a minute.

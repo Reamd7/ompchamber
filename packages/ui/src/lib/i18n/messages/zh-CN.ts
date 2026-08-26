@@ -448,7 +448,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.header.search.clear': '清除搜索',
   'sessions.sidebar.footer.actions.settings': '设置',
   'sessions.sidebar.footer.actions.shortcuts': '快捷键',
-  'sessions.sidebar.footer.actions.aboutOpenChamber': '关于 OMPChamber',
+  'sessions.sidebar.footer.actions.aboutOMPChamber': '关于 OMPChamber',
   'sessions.sidebar.footer.actions.update': '更新',
   'sessions.sidebar.empty.noSessions.title': '暂无会话',
   'sessions.sidebar.empty.noSessions.description': '创建你的第一个会话以开始编码。',

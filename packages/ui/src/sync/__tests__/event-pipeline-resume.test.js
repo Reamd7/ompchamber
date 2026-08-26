@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe('createEventPipeline — system resume reconnect', () => {
-  it('reconnects immediately on openchamber:system-resume event', async () => {
+  it('reconnects immediately on ompchamber:system-resume event', async () => {
     const winListeners = {};
     globalThis.document = {
       visibilityState: 'visible',

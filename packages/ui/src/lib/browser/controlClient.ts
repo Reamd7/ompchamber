@@ -13,7 +13,7 @@
  * opening does not cost the agent a second call.
  */
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import { subscribeOmpchamberEvents } from '@/lib/openchamberEvents';
 
 type BrowserControlRequest = {
   readonly requestId: string;
@@ -174,7 +174,7 @@ const handleRequest = async (request: BrowserControlRequest): Promise<void> => {
 
 const ensureSubscribed = (): void => {
   if (unsubscribe) return;
-  unsubscribe = subscribeOpenchamberEvents((event) => {
+  unsubscribe = subscribeOmpchamberEvents((event) => {
     if (event.type !== 'browser-control-request') return;
     void handleRequest({
       requestId: event.requestId,

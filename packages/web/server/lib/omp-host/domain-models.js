@@ -22,7 +22,7 @@
 //   `omp.settings.updated` (registered in omp-event-registry.json; the
 //   publish callback is wired by the coordinator to ompBus).
 // - defaultModel legacy migration (01 §5.8, R12): read-only detect of the
-//   OpenChamber defaultModel + explicit import that writes
+//   OMPChamber defaultModel + explicit import that writes
 //   modelRoles.default only when unset (never overwrites).
 //
 // Integration contract for the coordinator (this module never touches
@@ -309,11 +309,11 @@ export const buildModelsPayload = (settings, { legacyDefaults = null, models = n
 // Legacy defaultModel migration (01 §5.8, master R12)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const openchamberSettingsPath = () =>
+const ompchamberSettingsPath = () =>
   path.join(os.homedir(), '.config', 'ompchamber', 'settings.json');
 
 /**
- * Read-only detect of the OpenChamber legacy `defaultModel`
+ * Read-only detect of the OMPChamber legacy `defaultModel`
  * (`~/.config/ompchamber/settings.json`, same path the web server reads).
  * Never writes any omp configuration. Only a non-empty value containing "/"
  * is reported (mirroring settings-normalization-runtime.js:177 which keeps
@@ -325,7 +325,7 @@ const openchamberSettingsPath = () =>
 export const detectLegacyDefaultModel = ({ settingsPath } = {}) => {
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(settingsPath ?? openchamberSettingsPath(), 'utf8'));
+    parsed = JSON.parse(fs.readFileSync(settingsPath ?? ompchamberSettingsPath(), 'utf8'));
   } catch {
     return null;
   }

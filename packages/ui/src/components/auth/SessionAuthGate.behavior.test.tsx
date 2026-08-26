@@ -222,7 +222,7 @@ mock.module('@/components/ui', () => ({
 }));
 
 mock.module('@/components/ui/OpenChamberLogo', () => ({
-  OpenChamberLogo: () => 'logo',
+  OMPChamberLogo: () => 'logo',
 }));
 
 mock.module('@/components/icon/Icon', () => ({

@@ -444,11 +444,11 @@ const createOrReuseReviewSession = async (originalSessionID: string, directory: 
     if (existing && isReviewSession(existing)) return existing;
     await patchSessionMetadata(originalSessionID, directory, (metadata) => {
       const next = { ...metadata };
-      const openchamber = next.openchamber;
-      if (openchamber && typeof openchamber === 'object' && !Array.isArray(openchamber)) {
-        const rest = { ...(openchamber as Record<string, unknown>) };
+      const ompchamber = next.ompchamber;
+      if (ompchamber && typeof ompchamber === 'object' && !Array.isArray(ompchamber)) {
+        const rest = { ...(ompchamber as Record<string, unknown>) };
         delete rest.reviewSessionID;
-        next.openchamber = rest;
+        next.ompchamber = rest;
       }
       return next;
     });

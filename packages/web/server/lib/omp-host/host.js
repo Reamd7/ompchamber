@@ -15,7 +15,7 @@ import { isDispatchableInvocation, runWorkerDispatch } from './worker-dispatch.j
 import { OmpHostEngine } from './engine.js';
 import { registerEndpoints } from './endpoints.js';
 
-const HOST_VERSION = 'openchamber-omp-host/1.0.0';
+const HOST_VERSION = 'ompchamber-omp-host/1.0.0';
 
 const parseArgs = (argv) => {
   const args = { command: argv[0] ?? 'serve', hostname: '127.0.0.1', port: 0 };

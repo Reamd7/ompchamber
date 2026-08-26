@@ -61,7 +61,7 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
   let previousOpenCodeConfig: string | undefined;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-config-parse-'));
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-vscode-config-parse-'));
     previousOpenCodeConfig = process.env.OPENCODE_CONFIG;
   });
 
@@ -78,7 +78,7 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
 
     assert.throws(() => updateMcpConfig('openproject', { enabled: true }), isInvalidJsoncError);
     assert.equal(fs.readFileSync(configPath, 'utf8'), PARTIAL_PARSE_CONFIG);
-    assert.equal(fs.existsSync(`${configPath}.openchamber.backup`), false);
+    assert.equal(fs.existsSync(`${configPath}.ompchamber.backup`), false);
   });
 
   test('preserves unrelated keys when updating a valid MCP config', () => {
@@ -92,7 +92,7 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
     assert.deepEqual(rewritten.plugin, ['opencode-see-image']);
     assert.equal(rewritten.provider['ollama-cloud'].name, 'Ollama Cloud');
     assert.equal(rewritten.mcp.openproject.enabled, false);
-    assert.equal(fs.readFileSync(`${configPath}.openchamber.backup`, 'utf8'), VALID_CONFIG);
+    assert.equal(fs.readFileSync(`${configPath}.ompchamber.backup`, 'utf8'), VALID_CONFIG);
   });
 
   test('returns an empty object for a comment-only config file', () => {
@@ -111,7 +111,7 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
 
     assert.throws(() => updateMcpConfig('openproject', { enabled: true }), isInvalidJsoncError);
     assert.equal(fs.readFileSync(configPath, 'utf8'), contents);
-    assert.equal(fs.existsSync(`${configPath}.openchamber.backup`), false);
+    assert.equal(fs.existsSync(`${configPath}.ompchamber.backup`), false);
   });
 
   test('lists custom-layer plugins when a project layer is unparseable', () => {
@@ -126,7 +126,7 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
     const specs = listPluginEntries(projectDir).map((entry) => entry.spec);
     assert.deepEqual(specs, ['opencode-see-image']);
     assert.equal(fs.readFileSync(projectFile, 'utf8'), PARTIAL_PARSE_CONFIG);
-    assert.equal(fs.existsSync(`${projectFile}.openchamber.backup`), false);
+    assert.equal(fs.existsSync(`${projectFile}.ompchamber.backup`), false);
   });
 
   test('keeps a valid custom layer writable when a project layer is unparseable', () => {
@@ -144,6 +144,6 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
     assert.deepEqual(rewritten.plugin, ['opencode-see-image']);
     assert.equal(rewritten.mcp.openproject.enabled, false);
     assert.equal(fs.readFileSync(projectFile, 'utf8'), PARTIAL_PARSE_CONFIG);
-    assert.equal(fs.existsSync(`${projectFile}.openchamber.backup`), false);
+    assert.equal(fs.existsSync(`${projectFile}.ompchamber.backup`), false);
   });
 });

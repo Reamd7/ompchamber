@@ -200,7 +200,7 @@ export const VSCodeLayout: React.FC = () => {
       return;
     }
 
-    void vscodeApi.executeCommand('openchamber.setActiveSession', currentSessionId, activeSessionTitle);
+    void vscodeApi.executeCommand('ompchamber.setActiveSession', currentSessionId, activeSessionTitle);
   }, [activeSessionTitle, currentSessionId, runtimeApis.vscode]);
 
   React.useEffect(() => {
@@ -213,7 +213,7 @@ export const VSCodeLayout: React.FC = () => {
       return;
     }
 
-    void vscodeApi.executeCommand('openchamber.updateSessionEditorTitle', currentSessionId, activeSessionTitle);
+    void vscodeApi.executeCommand('ompchamber.updateSessionEditorTitle', currentSessionId, activeSessionTitle);
   }, [activeSessionTitle, currentSessionId, runtimeApis.vscode, viewMode]);
 
   // If the active session disappears (e.g., deleted), go back to sessions list
@@ -390,13 +390,13 @@ export const VSCodeLayout: React.FC = () => {
         const debugEnabled = (() => {
           if (typeof window === 'undefined') return false;
           try {
-            return window.localStorage.getItem('openchamber_stream_debug') === '1';
+            return window.localStorage.getItem('ompchamber_stream_debug') === '1';
           } catch {
             return false;
           }
         })();
 
-        if (debugEnabled) console.log('[OpenChamber][VSCode][bootstrap] attempt', { configInitialized });
+        if (debugEnabled) console.log('[OMPChamber][VSCode][bootstrap] attempt', { configInitialized });
         if (!configInitialized) {
           await initializeConfig();
         }
@@ -418,7 +418,7 @@ export const VSCodeLayout: React.FC = () => {
         if (!configState.isInitialized || !configState.isConnected || configState.providers.length === 0 || configState.agents.length === 0) {
           return;
         }
-        if (debugEnabled) console.log('[OpenChamber][VSCode][bootstrap] post-load', {
+        if (debugEnabled) console.log('[OMPChamber][VSCode][bootstrap] post-load', {
           providers: configState.providers.length,
           agents: configState.agents.length,
         });

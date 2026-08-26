@@ -245,7 +245,7 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
 
 /**
  * One-time migration notice when the omp engine reserves /debug (08 §5.4
- * collision rules): the OpenChamber guided debug command is /troubleshoot
+ * collision rules): the OMPChamber guided debug command is /troubleshoot
  * from then on. Persisted per install so the nudge appears exactly once.
  */
 const DEBUG_RENAME_TOAST_STORAGE_KEY = 'oc-omp-debug-rename-toast-shown';
@@ -2247,7 +2247,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         e.preventDefault();
         e.stopPropagation();
         dragEnterCountRef.current++;
-        const isInternal = e.dataTransfer.types?.includes('application/x-openchamber-file-path') ?? false;
+        const isInternal = e.dataTransfer.types?.includes('application/x-ompchamber-file-path') ?? false;
         if (isInternal !== isInternalDrag) {
             setIsInternalDrag(isInternal);
         }
@@ -2301,7 +2301,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         if (!currentSessionId && !newSessionDraftOpen) return;
 
         // Internal drag: file tree → chat input (relative path as @mention)
-        const internalPath = e.dataTransfer.getData('application/x-openchamber-file-path');
+        const internalPath = e.dataTransfer.getData('application/x-ompchamber-file-path');
         if (internalPath && internalPath !== '.') {
             confirmedMentionsRef.current.add(internalPath);
             const mention = `@${internalPath}`;

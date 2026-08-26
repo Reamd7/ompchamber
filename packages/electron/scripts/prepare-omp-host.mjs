@@ -1,4 +1,4 @@
-// Stage the OpenChamber omp host as a self-contained binary for packaged
+// Stage the OMPChamber omp host as a self-contained binary for packaged
 // desktop builds.
 //
 // The host (packages/web/server/lib/omp-host) embeds @oh-my-pi/

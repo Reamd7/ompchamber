@@ -18,7 +18,7 @@ export type BtwPanelState = {
 
 /**
  * Derive the `/btw` panel identity for one parent session from authoritative
- * session metadata (`openchamber.btwSessionID`), plus the transient UI state
+ * session metadata (`ompchamber.btwSessionID`), plus the transient UI state
  * kept in `useBtwStore`. The panel exists only while the parent's link AND the
  * fork itself are present in the live stores, so a fork deleted anywhere
  * (sidebar, another client) makes the panel disappear without extra tracking.

@@ -1,6 +1,6 @@
 // Native tray/menu bar controller.
 //
-// Surfaces a glanceable, always-visible view of OpenChamber's live state:
+// Surfaces a glanceable, always-visible view of OMPChamber's live state:
 //  1. an aggregate activity indicator (idle / busy / error+retry) in the icon
 //     title, rendered as a monochrome template image plus a text counter so it
 //     adapts to light/dark menu bars (colour can't be shown in template mode);

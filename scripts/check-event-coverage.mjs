@@ -212,7 +212,7 @@ if (!args.includes('--skip-name-scan')) {
         }
       }
       if (/(?:open|omp)chamber:omp/.test(line) && (!isDoc || !historicalLine.test(line))) {
-        fail(`parallel channel prefix "openchamber:omp"/"ompchamber:omp" in ${relLabel}:${i + 1} (master R1)`);
+        fail(`parallel channel prefix "ompchamber:omp"/"ompchamber:omp" in ${relLabel}:${i + 1} (master R1)`);
       }
     }
   };

@@ -36,7 +36,7 @@ const isNgrokHost = (hostname: string): boolean =>
 export const addRuntimeProxyHeaders = (url: string, headers: Headers): Headers => {
   try {
     if (isNgrokHost(new URL(url).hostname) && !headers.has('ngrok-skip-browser-warning')) {
-      headers.set('ngrok-skip-browser-warning', 'openchamber');
+      headers.set('ngrok-skip-browser-warning', 'ompchamber');
     }
   } catch {
     // Relative and non-HTTP runtime paths do not need proxy-specific headers.

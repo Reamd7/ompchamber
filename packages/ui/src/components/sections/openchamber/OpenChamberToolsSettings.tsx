@@ -12,7 +12,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useI18n } from '@/lib/i18n';
 
 /**
- * Which OpenChamber capabilities agents are given.
+ * Which OMPChamber capabilities agents are given.
  *
  * Each entry is one tool the managed OpenCode child is handed, so the choices
  * belong together and not under the CLI's own configuration — the binary path
@@ -22,7 +22,7 @@ import { useI18n } from '@/lib/i18n';
  * restarts, so each one records a pending restart rather than implying the
  * change is already live.
  */
-export const OpenChamberToolsSettings: React.FC = () => {
+export const OMPChamberToolsSettings: React.FC = () => {
   const { t } = useI18n();
   const agentControlToolEnabled = useUIStore((state) => state.agentControlToolEnabled);
   const setAgentControlToolEnabled = useUIStore((state) => state.setAgentControlToolEnabled);
@@ -65,24 +65,24 @@ export const OpenChamberToolsSettings: React.FC = () => {
   }, [setAgentMemoryToolEnabled]);
 
   return (
-    <SettingsSection title={t('settings.openchamber.tools.title')}>
+    <SettingsSection title={t('settings.ompchamber.tools.title')}>
       <div className={SETTINGS_OPTION_STACK_CLASS}>
         <SettingsCheckboxRow
           settingsItem="sessions.agent-control-tool"
           checked={agentControlToolEnabled}
           onChange={handleAgentControlToolChange}
-          label={t('settings.openchamber.tools.field.agentControlTool')}
-          ariaLabel={t('settings.openchamber.tools.field.agentControlToolAria')}
-          info={t('settings.openchamber.tools.field.agentControlToolInfo')}
+          label={t('settings.ompchamber.tools.field.agentControlTool')}
+          ariaLabel={t('settings.ompchamber.tools.field.agentControlToolAria')}
+          info={t('settings.ompchamber.tools.field.agentControlToolInfo')}
         />
 
         <SettingsCheckboxRow
           settingsItem="sessions.agent-web-tool"
           checked={agentWebToolEnabled}
           onChange={handleAgentWebToolChange}
-          label={t('settings.openchamber.tools.field.agentWebTool')}
-          ariaLabel={t('settings.openchamber.tools.field.agentWebToolAria')}
-          info={t('settings.openchamber.tools.field.agentWebToolInfo')}
+          label={t('settings.ompchamber.tools.field.agentWebTool')}
+          ariaLabel={t('settings.ompchamber.tools.field.agentWebToolAria')}
+          info={t('settings.ompchamber.tools.field.agentWebToolInfo')}
         />
 
         {agentMemoryAvailable ? (
@@ -90,9 +90,9 @@ export const OpenChamberToolsSettings: React.FC = () => {
           settingsItem="sessions.agent-memory-tool"
           checked={agentMemoryToolEnabled}
           onChange={handleAgentMemoryToolChange}
-          label={t('settings.openchamber.tools.field.agentMemoryTool')}
-          ariaLabel={t('settings.openchamber.tools.field.agentMemoryToolAria')}
-          info={t('settings.openchamber.tools.field.agentMemoryToolInfo')}
+          label={t('settings.ompchamber.tools.field.agentMemoryTool')}
+          ariaLabel={t('settings.ompchamber.tools.field.agentMemoryToolAria')}
+          info={t('settings.ompchamber.tools.field.agentMemoryToolInfo')}
         />
         ) : null}
       </div>

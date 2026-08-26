@@ -1148,7 +1148,7 @@ const injectRuntimeConfigIntoHtml = (html) => {
 };
 
 /**
- * The browser panel's own session, kept separate from OpenChamber's.
+ * The browser panel's own session, kept separate from OMPChamber's.
  *
  * Every page the user opens in the panel shares this partition, which is what
  * lets a dev-server login persist between sessions without touching the app's
@@ -1685,7 +1685,7 @@ Stop-ProcessTree $targetPid $true
     'if [ "$pid" -gt 0 ] 2>/dev/null; then kill -KILL "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null; fi',
     'if [ "$port" -gt 0 ] 2>/dev/null && command -v lsof >/dev/null 2>&1; then for target in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null; lsof -ti ":$port" 2>/dev/null); do [ "$target" = "$$" ] || kill -KILL "$target" 2>/dev/null; done; fi',
   ].join('; ');
-  const child = spawn('/bin/sh', ['-c', script, 'openchamber-opencode-killer', normalizedPid, normalizedPort, String(OPENCODE_SHUTDOWN_GRACE_MS / 1000)], {
+  const child = spawn('/bin/sh', ['-c', script, 'ompchamber-opencode-killer', normalizedPid, normalizedPort, String(OPENCODE_SHUTDOWN_GRACE_MS / 1000)], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -2211,7 +2211,7 @@ const confirmConnectDeepLink = async (payload) => {
   }
   const options = {
     type: 'warning',
-    title: 'Connect to OpenChamber server?',
+    title: 'Connect to OMPChamber server?',
     message: `Connect to "${payload.label}"?`,
     detail:
       `This will add ${payload.serverUrl} as a remote instance and route this app's activity ` +
@@ -3180,7 +3180,7 @@ const isAppBundleInstalled = async (appName) => Boolean(await resolveAppBundlePa
 const iconToDataUrl = async (iconPath, appName) => {
   if (!iconPath || !(await pathExists(iconPath))) return null;
   const safeName = String(appName || 'app').replace(/[^a-z0-9]/gi, '_');
-  const tempPath = path.join(os.tmpdir(), `openchamber-icon-${safeName}-${Date.now()}.png`);
+  const tempPath = path.join(os.tmpdir(), `ompchamber-icon-${safeName}-${Date.now()}.png`);
   try {
     await execFileAsync('sips', ['-s', 'format', 'png', '-Z', '32', iconPath, '--out', tempPath], { stdio: 'ignore' });
   } catch {
@@ -3869,7 +3869,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     // Dev-server tunnels: bind a loopback port here and pipe it to a dev server
-    // on the remote OpenChamber host, so the browser panel loads a real origin
+    // on the remote OMPChamber host, so the browser panel loads a real origin
     // instead of a rewritten page. Deliberately absent from
     // COMMANDS_SAFE_FOR_REMOTE — a remote page must never open local listeners.
     case 'desktop_dev_tunnel_open': {
@@ -3903,7 +3903,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     /**
      * Forces prefers-color-scheme for one previewed page.
      *
-     * nativeTheme.themeSource is app-wide and would drag OpenChamber's own
+     * nativeTheme.themeSource is app-wide and would drag OMPChamber's own
      * appearance along with it, so this goes through the page's own emulation
      * instead. The debugger session has to stay attached: emulation is part of
      * that session and resets the moment it detaches.
@@ -3938,7 +3938,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
      * Done here, in the panel's own session, rather than by the renderer: the
      * icon often sits behind the same login as the page, and letting the app's
      * own origin request it would both fail on those and quietly send traffic
-     * to third-party hosts from OpenChamber itself. The bytes come back as a
+     * to third-party hosts from OMPChamber itself. The bytes come back as a
      * data URL so nothing else has to fetch anything.
      */
     case 'desktop_browser_fetch_favicon': {
@@ -3971,7 +3971,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     // Scoped to the browser panel's own partition, so clearing it can never
-    // touch OpenChamber's session or any other window's storage.
+    // touch OMPChamber's session or any other window's storage.
     case 'desktop_browser_clear_data': {
       // Exact match, not a prefix: a prefix would also accept a partition that
       // merely starts with this name, which is not what the comment above

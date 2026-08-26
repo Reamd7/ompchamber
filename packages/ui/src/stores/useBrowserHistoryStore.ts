@@ -83,7 +83,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       },
     }),
     {
-      name: 'openchamber-browser-history',
+      name: 'ompchamber-browser-history',
       version: 1,
       storage: createDeferredSafeJSONStorage(),
       partialize: (state) => ({ byProject: state.byProject }),

@@ -6,7 +6,7 @@ import { createDevTunnelClient } from './client.js';
 import { createDevTunnelRuntime, isDevTunnelPath } from './runtime.js';
 
 /**
- * These exercise the real socket path end to end: a dev server, an OpenChamber
+ * These exercise the real socket path end to end: a dev server, an OMPChamber
  * host tunnelling to it, and a client binding a local port. Anything less would
  * not prove the thing that matters — that a page loads over the tunnel exactly
  * as it does locally.

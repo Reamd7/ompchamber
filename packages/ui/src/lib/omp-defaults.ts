@@ -1,5 +1,5 @@
 /**
- * omp-defaults — shared default-input resolver for OpenChamber original
+ * omp-defaults — shared default-input resolver for OMPChamber original
  * surfaces (spec 08 §5.1 GAP-01).
  *
  * Every original surface (multirun, scheduled tasks, GitHub issue picker,

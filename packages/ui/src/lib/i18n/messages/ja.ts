@@ -448,7 +448,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.header.search.clear': '検索をクリア',
   'sessions.sidebar.footer.actions.settings': '設定',
   'sessions.sidebar.footer.actions.shortcuts': 'ショートカット',
-  'sessions.sidebar.footer.actions.aboutOpenChamber': 'OMPChamberについて',
+  'sessions.sidebar.footer.actions.aboutOMPChamber': 'OMPChamberについて',
   'sessions.sidebar.footer.actions.update': '更新',
   'sessions.sidebar.empty.noSessions.title': 'まだセッションがありません',
   'sessions.sidebar.empty.noSessions.description': '最初のセッションを作成してコーディングを始めましょう。',

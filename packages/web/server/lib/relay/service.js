@@ -3,7 +3,7 @@
 //
 // Config lives in the server settings file as `settings.privateRelay =
 // { enabled, relayUrl }` (same storage precedent as tunnels/notifications).
-// Routes are registered with the other OpenChamber feature routes, before the
+// Routes are registered with the other OMPChamber feature routes, before the
 // generic OpenCode proxy, and are covered by the same global UI auth gate.
 //
 // Cross-runtime parity note: relay host mode intentionally targets the web
@@ -16,7 +16,7 @@ import express from 'express';
 import { createRelayIdentityRuntime } from './identity.js';
 import { startRelayHost } from './host-client.js';
 
-export const DEFAULT_RELAY_URL = 'wss://relay.openchamber.dev/ws';
+export const DEFAULT_RELAY_URL = 'wss://relay.ompchamber.dev/ws';
 
 const isValidRelayUrl = (value) => {
   if (typeof value !== 'string') return false;
@@ -122,7 +122,7 @@ export const createRelayService = ({
 
   const standbyStatus = (holderPid) => ({
     state: 'standby',
-    lastError: `relay host is owned by another local OpenChamber process (pid ${holderPid})`,
+    lastError: `relay host is owned by another local OMPChamber process (pid ${holderPid})`,
     connectedClients: 0,
   });
 

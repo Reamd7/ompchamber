@@ -207,11 +207,11 @@ export const getVisibleContextRailSurfaces = (options: VisibleRailSurfacesOption
       return false;
     }
     // The walkthrough needs room for a stop list beside real code, and its
-    // diffs come from OpenChamber's Git routes, which VS Code does not serve.
+    // diffs come from OMPChamber's Git routes, which VS Code does not serve.
     if (surface.id === 'walkthrough' && (options.isVSCode || options.screenWidth < WALKTHROUGH_MIN_WIDTH)) {
       return false;
     }
-    // VS Code already is an editor with a browser next to it. What OpenChamber
+    // VS Code already is an editor with a browser next to it. What OMPChamber
     // could add there is a bare frame: no annotation, no agent control, no
     // remote dev servers — all of which need a Chromium host the extension does
     // not have. Offering the surface anyway would promise the panel people see

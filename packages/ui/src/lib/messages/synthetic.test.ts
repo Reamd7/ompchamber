@@ -126,7 +126,7 @@ describe("filterSyntheticParts", () => {
     const contextPart = {
       ...createTextPart("2", "Comment on `x.ts` lines 1-2:\n```ts\ncode\n```\n\nfix", true),
       metadata: {
-        openchamberContext: {
+        ompchamberContext: {
           kind: "code-comment",
           source: "diff",
           fileLabel: "x.ts",

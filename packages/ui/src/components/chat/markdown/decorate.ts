@@ -68,12 +68,12 @@ const setIconHtml = (el: Element, html: string): void => {
 };
 
 const decorateImageLabels = (root: HTMLElement): void => {
-  for (const label of Array.from(root.querySelectorAll<HTMLElement>('[data-openchamber-markdown-image-label="true"]'))) {
-    if (label.querySelector('[data-openchamber-markdown-image-label-icon]')) continue;
+  for (const label of Array.from(root.querySelectorAll<HTMLElement>('[data-ompchamber-markdown-image-label="true"]'))) {
+    if (label.querySelector('[data-ompchamber-markdown-image-label-icon]')) continue;
     const icon = document.createElement('span');
     icon.className = 'inline-flex shrink-0';
     icon.setAttribute('aria-hidden', 'true');
-    icon.setAttribute('data-openchamber-markdown-image-label-icon', 'true');
+    icon.setAttribute('data-ompchamber-markdown-image-label-icon', 'true');
     setIconHtml(icon, ICONS.image);
     label.prepend(icon);
   }
@@ -462,7 +462,7 @@ const decorateLinks = (root: HTMLElement, ctx: DecorateContext): void => {
   const anchors = root.querySelectorAll<HTMLAnchorElement>('a[href]');
   for (const anchor of Array.from(anchors)) {
     if (anchor.getAttribute('data-md-link-decorated') === 'true') continue;
-    if (anchor.getAttribute('data-openchamber-file-link') === 'true') continue;
+    if (anchor.getAttribute('data-ompchamber-file-link') === 'true') continue;
     const href = anchor.getAttribute('href') ?? '';
     if (!isExternalHttpUrl(href)) continue;
     anchor.setAttribute('data-md-link-decorated', 'true');

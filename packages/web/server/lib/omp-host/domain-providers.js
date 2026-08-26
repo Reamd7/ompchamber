@@ -1,5 +1,5 @@
 // Domain module: omp custom provider CRUD over the engine's models.yml
-// (OpenChamber-owned capability; the SDK has no write API for models.yml).
+// (OMPChamber-owned capability; the SDK has no write API for models.yml).
 //
 // The omp engine is the only provider authority under modelRoles.v1: the wire
 // provider list is built from ModelRegistry.getAvailable(), custom providers
@@ -81,7 +81,7 @@ const readDocument = (modelsPath) => {
     }
     throw error;
   }
-  // models.yml is OpenChamber-authored state, not untrusted input; disable
+  // models.yml is OMPChamber-authored state, not untrusted input; disable
   // the yaml billion-laughs alias-count guard so large hand-maintained
   // files using anchors/aliases still parse (-1 = guard off).
   return { doc: parseDocument(raw, { merge: false, maxAliasCount: -1 }), existed: true };

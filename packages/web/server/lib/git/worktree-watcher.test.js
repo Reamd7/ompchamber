@@ -13,7 +13,7 @@ const tempDirs = [];
 const watchers = [];
 
 const createTempDir = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-worktree-watcher-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-worktree-watcher-'));
   tempDirs.push(dir);
   return dir;
 };

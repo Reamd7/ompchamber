@@ -20,7 +20,7 @@ mock.module('@/lib/runtime-fetch', () => ({
   }),
 }));
 mock.module('@/lib/openchamberEvents', () => ({
-  subscribeOpenchamberEvents: (handler: Listener) => {
+  subscribeOmpchamberEvents: (handler: Listener) => {
     listener = handler;
     return () => { listener = null; };
   },

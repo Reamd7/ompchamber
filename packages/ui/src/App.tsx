@@ -576,17 +576,17 @@ function App({ apis }: AppProps) {
     };
 
     const scopedWindow = window as unknown as {
-      __openchamberSetEmbeddedVisibility?: (payload?: EmbeddedVisibilityPayload) => void;
+      __ompchamberSetEmbeddedVisibility?: (payload?: EmbeddedVisibilityPayload) => void;
     };
 
-    scopedWindow.__openchamberSetEmbeddedVisibility = applyVisibility;
+    scopedWindow.__ompchamberSetEmbeddedVisibility = applyVisibility;
     window.addEventListener('message', handleMessage);
     requestEmbeddedSessionVisibility();
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      if (scopedWindow.__openchamberSetEmbeddedVisibility === applyVisibility) {
-        delete scopedWindow.__openchamberSetEmbeddedVisibility;
+      if (scopedWindow.__ompchamberSetEmbeddedVisibility === applyVisibility) {
+        delete scopedWindow.__ompchamberSetEmbeddedVisibility;
       }
     };
   }, [embeddedSessionChat]);
@@ -704,7 +704,7 @@ function App({ apis }: AppProps) {
     if (!isInitialized || isSwitchingDirectory) return;
     if (appReadyDispatchedRef.current) return;
     appReadyDispatchedRef.current = true;
-    (window as unknown as { __openchamberAppReady?: boolean }).__openchamberAppReady = true;
+    (window as unknown as { __ompchamberAppReady?: boolean }).__ompchamberAppReady = true;
     window.dispatchEvent(new Event('ompchamber:app-ready'));
   }, [isInitialized, isSwitchingDirectory]);
 

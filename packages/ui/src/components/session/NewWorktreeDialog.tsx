@@ -447,7 +447,7 @@ export function NewWorktreeDialog({
   const resolveDefaultModelSelection = React.useCallback(async (): Promise<{ providerID: string; modelID: string } | null> => {
     const omp = await resolveOmpDefaults(projectDirectory);
     if (omp.modelRolesEnabled) return omp.model;
-    // Legacy row (capability off): the OpenChamber settings default stays the
+    // Legacy row (capability off): the OMPChamber settings default stays the
     // display/dispatch truth until the omp engine is authoritative.
     const configState = useConfigStore.getState();
     const settingsDefaultModel = configState.settingsDefaultModel;
@@ -947,7 +947,7 @@ export function NewWorktreeDialog({
         void sessionActions.updateSessionTitle(session.id, sessionTitle).catch(() => undefined);
 
         try {
-          useSessionUIStore.getState().initializeNewOpenChamberSession(session.id, useConfigStore.getState().agents);
+          useSessionUIStore.getState().initializeNewOMPChamberSession(session.id, useConfigStore.getState().agents);
         } catch {
           // ignore
         }

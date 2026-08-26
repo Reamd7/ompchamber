@@ -23,7 +23,7 @@ import { openExternalUrl } from '@/lib/url';
 import { useI18n } from '@/lib/i18n';
 import {
   getProjectActionsState,
-  type OpenChamberProjectAction,
+  type OMPChamberProjectAction,
   type ProjectRef,
 } from '@/lib/openchamberConfig';
 import {
@@ -55,7 +55,7 @@ interface ProjectActionsButtonProps {
   allowMobile?: boolean;
 }
 
-const AUTO_DISCOVER_ACTION_ID = '__openchamber_auto_discover_preview__';
+const AUTO_DISCOVER_ACTION_ID = '__ompchamber_auto_discover_preview__';
 const AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS = 15_000;
 /**
  * How long to keep listening after the first server announces itself. A project
@@ -133,7 +133,7 @@ export const ProjectActionsButton = ({
   const updateProjectActionRunStatus = useTerminalStore((state) => state.updateProjectActionRunStatus);
   const removeProjectActionRun = useTerminalStore((state) => state.removeProjectActionRun);
 
-  const [actions, setActions] = React.useState<OpenChamberProjectAction[]>([]);
+  const [actions, setActions] = React.useState<OMPChamberProjectAction[]>([]);
   const [selectedActionId, setSelectedActionId] = React.useState<string | null>(null);
   const [isLoading, setIsLoading] = React.useState(false);
   const tabByKeyRef = React.useRef<Record<string, string>>({});
@@ -212,7 +212,7 @@ export const ProjectActionsButton = ({
     return actions.find((entry) => entry.id === selectedActionId) ?? null;
   }, [actions, selectedActionId]);
 
-  const autoDiscoverAction = React.useMemo<OpenChamberProjectAction>(() => ({
+  const autoDiscoverAction = React.useMemo<OMPChamberProjectAction>(() => ({
     id: AUTO_DISCOVER_ACTION_ID,
     name: t('projectActions.actions.autoDiscover'),
     command: '',
@@ -388,7 +388,7 @@ export const ProjectActionsButton = ({
     });
   }, [displayActions, openContextPreview, openExternal, projectActionRuns, removeProjectActionRun, setTabPreviewUrl, t, updateProjectActionRunStatus]);
 
-  const getOrCreateActionTab = React.useCallback(async (action: OpenChamberProjectAction, options: { revealTerminal?: boolean } = {}) => {
+  const getOrCreateActionTab = React.useCallback(async (action: OMPChamberProjectAction, options: { revealTerminal?: boolean } = {}) => {
     if (!normalizedDirectory) {
       throw new Error(t('projectActions.error.noActiveDirectory'));
     }
@@ -432,7 +432,7 @@ export const ProjectActionsButton = ({
     t,
   ]);
 
-  const runAction = React.useCallback(async (action: OpenChamberProjectAction) => {
+  const runAction = React.useCallback(async (action: OMPChamberProjectAction) => {
     if (runtime.isVSCode || (!allowMobile && isMobile)) {
       return;
     }
@@ -452,7 +452,7 @@ export const ProjectActionsButton = ({
 
     try {
       const discovered = action.id === AUTO_DISCOVER_ACTION_ID
-        ? await (async (): Promise<OpenChamberProjectAction> => {
+        ? await (async (): Promise<OMPChamberProjectAction> => {
           const [actionsState, scripts] = await Promise.all([
             getProjectActionsState({ id: stableProjectRef?.id ?? '', path: normalizedDirectory }),
             readPackageJsonScripts(normalizedDirectory),
@@ -631,7 +631,7 @@ export const ProjectActionsButton = ({
     terminal,
   ]);
 
-  const stopAction = React.useCallback(async (action: OpenChamberProjectAction) => {
+  const stopAction = React.useCallback(async (action: OMPChamberProjectAction) => {
     const runKey = toProjectActionRunKey(normalizedDirectory, action.id);
     const activeRun = projectActionRuns[runKey];
     if (!activeRun) {
@@ -697,7 +697,7 @@ export const ProjectActionsButton = ({
     void runAction(action);
   }, [displayActions, normalizedDirectory, runAction, projectActionRuns, selectedAction, stopAction]);
 
-  const handleSelectAction = React.useCallback((action: OpenChamberProjectAction, toggleStopIfRunning = false) => {
+  const handleSelectAction = React.useCallback((action: OMPChamberProjectAction, toggleStopIfRunning = false) => {
     setSelectedActionId(action.id);
 
     if (!toggleStopIfRunning) {

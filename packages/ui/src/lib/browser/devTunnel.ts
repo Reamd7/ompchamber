@@ -2,7 +2,7 @@
  * Makes a remote dev server browsable from the desktop app.
  *
  * A URL like `http://localhost:5173` means "this machine" to whoever resolves
- * it. When OpenChamber is running on another host, that is the wrong machine:
+ * it. When OMPChamber is running on another host, that is the wrong machine:
  * the dev server is on the host, the browser is here. The desktop shell binds
  * an equivalent local port and pipes it to the host, so the same page loads
  * from a real local origin with nothing rewritten.
@@ -27,7 +27,7 @@ const isDesktopRuntime = (): boolean => (
 );
 
 /**
- * True when the app is talking to an OpenChamber on another machine. A local
+ * True when the app is talking to an OMPChamber on another machine. A local
  * runtime resolves loopback URLs correctly on its own and must not be tunneled,
  * which would only add a hop.
  */
@@ -132,7 +132,7 @@ export const resolveBrowsableUrl = async (url: string): Promise<string> => {
 };
 
 /**
- * True when a loopback URL belongs to the machine OpenChamber runs on rather
+ * True when a loopback URL belongs to the machine OMPChamber runs on rather
  * than to this one.
  *
  * A page served through a tunnel can send the browser to another local port —

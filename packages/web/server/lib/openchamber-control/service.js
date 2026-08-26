@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createLocalEngineClient } from '../opencode/local-engine-client.js';
-import { OpenChamberControlError, asControlError } from './error.js';
+import { OMPChamberControlError, asControlError } from './error.js';
 import { OMPCHAMBER_ALL_ACTIONS } from './actions.js';
 import { writeScreenshot } from './screenshots.js';
 
@@ -25,7 +25,7 @@ const positiveInteger = (value, fallback, field) => {
   if (value === undefined || value === null) return fallback;
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1) {
-    throw new OpenChamberControlError(`${field} must be a positive integer`, 400);
+    throw new OMPChamberControlError(`${field} must be a positive integer`, 400);
   }
   return number;
 };
@@ -33,7 +33,7 @@ const positiveInteger = (value, fallback, field) => {
 const normalizeWaitTimeoutMs = (value) => {
   const seconds = value === undefined || value === null ? DEFAULT_WAIT_TIMEOUT_SECONDS : Number(value);
   if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > MAX_WAIT_TIMEOUT_SECONDS) {
-    throw new OpenChamberControlError(`timeout must be from 1 to ${MAX_WAIT_TIMEOUT_SECONDS} seconds`, 400);
+    throw new OMPChamberControlError(`timeout must be from 1 to ${MAX_WAIT_TIMEOUT_SECONDS} seconds`, 400);
   }
   return seconds * 1000;
 };
@@ -64,20 +64,20 @@ const extractTextMessages = (messages, role = 'all') => {
 
 const parseModel = (value) => {
   const model = asNonEmptyString(value);
-  if (!model) throw new OpenChamberControlError('model is required', 400);
+  if (!model) throw new OMPChamberControlError('model is required', 400);
   const slashIndex = model.indexOf('/');
   if (slashIndex <= 0 || slashIndex === model.length - 1) {
-    throw new OpenChamberControlError('model must be in provider/model format', 400);
+    throw new OMPChamberControlError('model must be in provider/model format', 400);
   }
   return { providerID: model.slice(0, slashIndex), modelID: model.slice(slashIndex + 1) };
 };
 
 const parseWeekdays = (value) => {
   const raw = asNonEmptyString(value);
-  if (!raw) throw new OpenChamberControlError('weekly is required', 400);
+  if (!raw) throw new OMPChamberControlError('weekly is required', 400);
   const weekdays = raw.split(',').map((entry) => Number.parseInt(entry.trim(), 10));
   if (weekdays.some((entry) => !Number.isInteger(entry) || entry < 0 || entry > 6)) {
-    throw new OpenChamberControlError('weekly must contain weekdays from 0 to 6', 400);
+    throw new OMPChamberControlError('weekly must contain weekdays from 0 to 6', 400);
   }
   return Array.from(new Set(weekdays)).sort((a, b) => a - b);
 };
@@ -89,18 +89,18 @@ const buildSchedule = (input) => {
   const cron = asNonEmptyString(input.cron);
   const selectors = [daily, weekly, once, cron].filter(Boolean);
   if (selectors.length !== 1) {
-    throw new OpenChamberControlError('Provide exactly one of daily, weekly, once, or cron', 400);
+    throw new OMPChamberControlError('Provide exactly one of daily, weekly, once, or cron', 400);
   }
   const timezone = asNonEmptyString(input.timezone);
   if (daily) return { kind: 'daily', times: [daily], ...(timezone ? { timezone } : {}) };
   if (weekly) {
     const time = asNonEmptyString(input.time);
-    if (!time) throw new OpenChamberControlError('time is required with weekly', 400);
+    if (!time) throw new OMPChamberControlError('time is required with weekly', 400);
     return { kind: 'weekly', weekdays: parseWeekdays(weekly), times: [time], ...(timezone ? { timezone } : {}) };
   }
   if (once) {
     const time = asNonEmptyString(input.time);
-    if (!time) throw new OpenChamberControlError('time is required with once', 400);
+    if (!time) throw new OMPChamberControlError('time is required with once', 400);
     return { kind: 'once', date: once, time, ...(timezone ? { timezone } : {}) };
   }
   return { kind: 'cron', cron, ...(timezone ? { timezone } : {}) };
@@ -109,15 +109,15 @@ const buildSchedule = (input) => {
 const buildScheduledTask = (input) => {
   const name = asNonEmptyString(input.name);
   const prompt = asNonEmptyString(input.prompt);
-  if (!name) throw new OpenChamberControlError('name is required', 400);
-  if (!prompt) throw new OpenChamberControlError('prompt is required', 400);
+  if (!name) throw new OMPChamberControlError('name is required', 400);
+  if (!prompt) throw new OMPChamberControlError('prompt is required', 400);
   const model = parseModel(input.model);
   const goalTokenBudget = input.goalTokenBudget;
   if (goalTokenBudget !== undefined && input.goal !== true) {
-    throw new OpenChamberControlError('goalTokenBudget requires goal', 400);
+    throw new OMPChamberControlError('goalTokenBudget requires goal', 400);
   }
   if (goalTokenBudget !== undefined && (!Number.isSafeInteger(goalTokenBudget) || goalTokenBudget < 1000 || goalTokenBudget > 100_000_000)) {
-    throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
+    throw new OMPChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
   }
   return {
     name,
@@ -134,7 +134,7 @@ const buildScheduledTask = (input) => {
   };
 };
 
-export const createOpenChamberControlService = (dependencies) => {
+export const createOMPChamberControlService = (dependencies) => {
   const {
     readSettingsFromDiskMigrated,
     sanitizeProjects,
@@ -152,11 +152,11 @@ export const createOpenChamberControlService = (dependencies) => {
 
   const wait = (duration, signal) => {
     if (!signal) return sleep(duration);
-    if (signal.aborted) return Promise.reject(new OpenChamberControlError('OpenChamber action was cancelled', 499));
+    if (signal.aborted) return Promise.reject(new OMPChamberControlError('OMPChamber action was cancelled', 499));
     return new Promise((resolve, reject) => {
       const onAbort = () => {
         signal.removeEventListener('abort', onAbort);
-        reject(new OpenChamberControlError('OpenChamber action was cancelled', 499));
+        reject(new OMPChamberControlError('OMPChamber action was cancelled', 499));
       };
       signal.addEventListener('abort', onAbort, { once: true });
       sleep(duration).then(() => {
@@ -201,7 +201,7 @@ export const createOpenChamberControlService = (dependencies) => {
     const response = await client.session.status({ directory });
     const statuses = response?.data;
     if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses)) {
-      throw new OpenChamberControlError('Invalid session status response', 500);
+      throw new OMPChamberControlError('Invalid session status response', 500);
     }
     return statuses[sessionID] || { type: 'idle' };
   };
@@ -223,7 +223,7 @@ export const createOpenChamberControlService = (dependencies) => {
     const deadline = now() + timeoutMs;
     let observedActivity = false;
     while (true) {
-      if (signal?.aborted) throw new OpenChamberControlError('OpenChamber action was cancelled', 499);
+      if (signal?.aborted) throw new OMPChamberControlError('OMPChamber action was cancelled', 499);
       const status = await sessionStatus(client, sessionID, directory);
       if (status.type === 'busy' || status.type === 'retry') {
         observedActivity = true;
@@ -238,7 +238,7 @@ export const createOpenChamberControlService = (dependencies) => {
       }
       const remaining = deadline - now();
       if (remaining <= 0) {
-        throw new OpenChamberControlError(`Session did not become idle within ${Math.ceil(timeoutMs / 1000)} seconds`, 500);
+        throw new OMPChamberControlError(`Session did not become idle within ${Math.ceil(timeoutMs / 1000)} seconds`, 500);
       }
       await wait(Math.min(WAIT_POLL_INTERVAL_MS, remaining), signal);
     }
@@ -262,8 +262,8 @@ export const createOpenChamberControlService = (dependencies) => {
   };
 
   const executeSessionAction = async (action, input, contextDirectory, signal) => {
-    if (input.timeout !== undefined && input.wait !== true) throw new OpenChamberControlError('timeout requires wait', 400);
-    if (input.lastAssistant === true && input.wait !== true) throw new OpenChamberControlError('lastAssistant requires wait', 400);
+    if (input.timeout !== undefined && input.wait !== true) throw new OMPChamberControlError('timeout requires wait', 400);
+    if (input.lastAssistant === true && input.wait !== true) throw new OMPChamberControlError('lastAssistant requires wait', 400);
     const sessionID = asNonEmptyString(input.sessionId);
     let directory = asNonEmptyString(input.directory) || (!input.projectId ? asNonEmptyString(contextDirectory) : null);
     if (sessionID && action !== 'session.create' && !asNonEmptyString(input.directory) && !input.projectId) {
@@ -293,7 +293,7 @@ export const createOpenChamberControlService = (dependencies) => {
     if (action === 'session.create') {
       result = await sessionService.create(payload);
     } else {
-      if (!sessionID) throw new OpenChamberControlError('sessionId is required', 400);
+      if (!sessionID) throw new OMPChamberControlError('sessionId is required', 400);
       if (action === 'session.send') {
         result = await sessionService.send(sessionID, payload);
       } else {
@@ -335,11 +335,11 @@ export const createOpenChamberControlService = (dependencies) => {
     const readViewport = (required) => {
       const viewport = asNonEmptyString(input.viewport);
       if (!viewport) {
-        if (required) throw new OpenChamberControlError('viewport is required for browser.resize', 400);
+        if (required) throw new OMPChamberControlError('viewport is required for browser.resize', 400);
         return;
       }
       if (!['mobile', 'tablet', 'desktop', 'fill'].includes(viewport)) {
-        throw new OpenChamberControlError('viewport must be mobile, tablet, desktop, or fill', 400);
+        throw new OMPChamberControlError('viewport must be mobile, tablet, desktop, or fill', 400);
       }
       parameters.viewport = viewport;
     };
@@ -354,15 +354,15 @@ export const createOpenChamberControlService = (dependencies) => {
     if (action === 'browser.open') {
       readViewport(false);
       const url = asNonEmptyString(input.url);
-      if (!url) throw new OpenChamberControlError('url is required for browser.open', 400);
+      if (!url) throw new OMPChamberControlError('url is required for browser.open', 400);
       let parsed;
       try {
         parsed = new URL(url);
       } catch {
-        throw new OpenChamberControlError('url must be an absolute http(s) URL', 400);
+        throw new OMPChamberControlError('url must be an absolute http(s) URL', 400);
       }
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new OpenChamberControlError('url must use http or https', 400);
+        throw new OMPChamberControlError('url must use http or https', 400);
       }
       parameters.url = parsed.toString();
     }
@@ -372,7 +372,7 @@ export const createOpenChamberControlService = (dependencies) => {
       const selector = asNonEmptyString(input.selector);
       const text = asNonEmptyString(input.text);
       if (!selector && !text) {
-        throw new OpenChamberControlError('browser.click requires selector or text', 400);
+        throw new OMPChamberControlError('browser.click requires selector or text', 400);
       }
       if (selector) parameters.selector = selector;
       if (text) parameters.text = text;
@@ -385,15 +385,15 @@ export const createOpenChamberControlService = (dependencies) => {
 
     if (action === 'browser.inspect') {
       const selector = asNonEmptyString(input.selector);
-      if (!selector) throw new OpenChamberControlError('selector is required for browser.inspect', 400);
+      if (!selector) throw new OMPChamberControlError('selector is required for browser.inspect', 400);
       parameters.selector = selector;
     }
 
     if (action === 'browser.type') {
       const selector = asNonEmptyString(input.selector);
-      if (!selector) throw new OpenChamberControlError('selector is required for browser.type', 400);
+      if (!selector) throw new OMPChamberControlError('selector is required for browser.type', 400);
       if (typeof input.value !== 'string') {
-        throw new OpenChamberControlError('value is required for browser.type', 400);
+        throw new OMPChamberControlError('value is required for browser.type', 400);
       }
       parameters.selector = selector;
       parameters.value = input.value;
@@ -404,10 +404,10 @@ export const createOpenChamberControlService = (dependencies) => {
       const selector = asNonEmptyString(input.selector);
       const direction = asNonEmptyString(input.direction);
       if (!selector && !direction) {
-        throw new OpenChamberControlError('browser.scroll requires direction or selector', 400);
+        throw new OMPChamberControlError('browser.scroll requires direction or selector', 400);
       }
       if (direction && !['up', 'down', 'top', 'bottom'].includes(direction)) {
-        throw new OpenChamberControlError('direction must be up, down, top, or bottom', 400);
+        throw new OMPChamberControlError('direction must be up, down, top, or bottom', 400);
       }
       if (selector) parameters.selector = selector;
       if (direction) parameters.direction = direction;
@@ -425,7 +425,7 @@ export const createOpenChamberControlService = (dependencies) => {
     if (action === 'browser.capture') {
       const directory = asNonEmptyString(input.directory) || asNonEmptyString(contextDirectory);
       if (!directory) {
-        throw new OpenChamberControlError('directory is required to save a screenshot', 400);
+        throw new OMPChamberControlError('directory is required to save a screenshot', 400);
       }
       const capture = result && typeof result === 'object' ? result : {};
       const saved = await writeScreenshot({
@@ -457,17 +457,17 @@ export const createOpenChamberControlService = (dependencies) => {
   const execute = async (action, input = {}, contextDirectory, options = {}) => {
     try {
       if (!CONTROL_ACTIONS.has(action)) {
-        throw new OpenChamberControlError(`Unsupported OpenChamber action: ${action || 'missing'}`, 400);
+        throw new OMPChamberControlError(`Unsupported OMPChamber action: ${action || 'missing'}`, 400);
       }
       if (action.startsWith('memory.')) {
         if (!agentMemoryActions) {
-          throw new OpenChamberControlError('Agent memory is not available on this server', 503);
+          throw new OMPChamberControlError('Agent memory is not available on this server', 503);
         }
         return agentMemoryActions.execute(action, input, contextDirectory);
       }
       if (action.startsWith('browser.')) {
         if (!browserControl) {
-          throw new OpenChamberControlError('The in-app browser is not available on this server', 503);
+          throw new OMPChamberControlError('The in-app browser is not available on this server', 503);
         }
         return browserAction(action, input, options.signal, contextDirectory);
       }
@@ -477,7 +477,7 @@ export const createOpenChamberControlService = (dependencies) => {
       if (action.startsWith('schedule.')) {
         const taskID = asNonEmptyString(input.taskId);
         if (SCHEDULE_TASK_ID_ACTIONS.has(action) && !taskID) {
-          throw new OpenChamberControlError('taskId is required', 400);
+          throw new OMPChamberControlError('taskId is required', 400);
         }
         const explicitProjectID = asNonEmptyString(input.projectId);
         const explicitDirectory = asNonEmptyString(input.directory);
@@ -501,7 +501,7 @@ export const createOpenChamberControlService = (dependencies) => {
             return { deleted: true, tasks: await scheduledTaskService.remove(projectID, taskID) };
           case 'schedule.toggle': {
             if (typeof input.disabled !== 'boolean') {
-              throw new OpenChamberControlError('disabled is required for schedule.toggle', 400);
+              throw new OMPChamberControlError('disabled is required for schedule.toggle', 400);
             }
             const enabled = input.disabled === false;
             return { task: await scheduledTaskService.setEnabled(projectID, taskID, enabled), enabled };
@@ -536,18 +536,18 @@ export const createOpenChamberControlService = (dependencies) => {
           }
           return { sessions, limit, directory, archived: input.all === true ? 'included' : 'excluded' };
         }
-        if (!sessionID) throw new OpenChamberControlError('sessionId is required', 400);
-        if (!directory) throw new OpenChamberControlError('directory is required', 400);
+        if (!sessionID) throw new OMPChamberControlError('sessionId is required', 400);
+        if (!directory) throw new OMPChamberControlError('directory is required', 400);
         if (action === 'session.status') {
           return { sessionId: sessionID, directory, sessionStatus: await sessionStatus(client, sessionID, directory) };
         }
         if (action === 'session.messages') {
-          if (input.timeout !== undefined && input.wait !== true) throw new OpenChamberControlError('timeout requires wait', 400);
+          if (input.timeout !== undefined && input.wait !== true) throw new OMPChamberControlError('timeout requires wait', 400);
           const role = input.lastAssistant === true ? 'assistant' : (asNonEmptyString(input.role) || 'all');
-          if (!['all', 'user', 'assistant'].includes(role)) throw new OpenChamberControlError('role must be all, user, or assistant', 400);
+          if (!['all', 'user', 'assistant'].includes(role)) throw new OMPChamberControlError('role must be all, user, or assistant', 400);
           const last = input.last === true || input.lastAssistant === true;
-          if (input.all === true && (last || input.limit !== undefined)) throw new OpenChamberControlError('all cannot be combined with last or limit', 400);
-          if (last && input.limit !== undefined) throw new OpenChamberControlError('last cannot be combined with limit', 400);
+          if (input.all === true && (last || input.limit !== undefined)) throw new OMPChamberControlError('all cannot be combined with last or limit', 400);
+          if (last && input.limit !== undefined) throw new OMPChamberControlError('last cannot be combined with limit', 400);
           const currentStatus = input.wait === true
             ? await waitForIdle({ client, sessionID, directory, timeoutMs: normalizeWaitTimeoutMs(input.timeout), requireActivity: false, startedAt: now(), signal: options.signal })
             : await sessionStatus(client, sessionID, directory);
@@ -555,9 +555,9 @@ export const createOpenChamberControlService = (dependencies) => {
           return { sessionId: sessionID, directory, role, sessionStatus: currentStatus, messages: await sessionMessages(client, sessionID, directory, role, limit) };
         }
       }
-      throw new OpenChamberControlError(`Unsupported OpenChamber action: ${action || 'missing'}`, 400);
+      throw new OMPChamberControlError(`Unsupported OMPChamber action: ${action || 'missing'}`, 400);
     } catch (error) {
-      throw asControlError(error, `Failed to execute ${action || 'OpenChamber action'}`);
+      throw asControlError(error, `Failed to execute ${action || 'OMPChamber action'}`);
     }
   };
 

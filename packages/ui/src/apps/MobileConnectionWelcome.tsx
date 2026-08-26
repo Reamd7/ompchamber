@@ -2,7 +2,7 @@ import React from 'react';
 
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
-import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { OMPChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
@@ -138,7 +138,7 @@ export const MobileConnectionWelcome: React.FC<{
       <div className="m-auto flex w-full max-w-[360px] shrink-0 flex-col items-center gap-9 py-8">
         <div className="flex flex-col items-center gap-5 text-center">
           <span {...debugLongPress} className="select-none" style={{ touchAction: 'manipulation' }}>
-            <OpenChamberLogo width={72} height={72} className="size-[72px]" />
+            <OMPChamberLogo width={72} height={72} className="size-[72px]" />
           </span>
           <h1 className="typography-h2 text-foreground">{t('mobile.connect.welcome.title')}</h1>
         </div>

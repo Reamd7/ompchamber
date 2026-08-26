@@ -91,7 +91,7 @@ type TraySnapshot = {
   approvals: TrayApproval[];
   // Pending omp approval/ask dialogs across all directories, oldest first.
   ompDialogs: TrayOmpDialog[];
-  // Active instance label (e.g. "Local OpenChamber" or a remote host name) so
+  // Active instance label (e.g. "Local OMPChamber" or a remote host name) so
   // the tray header makes clear which instance/window it reflects.
   instanceName: string;
   // Provider rate-limit usage, only for providers the user enabled for the
@@ -267,15 +267,15 @@ const buildUsage = (): TrayUsage => {
 };
 
 // Mirrors the header's instance resolution (Header.refreshCurrentInstanceLabel):
-// the local origin shows as "Local OpenChamber"; a remote host shows its
+// the local origin shows as "Local OMPChamber"; a remote host shows its
 // configured name. Async because the host config is read over IPC.
 const resolveInstanceName = async (): Promise<string> => {
   try {
-    if (isDesktopLocalOriginActive()) return 'Local OpenChamber';
+    if (isDesktopLocalOriginActive()) return 'Local OMPChamber';
     const localOrigin = (window as unknown as { __OMPCHAMBER_LOCAL_ORIGIN__?: string }).__OMPCHAMBER_LOCAL_ORIGIN__
       || window.location.origin;
     const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
-    if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) return 'Local OpenChamber';
+    if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) return 'Local OMPChamber';
     const cfg = await desktopHostsGet();
     const match = cfg.hosts.find((host) =>
       runtimeApiBaseUrl ? locationMatchesHost(runtimeApiBaseUrl, getDesktopHostApiUrl(host)) : false);

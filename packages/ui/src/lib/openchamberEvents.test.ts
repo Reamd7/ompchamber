@@ -27,7 +27,7 @@ class MockEventSource {
   }
 }
 
-describe('openchamber events', () => {
+describe('ompchamber events', () => {
   beforeEach(() => {
     MockEventSource.instances = [];
     globalThis.window = {} as Window & typeof globalThis;
@@ -40,10 +40,10 @@ describe('openchamber events', () => {
   });
 
   test('dispatches externally created session events', async () => {
-    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const { subscribeOmpchamberEvents } = await import('./openchamberEvents');
     const events: unknown[] = [];
     const listener = (event: unknown) => events.push(event);
-    const unsubscribe = subscribeOpenchamberEvents(listener);
+    const unsubscribe = subscribeOmpchamberEvents(listener);
     const source = MockEventSource.instances[0];
 
     source.onmessage?.({
@@ -75,10 +75,10 @@ describe('openchamber events', () => {
   });
 
   test('dispatches worktree topology change events', async () => {
-    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const { subscribeOmpchamberEvents } = await import('./openchamberEvents');
     const events: unknown[] = [];
     const listener = (event: unknown) => events.push(event);
-    const unsubscribe = subscribeOpenchamberEvents(listener);
+    const unsubscribe = subscribeOmpchamberEvents(listener);
     const source = MockEventSource.instances[0];
 
     source.onmessage?.({

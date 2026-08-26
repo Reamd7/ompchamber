@@ -5,7 +5,7 @@ import path from 'node:path';
  * Worktree topology watcher.
  *
  * Watches the git metadata of every registered project for linked-worktree
- * creation and removal, regardless of who performed it (OpenChamber's own
+ * creation and removal, regardless of who performed it (OMPChamber's own
  * worktree routes, the CLI, a terminal `git worktree add`, or another client).
  * Each linked worktree is registered under the repository's common git dir as
  * `.git/worktrees/<name>`, so watching that one directory per repository

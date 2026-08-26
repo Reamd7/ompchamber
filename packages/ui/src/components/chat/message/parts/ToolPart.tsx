@@ -1265,9 +1265,9 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
         [currentDirectory, diffContent, metadata]
     );
     const hasVisualDiffEntry = diffEntries.some((entry) => entry.renderMode === 'diff');
-    const hideToolInputPreview = part.tool === 'openchamber'
-        || part.tool === 'openchamber_web'
-        || part.tool === 'openchamber_memory'
+    const hideToolInputPreview = part.tool === 'ompchamber'
+        || part.tool === 'ompchamber_web'
+        || part.tool === 'ompchamber_memory'
         || part.tool === 'apply_patch'
         || part.tool === 'edit'
         || part.tool === 'multiedit'

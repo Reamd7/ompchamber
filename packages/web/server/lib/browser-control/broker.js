@@ -2,7 +2,7 @@
  * Request/response broker between the agent tool and the in-app browser.
  *
  * The browser lives in the renderer, not the server, so the server cannot act
- * on a page directly. It publishes a request over the existing OpenChamber
+ * on a page directly. It publishes a request over the existing OMPChamber
  * event stream and waits for the client that owns the browser view to post the
  * result back.
  *
@@ -73,8 +73,8 @@ export const createBrowserControlBroker = ({
         // environment can do, and leave deciding whether it matters to the
         // caller rather than handing it an instruction it cannot carry out.
         return Promise.reject(new BrowserControlError(
-          'No OpenChamber client connected here can control a page. Reading and '
-          + 'interacting with a page works when OpenChamber runs as its desktop '
+          'No OMPChamber client connected here can control a page. Reading and '
+          + 'interacting with a page works when OMPChamber runs as its desktop '
           + 'application; a web browser tab can display a page but cannot be '
           + 'driven. Nothing was changed. Mention this to the user only if it '
           + 'affects what they asked for.',

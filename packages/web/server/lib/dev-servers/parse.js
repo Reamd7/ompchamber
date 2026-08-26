@@ -143,7 +143,7 @@ export const parseNetstatListeners = (output) => {
 /**
  * Narrows raw listeners to the ones worth offering as a preview target.
  *
- * `ownPorts` removes OpenChamber's own listeners — offering the user a preview
+ * `ownPorts` removes OMPChamber's own listeners — offering the user a preview
  * of the app they are already looking at is pure noise.
  */
 export const selectDevServerCandidates = (listeners, { ownPorts = [], ownPids = [] } = {}) => {
@@ -169,7 +169,7 @@ const PROC_LOOPBACK_ADDRESSES = new Set(['0100007F', '00000000000000000000000001
  * Parses `/proc/net/tcp` and `/proc/net/tcp6`.
  *
  * The fallback for hosts without `lsof`, which is most containers — and a
- * deployed OpenChamber is exactly where a dev server needs discovering. Reads a
+ * deployed OMPChamber is exactly where a dev server needs discovering. Reads a
  * kernel file rather than shelling out, so it cannot be defeated by a missing
  * binary or a stripped PATH.
  *

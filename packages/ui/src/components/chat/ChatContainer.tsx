@@ -861,7 +861,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             useUIStore.getState().setAllowPromptingSubagentSessions(value);
         };
         const scopedWindow = window as typeof window & {
-            __openchamberApplyChatSettingsSync?: (payload: { allowPromptingSubagentSessions: boolean }) => void;
+            __ompchamberApplyChatSettingsSync?: (payload: { allowPromptingSubagentSessions: boolean }) => void;
         };
         const applySync = (payload: { allowPromptingSubagentSessions: boolean }) => {
             applySetting(payload.allowPromptingSubagentSessions);
@@ -874,13 +874,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             applySetting(data.payload.allowPromptingSubagentSessions);
         };
 
-        scopedWindow.__openchamberApplyChatSettingsSync = applySync;
+        scopedWindow.__ompchamberApplyChatSettingsSync = applySync;
         window.addEventListener('message', handleMessage);
         parentWindow.postMessage({ type: 'ompchamber:chat-settings-request' }, window.location.origin);
         return () => {
             window.removeEventListener('message', handleMessage);
-            if (scopedWindow.__openchamberApplyChatSettingsSync === applySync) {
-                delete scopedWindow.__openchamberApplyChatSettingsSync;
+            if (scopedWindow.__ompchamberApplyChatSettingsSync === applySync) {
+                delete scopedWindow.__ompchamberApplyChatSettingsSync;
             }
         };
     }, []);

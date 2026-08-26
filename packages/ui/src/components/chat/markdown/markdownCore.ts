@@ -146,7 +146,7 @@ const renderMarkdownImageLabel = ({
 }): string => {
   const label = getMarkdownImageFilename(href ?? '', text);
   const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-  return `<span${titleAttr} class="inline-flex items-center gap-1 align-text-bottom text-muted-foreground" data-openchamber-markdown-image-label="true">${escapeAttr(label)}</span>`;
+  return `<span${titleAttr} class="inline-flex items-center gap-1 align-text-bottom text-muted-foreground" data-ompchamber-markdown-image-label="true">${escapeAttr(label)}</span>`;
 };
 
 export const extractMarkdownImageCandidates = (
@@ -338,7 +338,7 @@ const createParser = (imageMode: MarkdownImageMode) => new Marked().use({
       const target = href ?? '';
       const agentName = parseAgentHref(target);
       if (agentName) {
-        return `<a href="${escapeAttr(buildAgentMentionUrl(agentName))}" data-openchamber-agent-mention="true" class="text-primary hover:underline" target="_blank" rel="noopener noreferrer">${text}</a>`;
+        return `<a href="${escapeAttr(buildAgentMentionUrl(agentName))}" data-ompchamber-agent-mention="true" class="text-primary hover:underline" target="_blank" rel="noopener noreferrer">${text}</a>`;
       }
       const skillName = parseSkillHref(target);
       if (skillName) {
@@ -352,7 +352,7 @@ const createParser = (imageMode: MarkdownImageMode) => new Marked().use({
       if (internalScheme !== null) {
         if (activeInternalUriSchemeOf(target) === null) return text;
         const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-        return `<a href="${escapeAttr(target)}"${titleAttr} data-openchamber-internal-uri="${escapeAttr(target)}" class="text-primary hover:underline">${text}</a>`;
+        return `<a href="${escapeAttr(target)}"${titleAttr} data-ompchamber-internal-uri="${escapeAttr(target)}" class="text-primary hover:underline">${text}</a>`;
       }
       const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
       return `<a href="${escapeAttr(target)}"${titleAttr} class="external-link" target="_blank" rel="noopener noreferrer">${text}</a>`;

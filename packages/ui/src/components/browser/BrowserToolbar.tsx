@@ -170,14 +170,14 @@ export const BrowserToolbar: React.FC<BrowserToolbarProps> = ({
           autoComplete="off"
           role="combobox"
           aria-expanded={visibleSuggestions.length > 0}
-          aria-controls="openchamber-browser-address-suggestions"
+          aria-controls="ompchamber-browser-address-suggestions"
           className={cn(
             'h-6 w-full rounded-full border border-border/50 bg-[var(--surface-elevated)] px-3',
             'typography-micro text-foreground outline-none focus:border-[var(--interactive-focus-ring)]',
           )}
           aria-label={t('contextPanel.browser.addressAria')}
         />
-        <div id="openchamber-browser-address-suggestions">
+        <div id="ompchamber-browser-address-suggestions">
           <BrowserAddressSuggestions
             entries={visibleSuggestions}
             activeIndex={activeSuggestion}

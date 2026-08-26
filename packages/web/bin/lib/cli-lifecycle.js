@@ -12,13 +12,13 @@ import {
   removePidFile,
   readInstanceOptions,
   removeInstanceFile,
-  getOpenchamberProcessState,
-  hasOpenchamberRuntimeInfo,
+  getOmpchamberProcessState,
+  hasOmpchamberRuntimeInfo,
 } from './cli-process.js';
 import { DEFAULT_TUNNEL_PROVIDER_CAPABILITIES } from './cli-tunnel-capabilities.js';
 
 function createLivePortInstance(port, info, host) {
-  if (!hasOpenchamberRuntimeInfo(info)) return null;
+  if (!hasOmpchamberRuntimeInfo(info)) return null;
   return {
     port,
     pid: Number.isFinite(info.pid) ? info.pid : null,
@@ -77,7 +77,7 @@ function getSystemInfoProbeHosts(...hosts) {
 async function fetchSystemInfoFromPortCandidates(port, fetchImpl, hosts, expectedPid) {
   for (const { host, requiresPidMatch } of hosts) {
     const info = await fetchSystemInfoFromPort(port, fetchImpl, host);
-    if (hasOpenchamberRuntimeInfo(info)) {
+    if (hasOmpchamberRuntimeInfo(info)) {
       if (requiresPidMatch && info.pid !== expectedPid) {
         continue;
       }
@@ -164,9 +164,9 @@ async function discoverRunningInstances(options = {}) {
   const instances = [];
   const runDir = getRunDir();
   const fetchImpl = typeof options.fetchImpl === 'function' ? options.fetchImpl : globalThis.fetch;
-  const getProcessState = typeof options.getOpenchamberProcessState === 'function'
-    ? options.getOpenchamberProcessState
-    : (pid) => getOpenchamberProcessState(pid, options);
+  const getProcessState = typeof options.getOmpchamberProcessState === 'function'
+    ? options.getOmpchamberProcessState
+    : (pid) => getOmpchamberProcessState(pid, options);
   try {
     const files = fs.readdirSync(runDir);
     const pidFiles = files.filter((file) => file.startsWith('ompchamber-') && file.endsWith('.pid'));
@@ -202,7 +202,7 @@ async function discoverRunningInstances(options = {}) {
         pid,
       );
       const livePid = Number.isFinite(liveInfo?.pid) ? liveInfo.pid : null;
-      if (!hasOpenchamberRuntimeInfo(liveInfo)) {
+      if (!hasOmpchamberRuntimeInfo(liveInfo)) {
         if (processState === 'mismatched') {
           removePidFile(pidFilePath);
           removeInstanceFile(instanceFilePath);
@@ -290,7 +290,7 @@ async function discoverUnconfirmedRegistryInstanceOnPort(port, options = {}) {
 
   const instanceFilePath = await getInstanceFilePath(port);
   const storedOptions = readInstanceOptions(instanceFilePath);
-  const processState = getOpenchamberProcessState(pid);
+  const processState = getOmpchamberProcessState(pid);
   if (processState === 'dead') {
     removePidFile(pidFilePath);
     removeInstanceFile(instanceFilePath);

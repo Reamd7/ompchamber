@@ -51,7 +51,7 @@ const registerCreatedSession = (session: Session, directory: string): Session =>
     : ({ ...session, directory: normalizedDirectory } as Session);
 
   registerSessionDirectory(session.id, normalizedDirectory);
-  useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id);
+  useSessionUIStore.getState().markSessionAsOMPChamberCreated(session.id);
   useGlobalSessionsStore.getState().upsertSession(sessionWithDirectory);
 
   try {

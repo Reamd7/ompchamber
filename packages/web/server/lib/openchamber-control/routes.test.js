@@ -2,16 +2,16 @@ import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 
-import { OpenChamberControlError } from './error.js';
-import { registerOpenChamberControlRoutes } from './routes.js';
+import { OMPChamberControlError } from './error.js';
+import { registerOMPChamberControlRoutes } from './routes.js';
 
 const createApp = (execute) => {
   const app = express();
-  registerOpenChamberControlRoutes(app, { controlService: { execute } });
+  registerOMPChamberControlRoutes(app, { controlService: { execute } });
   return app;
 };
 
-describe('OpenChamber control route', () => {
+describe('OMPChamber control route', () => {
   it('is a thin adapter over the control service', async () => {
     const execute = vi.fn(async () => ({ projects: [] }));
     const response = await request(createApp(execute))
@@ -24,7 +24,7 @@ describe('OpenChamber control route', () => {
 
   it('preserves service status and partial-result details', async () => {
     const execute = vi.fn(async () => {
-      throw new OpenChamberControlError('dispatch failed', 500, {
+      throw new OMPChamberControlError('dispatch failed', 500, {
         partial: true,
         partialAction: 'fork-created',
         sessionId: 'ses_fork',

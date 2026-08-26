@@ -44,7 +44,7 @@ const worktree = (path: string, branch: string): WorktreeMetadata => ({
 });
 
 mock.module('@/lib/openchamberEvents', () => ({
-  subscribeOpenchamberEvents: (listener: CapturedListener) => {
+  subscribeOmpchamberEvents: (listener: CapturedListener) => {
     capturedListener = listener;
     return () => {
       unsubscribeCalls += 1;

@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { createRemoteClientAuthRuntime } from './remote-clients.js';
 
 const createRuntime = async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-remote-clients-test-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ompchamber-remote-clients-test-'));
   const runtime = createRemoteClientAuthRuntime({
     fsPromises: fs,
     path,
@@ -86,15 +86,15 @@ describe('remote client auth runtime', () => {
   it('keeps the replaced record label on a dedupe re-mint without an explicit label', async () => {
     const { dir, runtime } = await createRuntime();
     try {
-      await runtime.createClient({ label: 'Iryna iPhone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
-      const remint = await runtime.createClient({ dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
+      await runtime.createClient({ label: 'Iryna iPhone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OMPChamber Mobile' });
+      const remint = await runtime.createClient({ dedupeKey: 'mobile:device-1', fallbackLabel: 'OMPChamber Mobile' });
       expect(remint.client.label).toBe('Iryna iPhone');
 
-      const renamed = await runtime.createClient({ label: 'Work phone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OpenChamber Mobile' });
+      const renamed = await runtime.createClient({ label: 'Work phone', dedupeKey: 'mobile:device-1', fallbackLabel: 'OMPChamber Mobile' });
       expect(renamed.client.label).toBe('Work phone');
 
-      const fresh = await runtime.createClient({ dedupeKey: 'mobile:device-2', fallbackLabel: 'OpenChamber Mobile' });
-      expect(fresh.client.label).toBe('OpenChamber Mobile');
+      const fresh = await runtime.createClient({ dedupeKey: 'mobile:device-2', fallbackLabel: 'OMPChamber Mobile' });
+      expect(fresh.client.label).toBe('OMPChamber Mobile');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -121,7 +121,7 @@ describe('remote client auth runtime', () => {
       expect(await runtime.hasActiveRelayClients()).toBe(false);
 
       // A tunneled request is the authoritative proof the device uses the relay.
-      const relayReq = { headers: { 'x-openchamber-relay-connection': 'conn-1' } };
+      const relayReq = { headers: { 'x-ompchamber-relay-connection': 'conn-1' } };
       const authenticated = await runtime.authenticateBearerToken(created.token, relayReq);
       expect(authenticated?.ok).toBe(true);
       expect(authenticated?.client.usesRelay).toBe(true);

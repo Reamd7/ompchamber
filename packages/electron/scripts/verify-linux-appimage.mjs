@@ -148,7 +148,7 @@ const main = () => {
   const appImagePath = process.argv[2] ? path.resolve(process.argv[2]) : findAppImage(electronPackage.version, target);
   assertElfArchitecture(appImagePath, target, 'AppImage');
 
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-appimage-'));
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-appimage-'));
   try {
     const result = verifyExtractedPayload({
       root: extractAppImage(appImagePath, temporaryDirectory),

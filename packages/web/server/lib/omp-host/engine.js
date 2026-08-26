@@ -1,8 +1,8 @@
 // omp engine manager: embeds @oh-my-pi/pi-coding-agent sessions behind the
 // OpenCode-compatible wire surface.
 //
-// One HostSession per OpenChamber session id. Transcripts live in omp's
-// SessionManager JSONL files (cwd-derived directory); OpenChamber-specific
+// One HostSession per OMPChamber session id. Transcripts live in omp's
+// SessionManager JSONL files (cwd-derived directory); OMPChamber-specific
 // metadata lives in the sidecar registry. Cold reads project the persisted
 // transcript without materializing an agent; the first prompt (or any live
 // operation) materializes a full AgentSession whose event stream is projected
@@ -343,7 +343,7 @@ export class OmpHostEngine {
   }
 
   #personasConfigPath() {
-    return path.join(this.registry.registryRoot, 'openchamber-personas.json');
+    return path.join(this.registry.registryRoot, 'ompchamber-personas.json');
   }
 
   #loadPersonas() {
@@ -389,13 +389,13 @@ export class OmpHostEngine {
 
   /**
    * One-time sidecar → omp migration (02 §6.2): each legacy
-   * `openchamber-agents.json` record becomes a user-scope worker `.md`
+   * `ompchamber-agents.json` record becomes a user-scope worker `.md`
    * (frontmatter description/tools, body prompt) plus a mirrored persona so
    * existing `meta.agent` sessions keep resolving. Runs before the request
    * surface opens; any failure keeps the sidecar for an idempotent retry.
    */
   async #migrateAgentsSidecar() {
-    const sidecarPath = path.join(this.registry.registryRoot, 'openchamber-agents.json');
+    const sidecarPath = path.join(this.registry.registryRoot, 'ompchamber-agents.json');
     const userAgentsDir = this.#userAgentsDir();
     let done = false;
     const result = await migrateSidecarAgents({
@@ -1704,7 +1704,7 @@ export class OmpHostEngine {
     if (thinkingLevel !== undefined && typeof session.setThinkingLevel === 'function') {
       // SDK contract: setThinkingLevel returns void (agent-session.d.ts:736)
       // — the change is observed through the thinking_level_changed event,
-      // never a return value. 'inherit' is OpenChamber's wire sentinel for
+      // never a return value. 'inherit' is OMPChamber's wire sentinel for
       // clearing the explicit level; the SDK clears via undefined.
       try {
         session.setThinkingLevel(thinkingLevel === 'inherit' ? undefined : thinkingLevel);

@@ -120,7 +120,7 @@ describe('third-party plugin catalog helpers', () => {
     expect(specMatchesPackage('@ompchamber/opencode-claude-extra@0.6.0', claudePackage)).toBe(false);
   });
 
-  test('points catalog plugins at the OpenChamber GitHub and npm packages', () => {
+  test('points catalog plugins at the OMPChamber GitHub and npm packages', () => {
     expect(thirdPartyCatalog.THIRD_PARTY_PLUGINS.map((plugin) => ({
       id: plugin.id,
       packageName: plugin.packageName,
@@ -129,12 +129,12 @@ describe('third-party plugin catalog helpers', () => {
       {
         id: 'opencode-claude',
         packageName: '@ompchamber/opencode-claude',
-        homepage: 'https://github.com/openchamber/opencode-claude',
+        homepage: 'https://github.com/ompchamber/opencode-claude',
       },
       {
         id: 'opencode-cursor-oauth',
         packageName: '@ompchamber/opencode-cursor',
-        homepage: 'https://github.com/openchamber/opencode-cursor',
+        homepage: 'https://github.com/ompchamber/opencode-cursor',
       },
     ]);
   });

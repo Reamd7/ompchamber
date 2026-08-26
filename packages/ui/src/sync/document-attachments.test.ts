@@ -224,7 +224,7 @@ describe("document attachment extraction", () => {
     const text = await result?.textFile.text() ?? ""
 
     expect(text.length <= 500_000).toBe(true)
-    expect(text.endsWith("[Document text truncated by OpenChamber]\n")).toBe(true)
+    expect(text.endsWith("[Document text truncated by OMPChamber]\n")).toBe(true)
     expect(text.includes("[long-image-1.png]")).toBe(false)
     expect(result?.images).toEqual([])
   })

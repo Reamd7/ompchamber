@@ -139,8 +139,8 @@ const buildMaterializedSubagentSession = () => {
 };
 
 const syncContext = (globalThis as unknown as {
-  __openchamber_sync_context__?: React.Context<unknown>;
-}).__openchamber_sync_context__;
+  __ompchamber_sync_context__?: React.Context<unknown>;
+}).__ompchamber_sync_context__;
 
 if (!syncContext) {
   throw new Error('sync context was not published on globalThis by @/sync/sync-context');

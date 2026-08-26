@@ -20,7 +20,7 @@ stays the same no matter who is writing.
 ### Keep it short
 
 - Lead with the task, not background. The first line should say what the page is
-  for ("Use `openchamber tunnel` to expose a running OpenChamber instance.").
+  for ("Use `ompchamber tunnel` to expose a running OpenChamber instance.").
 - Cut anything that doesn't change what the reader does next.
 - A basic page should fit in a screen or two. Long, dense reference pages (like
   Reverse Proxy) are the exception — and they say so in their first line ("Use
@@ -34,7 +34,7 @@ stays the same no matter who is writing.
   they did it right.
 
 ```mdx
-3. Run `openchamber --ui-password be-creative-here`.
+3. Run `ompchamber --ui-password be-creative-here`.
 4. Open the printed URL (usually `http://localhost:3000`).
 
 You should land on the OpenChamber session list. If you see it, the server is

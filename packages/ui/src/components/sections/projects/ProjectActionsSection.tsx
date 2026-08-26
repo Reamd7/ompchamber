@@ -27,7 +27,7 @@ import { isDesktopShell } from '@/lib/desktop';
 import {
   getProjectActionsState,
   saveProjectActionsState,
-  type OpenChamberProjectAction,
+  type OMPChamberProjectAction,
   type ProjectRef,
 } from '@/lib/openchamberConfig';
 import {
@@ -45,7 +45,7 @@ import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint'
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
-type EditableProjectAction = OpenChamberProjectAction;
+type EditableProjectAction = OMPChamberProjectAction;
 
 const AUTO_SAVE_DELAY_MS = 450;
 

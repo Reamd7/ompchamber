@@ -6,7 +6,7 @@ import { useDeviceInfo } from '@/lib/device';
 import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Icon } from "@/components/icon/Icon";
-import { OpenChamberLogo } from '@/components/ui/OpenChamberLogo';
+import { OMPChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { InstanceServiceUrls } from './InstanceServiceUrls';
@@ -18,7 +18,7 @@ import {
 
 const GITHUB_URL = 'https://github.com/openchamber/openchamber';
 const DISCORD_URL = 'https://discord.gg/ZYRSdnwwKA';
-const X_URL = 'https://x.com/openchamber_dev';
+const X_URL = 'https://x.com/ompchamber_dev';
 
 const MIN_CHECKING_DURATION = 800; // ms
 
@@ -30,7 +30,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
   const { t } = useI18n();
   const [updateDialogOpen, setUpdateDialogOpen] = React.useState(initialUpdateDialogOpen);
   const [showChecking, setShowChecking] = React.useState(false);
-  const [openChamberVersion, setOpenChamberVersion] = React.useState<string | null>(null);
+  const [openChamberVersion, setOMPChamberVersion] = React.useState<string | null>(null);
   const [openCodeVersion, setOpenCodeVersion] = React.useState<string | null>(null);
   const updateStore = useUpdateStore(useShallow((s) => ({
     info: s.info,
@@ -52,24 +52,24 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
   React.useEffect(() => {
     let cancelled = false;
 
-    const loadOpenChamberVersion = async () => {
+    const loadOMPChamberVersion = async () => {
       try {
         const response = await runtimeFetch('/api/system/info', {
           method: 'GET',
           headers: { Accept: 'application/json' },
         });
         if (!response.ok) return;
-        const data = await response.json().catch(() => null) as { openchamberVersion?: unknown } | null;
-        const version = typeof data?.openchamberVersion === 'string' && data.openchamberVersion.trim().length > 0
-          ? data.openchamberVersion.trim()
+        const data = await response.json().catch(() => null) as { ompchamberVersion?: unknown } | null;
+        const version = typeof data?.ompchamberVersion === 'string' && data.ompchamberVersion.trim().length > 0
+          ? data.ompchamberVersion.trim()
           : null;
-        if (!cancelled) setOpenChamberVersion(version);
+        if (!cancelled) setOMPChamberVersion(version);
       } catch {
-        if (!cancelled) setOpenChamberVersion(null);
+        if (!cancelled) setOMPChamberVersion(null);
       }
     };
 
-    void loadOpenChamberVersion();
+    void loadOMPChamberVersion();
 
     return () => {
       cancelled = true;
@@ -116,7 +116,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
         setShowChecking(false);
         // Show toast if check completed with no update available
         if (didInitiateCheck.current && !updateStore.available && !updateStore.error) {
-          toast.success(t('settings.openchamber.about.toast.latestVersion'));
+          toast.success(t('settings.ompchamber.about.toast.latestVersion'));
           didInitiateCheck.current = false;
         }
       }, MIN_CHECKING_DURATION);
@@ -130,11 +130,11 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
     return (
       <div className="w-full space-y-6 pb-2">
         <div className="flex flex-col items-center text-center">
-          <OpenChamberLogo width={72} height={72} />
-          <h2 className={`mt-4 ${SETTINGS_BRAND_TITLE_CLASS}`}>OpenChamber</h2>
+          <OMPChamberLogo width={72} height={72} />
+          <h2 className={`mt-4 ${SETTINGS_BRAND_TITLE_CLASS}`}>OMPChamber</h2>
           <div className="mt-2 space-y-1 typography-ui text-muted-foreground">
             <p>{t('aboutDialog.openChamberVersionLabel', { version: currentVersion })}</p>
-            <p>{t('aboutDialog.openCodeVersionLabel', { version: openCodeVersion || t('settings.openchamber.about.state.unknown') })}</p>
+            <p>{t('aboutDialog.openCodeVersionLabel', { version: openCodeVersion || t('settings.ompchamber.about.state.unknown') })}</p>
           </div>
           <InstanceServiceUrls />
         </div>
@@ -150,7 +150,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
               className="h-10 w-auto justify-center gap-2 rounded-xl px-4"
             >
               {isChecking ? <Icon name="loader" className="size-4 animate-spin" /> : <Icon name="refresh" className="size-4" />}
-              {isChecking ? t('settings.openchamber.about.state.checking') : t('settings.openchamber.about.actions.checkForUpdates')}
+              {isChecking ? t('settings.ompchamber.about.state.checking') : t('settings.ompchamber.about.actions.checkForUpdates')}
             </Button>
           )}
 
@@ -163,7 +163,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
               className="h-10 w-auto justify-center gap-2 rounded-xl px-4"
             >
               <Icon name="download" className="size-4" />
-              {t('settings.openchamber.about.actions.updateToVersion', { version: updateStore.info?.version || '' })}
+              {t('settings.ompchamber.about.actions.updateToVersion', { version: updateStore.info?.version || '' })}
             </Button>
           )}
         </div>
@@ -204,7 +204,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
             className="flex items-center gap-1.5 typography-ui-label text-muted-foreground transition-colors hover:text-foreground"
           >
             <Icon name="twitter-xfill" className="size-5" />
-            <span>@openchamber_dev</span>
+            <span>@ompchamber_dev</span>
           </a>
         </div>
 
@@ -234,19 +234,19 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
       <div className="rounded-lg bg-[var(--surface-elevated)]/70 overflow-hidden flex flex-col">
         <div className="flex flex-col @xl:flex-row @xl:items-center justify-between gap-4 px-4 py-3 border-b border-border/40">
           <div className="flex min-w-0 flex-col">
-            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.openchamber.about.field.version')}</span>
+            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.ompchamber.about.field.version')}</span>
             <span className="typography-meta text-muted-foreground font-mono">{currentVersion}</span>
           </div>
           <div className="flex min-w-0 flex-col">
-            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.openchamber.about.field.openCodeVersion')}</span>
-            <span className="typography-meta text-muted-foreground font-mono">{openCodeVersion || t('settings.openchamber.about.state.unknown')}</span>
+            <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.ompchamber.about.field.openCodeVersion')}</span>
+            <span className="typography-meta text-muted-foreground font-mono">{openCodeVersion || t('settings.ompchamber.about.state.unknown')}</span>
           </div>
           
           <div className="flex items-center gap-3">
             {updateStore.checking && (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Icon name="loader" className="h-4 w-4 animate-spin" />
-                <span className="typography-meta">{t('settings.openchamber.about.state.checking')}</span>
+                <span className="typography-meta">{t('settings.ompchamber.about.state.checking')}</span>
               </div>
             )}
 
@@ -256,12 +256,12 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
                 onClick={() => setUpdateDialogOpen(true)}
               >
                 <Icon name="download" className="h-4 w-4 mr-1" />
-                {t('settings.openchamber.about.actions.updateToVersion', { version: updateStore.info?.version || '' })}
+                {t('settings.ompchamber.about.actions.updateToVersion', { version: updateStore.info?.version || '' })}
               </Button>
             )}
 
             {!updateStore.checking && !updateStore.available && !updateStore.error && (
-              <span className="typography-meta text-muted-foreground">{t('settings.openchamber.about.state.upToDate')}</span>
+              <span className="typography-meta text-muted-foreground">{t('settings.ompchamber.about.state.upToDate')}</span>
             )}
 
             <Button size="sm"
@@ -269,7 +269,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
               onClick={() => updateStore.checkForUpdates()}
               disabled={updateStore.checking}
             >
-              {t('settings.openchamber.about.actions.checkForUpdates')}
+              {t('settings.ompchamber.about.actions.checkForUpdates')}
             </Button>
           </div>
         </div>
@@ -281,7 +281,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
         )}
 
         <div className="flex flex-col gap-2 border-b border-border/40 px-4 py-3 @xl:flex-row @xl:items-center @xl:justify-between">
-          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.openchamber.about.field.instanceUrls')}</span>
+          <span className={SETTINGS_FIELD_LABEL_CLASS}>{t('settings.ompchamber.about.field.instanceUrls')}</span>
           <InstanceServiceUrls />
         </div>
 
@@ -303,7 +303,7 @@ export const AboutSettings: React.FC<AboutSettingsProps> = ({ initialUpdateDialo
             className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground typography-meta transition-colors"
           >
             <Icon name="twitter-xfill" className="h-4 w-4" />
-              <span>@openchamber_dev</span>
+              <span>@ompchamber_dev</span>
             </a>
         </div>
       </div>

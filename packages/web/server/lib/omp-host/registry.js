@@ -1,4 +1,4 @@
-// Per-project sidecar registry for OpenChamber-specific session metadata.
+// Per-project sidecar registry for OMPChamber-specific session metadata.
 //
 // The omp engine (via `SessionManager`) owns session transcripts on disk:
 // one JSONL per session under the cwd-derived session directory. OpenCode's
@@ -19,7 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 
-const REGISTRY_FILE = 'openchamber-session-meta.json';
+const REGISTRY_FILE = 'ompchamber-session-meta.json';
 
 export const normalizeDirectoryKey = (directory) => {
   let normalized = String(directory ?? '').replaceAll('\\', '/');
@@ -41,7 +41,7 @@ export class SessionMetaRegistry {
    */
   constructor({ agentDir } = {}) {
     this.agentDir = agentDir || process.env.OMP_AGENT_DIR || defaultAgentDir();
-    this.registryRoot = path.join(this.agentDir, 'openchamber-registry');
+    this.registryRoot = path.join(this.agentDir, 'ompchamber-registry');
     /** @type {Map<string, Map<string, Record<string, unknown>>>} directoryKey -> sessionId -> meta */
     this.cache = new Map();
   }

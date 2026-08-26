@@ -4,28 +4,28 @@ import { resolveAgentToolAction } from './actions.js';
 
 /**
  * Both cases here are from one real conversation: the model called `read` and
- * then `get` on `openchamber_memory`, having dropped the namespace its own tool
+ * then `get` on `ompchamber_memory`, having dropped the namespace its own tool
  * name appeared to supply, and gave up after the second bare "unsupported".
  */
 describe('a namespace the tool name already implies', () => {
   test('resolves a bare action inside the calling tool', () => {
-    expect(resolveAgentToolAction('read', 'openchamber_memory')).toEqual({ action: 'memory.read' });
-    expect(resolveAgentToolAction('save', 'openchamber_memory')).toEqual({ action: 'memory.save' });
+    expect(resolveAgentToolAction('read', 'ompchamber_memory')).toEqual({ action: 'memory.read' });
+    expect(resolveAgentToolAction('save', 'ompchamber_memory')).toEqual({ action: 'memory.save' });
   });
 
   test('resolves a bare name that is ambiguous only across tools', () => {
     // `delete` belongs to schedule and to memory; inside one tool it is plain.
-    expect(resolveAgentToolAction('delete', 'openchamber_memory')).toEqual({ action: 'memory.delete' });
-    expect(resolveAgentToolAction('delete', 'openchamber')).toEqual({ action: 'schedule.delete' });
+    expect(resolveAgentToolAction('delete', 'ompchamber_memory')).toEqual({ action: 'memory.delete' });
+    expect(resolveAgentToolAction('delete', 'ompchamber')).toEqual({ action: 'schedule.delete' });
   });
 
   test('keeps a fully qualified action as it is', () => {
-    expect(resolveAgentToolAction('memory.read', 'openchamber_memory')).toEqual({ action: 'memory.read' });
+    expect(resolveAgentToolAction('memory.read', 'ompchamber_memory')).toEqual({ action: 'memory.read' });
   });
 
   test('does not reach outside the tool that asked', () => {
     // The memory tool asking for `open` must fail, not drive the browser.
-    expect(resolveAgentToolAction('open', 'openchamber_memory').action).toBeUndefined();
+    expect(resolveAgentToolAction('open', 'ompchamber_memory').action).toBeUndefined();
   });
 });
 
@@ -41,7 +41,7 @@ describe('an unidentified caller', () => {
 
 describe('what an unresolvable action reports', () => {
   test('names the actions the calling tool actually has', () => {
-    const { error } = resolveAgentToolAction('get', 'openchamber_memory');
+    const { error } = resolveAgentToolAction('get', 'ompchamber_memory');
 
     expect(error).toContain('memory.read');
     expect(error).toContain('memory.save');
@@ -50,14 +50,14 @@ describe('what an unresolvable action reports', () => {
   });
 
   test('reports a missing action rather than resolving to something', () => {
-    const { error, action } = resolveAgentToolAction('', 'openchamber_memory');
+    const { error, action } = resolveAgentToolAction('', 'ompchamber_memory');
 
     expect(action).toBeUndefined();
     expect(error).toContain('missing');
   });
 
   test('an unknown tool falls back to the full action list', () => {
-    const { error } = resolveAgentToolAction('nonsense', 'openchamber_future');
+    const { error } = resolveAgentToolAction('nonsense', 'ompchamber_future');
 
     expect(error).toContain('memory.read');
     expect(error).toContain('browser.open');

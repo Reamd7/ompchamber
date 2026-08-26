@@ -1,6 +1,6 @@
 // Launch-spec resolution for the managed omp host process.
 //
-// The managed engine is no longer the `opencode` CLI: it is the OpenChamber
+// The managed engine is no longer the `opencode` CLI: it is the OMPChamber
 // omp host (server/lib/omp-host/host.js) run under Bun. The host embeds
 // @oh-my-pi/pi-coding-agent and serves the OpenCode-compatible wire surface,
 // so everything around the child process (ports, Basic auth, readiness line,

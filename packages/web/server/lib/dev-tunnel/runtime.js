@@ -1,5 +1,5 @@
 /**
- * Raw byte tunnel to a dev server running on the OpenChamber host.
+ * Raw byte tunnel to a dev server running on the OMPChamber host.
  *
  * This is what lets a desktop client preview a dev server that lives on another
  * machine without rewriting anything. The client binds its own local port and

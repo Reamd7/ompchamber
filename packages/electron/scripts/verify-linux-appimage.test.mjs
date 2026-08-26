@@ -15,7 +15,7 @@ const writeElf = (filePath, architecture) => {
 };
 
 const createPayload = () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-payload-test-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-payload-test-'));
   fs.writeFileSync(path.join(root, 'ompchamber.desktop'), [
     '[Desktop Entry]', 'Name=OMPChamber', 'Exec=AppRun --no-sandbox %U', 'Icon=ompchamber', 'StartupWMClass=ompchamber', '',
   ].join('\n'));
@@ -34,7 +34,7 @@ const createPayload = () => {
 };
 
 test('reads supported ELF architectures', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-elf-test-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-elf-test-'));
   try {
     writeElf(path.join(root, 'x64'), 'x64');
     writeElf(path.join(root, 'arm64'), 'arm64');

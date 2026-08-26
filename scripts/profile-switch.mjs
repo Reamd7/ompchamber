@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Automated chat-switch capture for OpenChamber.
+ * Automated chat-switch capture for OMPChamber.
  *
  * Answers: what does switching to a session cost on the main thread, measured
  * on a production build without DevTools attached? The user-visible scenario

@@ -58,7 +58,7 @@ describe('loopback navigations against a remote instance', () => {
   });
 
   test('a public address is not loopback at all', () => {
-    expect(shouldTunnelLoopbackUrl('https://openchamber.dev/docs/')).toBe(false);
+    expect(shouldTunnelLoopbackUrl('https://ompchamber.dev/docs/')).toBe(false);
   });
 
   test('an implicit port is the port the scheme means, not nothing', () => {

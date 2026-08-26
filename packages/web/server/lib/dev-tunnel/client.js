@@ -2,7 +2,7 @@
  * Local end of the dev-server tunnel.
  *
  * Binds a loopback listener on this machine and pipes every connection to a
- * dev server on the OpenChamber host. The point of binding a real local port —
+ * dev server on the OMPChamber host. The point of binding a real local port —
  * rather than serving the remote page under a path on some other origin — is
  * that the page then has its own origin at the root of its own host. Absolute
  * URLs resolve, cookies scope correctly, HMR sockets connect, and nothing has

@@ -379,7 +379,7 @@ export const debugUtils = {
         projectInfo,
         health: opencodeHealth,
       },
-      openchamber: {
+      ompchamber: {
         settingsInfo,
       },
       // Empty is a meaningful answer here: it means no prompt was rejected in

@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 const createFixture = async ({ sources, markdown } = {}) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-session-assets-'));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ompchamber-session-assets-'));
   roots.push(root);
   const approvedTempRoot = path.join(root, 'opencode');
   const directory = path.join(root, 'workspace');

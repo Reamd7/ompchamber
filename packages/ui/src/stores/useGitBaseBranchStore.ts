@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 
-const GIT_BASE_BRANCH_STORAGE_KEY = 'openchamber.git-base-branch';
+const GIT_BASE_BRANCH_STORAGE_KEY = 'ompchamber.git-base-branch';
 const MAX_BASE_BRANCH_ENTRIES = 100;
 
 /**

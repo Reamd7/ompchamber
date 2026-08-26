@@ -23,7 +23,7 @@ const OMPCHAMBER_SETTINGS_FILE = path.join(
   'settings.json',
 );
 
-// OpenChamber's own settings: when the user unchecks "use default small model"
+// OMPChamber's own settings: when the user unchecks "use default small model"
 // their explicit override outranks every other resolution step.
 const readSmallModelSettingsOverride = () => {
   try {

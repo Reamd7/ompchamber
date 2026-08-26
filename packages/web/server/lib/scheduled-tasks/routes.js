@@ -15,7 +15,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     sanitizeProjects,
     projectConfigRuntime,
     scheduledTasksRuntime,
-    getOpenChamberEventClients,
+    getOMPChamberEventClients,
     writeSseEvent,
     scheduledTaskService = createScheduledTaskService(dependencies),
   } = dependencies;
@@ -149,9 +149,9 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     // not of this server: a desktop shell and a browser tab can be connected to
     // the same server at once. Recording it on the connection keeps the answer
     // current without any enable/disable setting to go stale.
-    res.openchamberBrowserCapable = req.query?.browser === '1';
+    res.ompchamberBrowserCapable = req.query?.browser === '1';
 
-    const clients = getOpenChamberEventClients();
+    const clients = getOMPChamberEventClients();
     clients.add(res);
 
     try {

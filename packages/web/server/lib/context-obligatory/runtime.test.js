@@ -23,7 +23,7 @@ describe('context obligatory runtime', () => {
         sessionReads += 1;
         return json({
           id: 'ses_1',
-          metadata: { openchamber: { context_obligatory_messages: [
+          metadata: { ompchamber: { context_obligatory_messages: [
             { id: 'msg_2', createdAt: 20, role: 'assistant' },
             { id: 'msg_1', createdAt: 10, role: 'user' },
           ] } },
@@ -58,7 +58,7 @@ describe('context obligatory runtime', () => {
     expect(payload.parts[0].text).toContain('Only if no tasks or next steps remain');
     expect(payload.parts[0].text).toContain('no more than one short paragraph');
     const patch = requests.find((request) => request.method === 'PATCH');
-    expect(JSON.parse(patch.body).metadata.openchamber.context_obligatory_last_compaction_message_id).toBe('msg_summary');
+    expect(JSON.parse(patch.body).metadata.ompchamber.context_obligatory_last_compaction_message_id).toBe('msg_summary');
     expect(sessionReads).toBe(2);
     runtime.stop();
   });
@@ -75,7 +75,7 @@ describe('context obligatory runtime', () => {
       if (url.pathname === '/session/ses_1' && init.method === 'PATCH') return json({});
       if (url.pathname === '/session/ses_1') return json({
         id: 'ses_1',
-        metadata: { openchamber: { knowledge_context_delivered: 'sig-before-compaction' } },
+        metadata: { ompchamber: { knowledge_context_delivered: 'sig-before-compaction' } },
       });
       if (url.pathname === '/session/ses_1/message') return json([
         { info: { id: 'msg_agent', role: 'assistant', providerID: 'provider', modelID: 'model', agent: 'build' } },
@@ -112,7 +112,7 @@ describe('context obligatory runtime', () => {
     expect(JSON.parse(prompt.body).parts[0].text).toContain('Remember this.');
     const patch = requests.find((request) => request.method === 'PATCH');
     // Recorded with the cursor, so the next ordinary send does not repeat it.
-    expect(JSON.parse(patch.body).metadata.openchamber.knowledge_context_delivered).toBe('sig-1');
+    expect(JSON.parse(patch.body).metadata.ompchamber.knowledge_context_delivered).toBe('sig-1');
   });
 
   it('sends pinned messages and project knowledge as one message', async () => {
@@ -123,7 +123,7 @@ describe('context obligatory runtime', () => {
       if (url.pathname === '/session/ses_1' && init.method === 'PATCH') return json({});
       if (url.pathname === '/session/ses_1') return json({
         id: 'ses_1',
-        metadata: { openchamber: { context_obligatory_messages: [{ id: 'msg_1', createdAt: 10, role: 'user' }] } },
+        metadata: { ompchamber: { context_obligatory_messages: [{ id: 'msg_1', createdAt: 10, role: 'user' }] } },
       });
       if (url.pathname === '/session/ses_1/message') return json([
         { info: { id: 'msg_agent', role: 'assistant', providerID: 'provider', modelID: 'model', agent: 'build' } },

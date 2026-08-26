@@ -196,7 +196,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
     window.addEventListener('ompchamber:app-ready', appReadyHandler);
     window.addEventListener('ompchamber:installed-apps-updated', updateHandler);
 
-    const appReady = (window as unknown as { __openchamberAppReady?: boolean }).__openchamberAppReady;
+    const appReady = (window as unknown as { __ompchamberAppReady?: boolean }).__ompchamberAppReady;
     if (appReady) {
       void loadInstalledApps();
     }

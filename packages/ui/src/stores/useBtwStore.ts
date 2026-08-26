@@ -4,7 +4,7 @@ import { create } from 'zustand';
  * UI-only state for the `/btw` peek panel.
  *
  * The panel's identity is NOT stored here: it is derived from session
- * metadata (`openchamber.btwSessionID` on the parent — see
+ * metadata (`ompchamber.btwSessionID` on the parent — see
  * `sessionBtwMetadata`), so the panel appears only in the session `/btw` was
  * typed into and survives reloads. This store keeps only transient
  * per-parent presentation state that has no authoritative home:

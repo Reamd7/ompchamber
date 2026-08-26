@@ -1,7 +1,7 @@
 // Session assist: after a session goes idle and stays quiet, generate a short
 // recap of the agent's last reply plus one suggested user follow-up with the
 // small model, and store both on the session's metadata
-// (metadata.openchamber.assist). Clients decide visibility from
+// (metadata.ompchamber.assist). Clients decide visibility from
 // assist.forMessageID — a new message makes the payload stale everywhere
 // without any extra writes.
 //
@@ -316,8 +316,8 @@ export const createSessionAssistRuntime = ({
     const currentMetadata = freshSession?.metadata && typeof freshSession.metadata === 'object'
       ? freshSession.metadata
       : (session.metadata && typeof session.metadata === 'object' ? session.metadata : {});
-    const currentNamespace = currentMetadata.openchamber && typeof currentMetadata.openchamber === 'object'
-      ? currentMetadata.openchamber
+    const currentNamespace = currentMetadata.ompchamber && typeof currentMetadata.ompchamber === 'object'
+      ? currentMetadata.ompchamber
       : {};
 
     console.log(`[session-assist] generated for ${sessionId} via ${generated.providerID}/${generated.modelID}`);
@@ -327,7 +327,7 @@ export const createSessionAssistRuntime = ({
       body: {
         metadata: {
           ...currentMetadata,
-          openchamber: {
+          ompchamber: {
             ...currentNamespace,
             assist: {
               recap,

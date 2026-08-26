@@ -28,7 +28,7 @@ function readJson(filePath) {
 
 describe('opencode plugins data layer', () => {
   beforeAll(async () => {
-    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-plugins-'));
+    rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-plugins-'));
     userConfigPath = path.join(rootDir, 'user-opencode.json');
     process.env.OPENCODE_CONFIG = userConfigPath;
     plugins = await import('./plugins.js');
@@ -136,7 +136,7 @@ describe('opencode plugins data layer', () => {
 
     expect(plugins.listPluginEntries(projectDir).map((entry) => entry.spec)).toEqual(['user-plugin']);
     expect(fs.readFileSync(projectFile, 'utf8')).toBe(partialProject);
-    expect(fs.existsSync(`${projectFile}.openchamber.backup`)).toBe(false);
+    expect(fs.existsSync(`${projectFile}.ompchamber.backup`)).toBe(false);
   });
 
   test('lists entries from user and project layers with scopes and parsed kinds', () => {

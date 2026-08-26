@@ -581,7 +581,7 @@ describe('OpenCode lifecycle', () => {
   it('strips AppImage ARGV0 from managed OpenCode launch env', async () => {
     delete process.env.OPENCODE_BINARY;
     const previousArgv0 = process.env.ARGV0;
-    process.env.ARGV0 = '/path/to/OpenChamber/OpenChamber-1.17.2-linux-x86_64.AppImage';
+    process.env.ARGV0 = '/path/to/OMPChamber/OMPChamber-1.17.2-linux-x86_64.AppImage';
     const child = createMockChild();
     spawnMock.mockImplementationOnce(() => {
       queueMicrotask(() => {
@@ -612,7 +612,7 @@ describe('OpenCode lifecycle', () => {
     }
   });
 
-  it('adds managed OpenChamber tool environment without allowing it to replace launch invariants', async () => {
+  it('adds managed OMPChamber tool environment without allowing it to replace launch invariants', async () => {
     const child = createMockChild();
     spawnMock.mockImplementationOnce(() => {
       queueMicrotask(() => {

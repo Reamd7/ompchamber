@@ -21,7 +21,7 @@ test('rejects missing and non-writable AppImages with actionable errors', () => 
     () => assertUpdaterCapability({
       platform: 'linux',
       packaged: true,
-      appImagePath: '/opt/OpenChamber.AppImage',
+      appImagePath: '/opt/OMPChamber.AppImage',
       stat: () => { throw new Error('missing'); },
     }),
     /cannot be found.*valid \.AppImage file/,
@@ -30,7 +30,7 @@ test('rejects missing and non-writable AppImages with actionable errors', () => 
     () => assertUpdaterCapability({
       platform: 'linux',
       packaged: true,
-      appImagePath: '/opt/OpenChamber.AppImage',
+      appImagePath: '/opt/OMPChamber.AppImage',
       stat: () => ({ isFile: () => true }),
       access: () => { throw new Error('read-only'); },
     }),
@@ -42,7 +42,7 @@ test('accepts a writable packaged AppImage', () => {
   assert.doesNotThrow(() => assertUpdaterCapability({
     platform: 'linux',
     packaged: true,
-    appImagePath: '/home/user/OpenChamber.AppImage',
+    appImagePath: '/home/user/OMPChamber.AppImage',
     stat: () => ({ isFile: () => true }),
     access: () => {},
   }));
