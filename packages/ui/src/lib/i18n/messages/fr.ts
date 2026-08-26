@@ -2136,6 +2136,7 @@ export const dict = {
 'chat.modelControls.roles.configure': 'Configurer les rôles',
 'chat.modelControls.roles.thinking': 'Réflexion {level}',
 'chat.modelControls.thinkingChangeFailed': 'Impossible de modifier le niveau de réflexion',
+'chat.modelControls.modelChangeFailed': 'Impossible de changer le modèle',
 'chat.modelControls.setAsRole': 'Définir comme rôle',
 'chat.modelControls.setAsRole.aria': 'Affecter ce modèle à un rôle',
 'chat.modelControls.setAsRole.applied': 'Rôle {role} mis à jour',

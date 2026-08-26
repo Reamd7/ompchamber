@@ -31,9 +31,22 @@ const childState = {
   limit: 5,
 };
 let currentDirectory = '/repo';
+const freshSessionModelCalls: Array<{ sessionID: string; directory: string | null | undefined; providerID?: string; modelID?: string }> = [];
+let resolveRouteMessage: (() => void) | null = null;
 
 mock.module('@/sync/session-ui-store', () => ({
-  routeMessage: mock(() => Promise.resolve()),
+  routeMessage: mock(() => {
+    resolveRouteMessage?.();
+    return Promise.resolve();
+  }),
+  applyOmpSessionModelToFreshSession: mock(async (
+    sessionID: string,
+    directory: string | null | undefined,
+    providerID?: string,
+    modelID?: string,
+  ) => {
+    freshSessionModelCalls.push({ sessionID, directory, providerID, modelID });
+  }),
   useSessionUIStore: {
     getState: () => ({
       markSessionAsOMPChamberCreated: mock(() => undefined),
@@ -147,10 +160,11 @@ mock.module('@/sync/sync-refs', () => ({
 }));
 
 const { useMultiRunStore } = await import('./useMultiRunStore');
-
 describe('useMultiRunStore', () => {
   beforeEach(() => {
-    upsertedSessions.length = 0;
+    freshSessionModelCalls.length = 0;
+    resolveRouteMessage = null;
+  upsertedSessions.length = 0;
     registeredDirectories.length = 0;
     ensureChildCalls.length = 0;
     worktreeMetadataCalls.length = 0;
@@ -167,6 +181,8 @@ describe('useMultiRunStore', () => {
   });
 
   test('registers created sessions without waiting for a sidebar refresh', async () => {
+    const routed = Promise.withResolvers<void>();
+    resolveRouteMessage = routed.resolve;
     const result = await useMultiRunStore.getState().createMultiRun({
       name: 'Fix thing',
       isolateRuns: false,
@@ -178,6 +194,15 @@ describe('useMultiRunStore', () => {
 
     expect(result?.sessionIds).toEqual(['ses_multirun']);
     expect(upsertedSessions.map((session) => session.id)).toEqual(['ses_multirun']);
+    // The dispatch loop is fire-and-forget; await its deterministic signal
+    // (routeMessage fires after the model application in the same chain).
+    await routed.promise;
+    expect(freshSessionModelCalls).toEqual([{
+      sessionID: 'ses_multirun',
+      directory: '/repo',
+      providerID: 'anthropic',
+      modelID: 'claude-sonnet-4-5',
+    }]);
     expect(registeredDirectories).toEqual([{ sessionID: 'ses_multirun', directory: '/repo' }]);
     expect(ensureChildCalls).toEqual([{ directory: '/repo', bootstrap: false }]);
     expect(childState.session.map((session) => session.id)).toEqual(['ses_multirun']);

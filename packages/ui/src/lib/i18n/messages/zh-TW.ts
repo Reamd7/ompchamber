@@ -2402,6 +2402,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modelControls.roles.configure': '設定角色',
 'chat.modelControls.roles.thinking': '思考 {level}',
 'chat.modelControls.thinkingChangeFailed': '無法變更思考級別',
+'chat.modelControls.modelChangeFailed': '無法變更模型',
 'chat.modelControls.setAsRole': '設為角色',
 'chat.modelControls.setAsRole.aria': '將此模型指派給角色',
 'chat.modelControls.setAsRole.applied': '角色 {role} 已更新',

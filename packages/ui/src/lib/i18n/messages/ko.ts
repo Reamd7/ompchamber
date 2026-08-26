@@ -2432,6 +2432,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modelControls.roles.configure': '역할 구성',
 'chat.modelControls.roles.thinking': '사고 {level}',
 'chat.modelControls.thinkingChangeFailed': '사고 수준을 변경하지 못했습니다',
+'chat.modelControls.modelChangeFailed': '모델을 변경하지 못했습니다',
 'chat.modelControls.setAsRole': '역할로 설정',
 'chat.modelControls.setAsRole.aria': '이 모델을 역할에 할당',
 'chat.modelControls.setAsRole.applied': '{role} 역할이 업데이트되었습니다',

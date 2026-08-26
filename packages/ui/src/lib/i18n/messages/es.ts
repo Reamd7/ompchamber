@@ -2398,6 +2398,7 @@ export const dict: Record<I18nKey, string> = {
 "chat.modelControls.roles.configure": "Configurar roles",
 "chat.modelControls.roles.thinking": "Razonamiento {level}",
 "chat.modelControls.thinkingChangeFailed": "No se pudo cambiar el nivel de pensamiento",
+"chat.modelControls.modelChangeFailed": "No se pudo cambiar el modelo",
 "chat.modelControls.setAsRole": "Establecer como rol",
 "chat.modelControls.setAsRole.aria": "Asignar este modelo a un rol",
 "chat.modelControls.setAsRole.applied": "Rol {role} actualizado",

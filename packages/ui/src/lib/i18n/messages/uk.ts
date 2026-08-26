@@ -2398,6 +2398,7 @@ export const dict: Record<I18nKey, string> = {
 "chat.modelControls.roles.configure": "Налаштувати ролі",
 "chat.modelControls.roles.thinking": "Мислення {level}",
 "chat.modelControls.thinkingChangeFailed": "Не вдалося змінити рівень мислення",
+"chat.modelControls.modelChangeFailed": "Не вдалося змінити модель",
 "chat.modelControls.setAsRole": "Призначити роллю",
 "chat.modelControls.setAsRole.aria": "Призначити цю модель ролі",
 "chat.modelControls.setAsRole.applied": "Роль {role} оновлено",

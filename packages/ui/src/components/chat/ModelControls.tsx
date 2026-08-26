@@ -57,6 +57,7 @@ import { OmpRoleSlots, type OmpRoleSlotsLabels } from './OmpRoleSlots';
 import { useOmpModelRoles, type OmpRoleSlot } from '@/hooks/useOmpModelRoles';
 import { useOmpPersonas } from '@/hooks/useOmpPersonas';
 import { useOmpSessionMode } from '@/hooks/useOmpSessionMode';
+import { useOmpSessionModelSwitch } from './useOmpSessionModelSwitch';
 import { useOmpSessionModelBadge, useOmpThinkingState } from '@/sync/useOmpSessionStore';
 import { createEnabledModelsMatcher } from '@/lib/omp/enabledModels';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
@@ -879,6 +880,21 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return 'applied';
     }, [addRecentModel, commitVariantSelectionForModel, resolveLiveAgentName, tryApplyModelSelection]);
 
+    // GAP-02/GAP-04 consumer side: under the omp model-roles capability
+    // prompts are model-free, so every user-driven picker selection must
+    // switch the session's model server-side (the /switch equivalent).
+    // Local stores stay the optimistic face; omp.model.changed reconciles,
+    // and a failed switch rolls the local selection back to the badge.
+    const { switchSessionModel: switchOmpSessionModel } = useOmpSessionModelSwitch({
+        sessionID: currentSessionId ?? null,
+        directory: ompPickerDirectory,
+        authoritativeModel: ompSessionModel?.provider && ompSessionModel?.id
+            ? { provider: ompSessionModel.provider, id: ompSessionModel.id }
+            : null,
+        applyLocalModel: tryApplyModelSelection,
+        changeFailedLabel: t('chat.modelControls.modelChangeFailed'),
+    });
+
     const ompRoleSlotsLabels = React.useMemo<OmpRoleSlotsLabels>(() => ({
         sectionTitle: t('chat.modelControls.roles.sectionTitle'),
         notConfigured: t('chat.modelControls.roles.notConfigured'),
@@ -895,9 +911,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         closeMobilePanel();
     }, [closeMobilePanel, setAgentMenuOpen, setSettingsDialogOpen, setSettingsPage]);
 
-    // Picking a role applies its resolved model through the existing model
-    // selection path — the session's model then updates through the wire
-    // prompt path; no new server write exists for this.
+    // Picking a role applies its resolved model through the model-selection
+    // path and switches the session's model server-side under omp; roles
+    // themselves stay settings-owned (GAP-05 tail handles assignments).
     const handleRoleSelect = React.useCallback((slot: OmpRoleSlot) => {
         if (!slot.model) return;
         const result = applyModelSelectionWithVariant(slot.model.provider, slot.model.id, undefined);
@@ -905,9 +921,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             console.error('[ModelControls] Role model not available for selection:', { role: slot.id, model: slot.model });
             return;
         }
+        switchOmpSessionModel(slot.model.provider, slot.model.id);
         setAgentMenuOpen(false);
         closeMobilePanel();
-    }, [applyModelSelectionWithVariant, setAgentMenuOpen, closeMobilePanel]);
+    }, [applyModelSelectionWithVariant, setAgentMenuOpen, closeMobilePanel, switchOmpSessionModel]);
 
     // GAP-06: in-session thinking level change — same endpoint as the model
     // switch; the engine short-circuits to setThinkingLevel when the model is
@@ -1537,7 +1554,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     console.error('[ModelControls] Model not available for selection:', { providerId, modelId });
                 }
                 return;
-            }
+             }
+            switchOmpSessionModel(providerId, modelId);
             if (!options?.applyVariant) {
                 // Add to recent models on successful selection.
                 addRecentModel(providerId, modelId);
@@ -1897,6 +1915,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 }
                 return;
             }
+            switchOmpSessionModel(providerId, modelId);
 
             setExpandedMobileModelKey(null);
             closeMobilePanel();
@@ -2244,6 +2263,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             if (result !== 'applied') {
                 return;
             }
+            switchOmpSessionModel(targetProviderId, targetModelId);
 
             closeMobilePanel();
             requestAnimationFrame(focusChatInput);

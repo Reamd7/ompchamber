@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Session } from '@/lib/opencode/wire'
-import { routeMessage, useSessionUIStore } from '@/sync/session-ui-store';
+import { applyOmpSessionModelToFreshSession, routeMessage, useSessionUIStore } from '@/sync/session-ui-store';
 import { devtools } from 'zustand/middleware';
 import type { CreateMultiRunParams, CreateMultiRunResult } from '@/types/multirun';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -300,6 +300,10 @@ export const useMultiRunStore = create<MultiRunStore>()(
                 createdRuns.map(async (run) => {
                   try {
                     const text = await expandText(run.prompt).catch(() => run.prompt);
+                    // GAP-02/GAP-04: prompts are model-free under omp model
+                    // roles, so each run's picked model must be applied to
+                    // its fresh session before the first turn routes.
+                    await applyOmpSessionModelToFreshSession(run.sessionId, run.worktreePath, run.providerID, run.modelID);
                     await routeMessage({
                       sessionId: run.sessionId,
                       directory: run.worktreePath,

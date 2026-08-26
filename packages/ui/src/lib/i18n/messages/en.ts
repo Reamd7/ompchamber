@@ -2425,6 +2425,7 @@ export const dict = {
   'chat.modelControls.roles.configure': 'Configure roles',
   'chat.modelControls.roles.thinking': 'Thinking {level}',
   'chat.modelControls.thinkingChangeFailed': 'Could not change the thinking level',
+  'chat.modelControls.modelChangeFailed': 'Could not change the model',
   'chat.modelControls.setAsRole': 'Set as role',
   'chat.modelControls.setAsRole.aria': 'Assign this model to a role',
   'chat.modelControls.setAsRole.applied': 'Role {role} updated',

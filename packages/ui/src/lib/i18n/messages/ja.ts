@@ -2431,6 +2431,7 @@ export const dict: Record<I18nKey, string> = {
 'chat.modelControls.roles.configure': 'ロールを設定',
 'chat.modelControls.roles.thinking': '思考 {level}',
 'chat.modelControls.thinkingChangeFailed': '思考レベルを変更できませんでした',
+'chat.modelControls.modelChangeFailed': 'モデルを変更できませんでした',
 'chat.modelControls.setAsRole': 'ロールに設定',
 'chat.modelControls.setAsRole.aria': 'このモデルをロールに割り当てる',
 'chat.modelControls.setAsRole.applied': 'ロール {role} を更新しました',

@@ -92,7 +92,8 @@ import { clearLastActiveSession, persistLastActiveSession, readLastActiveSession
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
 import { createOmpDialogsAPI, type OmpDialogsAPI } from "@/lib/api/omp"
-import { isOmpFeatureEnabled, primeOmpCapabilityGate, type OmpCapabilityGateResult } from "@/lib/omp/capabilityGate"
+import { isOmpFeatureEnabled, isOmpModelRolesEnabled, primeOmpCapabilityGate, type OmpCapabilityGateResult } from "@/lib/omp/capabilityGate"
+import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { getOmpDialogClientId } from "./omp-dialog-lease"
 import { contextTokensFromBreakdown } from "@/stores/utils/tokenUtils"
 
@@ -802,6 +803,39 @@ const createSessionWithDraftLifecycle = async (
   }
 }
 
+/**
+ * GAP-02/GAP-04: under the omp model-roles capability prompts are
+ * model-free, so a fresh session's picked model must be applied through the
+ * omp session-model endpoint (POST /api/omp/sessions/{id}/model) before its
+ * first turn routes — otherwise the engine's role/default resolution
+ * silently overrides the pick. Shared by the chat draft, fork/todo-send,
+ * and multirun launch paths. A failed switch degrades to the engine
+ * default (the pre-fix behavior) and never blocks the send; the first
+ * user-message echo then re-seeds the local model display.
+ */
+export const applyOmpSessionModelToFreshSession = async (
+  sessionID: string,
+  directory: string | null | undefined,
+  providerID?: string,
+  modelID?: string,
+): Promise<void> => {
+  if (!providerID || !modelID) return
+  const directoryKey = normalizePath(directory ?? null)
+  if (!directoryKey) return
+  await primeOmpCapabilityGate()
+  if (!isOmpModelRolesEnabled()) return
+  const switchResult = await getRegisteredRuntimeAPIs()?.ompModels
+    ?.setSessionModel(
+      sessionID,
+      { providerID, modelID },
+      { directory: directoryKey },
+    )
+    .catch(() => null)
+  if (switchResult && !switchResult.ok && !switchResult.unavailable) {
+    console.warn("[session-ui-store] omp session model switch failed for fresh session", switchResult.error)
+  }
+}
+
 export async function materializeOpenDraftSession(selection: {
   providerID?: string
   modelID?: string
@@ -884,7 +918,13 @@ export async function materializeOpenDraftSession(selection: {
     useSelectionStore.getState().saveAgentModelVariantForSession(created.id, effectiveDraftAgent, selection.providerID, selection.modelID, selection.variant)
   }
 
-  store.initializeNewOMPChamberSession(created.id, configState.agents ?? [])
+  // GAP-02/GAP-04: under the omp model-roles capability prompts are
+  // model-free, so the picked model must be applied to the fresh session
+  // before the first turn routes — otherwise the engine's role/default
+  // resolution silently overrides the picker.
+  await applyOmpSessionModelToFreshSession(created.id, createdDirectory, selection.providerID, selection.modelID)
+
+  store.setCurrentSession(created.id, createdDirectory)
 
   if (draftPermissionAutoAcceptEnabled) {
     void import("@/stores/permissionStore")
@@ -2054,6 +2094,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // Set explicitly either way so a stray armed flag cannot leak into a
     // non-goal fork.
     useSessionGoalArmStore.getState().setArmed(execution.runAsGoal === true)
+
+    // Same GAP-02/GAP-04 fix as the chat draft: the execution model must
+    // reach the fresh session server-side before the first turn routes.
+    await applyOmpSessionModelToFreshSession(session.id, session.directory ?? sessionDirectory, pID, mID)
 
     await get().sendMessage(
       composeForkSessionMessage(execution.instructions, assistantPlanText),
