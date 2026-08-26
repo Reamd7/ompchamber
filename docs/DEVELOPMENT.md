@@ -245,6 +245,7 @@ git worktree remove .worktrees/fix-foo && git branch -d fix-foo   # 用完即删
 ```
 
 机制:
+- 分支名(缺省与 worktree 同名,或 `--branch` 显式指定)按 git check-ref-format / GitHub 分支名规范在动手前校验;非法分支名直接退出码 2,不会留下 worktree、分支或端口登记
 
 - `init` 把分配到的端口对写进 worktree 根的 `.dev-ports.json`(已 gitignore);分配时排除主仓默认口 5180/3902 与所有已登记 worktree 的口,再对候选口做真实 bind 测试
 - `scripts/dev-web-hmr.mjs` 读口优先级:环境变量 > `.dev-ports.json` > 默认 5180/3902(主仓行为不变);rsbuild 以 `--strict-port` 启动,端口被抢会响亮失败而非静默漂移

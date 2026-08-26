@@ -4,6 +4,10 @@
 // Usage:
 //   bun run worktree init <name> [--branch <b>] [--base <ref>] [--json] [--quiet]
 //
+// Branch names (the name itself, or --branch) must satisfy the git
+// check-ref-format rules GitHub enforces; invalid names are rejected with
+// exit code 2 before any side effect.
+//
 // Worktrees live under .worktrees/<name> (gitignored). Each one persists a
 // port pair in .dev-ports.json that scripts/dev-web-hmr.mjs prefers over the
 // shared defaults, so `bun run dev` in every worktree binds its own UI/API
@@ -28,6 +32,36 @@ export function validateWorktreeName(name) {
   }
   if (!NAME_PATTERN.test(name)) {
     return { ok: false, reason: `invalid name "${name}" (use letters, digits, ".", "-", "_")` };
+  }
+  return { ok: true };
+}
+
+// git check-ref-format(1) refname rules, which GitHub branch creation also
+// enforces, applied to branch names. One deliberate extra: names must not
+// start with "-", which GitHub rejects and which every git command spawned
+// below would misparse as an option.
+const BRANCH_FORBIDDEN_CHARS = /[\s~^:?*[\\\x00-\x1f\x7f]/;
+
+export function validateBranchName(branch) {
+  if (!branch) {
+    return { ok: false, reason: 'branch name is required' };
+  }
+  const invalid = (why) => ({ ok: false, reason: `invalid branch "${branch}" (${why})` });
+  if (branch.startsWith('-')) return invalid('must not start with "-"');
+  if (branch === '@') return invalid('must not be just "@"');
+  if (branch === 'HEAD') return invalid('"HEAD" is reserved');
+  if (BRANCH_FORBIDDEN_CHARS.test(branch)) {
+    return invalid('must not contain spaces or any of ~ ^ : ? * [ \\');
+  }
+  if (branch.includes('..')) return invalid('must not contain ".."');
+  if (branch.includes('@{')) return invalid('must not contain "@{"');
+  if (branch.endsWith('.')) return invalid('must not end with "."');
+  if (branch.endsWith('.lock')) return invalid('must not end with ".lock"');
+  if (branch.startsWith('/') || branch.endsWith('/') || branch.includes('//')) {
+    return invalid('must not start or end with "/" or contain "//"');
+  }
+  if (branch.split('/').some((part) => part.startsWith('.'))) {
+    return invalid('path segments must not start with "."');
   }
   return { ok: true };
 }
@@ -114,7 +148,13 @@ async function main() {
     process.exit(2);
   }
 
-  const branch = values.branch ?? name;
+  const branch = String(values.branch ?? name).trim();
+  const branchCheck = validateBranchName(branch);
+  if (!branchCheck.ok) {
+    emit(fail(branchCheck.reason, 2));
+    process.exit(2);
+  }
+
   const base = values.base ?? 'HEAD';
   const worktreePath = path.join(repoRoot, WORKTREES_DIRNAME, name);
 
