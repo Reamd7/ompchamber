@@ -1,7 +1,6 @@
 /**
  * OpenChamber project-level configuration service.
  * Stores per-project settings in ~/.config/ompchamber/projects/<projectId>.json.
- * Migrates from legacy <project>/.openchamber/openchamber.json.
  *
  * Notes, todos, and plan files used to live here too. They are now server-owned
  * (`packages/web/server/lib/project-context`) and reached through
@@ -18,9 +17,6 @@ import { runtimeFetch } from './runtime-fetch';
 
 type ProjectRef = { id: string; path: string };
 
-const CONFIG_FILENAME = 'openchamber.json';
-// LEGACY_PROJECT_CONFIG: legacy per-project config root inside repo.
-const LEGACY_CONFIG_DIR = '.openchamber';
 const USER_PROJECTS_DIR_SEGMENTS = ['.config', 'ompchamber', 'projects'];
 
 /**
@@ -83,9 +79,6 @@ const joinPath = (base: string, segment: string): string => {
   return `${normalizedBase}/${cleanSegment}`;
 };
 
-const getLegacyConfigPath = (projectDirectory: string): string => {
-  return joinPath(joinPath(projectDirectory, LEGACY_CONFIG_DIR), CONFIG_FILENAME);
-};
 
 const getBaseUrl = (): string => {
   const defaultBaseUrl = import.meta.env.VITE_OPENCODE_URL || '/api';
@@ -387,25 +380,7 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
     }
   }
 
-  // 2) Migrate legacy <project>/.openchamber/openchamber.json.
-  // LEGACY_PROJECT_CONFIG: migrate project-local openchamber.json -> ~/.config/ompchamber/projects/<projectId>.json
-  const legacyPath = getLegacyConfigPath(projectDirectory);
-  const legacyConfig = parseConfig(await readText(legacyPath));
-  if (!legacyConfig) {
-    return null;
-  }
-
-  // Best-effort write + delete legacy.
-  try {
-    const wrote = await writeOpenChamberConfig(project, legacyConfig);
-    if (wrote) {
-      await deleteLegacyOpenChamberConfig(projectDirectory);
-    }
-  } catch {
-    // Ignore migration failures; still return legacy content.
-  }
-
-  return legacyConfig;
+  return null;
 }
 
 /**
@@ -552,26 +527,6 @@ export function substituteCommandVariables(
     // Legacy
     .replace(/\$ROOT_WORKTREE_PATH/g, variables.rootWorktreePath)
     .replace(/\$\{ROOT_WORKTREE_PATH\}/g, variables.rootWorktreePath);
-}
-
-async function deleteLegacyOpenChamberConfig(projectDirectory: string): Promise<void> {
-  const legacyPath = getLegacyConfigPath(projectDirectory);
-  const runtimeFiles = getRuntimeFilesAPI();
-
-  if (runtimeFiles?.delete) {
-    try {
-      await runtimeFiles.delete(legacyPath);
-      return;
-    } catch {
-      // fall through
-    }
-  }
-
-  try {
-    await postJson(`${getBaseUrl()}/fs/delete`, { path: legacyPath });
-  } catch {
-    // ignored
-  }
 }
 
 export type { ProjectRef };
