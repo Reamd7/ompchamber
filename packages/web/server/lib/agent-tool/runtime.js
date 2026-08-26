@@ -297,7 +297,7 @@ export const createAgentToolRuntime = (dependencies) => {
     const pluginUrl = pathToFileURL(pluginPath).href;
     return {
       OPENCODE_CONFIG_CONTENT: mergePluginConfig(env.OPENCODE_CONFIG_CONTENT, pluginUrl),
-      OMPCHAMBER_AGENT_TOOL_URL: `http://127.0.0.1:${port}/api/openchamber/agent-tool`,
+      OMPCHAMBER_AGENT_TOOL_URL: `http://127.0.0.1:${port}/api/ompchamber/agent-tool`,
       OMPCHAMBER_AGENT_TOOL_TOKEN: activeToken,
     };
   };
@@ -349,7 +349,7 @@ export const createAgentToolRuntime = (dependencies) => {
   };
 
   const registerRoutes = (app, express) => {
-    app.post('/api/openchamber/agent-tool', express.json({ limit: '1mb' }), async (req, res) => {
+    app.post('/api/ompchamber/agent-tool', express.json({ limit: '1mb' }), async (req, res) => {
       if (!authorize(req)) return res.status(401).json({ error: 'Unauthorized' });
       const controller = new AbortController();
       const abortOnDisconnect = () => {

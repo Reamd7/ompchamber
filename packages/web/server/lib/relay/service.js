@@ -1,5 +1,5 @@
 // Private relay service: config persistence, lifecycle of the relay host
-// client, and the /api/openchamber/relay/* management routes.
+// client, and the /api/ompchamber/relay/* management routes.
 //
 // Config lives in the server settings file as `settings.privateRelay =
 // { enabled, relayUrl }` (same storage precedent as tunnels/notifications).
@@ -318,7 +318,7 @@ export const createRelayService = ({
   };
 
   const registerRoutes = (app) => {
-    app.get('/api/openchamber/relay/status', async (_req, res) => {
+    app.get('/api/ompchamber/relay/status', async (_req, res) => {
       try {
         res.json(await getStatus());
       } catch (error) {
@@ -326,7 +326,7 @@ export const createRelayService = ({
       }
     });
 
-    app.post('/api/openchamber/relay/enable', express.json({ limit: '16kb' }), async (req, res) => {
+    app.post('/api/ompchamber/relay/enable', express.json({ limit: '16kb' }), async (req, res) => {
       try {
         const current = await readConfig();
         const relayUrl = typeof req.body?.relayUrl === 'string' ? normalizeRelayUrl(req.body.relayUrl) : current.relayUrl;
@@ -340,7 +340,7 @@ export const createRelayService = ({
       }
     });
 
-    app.post('/api/openchamber/relay/disable', async (_req, res) => {
+    app.post('/api/ompchamber/relay/disable', async (_req, res) => {
       try {
         const current = await readConfig();
         await writeConfig({ enabled: false, relayUrl: current.relayUrl });

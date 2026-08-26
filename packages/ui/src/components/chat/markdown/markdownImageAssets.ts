@@ -137,7 +137,7 @@ export const prepareLocalMarkdownImages = async ({
   if (cached) cache.delete(key);
 
   const response = await runtimeFetch(
-    `/api/openchamber/sessions/${encodeURIComponent(sessionId)}/markdown-image-grants`,
+    `/api/ompchamber/sessions/${encodeURIComponent(sessionId)}/markdown-image-grants`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

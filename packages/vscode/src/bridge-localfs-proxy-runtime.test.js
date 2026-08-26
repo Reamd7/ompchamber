@@ -38,7 +38,7 @@ const { tryHandleLocalFsProxy } = await import('./bridge-localfs-proxy-runtime')
 
 describe('bridge local fs proxy', () => {
   it('does not forward server-owned Markdown image grant routes to OpenCode', async () => {
-    const response = await tryHandleLocalFsProxy('POST', '/api/openchamber/sessions/ses_1/markdown-image-grants');
+    const response = await tryHandleLocalFsProxy('POST', '/api/ompchamber/sessions/ses_1/markdown-image-grants');
 
     expect(response?.status).toBe(501);
     expect(Buffer.from(response?.bodyBase64 ?? '', 'base64').toString('utf8'))

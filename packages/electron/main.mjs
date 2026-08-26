@@ -507,8 +507,8 @@ const refreshQuitRiskFlags = async () => {
   const base = typeof state.sidecarUrl === 'string' ? state.sidecarUrl.trim().replace(/\/$/, '') : '';
   if (!base) return;
 
-  const scheduledUrl = `${base}/api/openchamber/scheduled-tasks/status`;
-  const tunnelUrl = `${base}/api/openchamber/tunnel/status`;
+  const scheduledUrl = `${base}/api/ompchamber/scheduled-tasks/status`;
+  const tunnelUrl = `${base}/api/ompchamber/tunnel/status`;
 
   const fetchJson = async (url) => {
     try {

@@ -11,7 +11,7 @@ different machine.
 - Chat Markdown rendering is independent: assistant image syntax renders as an
   icon and filename, while the gallery only reads finalized Markdown to collect
   image candidates.
-- `POST /api/openchamber/sessions/:sessionId/markdown-image-grants` prepares up to 12
+- `POST /api/ompchamber/sessions/:sessionId/markdown-image-grants` prepares up to 12
   local images in one message-level request. The server fetches the assistant
   message once and verifies every exact image source before reading files.
 - Authorization recognizes the same common inline and reference-style image

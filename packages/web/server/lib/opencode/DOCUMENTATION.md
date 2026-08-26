@@ -363,12 +363,12 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
 
 ## Public exports (openchamber-routes.js)
 - `registerOpenChamberRoutes(app, dependencies)`: registers OpenChamber endpoints:
-  - `GET /api/openchamber/update-check`
-  - `POST /api/openchamber/update-install`
+  - `GET /api/ompchamber/update-check`
+  - `POST /api/ompchamber/update-install`
     - Foreground servers running under a systemd user unit queue installation in
       a separate transient unit and restart the configured service afterwards.
       `OMPCHAMBER_SYSTEMD_UNIT` overrides the default `openchamber.service`.
-  - `GET /api/openchamber/models-metadata`
+  - `GET /api/ompchamber/models-metadata`
   - `GET /api/zen/models`
 
 ## Public exports (pwa-manifest-routes.js)

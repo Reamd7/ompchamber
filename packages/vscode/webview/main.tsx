@@ -380,7 +380,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     return unsupportedWebRouteResponse('Preview proxy');
   }
 
-  if (normalizedPathname.startsWith('/api/openchamber/tunnel/')) {
+  if (normalizedPathname.startsWith('/api/ompchamber/tunnel/')) {
     return unsupportedWebRouteResponse('Remote tunnel settings');
   }
 
@@ -966,7 +966,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     }
   }
 
-  if (pathname.startsWith('/api/openchamber/models-metadata')) {
+  if (pathname.startsWith('/api/ompchamber/models-metadata')) {
     try {
       const data = await sendBridgeMessage('api:models/metadata');
       return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -1005,7 +1005,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     }
   }
 
-  if (pathname.startsWith('/api/openchamber/update-check')) {
+  if (pathname.startsWith('/api/ompchamber/update-check')) {
     try {
       const currentVersion = url.searchParams.get('currentVersion') || undefined;
       const instanceMode = url.searchParams.get('instanceMode') || 'local';

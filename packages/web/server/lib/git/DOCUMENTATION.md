@@ -58,7 +58,7 @@ The following functions are exported and used by the web server:
 - `resolveGitCommonDir(projectPath)`: Resolves the common git dir owning a project's worktree registry — `<project>/.git` for main repositories, the grandparent of a linked worktree's `gitdir` target otherwise. Non-repositories resolve to null.
 - Watches `<common git dir>/worktrees` directly when it exists and always watches the common git dir filtered to the `worktrees` name, so the registry's first appearance and last removal are also observed. Events are debounced per repository and never carry topology — clients re-list via `getWorktrees`/`git worktree list` authoritatively.
 - Watch failures close that repository's watchers and retry a bounded number of times before giving up until the project list changes; the client's pull-based listing remains the fallback. A worktree checkout deleted without `git worktree remove`/`prune` leaves metadata in place and fires no event (the existing "missing folder" status covers it).
-- Wired in `packages/web/server/index.js`: events are broadcast to OpenChamber clients as `ompchamber:worktrees-changed` on `/api/openchamber/events`; the shared UI consumes them in `packages/ui/src/lib/worktrees/worktreeEventSync.ts`.
+- Wired in `packages/web/server/index.js`: events are broadcast to OpenChamber clients as `ompchamber:worktrees-changed` on `/api/ompchamber/events`; the shared UI consumes them in `packages/ui/src/lib/worktrees/worktreeEventSync.ts`.
 ### Worktree creation from a GitHub pull request
 The UI provisions `pr-<owner>` via `ensureRemoteName`/`ensureRemoteUrl`
 (HTTPS clone URL preferred over SSH) and checks out

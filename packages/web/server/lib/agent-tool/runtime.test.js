@@ -90,7 +90,7 @@ describe('managed agent tool runtime', () => {
       ['example-plugin', { flag: true }],
       expect.stringContaining('/agent-tool/openchamber-plugin.js'),
     ]);
-    expect(preparedEnv.OMPCHAMBER_AGENT_TOOL_URL).toBe('http://127.0.0.1:3901/api/openchamber/agent-tool');
+    expect(preparedEnv.OMPCHAMBER_AGENT_TOOL_URL).toBe('http://127.0.0.1:3901/api/ompchamber/agent-tool');
     expect(preparedEnv.OMPCHAMBER_AGENT_TOOL_TOKEN).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(source).toContain('openchamber: {');
     for (const { action, description } of OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS) {
@@ -342,12 +342,12 @@ describe('managed agent tool runtime', () => {
     runtime.registerRoutes(app, express);
 
     await request(app)
-      .post('/api/openchamber/agent-tool')
+      .post('/api/ompchamber/agent-tool')
       .send({ input: { action: 'projects.list' } })
       .expect(401);
 
     const response = await request(app)
-      .post('/api/openchamber/agent-tool')
+      .post('/api/ompchamber/agent-tool')
       .set('authorization', `Bearer ${env.OMPCHAMBER_AGENT_TOOL_TOKEN}`)
       .send({ input: { action: 'projects.list' } })
       .expect(200);

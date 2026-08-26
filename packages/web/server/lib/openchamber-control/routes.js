@@ -2,7 +2,7 @@ import express from 'express';
 import { asControlError } from './error.js';
 
 export const registerOpenChamberControlRoutes = (app, { controlService }) => {
-  app.post('/api/openchamber/control', express.json({ limit: '1mb' }), async (req, res) => {
+  app.post('/api/ompchamber/control', express.json({ limit: '1mb' }), async (req, res) => {
     const controller = new AbortController();
     const abortOnDisconnect = () => {
       if (!res.writableEnded) controller.abort();

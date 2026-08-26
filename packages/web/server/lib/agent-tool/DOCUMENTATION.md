@@ -32,7 +32,7 @@ both settings are `false`.
    `OPENCODE_CONFIG_CONTENT` without replacing existing plugin entries.
 3. A random per-child token and loopback callback URL are added only to the
    managed OpenCode child environment.
-4. The plugin calls `POST /api/openchamber/agent-tool` with its typed input and
+4. The plugin calls `POST /api/ompchamber/agent-tool` with its typed input and
    OpenCode's authoritative session directory.
 5. The route delegates the fixed action allowlist directly to the shared
    OpenChamber control service. The CLI uses the same service through its

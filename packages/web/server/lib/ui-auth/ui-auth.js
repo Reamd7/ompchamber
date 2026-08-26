@@ -294,8 +294,8 @@ const isWebSocketUpgrade = (req) => {
 const isUrlAuthReadableHttpPath = (pathname) => {
   return pathname === '/api/event'
     || pathname === '/api/global/event'
-    || pathname === '/api/openchamber/events'
-    || pathname === '/api/openchamber/realtime-proxy/sse'
+    || pathname === '/api/ompchamber/events'
+    || pathname === '/api/ompchamber/realtime-proxy/sse'
     || pathname === '/api/notifications/stream'
     || pathname === '/api/fs/raw'
     || pathname === '/api/fs/serve'
@@ -307,7 +307,7 @@ const isUrlAuthReadableHttpPath = (pathname) => {
 const isUrlAuthWebSocketPath = (pathname) => {
   return pathname === '/api/event/ws'
     || pathname === '/api/global/event/ws'
-    || pathname === '/api/openchamber/realtime-proxy/ws'
+    || pathname === '/api/ompchamber/realtime-proxy/ws'
     || pathname === '/api/terminal/ws'
     || pathname === '/api/dictation/ws'
     || pathname.startsWith('/api/preview/proxy/');

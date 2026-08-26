@@ -171,5 +171,5 @@ project write lock on every `syncProject` when the project path is known:
   - `PATCH /api/projects/:projectId/scheduled-tasks/:taskId/loop-file`
   - `DELETE /api/projects/:projectId/scheduled-tasks/:taskId/loop-file`
   - `POST /api/projects/:projectId/scheduled-tasks/:taskId/run`
-  - `GET /api/openchamber/scheduled-tasks/status`
-  - `GET /api/openchamber/events`
+  - `GET /api/ompchamber/scheduled-tasks/status`
+  - `GET /api/ompchamber/events`

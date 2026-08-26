@@ -831,7 +831,7 @@ const sendServiceError = (res, error, fallback) => {
 export const registerOpenChamberSessionRoutes = (app, dependencies) => {
   const service = dependencies.sessionService || createOpenChamberSessionService(dependencies);
 
-  app.post('/api/openchamber/sessions', express.json({ limit: '1mb' }), async (req, res) => {
+  app.post('/api/ompchamber/sessions', express.json({ limit: '1mb' }), async (req, res) => {
     try {
       return res.json(await service.create(req.body && typeof req.body === 'object' ? req.body : {}));
     } catch (error) {
@@ -841,7 +841,7 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
   });
 
   app.post(
-    '/api/openchamber/sessions/:sessionId/send',
+    '/api/ompchamber/sessions/:sessionId/send',
     express.json({ limit: '1mb' }),
     async (req, res) => {
       try {
@@ -853,7 +853,7 @@ export const registerOpenChamberSessionRoutes = (app, dependencies) => {
     },
   );
   app.post(
-    '/api/openchamber/sessions/:sessionId/fork',
+    '/api/ompchamber/sessions/:sessionId/fork',
     express.json({ limit: '1mb' }),
     async (req, res) => {
       try {

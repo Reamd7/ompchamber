@@ -140,7 +140,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', title: 'Side task' })
         .expect(200);
 
@@ -167,7 +167,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp({}, { globalJson: false });
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app' })
         .expect(200);
 
@@ -185,7 +185,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp({ emitSessionCreatedEvent });
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', title: 'Side task' })
         .expect(200);
 
@@ -229,7 +229,7 @@ describe('openchamber session routes', () => {
     });
     try {
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run this' })
         .expect(200);
 
@@ -261,7 +261,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run this', model: 'openai/gpt-5.5' })
         .expect(200);
 
@@ -287,7 +287,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp({ createSessionGoal });
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
           prompt: 'Finish and verify the migration',
@@ -325,15 +325,15 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', goal: true })
         .expect(400, { error: 'prompt is required when goal is enabled' });
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run', goalTokenBudget: 200000 })
         .expect(400, { error: 'goalTokenBudget requires goal' });
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run', goal: true, goalTokenBudget: 999 })
         .expect(400, { error: 'goalTokenBudget must be an integer from 1000 to 100000000' });
       expect(fetchMock).not.toHaveBeenCalled();
@@ -353,7 +353,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
           worktree: { name: 'side-task', branchName: 'openchamber/side-task', startRef: 'main' },
@@ -398,7 +398,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
           worktree: { name: 'side-task' },
@@ -434,7 +434,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
           worktree: { name: 'side-task' },
@@ -458,7 +458,7 @@ describe('openchamber session routes', () => {
       setSessionMessages([{ info: { id: 'msg_before', role: 'assistant', time: { created: 10, completed: 20 } } }]);
       const { app } = createApp({ createSessionGoal });
       const response = await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({
           directory: '/repo/app',
           prompt: 'Apply and verify the review feedback',
@@ -504,7 +504,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp({ createSessionGoal });
       const response = await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({
           directory: '/repo/app',
           prompt: '/issue--to-pr LIN-123',
@@ -548,7 +548,7 @@ describe('openchamber session routes', () => {
       ]);
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({ directory: '/repo/app', prompt: 'Continue where you left off' })
         .expect(200);
 
@@ -581,7 +581,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp({ emitSessionCreatedEvent });
       const response = await request(app)
-        .post('/api/openchamber/sessions/ses_source/fork')
+        .post('/api/ompchamber/sessions/ses_source/fork')
         .send({
           directory: '/repo/app',
           messageId: 'msg_branch_point',
@@ -631,11 +631,11 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({ directory: '/repo/app' })
         .expect(400, { error: 'prompt is required' });
       await request(app)
-        .post('/api/openchamber/sessions/ses_source/fork')
+        .post('/api/ompchamber/sessions/ses_source/fork')
         .send({ directory: '/repo/app' })
         .expect(400, { error: 'prompt is required' });
       expect(fetchMock).not.toHaveBeenCalled();
@@ -651,7 +651,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions/ses_source/fork')
+        .post('/api/ompchamber/sessions/ses_source/fork')
         .send({
           directory: '/repo/app',
           prompt: 'Try another approach',
@@ -701,7 +701,7 @@ describe('openchamber session routes', () => {
         }),
       });
       await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({ directory: '/repo/app', prompt: 'Continue', model: 'openai/requested', agent: 'build' })
         .expect(200);
 
@@ -719,7 +719,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({
           directory: '/repo/app',
           prompt: 'Run this',
@@ -743,11 +743,11 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run this', model: 'openai/gpt-nope' })
         .expect(400, { error: "Unknown model 'openai/gpt-nope' for /repo/app" });
       await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run this', model: 'openai/gpt-5.5', variant: 'ultra' })
         .expect(400, { error: "Unknown variant 'ultra' for model 'openai/gpt-5.5'" });
 
@@ -768,7 +768,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       const response = await request(app)
-        .post('/api/openchamber/sessions')
+        .post('/api/ompchamber/sessions')
         .send({ directory: '/repo/app', prompt: 'Run this', model: 'openai/gpt-5.5' })
         .expect(200);
 
@@ -789,7 +789,7 @@ describe('openchamber session routes', () => {
     try {
       const { app } = createApp();
       await request(app)
-        .post('/api/openchamber/sessions/ses_source/send')
+        .post('/api/ompchamber/sessions/ses_source/send')
         .send({
           directory: '/repo/app',
           prompt: '/review fix this',

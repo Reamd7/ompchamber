@@ -162,8 +162,8 @@ const SSE_PATH_PREFIXES = [
   '/api/event',
   '/api/global/event',
   '/api/notifications/stream',
-  '/api/openchamber/events',
-  '/api/openchamber/realtime-proxy/sse',
+  '/api/ompchamber/events',
+  '/api/ompchamber/realtime-proxy/sse',
 ];
 
 function shouldSkipCompression(req, res) {

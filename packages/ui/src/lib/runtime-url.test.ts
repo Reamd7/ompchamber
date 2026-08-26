@@ -43,7 +43,7 @@ describe('createRuntimeUrlResolver', () => {
       realtimeBaseUrl: 'https://realtime.example/root',
     });
 
-    expect(urls.sse('/api/openchamber/events')).toBe('https://realtime.example/api/openchamber/events');
+    expect(urls.sse('/api/ompchamber/events')).toBe('https://realtime.example/api/ompchamber/events');
     expect(urls.websocket('/api/global/event/ws', { lastEventId: 'evt-1' })).toBe(
       'wss://realtime.example/api/global/event/ws?lastEventId=evt-1',
     );
@@ -89,10 +89,10 @@ describe('createRuntimeUrlResolver', () => {
         const ws = new URL(urls.websocket('/api/global/event/ws'));
 
         expect(sse.origin).toBe('http://127.0.0.1:57123');
-        expect(sse.pathname).toBe('/api/openchamber/realtime-proxy/sse');
+        expect(sse.pathname).toBe('/api/ompchamber/realtime-proxy/sse');
         expect(sse.searchParams.get('url')).toBe('https://remote.example/api/global/event');
         expect(ws.origin).toBe('ws://127.0.0.1:57123');
-        expect(ws.pathname).toBe('/api/openchamber/realtime-proxy/ws');
+        expect(ws.pathname).toBe('/api/ompchamber/realtime-proxy/ws');
         expect(ws.searchParams.get('url')).toBe('wss://remote.example/api/global/event/ws');
       });
     } finally {
@@ -157,8 +157,8 @@ describe('createRuntimeUrlResolver', () => {
       expect(urls.authenticatedAsset('/api/projects/p1/icon', { v: 123 })).toBe(
         'https://api.example/api/projects/p1/icon?v=123&oc_url_token=oc_url_secret',
       );
-      expect(urls.sse('/api/openchamber/events')).toBe(
-        'https://api.example/api/openchamber/events?oc_url_token=oc_url_secret',
+      expect(urls.sse('/api/ompchamber/events')).toBe(
+        'https://api.example/api/ompchamber/events?oc_url_token=oc_url_secret',
       );
       expect(urls.websocket('/api/global/event/ws', { lastEventId: 'evt-1' })).toBe(
         'wss://api.example/api/global/event/ws?lastEventId=evt-1&oc_url_token=oc_url_secret',
@@ -185,7 +185,7 @@ describe('createRuntimeUrlResolver', () => {
     setRuntimeBearerToken('oc_client_secret');
     try {
       const urls = createRuntimeUrlResolver({ apiBaseUrl: 'https://api.example' });
-      expect(urls.sse('/api/openchamber/events')).toBe('https://api.example/api/openchamber/events');
+      expect(urls.sse('/api/ompchamber/events')).toBe('https://api.example/api/ompchamber/events');
       expect(urls.websocket('/api/global/event/ws')).toBe('wss://api.example/api/global/event/ws');
       expect(urls.authenticatedAsset('/api/projects/p1/icon')).toBe('https://api.example/api/projects/p1/icon');
     } finally {

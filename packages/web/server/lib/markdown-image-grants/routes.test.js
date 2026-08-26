@@ -69,7 +69,7 @@ const createFixture = async ({ sources, markdown } = {}) => {
 };
 
 const prepare = (app, directory, sources) => request(app)
-  .post('/api/openchamber/sessions/ses_1/markdown-image-grants')
+  .post('/api/ompchamber/sessions/ses_1/markdown-image-grants')
   .send({ directory, messageId: 'msg_1', sources })
   .expect(200);
 

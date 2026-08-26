@@ -31,7 +31,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
     getCachedZenModels,
   } = dependencies;
 
-  app.get('/api/openchamber/update-check', async (req, res) => {
+  app.get('/api/ompchamber/update-check', async (req, res) => {
     try {
       const { checkForUpdates } = await import('../package-manager.js');
       const parseString = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined);
@@ -70,7 +70,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
     }
   });
 
-  app.post('/api/openchamber/update-install', async (_req, res) => {
+  app.post('/api/ompchamber/update-install', async (_req, res) => {
     try {
       const { spawn: spawnChild, spawnSync } = await import('child_process');
       const {
@@ -318,7 +318,7 @@ export const registerOpenChamberRoutes = (app, dependencies) => {
     }
   });
 
-  app.get('/api/openchamber/models-metadata', async (_req, res) => {
+  app.get('/api/ompchamber/models-metadata', async (_req, res) => {
     try {
       const { getModelsMetadata } = await import('./models-metadata.js');
       const { metadata, fromCache, stale } = await getModelsMetadata({

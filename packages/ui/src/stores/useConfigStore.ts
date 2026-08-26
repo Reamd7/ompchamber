@@ -34,7 +34,7 @@ import {
 } from "./useConfigStore.cascade";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
-const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
+const MODELS_DEV_PROXY_URL = "/api/ompchamber/models-metadata";
 
 // Sentinel selectedProviderId used by the providers UI while the "Add provider"
 // form is open. It is intentionally not a real provider id and must not be

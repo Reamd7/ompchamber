@@ -74,7 +74,7 @@ describe('OpenChamber foreground update route', () => {
     const { app } = createApp();
 
     await request(app)
-      .post('/api/openchamber/update-install')
+      .post('/api/ompchamber/update-install')
       .expect(409, {
         error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
       });
@@ -91,7 +91,7 @@ describe('OpenChamber foreground update route', () => {
     });
 
     await request(app)
-      .post('/api/openchamber/update-install')
+      .post('/api/ompchamber/update-install')
       .expect(409, {
         error: 'Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run openchamber update and restart the service.',
       });
@@ -111,7 +111,7 @@ describe('OpenChamber foreground update route', () => {
     });
 
     await request(app)
-      .post('/api/openchamber/update-install')
+      .post('/api/ompchamber/update-install')
       .expect(200, {
         success: true,
         message: 'Update queued; OpenChamber will restart after installation completes',

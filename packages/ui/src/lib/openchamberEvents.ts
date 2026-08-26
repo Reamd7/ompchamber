@@ -273,7 +273,7 @@ const connect = () => {
   // setting anyone has to remember to change.
   const canControlBrowser = typeof window !== 'undefined' && Boolean(window.__OMPCHAMBER_ELECTRON__);
   const source = new EventSource(getRuntimeUrlResolver().sse(
-    '/api/openchamber/events',
+    '/api/ompchamber/events',
     canControlBrowser ? { browser: '1' } : undefined,
   ));
   source.onopen = () => {

@@ -15,7 +15,7 @@ describe('OpenChamber control route', () => {
   it('is a thin adapter over the control service', async () => {
     const execute = vi.fn(async () => ({ projects: [] }));
     const response = await request(createApp(execute))
-      .post('/api/openchamber/control')
+      .post('/api/ompchamber/control')
       .send({ action: 'projects.list', input: {}, contextDirectory: '/repo' })
       .expect(200);
     expect(response.body).toEqual({ projects: [] });
@@ -32,7 +32,7 @@ describe('OpenChamber control route', () => {
       });
     });
     const response = await request(createApp(execute))
-      .post('/api/openchamber/control')
+      .post('/api/ompchamber/control')
       .send({ action: 'session.fork', input: {} })
       .expect(500);
     expect(response.body).toEqual({
