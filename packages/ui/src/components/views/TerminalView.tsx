@@ -296,10 +296,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 break;
                             }
                             case 'resized': {
-                                // Multi-device grid sync: another attachment changed
-                                // the shared PTY dimensions. No action needed here —
-                                // the TerminalViewport reads the new cols/rows from
-                                // the ghostty-web terminal's own resize event chain.
+                                // Multi-device grid sync: the server negotiated a
+                                // new minimum grid across all attached clients.
+                                // Resize this viewport's ghostty terminal to match
+                                // so the canvas doesn't render past the PTY grid.
+                                if (typeof event.cols === 'number' && typeof event.rows === 'number') {
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                }
                                 break;
                             }
                             case 'exit': {

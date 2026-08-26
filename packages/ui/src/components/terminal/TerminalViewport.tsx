@@ -88,6 +88,7 @@ const getProvisionalTerminalSize = (
 export type TerminalController = {
   focus: () => void;
   fit: () => void;
+  resizeGrid: (cols: number, rows: number) => void;
   getSelection: () => { text: string; startLine: number; endLine: number } | null;
 };
 
@@ -141,6 +142,10 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     if (size) resizeRef.current(size.cols, size.rows);
   }, [fontFamily, fontSize]);
 
+  // Server-negotiated grid from multi-device min-size arbitration. When set,
+  // fit() clamps to it so a large viewport doesn't fight the server's resize.
+  const negotiatedGridRef = React.useRef<{ cols: number; rows: number } | null>(null);
+
   const fit = React.useCallback(() => {
     const container = containerRef.current;
     const terminal = terminalRef.current;
@@ -148,7 +153,17 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const bounds = container.getBoundingClientRect();
     if (bounds.width < 24 || bounds.height < 24) return;
     try {
-      fitRef.current.fit();
+      const negotiated = negotiatedGridRef.current;
+      if (negotiated) {
+        // Multi-device sync: the server set the PTY grid via min-size
+        // negotiation. Clamp this viewport's terminal to that grid —
+        // the canvas renders the negotiated size, not the container size.
+        if (terminal.cols !== negotiated.cols || terminal.rows !== negotiated.rows) {
+          terminal.resize(negotiated.cols, negotiated.rows);
+        }
+      } else {
+        fitRef.current.fit();
+      }
       const next = { cols: terminal.cols, rows: terminal.rows };
       if (!lastSizeRef.current || lastSizeRef.current.cols !== next.cols || lastSizeRef.current.rows !== next.rows) {
         lastSizeRef.current = next;
@@ -648,6 +663,13 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
     fit,
+    resizeGrid: (cols: number, rows: number) => {
+      const terminal = terminalRef.current;
+      if (!terminal) return;
+      negotiatedGridRef.current = { cols, rows };
+      if (terminal.cols === cols && terminal.rows === rows) return;
+      terminal.resize(cols, rows);
+    },
     getSelection: () => {
       const terminal = terminalRef.current;
       const range = terminal?.getSelectionPosition();
