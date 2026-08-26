@@ -305,7 +305,7 @@ describe('ElectronSshManager', () => {
     await manager.installOpenChamberManaged({ destination: 'user@example.test', args: [] }, '/tmp/control.sock', '1.2.3', 'auto');
 
     expect(commands).toHaveLength(1);
-    expect(commands[0]).toContain('--prefix "$HOME/.openchamber/npm-global"');
+    expect(commands[0]).toContain('--prefix "$HOME/.ompchamber/npm-global"');
     expect(commands[0]).not.toMatch(/npm install -g @openchamber/);
   });
 
@@ -393,7 +393,7 @@ describe('ElectronSshManager', () => {
 
     await manager.installOpenChamberManaged({ destination: 'user@example.test', args: [] }, '/tmp/control.sock', '1.2.3', 'auto');
 
-    expect(commands).toEqual(["'/home/pi/.bun/bin/bun' add -g @openchamber/web@1.2.3"]);
+    expect(commands).toEqual(["'/home/pi/.bun/bin/bun' add -g https://github.com/Reamd7/openchamber/releases/download/v1.2.3/ompchamber-1.2.3.tgz"]);
   });
   test('stops a remote server it started through the CLI, not the authenticated HTTP route', async () => {
     const scripts = [];

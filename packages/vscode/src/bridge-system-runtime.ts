@@ -48,9 +48,9 @@ const claimNotification = (key: string): boolean => {
 const getOpenChamberConfigDir = (): string => {
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA;
-    if (appData) return path.join(appData, 'openchamber');
+    if (appData) return path.join(appData, 'ompchamber');
   }
-  return path.join(os.homedir(), '.config', 'openchamber');
+  return path.join(os.homedir(), '.config', 'ompchamber');
 };
 
 const sanitizeInstallScope = (scope: string): 'vscode' | 'web' => {

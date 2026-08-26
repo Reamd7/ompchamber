@@ -363,7 +363,7 @@ const isTrustedDeviceRequest = (value) => value === true;
 
 const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
   ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
-  : path.join(os.homedir(), '.config', 'openchamber');
+  : path.join(os.homedir(), '.config', 'ompchamber');
 const JWT_SECRET_FILE = path.join(OPENCHAMBER_DATA_DIR, 'jwt-secret');
 
 function getOrCreateJwtSecret() {

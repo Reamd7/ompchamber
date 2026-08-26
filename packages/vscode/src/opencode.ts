@@ -84,7 +84,7 @@ function isValidOpenCodePassword(password: string): boolean {
 }
 
 function readOpenChamberSettings(): Record<string, unknown> {
-  const settingsPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+  const settingsPath = path.join(os.homedir(), '.config', 'ompchamber', 'settings.json');
   try {
     const raw = fs.readFileSync(settingsPath, 'utf8');
     const parsed = JSON.parse(raw) as unknown;

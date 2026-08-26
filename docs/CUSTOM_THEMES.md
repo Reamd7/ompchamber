@@ -6,7 +6,7 @@ OpenChamber supports user-defined themes. Drop a JSON file into the themes direc
 
 1. Create the themes directory:
    ```bash
-   mkdir -p ~/.config/openchamber/themes
+   mkdir -p ~/.config/ompchamber/themes
    ```
 
 2. Create a theme JSON file (e.g., `my-theme.json`) with the format below.
@@ -19,7 +19,7 @@ OpenChamber supports user-defined themes. Drop a JSON file into the themes direc
 
 | Platform | Path |
 |----------|------|
-| macOS/Linux | `~/.config/openchamber/themes/` |
+| macOS/Linux | `~/.config/ompchamber/themes/` |
 
 ## Theme Format
 

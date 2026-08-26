@@ -13,7 +13,7 @@ describe('managed Chats runtime visibility', () => {
     version: '1',
     time: { created: 1, updated: 1 },
   })
-  const chat = session('chat', '/home/user/.config/openchamber/chats/2026-08-21/session-a')
+  const chat = session('chat', '/home/user/.config/ompchamber/chats/2026-08-21/session-a')
   const project = session('project', '/workspace/project')
 
   test('VS Code rejects managed Chats before they enter global state', () => {

@@ -310,11 +310,11 @@ export const buildModelsPayload = (settings, { legacyDefaults = null, models = n
 // ─────────────────────────────────────────────────────────────────────────────
 
 const openchamberSettingsPath = () =>
-  path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
+  path.join(os.homedir(), '.config', 'ompchamber', 'settings.json');
 
 /**
  * Read-only detect of the OpenChamber legacy `defaultModel`
- * (`~/.config/openchamber/settings.json`, same path the web server reads).
+ * (`~/.config/ompchamber/settings.json`, same path the web server reads).
  * Never writes any omp configuration. Only a non-empty value containing "/"
  * is reported (mirroring settings-normalization-runtime.js:177 which keeps
  * project defaultModel only when parseable).

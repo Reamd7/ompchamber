@@ -15,7 +15,7 @@ import path from 'path';
 const OPENCHAMBER_SETTINGS_FILE = path.join(
   process.env.OPENCHAMBER_DATA_DIR
     ? path.resolve(process.env.OPENCHAMBER_DATA_DIR)
-    : path.join(os.homedir(), '.config', 'openchamber'),
+    : path.join(os.homedir(), '.config', 'ompchamber'),
   'settings.json',
 );
 

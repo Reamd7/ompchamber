@@ -29,10 +29,10 @@ const UPDATE_CHECK_URL = process.env.OPENCHAMBER_UPDATE_API_URL || '';
 function getOpenChamberConfigDir() {
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA;
-    if (appData) return path.join(appData, 'openchamber');
+    if (appData) return path.join(appData, 'ompchamber');
   }
 
-  return path.join(os.homedir(), '.config', 'openchamber');
+  return path.join(os.homedir(), '.config', 'ompchamber');
 }
 
 function sanitizeInstallScope(scope) {

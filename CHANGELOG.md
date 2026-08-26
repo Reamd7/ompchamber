@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. Existing data is moved there automatically on first launch, so logins, paired devices, themes, and project settings carry over; the `OPENCHAMBER_DATA_DIR` environment variable still overrides the location.
 - **Chat:** changing the thinking level from the composer works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the resulting crash answered the request with a server error. Picking "Inherit" now genuinely clears the session's explicit level instead of being dropped.
 - Merged from upstream openchamber/openchamber v1.19.0–v1.20.0 plus their unreleased work:
 - **Chat context attachments:** everything you attach to a message — diff/file/plan comments, terminal selections, browser annotations, PR comments and failed checks, linked issues and PRs — now shows up in the conversation as a compact context card: a header naming the source, the captured content behind an expander, and your comment below it. Previously most of these arrived as a wall of raw text inside your message.

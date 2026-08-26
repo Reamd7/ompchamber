@@ -103,7 +103,7 @@ export const OpenCodeCliSettings: React.FC = () => {
               {' '}
               {t('settings.openchamber.opencodeCli.tipMiddle')}
               {' '}
-              <span className="font-mono">~/.config/openchamber/settings.json</span>
+              <span className="font-mono">~/.config/ompchamber/settings.json</span>
               {'.'}
             </>
           )}

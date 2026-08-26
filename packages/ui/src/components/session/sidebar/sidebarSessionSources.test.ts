@@ -7,7 +7,7 @@ const session = (id: string, title: string): Session => ({
   id,
   slug: id,
   title,
-  directory: `/home/.config/openchamber/chats/2026-08-21/${id}`,
+  directory: `/home/.config/ompchamber/chats/2026-08-21/${id}`,
   projectID: 'managed-chats',
   version: '1',
   time: { created: 1, updated: 1 },

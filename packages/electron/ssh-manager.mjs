@@ -13,7 +13,7 @@ const DEFAULT_LOCAL_BIND_HOST = '127.0.0.1';
 // Global npm prefixes are root-owned on most distributions, so `npm install -g`
 // fails with EACCES for a normal SSH user. Everything we install goes to a
 // prefix inside the user's home instead.
-const REMOTE_USER_PREFIX = '$HOME/.openchamber/npm-global';
+const REMOTE_USER_PREFIX = '$HOME/.ompchamber/npm-global';
 const REMOTE_BUN_CANDIDATE = '"${BUN_INSTALL:-$HOME/.bun}/bin/bun"';
 // The opencode CLI usually installs into the user's home, which an SSH login
 // shell does not have on PATH. The remote server only looks at OPENCODE_BINARY
@@ -22,10 +22,14 @@ const REMOTE_OPENCODE_CANDIDATES = [
   '"$HOME/.opencode/bin/opencode"',
   '"${BUN_INSTALL:-$HOME/.bun}/bin/opencode"',
   '"$HOME/.local/bin/opencode"',
+  '"$HOME/.ompchamber/npm-global/bin/opencode"',
+  // Legacy install prefix from before the ompchamber rename.
   '"$HOME/.openchamber/npm-global/bin/opencode"',
 ];
-const REMOTE_PATH_PREFIX = '$HOME/.opencode/bin:${BUN_INSTALL:-$HOME/.bun}/bin:$HOME/.local/bin:$HOME/.openchamber/npm-global/bin';
+const REMOTE_PATH_PREFIX = '$HOME/.opencode/bin:${BUN_INSTALL:-$HOME/.bun}/bin:$HOME/.local/bin:$HOME/.ompchamber/npm-global/bin:$HOME/.openchamber/npm-global/bin';
 const REMOTE_BIN_CANDIDATES = [
+  '"$HOME/.ompchamber/npm-global/bin/ompchamber"',
+  // Legacy install prefix from before the ompchamber rename.
   '"$HOME/.openchamber/npm-global/bin/ompchamber"',
   '"${BUN_INSTALL:-$HOME/.bun}/bin/ompchamber"',
 ];

@@ -5,6 +5,7 @@ import { SessionEditorPanelProvider } from './SessionEditorPanelProvider';
 import { createOpenCodeManager, type OpenCodeManager } from './opencode';
 import { startGlobalEventWatcher, stopGlobalEventWatcher, setChatViewProvider } from './sessionActivityWatcher';
 import { resolveWorkspaceFolders } from './workspaceResolver';
+import { migrateLegacyAppDataDir } from '../../web/server/lib/app-data-migration.js';
 
 let chatViewProvider: ChatViewProvider | undefined;
 let agentManagerProvider: AgentManagerPanelProvider | undefined;
@@ -38,6 +39,9 @@ const formatDurationMs = (value: number | null | undefined) => {
 };
 
 export async function activate(context: vscode.ExtensionContext) {
+  // Move ~/.config/openchamber to ~/.config/ompchamber before anything reads
+  // shared settings (VS Code does not run the web server runtime).
+  migrateLegacyAppDataDir({ logger: console });
   outputChannel = vscode.window.createOutputChannel('OpenChamber');
 
   let moveToRightSidebarScheduled = false;

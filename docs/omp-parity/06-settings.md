@@ -15,7 +15,7 @@
 ### 1.1 本域管什么
 
 1. **omp 设置的代理面**:OpenChamber 设置 UI 通过 RuntimeAPIs + `runtimeFetch` 的新端点组(`/api/omp/settings`)读取并写入 omp 的 `SETTINGS_SCHEMA`(`<s>`/config/settings-schema.ts:391,5,880 行、约 360 个键定义),落盘到 `~/.omp/agent/config.yml`(全局)与 `<cwd>/.omp/config.yml`(项目层,仅 `modelRoles` 子树权威)。OpenChamber **不复制 schema、不平行存储**,schema 即产品(`ui{tab,group,label,description}` 就是设置面板布局)。
-2. **OpenChamber 平行设置宇宙的退役**:OC 自有 `~/.config/openchamber/settings.json`(server/lib/opencode/proxy.js:696 证实路径)中与 omp 语义重叠的键(`defaultModel`/`defaultVariant`/`defaultAgent`/`permissionAutoAccept`/`planModeExperimentalEnabled` 等)的处置、迁移与退役。
+2. **OpenChamber 平行设置宇宙的退役**:OC 自有 `~/.config/ompchamber/settings.json`(server/lib/opencode/proxy.js:696 证实路径)中与 omp 语义重叠的键(`defaultModel`/`defaultVariant`/`defaultAgent`/`permissionAutoAccept`/`planModeExperimentalEnabled` 等)的处置、迁移与退役。
 3. **一致性与安全语义**:同一份 config.yml 被 TUI 与 web 并发编辑时的合并语义(omp 的按键合并 + 文件锁 + debounce)、变更通知(file watch → `omp.settings.updated`,经 05 章唯一通道)、credential 键的永不回显(write-only,R9 扩展到全部出口)。
 4. **暴露范围策略**:omp 10 个设置 tab(`SETTING_TABS` `<s>`/config/settings-schema.ts:95-106)中哪些在 OpenChamber 首批露出、哪些永不露出(TUI 专属外观/终端渲染键)。
 
@@ -43,7 +43,7 @@
 
 ### 2.1 OC 宿主设置:文件、路由、写路径
 
-- **存储**:`~/.config/openchamber/settings.json`,JSON,原子写(临时文件 + rename,Windows EPERM 回退 copyFile)且 0600/0700 权限收紧——server/lib/opencode/settings-runtime.js:503-521(`writeSettingsToDisk`)、:474-501(`replaceFile`)。路径硬编码证据:proxy.js:696。
+- **存储**:`~/.config/ompchamber/settings.json`,JSON,原子写(临时文件 + rename,Windows EPERM 回退 copyFile)且 0600/0700 权限收紧——server/lib/opencode/settings-runtime.js:503-521(`writeSettingsToDisk`)、:474-501(`replaceFile`)。路径硬编码证据:proxy.js:696。
 - **读路径**:`readSettingsFromDiskMigrated` 串 8 级迁移(lastDirectory→projects、theme 拆分、collapsedProjects、通知默认值、tunnel 键改名、路径规范化、确定性 projectId、删 approvedDirectories)——settings-runtime.js:806-820。
 - **写路径**:`persistSettings(changes)` 经 `persistSettingsLock` 串行链:读盘 → `sanitizeSettingsUpdate` → `mergePersistedSettings` → 规范化/迁移 → 项目校验 → 原子写——settings-runtime.js:822-897。日志只打字段名防凭据泄漏(:824-826)。
 - **路由**:`GET /api/config/settings` routes.js:140-148;`PUT /api/config/settings` routes.js:234-243。VS Code 运行时走 `getRegisteredRuntimeAPIs()?.settings.load/save`(ui/stores/useConfigStore.ts:85-88;注册形状 ui/contexts/runtimeAPIRegistry.ts:5-7)。
