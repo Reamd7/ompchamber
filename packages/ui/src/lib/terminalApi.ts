@@ -290,10 +290,18 @@ export class TerminalTransport {
     }
     if (typeof message.q !== 'number') return;
     const previous = this.projections.get(message.s);
+    // Seq-gap detection: if this frame's sequence jumps past the projection's
+    // last known sequence, we lost frames. Request a full resync instead of
+    // appending (which would create a hole in the scrollback).
+    if (previous && message.q > previous.sequence + 1 && message.t === 'output') {
+      this.requestResync(message.s);
+      return;
+    }
     if (previous && message.q > previous.sequence) {
       if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
+      else if (message.t === 'resized') this.projections.set(message.s, { ...previous, sequence: message.q });
     }
     for (const sub of subscribers) {
       if (message.q <= sub.lastSequence) continue;
@@ -302,6 +310,34 @@ export class TerminalTransport {
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'resized') sub.handlers.onEvent({ type: 'resized', sequence: message.q, cols: typeof message.cols === 'number' ? message.cols : undefined, rows: typeof message.rows === 'number' ? message.rows : undefined });
     }
+  }
+
+  private readonly resyncAttempts = new Map<string, { count: number; timer: ReturnType<typeof setTimeout> | null }>();
+
+  private requestResync(sessionId: string): void {
+    const state = this.resyncAttempts.get(sessionId) ?? { count: 0, timer: null };
+    if (state.timer) return; // already resyncing
+    state.count += 1;
+    // Backoff: first gap is immediate, then 500ms → 2s → 5s cap
+    const delay = state.count === 1 ? 0 : Math.min(500 * 2 ** (state.count - 2), 5000);
+    const notifySubs = () => {
+      for (const sub of this.subscribers.get(sessionId) ?? []) {
+        sub.handlers.onEvent({ type: 'reconnecting', attempt: state.count, maxAttempts: Number.POSITIVE_INFINITY });
+      }
+    };
+    const doResync = () => {
+      state.timer = null;
+      this.send({ t: 'resync', v: 3, s: sessionId });
+      notifySubs();
+      // Reset attempt count after a clean snapshot arrives (30s window)
+      setTimeout(() => {
+        const current = this.resyncAttempts.get(sessionId);
+        if (current && current === state && !current.timer) current.count = 0;
+      }, 30_000);
+    };
+    if (delay === 0) doResync();
+    else state.timer = setTimeout(doResync, delay);
+    this.resyncAttempts.set(sessionId, state);
   }
 
   sendViewport(sessionId: string, cols: number, rows: number): void {

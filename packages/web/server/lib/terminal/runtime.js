@@ -305,6 +305,10 @@ export function createTerminalRuntime({
         }
         return;
       }
+      if (message.t === 'resync') {
+        send(socket, snapshot(session));
+        return;
+      }
       if (message.t === 'write') {
         if (typeof message.d !== 'string' || !message.d || message.d.length > MAX_INPUT_CHARS) { send(socket, { t: 'error', v: 3, s: id, code: 'BAD_INPUT', message: 'Invalid terminal input', fatal: false }); return; }
         if (session.status !== 'running' || !session.process) { send(socket, { t: 'error', v: 3, s: id, code: 'NOT_RUNNING', message: 'Terminal is not running', fatal: false }); return; }
