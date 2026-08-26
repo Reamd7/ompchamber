@@ -1,0 +1,62 @@
+#!/bin/sh
+# Guard the local `openchamber` branch (the upstream mirror).
+#
+# Rule: arbitrary local commits may NOT land on `openchamber`. A commit is
+# allowed only when its content originates from `openchamber/main`:
+#   - a merge whose MERGE_HEAD is reachable from openchamber/main
+#     (this covers `git pull openchamber main` / merge upstream)
+#   - a cherry-pick whose picked commit is reachable from openchamber/main
+# Fast-forward pulls/rebases never fire this hook (no commit is created).
+#
+# Emergency override: OPENCHAMBER_ALLOW_MIRROR_COMMIT=1 git commit ...
+# All worktrees share this hook (it lives in the common git dir).
+
+PROTECTED_BRANCH="openchamber"
+UPSTREAM_REF="openchamber/main"
+
+branch=$(git branch --show-current 2>/dev/null)
+[ "$branch" = "$PROTECTED_BRANCH" ] || exit 0
+
+if [ -n "$OPENCHAMBER_ALLOW_MIRROR_COMMIT" ]; then
+  echo "pre-commit: override active, allowing commit on '$PROTECTED_BRANCH'" >&2
+  exit 0
+fi
+
+if ! git show-ref --verify --quiet "refs/remotes/$UPSTREAM_REF"; then
+  echo "pre-commit: refusing commit on '$PROTECTED_BRANCH':" >&2
+  echo "  tracking ref '$UPSTREAM_REF' not found (run 'git fetch openchamber' first)." >&2
+  exit 1
+fi
+
+git_path() { git rev-parse --git-path "$1"; }
+
+# Case 1: merging upstream into the mirror.
+merge_head_file=$(git_path MERGE_HEAD)
+if [ -f "$merge_head_file" ]; then
+  merge_head=$(cat "$merge_head_file")
+  if git merge-base --is-ancestor "$merge_head" "refs/remotes/$UPSTREAM_REF" 2>/dev/null; then
+    exit 0
+  fi
+  echo "pre-commit: refusing commit on '$PROTECTED_BRANCH':" >&2
+  echo "  merge HEAD $merge_head is not reachable from $UPSTREAM_REF." >&2
+  exit 1
+fi
+
+# Case 2: cherry-picking a commit that lives on openchamber/main.
+cherry_file=$(git_path CHERRY_PICK_HEAD)
+if [ -f "$cherry_file" ]; then
+  cherry=$(cat "$cherry_file")
+  if git merge-base --is-ancestor "$cherry" "refs/remotes/$UPSTREAM_REF" 2>/dev/null; then
+    exit 0
+  fi
+  echo "pre-commit: refusing commit on '$PROTECTED_BRANCH':" >&2
+  echo "  cherry-pick $cherry does not come from $UPSTREAM_REF." >&2
+  exit 1
+fi
+
+echo "pre-commit: refusing arbitrary commit on '$PROTECTED_BRANCH'." >&2
+echo "  '$PROTECTED_BRANCH' is the upstream mirror; only content from" >&2
+echo "  $UPSTREAM_REF may land there (pull/merge/cherry-pick from upstream)." >&2
+echo "  Work on a feature branch instead." >&2
+echo "  Override (know what you are doing): OPENCHAMBER_ALLOW_MIRROR_COMMIT=1 git commit" >&2
+exit 1

@@ -3,7 +3,7 @@ import type { FitAddon, Ghostty, Terminal as GhosttyTerminal } from 'ghostty-web
 
 import { cn } from '@/lib/utils';
 import type { TerminalTheme } from '@/lib/terminalTheme';
-import { getGhosttyTerminalOptions } from '@/lib/terminalTheme';
+import { TERMINAL_TYPOGRAPHY, getGhosttyTerminalOptions } from '@/lib/terminalTheme';
 import {
   getGhosttySafeResetSequence,
   rewriteGhosttyDefaultBackgroundResets,
@@ -55,13 +55,19 @@ const getProvisionalTerminalSize = (
   const context = document.createElement('canvas').getContext('2d');
   if (!context || container.clientWidth < 24 || container.clientHeight < 24) return null;
 
-  context.font = `${fontSize}px ${fontFamily}`;
+  // Mirror the renderer's measureFont exactly (weight in the font string,
+  // lineHeight scaling over ascent+descent). A mismatch here spawns the PTY
+  // with more rows than fit; the post-mount fit then shrinks the grid and
+  // full-screen TUIs (btop, fresh) redraw misaligned — their top row ends up
+  // covered by the pane header.
+  context.font = `${TERMINAL_TYPOGRAPHY.fontWeight} ${fontSize}px ${fontFamily}`;
   const metrics = context.measureText('M');
   const cellWidth = Math.ceil(metrics.width);
-  const cellHeight = Math.ceil(
+  const naturalHeight = Math.ceil(
     (metrics.actualBoundingBoxAscent || fontSize * 0.8) +
     (metrics.actualBoundingBoxDescent || fontSize * 0.2),
-  ) + 2;
+  );
+  const cellHeight = Math.max(1, Math.ceil(naturalHeight * TERMINAL_TYPOGRAPHY.lineHeight));
   if (cellWidth < 1 || cellHeight < 1) return null;
 
   const style = window.getComputedStyle(container);
@@ -374,13 +380,22 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const terminal = terminalRef.current;
     if (!enableTouchScroll || !container || !terminal) return;
     let pointerId: number | null = null;
+    // Second finger while the application tracks the mouse: two-finger pan
+    // becomes wheel events instead of a second pointer gesture.
+    let wheelPointerId: number | null = null;
     let longPressTimeout: ReturnType<typeof setTimeout> | null = null;
-    let gesture: 'idle' | 'pending' | 'scrolling' | 'selecting' = 'idle';
+    type Gesture = 'idle' | 'pending' | 'scrolling' | 'selecting' | 'app-press' | 'app-wheel';
+    let gesture: Gesture = 'idle';
     let startX = 0;
     let startY = 0;
     let lastY = 0;
     let remainder = 0;
     let selectionFocus: TerminalCellPosition | null = null;
+    // Application-mode tracking: last synthesized mouse coordinates and the
+    // two-finger wheel baseline.
+    let appX = 0;
+    let appY = 0;
+    let wheelBaseY = 0;
     const lineHeight = Math.max(12, fontSize + 2);
     // Android WebView only raises the soft keyboard for a native tap-focus; the
     // pointer-captured, touch-action:none tap here focuses programmatically, so
@@ -428,16 +443,66 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         buttons: 0,
       }));
     };
+    // Application-mode synthesis: the TUI owns the pointer while it enables
+    // mouse reporting, so touch becomes mouse — tap = click, drag = drag,
+    // two-finger pan = wheel. Events are dispatched at the canvas so they
+    // ride the exact mouse pipeline the desktop path uses.
+    const dispatchAppMouseEvent = (
+      type: 'mousedown' | 'mousemove' | 'mouseup',
+      x: number,
+      y: number,
+    ) => {
+      const canvas = container.querySelector('canvas');
+      if (!canvas) return;
+      canvas.dispatchEvent(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: type === 'mouseup' ? 0 : 1,
+        clientX: x,
+        clientY: y,
+      }));
+    };
+    const dispatchAppWheel = (lines: number) => {
+      container.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaMode: 0,
+        // 33px per notch matches InputHandler's pixel-mode wheel divisor.
+        deltaY: lines * 33,
+        clientX: appX,
+        clientY: appY,
+      }));
+    };
     const down = (event: PointerEvent) => {
-      if (event.pointerType !== 'touch' || pointerId !== null) return;
+      if (event.pointerType !== 'touch') return;
+      // Second finger during an application gesture turns the pan into a
+      // wheel scroll; close the accidental press first so the application
+      // sees a clean click-or-drag, not a held button.
+      if (wheelPointerId === null && pointerId !== null && event.pointerId !== pointerId &&
+          (gesture === 'app-press' || gesture === 'app-wheel')) {
+        if (gesture === 'app-press') dispatchAppMouseEvent('mouseup', appX, appY);
+        wheelPointerId = event.pointerId;
+        wheelBaseY = event.clientY;
+        gesture = 'app-wheel';
+        return;
+      }
+      if (pointerId !== null) return;
       pointerId = event.pointerId;
-      gesture = 'pending';
       startX = event.clientX;
       startY = event.clientY;
       lastY = event.clientY;
       remainder = 0;
       selectionFocus = null;
       container.setPointerCapture(event.pointerId);
+      if (terminal.hasMouseTracking()) {
+        gesture = 'app-press';
+        appX = event.clientX;
+        appY = event.clientY;
+        dispatchAppMouseEvent('mousedown', appX, appY);
+        return;
+      }
+      gesture = 'pending';
       longPressTimeout = setTimeout(() => {
         longPressTimeout = null;
         if (pointerId !== event.pointerId || gesture !== 'pending') return;
@@ -457,7 +522,33 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       }, 350);
     };
     const move = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch') return;
+
+      if (gesture === 'app-wheel') {
+        const pointer = wheelPointerId === event.pointerId ? event : (pointerId === event.pointerId ? event : null);
+        if (!pointer) return;
+        if (wheelPointerId === event.pointerId) {
+          remainder += wheelBaseY - event.clientY;
+          wheelBaseY = event.clientY;
+          const lines = Math.trunc(remainder / lineHeight);
+          if (lines) {
+            dispatchAppWheel(lines);
+            remainder -= lines * lineHeight;
+          }
+        }
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+
       if (pointerId !== event.pointerId) return;
+
+      if (gesture === 'app-press') {
+        appX = event.clientX;
+        appY = event.clientY;
+        dispatchAppMouseEvent('mousemove', appX, appY);
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
 
       if (gesture === 'selecting') {
         const focus = cellFromPoint(event.clientX, event.clientY);
@@ -484,28 +575,62 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       if (lines) { terminal.scrollLines(lines); remainder -= lines * lineHeight; }
       if (event.cancelable) event.preventDefault();
     };
+    const releasePointer = (event: PointerEvent) => {
+      clearLongPress();
+      if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+    };
     const up = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch') return;
+
+      if (gesture === 'app-wheel') {
+        if (wheelPointerId === event.pointerId) {
+          releasePointer(event);
+          wheelPointerId = null;
+        } else if (pointerId === event.pointerId) {
+          releasePointer(event);
+          pointerId = null;
+        }
+        if (wheelPointerId === null && pointerId === null) gesture = 'idle';
+        return;
+      }
+
       if (pointerId !== event.pointerId) return;
       const shouldFocus = gesture === 'pending';
       const shouldFinishSelection = gesture === 'selecting';
-      clearLongPress();
-      if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+      const wasAppPress = gesture === 'app-press';
+      releasePointer(event);
       pointerId = null;
       gesture = 'idle';
       if (shouldFinishSelection) finishSelection();
+      if (wasAppPress) dispatchAppMouseEvent('mouseup', appX, appY);
       if (shouldFocus) {
         terminal.focus();
         showAndroidSoftKeyboard();
       }
     };
     const cancel = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch') return;
+
+      if (gesture === 'app-wheel') {
+        if (wheelPointerId === event.pointerId) {
+          releasePointer(event);
+          wheelPointerId = null;
+        } else if (pointerId === event.pointerId) {
+          releasePointer(event);
+          pointerId = null;
+        }
+        if (wheelPointerId === null && pointerId === null) gesture = 'idle';
+        return;
+      }
+
       if (pointerId !== event.pointerId) return;
       const shouldFinishSelection = gesture === 'selecting';
-      clearLongPress();
-      if (container.hasPointerCapture(event.pointerId)) container.releasePointerCapture(event.pointerId);
+      const wasAppPress = gesture === 'app-press';
+      releasePointer(event);
       pointerId = null;
       gesture = 'idle';
       if (shouldFinishSelection) finishSelection();
+      if (wasAppPress) dispatchAppMouseEvent('mouseup', appX, appY);
     };
     container.addEventListener('pointerdown', down);
     container.addEventListener('pointermove', move, { passive: false });

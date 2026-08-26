@@ -1,0 +1,52 @@
+#!/bin/sh
+# Guard pushes to the upstream remote `openchamber` (github.com/openchamber/openchamber).
+#
+# Rule: nothing new may be pushed to the upstream remote — landing work
+# there goes through a PR. A push is allowed only when every commit it
+# would introduce already exists on `openchamber/main` (i.e. a ref-only
+# no-op); anything introducing commits not present upstream is rejected.
+#
+# Emergency override: OPENCHAMBER_ALLOW_UPSTREAM_PUSH=1 git push ...
+# All worktrees share this hook (it lives in the common git dir).
+
+UPSTREAM_REMOTE="openchamber"
+UPSTREAM_REF="refs/remotes/openchamber/main"
+ZERO=0000000000000000000000000000000000000000
+
+remote="$1"
+[ "$remote" = "$UPSTREAM_REMOTE" ] || exit 0
+
+if [ -n "$OPENCHAMBER_ALLOW_UPSTREAM_PUSH" ]; then
+  echo "pre-push: override active, allowing push to '$UPSTREAM_REMOTE'" >&2
+  exit 0
+fi
+
+if ! git show-ref --verify --quiet "$UPSTREAM_REF"; then
+  echo "pre-push: refusing push to '$UPSTREAM_REMOTE':" >&2
+  echo "  tracking ref $UPSTREAM_REF not found (run 'git fetch openchamber' first)." >&2
+  exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_ref" ] || continue
+  if [ "$local_sha" = "$ZERO" ]; then
+    echo "pre-push: refusing to delete $remote_ref on upstream '$UPSTREAM_REMOTE'." >&2
+    exit 1
+  fi
+  if [ "$remote_sha" = "$ZERO" ]; then
+    echo "pre-push: refusing to create $remote_ref on upstream '$UPSTREAM_REMOTE' — open a PR." >&2
+    exit 1
+  fi
+  # Any commit that would be new to the remote and is not already on
+  # openchamber/main makes this a real content push -> block.
+  new_commits=$(git rev-list "$remote_sha..$local_sha" --not "$UPSTREAM_REF" 2>/dev/null)
+  if [ -n "$new_commits" ]; then
+    count=$(printf '%s\n' "$new_commits" | wc -l | tr -d ' ')
+    echo "pre-push: refusing push of $count new commit(s) to $remote_ref on upstream '$UPSTREAM_REMOTE'." >&2
+    echo "  Landing work upstream goes through a PR; push your branch to origin instead." >&2
+    echo "  Override (know what you are doing): OPENCHAMBER_ALLOW_UPSTREAM_PUSH=1 git push" >&2
+    exit 1
+  fi
+done
+
+exit 0

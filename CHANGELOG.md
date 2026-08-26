@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Dev: new `bun run stop` clears every leftover dev server in one command — it targets all dev ports the repo can use (the shared pair plus each worktree's own), so a backgrounded or crashed dev session no longer leaves you hunting listeners by PID.
 - **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. Existing data is moved there automatically on first launch, so logins, paired devices, themes, and project settings carry over; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.
 - **Desktop/Mobile: the deep-link scheme is now `ompchamber://` (was `openchamber://`).** Links and QR codes created by older versions no longer open the app; regenerate them from the current version. The embedded browser panel also moves to a renamed storage partition, so sites logged in there ask for login once more.
 - VS Code: the extension's commands, views, and settings now live under the `ompchamber.*` namespace — custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once.
@@ -84,6 +85,7 @@ All notable changes to this project will be documented in this file.
 - Browser: typing a comment on a page no longer triggers app shortcuts.
 - Skills Catalog: the source is now named ClawHub instead of "ClawdHub" (thanks to @makeittech).
 - Internal: the web UI build tooling now uses Rsbuild instead of Vite; behavior, dev ports, and the `VITE_OPENCODE_URL` build variable are unchanged.
+- Dev: new `bun run stop` clears every leftover dev server in one command — it targets all dev ports the repo can use (the shared pair plus each worktree's own), so a backgrounded or crashed dev session no longer leaves you hunting listeners by PID.
 
 ## [1.19.1] - 2026-08-25
 

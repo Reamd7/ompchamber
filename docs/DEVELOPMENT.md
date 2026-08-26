@@ -40,10 +40,15 @@ scripts/     根工具:check:events 事件门禁、run-isolated-tests.mjs 等
 
 ```bash
 bun run dev            # 根目录:web HMR(web:rsbuild --watch + 服务器)
+bun run stop           # 杀掉所有 dev 端口上的进程(默认 5180/3902、本仓 .dev-ports.json、各 worktree 的口)
 # 或分开两个终端:
 cd packages/web && bun run dev          # 构建 UI,变更热更
 cd packages/web && bun run dev:server   # bun server/index.js
 ```
+
+### 3.1.1 Git 钩子(自动安装)
+
+`scripts/hooks/` 内置 pre-commit/pre-push 守卫,`bun install` 时经 postinstall 自动设置 `core.hooksPath`(也可手动 `node ./scripts/install-git-hooks.mjs`)。规则:本地 `openchamber` 分支(上游镜像)只接受来自 `openchamber/main` 的内容(pull/merge/cherry-pick 上游),自己的提交或合并一律拒绝;直推上游远端 `openchamber/*` 拒绝(走 PR)。逃生门:`OPENCHAMBER_ALLOW_MIRROR_COMMIT=1` / `OPENCHAMBER_ALLOW_UPSTREAM_PUSH=1`。
 
 ### 3.2 改动后的固定门禁(每包按需)
 

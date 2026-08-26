@@ -63,6 +63,17 @@ export function convertThemeToXterm(theme: Theme): TerminalTheme {
 }
 
 /**
+ * Terminal typography shared by the renderer options and every host-side
+ * measurement that must predict them (provisional sizing before the
+ * renderer exists). Orca-style: light regular, medium bold, taller line box.
+ */
+export const TERMINAL_TYPOGRAPHY = {
+  fontWeight: 300,
+  fontWeightBold: 500,
+  lineHeight: 1.2,
+} as const;
+
+/**
  * Get terminal options for Ghostty Web terminal
  */
 export function getGhosttyTerminalOptions(
@@ -82,6 +93,7 @@ export function getGhosttyTerminalOptions(
     cursorStyle: 'bar' as const,
     fontSize,
     fontFamily: augmentedFontFamily,
+    ...TERMINAL_TYPOGRAPHY,
     allowTransparency: false,
     theme: {
       background: theme.background,
