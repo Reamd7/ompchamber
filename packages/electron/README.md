@@ -88,7 +88,7 @@ Releases are built by `.github/workflows/release.yml` on GitHub-hosted runners (
 
 macOS packaging needs Xcode/build tools for notarized builds and icon asset compilation.
 
-Windows packaging needs NSIS support through `electron-builder`. If no Windows signing env is set, `package.mjs` disables code signing and builds an unsigned installer. Windows updates use `latest.yml` for x64 and the `latest-arm64.yml` channel for ARM64 so each installation resolves an architecture-matching installer.
+Windows packaging needs NSIS support through `electron-builder`. The NSIS target is an assisted installer (`oneClick: false` with `allowToChangeInstallationDirectory`): users choose per-user or all-users installation and can change the install folder; fresh installs default to `%LOCALAPPDATA%\Programs\OMPChamber` (per-user) or `Program Files\OMPChamber` (per-machine), while an update to an existing install keeps its registered folder. If no Windows signing env is set, `package.mjs` disables code signing and builds an unsigned installer. Windows updates use `latest.yml` for x64 and the `latest-arm64.yml` channel for ARM64 so each installation resolves an architecture-matching installer.
 
 Linux AppImages must be built natively. Set `OMPCHAMBER_TARGET_ARCH=x64` or `OMPCHAMBER_TARGET_ARCH=arm64` when packaging; the build rejects a target that does not match the Linux host. The same target selects the bundled OpenCode CLI, native Electron rebuild, and Electron Builder architecture. Linux identity is stable across architectures: executable `ompchamber`, desktop file `ompchamber.desktop`, icon `ompchamber`, and `StartupWMClass=ompchamber`.
 
