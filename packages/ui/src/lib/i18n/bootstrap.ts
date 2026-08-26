@@ -28,7 +28,7 @@ const EN_MESSAGES: BootstrapMessages = {
   disconnected: 'Disconnected',
   reconnecting: 'Reconnecting…',
   initialDataLoadFailed: 'OpenCode connected, but initial data load failed.',
-  cliNotFound: 'OpenCode CLI not found. Please install it first.',
+  cliNotFound: 'The local engine is not available. Check your OMPChamber installation.',
   providersReady: '✓ Providers',
   providersLoading: '… Providers',
   agentsReady: '✓ Agents',

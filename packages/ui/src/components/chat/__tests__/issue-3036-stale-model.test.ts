@@ -1,5 +1,5 @@
 /**
- * Regression coverage for https://github.com/openchamber/openchamber/issues/3036.
+ * Regression coverage for upstream issue #3036.
  *
  * Restoring persisted agent/model pairs used to switch agents before checking
  * whether each model still existed. Several stale pairs could therefore keep

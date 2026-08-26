@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Branding: display names across the web app, PWA, VS Code extension, and mobile now read OMPChamber; the About and update dialogs link to this repository instead of the upstream one.
+- Setup: onboarding now installs the ompchamber CLI from this repository instead of telling you to install the OpenCode CLI, and text that called the engine OpenCode (status, restart prompts, onboarding, error messages) now says engine, translated in every language.
+
 ## [1.20.0] - 2026-08-26
 
 - **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. The old directory is not migrated — back it up and copy anything you need before upgrading; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.

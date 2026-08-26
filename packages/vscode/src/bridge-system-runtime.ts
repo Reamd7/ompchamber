@@ -259,7 +259,7 @@ export async function handleSystemBridgeMessage(
         });
         const health = await response.json().catch(() => null) as { version?: unknown; error?: unknown } | null;
         if (!response.ok) {
-          const message = typeof health?.error === 'string' ? health.error : response.statusText || 'Failed to read OpenCode version';
+          const message = typeof health?.error === 'string' ? health.error : response.statusText || 'Failed to read engine version';
           return { id, type, success: true, data: { version: null, error: message } };
         }
         const version = typeof health?.version === 'string' && health.version.trim().length > 0
@@ -439,7 +439,7 @@ export async function handleSystemBridgeMessage(
           data: {
             removed,
             ...(removed
-              ? buildDeferredRestartResponse(`Provider ${providerId} disconnected successfully. Restart OpenCode to apply.`)
+              ? buildDeferredRestartResponse(`Provider ${providerId} disconnected successfully. Restart the engine to apply.`)
               : {
                 success: true,
                 requiresReload: false,

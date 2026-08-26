@@ -328,7 +328,7 @@ export const useMenuActions = (
 
         case 'download-logs': {
           void showOpenCodeStatus().catch(() => {
-            toast.error('Failed to collect OpenCode status');
+            toast.error('Failed to collect engine status');
           });
           break;
         }

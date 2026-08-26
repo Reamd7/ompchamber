@@ -573,14 +573,14 @@ async function waitForOpenCodeConnection(delayMs?: number) {
 
   while (Date.now() - start < MAX_HEALTH_WAIT_MS) {
     attempt += 1;
-    updateConfigUpdateMessage(`Waiting for OpenCode… (attempt ${attempt})`);
+    updateConfigUpdateMessage(`Waiting for the engine… (attempt ${attempt})`);
 
     try {
       const isHealthy = await opencodeClient.checkHealth();
       if (isHealthy) {
         return;
       }
-      lastError = new Error("OpenCode health check reported not ready");
+      lastError = new Error("Engine health check reported not ready");
     } catch (error) {
       lastError = error;
     }
@@ -599,7 +599,7 @@ async function waitForOpenCodeConnection(delayMs?: number) {
     await sleep(waitMs);
   }
 
-  throw lastError || new Error("OpenCode did not become ready in time");
+  throw lastError || new Error("The engine did not become ready in time");
 }
 
 async function performFullConfigRefresh(options: { message?: string; delayMs?: number } = {}) {
@@ -623,7 +623,7 @@ async function performFullConfigRefresh(options: { message?: string; delayMs?: n
     emitConfigChange("commands", { source: CONFIG_EVENT_SOURCE });
   } catch (error) {
     console.error("[CommandsStore] Failed to refresh configuration after OpenCode restart:", error);
-    updateConfigUpdateMessage("OpenCode refresh failed. Please retry refreshing configuration manually.");
+    updateConfigUpdateMessage("Engine refresh failed. Please retry refreshing configuration manually.");
     await sleep(1500);
     throw error;
   } finally {

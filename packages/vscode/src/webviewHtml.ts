@@ -173,7 +173,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
     </svg>
     <!-- Status text stays empty while things are fine; populated only on error. -->
     <div class="status-text" id="loading-status"></div>
-    ${!cliAvailable ? `<div class="error-text" id="cli-missing-text">OpenCode CLI not found. Please install it first.</div>` : ''}
+    ${!cliAvailable ? `<div class="error-text" id="cli-missing-text">The engine failed to start.</div>` : ''}
   </div>
   
   <div id="root"></div>
@@ -210,22 +210,22 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
 
       return locale === 'fr'
         ? {
-            startingApi: 'Démarrage de l’API OpenCode…',
+            startingApi: 'Démarrage du moteur…',
             initializing: 'Initialisation…',
             connecting: 'Connexion…',
             connected: 'Connecté !',
             connectionError: 'Erreur de connexion',
             reconnecting: 'Reconnexion…',
-            cliNotFound: 'L’interface en ligne de commande OpenCode est introuvable. Veuillez l’installer d’abord.',
+            cliNotFound: 'Le démarrage du moteur a échoué.',
           }
         : {
-            startingApi: 'Starting OpenCode API…',
+            startingApi: 'Starting the engine…',
             initializing: 'Initializing…',
             connecting: 'Connecting…',
             connected: 'Connected!',
             connectionError: 'Connection error',
             reconnecting: 'Reconnecting…',
-            cliNotFound: 'OpenCode CLI not found. Please install it first.',
+            cliNotFound: 'The engine failed to start.',
           };
     }
 

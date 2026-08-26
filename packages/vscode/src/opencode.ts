@@ -1024,9 +1024,9 @@ export function createOpenCodeManager(context: vscode.ExtensionContext): OpenCod
           cliPath = resolveOpencodeCliPath();
         }
         const moreInfoLabel = t('More Info');
-        setStatus('error', t('OpenCode CLI not found. Install it and ensure it\'s in PATH.'));
+        setStatus('error', t('The engine failed to start.'));
         vscode.window.showErrorMessage(
-          t('OpenCode CLI not found. Please install it and ensure it\'s in PATH.'),
+          t('The engine failed to start. Check the OMPChamber logs for details.'),
           moreInfoLabel
         ).then(selection => {
           if (selection === moreInfoLabel) {
@@ -1034,7 +1034,7 @@ export function createOpenCodeManager(context: vscode.ExtensionContext): OpenCod
           }
         });
       } else {
-        setStatus('error', t('Failed to start OpenCode: {0}', message));
+        setStatus('error', t('Failed to start the engine: {0}', message));
       }
     }
   }

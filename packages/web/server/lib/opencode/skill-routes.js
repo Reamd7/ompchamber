@@ -516,7 +516,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         installed,
         skipped,
         ...(requiresRestart
-          ? buildDeferredRestartResponse('Skills installed successfully. Restart OpenCode to apply.')
+          ? buildDeferredRestartResponse('Skills installed successfully. Restart the engine to apply.')
           : {
             requiresReload: false,
             message: 'No skills were installed',
@@ -602,7 +602,7 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       createSkill(skillName, { ...config, source: skillSource }, directory, scope);
       res.json(buildDeferredRestartResponse(
-        `Skill ${skillName} created successfully. Restart OpenCode to apply.`,
+        `Skill ${skillName} created successfully. Restart the engine to apply.`,
       ));
     } catch (error) {
       console.error('Failed to create skill:', error);
@@ -640,7 +640,7 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       updateSkill(skillName, updates, directory, updates?.targetPath);
       res.json(buildDeferredRestartResponse(
-        `Skill ${skillName} updated successfully. Restart OpenCode to apply.`,
+        `Skill ${skillName} updated successfully. Restart the engine to apply.`,
       ));
     } catch (error) {
       console.error('[Server] Failed to update skill:', error);
@@ -727,7 +727,7 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       deleteSkill(skillName, directory);
       res.json(buildDeferredRestartResponse(
-        `Skill ${skillName} deleted successfully. Restart OpenCode to apply.`,
+        `Skill ${skillName} deleted successfully. Restart the engine to apply.`,
       ));
     } catch (error) {
       console.error('Failed to delete skill:', error);

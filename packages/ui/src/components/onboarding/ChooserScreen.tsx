@@ -12,8 +12,8 @@ import { desktopHostsGet, desktopHostsSet } from '@/lib/desktopHosts';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 
-const INSTALL_COMMAND = 'curl -fsSL https://opencode.ai/install | bash';
-const DOCS_URL = 'https://opencode.ai/docs';
+const INSTALL_COMMAND = 'curl -fsSL https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/install.sh | bash';
+const DOCS_URL = 'https://github.com/Reamd7/ompchamber';
 const POLL_INTERVAL_MS = 2500;
 
 type OnboardingPlatform = 'macos' | 'linux' | 'windows' | 'unknown';
@@ -30,7 +30,7 @@ function BashCommand({ onCopy, copyTitle }: { onCopy: () => void; copyTitle: str
       <code className="flex-1 text-left overflow-x-auto whitespace-nowrap">
         <span style={{ color: 'var(--syntax-keyword)' }}>curl</span>
         <span className="text-muted-foreground"> -fsSL </span>
-        <span style={{ color: 'var(--syntax-string)' }}>https://opencode.ai/install</span>
+        <span style={{ color: 'var(--syntax-string)' }}>https://raw.githubusercontent.com/Reamd7/ompchamber/main/scripts/install.sh</span>
         <span className="text-muted-foreground"> | </span>
         <span style={{ color: 'var(--syntax-keyword)' }}>bash</span>
       </code>
@@ -219,10 +219,10 @@ export function ChooserScreen({ onCliAvailable, localAvailable = true }: Chooser
   const docsUrl = DOCS_URL;
   const binaryPlaceholder =
     platform === 'windows'
-      ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\opencode.cmd'
+      ? 'C:\\Users\\you\\AppData\\Roaming\\npm\\ompchamber.cmd'
       : platform === 'linux'
-        ? '/home/you/.bun/bin/opencode'
-        : '/Users/you/.bun/bin/opencode';
+        ? '/home/you/.bun/bin/ompchamber'
+        : '/Users/you/.bun/bin/ompchamber';
 
   const showLocal = localAvailable && (!isDesktopApp || activeTab === 'local');
 

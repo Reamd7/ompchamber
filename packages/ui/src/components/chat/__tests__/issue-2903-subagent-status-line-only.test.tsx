@@ -1,5 +1,5 @@
 /**
- * Regression coverage for https://github.com/openchamber/openchamber/issues/2903
+ * Regression coverage for upstream issue #2903
  *
  * Busy embedded session-chat panels were rendering only the working-status row
  * ("…is running command") because ChatContainer gated message reads on the

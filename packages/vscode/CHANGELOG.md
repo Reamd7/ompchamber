@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 - The extension now presents itself as OMPChamber — its commands, views, and settings moved to the `ompchamber.*` namespace, so custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once. Installing or updating shows the new name.
+- Command titles, the sidebar label, and the marketplace description now read OMPChamber and name the omp engine; engine-start errors no longer tell you to install the OpenCode CLI, and French localization keys match the updated strings again.
 - Shared settings now read from `~/.config/ompchamber` (previously `~/.config/openchamber`, not migrated — the new location starts fresh) to match the renamed app data directory.
 - Chat: the per-session thinking-level selector works again — every pick failed with "Could not change the thinking level" because the engine called the level switch as if it returned a promise, and the crash answered the request with a server error. "Inherit" now genuinely clears the explicit level.
 - Sessions: deleting a session no longer reports "Failed to delete session" — the bundled engine confirmed deletions in a format the app didn't recognize, so every delete looked failed even though the session had already been removed.

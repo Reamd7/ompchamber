@@ -155,7 +155,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
       if (!healthResponse.ok) {
         return res.status(healthResponse.status).json({
           version: null,
-          error: health?.error || healthResponse.statusText || 'Failed to read OpenCode version',
+          error: health?.error || healthResponse.statusText || 'Failed to read engine version',
         });
       }
       const version = typeof health?.version === 'string' ? health.version.replace(/^v/, '') : null;
@@ -163,7 +163,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
     } catch (error) {
       return res.status(500).json({
         version: null,
-        error: error instanceof Error ? error.message : 'Failed to read OpenCode version',
+        error: error instanceof Error ? error.message : 'Failed to read engine version',
       });
     }
   });
@@ -423,7 +423,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
 
       return res.json({
         ...buildDeferredRestartResponse(
-          `Provider ${providerID} saved. Restart OpenCode to apply.`,
+          `Provider ${providerID} saved. Restart the engine to apply.`,
         ),
         providerId: upsertResult.providerId,
         path: upsertResult.path,
@@ -485,7 +485,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
         return res.json({
           success: true,
           removed,
-          ...buildDeferredRestartResponse('Provider disconnected successfully. Restart OpenCode to apply.'),
+          ...buildDeferredRestartResponse('Provider disconnected successfully. Restart the engine to apply.'),
         });
       }
 
@@ -640,7 +640,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
       await fs.promises.writeFile(targetPath, content, 'utf8');
 
       return res.json(buildDeferredRestartResponse(
-        'AGENTS.md saved. Restart OpenCode to apply.',
+        'AGENTS.md saved. Restart the engine to apply.',
       ));
     } catch (error) {
       console.error('Failed to write AGENTS.md:', error);

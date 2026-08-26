@@ -271,7 +271,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin entry created. Restart OpenCode to apply.',
+      message: 'Plugin entry created. Restart the engine to apply.',
     });
     expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
   });
@@ -310,7 +310,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin entry updated. Restart OpenCode to apply.',
+      message: 'Plugin entry updated. Restart the engine to apply.',
     });
     const after = await request(app).get('/api/config/plugins').expect(200);
     expect(after.body.entries[0]).toEqual(expect.objectContaining({ spec: 'b', scope: 'user' }));
@@ -332,7 +332,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin entry deleted. Restart OpenCode to apply.',
+      message: 'Plugin entry deleted. Restart the engine to apply.',
     });
     expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
   });
@@ -345,7 +345,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin file created. Restart OpenCode to apply.',
+      message: 'Plugin file created. Restart the engine to apply.',
     });
     expect(fs.readFileSync(path.join(rootDir, 'plugins', 'test.js'), 'utf8')).toBe('//x');
     expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
@@ -378,7 +378,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin file updated. Restart OpenCode to apply.',
+      message: 'Plugin file updated. Restart the engine to apply.',
     });
     expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
   });
@@ -396,7 +396,7 @@ describe('opencode plugin routes', () => {
       requiresReload: false,
       requiresRestart: true,
       restartDeferred: true,
-      message: 'Plugin file deleted. Restart OpenCode to apply.',
+      message: 'Plugin file deleted. Restart the engine to apply.',
     });
     expect(refreshOpenCodeAfterConfigChange).not.toHaveBeenCalled();
   });

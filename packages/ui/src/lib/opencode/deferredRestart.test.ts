@@ -77,7 +77,7 @@ describe('deferred OpenCode restart helpers', () => {
   test('applyPendingOpenCodeRestart clears pending changes on manual restart', async () => {
     mock.module('@/stores/useAgentsStore', () => ({
       reloadOpenCodeConfiguration: async () => {
-        const error = new Error('Restart your connected OpenCode server');
+        const error = new Error('Restart your connected server to apply the changes.');
         (error as Error & { requiresManualRestart?: boolean }).requiresManualRestart = true;
         throw error;
       },

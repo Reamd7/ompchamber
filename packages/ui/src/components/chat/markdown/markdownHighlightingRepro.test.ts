@@ -1,5 +1,5 @@
 /**
- * Regression tests for https://github.com/openchamber/openchamber/issues/2769
+ * Regression tests for upstream issue #2769
  *
  * Sustained Shiki worker CPU came from re-tokenizing unchanged content:
  *  1. `htmlCache` keyed by renderer identity (`simple:${variant}`) so
