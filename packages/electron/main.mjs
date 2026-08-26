@@ -535,8 +535,6 @@ const refreshQuitRiskFlags = async () => {
     quitRisk.hasActiveTunnel = Boolean(tunnel.active);
   }
 };
-import { migrateLegacyAppDataDir } from '@ompchamber/web/server/lib/app-data-migration.js';
-migrateLegacyAppDataDir({ logger: log });
 
 const settingsFilePath = () => {
   if (typeof process.env.OMPCHAMBER_DATA_DIR === 'string' && process.env.OMPCHAMBER_DATA_DIR.trim()) {
