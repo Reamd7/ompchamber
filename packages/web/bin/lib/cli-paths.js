@@ -10,7 +10,7 @@ function getDataDir() {
   if (typeof process.env.OMPCHAMBER_DATA_DIR === 'string' && process.env.OMPCHAMBER_DATA_DIR.trim().length > 0) {
     return path.resolve(process.env.OMPCHAMBER_DATA_DIR.trim());
   }
-  return path.join(os.homedir(), '.config', 'openchamber');
+  return path.join(os.homedir(), '.config', 'ompchamber');
 }
 
 function getLogsDir() {

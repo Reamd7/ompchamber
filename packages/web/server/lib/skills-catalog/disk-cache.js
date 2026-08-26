@@ -4,7 +4,7 @@ import path from 'path';
 
 const resolveDataDir = () => (process.env.OMPCHAMBER_DATA_DIR
   ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
-  : path.join(os.homedir(), '.config', 'openchamber'));
+  : path.join(os.homedir(), '.config', 'ompchamber'));
 
 const readJsonFile = (filePath) => {
   try {

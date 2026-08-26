@@ -19,7 +19,7 @@ import { PROMPT_VERSION, WALKTHROUGH_VERSION } from './schema.js';
 
 const DATA_DIR = process.env.OMPCHAMBER_DATA_DIR
   ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
-  : path.join(os.homedir(), '.config', 'openchamber');
+  : path.join(os.homedir(), '.config', 'ompchamber');
 
 const WALKTHROUGH_DIR = path.join(DATA_DIR, 'walkthroughs');
 const ENTRIES_DIR = path.join(WALKTHROUGH_DIR, 'entries');

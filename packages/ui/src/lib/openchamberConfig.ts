@@ -1,6 +1,6 @@
 /**
  * OpenChamber project-level configuration service.
- * Stores per-project settings in ~/.config/openchamber/projects/<projectId>.json.
+ * Stores per-project settings in ~/.config/ompchamber/projects/<projectId>.json.
  * Migrates from legacy <project>/.openchamber/openchamber.json.
  *
  * Notes, todos, and plan files used to live here too. They are now server-owned
@@ -21,7 +21,7 @@ type ProjectRef = { id: string; path: string };
 const CONFIG_FILENAME = 'openchamber.json';
 // LEGACY_PROJECT_CONFIG: legacy per-project config root inside repo.
 const LEGACY_CONFIG_DIR = '.openchamber';
-const USER_PROJECTS_DIR_SEGMENTS = ['.config', 'openchamber', 'projects'];
+const USER_PROJECTS_DIR_SEGMENTS = ['.config', 'ompchamber', 'projects'];
 
 /**
  * Get the runtime Files API if available (Desktop/VSCode).
@@ -388,7 +388,7 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
   }
 
   // 2) Migrate legacy <project>/.openchamber/openchamber.json.
-  // LEGACY_PROJECT_CONFIG: migrate project-local openchamber.json -> ~/.config/openchamber/projects/<projectId>.json
+  // LEGACY_PROJECT_CONFIG: migrate project-local openchamber.json -> ~/.config/ompchamber/projects/<projectId>.json
   const legacyPath = getLegacyConfigPath(projectDirectory);
   const legacyConfig = parseConfig(await readText(legacyPath));
   if (!legacyConfig) {

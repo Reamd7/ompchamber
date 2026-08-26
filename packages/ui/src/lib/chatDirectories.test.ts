@@ -34,22 +34,22 @@ describe('chat directories', () => {
   test('creates one isolated directory beneath the dated chats root', async () => {
     const directory = await createChatDirectory(new Date(2026, 7, 21, 12));
     expect(createdDirectories[0]).toBe(directory);
-    expect(directory.startsWith('/Users/tester/.config/openchamber/chats/2026-08-21/session-')).toBe(true);
+    expect(directory.startsWith('/Users/tester/.config/ompchamber/chats/2026-08-21/session-')).toBe(true);
     expect(createdDirectories).toEqual([directory]);
     expect(createDirectoryOptions).toEqual([undefined]);
   });
 
   test('recognizes only descendants of the managed chats root', () => {
-    expect(isChatDirectoryForHome('/Users/tester/.config/openchamber/chats/2026-08-21/session-a', '/Users/tester')).toBe(true);
+    expect(isChatDirectoryForHome('/Users/tester/.config/ompchamber/chats/2026-08-21/session-a', '/Users/tester')).toBe(true);
     expect(isChatDirectoryForHome('/Users/tester/project', '/Users/tester')).toBe(false);
-    expect(isChatDirectoryForHome('/remote/home/.config/openchamber/chats/2026-08-21/session-a', '/Users/tester')).toBe(true);
-    expect(isChatDirectoryPath('/remote/home/.config/openchamber/chats/2026-08-21/session-a')).toBe(true);
-    expect(getChatsRootFromDirectory('/remote/home/.config/openchamber/chats/2026-08-21/session-a')).toBe('/remote/home/.config/openchamber/chats');
+    expect(isChatDirectoryForHome('/remote/home/.config/ompchamber/chats/2026-08-21/session-a', '/Users/tester')).toBe(true);
+    expect(isChatDirectoryPath('/remote/home/.config/ompchamber/chats/2026-08-21/session-a')).toBe(true);
+    expect(getChatsRootFromDirectory('/remote/home/.config/ompchamber/chats/2026-08-21/session-a')).toBe('/remote/home/.config/ompchamber/chats');
   });
 
   test('deletes managed chat directories but leaves project directories alone', async () => {
-    await deleteChatDirectory('/Users/tester/.config/openchamber/chats/2026-08-21/session-a');
+    await deleteChatDirectory('/Users/tester/.config/ompchamber/chats/2026-08-21/session-a');
     await deleteChatDirectory('/Users/tester/project');
-    expect(deletedDirectories).toEqual(['/Users/tester/.config/openchamber/chats/2026-08-21/session-a']);
+    expect(deletedDirectories).toEqual(['/Users/tester/.config/ompchamber/chats/2026-08-21/session-a']);
   });
 });

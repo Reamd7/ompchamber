@@ -15,7 +15,7 @@ import path from 'node:path';
 import fsPromises from 'node:fs/promises';
 
 /** Project-relative home for agent screenshots. */
-export const SCREENSHOT_DIRECTORY = path.join('.openchamber', 'screenshots');
+export const SCREENSHOT_DIRECTORY = path.join('.ompchamber', 'screenshots');
 
 const MAX_LABEL_LENGTH = 48;
 

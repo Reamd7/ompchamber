@@ -32,6 +32,7 @@ import {
   findClosestMatch,
 } from './lib/cli-args.js';
 import { readDesktopLocalPortFromSettings } from './lib/cli-paths.js';
+import { migrateLegacyAppDataDir } from '../server/lib/app-data-migration.js';
 import { resolveExplicitBinary, searchPathFor } from './lib/cli-executables.js';
 import { startupCommand } from './lib/commands-startup.js';
 import { logsCommand } from './lib/commands-logs.js';
@@ -234,6 +235,7 @@ commands.update = createUpdateCommand({
 });
 
 async function main() {
+  migrateLegacyAppDataDir();
   const parsed = parseArgs();
   const { command, subcommand, tunnelAction, startupAction, scheduleAction, sessionAction, controlAction, options, removedFlagErrors, helpRequested, versionRequested } = parsed;
   activeCommandOptions = options;

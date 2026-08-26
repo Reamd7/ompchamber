@@ -46,7 +46,7 @@
 
 ## Auth storage and config
 
-- Auth storage: `~/.config/openchamber/github-auth.json`
+- Auth storage: `~/.config/ompchamber/github-auth.json`
 - Writes are atomic and file mode is `0o600`.
 - Client ID resolution order: `OMPCHAMBER_GITHUB_CLIENT_ID` -> `settings.json` -> default.
 - Scope resolution order: `OMPCHAMBER_GITHUB_SCOPES` -> `settings.json` -> default.

@@ -47,7 +47,7 @@ describe('writing a screenshot', () => {
       fs,
     });
 
-    expect(result.path).toBe('.openchamber/screenshots/after-fix-2026-08-13T09-37-00-000.jpg');
+    expect(result.path).toBe('.ompchamber/screenshots/after-fix-2026-08-13T09-37-00-000.jpg');
     expect(result.path.includes('\\')).toBe(false);
     expect(result.absolutePath).toBe(path.join('/work/project', SCREENSHOT_DIRECTORY, 'after-fix-2026-08-13T09-37-00-000.jpg'));
     expect(fs.written.get(result.absolutePath).toString()).toBe('image-bytes');

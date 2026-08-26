@@ -15,7 +15,7 @@ const DEFAULT_RP_NAME = 'OpenChamber';
 
 const OMPCHAMBER_DATA_DIR = process.env.OMPCHAMBER_DATA_DIR
   ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
-  : path.join(os.homedir(), '.config', 'openchamber');
+  : path.join(os.homedir(), '.config', 'ompchamber');
 
 const PASSKEY_STORE_FILE = path.join(OMPCHAMBER_DATA_DIR, 'ui-passkeys.json');
 

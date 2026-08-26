@@ -289,7 +289,7 @@ describe('browser capture', () => {
 
     const result = await service.execute('browser.capture', { label: 'After fix' }, directory);
 
-    expect(result.path.startsWith('.openchamber/screenshots/after-fix-')).toBe(true);
+    expect(result.path.startsWith('.ompchamber/screenshots/after-fix-')).toBe(true);
     expect(result.path.endsWith('.png')).toBe(true);
     expect(result.url).toBe('http://localhost:3000/');
     expect(result.viewport).toEqual({ mode: 'mobile', width: 390, height: 844 });

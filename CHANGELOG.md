@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. Existing data is moved there automatically on first launch, so logins, paired devices, themes, and project settings carry over; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.
 - **Desktop/Mobile: the deep-link scheme is now `ompchamber://` (was `openchamber://`).** Links and QR codes created by older versions no longer open the app; regenerate them from the current version. The embedded browser panel also moves to a renamed storage partition, so sites logged in there ask for login once more.
 - VS Code: the extension's commands, views, and settings now live under the `ompchamber.*` namespace — custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once.
 - **Desktop: the Windows installer is now an assisted setup wizard.** Choose installing for the current user or all users, browse to a different installation folder, and see the required disk space before installing. New installs land in `Programs\OMPChamber`; updating an existing install keeps its current folder.
