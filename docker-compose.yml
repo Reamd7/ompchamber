@@ -1,20 +1,20 @@
 services:
-  openchamber:
+  ompchamber:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: openchamber
+    container_name: ompchamber
     ports:
       - "3000:3000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./data/ompchamber:/home/openchamber/.config/ompchamber
-      - ./data/opencode/share:/home/openchamber/.local/share/opencode
-      - ./data/opencode/state:/home/openchamber/.local/state/opencode
-      - ./data/opencode/config:/home/openchamber/.config/opencode
-      - ./data/ssh:/home/openchamber/.ssh
-      - ./workspaces:/home/openchamber/workspaces
+      - ./data/ompchamber:/home/ompchamber/.config/ompchamber
+      - ./data/opencode/share:/home/ompchamber/.local/share/opencode
+      - ./data/opencode/state:/home/ompchamber/.local/state/opencode
+      - ./data/opencode/config:/home/ompchamber/.config/opencode
+      - ./data/ssh:/home/ompchamber/.ssh
+      - ./workspaces:/home/ompchamber/workspaces
     environment:
       # Docker binds OpenChamber to 0.0.0.0 for port mapping, so UI auth is required.
       # Set this before starting, for example:
@@ -25,7 +25,7 @@ services:
     # OMPCHAMBER_TUNNEL_MODE: quick  # quick | managed-remote | managed-local
     # OMPCHAMBER_TUNNEL_HOSTNAME: app.example.com  # required for managed-remote
     # OMPCHAMBER_TUNNEL_TOKEN: your_cloudflare_token  # required for managed-remote
-    # OMPCHAMBER_TUNNEL_CONFIG: /home/openchamber/.cloudflared/config.yml  # optional for managed-local
+    # OMPCHAMBER_TUNNEL_CONFIG: /home/ompchamber/.cloudflared/config.yml  # optional for managed-local
     # OH_MY_OPENCODE: true # enable oh-my-opencode
     # OPENCODE_HOST: http://172.17.0.1:4096 # Connect to external OpenCode server
     # OPENCODE_SKIP_START: true # skip start opencode
