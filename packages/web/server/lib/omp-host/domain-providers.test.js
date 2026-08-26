@@ -217,6 +217,57 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     expect(w2).not.toContain('contextPromotionTarget');
   });
 
+  test('new model rows with dialog collections (input/cost/thinking) write real YAML nodes (regression: Tag not resolved for Array value)', async () => {
+    const { modelsPath } = makeEnv();
+    // Regression: the create path wrapped every incoming value in
+    // `new Scalar(...)`, so array/object values (input, cost, thinking)
+    // resolved no tag and the whole PUT died with
+    // "Tag not resolved for Array value" at the doc.toString() write.
+    const created = await putOmpProvider({
+      provider: {
+        id: 'gamma',
+        baseUrl: 'https://gamma.example.com/v1',
+        api: 'openai-responses',
+        apiKey: 'gk-123',
+        models: [{
+          id: 'g1',
+          name: 'Gamma One',
+          input: ['text', 'image'],
+          cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 },
+          thinking: { mode: 'effort', efforts: ['low', 'high'], defaultLevel: 'low' },
+        }],
+      },
+    }, { modelsPath });
+    expect(created.status).toBe(200);
+    const written = readFileSync(modelsPath, 'utf8');
+    expect(written).toContain('- image');
+    expect(written).toContain('cacheRead: 0.5');
+    expect(written).toContain('- high');
+    expect(written).toContain('defaultLevel: low');
+
+    // Same collections as NEW rows appended to an existing provider.
+    const appended = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [
+          { id: 'a1' },
+          { id: 'a2', name: 'Alpha Two', input: ['text', 'image'] },
+        ],
+      },
+    }, { modelsPath });
+    expect(appended.status).toBe(200);
+
+    const listed = await listOmpProviders({ modelsPath });
+    const gamma = listed.providers.find((p) => p.id === 'gamma');
+    expect(gamma.models[0].input).toEqual(['text', 'image']);
+    expect(gamma.models[0].cost.cacheRead).toBe(0.5);
+    expect(gamma.models[0].thinking.efforts).toEqual(['low', 'high']);
+    expect(gamma.models[0].thinking.defaultLevel).toBe('low');
+    const alpha = listed.providers.find((p) => p.id === 'alpha');
+    expect(alpha.models.find((m) => m.id === 'a2').input).toEqual(['text', 'image']);
+  });
+
   test('dialog null payload clears per-model baseUrl instead of writing literal nulls (engine drops whole models.yml on null)', async () => {
     const { modelsPath } = makeEnv();
     // Establish a per-model endpoint override the dialog will clear.

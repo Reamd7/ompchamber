@@ -294,6 +294,65 @@ const normalizeIncomingModel = (raw, index) => {
   }
   return { model };
 };
+// Apply GUI-managed model fields onto a model map node. Shared by the update
+// (field-merge) and create paths so collection values (input/cost/thinking)
+// always become real YAML collection nodes: a Scalar wrapping an array or
+// object resolves no tag and the whole write throws
+// "Tag not resolved for Array value".
+const MANAGED_MODEL_SCALAR_KEYS = [
+  'name', 'reasoning', 'contextWindow', 'maxTokens', 'baseUrl', 'api',
+  'supportsTools', 'omitMaxOutputTokens', 'contextPromotionTarget', 'compactionModel',
+];
+
+const applyManagedModelFields = (modelNode, incoming) => {
+  for (const key of MANAGED_MODEL_SCALAR_KEYS) {
+    if (incoming[key] === undefined) continue;
+    // `null` clears the key (documented contract) — a literal null is
+    // never written: the engine schema rejects any null model value by
+    // dropping the WHOLE models.yml (every custom provider disappears).
+    if (incoming[key] === null) modelNode.delete(key);
+    else modelNode.set(new Scalar(key), new Scalar(incoming[key]));
+  }
+  if (incoming.input === undefined) {
+    // keep
+  } else if (incoming.input === null) {
+    modelNode.delete('input');
+  } else {
+    const inputSeq = new YAMLSeq();
+    for (const item of incoming.input) inputSeq.items.push(new Scalar(item));
+    modelNode.set(new Scalar('input'), inputSeq);
+  }
+  if (incoming.cost === undefined) {
+    // keep
+  } else if (incoming.cost === null) {
+    modelNode.delete('cost');
+  } else {
+    const costMap = new YAMLMap();
+    for (const [key, value] of Object.entries(incoming.cost)) {
+      costMap.set(new Scalar(key), new Scalar(value));
+    }
+    modelNode.set(new Scalar('cost'), costMap);
+  }
+  if (incoming.thinking !== undefined) {
+    const efforts = Array.isArray(incoming.thinking?.efforts) ? incoming.thinking.efforts : [];
+    // The schema requires efforts (or legacy ranges) — an emptied
+    // thinking config removes the block instead of writing an invalid one.
+    if (incoming.thinking === null || efforts.length === 0) {
+      modelNode.delete('thinking');
+    } else {
+      const thinkingNode = new YAMLMap();
+      thinkingNode.set(new Scalar('mode'), new Scalar(typeof incoming.thinking.mode === 'string' ? incoming.thinking.mode : 'effort'));
+      const effortsSeq = new YAMLSeq();
+      for (const effort of efforts) effortsSeq.items.push(new Scalar(effort));
+      thinkingNode.set(new Scalar('efforts'), effortsSeq);
+      if (typeof incoming.thinking.defaultLevel === 'string' && incoming.thinking.defaultLevel) {
+        thinkingNode.set(new Scalar('defaultLevel'), new Scalar(incoming.thinking.defaultLevel));
+      }
+      modelNode.set(new Scalar('thinking'), thinkingNode);
+    }
+  }
+};
+
 
 /**
  * Validate + merge + write one provider into models.yml.
@@ -404,72 +463,16 @@ export const putOmpProvider = async (input, options = {}) => {
     }
     for (const incoming of incomingModels) {
       const priorNode = existingById.get(incoming.id);
-      if (priorNode && isMap(priorNode)) {
-        // Update only GUI-managed keys; cost/input/compat/… survive. The
-        // thinking block is GUI-managed via the model dialog (efforts +
-        // defaultLevel) and replaces/removes the prior block when provided.
-        const modelNode = priorNode;
-        for (const key of ['name', 'reasoning', 'contextWindow', 'maxTokens', 'baseUrl', 'api']) {
-          if (incoming[key] === undefined) continue;
-          // `null` clears the key (documented contract) — a literal null is
-          // never written: the engine schema rejects any null model value by
-          // dropping the WHOLE models.yml (every custom provider disappears).
-          if (incoming[key] === null) modelNode.delete(key);
-          else modelNode.set(new Scalar(key), new Scalar(incoming[key]));
-        }
-        for (const key of ['supportsTools', 'omitMaxOutputTokens', 'contextPromotionTarget', 'compactionModel']) {
-          if (incoming[key] === undefined) continue;
-          if (incoming[key] === null) modelNode.delete(key);
-          else modelNode.set(new Scalar(key), new Scalar(incoming[key]));
-        }
-        if (incoming.input === undefined) {
-          // keep
-        } else if (incoming.input === null) {
-          modelNode.delete('input');
-        } else {
-          const inputSeq = new YAMLSeq();
-          for (const item of incoming.input) inputSeq.items.push(new Scalar(item));
-          modelNode.set(new Scalar('input'), inputSeq);
-        }
-        if (incoming.cost === undefined) {
-          // keep
-        } else if (incoming.cost === null) {
-          modelNode.delete('cost');
-        } else {
-          const costMap = new YAMLMap();
-          for (const [key, value] of Object.entries(incoming.cost)) {
-            costMap.set(new Scalar(key), new Scalar(value));
-          }
-          modelNode.set(new Scalar('cost'), costMap);
-        }
-        if (incoming.thinking !== undefined) {
-          const efforts = Array.isArray(incoming.thinking?.efforts) ? incoming.thinking.efforts : [];
-          // The schema requires efforts (or legacy ranges) — an emptied
-          // thinking config removes the block instead of writing an invalid one.
-          if (incoming.thinking === null || efforts.length === 0) {
-            modelNode.delete('thinking');
-          } else {
-            const thinkingNode = new YAMLMap();
-            thinkingNode.set(new Scalar('mode'), new Scalar(typeof incoming.thinking.mode === 'string' ? incoming.thinking.mode : 'effort'));
-            const effortsSeq = new YAMLSeq();
-            for (const effort of efforts) effortsSeq.items.push(new Scalar(effort));
-            thinkingNode.set(new Scalar('efforts'), effortsSeq);
-            if (typeof incoming.thinking.defaultLevel === 'string' && incoming.thinking.defaultLevel) {
-              thinkingNode.set(new Scalar('defaultLevel'), new Scalar(incoming.thinking.defaultLevel));
-            }
-            modelNode.set(new Scalar('thinking'), thinkingNode);
-          }
-        }
-        mergedModels.push(modelNode);
-      } else {
-        const modelNode = new YAMLMap();
-        for (const [key, value] of Object.entries(incoming)) {
-          // Skip nulls for the same reason as the update path above.
-          if (value === null) continue;
-          modelNode.set(new Scalar(key), new Scalar(value));
-        }
-        mergedModels.push(modelNode);
-      }
+      const isUpdate = Boolean(priorNode && isMap(priorNode));
+      // Update only GUI-managed keys; cost/input/compat/… survive. The
+      // thinking block is GUI-managed via the model dialog (efforts +
+      // defaultLevel) and replaces/removes the prior block when provided.
+      // New models run the same applier over a fresh map so every value
+      // lands as the right node kind.
+      const modelNode = isUpdate ? priorNode : new YAMLMap();
+      if (!isUpdate) modelNode.set(new Scalar('id'), new Scalar(incoming.id));
+      applyManagedModelFields(modelNode, incoming);
+      mergedModels.push(modelNode);
     }
     const seq = new YAMLSeq();
     for (const node of mergedModels) seq.items.push(node);
