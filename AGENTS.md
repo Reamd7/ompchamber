@@ -46,6 +46,12 @@ Shared contracts must define intentional behavior for every applicable runtime: 
 - Keep entrypoints and bridges thin; place domain logic in focused owning modules.
 - Update owning documentation when module ownership, contracts, or invariants change.
 
+## Branch and Remote Strategy
+
+- `main` is this repository's independent development line; `origin` (`Reamd7/openchamber`) is its remote.
+- The `openchamber` remote (`openchamber/openchamber`) is upstream, used only to sync into `main`: fetch it, then merge `openchamber/main` into `main`, absorbing as much upstream change as feasible and resolving conflicts locally.
+- Never merge, push, or otherwise propagate this repository's branches to the `openchamber` remote; treat it as fetch-only.
+
 ## Correctness Invariants
 
 - Prefer authoritative state over heuristics.
