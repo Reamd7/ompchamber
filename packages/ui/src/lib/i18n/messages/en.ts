@@ -1741,6 +1741,7 @@ export const dict = {
   'terminalView.stream.processExitedMessage': '\r\n[Process exited{exitCodeSegment}{signalSegment}]\r\n',
   'terminalView.stream.processExitedWithCode': ' with code {exitCode}',
   'terminalView.stream.processExitedWithSignal': ' (signal {signal})',
+  'terminalView.stream.reconnecting': 'Reconnecting…',
   'terminalView.error.sessionEnded': 'Terminal session ended',
   'terminalView.error.connectionFailed': 'Connection failed: {message}',
   'terminalView.error.startSessionFailed': 'Failed to start terminal session',

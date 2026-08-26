@@ -1719,6 +1719,7 @@ export const dict: Record<I18nKey, string> = {
   "terminalView.stream.processExitedMessage": "\r\n[Process exited{exitCodeSegment}{signalSegment}]\r\n",
   "terminalView.stream.processExitedWithCode": " з кодом {exitCode}",
   "terminalView.stream.processExitedWithSignal": " (сигнал {signal})",
+  'terminalView.stream.reconnecting': 'Перепідключення…',
   "terminalView.error.sessionEnded": "Термінальну сесію завершено",
   "terminalView.error.connectionFailed": "Помилка підключення: {message}",
   "terminalView.error.startSessionFailed": "Не вдалося розпочати термінальну сесію",

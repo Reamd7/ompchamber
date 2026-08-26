@@ -1719,6 +1719,7 @@ export const dict: Record<I18nKey, string> = {
   "terminalView.stream.processExitedMessage": "\r\n[Proceso terminado{exitCodeSegment}{signalSegment}]\r\n",
   "terminalView.stream.processExitedWithCode": " con código {exitCode}",
   "terminalView.stream.processExitedWithSignal": " (señal {signal})",
+  'terminalView.stream.reconnecting': 'Reconectando…',
   "terminalView.error.sessionEnded": "Sesión de terminal terminada",
   "terminalView.error.connectionFailed": "Error de conexión: {message}",
   "terminalView.error.startSessionFailed": "No se pudo iniciar la sesión de terminal",

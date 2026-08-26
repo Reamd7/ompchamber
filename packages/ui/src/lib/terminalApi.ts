@@ -309,6 +309,7 @@ export class TerminalTransport {
       if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '', replayData: typeof message.r === 'string' ? message.r : undefined });
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'resized') sub.handlers.onEvent({ type: 'resized', sequence: message.q, cols: typeof message.cols === 'number' ? message.cols : undefined, rows: typeof message.rows === 'number' ? message.rows : undefined });
+      else if (message.t === 'command-finished') sub.handlers.onEvent({ type: 'command-finished', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined });
     }
   }
 

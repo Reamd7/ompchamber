@@ -305,6 +305,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 }
                                 break;
                             }
+                            case 'command-finished': {
+                                // Shell integration: a command finished (OSC 133;D).
+                                // Mark this terminal tab as unread so the user sees
+                                // a badge when focused elsewhere.
+                                useTerminalStore.getState().setTabUnread(tabId, true);
+                                break;
+                            }
                             case 'exit': {
                                 const exitCode =
                                     typeof event.exitCode === 'number' ? event.exitCode : null;
@@ -1135,6 +1142,12 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         />
                     ) : null}
                 </div>
+                {isReconnectPending && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[var(--status-warning-background,var(--surface-muted))] px-3 py-2 text-xs text-[var(--status-warning-foreground,var(--muted-foreground))] flex items-center gap-2">
+                        <span className="inline-block size-3 animate-pulse rounded-full bg-current" />
+                        <span>{t('terminalView.stream.reconnecting')}</span>
+                    </div>
+                )}
                 {!isReconnectPending && connectionError && (
                     <div className="absolute inset-x-0 bottom-0 bg-[var(--status-error-background)] px-3 py-2 text-xs text-[var(--status-error-foreground)] flex items-center justify-between gap-2">
                         <span>{connectionError}</span>

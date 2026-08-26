@@ -1737,6 +1737,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.stream.processExitedMessage': '\r\n[プロセスが終了しました{exitCodeSegment}{signalSegment}]\r\n',
   'terminalView.stream.processExitedWithCode': ' コード {exitCode}',
   'terminalView.stream.processExitedWithSignal': '（シグナル {signal}）',
+  'terminalView.stream.reconnecting': '再接続中…',
   'terminalView.error.sessionEnded': 'ターミナルセッションが終了しました',
   'terminalView.error.connectionFailed': '接続に失敗しました: {message}',
   'terminalView.error.startSessionFailed': 'ターミナルセッションの開始に失敗しました',

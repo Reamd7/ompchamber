@@ -9,6 +9,7 @@ import {
 } from './terminal-ws-protocol.js';
 import { sanitizeTerminalHistoryChunk } from './history.js';
 import { consumeTerminalThemeQueries, terminalThemeModeReport } from './theme-response.js';
+import { Osc133Scanner } from './shell-integration.js';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
 
@@ -159,6 +160,13 @@ export function createTerminalRuntime({
           session.history = trimHistory(session.history + sanitized.visible);
           session.lastActivity = Date.now();
           publish(session, { t: 'output', d: event.data, ...(sanitized.visible !== event.data ? { r: sanitized.visible } : {}) });
+          // OSC 133 shell integration: detect command boundary markers
+          if (!session.osc133) session.osc133 = new Osc133Scanner();
+          for (const oscEvent of session.osc133.scan(event.data)) {
+            if (oscEvent.kind === 'command-finished') {
+              publish(session, { t: 'command-finished', exitCode: oscEvent.exitCode });
+            }
+          }
         } else {
           session.status = 'exited';
           session.exitCode = Number.isInteger(event.exitCode) ? event.exitCode : null;

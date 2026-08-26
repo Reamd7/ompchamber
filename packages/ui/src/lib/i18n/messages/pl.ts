@@ -3010,6 +3010,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.stream.processExitedMessage': '\r\n[Process exited{exitCodeSegment}{signalSegment}]\r\n',
   'terminalView.stream.processExitedWithCode': ' with code {exitCode}',
   'terminalView.stream.processExitedWithSignal': ' (signal {signal})',
+  'terminalView.stream.reconnecting': 'Ponowne łączenie…',
   'terminalView.tabs.closeTabTitle': 'Close tab',
   'terminalView.tabs.newTabTitle': 'New tab',
   'terminalView.viewport.inputAria': 'Terminal input',

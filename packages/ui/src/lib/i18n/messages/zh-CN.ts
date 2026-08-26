@@ -1707,6 +1707,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.stream.processExitedMessage': '\r\n[进程已退出{exitCodeSegment}{signalSegment}]\r\n',
   'terminalView.stream.processExitedWithCode': '，退出码 {exitCode}',
   'terminalView.stream.processExitedWithSignal': '（信号 {signal}）',
+  'terminalView.stream.reconnecting': '重连中…',
   'terminalView.error.sessionEnded': '终端会话已结束',
   'terminalView.error.connectionFailed': '连接失败：{message}',
   'terminalView.error.startSessionFailed': '启动终端会话失败',

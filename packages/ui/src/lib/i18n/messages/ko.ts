@@ -1743,6 +1743,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.stream.processExitedMessage': '\r\n[Process exited{exitCodeSegment}{signalSegment}]\r\n',
   'terminalView.stream.processExitedWithCode': ', 종료 코드 {exitCode}',
   'terminalView.stream.processExitedWithSignal': ' (시그널 {signal})',
+  'terminalView.stream.reconnecting': '재연결 중…',
   'terminalView.error.sessionEnded': '터미널 세션이 종료되었습니다',
   'terminalView.error.connectionFailed': '연결 실패: {message}',
   'terminalView.error.startSessionFailed': '터미널 세션 시작에 실패했습니다',

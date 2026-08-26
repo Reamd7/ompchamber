@@ -47,7 +47,7 @@ export interface TerminalShellOption {
 }
 
 export interface TerminalStreamEvent {
-  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized';
+  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized' | 'command-finished';
   sequence?: number;
   data?: string;
   replayData?: string;
