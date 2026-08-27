@@ -111,12 +111,15 @@
 
 `bun test server/lib/omp-host/`（311+新增）全绿 → `bun run type-check` 双项目 0 → `bunx oxlint` 新增类 0 → `bun run check:events` OK → 涉及 UI 面的浏览器冒烟（技能页/消息渲染/goal 指示器/providers 页）→ 独立提交。
 
-## 三、观察清单（不在本计划内，待消费面落地时处理）
+## 三、观察清单处置（2026-08-28 裁定）
 
-- `getTelemetry`/`getEntries`/`getCustomMessages` 三个结构化端点零生产消费方（omp-resync.ts:150-154 明确推迟）。
-- `parseCustomMessageEntry` 丢服务器 `text` 字段；`omp.model.changed` role 死字段；`turnUsage` 未读 `reasoningTokens`/`totalTokens`/`contextTokens`。
-- `GET /api/omp/models` 注册表失败降级与零模型不可分辨（无消费方）。
-- plugins `requiresRestart`、agentRuns `kind/parentId/history/hasTranscript` 等未读字段。
+- **`session.deleted` 缺 `info` 字段——关闭（won't-fix）**：项目不再支持外部 OpenCode 客户端，该字段仅服务外部消费方，OpenChamber 自身消费链均按 sessionID 容忍。
+- `getTelemetry`/`getEntries`/`getCustomMessages` 三个结构化端点零生产消费方 → **规格化**：docs/omp-parity/11-structured-read-surfaces.md（遥测种子/时间线 Tab/自定义消息冷读对账）。
+- Todo `blocker` 丢弃 → **规格化**：docs/omp-parity/10-todo-blocker-surface.md（omp.todo.updated 原生事件 + wire 追加字段）。
+- 工具意图状态行（原 P12 可选项）→ **规格化**：docs/omp-parity/12-tool-intent-status.md。
+- 单数 `skill` 根分组失效 → **规格化**：docs/omp-parity/13-skill-group-roots.md。
+- `parseCustomMessageEntry` 丢 `text` 字段 → 随 11 章 §4.3 一并修。
+- `omp.model.changed` role 死字段；`turnUsage` 未读 `reasoningTokens`/`totalTokens`/`contextTokens`；`GET /api/omp/models` 降级不可分辨；plugins `requiresRestart`、agentRuns 未读字段——维持观察，消费面出现时处理。
 - SDK 自身 `enableSkillCommands` 门控不对称（RPC/ACP truthy vs TUI 默认开）——域内若复刻需选定一侧并注明。
 
 ## 附录 A：TUI 重审方法与范围
