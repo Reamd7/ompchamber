@@ -202,6 +202,26 @@ describe('projection', () => {
     expect(settledInfo.finish).toBe('stop');
   });
 
+  test('projectUsage emits the SDK totalTokens as wire tokens.total when present', () => {
+    const withTotal = assistantMessage([{ type: 'text', text: 'a' }], {
+      usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 18 },
+    });
+    const [, withTotalMessage] = projectConversation([userMessage('q'), withTotal], {
+      sessionID: 's1',
+      directory: '/repo',
+    });
+    expect(withTotalMessage.info.tokens?.total).toBe(18);
+
+    const withoutTotal = assistantMessage([{ type: 'text', text: 'b' }], {
+      usage: { input: 10, output: 5 },
+    });
+    const [, withoutTotalMessage] = projectConversation([userMessage('q'), withoutTotal], {
+      sessionID: 's1',
+      directory: '/repo',
+    });
+    expect('total' in (withoutTotalMessage.info.tokens ?? {})).toBe(false);
+  });
+
   test('message ids are deterministic across repeated projections', () => {
     const messages = [userMessage('stable'), assistantMessage([{ type: 'text', text: 'reply' }])];
     const a = projectConversation(messages, { sessionID: 's1', directory: '/repo' });

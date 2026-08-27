@@ -57,6 +57,12 @@ export interface UsageInput {
   reasoningTokens?: number;
   cacheRead?: number;
   cacheWrite?: number;
+  /** SDK Usage.totalTokens — the authoritative final-round-trip window
+   * (input+output+cacheRead+cacheWrite + orchestration). Emitted as the wire
+   * `tokens.total` so the UI context meter prefers it over summing buckets
+   * (OpenCode-wire precedent; TUI computes context from session accounting
+   * instead — see docs/omp-host-field-loss-fix-plan.md P7). */
+  totalTokens?: number;
   /** omp reports per-message cost as a number; the SDK usage object carries a cost breakdown. */
   cost?: number | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };
 }
@@ -166,6 +172,8 @@ export interface WireTokenTotals {
   output: number;
   reasoning: number;
   cache: { read: number; write: number };
+  /** Final-round-trip window when the SDK reported it; omitted otherwise. */
+  total?: number;
 }
 
 /** `projectUsage` result. */
@@ -494,8 +502,9 @@ export const projectUsage = (usage?: UsageInput | null): WireUsageProjection => 
       reasoning: u.reasoningTokens ?? 0,
       cache: {
         read: u.cacheRead ?? 0,
-        write: u.cacheWrite ?? 0
-      }
+        write: u.cacheWrite ?? 0,
+      },
+      ...(u.totalTokens !== undefined ? { total: u.totalTokens } : {}),
     },
     // omp reports cost through usage reports rather than per-message totals;
     // per-message cost is surfaced as zero and session aggregates come from
