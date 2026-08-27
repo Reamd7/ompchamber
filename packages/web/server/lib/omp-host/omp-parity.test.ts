@@ -98,6 +98,7 @@ describe('divider projection (spec 05 §5.5)', () => {
     expect(projected.info.metadata).toEqual({ ompRole: 'compactionSummary', tokensBefore: 9000, warning: 'freed little' });
     expect(projected.parts[0].text).toBe('[omp:compactionSummary] summarized turn');
     expect(projected.parts[0].synthetic).toBe(true);
+    expect(projected.info.summary).toBe(true);
   });
 
   test('branchSummary carries fromId metadata', () => {
@@ -106,6 +107,7 @@ describe('divider projection (spec 05 §5.5)', () => {
       { sessionID: 's1' },
     );
     expect(projected.info.metadata).toEqual({ ompRole: 'branchSummary', fromId: 'e7' });
+    expect(projected.info.summary).toBe(true);
   });
 
   test('projectConversation routes divider roles and keeps pairing intact', () => {

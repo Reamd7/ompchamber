@@ -262,6 +262,9 @@ export interface WireMessageInfo {
    * present only on settled assistant messages — its presence is the wire
    * "step closed" signal (ChatMessage open-step check). */
   finish?: string;
+  /** Compaction/branch divider marker: OpenCode's turn-summary picker skips
+   * summary messages when choosing a turn's answer text. */
+  summary?: boolean;
   error?: { name: string; data: { message: string } };
 }
 
@@ -875,6 +878,7 @@ export const projectDividerMessage = (
       role: 'assistant',
       ...(parentID ? { parentID } : {}),
       time: { created: message.timestamp, completed: message.timestamp },
+      summary: true,
       agent: agent ?? 'build',
       model: { providerID: '', modelID: '' },
       metadata: {
