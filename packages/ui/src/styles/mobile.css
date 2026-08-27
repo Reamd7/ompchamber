@@ -734,13 +734,30 @@
    under the strip: the strip renders as dead non-page space and the
    window stays scrollable into it (the stray scrollbar). While
    `oc-vv-clamp` is set (see lib/iosKeyboardViewportClamp.ts), size the
-   shells to the measured visible height instead; the strip keeps the
-   page background, the document fits, and the scrollbar disappears.
-   The clamp only engages for widget-band strips (shorter than a real
-   software keyboard), so the dvh / interactive-widget keyboard flows
-   elsewhere in this file are untouched. */
+   document box AND the shells to the measured visible height; the strip
+   keeps the page background, the document fits, and the scrollbar
+   disappears. The clamp only engages for widget-band strips (shorter
+   than a real software keyboard), so the dvh / interactive-widget
+   keyboard flows elsewhere in this file are untouched. */
+
+/* The html box first: body/#root are 100% of it, and as long as it keeps
+   full vh height the WINDOW can still scroll the 688px document inside
+   the 618px window (measured on iPadOS 26: docH=688, innerH=618,
+   scrollY=71). Shrinking it removes the scroll range entirely. */
+:root.oc-vv-clamp {
+  height: var(--oc-vv-clamp-height, 100dvh);
+}
+
 :root.oc-vv-clamp .oc-app-shell {
   height: var(--oc-vv-clamp-height);
+}
+
+/* Debug aid (?vvdebug=1): bright frame marks the clamped shell boundary so
+   build/engagement state is visible without reading the overlay. */
+:root.oc-vv-clamp.oc-vv-debug .oc-app-shell,
+:root.oc-vv-clamp.oc-vv-debug .oc-mobile-app-shell {
+  outline: 4px solid #22c55e;
+  outline-offset: -4px;
 }
 
 /* Outranks the standalone 100lvh pin above (equal specificity, later

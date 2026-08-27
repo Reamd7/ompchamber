@@ -36,6 +36,8 @@ const CLAMP_MIN_STRIP_PX = 16;
 /** Root class + CSS variable the shells consume (see mobile.css). */
 const CLAMP_CLASS = 'oc-vv-clamp';
 const CLAMP_HEIGHT_VAR = '--oc-vv-clamp-height';
+/** Opt-in flag for the dev-only geometry overlay: append `?vvdebug=1`. */
+const CLAMP_DEBUG_QUERY = 'vvdebug';
 
 /**
  * True on iOS/iPadOS WebKit in any surface: browser tab, standalone PWA, or
@@ -48,11 +50,47 @@ const isIOSWebKitRuntime = (): boolean => {
     || (/Macintosh|MacIntel/i.test(userAgent) && maxTouchPoints > 1);
 };
 
+/**
+ * Dev-only geometry overlay for on-device diagnosis (iPad + Web Inspector is
+ * a heavy loop; a screenshot of this closes it). Double-gated: compiled out
+ * of production builds (import.meta.env.DEV) and opt-in via ?vvdebug=1, so
+ * ordinary dev sessions are untouched. Null when not requested.
+ */
+interface ClampDebugOverlay {
+  write: (line: string) => void;
+  dispose: () => void;
+}
+
+const installClampDebugOverlay = (): ClampDebugOverlay | null => {
+  if (!import.meta.env.DEV) return null;
+  try {
+    if (!new URLSearchParams(window.location.search).has(CLAMP_DEBUG_QUERY)) return null;
+  } catch {
+    return null;
+  }
+  // carried no cache directives, so a stale tab is indistinguishable from
+  // a failed fix unless the version is visible without hunting for text.
+  document.title = `[vv5] ${document.title}`;
+  const overlay = document.createElement('div');
+  overlay.setAttribute('aria-hidden', 'true');
+  overlay.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:2147483647;pointer-events:none;'
+    + 'font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff;'
+    + 'background:rgba(0,0,0,.82);padding:6px 9px;border-radius:8px;white-space:pre;';
+  document.body.appendChild(overlay);
+  return {
+    write: (line: string) => {
+      if (overlay.textContent !== line) overlay.textContent = line;
+    },
+    dispose: () => {
+      overlay.remove();
+      document.title = document.title.replace('[vv5] ', '');
+    },
+  };
+};
+
 export interface ViewportClampInput {
   /** `visualViewport.height` in CSS pixels. */
   visualHeight: number;
-  /** `visualViewport.offsetTop` in CSS pixels (top chrome / pan). */
-  visualOffsetTop: number;
   /** `document.documentElement.clientHeight` — the layout viewport height. */
   layoutHeight: number;
   /** `visualViewport.scale` — pinch zoom also shrinks the visual viewport. */
@@ -75,6 +113,14 @@ export interface ViewportClampResult {
  * viewport is reserved keyboard space (browser chrome moves both, pinch
  * zoom is excluded by the scale guard) — so a widget-band strip clamps
  * even while the widget lingers after blur.
+ *
+ * The reserved strip is `layoutHeight - visualHeight`, NOT
+ * `layoutHeight - (offsetTop + visualHeight)`: offsetTop is the PAN of the
+ * visual viewport over the layout viewport, and subtracting it cancels the
+ * strip exactly when Safari has scrolled the page into the dead space
+ * (measured on iPadOS 26: scrollY=71, top=70 zeroed a real 71px strip).
+ * The shell is sized to `visualHeight` and anchored at the document top;
+ * the hook scrolls the pan back when engaging (see evaluate).
  */
 export const resolveIOSKeyboardViewportClamp = (input: ViewportClampInput): ViewportClampResult => {
   // Pinch zoom shrinks the visual viewport the same way — that loss is the
@@ -83,14 +129,13 @@ export const resolveIOSKeyboardViewportClamp = (input: ViewportClampInput): View
     return { active: false, heightPx: null };
   }
   // Stale-visualViewport guard (iOS standalone serves pre-keyboard full
-  // height intermittently): the visible bottom never exceeds the layout
-  // viewport. Mirrors useMobileViewportPin's min() anchoring.
-  const visibleBottom = Math.min(input.visualOffsetTop + input.visualHeight, input.layoutHeight);
-  const strip = input.layoutHeight - visibleBottom;
+  // height intermittently): never clamp above the layout viewport.
+  const visibleHeight = Math.min(input.visualHeight, input.layoutHeight);
+  const strip = input.layoutHeight - visibleHeight;
   if (strip < CLAMP_MIN_STRIP_PX || strip >= SOFTWARE_KEYBOARD_MIN_HEIGHT_PX) {
     return { active: false, heightPx: null };
   }
-  return { active: true, heightPx: Math.round(visibleBottom) };
+  return { active: true, heightPx: Math.round(visibleHeight) };
 };
 
 const isEditableElement = (node: Element | null): node is HTMLElement =>
@@ -120,17 +165,32 @@ export function useIOSKeyboardViewportClamp(): void {
     let lastHeight: number | null = null;
     let frame = 0;
     let loopWanted = false;
+    const debug = installClampDebugOverlay();
+    // 100dvh probe: the authoritative "vh did not shrink" side of the
+    // symptom. documentElement.clientHeight cannot serve once the clamp
+    // sets html's height (it would read the clamped value and release the
+    // clamp — a feedback loop); a fixed 100dvh probe reads the viewport's
+    // vh units, which iPadOS leaves at full height while the window shrinks.
+    const dvhProbe = document.createElement('div');
+    dvhProbe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:100dvh;visibility:hidden;pointer-events:none;';
+    document.body.appendChild(dvhProbe);
 
     const evaluate = () => {
       const { active, heightPx } = resolveIOSKeyboardViewportClamp({
         visualHeight: vv.height,
-        visualOffsetTop: vv.offsetTop,
-        layoutHeight: root.clientHeight,
+        layoutHeight: dvhProbe.getBoundingClientRect().height,
         scale: vv.scale,
       });
       if (active !== lastActive) {
         lastActive = active;
         root.classList.toggle(CLAMP_CLASS, active);
+        if (debug) {
+          // Unmissable visual truth-serum: with unhashed dev chunks and no
+          // cache directives, a stale tab looks exactly like a failed fix.
+          // The green frame says "this build's clamp is engaged" at a
+          // glance — no overlay reading required.
+          root.classList.toggle('oc-vv-debug', active);
+        }
         if (active) {
           // Engage from a panned state (Safari scrolled the full-height
           // shell into the strip): snap the pan back first, then measure —
@@ -148,6 +208,21 @@ export function useIOSKeyboardViewportClamp(): void {
         } else {
           root.style.setProperty(CLAMP_HEIGHT_VAR, `${heightPx}px`);
         }
+      }
+      if (debug) {
+        const dvhH = Math.round(dvhProbe.getBoundingClientRect().height);
+        const stripPx = Math.round(dvhH - Math.min(vv.height, dvhH));
+        const shell = document.querySelector('.oc-app-shell, .oc-mobile-app-shell');
+        const shellH = shell ? Math.round(shell.getBoundingClientRect().height) : -1;
+        const docH = document.scrollingElement?.scrollHeight ?? -1;
+        debug.write(
+          `ios=${isIOSWebKitRuntime()} mtp=${navigator.maxTouchPoints}`
+          + `\nvv=${Math.round(vv.height)} top=${Math.round(vv.offsetTop)} scale=${vv.scale.toFixed(2)}`
+          + `\nclientH=${root.clientHeight} innerH=${window.innerHeight} dvh=${dvhH}`
+          + `\nstrip=${stripPx} clamp=${active} h=${heightPx ?? '-'}`
+          + `\nclass=${root.classList.contains(CLAMP_CLASS)} shellH=${shellH} docH=${docH}`
+          + `\nscrollY=${Math.round(window.scrollY)}`,
+        );
       }
       return { active };
     };
@@ -192,12 +267,14 @@ export function useIOSKeyboardViewportClamp(): void {
       }
       document.removeEventListener('focusin', onFocusIn, true);
       document.removeEventListener('focusout', kickLoop, true);
-      vv.removeEventListener('resize', kickLoop);
+      root.classList.remove(CLAMP_CLASS, 'oc-vv-debug');
       vv.removeEventListener('scroll', kickLoop);
       window.removeEventListener('resize', kickLoop);
       window.removeEventListener('orientationchange', kickLoop);
       root.classList.remove(CLAMP_CLASS);
       root.style.removeProperty(CLAMP_HEIGHT_VAR);
+      dvhProbe.remove();
+      debug?.dispose();
     };
   }, []);
 }

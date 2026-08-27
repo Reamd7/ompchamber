@@ -6,49 +6,53 @@ import { resolveIOSKeyboardViewportClamp } from './iosKeyboardViewportClamp';
 // reserved strip itself is the trigger (iPadOS 26 keeps the widget after
 // blur), and the WebKit event wiring around it is not meaningfully testable
 // off-device (same stance as useMobileViewportPin).
-// Layout 820 / visual 760 = the ~60px strip iPadOS reserves for the
-// minimized keyboard widget while a hardware keyboard is attached.
+// Numbers below are the real on-device captures from iPadOS 26 + Magic
+// Keyboard (layout 688, visual 618 = the ~70px minimized-widget strip).
 const widgetStrip = (overrides: Partial<Parameters<typeof resolveIOSKeyboardViewportClamp>[0]> = {}) => ({
-  visualHeight: 760,
-  visualOffsetTop: 0,
-  layoutHeight: 820,
+  visualHeight: 618,
+  layoutHeight: 688,
   scale: 1,
   ...overrides,
 });
 
 describe('resolveIOSKeyboardViewportClamp', () => {
   test('a widget-band strip clamps to the visible height', () => {
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip())).toEqual({ active: true, heightPx: 760 });
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip())).toEqual({ active: true, heightPx: 618 });
   });
 
-  test('top chrome offsets count: clamp to offsetTop + height, not raw height', () => {
-    expect(
-      resolveIOSKeyboardViewportClamp(widgetStrip({ visualOffsetTop: 60, visualHeight: 720 })),
-    ).toEqual({ active: true, heightPx: 780 });
+  test('regression: a panned visual viewport keeps the strip (scrollY=71, top=70 capture)', () => {
+    // The first implementation subtracted offsetTop + height from the layout
+    // height, which cancelled the strip exactly while Safari had scrolled
+    // the page into the dead space — the clamp released mid-pan. The pan is
+    // scroll, not reservation; only the height difference counts.
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 618 }))).toEqual({
+      active: true,
+      heightPx: 618,
+    });
   });
 
   test('sub-strip loss is rounding noise, not the widget', () => {
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 812 }))).toEqual({
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 680 }))).toEqual({
       active: false,
       heightPx: null,
     });
   });
 
   test('a full software keyboard reserve is out of scope: existing keyboard flows own it', () => {
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 500 }))).toEqual({
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 400 }))).toEqual({
       active: false,
       heightPx: null,
     });
   });
 
   test('a stale full-height visual viewport never clamps (standalone stale-metrics guard)', () => {
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 820 }))).toEqual({
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 688 }))).toEqual({
       active: false,
       heightPx: null,
     });
-    // Even beyond the layout viewport, the visible bottom is capped:
-    // strip computes as zero, not negative.
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 900 }))).toEqual({
+    // Even beyond the layout viewport, the height is capped: strip computes
+    // as zero, not negative.
+    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ visualHeight: 760 }))).toEqual({
       active: false,
       heightPx: null,
     });
