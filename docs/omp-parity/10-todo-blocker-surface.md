@@ -46,7 +46,7 @@ wire client 是 OpenChamber 拥有的契约拷贝(文件头自述 "OMPChamber's 
 ## 4. 明确不做
 
 - 不改 omp SDK(node_modules)——总纲红线。
-- 不开 omp.todo.updated 并行事件、不做能力协商/回落——两端同仓同发,旧帧只是无 blocker 字段,UI 可选读取自然兼容。
+- 不开并行 omp 原生事件、不做能力协商/回落——两端同仓同发,旧帧只是无 blocker 字段,UI 可选读取自然兼容。
 - 不给 `GET /session/{id}/todo` 快照端点补字段——UI 对该端点零调用(查证:唯一 todo 消费方是 wire 事件 reducer),补了服务零消费者。
 - 不做 todo 编辑面、TUI 阶段进度头、markdown 往返标记;priority 维持现状捏造值 `medium`(ACP 桥同款)。
 
