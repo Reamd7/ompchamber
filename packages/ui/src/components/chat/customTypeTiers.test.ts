@@ -24,6 +24,8 @@ describe('tierFor (05 §5.8.2 tier table)', () => {
         expect(tierFor('compactionSummary')).toBe('T2');
         expect(tierFor('branchSummary')).toBe('T2');
         expect(tierFor('handoff')).toBe('T2');
+        expect(tierFor('modelChange')).toBe('T2');
+        expect(tierFor('modeChange')).toBe('T2');
     });
 
     test('T3 — hidden display:false types, including prefix families', () => {

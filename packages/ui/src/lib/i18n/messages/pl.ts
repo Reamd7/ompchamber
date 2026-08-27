@@ -700,6 +700,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.compacted': 'skompaktowano',
   'chat.chat.ompDivider.branchSummary': 'podsumowanie gałęzi',
   'chat.chat.ompDivider.handoff': 'przekazanie',
+  'chat.chat.ompDivider.modelChange': 'Zmieniono model',
+  'chat.chat.ompDivider.modeChange': 'Tryb',
   'chat.chat.ompDivider.fromTokens': 'z {tokens} tokenów',
   'chat.chat.ompDivider.expand': 'Rozwiń podsumowanie',
   'chat.chat.ompDivider.collapse': 'Zwiń podsumowanie',

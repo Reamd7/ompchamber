@@ -35,6 +35,8 @@ export interface OmpCustomMessageData {
     tokensBefore?: number;
     warning?: string;
     fromId?: string;
+    /** modeChange dividers: the raw mode value (none/plan/goal/vibe). */
+    mode?: string;
 }
 
 const readTextOfPart = (part: Part): string => {
@@ -58,8 +60,9 @@ export function parseOmpCustomMessage(info: Message, parts: Part[]): OmpCustomMe
 
     const metadata = (info as { metadata?: Record<string, unknown> }).metadata;
     const tokensBefore = typeof metadata?.tokensBefore === 'number' ? metadata.tokensBefore : undefined;
-    const warning = typeof metadata?.warning === 'string' && metadata.warning.length > 0 ? metadata.warning : undefined;
     const fromId = typeof metadata?.fromId === 'string' ? metadata.fromId : undefined;
+    const warning = typeof metadata?.warning === 'string' && metadata.warning.length > 0 ? metadata.warning : undefined;
+    const mode = typeof metadata?.mode === 'string' && metadata.mode.length > 0 ? metadata.mode : undefined;
 
     return {
         tier,
@@ -70,6 +73,7 @@ export function parseOmpCustomMessage(info: Message, parts: Part[]): OmpCustomMe
         tokensBefore,
         warning,
         fromId,
+        mode,
     };
 }
 
@@ -262,7 +266,6 @@ export const SummaryDividerView: React.FC<SummaryDividerViewProps> = ({
         </div>
     );
 };
-
 /** T2 divider with local disclosure state — collapsed until clicked. */
 const OmpSummaryDivider: React.FC<{ data: OmpCustomMessageData }> = ({ data }) => {
     const { t } = useI18n();
@@ -273,25 +276,33 @@ const OmpSummaryDivider: React.FC<{ data: OmpCustomMessageData }> = ({ data }) =
             ? t('chat.chat.ompDivider.branchSummary')
             : data.customType === 'handoff'
                 ? t('chat.chat.ompDivider.handoff')
-                : data.customType;
+                : data.customType === 'modelChange'
+                    ? t('chat.chat.ompDivider.modelChange')
+                    : data.customType === 'modeChange'
+                        ? t('chat.chat.ompDivider.modeChange')
+                        : data.customType;
+    // The mode value is protocol vocabulary; render it with the same localized
+    // labels the mode chip uses when it is a known mode, raw otherwise.
+    const modeLabelKey = data.mode === 'none' ? 'chat.modeSelector.label.default'
+        : data.mode === 'plan' ? 'chat.modeSelector.label.plan'
+        : data.mode === 'goal' ? 'chat.modeSelector.label.goal'
+        : data.mode === 'vibe' ? 'chat.modeSelector.label.vibe'
+        : null;
+    const summary = data.customType === 'modeChange' && modeLabelKey !== null
+        ? t(modeLabelKey)
+        : data.body;
     return (
         <SummaryDividerView
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
             label={label}
-            summary={data.body}
+            summary={summary}
             tokensBefore={data.tokensBefore}
             warning={data.warning}
         />
     );
 };
 
-// ---------------------------------------------------------------------------
-
-/**
- * Entry: renders one tiered omp custom message. T4 never reaches here (the
- * parse returns null); T3 renders nothing.
- */
 export const OmpCustomMessage: React.FC<{ data: OmpCustomMessageData }> = ({ data }) => {
     if (data.tier === 'T3') return null;
     if (data.tier === 'T1') return <OmpCustomCard data={data} />;

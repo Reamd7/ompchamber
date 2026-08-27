@@ -14,6 +14,7 @@ const sessionFiles = [
   // the pre-existing mock behavior for the other ids).
   { id: 's3', path: path.join(sessionDir, 's3.jsonl'), cwd: '/repo' },
 ];
+const fakeManagerEntries = [];
 const createdOptions = [];
 const registries = [];
 const toolUiContextCalls = [];
@@ -71,7 +72,8 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
           // Idle-session reads (#infoFromManager) need the transcript reader
           // surface; an empty header/entries set is enough for wire building.
           getHeader: () => null,
-          getEntries: () => [],
+          getEntries: () => fakeManagerEntries,
+          buildSessionContext: () => ({ messages: [] }),
           getCwd: () => undefined,
           getSessionName: () => undefined,
           close: async () => {},
@@ -123,6 +125,36 @@ describe('OmpHostEngine prompt dispatch', () => {
     ).resolves.toBeTruthy();
     expect(session.prompt).toHaveBeenCalledTimes(2);
     expect(session.prompt).toHaveBeenLastCalledWith('mid turn', { images: [], streamingBehavior: 'steer' });
+  });
+  test('projects transcript model/mode switches as timeline dividers', async () => {
+    const stamp = 1_787_811_000_000;
+    const session = sessionFor('s1');
+    fakeManagerEntries.push(
+      { type: 'model_change', model: 'p1/old', role: 'default', timestamp: stamp - 10_000 },
+      { type: 'model_change', model: 'p1/new', role: 'temporary', timestamp: stamp },
+      { type: 'mode_change', mode: 'plan', timestamp: stamp + 5_000 },
+    );
+    try {
+      const engine = new OmpHostEngine({ agentDir });
+      // Materialize the live session so the projection reads its messages.
+      await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+      session.messages = [{ role: 'user', content: 'before', timestamp: stamp - 5_000 }];
+      const projected = await engine.getMessages({ sessionID: 's1', directory: '/repo' });
+      const rows = (projected ?? []).map((item) => ({
+        role: item.info.role,
+        text: item.parts[0]?.text ?? '',
+        ompRole: item.info.metadata?.ompRole,
+      }));
+      expect(rows).toEqual([
+        { role: 'assistant', text: '[omp:modelChange] p1/old · default', ompRole: 'modelChange' },
+        { role: 'user', text: 'before', ompRole: undefined },
+        { role: 'assistant', text: '[omp:modelChange] p1/new · temporary', ompRole: 'modelChange' },
+        { role: 'assistant', text: '[omp:modeChange] plan', ompRole: 'modeChange' },
+      ]);
+    } finally {
+      fakeManagerEntries.length = 0;
+      session.messages = [];
+    }
   });
 
   test('stamps the effective thinking level on the user message snapshot', async () => {

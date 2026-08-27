@@ -2007,6 +2007,8 @@ export const dict = {
   'chat.chat.ompDivider.compacted': 'compacted',
   'chat.chat.ompDivider.branchSummary': 'branch summary',
   'chat.chat.ompDivider.handoff': 'handoff',
+  'chat.chat.ompDivider.modelChange': 'Switched model',
+  'chat.chat.ompDivider.modeChange': 'Mode',
   'chat.chat.ompDivider.fromTokens': 'from {tokens} tokens',
   'chat.chat.ompDivider.expand': 'Expand summary',
   'chat.chat.ompDivider.collapse': 'Collapse summary',

@@ -1833,6 +1833,8 @@ export const dict = {
   'chat.chat.ompDivider.compacted': 'komprimiert',
   'chat.chat.ompDivider.branchSummary': 'Branch-Zusammenfassung',
   'chat.chat.ompDivider.handoff': 'Übergabe',
+  'chat.chat.ompDivider.modelChange': 'Modell gewechselt',
+  'chat.chat.ompDivider.modeChange': 'Modus',
   'chat.chat.ompDivider.fromTokens': 'aus {tokens} Tokens',
   'chat.chat.ompDivider.expand': 'Zusammenfassung ausklappen',
   'chat.chat.ompDivider.collapse': 'Zusammenfassung einklappen',

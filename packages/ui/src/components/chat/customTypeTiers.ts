@@ -45,6 +45,8 @@ const T2_CUSTOM_TYPES: Record<string, true> = {
     compactionSummary: true,
     branchSummary: true,
     handoff: true,
+    modelChange: true,
+    modeChange: true,
 };
 
 /**

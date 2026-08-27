@@ -2009,6 +2009,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.compacted': '압축됨',
   'chat.chat.ompDivider.branchSummary': '브랜치 요약',
   'chat.chat.ompDivider.handoff': '핸드오프',
+  'chat.chat.ompDivider.modelChange': '모델 전환',
+  'chat.chat.ompDivider.modeChange': '모드',
   'chat.chat.ompDivider.fromTokens': '{tokens} 토큰에서',
   'chat.chat.ompDivider.expand': '요약 펼치기',
   'chat.chat.ompDivider.collapse': '요약 접기',

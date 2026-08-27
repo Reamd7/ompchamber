@@ -285,6 +285,76 @@ export const projectCustomMessage = (message, { sessionID, agent, parentID }) =>
 };
 
 /**
+ * Project a transcript turn-state entry (model_change / mode_change) into
+ * the same slim-divider wire shape as compaction summaries, so the timeline
+ * shows where the session's model or mode changed. Standalone (no parentID):
+ * turn pairing never anchors on it. Entries without a role tag are the
+ * session's init/restore bookkeeping, not user-visible switches — skipped.
+ */
+export const projectTurnEventDivider = (entry, { sessionID }) => {
+  if (!entry || typeof entry !== 'object' || typeof entry.timestamp !== 'number') return null;
+  if (entry.type === 'model_change') {
+    if (typeof entry.model !== 'string' || entry.model.length === 0) return null;
+    if (typeof entry.role !== 'string' || entry.role.length === 0) return null;
+    const suffixParts = [entry.role];
+    if (entry.resolvedModelIsFallback === true) suffixParts.push('fallback');
+    const body = `${entry.model} · ${suffixParts.join(' · ')}`;
+    const id = wireMessageId('custom', entry.timestamp, `[omp:modelChange] ${body}`);
+    return {
+      info: {
+        id,
+        sessionID,
+        role: 'assistant',
+        time: { created: entry.timestamp, completed: entry.timestamp },
+        model: { providerID: '', modelID: '' },
+        metadata: {
+          ompRole: 'modelChange',
+          model: entry.model,
+          ...(typeof entry.role === 'string' ? { role: entry.role } : {}),
+          ...(entry.resolvedModelIsFallback === true ? { fallback: true } : {}),
+        },
+      },
+      parts: [
+        {
+          id: partId(id, 0),
+          sessionID,
+          messageID: id,
+          type: 'text',
+          text: `[omp:modelChange] ${body}`,
+          synthetic: true,
+          time: { start: entry.timestamp },
+        },
+      ],
+    };
+  }
+  if (entry.type === 'mode_change') {
+    if (typeof entry.mode !== 'string' || entry.mode.length === 0) return null;
+    const id = wireMessageId('custom', entry.timestamp, `[omp:modeChange] ${entry.mode}`);
+    return {
+      info: {
+        id,
+        sessionID,
+        role: 'assistant',
+        time: { created: entry.timestamp, completed: entry.timestamp },
+        model: { providerID: '', modelID: '' },
+        metadata: { ompRole: 'modeChange', mode: entry.mode },
+      },
+      parts: [
+        {
+          id: partId(id, 0),
+          sessionID,
+          messageID: id,
+          type: 'text',
+          text: `[omp:modeChange] ${entry.mode}`,
+          synthetic: true,
+          time: { start: entry.timestamp },
+        },
+      ],
+    };
+  }
+  return null;
+};
+/**
  * Project a transcript divider role (compactionSummary / branchSummary) into
  * a synthetic assistant-side wire message (spec 05 §5.5, GAP-E04 P1).
  * Rendered as a collapsible slim divider; the `[omp:<role>]` prefix is the

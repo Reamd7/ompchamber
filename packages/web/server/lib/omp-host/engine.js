@@ -34,6 +34,7 @@ import {
   projectDividerMessage,
   projectUserMessage,
   buildTurnStateStamper,
+  projectTurnEventDivider,
   wireMessageId,
   deterministicWireId,
   resolveWireIdToEntryId,
@@ -743,33 +744,36 @@ export class OmpHostEngine {
     // the summary), which used to blank the UI — so read the live list only
     // when it is at least as complete as the file.
     const file = await this.#findSessionFile(sessionID, directoryKey);
-    let turnStateFor;
     if (file) {
       const manager = await SessionManager.open(file.path);
       try {
         const context = manager.buildSessionContext({ transcript: true });
         const fileMessages = context.messages ?? [];
+        const entries = manager.getEntries() ?? [];
         // Exact per-message snapshots: fold the transcript's model_change /
         // thinking_level_change log so every user message carries the state
         // it was sent with (SDK user messages persist neither).
-        turnStateFor = buildTurnStateStamper(manager.getEntries() ?? [], { wireIdFor });
+        const turnStateFor = buildTurnStateStamper(entries, { wireIdFor });
+        // Timeline dividers for the same turn-state entries: model and mode
+        // switches render as slim dividers at their point in the log.
+        const mergeDividers = (projected) => this.#mergeTurnEventDividers(projected, entries, sessionID);
         if (liveCount >= 0 && liveCount >= fileMessages.length) {
-          return projectConversation(live.agentSession.messages, {
+          return mergeDividers(projectConversation(live.agentSession.messages, {
             sessionID,
             directory: directoryKey,
             agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
             wireIdFor,
             turnStateFor,
-          });
+          }));
         }
         if (fileMessages.length > 0 || liveCount < 0) {
-          return projectConversation(fileMessages, {
+          return mergeDividers(projectConversation(fileMessages, {
             sessionID,
             directory: directoryKey,
             agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
             wireIdFor,
             turnStateFor,
-          });
+          }));
         }
       } finally {
         await manager.close().catch(() => {});
@@ -784,6 +788,30 @@ export class OmpHostEngine {
       });
     }
     return null;
+  }
+
+  /**
+   * Insert turn-event dividers (model/mode switches) into a projected
+   * conversation at their transcript position: before the first message
+   * created at or after the entry's timestamp, or at the end. Entries the
+   * divider projection rejects (init bookkeeping without a role tag) are
+   * skipped, keeping deterministic ids stable across re-projections.
+   */
+  #mergeTurnEventDividers(projected, entries, sessionID) {
+    const dividers = [];
+    for (const entry of entries) {
+      const wire = projectTurnEventDivider(entry, { sessionID });
+      if (wire) dividers.push(wire);
+    }
+    if (dividers.length === 0) return projected;
+    const out = [...projected];
+    for (const wire of dividers) {
+      const at = out.findIndex(
+        (item) => (item.info.time?.created ?? 0) >= (wire.info.time?.created ?? 0),
+      );
+      out.splice(at === -1 ? out.length : at, 0, wire);
+    }
+    return out;
   }
 
   /**

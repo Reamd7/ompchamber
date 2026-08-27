@@ -318,7 +318,7 @@ export const projectTurnRecords = (
         // content: after a compaction folds every user turn into the summary
         // there is no parent to anchor on, so dividers render through the
         // standalone ungrouped channel instead of vanishing.
-        const isDivider = ['compactionSummary', 'branchSummary'].includes(
+        const isDivider = ['compactionSummary', 'branchSummary', 'modelChange', 'modeChange'].includes(
             String((message.info as { metadata?: { ompRole?: unknown } }).metadata?.ompRole ?? ''),
         );
         if (role === 'assistant') {

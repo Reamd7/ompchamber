@@ -1765,6 +1765,8 @@ export const dict = {
   'chat.chat.ompDivider.compacted': 'compacté',
   'chat.chat.ompDivider.branchSummary': 'résumé de branche',
   'chat.chat.ompDivider.handoff': 'transfert',
+  'chat.chat.ompDivider.modelChange': 'Modèle changé',
+  'chat.chat.ompDivider.modeChange': 'Mode',
   'chat.chat.ompDivider.fromTokens': 'à partir de {tokens} jetons',
   'chat.chat.ompDivider.expand': 'Déplier le résumé',
   'chat.chat.ompDivider.collapse': 'Replier le résumé',

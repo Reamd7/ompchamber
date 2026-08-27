@@ -13,6 +13,7 @@ import {
   buildTurnStateStamper,
   deterministicWireId,
   projectConversation,
+  projectTurnEventDivider,
   projectUserMessage,
 } from './projection.js';
 
@@ -104,5 +105,44 @@ describe('projectConversation turn-state threading', () => {
       turnStateFor: () => null,
     });
     expect(projected[0].info.model).toEqual({ providerID: 'p', modelID: 'current' });
+  });
+});
+
+describe('projectTurnEventDivider', () => {
+  test('projects a role-tagged model change with fallback flag as a divider', () => {
+    const wire = projectTurnEventDivider(
+      { type: 'model_change', model: 'p/m', role: 'temporary', resolvedModelIsFallback: true, timestamp: now },
+      { sessionID: 's1' },
+    );
+    expect(wire?.info.metadata).toEqual({
+      ompRole: 'modelChange',
+      model: 'p/m',
+      role: 'temporary',
+      fallback: true,
+    });
+    expect(wire?.parts[0]?.text).toBe('[omp:modelChange] p/m · temporary · fallback');
+    expect(wire?.info.role).toBe('assistant');
+    expect(wire?.info.parentID).toBeUndefined();
+  });
+
+  test('skips role-less init bookkeeping and unknown kinds', () => {
+    expect(projectTurnEventDivider(
+      { type: 'model_change', model: 'p/m', timestamp: now },
+      { sessionID: 's1' },
+    )).toBeNull();
+    expect(projectTurnEventDivider(
+      { type: 'thinking_level_change', thinkingLevel: 'high', timestamp: now },
+      { sessionID: 's1' },
+    )).toBeNull();
+    expect(projectTurnEventDivider(null, { sessionID: 's1' })).toBeNull();
+  });
+
+  test('projects a mode change carrying the mode value', () => {
+    const wire = projectTurnEventDivider(
+      { type: 'mode_change', mode: 'plan', timestamp: now },
+      { sessionID: 's1' },
+    );
+    expect(wire?.info.metadata).toEqual({ ompRole: 'modeChange', mode: 'plan' });
+    expect(wire?.parts[0]?.text).toBe('[omp:modeChange] plan');
   });
 });

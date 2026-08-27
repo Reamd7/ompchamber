@@ -60,6 +60,18 @@ describe('applyOmpEvent — retry lifecycle (spec 05 §5.3.2 P1)', () => {
     expect(draft.retryTerminal.ses_1).toBe(undefined);
   });
 
+  test('a replayed retry.ended alone restores the superseded overlay (reload path)', () => {
+    const draft = state();
+    // Fresh page load: the volatile omp.retry.started never re-arrives; the
+    // durable ended event is the only carrier of what was superseded.
+    applyOmpEvent(draft, envelope({
+      id: 7, type: 'omp.retry.ended', sessionID: 'ses_1', createdAt: 200,
+      payload: { success: true, attempt: 2, retryErrors: [{ messageID: 'msg_A', note: 'flaky' }] },
+    }));
+    expect(draft.notes.msg_A).toEqual({ note: 'flaky', appliedAt: 200 });
+    expect(draft.superseded.msg_A).toEqual({ since: 200 });
+  });
+
   test('stale volatile retry frames are rejected', () => {
     const draft = state();
     applyOmpEvent(draft, envelope({ id: 2, type: 'omp.retry.started', sessionID: 'ses_1', createdAt: 200, payload: { attempt: 2 } }));

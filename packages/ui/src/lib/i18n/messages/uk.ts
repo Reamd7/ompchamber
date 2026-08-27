@@ -1985,6 +1985,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.chat.ompDivider.compacted": "ущільнено",
   "chat.chat.ompDivider.branchSummary": "підсумок гілки",
   "chat.chat.ompDivider.handoff": "передача",
+  "chat.chat.ompDivider.modelChange": "Модель змінено",
+  "chat.chat.ompDivider.modeChange": "Режим",
   "chat.chat.ompDivider.fromTokens": "з {tokens} токенів",
   "chat.chat.ompDivider.expand": "Розгорнути підсумок",
   "chat.chat.ompDivider.collapse": "Згорнути підсумок",

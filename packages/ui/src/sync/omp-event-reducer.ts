@@ -450,6 +450,13 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
           appliedAt: envelope.createdAt,
         };
         mutated = true;
+        // The durable end event is the only replayable carrier of which
+        // messages a retry superseded (omp.retry.started is volatile): restore
+        // the dimming marker so a reload keeps the superseded presentation.
+        const superseded = draft.superseded[entry.messageID];
+        if (!superseded || envelope.createdAt < superseded.since) {
+          draft.superseded[entry.messageID] = { since: envelope.createdAt };
+        }
       }
       if (!success) {
         const existing = draft.retryTerminal[sessionID];

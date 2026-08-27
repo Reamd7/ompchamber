@@ -2003,6 +2003,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.compacted': '圧縮済み',
   'chat.chat.ompDivider.branchSummary': 'ブランチ要約',
   'chat.chat.ompDivider.handoff': 'ハンドオフ',
+  'chat.chat.ompDivider.modelChange': 'モデル切替',
+  'chat.chat.ompDivider.modeChange': 'モード',
   'chat.chat.ompDivider.fromTokens': '{tokens} トークンから',
   'chat.chat.ompDivider.expand': '要約を展開',
   'chat.chat.ompDivider.collapse': '要約を折りたたむ',
