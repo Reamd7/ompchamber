@@ -71,6 +71,8 @@ export interface UsageInput {
 export interface UserMessageInput {
   role: 'user';
   content?: ProjectedContentInput;
+  /** System-injected (auto-continue etc.); TUI renders dimmed/collapsed. */
+  synthetic?: boolean;
   timestamp: number;
 }
 
@@ -594,7 +596,8 @@ export const projectUserMessage = (
       sessionID,
       messageID: id,
       type: 'text',
-      text
+      text,
+      ...(message.synthetic ? { synthetic: true } : {}),
     });
   }
   for (const image of imageBlocks(message.content)) {

@@ -239,6 +239,19 @@ describe('projection', () => {
     expect(assistant.parts[2].url).toContain('data:image/png;base64,iVBOR');
   });
 
+  test('user message synthetic flag rides the text part', () => {
+    const synthetic = projectUserMessage(
+      { role: 'user', content: 'auto-continue', synthetic: true, timestamp: now },
+      { sessionID: 's1', agent: 'build', model: { id: 'claude-x', provider: 'anthropic' } },
+    );
+    expect(synthetic.parts[0].synthetic).toBe(true);
+    const human = projectUserMessage(
+      { role: 'user', content: 'typed', timestamp: now },
+      { sessionID: 's1', agent: 'build', model: { id: 'claude-x', provider: 'anthropic' } },
+    );
+    expect('synthetic' in human.parts[0]).toBe(false);
+  });
+
   test('message ids are deterministic across repeated projections', () => {
     const messages = [userMessage('stable'), assistantMessage([{ type: 'text', text: 'reply' }])];
     const a = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
