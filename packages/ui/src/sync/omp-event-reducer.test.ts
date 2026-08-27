@@ -158,6 +158,43 @@ describe('applyOmpEvent — model/fallback/mode/goal/thinking', () => {
     expect(applyOmpEvent(draft, envelope({ id: 3, type: 'omp.mode.changed', sessionID: 'ses_1', payload: { mode: 'plan' } })).changed).toBe(true);
     expect(draft.mode.ses_1?.mode).toBe('plan');
   });
+
+  test('goal.updated accepts the SDK GoalModeState object instead of dropping the frame', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({
+      id: 1, type: 'omp.goal.updated', sessionID: 'ses_1',
+      payload: {
+        goal: { status: 'active', objective: 'ship it', tokensUsed: 10, tokenBudget: 100 },
+        state: { enabled: true, mode: 'active', goal: { status: 'active', objective: 'ship it', tokensUsed: 20, tokenBudget: 100 } },
+      },
+    }));
+    expect(outcome.changed).toBe(true);
+    expect(draft.goal.ses_1?.state?.enabled).toBe(true);
+    expect(draft.goal.ses_1?.state?.mode).toBe('active');
+    // The state-carried goal is the fresher record (TUI parity).
+    expect(draft.goal.ses_1?.state?.goal).toMatchObject({ status: 'active', tokensUsed: 20 });
+    expect(draft.goal.ses_1?.goal).toMatchObject({ tokensUsed: 10 });
+  });
+
+  test('goal.updated with a malformed state still drops the frame', () => {
+    const draft = state();
+    const outcome = applyOmpEvent(draft, envelope({
+      id: 2, type: 'omp.goal.updated', sessionID: 'ses_1',
+      payload: { goal: { status: 'active' }, state: 'active' },
+    }));
+    expect(outcome.changed).toBe(false);
+    expect(draft.goal.ses_1).toBeUndefined();
+  });
+
+  test('goal.updated exiting frame carries the drop through state.goal', () => {
+    const draft = state();
+    applyOmpEvent(draft, envelope({
+      id: 3, type: 'omp.goal.updated', sessionID: 'ses_1',
+      payload: { state: { enabled: false, mode: 'exiting', goal: { status: 'dropped' } } },
+    }));
+    expect(draft.goal.ses_1?.state?.mode).toBe('exiting');
+    expect(draft.goal.ses_1?.state?.goal).toMatchObject({ status: 'dropped' });
+  });
 });
 
 describe('applyOmpEvent — effects', () => {

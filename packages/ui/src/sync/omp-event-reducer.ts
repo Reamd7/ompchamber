@@ -109,9 +109,18 @@ const ModeChangedPayload = z.object({
   data: z.unknown().optional(),
 });
 
+/** SDK goals/state.ts GoalModeState — an OBJECT; a string schema here used to
+ * drop every goal frame while goal mode was active (field-loss plan P5). */
+export const OmpGoalModeStateSchema = z.object({
+  enabled: z.boolean(),
+  mode: z.enum(['active', 'exiting']),
+  reason: z.string().optional(),
+  goal: z.unknown().optional(),
+});
+
 const GoalUpdatedPayload = z.object({
   goal: z.unknown().optional(),
-  state: z.string().optional(),
+  state: OmpGoalModeStateSchema.optional(),
 });
 
 const PlanReviewRequestedPayload = z.object({
@@ -244,7 +253,7 @@ export interface OmpPlanReviewState {
 
 export interface OmpGoalState {
   goal?: unknown;
-  state?: string;
+  state?: z.infer<typeof OmpGoalModeStateSchema>;
   updatedAt: number;
 }
 

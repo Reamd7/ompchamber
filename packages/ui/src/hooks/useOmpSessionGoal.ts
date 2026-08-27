@@ -50,7 +50,11 @@ export const useOmpSessionGoal = (
   sessionID: string | null | undefined,
   modesEnabled: boolean,
 ): OmpSessionGoalRecord | null => {
-  const storeGoal = useOmpGoalState(directory ?? '', sessionID ?? undefined)?.goal ?? null;
+  // TUI parity (interactive-mode.ts goal_updated): the freshest goal rides
+  // GoalModeState.goal on every goal-mode commit (incl. drops/pauses);
+  // the top-level payload.goal is the fallback when no state arrived.
+  const storeRecord = useOmpGoalState(directory ?? '', sessionID ?? undefined);
+  const storeGoal = storeRecord?.state?.goal ?? storeRecord?.goal ?? null;
   const storeHasGoal = storeGoal !== null && parseOmpGoalRecord(storeGoal) !== null;
   const { ompModes } = useRuntimeAPIs();
   const [seeded, setSeeded] = React.useState<OmpSessionGoalRecord | null>(null);
