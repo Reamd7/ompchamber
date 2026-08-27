@@ -125,6 +125,21 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(session.prompt).toHaveBeenLastCalledWith('mid turn', { images: [], streamingBehavior: 'steer' });
   });
 
+  test('stamps the effective thinking level on the user message snapshot', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s3');
+    // No explicit level and no model default in the registry → no variant.
+    const bare = await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'bare' });
+    expect(bare.info.model).toEqual({ providerID: 'p1', modelID: 'current-model' });
+
+    // An explicit session level rides model.variant — the exact send-time
+    // snapshot the turn runs with.
+    session.thinkingLevel = 'xhigh';
+    const stamped = await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'stamped' });
+    expect(stamped.info.model).toEqual({ providerID: 'p1', modelID: 'current-model', variant: 'xhigh' });
+    delete session.thinkingLevel;
+  });
+
   test('maps wire delivery "queue" to a follow-up', async () => {
     const engine = new OmpHostEngine({ agentDir });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'after this turn', delivery: 'queue' });

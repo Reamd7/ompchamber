@@ -33,6 +33,7 @@ import {
   projectCustomMessage,
   projectDividerMessage,
   projectUserMessage,
+  buildTurnStateStamper,
   wireMessageId,
   deterministicWireId,
   resolveWireIdToEntryId,
@@ -742,20 +743,24 @@ export class OmpHostEngine {
     // the summary), which used to blank the UI — so read the live list only
     // when it is at least as complete as the file.
     const file = await this.#findSessionFile(sessionID, directoryKey);
+    let turnStateFor;
     if (file) {
       const manager = await SessionManager.open(file.path);
       try {
         const context = manager.buildSessionContext({ transcript: true });
         const fileMessages = context.messages ?? [];
-        if (liveCount < 0 || liveCount >= fileMessages.length) {
-          if (liveCount >= 0 && liveCount >= fileMessages.length) {
-            return projectConversation(live.agentSession.messages, {
-              sessionID,
-              directory: directoryKey,
-              agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
-              wireIdFor,
-            });
-          }
+        // Exact per-message snapshots: fold the transcript's model_change /
+        // thinking_level_change log so every user message carries the state
+        // it was sent with (SDK user messages persist neither).
+        turnStateFor = buildTurnStateStamper(manager.getEntries() ?? [], { wireIdFor });
+        if (liveCount >= 0 && liveCount >= fileMessages.length) {
+          return projectConversation(live.agentSession.messages, {
+            sessionID,
+            directory: directoryKey,
+            agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
+            wireIdFor,
+            turnStateFor,
+          });
         }
         if (fileMessages.length > 0 || liveCount < 0) {
           return projectConversation(fileMessages, {
@@ -763,6 +768,7 @@ export class OmpHostEngine {
             directory: directoryKey,
             agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
             wireIdFor,
+            turnStateFor,
           });
         }
       } finally {
@@ -778,6 +784,24 @@ export class OmpHostEngine {
       });
     }
     return null;
+  }
+
+  /**
+   * The thinking level a turn actually runs with: the session's explicit
+   * pick when set, else the model's configured default (inherit), else
+   * unknown (models without a thinking surface).
+   */
+  #effectiveThinkingLevel(session) {
+    if (session.thinkingLevel !== undefined && session.thinkingLevel !== null) {
+      return session.thinkingLevel;
+    }
+    const model = session.model;
+    if (!model?.provider || !model?.id) return undefined;
+    const entry = this.availableModels().find(
+      (candidate) => candidate.provider === model.provider && candidate.id === model.id,
+    );
+    const defaultLevel = entry?.thinking?.defaultLevel;
+    return typeof defaultLevel === 'string' && defaultLevel.length > 0 ? defaultLevel : undefined;
   }
 
   #wireIdResolver(directoryKey, sessionID) {
@@ -1635,6 +1659,9 @@ export class OmpHostEngine {
         sessionID,
         agent: wireAgentFor(nextPersona),
         model: session.model,
+        // Exact send-time snapshot: the effective level the turn runs with
+        // (explicit pick, else the model's default) rides model.variant.
+        thinkingLevel: this.#effectiveThinkingLevel(session),
         ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {}),
       },
     );

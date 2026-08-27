@@ -171,8 +171,12 @@ const safeJson = (value) => {
 
 /**
  * Project one omp UserMessage into wire `{ info, parts }`.
+ * `model` is the send-time model (SDK user messages carry none — the engine
+ * passes the live session model for fresh sends, the turn-state stamper for
+ * replays); `thinkingLevel`, when known, rides `model.variant` as the wire
+ * contract's effort slot so each message carries its exact turn snapshot.
  */
-export const projectUserMessage = (message, { sessionID, agent, model, wireId }) => {
+export const projectUserMessage = (message, { sessionID, agent, model, thinkingLevel, wireId }) => {
   const id = wireId ?? wireMessageId('user', message.timestamp, textOfContent(message.content));
   const text = textOfContent(message.content);
   const parts = [];
@@ -201,9 +205,43 @@ export const projectUserMessage = (message, { sessionID, agent, model, wireId })
     role: 'user',
     time: { created: message.timestamp },
     agent: agent ?? 'build',
-    model: { providerID: selector.providerID, modelID: selector.modelID },
+    model: {
+      providerID: selector.providerID,
+      modelID: selector.modelID,
+      ...(typeof thinkingLevel === 'string' && thinkingLevel.length > 0 ? { variant: thinkingLevel } : {}),
+    },
   };
   return { info, parts };
+};
+
+/**
+ * Fold the transcript's `model_change` / `thinking_level_change` entries
+ * into a per-user-message turn-state resolver: every user entry is stamped
+ * with the model and thinking level in effect at its point in the log —
+ * the exact snapshot the turn ran with. `wireIdFor` mirrors the projector's
+ * id derivation so overridden ids join; entries before the first change
+ * fall back to the caller's seed (passed separately by the engine).
+ */
+export const buildTurnStateStamper = (entries, { wireIdFor } = {}) => {
+  const stateByWireId = new Map();
+  let model = null;
+  let thinkingLevel = null;
+  for (const entry of entries ?? []) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (entry.type === 'model_change' && typeof entry.model === 'string' && entry.model.length > 0) {
+      model = entry.model;
+    } else if (entry.type === 'thinking_level_change') {
+      thinkingLevel = typeof entry.thinkingLevel === 'string' && entry.thinkingLevel.length > 0
+        ? entry.thinkingLevel
+        : null;
+    } else if (entry.type === 'message' && entry.message?.role === 'user') {
+      const key = wireIdFor?.(entry.message) ?? deterministicWireId(entry.message);
+      stateByWireId.set(key, { model, thinkingLevel });
+    }
+  }
+  return (message) => (message?.role === 'user'
+    ? stateByWireId.get(wireIdFor?.(message) ?? deterministicWireId(message)) ?? null
+    : null);
 };
 
 /**
@@ -532,7 +570,15 @@ export const projectConversation = (messages, options) => {
     if (message.role === 'user') {
       flushAssistant();
       const wireId = options?.wireIdFor?.(message);
-      const projected = projectUserMessage(message, wireId ? { ...options, wireId } : options);
+      // Turn-state snapshot (model + thinking as of this message in the
+      // transcript log) overrides the projection-wide model default.
+      const turnState = options?.turnStateFor?.(message);
+      const projected = projectUserMessage(message, {
+        ...options,
+        ...(turnState?.model ? { model: turnState.model } : {}),
+        ...(turnState?.thinkingLevel ? { thinkingLevel: turnState.thinkingLevel } : {}),
+        ...(wireId ? { wireId } : {}),
+      });
       lastUserWireId = projected.info.id;
       out.push(projected);
     } else if (message.role === 'assistant') {
@@ -585,7 +631,6 @@ export class StreamProjector {
     this.toolPartialMeta = new Map();
     this.parentID = '';
   }
-
   setParentID(parentID) {
     this.parentID = parentID ?? '';
   }
