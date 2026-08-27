@@ -2,73 +2,72 @@
 
 状态:设计定稿,待实施
 日期基线:2026-08-28(omp SDK 18.0.4;证据锚点以当日树为准)
-上游依据:00-MASTER D1(双轨契约)、D6-R1(事件单通道);docs/omp-host-field-loss-fix-plan.md P14 遗留项
+上游依据:00-MASTER D1(双轨契约——vendored wire 不扩张)、D6-R1(omp 事件单通道);docs/omp-host-field-loss-fix-plan.md P14 遗留项
 
 ---
 
-## 1. 域概述与边界
+## 1. 业务目标
 
-Todo 列表当前丢弃 SDK `TodoItem.blocker`("被什么挡住"的自由文本),blocked 状态虽已可视化(warning 色 + 图标,StatusRow.tsx:35-41),但用户看不到**挡住它的原因**。本章设计 blocker 从 SDK 到 UI 的完整通路。
+Todo 列表中 agent 标记 blocked 的条目,当前只显示"已阻塞"状态(Warning 色 + 图标);目标是同时显示**被什么挡住**——SDK `TodoItem.blocker` 已携带该文本,但传输途中被丢弃。
 
-**边界**:只做 blocker 字段的透传与展示;不改 todo 的写入面(OpenChamber 无 todo 编辑器,todo 由 agent 的 todo 工具写入)、不改 wire `todo.updated` 既有三字段消费者。
+## 2. 现状数据流(blocker 丢失点)
 
-**非目标**:TUI 的 `formatPhaseProgress` 阶段进度(roman numeral 阶段头)与 markdown 往返标记——UI 已有自己的列表形态。
+```
+SDK 事件 todo_reminder            每条 todo: {content, status, blocker?}
+    ↓ engine.ts:1486-1493 投影     只取 content/status/priority —— blocker 在此丢弃
+wire 事件 todo.updated             固定三字段管道(types.gen.d.ts:496-509)
+    ↓ ui sync/event-reducer.ts:315 (UI 唯一 todo 消费点;GET /session/{id}/todo 端点零 UI 调用方)
+StatusRow.tsx TodoItemRow          blocked 分支有视觉态,无原因文本
+```
 
-## 2. 现状分析
+约束:vendored wire 生成类型按 D1 不得扩张,blocker 进不了 `todo.updated` 的 payload。
 
-- **投影丢弃点**:engine.ts:1486-1495 `todo_reminder` → `bus.emit('todo.updated', { todos })`,map 只留 `content/status/priority`(`priority: todo.priority ?? 'medium'` 读的是 SDK TodoItem 上不存在的字段,恒为 medium——与 ACP 桥同款捏造,保留);`blocker` 无人读取。
-- **wire 契约无槽位**:vendored `Todo` 类型(types.gen.d.ts:496-509)是 `{content, status, priority}`,无 blocker 字段。
-- **UI 消费**:StatusRow.tsx 的 `TodoItemRow` 按 `todo.status` 渲染色调/图标/删除线(blocked=warning),标签走 i18n `chat.statusRow.todo.status.blocked`(11 语言已就位)。
-- **SDK 真值**:`TodoItem = {content, status: pending|in_progress|completed|abandoned|blocked, blocker?}`(tools/todo.ts:25-30);TUI 渲染 `blocked` 为 `(blocked: <item.blocker>)` 或 `(blocked)`(todo.ts:1031-1050)。
+## 3. 设计方案:新开 omp 原生事件
 
-## 3. 目标语义(对齐 TUI)
+```
+SDK 事件 todo_reminder
+    ├→ wire todo.updated(原样三字段,不动——现状兜底,旧 UI/回落路径零迁移)
+    └→ omp.todo.updated(新增,经 OmpEventBus → /api/omp/events 单通道)
+         payload: { todos: Array<{ content, status, blocker? }> }   ← 完整 SDK 形状
+    ↓ UI 新增消费(能力存在时优先)
+StatusRow blocked 行: "已阻塞({reason})" / blocker 缺失时裸 "(已阻塞)"
+```
 
-blocked 行显示阻塞原因文本,缺失时显示裸 `(blocked)` 标记;其余状态不变。
+### 3.1 引擎
 
-## 4. 设计方案
+- `#handleEngineEvent` 的 `todo_reminder` 与 `todo_auto_clear` 两处,在 wire emit 旁追加 `#ompPublish(hostSession, 'omp.todo.updated', { todos }, { durable: false })`;todos map 读 `todo.blocker`(string 时携带)。
+- omp-event-registry.json 登记 `omp.todo.updated`(volatile,scope=server);`bun run check:events` 的注册表校验自动覆盖。
+- **volatile 的理由**:todo 是瞬态 UI 状态;断流不重放,SDK 每 N 轮全量重发 `todo_reminder`,下一次事件即自愈。冷启动为空与现状一致(现状 UI 也只靠事件,无快照消费)。
 
-### 4.1 通道选择:omp 原生事件,不动 vendored wire(D1)
+### 3.2 UI
 
-00-MASTER D1 裁定 wire gen **不再扩张**。blocker 不进 `todo.updated` 的 vendored payload,而是新增 omp 原生事件:
-
-- **事件名**:`omp.todo.updated`(注册进 omp-event-registry.json,scope=server,volatile——todo 列表是瞬态 UI 状态,快照另有权威源,见 4.3)。
-- **payload**:`{ todos: Array<{ content: string; status: 'pending'|'in_progress'|'completed'|'abandoned'|'blocked'; blocker?: string }> }`——完整 SDK 形状,无 priority(priority 是 wire 侧捏造,omp 面不需要)。
-- **发射点**:engine.ts `todo_reminder` / `todo_auto_clear` 两处,与 wire `todo.updated` 并联发射(双轨期:wire 事件保持不动,既有消费者零迁移)。
-
-### 4.2 引擎改动
-
-1. `#handleEngineEvent` 两个 todo case 补 `#ompPublish(hostSession, 'omp.todo.updated', { todos }, { durable: false })`,todos map 读 `todo.blocker`(string 时携带)。
-2. 事件登记:omp-event-registry.json 加 `omp.todo.updated` 条目;`check:events` 的 omp 名称扫描自动覆盖(名字含 `omp.` 前缀,注册表为唯一权威)。
-
-### 4.3 快照与重连
-
-todo 快照权威源是 wire `GET /session/{id}/todo`(engine.getTodos,已修 tasks 字段并有回归测试)。**缺口**:该端点同样丢 blocker。改法:engine.getTodos(P4 修复后的版本)在 wire 三字段之外追加 `blocker`——vendored 生成类型无此字段,但 wire payload 是我们发射的 JSON,追加字段对类型消费者透明(optional 字段不存在于类型中不报错,只有显式严格解析才会拒)。若不接受此松动,替代方案为 omp 快照端点 `GET /omp/sessions/{id}/todo`;**取舍:先用 wire 追加字段**(零新端点、重连矩阵零改动),UI zod schema 显式加 `blocker: z.string().optional()` 收窄。
-
-**重连对账**:omp.resync 矩阵不为此新增步骤——todo 属于瞬态状态,断流后由下一次 `todo_reminder` 全量覆盖(SDK 每 N 轮全量重发)。
-
-### 4.4 UI 改动
-
-1. `omp-event-reducer.ts`:新增 `omp.todo.updated` case,schema `z.object({ todos: z.array(z.object({ content: z.string(), status: z.enum([...5 态]), blocker: z.string().optional() })) })`,存 `draft.todo[sessionID]`;负例测试:畸形 status 整帧丢弃。
+1. `omp-event-reducer.ts` 新增 case `omp.todo.updated`,schema:
+   `z.object({ todos: z.array(z.object({ content: z.string(), status: z.enum(['pending','in_progress','completed','abandoned','blocked']), blocker: z.string().optional() })) })`,
+   存 `draft.todo[sessionID]`(整表覆盖语义,同 wire 事件);畸形帧整帧丢弃(zod 边界既有策略)。
 2. `useOmpSessionStore` 导出 `useOmpTodoState(directory, sessionID)`。
-3. StatusRow.tsx:`TodoItemRow` 消费 omp store(能力门控 `todoBlocker.v1`?**不需要**——新事件是纯增益,UI 在事件缺席时回落现状);blocked 分支追加 `<span className="text-muted-foreground">({t('chat.statusRow.todo.status.blockedBy', { reason })})</span>` 或裸 `(blocked)`。i18n 键 `chat.statusRow.todo.status.blockedBy`: 'Blocked by {reason}' + 11 语言真实翻译。
-4. 冷路径:wire todo 端点追加的 blocker 字段进 store 同一 slot(StatusRowContainer 的装载器把 wire todos 归一成同一形状)。
+3. StatusRow `TodoItemRow`:blocked 分支在状态标签后追加
+   `({t('chat.statusRow.todo.status.blockedBy', { reason })})`,`reason` 缺失时用裸 `chat.statusRow.todo.status.blocked`;新 i18n 键 `blockedBy: 'Blocked by {reason}'` + 11 语言真实翻译(locale-ui-patterns 流程)。
+4. **回落**:事件流中未见 `omp.todo.updated`(旧服务器)时维持 wire `todo.updated` 消费——两路写同一 store slot,omp 帧后到即覆盖,无需能力协商。
 
-## 5. 迁移与兼容
+## 4. 明确不做
 
-双轨期 wire `todo.updated` 保持三字段原样;UI 全部切到 omp store 后(验收条件 7.3 达成),wire todo 事件与 wire todo 端点的追加字段按 07 章删除列车处理。旧服务器(无 omp.todo.updated)上 UI 自动回落 wire 路径,无版本协商。
+- 不改 wire `todo.updated` payload / vendored 生成类型(D1)。
+- 不给 `GET /session/{id}/todo` 快照端点加字段——**UI 对该端点零调用**(查证:唯一 todo 消费方是 wire 事件 reducer),追加字段服务零消费者。
+- 不做 todo 编辑面(写入归 agent 的 todo 工具)、不做 TUI 阶段进度头与 markdown 往返标记。
+- priority 维持现状捏造值 `medium`(wire 侧历史行为,ACP 桥同款)。
 
-## 6. 验证方案
+## 5. 验证方案
 
-1. 引擎:dispositions 测试新增 `todo_reminder` 断言 omp.todo.updated payload 含 blocker;`todo_auto_clear` 断言空数组帧。
-2. 注册表:`bun run check:events` 通过(新事件名已注册)。
-3. reducer:对象帧接受、畸形帧丢弃、重复帧 NO_CHANGE 三个用例。
-4. UI 视觉:StatusRow blocked 行显示 reason 文本;blocker 缺失显示裸标记(组件测试或人工冒烟)。
-5. 全门禁:bun test / tsc 双包 / oxlint 新增类 0。
+1. 引擎:dispositions 测试 `todo_reminder` 断言 omp.todo.updated 帧含 blocker 与五态 status;`todo_auto_clear` 断言空数组帧;wire todo.updated 保持三字段(既有断言不破)。
+2. 注册表:`bun run check:events` 通过。
+3. reducer:合法帧覆盖 slot、畸形 status 整帧丢弃、重复帧 NO_CHANGE。
+4. 视觉:blocked 行显示 reason;缺失时裸标记(vitest 组件断言或冒烟)。
+5. 全门禁:bun test / tsc 双包 / oxlint 新增类 0 / check:events。
 
-## 7. 开放问题
+## 6. 开放问题
 
-无——blocker 是 SDK 已有数据,通路三段(投影/通道/渲染)均有既有先例(omp.custom.appended 的 volatile 事件、StatusRow 的状态渲染)。
+无——三段(投影/通道/渲染)均有既有先例(omp.custom.appended 的 volatile 发布、StatusRow 状态渲染、reducer case 模式)。
 
-## 8. 依赖
+## 7. 依赖
 
-无外部依赖;实施顺序建议在 11 章(结构化读取面)之前(blocker 改动小,先行验证 omp 事件新增流程)。
+无外部依赖;实施顺序建议先于 11 章(小改动先趟平 omp 事件新增流程)。
