@@ -1,9 +1,6 @@
 # omp-host 数据变形丢失问题：问题点、根因与实施计划
 
-> 状态：计划待实施（批次 1 未开工）；已完成 TUI 参照重审（见每条"TUI 裁决"）
-> 来源：2026-08-27 omp-host TypeScript 类型化后对全部变形缝的四路审计（projection / omp 事件 / domain 序列化 / UI 读取），随后按仓库不变量"SDK 用法一律对齐 TUI 语义"用 SDK 内 TUI 源码（`node_modules/@oh-my-pi/pi-coding-agent/src/modes/**` 等，18.0.4）逐条重审。类型化本身已修的四个静默 bug 见文末附录，提交 `8ac3c036`。
-> 证据基准：**语义问题以 TUI 实现为地面真相**；**wire 字段形状以 vendored OpenCode 契约为准**（TUI 无 wire 概念，两者不可混用）。
-> 门禁基线：`bun test server/lib/omp-host/` 311 pass / 0 fail；`bun run type-check` 双项目 0 错误；oxlint 新增类 0；`bun run check:events` OK。
+> 状态：**批次 1 已完成**（P1 `e043fa4c` / P2 `4c5f0b03` / P4 `390cf005` / P5 `ae766150`；门禁全绿：bun 314/0、双项目 tsc 0、oxlint 新增类 0、check:events OK、打包重编+verify 19 features）；批次 2/3 待实施；已完成 TUI 参照重审（见每条"TUI 裁决"）
 
 ## 零、四类根因
 
