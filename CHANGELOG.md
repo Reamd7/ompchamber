@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-08-27
+
+- **Terminal: one session on every device.** Terminal sessions for the same directory now sync live across tabs and connected devices: the grid is negotiated to the smallest viewport, weak connections detect dropped output and resynchronize on their own, and a status bar shows when the connection is re-establishing.
+- Terminal: per-device zoom. Buttons and Ctrl+wheel zoom each surface independently, small windows scale big-window content instead of shrinking the grid, TUIs always keep at least an 80×24 grid, and a driver indicator shows when another surface is driving the terminal.
+- Terminal: shells get OSC 133 integration injected automatically, and the terminal speaks the kitty keyboard protocol, so more keys reach TUI apps on large screens.
+- Terminal: new local tabs start a fresh shell instead of mirroring the current one.
+- Build: the terminal's ghostty-web engine now builds from this repository's own fork of ghostty-web (a submodule) instead of the published npm package.
+
 ## [1.20.1] - 2026-08-27
 - **Chat: timeline dividers mark model and mode switches.** A change of model, thinking level, or mode during a turn now inserts a divider at the point it happened, showing the model name or the mode's label, and it survives reloading the session. Which role picked the model and retry-fallback models appear in the divider's expanded detail instead of sitting next to the model name where they read like a thinking level.
 - Chat: a retried turn keeps its superseded dimming after a reload — the overlay used to disappear because only the volatile start event drew it; the durable retry record now restores it.
