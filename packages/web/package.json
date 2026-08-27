@@ -1,6 +1,6 @@
 {
   "name": "@ompchamber/web",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "private": false,
   "type": "module",
   "main": "./server/index.js",

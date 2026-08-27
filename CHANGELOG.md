@@ -4,8 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.20.1] - 2026-08-27
+
 - Branding: display names across the web app, PWA, VS Code extension, and mobile now read OMPChamber; the About and update dialogs link to this repository instead of the upstream one.
 - Setup: onboarding now installs the ompchamber CLI from this repository instead of telling you to install the OpenCode CLI, and text that called the engine OpenCode (status, restart prompts, onboarding, error messages) now says engine, translated in every language.
+- Dev: `bun run worktree` now rejects invalid branch names up front — names are checked against the git/GitHub branch rules before any worktree, branch, or port registration is created, so a bad name exits with code 2 and leaves nothing behind.
 
 ## [1.20.0] - 2026-08-26
 
