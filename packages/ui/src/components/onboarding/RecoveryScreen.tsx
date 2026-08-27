@@ -23,8 +23,6 @@ type RecoveryScreenProps = {
   onCloseRemoteForm?: () => void;
   /** Callback when switching to local from remote form */
   onSwitchToLocalFromRemote?: () => void;
-  /** Callback when entering local setup */
-  onEnterLocalSetup?: () => void;
   /** Whether retry action is in progress */
   isRetrying?: boolean;
   localAvailable?: boolean;
@@ -39,7 +37,6 @@ export function RecoveryScreen({
   showRemoteForm = false,
   onCloseRemoteForm,
   onSwitchToLocalFromRemote,
-  onEnterLocalSetup,
   isRetrying = false,
   localAvailable = true,
 }: RecoveryScreenProps) {
@@ -71,12 +68,8 @@ export function RecoveryScreen({
 
   const handleRecoveryUseLocal = React.useCallback(async () => {
     const step = resolveRecoveryNextStep(variant, 'use-local');
-    if (step.kind === 'local-setup') {
-      // local-unavailable + local → enter local-setup subflow without reload
-      onEnterLocalSetup?.();
-      return;
-    }
-    // switch-default-to-local → persist local choice and restart
+    if (step.kind !== 'switch-default-to-local') return;
+    // persist local choice and restart
     await persistFirstChoice('local');
 
     if (isDesktopShell()) {
@@ -85,7 +78,7 @@ export function RecoveryScreen({
     }
 
     window.location.reload();
-  }, [variant, persistFirstChoice, onEnterLocalSetup]);
+  }, [variant, persistFirstChoice]);
 
   const handleRecoveryUseRemote = React.useCallback(() => {
     const step = resolveRecoveryNextStep(variant, 'use-remote');
@@ -111,7 +104,7 @@ export function RecoveryScreen({
             if (isDesktopShell()) {
               restartDesktopApp();
             } else {
-              onEnterLocalSetup?.();
+              window.location.reload();
             }
           });
         })) : undefined}

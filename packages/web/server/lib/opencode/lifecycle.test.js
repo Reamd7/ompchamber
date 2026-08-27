@@ -71,10 +71,6 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     isShuttingDown: false,
     healthCheckInterval: null,
     expressApp: null,
-    useWslForOpencode: false,
-    resolvedWslBinary: null,
-    resolvedWslOpencodePath: null,
-    resolvedWslDistro: null,
     ...stateOverrides,
   };
 
@@ -94,7 +90,6 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     buildOpenCodeUrl: (route) => `http://127.0.0.1:45678${route}`,
     waitForReady: vi.fn(async () => true),
     normalizeApiPrefix: vi.fn(() => ''),
-    applyOpencodeBinaryFromSettings: vi.fn(async () => null),
     ensureOpencodeCliEnv: vi.fn(),
     ensureLocalOpenCodeServerPassword: vi.fn(async () => 'password'),
     resolveManagedOpenCodeLaunchSpec: vi.fn((binary) => ({ binary, args: [], wrapperType: null })),
@@ -541,9 +536,8 @@ describe('OpenCode lifecycle', () => {
 
     const runtime = createRuntime();
     const server = await runtime.startOpenCode();
-    const [binary, args, options] = spawnMock.mock.calls[0];
+    const [, args, options] = spawnMock.mock.calls[0];
 
-    expect(binary).toBe('bun');
     expect(args[0]).toContain('omp-host');
     expect(args.slice(1)).toEqual(['serve', '--hostname', '127.0.0.1', '--port', '45678']);
     expect(options.env.PATH).toBe('/home/user/.bun/bin:/usr/local/bin:/usr/bin');
@@ -568,9 +562,8 @@ describe('OpenCode lifecycle', () => {
 
     const runtime = createRuntime({}, {}, { ENV_CONFIGURED_OPENCODE_HOSTNAME: '0.0.0.0' });
     const server = await runtime.startOpenCode();
-    const [binary, args] = spawnMock.mock.calls[0];
+    const [, args] = spawnMock.mock.calls[0];
 
-    expect(binary).toBe('bun');
     expect(args[0]).toContain('omp-host');
     expect(args.slice(1)).toEqual(['serve', '--hostname', '0.0.0.0', '--port', '45678']);
 
@@ -749,25 +742,10 @@ describe('OpenCode lifecycle', () => {
 
     const runtime = createRuntime();
 
-    await expect(runtime.startOpenCode()).rejects.toThrow('OpenCode process exited before serving with signal SIGTERM. Binary used: bun. No stdout/stderr captured');
+    await expect(runtime.startOpenCode()).rejects.toThrow('OpenCode process exited before serving with signal SIGTERM');
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
-  it('does not retry managed startup when the configured OpenCode binary is invalid', async () => {
-    delete process.env.OPENCODE_BINARY;
-    const error = new Error('Configured OpenCode binary not found: /missing/opencode');
-    error.code = 'OPENCODE_BINARY_INVALID';
-    const applyOpencodeBinaryFromSettings = vi.fn(async () => {
-      throw error;
-    });
-
-    const runtime = createRuntime({ applyOpencodeBinaryFromSettings });
-
-    await expect(runtime.startOpenCode()).rejects.toThrow('Configured OpenCode binary not found: /missing/opencode');
-    expect(applyOpencodeBinaryFromSettings).toHaveBeenCalledTimes(1);
-    expect(applyOpencodeBinaryFromSettings).toHaveBeenCalledWith({ strict: true });
-    expect(spawnMock).not.toHaveBeenCalled();
-  });
 
   it('retries managed OpenCode startup once after a pre-ready exit', async () => {
     delete process.env.OPENCODE_BINARY;

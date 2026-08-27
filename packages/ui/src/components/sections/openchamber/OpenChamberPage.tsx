@@ -10,7 +10,6 @@ import { NotificationSettings } from './NotificationSettings';
 import { GitHubSettings } from './GitHubSettings';
 import { VoiceSettings } from './VoiceSettings';
 import { TunnelSettings } from './TunnelSettings';
-import { OpenCodeCliSettings } from './OpenCodeCliSettings';
 import { OMPChamberToolsSettings } from './OpenChamberToolsSettings';
 import { DesktopNetworkSettings } from './DesktopNetworkSettings';
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings';
@@ -53,7 +52,6 @@ export const OMPChamberPage: React.FC<OMPChamberPageProps> = ({ section }) => {
                 <OpenChamberVisualSettings />
                 <DefaultsSettings />
                 {showDesktopNetworkSettings && <DesktopNetworkSettings />}
-                {!isVSCode && <OpenCodeCliSettings />}
                 {!isVSCode && <OMPChamberToolsSettings />}
                 <SessionRetentionSettings />
                 <AppLinkSecuritySettings />
@@ -148,7 +146,6 @@ const GeneralSectionContent: React.FC = () => {
             {showDesktopNetworkSettings && <DesktopNetworkSettings />}
             {showPasskeySettings && <PasskeySettings />}
             <AppLinkSecuritySettings />
-            {!isVSCode && <OpenCodeCliSettings />}
             {!isVSCode && <OMPChamberToolsSettings />}
             <OpenChamberVisualSettings visibleSettings={[
                 'fileEditorKeymap',

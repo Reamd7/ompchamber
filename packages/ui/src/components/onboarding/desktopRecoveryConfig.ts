@@ -20,9 +20,9 @@ export type DesktopRecoveryConfig = {
   retryLabelKey?: string;
   showUseLocal: boolean;
   showUseRemote: boolean;
-  /** Label for the "use local" primary action button */
-  useLocalLabel: string;
-  useLocalLabelKey: string;
+  /** Label for the "use local" primary action button (when shown) */
+  useLocalLabel?: string;
+  useLocalLabelKey?: string;
   /** Label for the "use remote" primary action button */
   useRemoteLabel: string;
   useRemoteLabelKey: string;
@@ -50,10 +50,8 @@ export function getDesktopRecoveryConfig(
         showRetry: true,
         retryLabel: 'Retry Local',
         retryLabelKey: 'onboarding.desktopRecovery.localUnavailable.retry',
-        showUseLocal: true,
+        showUseLocal: false,
         showUseRemote: true,
-        useLocalLabel: 'Set Up Local',
-        useLocalLabelKey: 'onboarding.desktopRecovery.localUnavailable.useLocal',
         useRemoteLabel: 'Use Remote',
         useRemoteLabelKey: 'onboarding.desktopRecovery.common.useRemote',
       };

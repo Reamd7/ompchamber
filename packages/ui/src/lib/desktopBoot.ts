@@ -40,7 +40,6 @@ export type DesktopBootOutcome =
 export type DesktopBootView =
   | ({ screen: 'main' } & DesktopBootAvailability)
   | ({ screen: 'main'; hostId: string; url: string } & DesktopBootAvailability)
-  | ({ screen: 'chooser' } & DesktopBootAvailability)
   | ({ screen: 'recovery'; variant: 'local-unavailable' } & DesktopBootAvailability)
   | ({ screen: 'recovery'; variant: 'remote-unreachable'; hostId: string; url: string } & DesktopBootAvailability)
   | ({ screen: 'recovery'; variant: 'remote-incompatible'; hostId: string; url: string } & DesktopBootAvailability)
@@ -171,23 +170,26 @@ export function resolveDesktopBootView(
   }
   const availability = outcome.localAvailable === false ? { localAvailable: false } : {};
 
-  // Main screens - CLI or remote connection is working
-  if (outcome.status === 'ok') {
-    if (outcome.target === 'local') {
+  // Main screens — local engine or remote connection is working. The engine
+  // is bundled, so a not-configured first launch also lands on the local
+  // main screen; there is no setup step.
+  if (outcome.status === 'ok' || outcome.status === 'not-configured') {
+    if (outcome.target === 'local' || outcome.target === null) {
+      // A first launch whose local server never came up is an engine
+      // failure, not a setup step.
+      if (outcome.status === 'not-configured' && outcome.localAvailable === false) {
+        return { screen: 'recovery', variant: 'local-unavailable', ...availability };
+      }
       return { screen: 'main', ...availability };
     } else if (outcome.target === 'remote') {
       return { screen: 'main', hostId: outcome.hostId, url: outcome.url, ...availability };
     }
   }
 
-  // First launch - user hasn't made a choice yet
-  if (outcome.target === null && outcome.status === 'not-configured') {
-    return { screen: 'chooser', ...availability };
-  }
-
-  // Recovery screens - something is wrong
+  // Recovery screens - something is wrong. A failed local boot is a retry or
+  // remote-switch situation; there is no local setup path anymore.
   if (outcome.target === 'local' && outcome.status === 'unreachable') {
-    return { screen: 'chooser', ...availability };
+    return { screen: 'recovery', variant: 'local-unavailable', ...availability };
   }
 
   if (outcome.target === 'remote') {

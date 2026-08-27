@@ -32,7 +32,6 @@ type OMPChamberHealthSnapshot = {
 };
 
 type OMPChamberOpencodeResolution = {
-  configured?: unknown;
   resolved?: unknown;
   resolvedDir?: unknown;
   source?: unknown;
@@ -297,10 +296,6 @@ const buildOpenCodeStatusReport = async (): Promise<string> => {
       ? launchDiagnostics.args.filter((value): value is string => typeof value === 'string')
       : [];
     const openChamberOpencodeResolution = openChamberOpencodeResolutionResult.data;
-    const configured =
-      openChamberOpencodeResolution && typeof openChamberOpencodeResolution.configured === 'string'
-        ? openChamberOpencodeResolution.configured
-        : null;
     const resolved =
       openChamberOpencodeResolution && typeof openChamberOpencodeResolution.resolved === 'string'
         ? openChamberOpencodeResolution.resolved
@@ -344,9 +339,6 @@ const buildOpenCodeStatusReport = async (): Promise<string> => {
         ? openChamberOpencodeResolution.detectedSourceNow
         : '';
 
-    if (configured !== null) {
-      lines.push(`- configured: ${configured.trim().length === 0 ? '(cleared)' : configured}`);
-    }
 
     if (resolved) {
       const dir = resolvedDir || (resolved.includes('/') ? resolved.split('/').slice(0, -1).join('/') || '/' : '');

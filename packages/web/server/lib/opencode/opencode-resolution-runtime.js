@@ -2,31 +2,23 @@ export const createOpenCodeResolutionRuntime = (dependencies) => {
   const {
     path,
     resolveOpencodeCliPath,
-    applyOpencodeBinaryFromSettings,
     ensureOpencodeCliEnv,
     resolveManagedOpenCodeLaunchSpec,
     getResolvedState,
     setResolvedOpencodeBinarySource,
   } = dependencies;
 
-  const getOpenCodeResolutionSnapshot = async (settings) => {
-    const configured = typeof settings?.opencodeBinary === 'string' ? settings.opencodeBinary : null;
-
+  const getOpenCodeResolutionSnapshot = async () => {
     const { resolvedOpencodeBinarySource: previousSource } = getResolvedState();
     const detectedNow = resolveOpencodeCliPath();
     const { resolvedOpencodeBinarySource: rawDetectedSourceNow } = getResolvedState();
     setResolvedOpencodeBinarySource(previousSource);
 
-    await applyOpencodeBinaryFromSettings();
     ensureOpencodeCliEnv();
 
     const {
       resolvedOpencodeBinary,
       resolvedOpencodeBinarySource,
-      useWslForOpencode,
-      resolvedWslBinary,
-      resolvedWslOpencodePath,
-      resolvedWslDistro,
       resolvedNodeBinary,
       resolvedBunBinary,
     } = getResolvedState();
@@ -42,12 +34,11 @@ export const createOpenCodeResolutionRuntime = (dependencies) => {
       source !== 'env'
         ? source
         : rawDetectedSourceNow;
-    const launchSpec = resolved && !useWslForOpencode
+    const launchSpec = resolved
       ? resolveManagedOpenCodeLaunchSpec(resolved)
       : null;
 
     return {
-      configured,
       resolved,
       resolvedDir: resolved ? path.dirname(resolved) : null,
       source,
@@ -56,10 +47,6 @@ export const createOpenCodeResolutionRuntime = (dependencies) => {
       launchBinary: launchSpec?.binary || null,
       launchArgs: launchSpec?.args || [],
       launchWrapperType: launchSpec?.wrapperType || null,
-      viaWsl: useWslForOpencode,
-      wslBinary: resolvedWslBinary || null,
-      wslPath: resolvedWslOpencodePath || null,
-      wslDistro: resolvedWslDistro || null,
       node: resolvedNodeBinary || null,
       bun: resolvedBunBinary || null,
     };

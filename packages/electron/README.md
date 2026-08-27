@@ -117,7 +117,7 @@ Packaged Desktop builds include a self-contained omp host binary compiled from `
 Managed local Desktop startup resolves the engine in this order:
 
 1. An explicit compiled host binary: `OMPCHAMBER_OMP_HOST_BINARY`, or the bundled binary in `process.resourcesPath/omp-host`.
-2. A Bun runtime launching the host from source: `OMPCHAMBER_OMP_HOST_RUNTIME` (or `settings.opencodeBinary`, which now names the Bun runtime), then PATH.
+2. A Bun runtime launching the host from source: `OMPCHAMBER_OMP_HOST_RUNTIME`, then PATH.
 
 Use an explicit override when testing a different engine build.
 

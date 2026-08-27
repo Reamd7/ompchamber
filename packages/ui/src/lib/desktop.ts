@@ -57,8 +57,6 @@ export type DesktopSettings = {
   splashFgDark?: string;
   lastDirectory?: string;
   homeDirectory?: string;
-  // Optional absolute path to `opencode` binary.
-  opencodeBinary?: string;
   desktopLanAccessEnabled?: boolean;
   desktopKeepAwakeEnabled?: boolean;
   desktopMinimizeToTrayEnabled?: boolean;

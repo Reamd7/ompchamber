@@ -683,10 +683,6 @@ let resolvedOpencodeBinarySource = null;
 let resolvedNodeBinary = null;
 let resolvedBunBinary = null;
 let resolvedGitBinary = null;
-let useWslForOpencode = false;
-let resolvedWslBinary = null;
-let resolvedWslOpencodePath = null;
-let resolvedWslDistro = null;
 
 const openCodeEnvState = {};
 Object.defineProperties(openCodeEnvState, {
@@ -696,10 +692,6 @@ Object.defineProperties(openCodeEnvState, {
   resolvedNodeBinary: { get: () => resolvedNodeBinary, set: (value) => { resolvedNodeBinary = value; } },
   resolvedBunBinary: { get: () => resolvedBunBinary, set: (value) => { resolvedBunBinary = value; } },
   resolvedGitBinary: { get: () => resolvedGitBinary, set: (value) => { resolvedGitBinary = value; } },
-  useWslForOpencode: { get: () => useWslForOpencode, set: (value) => { useWslForOpencode = value; } },
-  resolvedWslBinary: { get: () => resolvedWslBinary, set: (value) => { resolvedWslBinary = value; } },
-  resolvedWslOpencodePath: { get: () => resolvedWslOpencodePath, set: (value) => { resolvedWslOpencodePath = value; } },
-  resolvedWslDistro: { get: () => resolvedWslDistro, set: (value) => { resolvedWslDistro = value; } },
 });
 
 const openCodeEnvRuntime = createOpenCodeEnvRuntime({
@@ -711,7 +703,6 @@ const openCodeEnvRuntime = createOpenCodeEnvRuntime({
 const applyLoginShellEnvSnapshot = (...args) => openCodeEnvRuntime.applyLoginShellEnvSnapshot(...args);
 const getLoginShellEnvSnapshot = (...args) => openCodeEnvRuntime.getLoginShellEnvSnapshot(...args);
 const ensureOpencodeCliEnv = (...args) => openCodeEnvRuntime.ensureOpencodeCliEnv(...args);
-const applyOpencodeBinaryFromSettings = (...args) => openCodeEnvRuntime.applyOpencodeBinaryFromSettings(...args);
 const resolveOpencodeCliPath = (...args) => openCodeEnvRuntime.resolveOpencodeCliPath(...args);
 const isExecutable = (...args) => openCodeEnvRuntime.isExecutable(...args);
 const searchPathFor = (...args) => openCodeEnvRuntime.searchPathFor(...args);
@@ -721,16 +712,11 @@ const clearResolvedOpenCodeBinary = (...args) => openCodeEnvRuntime.clearResolve
 const openCodeResolutionRuntime = createOpenCodeResolutionRuntime({
   path,
   resolveOpencodeCliPath,
-  applyOpencodeBinaryFromSettings,
   ensureOpencodeCliEnv,
   resolveManagedOpenCodeLaunchSpec,
   getResolvedState: () => ({
     resolvedOpencodeBinary,
     resolvedOpencodeBinarySource,
-    useWslForOpencode,
-    resolvedWslBinary,
-    resolvedWslOpencodePath,
-    resolvedWslDistro,
     resolvedNodeBinary,
     resolvedBunBinary,
   }),
@@ -1097,18 +1083,10 @@ Object.defineProperties(openCodeLifecycleState, {
   lastOpenCodeError: { get: () => lastOpenCodeError, set: (value) => { lastOpenCodeError = value; } },
   lastOpenCodeLaunchDiagnostics: { get: () => lastOpenCodeLaunchDiagnostics, set: (value) => { lastOpenCodeLaunchDiagnostics = value; } },
   lastOpenCodeHealthFailure: { get: () => lastOpenCodeHealthFailure, set: (value) => { lastOpenCodeHealthFailure = value; } },
-  lastManagedOpenCodeProcess: { get: () => lastManagedOpenCodeProcess, set: (value) => { lastManagedOpenCodeProcess = value; } },
-  lastOpenCodeRestartDiagnostics: { get: () => lastOpenCodeRestartDiagnostics, set: (value) => { lastOpenCodeRestartDiagnostics = value; } },
-  isOpenCodeReady: { get: () => isOpenCodeReady, set: (value) => { isOpenCodeReady = value; } },
-  openCodeNotReadySince: { get: () => openCodeNotReadySince, set: (value) => { openCodeNotReadySince = value; } },
   isExternalOpenCode: { get: () => isExternalOpenCode, set: (value) => { isExternalOpenCode = value; } },
   isShuttingDown: { get: () => isShuttingDown, set: (value) => { isShuttingDown = value; } },
   healthCheckInterval: { get: () => healthCheckInterval, set: (value) => { healthCheckInterval = value; } },
   expressApp: { get: () => expressApp, set: (value) => { expressApp = value; } },
-  useWslForOpencode: { get: () => useWslForOpencode, set: (value) => { useWslForOpencode = value; } },
-  resolvedWslBinary: { get: () => resolvedWslBinary, set: (value) => { resolvedWslBinary = value; } },
-  resolvedWslOpencodePath: { get: () => resolvedWslOpencodePath, set: (value) => { resolvedWslOpencodePath = value; } },
-  resolvedWslDistro: { get: () => resolvedWslDistro, set: (value) => { resolvedWslDistro = value; } },
 });
 
 const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
@@ -1126,7 +1104,6 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   buildOpenCodeUrl,
   waitForReady,
   normalizeApiPrefix,
-  applyOpencodeBinaryFromSettings,
   ensureOpencodeCliEnv,
   ensureLocalOpenCodeServerPassword,
   resolveManagedOpenCodeLaunchSpec,
@@ -1681,7 +1658,7 @@ async function main(options = {}) {
     serverStartedAt,
     gracefulShutdown,
     getHealthSnapshot: () => {
-      const launchSpec = resolvedOpencodeBinary && !useWslForOpencode
+      const launchSpec = resolvedOpencodeBinary
         ? resolveManagedOpenCodeLaunchSpec(resolvedOpencodeBinary)
         : null;
       return {
@@ -1702,10 +1679,6 @@ async function main(options = {}) {
         opencodeLaunchBinary: launchSpec?.binary || null,
         opencodeLaunchArgs: launchSpec?.args || [],
         opencodeLaunchWrapperType: launchSpec?.wrapperType || null,
-        opencodeViaWsl: useWslForOpencode,
-        opencodeWslBinary: resolvedWslBinary || null,
-        opencodeWslPath: resolvedWslOpencodePath || null,
-        opencodeWslDistro: resolvedWslDistro || null,
         nodeBinaryResolved: resolvedNodeBinary || null,
         bunBinaryResolved: resolvedBunBinary || null,
         desktopNotifyEnabled: ENV_DESKTOP_NOTIFY,
