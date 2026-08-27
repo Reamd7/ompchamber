@@ -238,6 +238,29 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     expect(raised[1].payload).toEqual({ level: 'info', message: 'fyi', source: 'hub' });
   });
 
+  test('thinking/model events omit null fields instead of emitting JSON null', async () => {
+    const h = await harness();
+    // Clear: no thinkingLevel in the event → no thinkingLevel key in the payload.
+    h.emit({ type: 'thinking_level_changed', configured: 'medium' });
+    const cleared = h.ompOf('omp.thinking.changed').at(-1);
+    expect('thinkingLevel' in cleared.payload).toBe(false);
+    expect(cleared.payload.configured).toBe('medium');
+
+    h.emit({ type: 'thinking_level_changed', thinkingLevel: 'high' });
+    expect(h.ompOf('omp.thinking.changed').at(-1).payload.thinkingLevel).toBe('high');
+
+    // Unset session model → no model key (invalidate + refetch semantics;
+    // JSON null would fail the UI schema and drop the frame).
+    h.session.model = null;
+    h.emit({ type: 'model_changed' });
+    const noModel = h.ompOf('omp.model.changed').at(-1);
+    expect('model' in noModel.payload).toBe(false);
+
+    h.session.model = { provider: 'p1', id: 'm1' };
+    h.emit({ type: 'model_changed' });
+    expect(h.ompOf('omp.model.changed').at(-1).payload.model).toEqual({ provider: 'p1', id: 'm1' });
+  });
+
   test('todo_auto_clear emits an empty todo.updated', async () => {
     const h = await harness();
     h.emit({ type: 'todo_auto_clear' });

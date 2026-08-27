@@ -1791,15 +1791,15 @@ export class OmpHostEngine {
         });
         const info = this.#wireSessionFromLive(hostSession);
         this.bus.emit('session.updated', { sessionID: sessionId, info }, directory);
-        this.#ompPublish(
-          hostSession,
-          'omp.model.changed',
-          {
-            model: session.model ? { provider: session.model.provider, id: session.model.id } : null,
-            ...(session.thinkingLevel !== undefined ? { thinkingLevel: session.thinkingLevel } : {})
-          },
-          { durable: true }
-        );
+        this.#ompPublish(hostSession, 'omp.model.changed', {
+          // Model omitted when unset: the upstream event is payload-less and
+          // the TUI re-reads session.model (invalidate + refetch semantics);
+          // a JSON null would fail the UI schema and drop the whole frame.
+          ...(session.model
+            ? { model: { provider: session.model.provider, id: session.model.id } }
+            : {}),
+          ...(session.thinkingLevel !== undefined ? { thinkingLevel: session.thinkingLevel } : {}),
+        }, { durable: true });
         return;
       }
       case 'ttsr_triggered': {
@@ -1818,16 +1818,13 @@ export class OmpHostEngine {
         return;
       }
       case 'thinking_level_changed': {
-        this.#ompPublish(
-          hostSession,
-          'omp.thinking.changed',
-          {
-            thinkingLevel: event.thinkingLevel ?? null,
-            ...(event.configured !== undefined ? { configured: event.configured } : {}),
-            ...(event.resolved !== undefined ? { resolved: event.resolved } : {})
-          },
-          { durable: true }
-        );
+        // thinkingLevel omitted on clear (SDK contract: ThinkingLevel |
+        // undefined; the TUI falls back to Off/inherited) — never JSON null.
+        this.#ompPublish(hostSession, 'omp.thinking.changed', {
+          ...(event.thinkingLevel !== undefined ? { thinkingLevel: event.thinkingLevel } : {}),
+          ...(event.configured !== undefined ? { configured: event.configured } : {}),
+          ...(event.resolved !== undefined ? { resolved: event.resolved } : {}),
+        }, { durable: true });
         return;
       }
       case 'goal_updated': {

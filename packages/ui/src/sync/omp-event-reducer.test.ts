@@ -195,6 +195,23 @@ describe('applyOmpEvent — model/fallback/mode/goal/thinking', () => {
     expect(draft.goal.ses_1?.state?.mode).toBe('exiting');
     expect(draft.goal.ses_1?.state?.goal).toMatchObject({ status: 'dropped' });
   });
+
+  test('thinking.changed without the thinkingLevel key clears the stored level', () => {
+    const draft = state();
+    applyOmpEvent(draft, envelope({
+      id: 1, type: 'omp.thinking.changed', sessionID: 'ses_1',
+      payload: { thinkingLevel: 'high', configured: 'high' },
+    }));
+    expect(draft.thinking.ses_1?.thinkingLevel).toBe('high');
+    // Key-absent frame = explicit clear (SDK ThinkingLevel | undefined),
+    // not "keep the previous value".
+    applyOmpEvent(draft, envelope({
+      id: 2, type: 'omp.thinking.changed', sessionID: 'ses_1',
+      payload: { configured: 'medium' },
+    }));
+    expect(draft.thinking.ses_1?.thinkingLevel).toBeUndefined();
+    expect(draft.thinking.ses_1?.configured).toBe('medium');
+  });
 });
 
 describe('applyOmpEvent — effects', () => {

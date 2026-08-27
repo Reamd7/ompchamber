@@ -685,7 +685,12 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = ThinkingChangedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const existing = draft.thinking[sessionID];
-      const thinkingLevel = payload.data.thinkingLevel || existing?.thinkingLevel;
+      // Key presence, not truthiness: an absent thinkingLevel key is the
+      // explicit clear (SDK ThinkingLevel|undefined; TUI falls back to Off)
+      // and must wipe the stored level instead of keeping the stale one.
+      const thinkingLevel = 'thinkingLevel' in payload.data
+        ? payload.data.thinkingLevel
+        : undefined;
       const configured = payload.data.configured || existing?.configured;
       const resolved = payload.data.resolved || existing?.resolved;
       if (
