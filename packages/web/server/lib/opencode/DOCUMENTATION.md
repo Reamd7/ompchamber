@@ -155,12 +155,11 @@ Managed health failures are classified as `timeout`, `connection_refused`, `conn
 
 ## Public exports (env-runtime.js)
 - `createOpenCodeEnvRuntime(dependencies)`: creates runtime that owns OpenCode CLI environment and binary discovery state.
-- OpenCode CLI resolution order is persisted settings, environment overrides, bundled Desktop CLI when available, PATH, known install locations, then platform shell discovery.
+- omp host runtime resolution order is environment overrides (`OMPCHAMBER_OMP_HOST_RUNTIME`, legacy `OPENCODE_BINARY`), bundled Desktop CLI when available, PATH, known install locations, then platform shell discovery. There is no persisted settings override.
 - Returned API:
   - `applyLoginShellEnvSnapshot()`
   - `getLoginShellEnvSnapshot()`
   - `ensureOpencodeCliEnv()`
-  - `applyOpencodeBinaryFromSettings()`
   - `resolveOpencodeCliPath()`
   - `resolveManagedOpenCodeLaunchSpec(opencodePath)`: resolves the effective managed OpenCode launch target, unwrapping Windows package-manager shims to a direct native binary or explicit runtime+script when possible.
   - `resolveGitBinaryForSpawn()`
@@ -345,7 +344,7 @@ Managed health failures are classified as `timeout`, `connection_refused`, `conn
 ## Public exports (opencode-resolution-runtime.js)
 - `createOpenCodeResolutionRuntime(dependencies)`: creates runtime for OpenCode binary/source snapshot resolution.
 - Returned API:
-  - `getOpenCodeResolutionSnapshot(settings)`: returns configured/resolved OpenCode binary details plus effective managed-launch fields (`launchBinary`, `launchArgs`, `launchWrapperType`) when applicable.
+  - `getOpenCodeResolutionSnapshot()`: returns the resolved omp host runtime details plus effective managed-launch fields (`launchBinary`, `launchArgs`, `launchWrapperType`) when applicable.
 
 ## Public exports (tunnel-wiring-runtime.js)
 - `createTunnelWiringRuntime(dependencies)`: creates runtime for tunnel service construction and tunnel route registration.

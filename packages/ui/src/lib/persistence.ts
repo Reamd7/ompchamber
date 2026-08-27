@@ -1068,10 +1068,6 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
     result.homeDirectory = candidate.homeDirectory;
   }
 
-  if (typeof candidate.opencodeBinary === 'string') {
-    const trimmed = candidate.opencodeBinary.trim();
-    result.opencodeBinary = trimmed.length > 0 ? trimmed : undefined;
-  }
   if (typeof candidate.desktopLanAccessEnabled === 'boolean') {
     result.desktopLanAccessEnabled = candidate.desktopLanAccessEnabled;
   }

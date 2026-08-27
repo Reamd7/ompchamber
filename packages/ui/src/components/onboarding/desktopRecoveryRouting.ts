@@ -3,7 +3,6 @@ import type { RecoveryVariant } from './desktopRecoveryConfig';
 export type RecoveryPrimaryAction = 'use-local' | 'use-remote';
 
 export type RecoveryNextStep =
-  | { kind: 'local-setup' }
   | { kind: 'switch-default-to-local' }
   | { kind: 'remote-form' };
 
@@ -18,7 +17,6 @@ export function resolveRecoveryNextStep(
   // action === 'use-local'
   switch (variant) {
     case 'local-unavailable':
-      return { kind: 'local-setup' };
     case 'remote-unreachable':
     case 'remote-incompatible':
     case 'remote-wrong-service':

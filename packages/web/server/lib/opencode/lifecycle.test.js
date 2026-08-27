@@ -71,10 +71,6 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     isShuttingDown: false,
     healthCheckInterval: null,
     expressApp: null,
-    useWslForOpencode: false,
-    resolvedWslBinary: null,
-    resolvedWslOpencodePath: null,
-    resolvedWslDistro: null,
     ...stateOverrides,
   };
 
@@ -94,7 +90,6 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     buildOpenCodeUrl: (route) => `http://127.0.0.1:45678${route}`,
     waitForReady: vi.fn(async () => true),
     normalizeApiPrefix: vi.fn(() => ''),
-    applyOpencodeBinaryFromSettings: vi.fn(async () => null),
     ensureOpencodeCliEnv: vi.fn(),
     ensureLocalOpenCodeServerPassword: vi.fn(async () => 'password'),
     resolveManagedOpenCodeLaunchSpec: vi.fn((binary) => ({ binary, args: [], wrapperType: null })),
@@ -753,21 +748,6 @@ describe('OpenCode lifecycle', () => {
     expect(spawnMock).toHaveBeenCalledTimes(2);
   });
 
-  it('does not retry managed startup when the configured OpenCode binary is invalid', async () => {
-    delete process.env.OPENCODE_BINARY;
-    const error = new Error('Configured OpenCode binary not found: /missing/opencode');
-    error.code = 'OPENCODE_BINARY_INVALID';
-    const applyOpencodeBinaryFromSettings = vi.fn(async () => {
-      throw error;
-    });
-
-    const runtime = createRuntime({ applyOpencodeBinaryFromSettings });
-
-    await expect(runtime.startOpenCode()).rejects.toThrow('Configured OpenCode binary not found: /missing/opencode');
-    expect(applyOpencodeBinaryFromSettings).toHaveBeenCalledTimes(1);
-    expect(applyOpencodeBinaryFromSettings).toHaveBeenCalledWith({ strict: true });
-    expect(spawnMock).not.toHaveBeenCalled();
-  });
 
   it('retries managed OpenCode startup once after a pre-ready exit', async () => {
     delete process.env.OPENCODE_BINARY;

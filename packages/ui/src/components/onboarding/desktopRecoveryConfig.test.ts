@@ -3,19 +3,18 @@ import { getDesktopRecoveryConfig } from './desktopRecoveryConfig';
 
 describe('getDesktopRecoveryConfig', () => {
   // ---------------------------------------------------------------------------
-  // 1. local-unavailable: both actions visible + retry labeled "Retry Local"
+  // 1. local-unavailable: retry + use-remote; no local-setup exit anymore
   // ---------------------------------------------------------------------------
-  test('local-unavailable exposes both actions and Retry Local', () => {
+  test('local-unavailable exposes retry and remote switch only', () => {
     const config = getDesktopRecoveryConfig('local-unavailable');
 
     expect(config.title).toBe('Local Engine Unavailable');
     expect(config.iconKey).toBe('local');
     expect(config.showRetry).toBe(true);
     expect(config.retryLabel).toBe('Retry Local');
-    expect(config.showUseLocal).toBe(true);
+    expect(config.showUseLocal).toBe(false);
     expect(config.showUseRemote).toBe(true);
-    // local-unavailable uses setup-oriented label since local needs installing
-    expect(config.useLocalLabel).toBe('Set Up Local');
+    expect(config.useLocalLabel).toBe(undefined);
     expect(config.useRemoteLabel).toBe('Use Remote');
   });
 

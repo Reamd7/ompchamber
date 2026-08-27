@@ -677,7 +677,6 @@ export interface SettingsPayload {
   darkThemeId?: string;
   lastDirectory?: string;
   homeDirectory?: string;
-  opencodeBinary?: string;
   projects?: ProjectEntry[];
   activeProjectId?: string;
   sidebarProjectDisplayMode?: 'all' | 'single';

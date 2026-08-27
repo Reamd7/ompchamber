@@ -8,13 +8,22 @@ import {
 } from './desktopBoot';
 
 describe('resolveDesktopBootView', () => {
-  test('returns chooser for first launch (not-configured)', () => {
+  test('returns main for first launch (not-configured)', () => {
     expect(
       resolveDesktopBootView({
         isDesktopShell: true,
         bootOutcome: { target: null, status: 'not-configured' },
       }),
-    ).toEqual({ screen: 'chooser' });
+    ).toEqual({ screen: 'main' });
+  });
+
+  test('returns local-unavailable recovery for first launch with a dead local server', () => {
+    expect(
+      resolveDesktopBootView({
+        isDesktopShell: true,
+        bootOutcome: { target: null, status: 'not-configured', localAvailable: false },
+      }),
+    ).toEqual({ screen: 'recovery', variant: 'local-unavailable', localAvailable: false });
   });
 
   test('returns recovery view for broken saved remote', () => {
@@ -98,22 +107,22 @@ describe('resolveDesktopBootView', () => {
     ).toEqual({ screen: 'recovery', variant: 'remote-incompatible', hostId: 'old-host', url: 'https://old.test' });
   });
 
-  test('returns chooser for local unreachable', () => {
+  test('returns local-unavailable recovery for local unreachable', () => {
     expect(
       resolveDesktopBootView({
         isDesktopShell: true,
         bootOutcome: { target: 'local', status: 'unreachable' },
       }),
-    ).toEqual({ screen: 'chooser' });
+    ).toEqual({ screen: 'recovery', variant: 'local-unavailable' });
   });
 
-  test('returns remote-only chooser when local runtime is disabled', () => {
+  test('keeps localAvailable false on local-unavailable recovery', () => {
     expect(
       resolveDesktopBootView({
         isDesktopShell: true,
         bootOutcome: { target: 'local', status: 'unreachable', localAvailable: false },
       }),
-    ).toEqual({ screen: 'chooser', localAvailable: false });
+    ).toEqual({ screen: 'recovery', variant: 'local-unavailable', localAvailable: false });
   });
 
   test('returns recovery view for remote missing', () => {

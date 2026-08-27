@@ -21,17 +21,15 @@ import { usePwaInstallPrompt } from '@/hooks/usePwaInstallPrompt';
 import { useWindowTitle } from '@/hooks/useWindowTitle';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { hasModifier } from '@/lib/utils';
-import { isDesktopLocalOriginActive, isDesktopShell, restartDesktopApp, invokeDesktop } from '@/lib/desktop';
+import { isDesktopShell, invokeDesktop } from '@/lib/desktop';
 import {
   getInjectedBootOutcome,
   getBootInjectionStatus,
   resolveDesktopBootView,
   canDismissInitialLoading,
-  shouldRestartDesktopBootFlow,
   type BootInjectionStatus,
   type DesktopBootView,
 } from '@/lib/desktopBoot';
-import type { RecoveryVariant } from '@/components/onboarding/DesktopConnectionRecovery';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { markSessionViewed } from '@/sync/notification-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
@@ -68,8 +66,8 @@ import { useAppFontEffects } from '@/apps/useAppFontEffects';
 import { markStartupTrace, startupTraceEnabled } from '@/lib/startupTrace';
 
 // Lazy-loaded heavy views — loaded on demand to reduce initial bundle size.
-const OnboardingScreen = lazyWithChunkRecovery(() =>
-  import('@/components/onboarding/OnboardingScreen').then((m) => ({ default: m.OnboardingScreen })),
+const RecoveryScreen = lazyWithChunkRecovery(() =>
+  import('@/components/onboarding/RecoveryScreen').then((m) => ({ default: m.RecoveryScreen })),
 );
 
 const AboutDialogWrapper: React.FC = () => {
@@ -268,6 +266,7 @@ function App({ apis }: AppProps) {
       : null;
   });
   const appReadyDispatchedRef = React.useRef(false);
+  const [recoveryRemoteFormOpen, setRecoveryRemoteFormOpen] = React.useState(false);
   const embeddedSessionChat = React.useMemo<EmbeddedSessionChatConfig | null>(() => readEmbeddedSessionChatConfig(), []);
   const embeddedBackgroundWorkEnabled = !embeddedSessionChat || isEmbeddedVisible;
   const isMcpOAuthCallback = React.useMemo(() => isMcpOAuthCallbackPath(), []);
@@ -825,18 +824,6 @@ function App({ apis }: AppProps) {
     };
   }, [isDesktopRuntime, bootInjectionStatus]);
 
-  const handleDesktopBootDismiss = React.useCallback(async () => {
-    if (shouldRestartDesktopBootFlow({
-      isDesktopShell: isDesktopShell(),
-      isDesktopLocalOriginActive: isDesktopLocalOriginActive(),
-    })) {
-      await restartDesktopApp();
-      return;
-    }
-
-    window.location.reload();
-  }, []);
-
   const handleManualInitRetry = React.useCallback(async () => {
     if (manualInitRetrying) return;
 
@@ -853,53 +840,25 @@ function App({ apis }: AppProps) {
     }
   }, [manualInitRetrying]);
 
-  // Map boot outcome kind to recovery variant
-  const mapBootViewToRecoveryVariant = (view: DesktopBootView): RecoveryVariant | undefined => {
-    if (view.screen === 'recovery') {
-      return view.variant;
-    }
-    return undefined;
-  };
 
-  // Desktop boot view routing.
-  // When the boot outcome resolves to a non-main screen (chooser, recovery),
-  // render OnboardingScreen with appropriate mode/variant.
-  if (isDesktopRuntime && bootView && bootView.screen !== 'main') {
-    // First-launch chooser
-    if (bootView.screen === 'chooser') {
-      return (
-        <ErrorBoundary>
-          <div className="h-full text-foreground bg-background">
-            <React.Suspense fallback={<div className="h-full" />}>
-              <OnboardingScreen
-                mode="first-launch"
-                localAvailable={bootView.localAvailable !== false}
-                onCliAvailable={handleDesktopBootDismiss}
-                onChooseRemote={() => {
-                  // Switch to remote tab - handled internally by OnboardingScreen
-                }}
-              />
-            </React.Suspense>
-          </div>
-        </ErrorBoundary>
-      );
-    }
-
-    // Recovery screens
-    const recoveryVariant = mapBootViewToRecoveryVariant(bootView);
-    const hostUrl = bootView.screen === 'recovery' && 'url' in bootView ? bootView.url : undefined;
+  // Desktop boot view routing: a failed boot renders the recovery screen.
+  // First launch needs no setup — the engine is bundled — so every healthy
+  // outcome lands on main.
+  if (isDesktopRuntime && bootView && bootView.screen === 'recovery') {
+    const hostUrl = 'url' in bootView ? bootView.url : undefined;
 
     return (
       <ErrorBoundary>
         <div className="h-full text-foreground bg-background">
           <React.Suspense fallback={<div className="h-full" />}>
-            <OnboardingScreen
-              mode="recovery"
-              recoveryVariant={recoveryVariant}
-              recoveryHostUrl={hostUrl}
-              recoveryHostLabel={undefined}
+            <RecoveryScreen
+              variant={bootView.variant}
+              hostUrl={hostUrl}
+              onChooseRemote={() => setRecoveryRemoteFormOpen(true)}
+              showRemoteForm={recoveryRemoteFormOpen}
+              onCloseRemoteForm={() => setRecoveryRemoteFormOpen(false)}
+              onSwitchToLocalFromRemote={() => setRecoveryRemoteFormOpen(false)}
               localAvailable={bootView.localAvailable !== false}
-              onCliAvailable={handleDesktopBootDismiss}
             />
           </React.Suspense>
         </div>

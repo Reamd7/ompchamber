@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Setup: first launch now opens the app directly.** The engine ships inside the app, so the startup screen that told you to install a CLI is gone; if the local engine still fails to start, you get a retry screen instead of setup instructions.
+- Settings: the "OpenCode CLI" section is gone from the OMPChamber settings page — the engine is bundled with the app and there is no CLI path to configure.
+
 ## [1.21.0] - 2026-08-27
 
 - **Terminal: one session on every device.** Terminal sessions for the same directory now sync live across tabs and connected devices: the grid is negotiated to the smallest viewport, weak connections detect dropped output and resynchronize on their own, and a status bar shows when the connection is re-establishing.
@@ -19,7 +22,6 @@ All notable changes to this project will be documented in this file.
 - Branding: display names across the web app, PWA, VS Code extension, and mobile now read OMPChamber; the About and update dialogs link to this repository instead of the upstream one.
 - Setup: onboarding now installs the ompchamber CLI from this repository instead of telling you to install the OpenCode CLI, and text that called the engine OpenCode (status, restart prompts, onboarding, error messages) now says engine, translated in every language.
 - Dev: `bun run worktree` now rejects invalid branch names up front — names are checked against the git/GitHub branch rules before any worktree, branch, or port registration is created, so a bad name exits with code 2 and leaves nothing behind.
-
 ## [1.20.0] - 2026-08-26
 
 - **Data directory:** settings and stored data now live in `~/.config/ompchamber` instead of `~/.config/openchamber`. The old directory is not migrated — back it up and copy anything you need before upgrading; the `OMPCHAMBER_DATA_DIR` environment variable still overrides the location.

@@ -95,7 +95,6 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     buildOpenCodeUrl,
     waitForReady,
     normalizeApiPrefix,
-    applyOpencodeBinaryFromSettings,
     ensureOpencodeCliEnv,
     ensureLocalOpenCodeServerPassword,
     resolveManagedOpenCodeLaunchSpec,
@@ -665,7 +664,6 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         : `Starting OpenCode on allocated port ${spawnPort}...`
     );
 
-    await applyOpencodeBinaryFromSettings({ strict: true });
     ensureOpencodeCliEnv();
     recordStartupPerformance('opencode.binary.ready', {
       attempt,
@@ -766,9 +764,6 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         return await startOpenCodeOnce(attempt);
       } catch (error) {
         lastError = error;
-        if (error?.code === 'OPENCODE_BINARY_INVALID') {
-          break;
-        }
         if (attempt >= START_OPEN_CODE_MAX_ATTEMPTS) {
           break;
         }
@@ -988,7 +983,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
 
     console.log(`Refreshing OpenCode after ${reason}`);
     clearResolvedOpenCodeBinary();
-    await applyOpencodeBinaryFromSettings();
+
 
     await restartOpenCode(reason || 'config-change');
 

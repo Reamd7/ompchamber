@@ -97,10 +97,6 @@ const createRuntime = (settings, options = {}) => {
     cachedLoginShellEnvSnapshot: null,
     resolvedOpencodeBinary: null,
     resolvedOpencodeBinarySource: null,
-    useWslForOpencode: false,
-    resolvedWslBinary: null,
-    resolvedWslOpencodePath: null,
-    resolvedWslDistro: null,
     resolvedNodeBinary: null,
     resolvedBunBinary: null,
     managedOpenCodeShellEnvSnapshot: null,
@@ -127,7 +123,9 @@ describe('OpenCode env runtime', () => {
     process.env.PATH = defaultDir;
     const { runtime } = createRuntime({});
 
-    expect(runtime.searchPathFor('custom-shell', explicitDir)).toBe(binary);
+    // Windows PATHEXT spellings vary per machine (`.EXE` vs `.exe`) while the
+    // filesystem is case-insensitive, so compare the resolved path loosely.
+    expect(runtime.searchPathFor('custom-shell', explicitDir)?.toLowerCase()).toBe(binary.toLowerCase());
     expect(process.env.PATH).toBe(defaultDir);
   });
 
@@ -168,37 +166,6 @@ describe('OpenCode env runtime', () => {
     }
   });
 
-  it('throws a specific error for a missing configured OpenCode binary in strict mode', async () => {
-    const { runtime } = createRuntime({ opencodeBinary: '/missing/opencode' });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
-      code: 'OPENCODE_BINARY_INVALID',
-      message: expect.stringContaining('Configured OpenCode binary not found: /missing/opencode'),
-    });
-  });
-
-  it('throws a specific error for a configured directory without an executable CLI in strict mode', async () => {
-    const dir = createTempDir('ompchamber-opencode-dir-');
-    const { runtime } = createRuntime({ opencodeBinary: dir });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
-      code: 'OPENCODE_BINARY_INVALID',
-      message: expect.stringContaining('Configured OpenCode binary directory does not contain an executable'),
-    });
-  });
-
-  it('applies a valid configured executable OpenCode binary', async () => {
-    const dir = createTempDir('ompchamber-opencode-bin-');
-    const binary = path.join(dir, 'opencode');
-    fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n');
-    fs.chmodSync(binary, 0o755);
-    const { runtime, state } = createRuntime({ opencodeBinary: binary });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).resolves.toBe(binary);
-    expect(process.env.OPENCODE_BINARY).toBe(binary);
-    expect(state.resolvedOpencodeBinary).toBe(binary);
-    expect(state.resolvedOpencodeBinarySource).toBe('settings');
-  });
 
   it('resolves the omp host runtime (bun) from PATH', () => {
     const pathDir = createTempDir('ompchamber-path-bun-');
@@ -264,29 +231,6 @@ describe('OpenCode env runtime', () => {
     expect(state.resolvedOpencodeBinarySource).toBeNull();
   });
 
-  itIf(process.platform === 'darwin')('rejects known macOS OpenCode app bundle executable paths', async () => {
-    const { runtime } = createRuntime({ opencodeBinary: '/Applications/OpenCode.app/Contents/MacOS/OpenCode' });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
-      code: 'OPENCODE_BINARY_INVALID',
-      message: expect.stringContaining('macOS desktop app bundle'),
-    });
-  });
-
-  it('rejects known Windows OpenCode desktop app install paths', async () => {
-    setPlatform('win32');
-    const localAppData = createTempDir('ompchamber-localappdata-');
-    const desktopBinary = path.join(localAppData, 'Programs', 'OpenCode', 'OpenCode.exe');
-    fs.mkdirSync(path.dirname(desktopBinary), { recursive: true });
-    fs.writeFileSync(desktopBinary, '');
-    process.env.LOCALAPPDATA = localAppData;
-    const { runtime } = createRuntime({ opencodeBinary: desktopBinary });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
-      code: 'OPENCODE_BINARY_INVALID',
-      message: expect.stringContaining('Windows desktop app install'),
-    });
-  });
 
   it('does not auto-detect the Windows OpenCode desktop app as a runtime', () => {
     setPlatform('win32');
@@ -324,19 +268,6 @@ describe('OpenCode env runtime', () => {
     expect(state.resolvedOpencodeBinarySource).toBe('path');
   });
 
-  it('rejects WSL settings in strict mode', async () => {
-    setPlatform('win32');
-    const dir = createTempDir('ompchamber-no-wsl-');
-    process.env.PATH = dir;
-    process.env.SystemRoot = dir;
-    process.env.WSL_BINARY = path.join(dir, 'missing-wsl.exe');
-    process.env.OMPCHAMBER_WSL_BINARY = path.join(dir, 'missing-ompchamber-wsl.exe');
-    const { runtime } = createRuntime({ opencodeBinary: 'wsl:/usr/local/bin/opencode' });
-
-    await expect(runtime.applyOpencodeBinaryFromSettings({ strict: true })).rejects.toMatchObject({
-      message: expect.stringContaining('uses WSL'),
-    });
-  });
 
   it('does not auto-detect OpenCode from WSL fallback paths', () => {
     setPlatform('win32');
@@ -362,9 +293,6 @@ describe('OpenCode env runtime', () => {
     const { runtime, state } = createRuntime({}, { spawnSync: spawnSyncMock, homedir: () => createTempDir('ompchamber-empty-home-') });
 
     expect(runtime.resolveOpencodeCliPath()).toBeNull();
-    expect(state.useWslForOpencode).toBe(false);
-    expect(state.resolvedWslBinary).toBeNull();
-    expect(state.resolvedWslOpencodePath).toBeNull();
     expect(state.resolvedOpencodeBinarySource).toBeNull();
 
     const wslCall = calls.find((call) => call.command === wslBinary);

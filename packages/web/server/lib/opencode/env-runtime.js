@@ -9,7 +9,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
   const {
     state,
     normalizeDirectoryPath,
-    readSettingsFromDiskMigrated,
   } = deps;
   const runSpawnSync = typeof deps.spawnSync === 'function' ? deps.spawnSync : spawnSync;
   const resolveHomeDir = typeof deps.homedir === 'function' ? deps.homedir : () => os.homedir();
@@ -258,12 +257,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
     process.env.PATH = mergePathValues(shellPath, currentPath, path.delimiter);
   };
 
-  const isWslExecutableValue = (value) => {
-    if (typeof value !== 'string') return false;
-    const trimmed = value.trim();
-    if (!trimmed) return false;
-    return /(^|[\\/])wsl(\.exe)?$/i.test(trimmed);
-  };
 
   const isWindowsOpenCodeDesktopAppPath = (candidate) => {
     if (process.platform !== 'win32' || typeof candidate !== 'string') {
@@ -326,17 +319,10 @@ export const createOpenCodeEnvRuntime = (deps) => {
   const bundledOpenCodeCliFallback = () => {
     const bundled = resolveBundledOpenCodeCliPath();
     if (!bundled) return null;
-    clearWslOpencodeResolution();
     state.resolvedOpencodeBinarySource = 'bundled';
     return bundled;
   };
 
-  const clearWslOpencodeResolution = () => {
-    state.useWslForOpencode = false;
-    state.resolvedWslBinary = null;
-    state.resolvedWslOpencodePath = null;
-    state.resolvedWslDistro = null;
-  };
 
   // Strip a single wrapping quote pair (Windows "Copy as path" and quoted
   // shell snippets) — literal quotes are never part of a real path and break
@@ -837,159 +823,15 @@ export const createOpenCodeEnvRuntime = (deps) => {
     }
   };
 
-  const isMacOpenCodeAppBundlePath = (candidate) => {
-    if (process.platform !== 'darwin' || typeof candidate !== 'string') {
-      return false;
-    }
-    return /\/OpenCode(?: Dev| Beta)?\.app\/Contents\/MacOS\/(?:OpenCode(?: Dev| Beta)?|opencode-cli)$/i.test(candidate);
-  };
-
-  const isKnownOpenCodeDesktopAppPath = (candidate) => isMacOpenCodeAppBundlePath(candidate)
-    || isWindowsOpenCodeDesktopAppPath(candidate);
-
-  const createConfiguredOpencodeBinaryError = (raw, normalized) => {
-    const configured = typeof raw === 'string' ? raw.trim() : '';
-    const candidate = typeof normalized === 'string' && normalized.trim().length > 0 ? normalized.trim() : configured;
-    const messageSuffix = 'OMPChamber needs the standalone opencode CLI. Install it and set settings.opencodeBinary to the CLI path, for example ~/.opencode/bin/opencode, or leave the setting empty to use PATH lookup.';
-    const error = (() => {
-      if (isKnownOpenCodeDesktopAppPath(candidate) || isKnownOpenCodeDesktopAppPath(configured)) {
-        const platformName = process.platform === 'win32' ? 'Windows desktop app install' : 'macOS desktop app bundle';
-        return new Error(`Configured OpenCode binary points at the ${platformName}, not the CLI: ${candidate}. ${messageSuffix}`);
-      }
-
-      try {
-        const configuredStat = fs.statSync(configured);
-        if (configuredStat.isDirectory()) {
-          return new Error(`Configured OpenCode binary directory does not contain an executable ${process.platform === 'win32' ? 'opencode.exe' : 'opencode'}: ${configured}. ${messageSuffix}`);
-        }
-      } catch {
-      }
-
-      try {
-        const stat = fs.statSync(candidate);
-        if (stat.isDirectory()) {
-          return new Error(`Configured OpenCode binary directory does not contain an executable ${process.platform === 'win32' ? 'opencode.exe' : 'opencode'}: ${candidate}. ${messageSuffix}`);
-        }
-        if (!stat.isFile()) {
-          return new Error(`Configured OpenCode binary is not a file: ${candidate}. ${messageSuffix}`);
-        }
-        return new Error(`Configured OpenCode binary is not executable: ${candidate}. ${messageSuffix}`);
-      } catch {
-        return new Error(`Configured OpenCode binary not found: ${candidate}. ${messageSuffix}`);
-      }
-    })();
-    error.code = 'OPENCODE_BINARY_INVALID';
-    return error;
-  };
-
-  const createConfiguredWslOpencodeError = (raw) => new Error(
-    `Configured settings.opencodeBinary uses WSL but OMPChamber could not resolve a WSL OpenCode command: ${raw}. Ensure WSL is available and opencode is installed in the configured distro.`
-  );
-
-  const normalizeOpencodeBinarySetting = (raw) => {
-    if (typeof raw !== 'string') {
-      return null;
-    }
-    const trimmed = normalizeDirectoryPath(raw).trim();
-    if (!trimmed) {
-      return '';
-    }
-
-    try {
-      const stat = fs.statSync(trimmed);
-      if (stat.isDirectory()) {
-        const bin = process.platform === 'win32' ? 'bun.exe' : 'bun';
-        return path.join(trimmed, bin);
-      }
-    } catch {
-    }
-
-    return trimmed;
-  };
-
-  const applyOpencodeBinaryFromSettings = async (options = {}) => {
-    const strict = options?.strict === true;
-    try {
-      const settings = await readSettingsFromDiskMigrated();
-      if (!settings || typeof settings !== 'object') {
-        return null;
-      }
-      if (!Object.prototype.hasOwnProperty.call(settings, 'opencodeBinary')) {
-        return null;
-      }
-
-      const normalized = normalizeOpencodeBinarySetting(settings.opencodeBinary);
-
-      if (normalized === '') {
-        delete process.env.OPENCODE_BINARY;
-        state.resolvedOpencodeBinary = null;
-        state.resolvedOpencodeBinarySource = null;
-        clearWslOpencodeResolution();
-        return null;
-      }
-
-      const raw = typeof settings.opencodeBinary === 'string' ? settings.opencodeBinary.trim() : '';
-      const explicitWslPath = process.platform === 'win32' && typeof raw === 'string'
-        ? raw.match(/^wsl:\s*(.+)$/i)
-        : null;
-
-      if (explicitWslPath && explicitWslPath[1] && explicitWslPath[1].trim().length > 0) {
-        clearWslOpencodeResolution();
-        if (strict) {
-          throw createConfiguredWslOpencodeError(raw);
-        }
-        console.warn(`Configured settings.opencodeBinary uses WSL, which is no longer supported by OMPChamber desktop: ${raw}`);
-        return null;
-      }
-
-      if (process.platform === 'win32' && (isWslExecutableValue(raw) || isWslExecutableValue(normalized || ''))) {
-        clearWslOpencodeResolution();
-        if (strict) {
-          throw createConfiguredWslOpencodeError(raw);
-        }
-        console.warn(`Configured settings.opencodeBinary points to WSL, which is no longer supported by OMPChamber desktop: ${raw}`);
-        return null;
-      }
-
-      if (normalized && isExecutable(normalized) && !isKnownOpenCodeDesktopAppPath(normalized)) {
-        clearWslOpencodeResolution();
-        // The setting now names the runtime that launches the managed omp
-        // host (Bun); OPENCODE_BINARY stays in sync for child-env snapshots.
-        process.env.OMPCHAMBER_OMP_HOST_RUNTIME = normalized;
-        process.env.OPENCODE_BINARY = normalized;
-        prependToPath(path.dirname(normalized));
-        state.resolvedOpencodeBinary = normalized;
-        state.resolvedOpencodeBinarySource = 'settings';
-        return normalized;
-      }
-
-      if (raw) {
-        if (strict) {
-          throw createConfiguredOpencodeBinaryError(raw, normalized);
-        }
-        console.warn(`Configured settings.opencodeBinary is not executable: ${raw}`);
-      }
-    } catch (error) {
-      if (strict) {
-        throw error;
-      }
-    }
-
-    return null;
-  };
 
   const ensureOpencodeCliEnv = () => {
     if (state.resolvedOpencodeBinary) {
-      if (state.useWslForOpencode) {
-        return state.resolvedOpencodeBinary;
-      }
       ensureOpencodeShimRuntime(state.resolvedOpencodeBinary);
       return state.resolvedOpencodeBinary;
     }
 
     const existing = typeof process.env.OPENCODE_BINARY === 'string' ? process.env.OPENCODE_BINARY.trim() : '';
     if (existing && isExecutable(existing)) {
-      clearWslOpencodeResolution();
       state.resolvedOpencodeBinary = existing;
       state.resolvedOpencodeBinarySource = state.resolvedOpencodeBinarySource || 'env';
       prependToPath(path.dirname(existing));
@@ -999,13 +841,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
 
     const resolved = resolveOpencodeCliPath();
     if (resolved) {
-      if (state.useWslForOpencode) {
-        state.resolvedOpencodeBinary = resolved;
-        state.resolvedOpencodeBinarySource = state.resolvedOpencodeBinarySource || 'wsl';
-        console.log(`Resolved opencode CLI via WSL: ${state.resolvedWslOpencodePath || 'opencode'}`);
-        return resolved;
-      }
-
       process.env.OPENCODE_BINARY = resolved;
       prependToPath(path.dirname(resolved));
       ensureOpencodeShimRuntime(resolved);
@@ -1015,7 +850,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
       return resolved;
     }
 
-    clearWslOpencodeResolution();
     return null;
   };
 
@@ -1095,7 +929,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
   return {
     applyLoginShellEnvSnapshot,
     ensureOpencodeCliEnv,
-    applyOpencodeBinaryFromSettings,
     getLoginShellEnvSnapshot,
     resolveOpencodeCliPath,
     isBundledOpenCodeCliPath,

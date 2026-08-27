@@ -467,13 +467,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => ctx.isDesktopLocalOrigin,
   },
   {
-    id: 'sessions.opencode-binary',
-    page: 'general',
-    titleKey: 'settings.ompchamber.opencodeCli.field.binaryPath',
-    keywords: ['opencode', 'cli', 'binary', 'path'],
-    isAvailable: (ctx) => !ctx.isVSCode,
-  },
-  {
     id: 'sessions.agent-control-tool',
     page: 'general',
     titleKey: 'settings.ompchamber.tools.field.agentControlTool',

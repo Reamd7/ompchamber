@@ -3,7 +3,6 @@ import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
 export const createSettingsHelpers = (dependencies) => {
   const {
     normalizePathForPersistence,
-    normalizeDirectoryPath,
     normalizeTunnelBootstrapTtlMs,
     normalizeTunnelSessionTtlMs,
     normalizeTunnelProvider,
@@ -174,13 +173,6 @@ export const createSettingsHelpers = (dependencies) => {
       }
     }
 
-    // Absolute path to the opencode CLI binary (optional override).
-    // Accept empty-string to clear (we persist an empty string sentinel so the running
-    // process can reliably drop a previously applied OPENCODE_BINARY override).
-    if (typeof candidate.opencodeBinary === 'string') {
-      const normalized = normalizeDirectoryPath(candidate.opencodeBinary).trim();
-      result.opencodeBinary = normalized;
-    }
     if (typeof candidate.workStatusPanelEnabled === 'boolean') {
       result.workStatusPanelEnabled = candidate.workStatusPanelEnabled;
     }

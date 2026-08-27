@@ -10,7 +10,7 @@ import type { RecoveryVariant } from './desktopRecoveryConfig';
 // ---------------------------------------------------------------------------
 const EXPECTED_ROUTING: Record<RecoveryVariant, Record<RecoveryPrimaryAction, RecoveryNextStep['kind']>> = {
   'local-unavailable': {
-    'use-local': 'local-setup',
+    'use-local': 'switch-default-to-local',
     'use-remote': 'remote-form',
   },
   'remote-unreachable': {
