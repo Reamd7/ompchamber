@@ -9,7 +9,8 @@ import {
 } from './terminal-ws-protocol.js';
 import { sanitizeTerminalHistoryChunk } from './history.js';
 import { consumeTerminalThemeQueries, terminalThemeModeReport } from './theme-response.js';
-import { Osc133Scanner } from './shell-integration.js';
+import { Osc133Scanner, buildZshOsc133Wrapper, buildBashOsc133Rc } from './shell-integration.js';
+import * as osModule from 'node:os';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
 
@@ -71,12 +72,70 @@ export function createTerminalRuntime({
         // AppImage exports ARGV0; zsh would otherwise rewrite argv[0] for every command (#2588).
         // bun-pty also merges the native OS environ, so wrap with `env -u ARGV0` on Linux.
         stripAppImageArgv0Leak(env);
-        const launch = resolveLinuxPtyLaunch(executable, args);
+        const shellIntegration = injectShellIntegration({ shellId: resolvedShell.id, executable, args, env, loginShell });
+        const launch = resolveLinuxPtyLaunch(executable, shellIntegration ? shellIntegration.args : args);
         const options = { name: 'xterm-256color', cwd, cols, rows, env, ...(process.platform === 'win32' ? { useConpty: true } : {}) };
-        return { process: provider.spawn(launch.executable, launch.args, options), backend: provider.backend, shell: resolvedShell.id, loginShell };
+        const process_ = provider.spawn(launch.executable, launch.args, options);
+        if (shellIntegration) shellIntegration.scheduleCleanup();
+        return { process: process_, backend: provider.backend, shell: resolvedShell.id, loginShell };
       } catch (error) { lastError = error; }
     }
     throw lastError ?? new Error('No executable shell found');
+  };
+
+  /**
+   * OSC 133 shell-integration injection: emit command-boundary markers so the
+   * runtime can publish command-finished events (unread badges, OSC 133
+   * consumers). zsh gets a temporary ZDOTDIR whose .zshenv hands control back
+   * to the user's config immediately; bash gets an --rcfile that chains into
+   * the user's bashrc. Injection is best-effort: skipped on Windows, for
+   * login shells, when the injected fs lacks sync writes (tests), or when the
+   * user opts out via OMPCHAMBER_NO_SHELL_INTEGRATION.
+   * @returns {{ args: string[], scheduleCleanup: () => void } | null}
+   */
+  const injectShellIntegration = ({ shellId, executable, args, env, loginShell }) => {
+    if (process.platform === 'win32') return null;
+    if (loginShell) return null;
+    if (process.env.OMPCHAMBER_NO_SHELL_INTEGRATION === '1') return null;
+    if (!fs?.writeFileSync || !fs?.mkdtempSync || !fs?.rmSync) return null;
+    if (!path?.join) return null;
+    const os = osModule?.tmpdir ? osModule : null;
+    if (!os) return null;
+    const home = env.HOME || '/root';
+    let wrapperFile = null;
+    try {
+      if (shellId === 'zsh' && !env.ZDOTDIR) {
+        const zdotdir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-zdot-'));
+        wrapperFile = zdotdir;
+        fs.writeFileSync(path.join(zdotdir, '.zshenv'), buildZshOsc133Wrapper(home));
+        env.ZDOTDIR = zdotdir;
+        return {
+          args,
+          scheduleCleanup: () => {
+            const timer = setTimeout(() => { try { fs.rmSync(zdotdir, { recursive: true, force: true }); } catch { /* already gone */ } }, 60_000);
+            timer.unref?.();
+          },
+        };
+      }
+      if (shellId === 'bash') {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-bash-'));
+        const rcfile = path.join(dir, 'oc-bashrc');
+        wrapperFile = dir;
+        fs.writeFileSync(rcfile, buildBashOsc133Rc(path.join(home, '.bashrc')));
+        return {
+          args: ['--rcfile', rcfile, '-i', ...args],
+          scheduleCleanup: () => {
+            const timer = setTimeout(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* already gone */ } }, 60_000);
+            timer.unref?.();
+          },
+        };
+      }
+    } catch {
+      // Best-effort: a failed injection must never block the spawn.
+      if (wrapperFile) { try { fs.rmSync(wrapperFile, { recursive: true, force: true }); } catch { /* ignore */ } }
+      return null;
+    }
+    return null;
   };
 
   const killProcess = (ptyProcess, force = false) => {
@@ -361,10 +420,9 @@ export function createTerminalRuntime({
           send(socket, { t: 'error', v: 3, s: id, code: 'NOT_ATTACHED', message: 'Attach before claiming the viewport', fatal: false });
           return;
         }
-        const cols = typeof message.cols === 'number' ? Math.max(1, Math.min(message.cols, 1000)) : session.cols;
-        const rows = typeof message.rows === 'number' ? Math.max(1, Math.min(message.rows, 500)) : session.rows;
+        const cols = Number.isFinite(message.cols) ? Math.max(1, Math.min(message.cols, 1000)) : session.cols;
+        const rows = Number.isFinite(message.rows) ? Math.max(1, Math.min(message.rows, 500)) : session.rows;
         session.viewportDriver = { connectionId: connection.connectionId, cols, rows };
-        // recomputeGrid's DRIVEN branch publishes driverChanged when the size
         // changes; only broadcast explicitly for the same-size claim.
         if (cols === session.cols && rows === session.rows) broadcastDriverChanged(session);
         else recomputeGrid(session);
