@@ -8,6 +8,15 @@ cd openchamber
 bun install
 ```
 
+The terminal emulator (`ghostty-web`) is a git submodule tracking the
+`Reamd7/ghostty-web` fork's `terminal-enhancer` branch. `bun install`
+initializes it automatically via the root `preinstall` script; to pull the
+latest fork changes into the pin:
+
+```bash
+git submodule update --remote references/ghostty-web
+```
+
 ## Dev Scripts
 
 Run commands from the project root unless a section says otherwise.

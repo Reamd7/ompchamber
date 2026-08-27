@@ -45,6 +45,7 @@
     "clean": "bun run --filter '*' clean",
     "changelog-card": "node scripts/changelog-card/generate.mjs",
     "check:events": "node scripts/check-event-coverage.mjs",
+    "preinstall": "node ./scripts/ensure-submodules.mjs",
     "postinstall": "node ./fix-deprecation.js && patch-package && node ./packages/electron/scripts/ensure-electron.mjs --best-effort && node ./scripts/install-git-hooks.mjs",
     "dev:web": "bun run --cwd packages/web build:watch",
     "dev:web:server": "bun run --cwd packages/web dev:server:watch",
