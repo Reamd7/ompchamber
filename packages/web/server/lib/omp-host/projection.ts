@@ -1035,6 +1035,20 @@ export const projectAssistantMessage = (
         text: block.thinking ?? '',
         time: { start: message.timestamp, end: message.timestamp }
       });
+    } else if (block.type === 'image' && typeof block.data === 'string') {
+      // Assistant-attached images project as wire file parts in content
+      // order (TUI assistant-message.ts:815-818 renders them interleaved);
+      // the user-message projector uses the identical shape.
+      const mime = block.mimeType || 'image/png';
+      pushPart({
+        id: partId(id, seq++),
+        sessionID,
+        messageID: id,
+        type: 'file',
+        mime,
+        url: `data:${mime};base64,${block.data}`,
+        time: { start: message.timestamp },
+      });
     } else if (block.type === 'toolCall') {
       const result = toolResults.get(block.id);
       const input = safeJson(block.arguments);

@@ -222,6 +222,23 @@ describe('projection', () => {
     expect('total' in (withoutTotalMessage.info.tokens ?? {})).toBe(false);
   });
 
+  test('assistant image blocks project as interleaved file parts', () => {
+    const projected = projectConversation(
+      [
+        userMessage('show me'),
+        assistantMessage([
+          { type: 'text', text: 'here is the chart:' },
+          { type: 'image', data: 'iVBOR', mimeType: 'image/png' },
+          { type: 'text', text: 'and done' },
+        ]),
+      ],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    const [, assistant] = projected;
+    expect(assistant.parts[2].mime).toBe('image/png');
+    expect(assistant.parts[2].url).toContain('data:image/png;base64,iVBOR');
+  });
+
   test('message ids are deterministic across repeated projections', () => {
     const messages = [userMessage('stable'), assistantMessage([{ type: 'text', text: 'reply' }])];
     const a = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
