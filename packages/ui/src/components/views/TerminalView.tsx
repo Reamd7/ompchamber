@@ -1110,6 +1110,43 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                     <Icon name={isSelfDriver ? 'fullscreen-exit' : 'fullscreen'} className="h-4 w-4" />
                                 </Button>
                             ) : null}
+                            {terminalSessionId ? (
+                                <div className="flex shrink-0 items-center">
+                                    <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0"
+                                        onClick={() => setTerminalFontSize(terminalFontSize - 1)}
+                                        disabled={terminalFontSize <= 9}
+                                        title={t('terminalView.actions.zoomOut')}
+                                        aria-label={t('terminalView.actions.zoomOut')}
+                                    >
+                                        <Icon name="subtract" className="h-4 w-4" />
+                                    </Button>
+                                    <button
+                                        type="button"
+                                        className="h-7 min-w-9 px-1 text-xs text-muted-foreground hover:text-foreground cursor-pointer tabular-nums"
+                                        onClick={() => setTerminalFontSize(14)}
+                                        title={t('terminalView.actions.zoomReset')}
+                                        aria-label={t('terminalView.actions.zoomReset')}
+                                    >
+                                        {terminalFontSize}px
+                                    </button>
+                                    <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0"
+                                        onClick={() => setTerminalFontSize(terminalFontSize + 1)}
+                                        disabled={terminalFontSize >= 52}
+                                        title={t('terminalView.actions.zoomIn')}
+                                        aria-label={t('terminalView.actions.zoomIn')}
+                                    >
+                                        <Icon name="add" className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            ) : null}
                             <Button type="button" size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => void handleRestart()} disabled={isRestarting} title={t('terminalView.actions.restart')} aria-label={t('terminalView.actions.restart')}>
                                 <Icon name="restart" className="h-4 w-4" />
                             </Button>

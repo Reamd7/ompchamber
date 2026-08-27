@@ -289,6 +289,16 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       const fitAddon = new module.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(container);
+      // Ctrl+wheel terminal zoom: ghostty's capture-phase wheel handler
+      // stopPropagation()s normal wheels, so the only reliable hook is its
+      // custom handler. Return true to claim ctrl-wheels for font zoom;
+      // everything else falls through to ghostty's scroll handling.
+      terminal.attachCustomWheelEventHandler((event) => {
+        if (!event.ctrlKey) return false;
+        const next = Math.round(fontSize + (event.deltaY < 0 ? 1 : -1));
+        if (next >= 9 && next <= 52) onZoomFontSize?.(next);
+        return true;
+      });
       terminalRef.current = terminal;
       fitRef.current = fitAddon;
       subscriptions = [terminal.onData((data) => inputRef.current(data))];
@@ -765,6 +775,8 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       container.removeEventListener('pointercancel', cancel);
     };
   }, [enableTouchScroll, fontSize, onZoomFontSize, ready]);
+
+
 
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
