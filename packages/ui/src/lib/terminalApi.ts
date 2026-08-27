@@ -78,6 +78,7 @@ export class TerminalTransport {
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly viewports = new Map<string, { cols: number; rows: number }>();
+  private connectionId: string | null = null;
   private failures = 0;
   private wakeCleanup: (() => void) | null = null;
   private generation = 0;
@@ -257,10 +258,14 @@ export class TerminalTransport {
       }
     }
   }
-
   private async handleMessage(raw: unknown): Promise<void> {
     const message = await decode(raw);
-    if (!message || message.t === 'hello' || message.t === 'pong') return;
+    if (!message) return;
+    if (message.t === 'hello') {
+      if (typeof message.connectionId === 'string') this.connectionId = message.connectionId;
+      return;
+    }
+    if (message.t === 'pong') return;
     if (message.t === 'error') {
       const error = new Error(typeof message.message === 'string' ? message.message : 'Terminal error') as TerminalError;
       if (typeof message.code === 'string') error.code = message.code;
@@ -285,6 +290,24 @@ export class TerminalTransport {
       for (const sub of subscribers) {
         sub.lastSequence = projection.sequence;
         sub.handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
+      }
+      return;
+    }
+    // driverChanged may arrive without q (sent directly during attach, not via publish)
+    if (message.t === 'driverChanged') {
+      // Frames sent via publish() consume a sequence number; track it so the
+      // next output frame isn't misread as a gap.
+      const previous = this.projections.get(message.s);
+      if (previous && typeof message.q === 'number' && message.q > previous.sequence) {
+        this.projections.set(message.s, { ...previous, sequence: message.q });
+      }
+      for (const sub of subscribers) {
+        sub.handlers.onEvent({
+          type: 'driverChanged',
+          driverId: typeof message.driverId === 'string' ? message.driverId : null,
+          cols: typeof message.cols === 'number' ? message.cols : undefined,
+          rows: typeof message.rows === 'number' ? message.rows : undefined,
+        });
       }
       return;
     }
@@ -345,6 +368,16 @@ export class TerminalTransport {
     this.viewports.set(sessionId, { cols, rows });
     this.send({ t: 'viewport', v: 3, s: sessionId, cols, rows });
   }
+
+  claimViewport(sessionId: string, cols: number, rows: number): void {
+    this.send({ t: 'claimViewport', v: 3, s: sessionId, cols, rows });
+  }
+
+  releaseViewport(sessionId: string): void {
+    this.send({ t: 'releaseViewport', v: 3, s: sessionId });
+  }
+
+  get ownConnectionId(): string | null { return this.connectionId; }
 
   private send(message: Message): boolean {
     if (!this.socket || this.socket.readyState !== SOCKET_OPEN) return false;
@@ -434,6 +467,9 @@ export async function listTerminalShells(): Promise<TerminalShellOption[]> {
 export function connectTerminalStream(sessionId: string, onEvent: TerminalHandlers['onEvent'], onError?: TerminalHandlers['onError']): () => void { return transport.subscribe(sessionId, { onEvent, onError }); }
 export async function sendTerminalInput(sessionId: string, data: string): Promise<void> { await transport.write(sessionId, data); }
 export function sendTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.sendViewport(sessionId, cols, rows); }
+export function claimTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.claimViewport(sessionId, cols, rows); }
+export function releaseTerminalViewport(sessionId: string): void { transport.releaseViewport(sessionId); }
+export function getTerminalConnectionId(): string | null { return transport.ownConnectionId; }
 
 async function command(path: string, method: string, body?: unknown): Promise<Response> {
   const options: RequestInit = { method };

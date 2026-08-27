@@ -20,7 +20,7 @@ import { extractTerminalPreviewUrl, isTerminalPreviewUrlAvailable } from '@/lib/
 import { useI18n } from '@/lib/i18n';
 import { PROJECT_ACTION_ICON_MAP, type ProjectActionIconKey } from '@/lib/projectActions';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
-import { sendTerminalViewport } from '@/lib/terminalApi';
+import { sendTerminalViewport, claimTerminalViewport, releaseTerminalViewport, getTerminalConnectionId } from '@/lib/terminalApi';
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 
 type TerminalViewProps = {
@@ -37,6 +37,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     terminalAppearanceRef.current = { themeMode: currentTheme.metadata.variant === 'light' ? 'light' : 'dark', terminalBackground: currentTheme.colors.surface.background, terminalForeground: currentTheme.colors.syntax.base.foreground };
     const { monoFont } = useFontPreferences();
     const terminalFontSize = useUIStore(state => state.terminalFontSize);
+    const setTerminalFontSize = useUIStore(state => state.setTerminalFontSize);
     const terminalShell = useUIStore(state => state.terminalShell);
     const terminalLoginShell = useUIStore(state => state.terminalLoginShells.includes(state.terminalShell));
     const { isMobile, isTablet, hasTouchOnlyPointer } = useDeviceInfo();
@@ -112,6 +113,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const [isReconnectPending, setIsReconnectPending] = React.useState(false);
     const [activeModifier, setActiveModifier] = React.useState<Modifier | null>(null);
     const [isRestarting, setIsRestarting] = React.useState(false);
+    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
 
     const streamCleanupRef = React.useRef<(() => void) | null>(null);
     const activeTerminalIdRef = React.useRef<string | null>(null);
@@ -192,8 +194,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const disconnectStream = React.useCallback(() => {
         streamCleanupRef.current?.();
         streamCleanupRef.current = null;
-        activeTerminalIdRef.current = null;
-        setIsReconnectPending(false);
     }, []);
 
     React.useEffect(
@@ -255,8 +255,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                 return;
             }
 
-            disconnectStream();
-
             // Mark active before connect so early events aren't dropped.
             activeTerminalIdRef.current = terminalId;
 
@@ -303,6 +301,21 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 if (typeof event.cols === 'number' && typeof event.rows === 'number') {
                                     terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
                                 }
+                                break;
+                            }
+                            case 'driverChanged': {
+                                // Viewport driver model: the driver (or min-size
+                                // arbitration after release) set the PTY grid.
+                                // Follow it; TerminalViewport CSS-scales if the
+                                // grid is wider than this container.
+                                if (typeof event.cols === 'number' && typeof event.rows === 'number') {
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                }
+                                setDriverState({
+                                    driverId: event.driverId ?? null,
+                                    cols: event.cols ?? null,
+                                    rows: event.rows ?? null,
+                                });
                                 break;
                             }
                             case 'command-finished': {
@@ -412,13 +425,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                     ? t('terminalView.empty.noWorkingDirectory')
                     : t('terminalView.empty.selectSession')
             );
-            disconnectStream();
             return;
         }
 
+        const directory = effectiveDirectory;
         const ensureSession = async () => {
-            const directory = effectiveDirectory;
             if (!directoryRef.current || directoryRef.current !== directory) return;
+
 
             const existingState = useTerminalStore.getState().getDirectoryState(directory);
             if (!existingState) {
@@ -767,6 +780,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         [isTerminalVisible]
     );
 
+    const isSelfDriver = Boolean(driverState?.driverId && driverState.driverId === getTerminalConnectionId());
+    const handleToggleDriver = React.useCallback(() => {
+        const terminalId = terminalIdRef.current;
+        if (!terminalId) return;
+        if (driverState?.driverId && driverState.driverId === getTerminalConnectionId()) {
+            releaseTerminalViewport(terminalId);
+            return;
+        }
+        const size = lastViewportSizeRef.current;
+        if (size) claimTerminalViewport(terminalId, size.cols, size.rows);
+    }, [driverState]);
+
     const handleModifierToggle = React.useCallback(
         (modifier: Modifier) => {
             setActiveModifier((current) => (current === modifier ? null : modifier));
@@ -1071,6 +1096,20 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         </Button>
 
                         <div className="flex shrink-0 items-center gap-1 overflow-visible">
+                            {terminalSessionId ? (
+                                <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="ghost"
+                                    className={cn('h-7 w-7 p-0', isSelfDriver && 'bg-accent text-accent-foreground')}
+                                    onClick={handleToggleDriver}
+                                    title={isSelfDriver ? t('terminalView.actions.releaseControl') : t('terminalView.actions.takeControl')}
+                                    aria-label={isSelfDriver ? t('terminalView.actions.releaseControl') : t('terminalView.actions.takeControl')}
+                                    aria-pressed={isSelfDriver}
+                                >
+                                    <Icon name={isSelfDriver ? 'fullscreen-exit' : 'fullscreen'} className="h-4 w-4" />
+                                </Button>
+                            ) : null}
                             <Button type="button" size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => void handleRestart()} disabled={isRestarting} title={t('terminalView.actions.restart')} aria-label={t('terminalView.actions.restart')}>
                                 <Icon name="restart" className="h-4 w-4" />
                             </Button>
@@ -1136,6 +1175,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             theme={xtermTheme}
                             fontFamily={resolvedFontStack}
                             fontSize={terminalFontSize}
+                            onZoomFontSize={setTerminalFontSize}
                             enableTouchScroll={useTouchTerminalInput}
                             autoFocus={isTerminalVisible}
                             isVisible={isTerminalVisible}

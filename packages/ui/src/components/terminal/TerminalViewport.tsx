@@ -102,13 +102,14 @@ type Props = {
   fontSize: number;
   className?: string;
   enableTouchScroll?: boolean;
+  /** Pinch-to-zoom snap target: called with the new integer fontSize. */
+  onZoomFontSize?: (fontSize: number) => void;
   autoFocus?: boolean;
   isVisible?: boolean;
 };
-
 const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   sessionKey, chunks, onInput, onResize, theme, fontFamily, fontSize, className,
-  enableTouchScroll = false, autoFocus = true, isVisible = true,
+  enableTouchScroll = false, onZoomFontSize, autoFocus = true, isVisible = true,
 }, ref) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const terminalRef = React.useRef<GhosttyTerminal | null>(null);
@@ -145,6 +146,29 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   // Server-negotiated grid from multi-device min-size arbitration. When set,
   // fit() clamps to it so a large viewport doesn't fight the server's resize.
   const negotiatedGridRef = React.useRef<{ cols: number; rows: number } | null>(null);
+  // Driver-follow scaling: when the negotiated grid (set by the driver
+  // device's viewport) is wider than this container, CSS-scale the canvas
+  // down so the full grid stays visible. All gesture math is ratio-based
+  // against the canvas rect, so the transform doesn't break cell mapping.
+  const driverScaleRef = React.useRef(1);
+  const applyDriverScale = React.useCallback(() => {
+    const container = containerRef.current;
+    const canvas = container?.querySelector('canvas');
+    if (!container || !canvas) return;
+    const naturalWidth = canvas.offsetWidth;
+    const containerWidth = container.clientWidth;
+    if (naturalWidth <= 0 || containerWidth <= 0) return;
+    const scale = Math.min(1, containerWidth / naturalWidth);
+    driverScaleRef.current = scale;
+    if (scale >= 0.999) {
+      canvas.style.transform = '';
+      canvas.style.transformOrigin = '';
+    } else {
+      canvas.style.transform = `scale(${scale})`;
+      canvas.style.transformOrigin = 'top left';
+    }
+  }, []);
+
 
   const fit = React.useCallback(() => {
     const container = containerRef.current;
@@ -169,12 +193,10 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         lastSizeRef.current = next;
         resizeRef.current(next.cols, next.rows);
       }
-      if (!rendererReadyRef.current) {
-        rendererReadyRef.current = true;
-        setReady((value) => value + 1);
-      }
+      requestAnimationFrame(() => applyDriverScale());
     } catch { /* hidden or detached */ }
-  }, []);
+  }, [applyDriverScale]);
+
 
   const flush = React.useCallback(() => {
     if (writingRef.current || !writeQueueRef.current || !terminalRef.current) return;
@@ -233,6 +255,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     let disposed = false;
     let terminal: GhosttyTerminal | null = null;
     let observer: ResizeObserver | null = null;
+    let canvasObserver: ResizeObserver | null = null;
     let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
     let fitFrame: number | null = null;
     let subscriptions: Array<{ dispose: () => void }> = [];
@@ -274,7 +297,14 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         resizeTimeout = setTimeout(fit, 80);
       });
       observer.observe(container);
-      fit();
+      // Canvas-resize observer: the ghostty canvas resizes asynchronously
+      // after terminal.resize(), so driver-follow scaling must re-run when
+      // the canvas layout size actually settles (not just on requestAnimationFrame).
+      const canvas = container.querySelector('canvas');
+      if (canvas) {
+        canvasObserver = new ResizeObserver(() => applyDriverScale());
+        canvasObserver.observe(canvas);
+      }
       const safeReset = safeResetRef.current;
       if (safeReset) terminal.write(`${safeReset}\u001b[2J\u001b[H`);
       fitFrame = requestAnimationFrame(fit);
@@ -297,6 +327,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         }
       }
       observer?.disconnect();
+      canvasObserver?.disconnect();
       if (resizeTimeout) clearTimeout(resizeTimeout);
       if (fitFrame !== null) cancelAnimationFrame(fitFrame);
       container.removeEventListener('focusin', handleFocusIn);
@@ -399,7 +430,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     // becomes wheel events instead of a second pointer gesture.
     let wheelPointerId: number | null = null;
     let longPressTimeout: ReturnType<typeof setTimeout> | null = null;
-    type Gesture = 'idle' | 'pending' | 'scrolling' | 'selecting' | 'app-press' | 'app-wheel';
+    type Gesture = 'idle' | 'pending' | 'scrolling' | 'selecting' | 'app-press' | 'app-wheel' | 'pinch';
     let gesture: Gesture = 'idle';
     let startX = 0;
     let startY = 0;
@@ -411,6 +442,33 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     let appX = 0;
     let appY = 0;
     let wheelBaseY = 0;
+    // Pinch-to-zoom: transient CSS preview during the gesture; snap to an
+    // integer fontSize on release so cellWidth changes drive renegotiation.
+    const pinchPointers = new Map<number, { x: number; y: number }>();
+    let pinchBaseDistance = 0;
+    let pinchScale = 1;
+    const pinchFontBase = fontSize;
+    const applyPinchPreview = () => {
+      const canvas = container.querySelector('canvas');
+      if (!canvas) return;
+      const total = driverScaleRef.current * pinchScale;
+      if (Math.abs(total - 1) < 0.001) {
+        canvas.style.transform = '';
+      } else {
+        canvas.style.transform = `scale(${total})`;
+        canvas.style.transformOrigin = 'top left';
+      }
+    };
+    const finishPinch = () => {
+      pinchPointers.clear();
+      pinchBaseDistance = 0;
+      const snapped = Math.round(pinchFontBase * pinchScale);
+      pinchScale = 1;
+      applyDriverScale();
+      if (snapped !== pinchFontBase && snapped >= 9 && snapped <= 52) {
+        onZoomFontSize?.(snapped);
+      }
+    };
     const lineHeight = Math.max(12, fontSize + 2);
     // Android WebView only raises the soft keyboard for a native tap-focus; the
     // pointer-captured, touch-action:none tap here focuses programmatically, so
@@ -502,7 +560,22 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         gesture = 'app-wheel';
         return;
       }
-      if (pointerId !== null) return;
+      if (pointerId !== null) {
+        // Second finger outside application mode → pinch-to-zoom.
+        if (gesture !== 'app-press' && gesture !== 'app-wheel' && event.pointerId !== pointerId) {
+          clearLongPress();
+          if (gesture === 'selecting') finishSelection();
+          pinchPointers.set(pointerId, { x: startX, y: startY });
+          pinchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          const [a, b] = [...pinchPointers.values()];
+          pinchBaseDistance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+          pinchScale = 1;
+          try { container.releasePointerCapture(pointerId); } catch { /* already released */ }
+          pointerId = null;
+          gesture = 'pinch';
+        }
+        return;
+      }
       pointerId = event.pointerId;
       startX = event.clientX;
       startY = event.clientY;
@@ -550,6 +623,21 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
             dispatchAppWheel(lines);
             remainder -= lines * lineHeight;
           }
+        }
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+
+      if (gesture === 'pinch') {
+        const tracked = pinchPointers.get(event.pointerId);
+        if (!tracked) return;
+        tracked.x = event.clientX;
+        tracked.y = event.clientY;
+        const [a, b] = [...pinchPointers.values()];
+        if (pinchPointers.size >= 2) {
+          const distance = Math.hypot(a.x - b.x, a.y - b.y);
+          pinchScale = Math.max(0.4, Math.min(3, distance / pinchBaseDistance));
+          applyPinchPreview();
         }
         if (event.cancelable) event.preventDefault();
         return;
@@ -609,6 +697,15 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         return;
       }
 
+      if (gesture === 'pinch') {
+        pinchPointers.delete(event.pointerId);
+        if (pinchPointers.size <= 1) {
+          gesture = 'idle';
+          finishPinch();
+        }
+        return;
+      }
+
       if (pointerId !== event.pointerId) return;
       const shouldFocus = gesture === 'pending';
       const shouldFinishSelection = gesture === 'selecting';
@@ -635,6 +732,15 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
           pointerId = null;
         }
         if (wheelPointerId === null && pointerId === null) gesture = 'idle';
+      }
+
+      if (gesture === 'pinch') {
+        pinchPointers.delete(event.pointerId);
+        if (pinchPointers.size <= 1) {
+          gesture = 'idle';
+          pinchScale = 1;
+          applyDriverScale();
+        }
         return;
       }
 
@@ -658,7 +764,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       container.removeEventListener('pointerup', up);
       container.removeEventListener('pointercancel', cancel);
     };
-  }, [enableTouchScroll, fontSize, ready]);
+  }, [enableTouchScroll, fontSize, onZoomFontSize, ready]);
 
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
@@ -667,8 +773,12 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       const terminal = terminalRef.current;
       if (!terminal) return;
       negotiatedGridRef.current = { cols, rows };
-      if (terminal.cols === cols && terminal.rows === rows) return;
+      if (terminal.cols === cols && terminal.rows === rows) {
+        requestAnimationFrame(() => applyDriverScale());
+        return;
+      }
       terminal.resize(cols, rows);
+      requestAnimationFrame(() => applyDriverScale());
     },
     getSelection: () => {
       const terminal = terminalRef.current;
@@ -677,7 +787,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       if (!range || !text.trim()) return null;
       return { text, startLine: range.start.y + 1, endLine: range.end.y + 1 };
     },
-  }), [fit]);
+  }), [fit, applyDriverScale]);
 
   return (
     <div

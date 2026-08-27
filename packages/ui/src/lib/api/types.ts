@@ -47,7 +47,7 @@ export interface TerminalShellOption {
 }
 
 export interface TerminalStreamEvent {
-  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized' | 'command-finished';
+  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized' | 'command-finished' | 'driverChanged';
   sequence?: number;
   data?: string;
   replayData?: string;
@@ -58,6 +58,7 @@ export interface TerminalStreamEvent {
   maxAttempts?: number;
   cols?: number;
   rows?: number;
+  driverId?: string | null;
 
   runtime?: 'node' | 'bun';
   ptyBackend?: string;

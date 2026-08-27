@@ -563,4 +563,113 @@ describe('terminal runtime', () => {
       await new Promise((resolve) => server.close(resolve));
     }
   }, 15_000);
+
+  it('runs viewport-driver claim, follow, release, and disconnect-release over real websockets', async () => {
+    const app = express();
+    app.use(express.json());
+    const server = http.createServer(app);
+    const resizes = [];
+    const loadPtyProvider = async () => ({
+      backend: 'fake-pty',
+      spawn: () => ({
+        pid: 99456,
+        writes: [],
+        write() {},
+        resize(cols, rows) { resizes.push([cols, rows]); },
+        kill() {},
+        onData() { return { dispose() {} }; },
+        onExit() { return { dispose() {} }; },
+      }),
+    });
+    const runtime = createRuntime(server, {
+      app, loadPtyProvider,
+      terminalTerminationGraceMs: 10,
+      fs: { promises: { stat: async () => ({ isDirectory: () => true }) } },
+      searchPathFor: () => '/bin/sh', isExecutable: () => true,
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const base = `http://127.0.0.1:${address.port}`;
+    const socketUrl = `ws://127.0.0.1:${address.port}/api/terminal/ws`;
+    const sockets = [];
+
+    const open = async () => {
+      const socket = new WebSocket(socketUrl);
+      sockets.push(socket);
+      const messages = [];
+      socket.on('message', (raw) => messages.push(readTerminalWsControlFrame(raw)));
+      await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+      const next = async (type) => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const index = messages.findIndex((message) => message?.t === type && (type === 'hello' || message.s === 'term-drv'));
+          if (index >= 0) return messages.splice(index, 1)[0];
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        throw new Error(`Timed out waiting for ${type}`);
+      };
+      const hello = await next('hello');
+      return { socket, next, connectionId: hello.connectionId };
+    };
+
+    try {
+      const created = await fetch(`${base}/api/terminal/create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'term-drv', cwd: '/repo', cols: 80, rows: 24 }),
+      });
+      expect(created.status).toBe(200);
+
+      const big = await open();
+      big.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-drv', cols: 100, rows: 30 }));
+      await big.next('snapshot');
+      const small = await open();
+      small.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-drv', cols: 60, rows: 20 }));
+      await small.next('snapshot');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      // IDLE min-size: the smaller viewport shrinks the grid.
+      expect(resizes.at(-1)).toEqual([60, 20]);
+
+      // Claim: the big screen takes control; PTY follows its viewport even
+      // though the small screen is narrower.
+      big.socket.send(createTerminalWsControlFrame({ t: 'claimViewport', v: 3, s: 'term-drv', cols: 100, rows: 30 }));
+      const smallSeesDriver = await small.next('driverChanged');
+      expect(smallSeesDriver).toMatchObject({ cols: 100, rows: 30 });
+      expect(typeof smallSeesDriver.driverId).toBe('string');
+      expect(smallSeesDriver.driverId).not.toBe(small.connectionId);
+      const bigSeesDriver = await big.next('driverChanged');
+      expect(bigSeesDriver.driverId).toBe(big.connectionId);
+      expect(resizes.at(-1)).toEqual([100, 30]);
+
+      // In DRIVEN mode a follower viewport update must NOT resize the PTY.
+      small.socket.send(createTerminalWsControlFrame({ t: 'viewport', v: 3, s: 'term-drv', cols: 50, rows: 15 }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(resizes.at(-1)).toEqual([100, 30]);
+
+      // Release: back to IDLE min-size across remaining attachments.
+      big.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-drv' }));
+      const released = await small.next('driverChanged');
+      expect(released.driverId).toBeNull();
+      expect(resizes.at(-1)).toEqual([50, 15]);
+      const bigSeesRelease = await big.next('driverChanged');
+      expect(bigSeesRelease.driverId).toBeNull();
+      // Re-claim from the other side, then drop the driver connection:
+      // the driver role must auto-release and the grid must renegotiate.
+      small.socket.send(createTerminalWsControlFrame({ t: 'claimViewport', v: 3, s: 'term-drv', cols: 120, rows: 40 }));
+      await big.next('driverChanged');
+      expect(resizes.at(-1)).toEqual([120, 40]);
+      small.socket.terminate();
+      const afterDrop = await big.next('driverChanged');
+      expect(afterDrop.driverId).toBeNull();
+      expect(resizes.at(-1)).toEqual([100, 30]);
+
+      // A releaseViewport from a non-driver must be ignored.
+      big.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-drv' }));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(resizes.at(-1)).toEqual([100, 30]);
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      await runtime.shutdown();
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 15_000);
 });

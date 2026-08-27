@@ -236,7 +236,7 @@ export function createTerminalRuntime({
     }
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
-      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
+      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false, viewportDriver: null };
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
@@ -257,8 +257,19 @@ export function createTerminalRuntime({
     }
     return sizes;
   };
-
   const recomputeGrid = (session) => {
+    // DRIVEN mode: PTY size is the driver's viewport, not min-size
+    if (session.viewportDriver) {
+      const { cols, rows } = session.viewportDriver;
+      if (cols === session.cols && rows === session.rows) return;
+      session.cols = cols; session.rows = rows;
+      if (session.status === 'running' && session.process) {
+        try { session.process.resize(cols, rows); } catch { /* process exited */ }
+      }
+      publish(session, { t: 'driverChanged', driverId: session.viewportDriver.connectionId, cols, rows });
+      return;
+    }
+    // IDLE mode: min-size across all attachments
     const sizes = collectViewportSizes(session.id);
     if (sizes.length === 0) return;
     const cols = Math.max(1, Math.min(...sizes.map((s) => s.cols)));
@@ -268,13 +279,22 @@ export function createTerminalRuntime({
     if (session.status === 'running' && session.process) {
       try { session.process.resize(cols, rows); } catch { /* process exited */ }
     }
-    publish(session, { t: 'resized', v: 3, s: session.id, q: session.sequence, cols, rows });
+    publish(session, { t: 'resized', cols, rows });
   };
 
+  const broadcastDriverChanged = (session) => {
+    if (session.viewportDriver) {
+      publish(session, { t: 'driverChanged', driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
+    } else {
+      publish(session, { t: 'driverChanged', driverId: null, cols: session.cols, rows: session.rows });
+    }
+  };
+
+
   wsServer.on('connection', (socket) => {
-    const connection = { socket, attachments: new Map() };
+    const connection = { socket, attachments: new Map(), connectionId: randomUUID() };
     connections.add(connection);
-    send(socket, { t: 'hello', v: 3 });
+    send(socket, { t: 'hello', v: 3, connectionId: connection.connectionId });
     const heartbeat = setInterval(() => { try { socket.ping(); } catch { /* closed */ } }, TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS);
     socket.on('message', (raw, isBinary) => {
       if (!isBinary) { send(socket, { t: 'error', v: 3, code: 'BAD_FRAME', message: 'Binary control frame required', fatal: false }); return; }
@@ -287,7 +307,18 @@ export function createTerminalRuntime({
       if (message.t === 'detach') {
         connection.attachments.delete(id);
         const session = sessions.get(id);
-        if (session) recomputeGrid(session);
+        if (session) {
+          // A driver that detaches must release the role, otherwise the
+          // ownership outlives the attachment and the close-time cleanup
+          // (which walks attachments only) never releases it.
+          if (session.viewportDriver?.connectionId === connection.connectionId) {
+            session.viewportDriver = null;
+            recomputeGrid(session);
+            broadcastDriverChanged(session);
+          } else {
+            recomputeGrid(session);
+          }
+        }
         return;
       }
       const session = sessions.get(id);
@@ -301,7 +332,12 @@ export function createTerminalRuntime({
         send(socket, initial);
         for (const event of attachment.pending) if (event.q > initial.q) send(socket, event);
         attachment.pending.length = 0; attachment.initializing = false;
-        recomputeGrid(session);
+        // In DRIVEN mode, send the current driver info; don't recompute (PTY is driver-sized)
+        if (session.viewportDriver) {
+          send(socket, { t: 'driverChanged', v: 3, s: session.id, driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
+        } else {
+          recomputeGrid(session);
+        }
         return;
       }
       if (message.t === 'viewport') {
@@ -309,12 +345,44 @@ export function createTerminalRuntime({
         if (attachment) {
           if (typeof message.cols === 'number' && message.cols > 0) attachment.cols = Math.min(message.cols, 1000);
           if (typeof message.rows === 'number' && message.rows > 0) attachment.rows = Math.min(message.rows, 500);
+          // In DRIVEN mode, viewport updates from the driver resize the PTY
+          if (session.viewportDriver && session.viewportDriver.connectionId === connection.connectionId) {
+            session.viewportDriver.cols = attachment.cols;
+            session.viewportDriver.rows = attachment.rows;
+          }
           recomputeGrid(session);
+        }
+        return;
+      }
+      if (message.t === 'claimViewport') {
+        // Only an attached client may drive the viewport; a claim from an
+        // unattached (or detached) connection would orphan the driver role.
+        if (!connection.attachments.has(id)) {
+          send(socket, { t: 'error', v: 3, s: id, code: 'NOT_ATTACHED', message: 'Attach before claiming the viewport', fatal: false });
+          return;
+        }
+        const cols = typeof message.cols === 'number' ? Math.max(1, Math.min(message.cols, 1000)) : session.cols;
+        const rows = typeof message.rows === 'number' ? Math.max(1, Math.min(message.rows, 500)) : session.rows;
+        session.viewportDriver = { connectionId: connection.connectionId, cols, rows };
+        // recomputeGrid's DRIVEN branch publishes driverChanged when the size
+        // changes; only broadcast explicitly for the same-size claim.
+        if (cols === session.cols && rows === session.rows) broadcastDriverChanged(session);
+        else recomputeGrid(session);
+        return;
+      }
+      if (message.t === 'releaseViewport') {
+        if (session.viewportDriver && session.viewportDriver.connectionId === connection.connectionId) {
+          session.viewportDriver = null;
+          recomputeGrid(session);
+          broadcastDriverChanged(session);
         }
         return;
       }
       if (message.t === 'resync') {
         send(socket, snapshot(session));
+        if (session.viewportDriver) {
+          send(socket, { t: 'driverChanged', v: 3, s: session.id, driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
+        }
         return;
       }
       if (message.t === 'write') {
@@ -330,11 +398,29 @@ export function createTerminalRuntime({
       connections.delete(connection);
       for (const sid of attached) {
         const session = sessions.get(sid);
-        if (session) recomputeGrid(session);
+        if (!session) continue;
+        if (session.viewportDriver?.connectionId === connection.connectionId) {
+          session.viewportDriver = null;
+          recomputeGrid(session);
+          broadcastDriverChanged(session);
+        } else {
+          recomputeGrid(session);
+        }
+      }
+      // Safety net: release any driver role this connection still holds on
+      // sessions it detached from earlier (detach already releases, but a
+      // raced detach/claim ordering could leave the role behind).
+      for (const session of sessions.values()) {
+        if (session.viewportDriver?.connectionId === connection.connectionId) {
+          session.viewportDriver = null;
+          recomputeGrid(session);
+          broadcastDriverChanged(session);
+        }
       }
     };
     socket.on('close', cleanup); socket.on('error', () => {});
   });
+
 
   const upgradeHandler = (req, socket, head) => {
     if (parseRequestPathname(req.url) !== TERMINAL_WS_PATH) return;
