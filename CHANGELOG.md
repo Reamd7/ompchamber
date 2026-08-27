@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ## [1.20.1] - 2026-08-27
-
+- **Chat: timeline dividers mark model and mode switches.** A change of model, thinking level, or mode during a turn now inserts a divider at the point it happened, showing the model name or the mode's label, and it survives reloading the session. Which role picked the model and retry-fallback models appear in the divider's expanded detail instead of sitting next to the model name where they read like a thinking level.
+- Chat: a retried turn keeps its superseded dimming after a reload — the overlay used to disappear because only the volatile start event drew it; the durable retry record now restores it.
+- Providers: dialog edits to reasoning, input cost, and tool support now actually save instead of being silently dropped; the fetch-models probe rejects non-http(s) base URLs rather than letting a file:// URL read local files on the server; and saving thinking levels no longer wipes effort settings or their comments from the provider config.
 - Branding: display names across the web app, PWA, VS Code extension, and mobile now read OMPChamber; the About and update dialogs link to this repository instead of the upstream one.
 - Setup: onboarding now installs the ompchamber CLI from this repository instead of telling you to install the OpenCode CLI, and text that called the engine OpenCode (status, restart prompts, onboarding, error messages) now says engine, translated in every language.
 - Dev: `bun run worktree` now rejects invalid branch names up front — names are checked against the git/GitHub branch rules before any worktree, branch, or port registration is created, so a bad name exits with code 2 and leaves nothing behind.
