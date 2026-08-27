@@ -327,12 +327,12 @@ export function createTerminalRuntime({
     return sizes;
   };
   const recomputeGrid = (session) => {
-    // DRIVEN mode: PTY size is the driver's viewport, not min-size.
-    // The floor applies here too — a driver claiming a sub-80 viewport would
-    // reintroduce the same TUI breakage the floor exists to prevent.
+    // DRIVEN mode: PTY size is the driver's viewport, not min-size. The 80x24
+    // floor does NOT apply here: claiming control is an explicit act, and a
+    // narrow-screen user zooming in below 80 columns is choosing bigger text
+    // over TUI compatibility for this session (followers can reclaim anytime).
     if (session.viewportDriver) {
-      const cols = Math.max(MIN_TERMINAL_COLS, session.viewportDriver.cols);
-      const rows = Math.max(MIN_TERMINAL_ROWS, session.viewportDriver.rows);
+      const { cols, rows } = session.viewportDriver;
       if (cols === session.cols && rows === session.rows) return;
       session.cols = cols; session.rows = rows;
       if (session.status === 'running' && session.process) {
@@ -342,7 +342,8 @@ export function createTerminalRuntime({
       return;
     }
     // IDLE mode: min-size across all attachments, floored to the TUI minimum.
-    // Devices narrower than the floor CSS-scale the grid client-side.
+    // Passive narrow devices must not drag the shared grid below 80x24;
+    // devices narrower than the floor CSS-scale the grid client-side.
     const sizes = collectViewportSizes(session.id);
     if (sizes.length === 0) return;
     const cols = Math.max(MIN_TERMINAL_COLS, Math.min(...sizes.map((s) => s.cols)));

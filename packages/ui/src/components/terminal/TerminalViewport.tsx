@@ -45,11 +45,6 @@ const ensureNerdFonts = (): Promise<void> => {
 
 type TerminalSize = { cols: number; rows: number };
 
-// Shared grid floor (mirrors the server's MIN_TERMINAL_COLS/ROWS): TUI apps
-// (btop, htop, vim) misrender below the 80x24 VT standard. Containers too
-// narrow for the floor render CSS-scaled instead of shrinking the PTY grid.
-const MIN_TERMINAL_COLS = 80;
-const MIN_TERMINAL_ROWS = 24;
 const getProvisionalTerminalSize = (
   container: HTMLDivElement,
   fontFamily: string,
@@ -84,12 +79,11 @@ const getProvisionalTerminalSize = (
     (Number.parseInt(style.paddingBottom, 10) || 0);
 
   // Match Ghostty FitAddon's 15px scrollbar reservation and minimum dimensions.
-  // Match Ghostty FitAddon's 15px scrollbar reservation and minimum dimensions,
-  // then apply the shared grid floor so the provisional spawn already matches
-  // what post-mount fit and the server will negotiate.
+  // No grid floor here: the server floors the create request itself, and the
+  // client must report true viewport sizes for driver zoom to work.
   return {
-    cols: Math.max(MIN_TERMINAL_COLS, Math.max(2, Math.floor((container.clientWidth - horizontalPadding - 15) / cellWidth))),
-    rows: Math.max(MIN_TERMINAL_ROWS, Math.max(1, Math.floor((container.clientHeight - verticalPadding) / cellHeight))),
+    cols: Math.max(2, Math.floor((container.clientWidth - horizontalPadding - 15) / cellWidth)),
+    rows: Math.max(1, Math.floor((container.clientHeight - verticalPadding) / cellHeight)),
   };
 };
 
@@ -164,9 +158,13 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const canvas = container?.querySelector('canvas');
     if (!container || !canvas) return;
     const naturalWidth = canvas.offsetWidth;
+    const naturalHeight = canvas.offsetHeight;
     const containerWidth = container.clientWidth;
-    if (naturalWidth <= 0 || containerWidth <= 0) return;
-    const scale = Math.min(1, containerWidth / naturalWidth);
+    const containerHeight = container.clientHeight;
+    if (naturalWidth <= 0 || containerWidth <= 0 || naturalHeight <= 0) return;
+    // Fit BOTH axes: a wide grid must not clip bottom rows in a short
+    // container any more than a tall grid may clip columns in a narrow one.
+    const scale = Math.min(1, containerWidth / naturalWidth, naturalHeight > 0 && containerHeight > 0 ? containerHeight / naturalHeight : 1);
     driverScaleRef.current = scale;
     if (scale >= 0.999) {
       canvas.style.transform = '';
@@ -194,14 +192,11 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
           terminal.resize(negotiated.cols, negotiated.rows);
         }
       } else {
+        // Unconstrained fit: report the device's true effective viewport.
+        // The SERVER owns the 80x24 floor (IDLE negotiation + create);
+        // keeping a second floor here would lock narrow drivers out of
+        // zooming their own claimed grid below the floor.
         fitRef.current.fit();
-        // Shared grid floor (matches the server's MIN_TERMINAL_COLS/ROWS):
-        // TUI apps misrender below 80x24. A container too narrow for the
-        // floor renders the grid CSS-scaled via applyDriverScale instead of
-        // shrinking the PTY for every attached device.
-        if (terminal.cols < MIN_TERMINAL_COLS || terminal.rows < MIN_TERMINAL_ROWS) {
-          terminal.resize(Math.max(MIN_TERMINAL_COLS, terminal.cols), Math.max(MIN_TERMINAL_ROWS, terminal.rows));
-        }
       }
       const next = { cols: terminal.cols, rows: terminal.rows };
       if (!lastSizeRef.current || lastSizeRef.current.cols !== next.cols || lastSizeRef.current.rows !== next.rows) {
