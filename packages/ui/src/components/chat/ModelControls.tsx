@@ -702,6 +702,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         : (ompWireSessionModel?.providerID && ompWireSessionModel?.id
             ? { provider: ompWireSessionModel.providerID, id: ompWireSessionModel.id }
             : null);
+    // GAP-06 target: the model the thinking slot speaks for. Server truth
+    // first; while it has not arrived (cold-open, event gap) the displayed
+    // (config-store) model takes over when the models snapshot knows it, so
+    // the chip never disappears while a model chip still shows a model.
+    const ompThinkingTargetModel = ompSessionModel
+        ?? (currentProviderId && currentModelId
+            && ompModelRoles.snapshot?.models.some(
+                (model) => model.provider === currentProviderId && model.id === currentModelId,
+            )
+            ? { provider: currentProviderId, id: currentModelId }
+            : null);
     // GAP-10: enabledModels patterns restrict the picker under model roles.
     const ompEnabledModels = React.useMemo(
         () => (ompModelRoles.modelRolesEnabled
@@ -726,17 +737,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         && currentModelId
         && !ompEnabledModels.allows(currentProviderId, currentModelId),
     );
-    // GAP-06: thinking-level candidates for the session's current model.
+    // GAP-06: thinking-level candidates for the thinking target model.
     const ompThinkingOptions = React.useMemo(() => {
-        if (!ompModelRoles.modelRolesEnabled || !ompSessionModel?.provider || !ompSessionModel?.id) {
+        if (!ompModelRoles.modelRolesEnabled || !ompThinkingTargetModel?.provider || !ompThinkingTargetModel?.id) {
             return [];
         }
         const entry = ompModelRoles.snapshot?.models.find(
-            (model) => model.provider === ompSessionModel.provider && model.id === ompSessionModel.id,
+            (model) => model.provider === ompThinkingTargetModel.provider && model.id === ompThinkingTargetModel.id,
         );
         if (!entry) return [];
         return ['inherit', 'off', 'auto', ...entry.thinking.supported];
-    }, [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.models, ompSessionModel?.provider, ompSessionModel?.id]);
+    }, [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.models, ompThinkingTargetModel?.provider, ompThinkingTargetModel?.id]);
     // GAP-06 draft tail: before a session exists there is no session model to
     // derive levels from — use the picked model's snapshot entry. The variant
     // slot carries the pick (undefined = inherit) into
@@ -957,12 +968,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // unchanged. 'inherit' travels as the wire sentinel; the engine maps it
     // to setThinkingLevel(undefined), which clears the explicit level.
     const handleOmpThinkingSelect = React.useCallback((level: string) => {
-        if (!currentSessionId || !ompSessionModel?.provider || !ompSessionModel?.id || !ompPickerDirectory) {
+        if (!currentSessionId || !ompThinkingTargetModel?.provider || !ompThinkingTargetModel?.id || !ompPickerDirectory) {
             return;
         }
         void ompModels.setSessionModel(
             currentSessionId,
-            { providerID: ompSessionModel.provider, modelID: ompSessionModel.id },
+            { providerID: ompThinkingTargetModel.provider, modelID: ompThinkingTargetModel.id },
             {
                 directory: ompPickerDirectory,
                 thinkingLevel: level,
@@ -972,7 +983,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 toast.error(t('chat.modelControls.thinkingChangeFailed'));
             }
         });
-    }, [currentSessionId, ompModels, ompPickerDirectory, ompSessionModel?.id, ompSessionModel?.provider, t]);
+    }, [currentSessionId, ompModels, ompPickerDirectory, ompThinkingTargetModel?.id, ompThinkingTargetModel?.provider, t]);
 
     // GAP-06 draft tail: with no session yet, the level is a local pick in
     // the variant slot (undefined = inherit); materializeOpenDraftSession
