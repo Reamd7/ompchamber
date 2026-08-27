@@ -98,12 +98,19 @@ export interface DiscoveredSkill {
 /** Parse the domain group folder from a skill file path.
  *  e.g. "~/.config/opencode/skills/automation-ai/ai-production/SKILL.md" → "automation-ai"
  *  e.g. "~/.config/opencode/skills/theme-system/SKILL.md"                → undefined (flat)
+ *  Legacy managed roots use the singular dir (".opencode/skill/<group>/<name>/SKILL.md")
+ *  — a path hits exactly one of the two markers, so max() picks the hit (ch 13).
  */
 function parseSkillGroup(path: string): string | undefined {
   const normalizedPath = path.replace(/\\/g, '/');
-  const idx = normalizedPath.lastIndexOf('/skills/');
+  // A path hits exactly one of the two markers (mutually exclusive), so the
+  // later hit wins and its own length offsets the substring.
+  const pluralIdx = normalizedPath.lastIndexOf('/skills/');
+  const singularIdx = normalizedPath.lastIndexOf('/skill/');
+  const hit: [number, string] = pluralIdx >= singularIdx ? [pluralIdx, '/skills/'] : [singularIdx, '/skill/'];
+  const [idx, marker] = hit;
   if (idx === -1) return undefined;
-  const relative = normalizedPath.substring(idx + '/skills/'.length);
+  const relative = normalizedPath.substring(idx + marker.length);
   const parts = relative.split('/');
   // Grouped layout: <group>/<name>/SKILL.md → parts.length >= 3
   // Flat layout:    <name>/SKILL.md         → parts.length == 2

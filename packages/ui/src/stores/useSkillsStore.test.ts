@@ -230,3 +230,27 @@ describe('useSkillsStore directory resolution', () => {
     expect(runtimeFetchCalls[1]?.url).toContain(`directory=${encodeURIComponent(activeProjectPath)}`);
   });
 });
+
+describe('parseSkillGroup roots (ch 13: singular + plural markers)', () => {
+  beforeEach(() => {
+    runtimeFetchImpl = async () => new Response(JSON.stringify({
+      skills: [
+        { name: 'plural-grouped', path: '/home/u/.config/opencode/skills/automation-ai/prod/SKILL.md', scope: 'user', source: 'opencode' },
+        { name: 'plural-flat', path: '/home/u/.config/opencode/skills/solo/SKILL.md', scope: 'user', source: 'opencode' },
+        { name: 'singular-grouped', path: '/home/u/.opencode/skill/legacy-domain/old-skill/SKILL.md', scope: 'user', source: 'opencode' },
+        { name: 'singular-flat', path: '/home/u/.opencode/skill/flat-old/SKILL.md', scope: 'user', source: 'opencode' },
+      ],
+    }), { headers: { 'Content-Type': 'application/json' } });
+    invalidateSkillsLoadCache('/workspace/roots-check');
+  });
+
+  test('groups parse from both /skills/ and legacy /skill/ roots', async () => {
+    expect(await useSkillsStore.getState().loadSkills('/workspace/roots-check')).toBe(true);
+    const skills = useSkillsStore.getState().skillsByDirectory['/workspace/roots-check'] ?? [];
+    const groupOf = (name: string) => skills.find((s) => s.name === name)?.group;
+    expect(groupOf('plural-grouped')).toBe('automation-ai');
+    expect(groupOf('plural-flat')).toBeUndefined();
+    expect(groupOf('singular-grouped')).toBe('legacy-domain');
+    expect(groupOf('singular-flat')).toBeUndefined();
+  });
+});
