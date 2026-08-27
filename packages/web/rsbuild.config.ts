@@ -197,6 +197,12 @@ export default defineConfig(({ command }) => ({
   },
   server: {
     port: 5173,
+    // Dev chunks are served with unhashed names and (by default) no cache
+    // directives, so LAN clients — iPads over HMR especially, whose sockets
+    // get killed in the background — can freeze on stale chunks that a soft
+    // revisit happily re-serves from heuristic cache. No-store closes that
+    // hole: every load fetches what the watcher currently has.
+    headers: { 'Cache-Control': 'no-store' },
     // changeOrigin must stay false (Rsbuild defaults it to true): the backend
     // derives trusted origins for WebSocket upgrades (and passkey RP origins)
     // from the Host/X-Forwarded-Host headers. Rewriting Host to the loopback
