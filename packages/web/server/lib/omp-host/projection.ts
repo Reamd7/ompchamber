@@ -248,6 +248,10 @@ export interface WireMessageInfo {
   path?: { cwd: string; root: string };
   cost?: number;
   tokens?: WireTokenTotals;
+  /** Terminal stop reason ('stop' | 'length' | 'toolUse' | 'error' | 'aborted');
+   * present only on settled assistant messages — its presence is the wire
+   * "step closed" signal (ChatMessage open-step check). */
+  finish?: string;
   error?: { name: string; data: { message: string } };
 }
 
@@ -1122,6 +1126,7 @@ export const projectAssistantMessage = (
     mode: agent ?? 'build',
     agent: agent ?? 'build',
     path: { cwd: directory ?? '', root: directory ?? '' },
+    ...(message.stopReason !== undefined ? { finish: message.stopReason } : {}),
     cost,
     tokens
   };

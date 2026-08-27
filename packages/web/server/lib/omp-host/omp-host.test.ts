@@ -162,6 +162,46 @@ describe('projection', () => {
     expect(projected[1].info.time.completed).toBeUndefined();
   });
 
+  test('finish maps from stopReason on settled messages only', () => {
+    // Cold projection: stopReason rides verbatim as wire finish.
+    const projected = projectConversation(
+      [
+        userMessage('go'),
+        assistantMessage([{ type: 'text', text: 'a' }], { stopReason: 'toolUse' }),
+      ],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    expect(projected[1].info.finish).toBe('toolUse');
+
+    // No stopReason on the persisted message → the key stays absent.
+    const bare = assistantMessage([{ type: 'text', text: 'x' }]);
+    delete bare.stopReason;
+    const bareProjected = projectConversation([userMessage('go'), bare], {
+      sessionID: 's1',
+      directory: '/repo',
+    });
+    expect('finish' in bareProjected[1].info).toBe(false);
+
+    // Live streaming: message_start carries NO finish (open-step signal);
+    // message_end settles it from the same mapping.
+    const emitted = [];
+    const projector = new StreamProjector({
+      sessionID: 's1',
+      directory: '/repo',
+      agent: 'build',
+      emit: (type, properties) => emitted.push({ type, properties }),
+    });
+    const finalMessage = assistantMessage([{ type: 'text', text: 'a' }]);
+    const started = projector.startAssistant(finalMessage);
+    expect('finish' in started).toBe(false);
+    projector.finishAssistant(finalMessage, new Map());
+    const settledInfo = emitted
+      .filter((e) => e.type === 'message.updated')
+      .map((e) => e.properties.info)
+      .at(-1);
+    expect(settledInfo.finish).toBe('stop');
+  });
+
   test('message ids are deterministic across repeated projections', () => {
     const messages = [userMessage('stable'), assistantMessage([{ type: 'text', text: 'reply' }])];
     const a = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
