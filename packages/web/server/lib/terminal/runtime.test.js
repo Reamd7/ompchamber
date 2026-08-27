@@ -625,8 +625,9 @@ describe('terminal runtime', () => {
       small.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-drv', cols: 60, rows: 20 }));
       await small.next('snapshot');
       await new Promise((resolve) => setTimeout(resolve, 5));
-      // IDLE min-size: the smaller viewport shrinks the grid.
-      expect(resizes.at(-1)).toEqual([60, 20]);
+      // IDLE min-size: the smaller viewport shrinks the grid, floored to
+      // the 80x24 TUI minimum (narrow clients CSS-scale instead).
+      expect(resizes.at(-1)).toEqual([80, 24]);
 
       // Claim: the big screen takes control; PTY follows its viewport even
       // though the small screen is narrower.
@@ -648,7 +649,7 @@ describe('terminal runtime', () => {
       big.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-drv' }));
       const released = await small.next('driverChanged');
       expect(released.driverId).toBeNull();
-      expect(resizes.at(-1)).toEqual([50, 15]);
+      expect(resizes.at(-1)).toEqual([80, 24]);
       const bigSeesRelease = await big.next('driverChanged');
       expect(bigSeesRelease.driverId).toBeNull();
       // Re-claim from the other side, then drop the driver connection:

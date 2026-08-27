@@ -45,6 +45,11 @@ const ensureNerdFonts = (): Promise<void> => {
 
 type TerminalSize = { cols: number; rows: number };
 
+// Shared grid floor (mirrors the server's MIN_TERMINAL_COLS/ROWS): TUI apps
+// (btop, htop, vim) misrender below the 80x24 VT standard. Containers too
+// narrow for the floor render CSS-scaled instead of shrinking the PTY grid.
+const MIN_TERMINAL_COLS = 80;
+const MIN_TERMINAL_ROWS = 24;
 const getProvisionalTerminalSize = (
   container: HTMLDivElement,
   fontFamily: string,
@@ -79,9 +84,12 @@ const getProvisionalTerminalSize = (
     (Number.parseInt(style.paddingBottom, 10) || 0);
 
   // Match Ghostty FitAddon's 15px scrollbar reservation and minimum dimensions.
+  // Match Ghostty FitAddon's 15px scrollbar reservation and minimum dimensions,
+  // then apply the shared grid floor so the provisional spawn already matches
+  // what post-mount fit and the server will negotiate.
   return {
-    cols: Math.max(2, Math.floor((container.clientWidth - horizontalPadding - 15) / cellWidth)),
-    rows: Math.max(1, Math.floor((container.clientHeight - verticalPadding) / cellHeight)),
+    cols: Math.max(MIN_TERMINAL_COLS, Math.max(2, Math.floor((container.clientWidth - horizontalPadding - 15) / cellWidth))),
+    rows: Math.max(MIN_TERMINAL_ROWS, Math.max(1, Math.floor((container.clientHeight - verticalPadding) / cellHeight))),
   };
 };
 
@@ -187,6 +195,13 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         }
       } else {
         fitRef.current.fit();
+        // Shared grid floor (matches the server's MIN_TERMINAL_COLS/ROWS):
+        // TUI apps misrender below 80x24. A container too narrow for the
+        // floor renders the grid CSS-scaled via applyDriverScale instead of
+        // shrinking the PTY for every attached device.
+        if (terminal.cols < MIN_TERMINAL_COLS || terminal.rows < MIN_TERMINAL_ROWS) {
+          terminal.resize(Math.max(MIN_TERMINAL_COLS, terminal.cols), Math.max(MIN_TERMINAL_ROWS, terminal.rows));
+        }
       }
       const next = { cols: terminal.cols, rows: terminal.rows };
       if (!lastSizeRef.current || lastSizeRef.current.cols !== next.cols || lastSizeRef.current.rows !== next.rows) {
