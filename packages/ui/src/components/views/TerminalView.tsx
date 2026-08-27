@@ -494,9 +494,21 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                     if (terminal.listSessions) {
                         const running = await terminal.listSessions();
                         const normalizedCwd = directory.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+                        // Session sync is for CROSS-DEVICE sharing: attach to a
+                        // session another device left running in this cwd. A
+                        // session already bound to a tab on THIS device must
+                        // not be reused — a new local tab means the user wants
+                        // a fresh shell, not a mirror of an existing tab.
+                        const locallyBoundSessionIds = new Set<string>();
+                        for (const dirState of useTerminalStore.getState().sessions.values()) {
+                            for (const tab of dirState.tabs) {
+                                if (tab.terminalSessionId) locallyBoundSessionIds.add(tab.terminalSessionId);
+                            }
+                        }
                         const match = running.find(
                             (s) => s.status === 'running' &&
-                            s.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalizedCwd
+                            s.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalizedCwd &&
+                            !locallyBoundSessionIds.has(s.sessionId)
                         );
                         if (match) {
                             session = { sessionId: match.sessionId, cols: match.cols, rows: match.rows, status: match.status };
