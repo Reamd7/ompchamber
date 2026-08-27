@@ -2738,21 +2738,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     <span className="font-medium text-foreground">{t('chat.modelControls.addNewProvider')}</span>
                                 </button>
                             </div>
-                            {ompModelRoles.modelRolesEnabled ? (
-                                // The role section is an unshrinkable flex child; without
-                                // its own cap it overflows the overflow-hidden popup and
-                                // clips everything below (search box, model list) with no
-                                // scrollbar once configured roles exceed the height budget.
-                                <div className="max-h-[min(340px,calc(var(--available-height)*0.45))] shrink-0 overflow-y-auto overscroll-contain">
-                                    <OmpRoleSlots
-                                        roles={ompModelRoles.roles}
-                                        selectedModel={currentProviderId && currentModelId ? { provider: currentProviderId, id: currentModelId } : null}
-                                        onSelect={handleRoleSelect}
-                                        onConfigure={openRolesSettings}
-                                        labels={ompRoleSlotsLabels}
-                                    />
-                                </div>
-                            ) : null}
                             {ompCurrentModelExcluded ? (
                                 <div className="typography-meta flex items-center gap-1.5 border-b border-border/40 px-3 py-1.5 text-[color:var(--status-warning)]">
                                     <Icon name="alert" className="size-3.5 flex-shrink-0" />
@@ -2772,8 +2757,15 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 hiddenModels={hiddenModels}
                                 onActiveKeyDown={handleModelPickerKeyDown}
                                 onActiveEntryChange={(entry) => { activeModelPickerEntryRef.current = entry; }}
-                                onVariantKey={handleThinkingVariantKey}
-                                isFavorite={(entry) => isFavoriteModel(entry.providerID, entry.modelID)}
+                                leadingContent={ompModelRoles.modelRolesEnabled ? (
+                                    <OmpRoleSlots
+                                        roles={ompModelRoles.roles}
+                                        selectedModel={currentProviderId && currentModelId ? { provider: currentProviderId, id: currentModelId } : null}
+                                        onSelect={handleRoleSelect}
+                                        onConfigure={openRolesSettings}
+                                        labels={ompRoleSlotsLabels}
+                                    />
+                                ) : undefined}
                                 onToggleFavorite={(entry) => toggleFavoriteModel(entry.providerID, entry.modelID)}
                                 renderRowEnd={renderThinkingSlot}
                                 renderVersion={modelPickerRenderVersion}

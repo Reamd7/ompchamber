@@ -353,6 +353,10 @@ interface ModelPickerListProps {
   disabled?: boolean;
   maxHeightClassName?: string;
   maxHeightStyle?: React.CSSProperties;
+  /** Content rendered inside the scroll area above the first section (e.g. the
+ * composer's omp role rows) — scrolls with the list, so the menu keeps one
+ * scrollbar instead of a capped nested region. */
+  leadingContent?: React.ReactNode;
   sectionHeaderClassName?: string;
   rowClassName?: string;
   stickyHeaders?: boolean;
@@ -412,6 +416,7 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
   onReorderProvider,
   reorderProviderTitle,
   footerContent,
+  leadingContent,
   renderVersion,
   tooltipsEnabled = true,
 }) => {
@@ -839,10 +844,12 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
     if (stuckSectionHeaders.has(sectionKey)) stuckSectionKey = sectionKey;
   }
   // The sidebar can seed its overlay with the first section because its first
-  // header starts flush with the scroller. `Not selected` may precede the
-  // first model section here, so wait for that section's sentinel rather than
-  // showing its identity while the leading action is still visible.
-  const leadingSectionKey = stuckSectionKey ?? (!includeNotSelected ? visibleSectionKeys[0] ?? null : null);
+  // header starts flush with the scroller. `Not selected` and leading content
+  // (the composer's role rows) may precede the first model section, so wait
+  // for that section's sentinel rather than showing its identity while the
+  // leading content is still visible.
+  const leadingSectionKey = stuckSectionKey
+    ?? (!includeNotSelected && !leadingContent ? visibleSectionKeys[0] ?? null : null);
   const renderSectionIdentity = (sectionKey: string): React.ReactNode => {
     if (sectionKey === 'favorites') {
       return <><Icon name="star-fill" className="h-4 w-4 flex-shrink-0 text-primary" /><span className="min-w-0 truncate">{labels.favorites}</span></>;
@@ -893,6 +900,7 @@ export const ModelPickerList: React.FC<ModelPickerListProps> = ({
         onScroll={stickyHeaders ? (event) => syncStickyFade(event.currentTarget) : undefined}
       >
         <div className="px-1">
+          {leadingContent}
           {includeNotSelected ? (
             <>
               <button
