@@ -450,7 +450,7 @@ describe('capabilities (spec 05 §5.2.3, master R2)', () => {
     expect(caps.features['queue.v1']).toBe(false);
     expect(caps.features['jobs.v1']).toBe(false);
     expect(caps.features['mcp.executable']).toBe(false);
-    expect(caps.features['mcp.readOnly']).toBe(true);
+    expect(caps.features['commands.v1']).toBe(true);
     expect(Object.keys(ompFeatures())).toContain('modelRoles.v1');
   });
 });

@@ -65,7 +65,11 @@ export const ompFeatures = () => ({
   'plugins.v1': true,
   // 09: extension chrome projection — widget/status strings via the dialog
   // bridge, mirroring RpcExtensionUIRequest (chapter 09 §5.0).
-  'extensionChrome.v1': true,
+  // 08 §5.4: engine slash-command discovery (skills + file commands via the
+  // headless buildAvailableSlashCommands session). Upstream has no
+  // capability gate for command enumeration (TUI/ACP enumerate
+  // unconditionally, settings-gated only), so the switch is ours alone.
+  'commands.v1': true,
   // jobs: SDK AsyncJobManager only attaches to the first top-level session;
   // capability stays false until upstream injection (master R12).
   'jobs.v1': false,
