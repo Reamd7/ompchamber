@@ -178,7 +178,7 @@ export interface OmpFileProviderProjection {
   baseUrl?: string;
   api?: string;
   authHeader?: boolean;
-  headers?: JsonRecord;
+  headers?: Record<string, string>;
   hasApiKey: boolean;
   models: OmpProjectedModel[];
 }
@@ -318,17 +318,35 @@ const deriveThinkingEfforts = (thinking) => {
   const max = THINKING_EFFORT_ORDER.indexOf(thinking.maxLevel);
   return min >= 0 && max >= min ? THINKING_EFFORT_ORDER.slice(min, max + 1) : [];
 };
+/**
+ * Header values must be strings: the engine's models.yml schema rejects the
+ * whole config on a non-string value, and the wire/UI contracts are
+ * string-only. Hand-authored YAML may carry scalars (`X-Request-Id: 42`);
+ * coerce those to their string form and drop anything structural, so one
+ * loose value never blanks the provider list (plan P15).
+ */
+const stringHeaders = (value: ProviderRuntimeValue | undefined): OmpFileProviderProjection['headers'] => {
+  if (!isRecord(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, headerValue] of Object.entries(value)) {
+    if (typeof headerValue === 'string') out[key] = headerValue;
+    else if (typeof headerValue === 'number' || typeof headerValue === 'boolean') out[key] = String(headerValue);
+    // objects/arrays are not header values — dropped.
+  }
+  return out;
+};
 
 /** Projected file provider for GET / edit prefill. apiKey never leaves this
  * module — only `hasApiKey`. */
 const projectFileProvider = (id: string, value: JsonRecord): OmpFileProviderProjection => {
   const models = Array.isArray(value.models) ? value.models : [];
+  const headers = stringHeaders(value.headers);
   return {
     id,
     source: 'file',
     ...(typeof value.baseUrl === 'string' ? { baseUrl: value.baseUrl } : {}),
     ...(value.authHeader !== undefined ? { authHeader: Boolean(value.authHeader) } : {}),
-    ...(isRecord(value.headers) ? { headers: value.headers } : {}),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
     hasApiKey: typeof value.apiKey === 'string' && value.apiKey.length > 0,
     models: models
       .filter((model): model is JsonRecord & { id: string } => isRecord(model) && typeof model.id === 'string')
@@ -631,21 +649,16 @@ export const putOmpProvider = async (input: PutOmpProviderInput, options: OmpPro
   if (!PROVIDER_ID_PATTERN.test(id)) {
     return { status: 400, body: { error: 'validation', message: 'provider.id must match [a-z0-9][a-z0-9-_]*' } };
   }
-  if (provider.baseUrl !== undefined && (typeof provider.baseUrl !== 'string' || !/^https?:\/\//.test(provider.baseUrl.trim()))) {
-    return { status: 400, body: { error: 'validation', message: 'provider.baseUrl must be an http(s) URL' } };
-  }
   if (provider.api !== undefined && (typeof provider.api !== 'string' || !OMP_PROVIDER_APIS.includes(provider.api))) {
     return { status: 400, body: { error: 'validation', message: `provider.api must be one of: ${OMP_PROVIDER_APIS.join(', ')}` } };
   }
-  if (provider.apiKey !== undefined && provider.apiKey !== null && (typeof provider.apiKey !== 'string' || !provider.apiKey.trim())) {
-    return { status: 400, body: { error: 'validation', message: 'provider.apiKey must be a non-empty string or null' } };
-  }
-  if (provider.authHeader !== undefined && provider.authHeader !== null && typeof provider.authHeader !== 'boolean') {
-    return { status: 400, body: { error: 'validation', message: 'provider.authHeader must be a boolean or null' } };
+  if (provider.baseUrl !== undefined && (typeof provider.baseUrl !== 'string' || !/^https?:\/\//.test(provider.baseUrl.trim()))) {
+    return { status: 400, body: { error: 'validation', message: 'provider.baseUrl must be an http(s) URL' } };
   }
   if (provider.headers !== undefined && provider.headers !== null) {
-    if (!isRecord(provider.headers) || Object.values(provider.headers).some((v) => typeof v !== 'string')) {
-      return { status: 400, body: { error: 'validation', message: 'provider.headers must be a string record' } };
+    if (!isRecord(provider.headers)
+      || Object.values(provider.headers).some((v) => v !== null && typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean')) {
+      return { status: 400, body: { error: 'validation', message: 'provider.headers must be a string record (scalar values are stringified)' } };
     }
   }
 
@@ -704,7 +717,9 @@ export const putOmpProvider = async (input: PutOmpProviderInput, options: OmpPro
   else if (provider.headers !== undefined) {
     const headersMap = new YAMLMap();
     for (const [key, value] of Object.entries(provider.headers)) {
-      headersMap.set(new Scalar(key), new Scalar(value));
+      // Scalars are stringified on write: the engine's models.yml schema
+      // rejects non-string header values by dropping the whole config.
+      headersMap.set(new Scalar(key), new Scalar(typeof value === 'string' ? value : String(value)));
     }
     target.set(new Scalar('headers'), headersMap);
   }

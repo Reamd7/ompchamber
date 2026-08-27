@@ -15,7 +15,7 @@ import {
   fetchOmpProviderModels,
   registerProvidersDomainRoutes,
 } from './domain-providers.ts';
-import type { OmpProjectedModel, PutOmpProviderInput } from './domain-providers.ts';
+import type { OmpFileProviderProjection, OmpProjectedModel, PutOmpProviderInput } from './domain-providers.ts';
 import type { ParseOptions } from 'yaml';
 
 /** Read view for the list assertions: baseUrl/hasApiKey exist only on
@@ -109,6 +109,48 @@ describe('GET /omp/providers (listOmpProviders)', () => {
     expect(result.providers.some((p) => p.id === 'beta' && p.source === 'file')).toBe(true);
   });
 });
+
+  test('scalar header values in hand-authored YAML are stringified on read; structural values dropped', async () => {
+    const { modelsPath } = makeEnv({ template: `# hand-authored
+providers:
+  alpha:
+    baseUrl: https://alpha.example.com/v1
+    apiKey: ak-secret
+    headers:
+      X-Request-Id: 42
+      X-Flag: true
+      X-Bad:
+        nested: value
+    models:
+      - id: a1
+` });
+    const result = await listOmpProviders({ modelsPath, listEngineModels: () => [{ provider: 'alpha' }] });
+    const alpha = result.providers.find((p) => p.id === 'alpha');
+    expect(alpha?.source).toBe('file');
+    // SAFETY: source asserted 'file' above — the file arm is the only one
+    // carrying headers.
+    expect((alpha as OmpFileProviderProjection | undefined)?.headers)
+      .toEqual({ 'X-Request-Id': '42', 'X-Flag': 'true' });
+  });
+
+  test('PUT stringifies scalar header values the form could not have typed', async () => {
+    const { modelsPath } = makeEnv();
+    const result = await putOmpProvider({
+      provider: {
+        id: 'gamma',
+        baseUrl: 'https://gamma.example/v1',
+        api: 'openai-completions',
+        apiKey: 'gk',
+        headers: { 'X-Count': 7, 'X-Flag': false, 'X-Str': 'keep' },
+        models: [{ id: 'g1' }],
+      },
+    }, { modelsPath });
+    expect(result.status).toBe(200);
+    const written = readFileSync(modelsPath, 'utf8');
+    expect(written).toContain('X-Count: "7"');
+    expect(written).toContain('X-Flag: "false"');
+    expect(written).toContain('X-Str: keep');
+  });
 
 describe('PUT /omp/providers (putOmpProvider)', () => {
   test('creates a provider in a commented file, preserving every comment', async () => {
