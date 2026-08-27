@@ -2105,6 +2105,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.statusRow.todo.status.completed': '완료됨',
   'chat.statusRow.todo.status.cancelled': '취소됨',
   'chat.statusRow.todo.status.blocked': '차단됨',
+
+  'chat.statusRow.todo.status.blockedBy': '차단 사유: {reason}',
+  'chat.statusRow.todo.status.blockedBare': '차단됨',
   'chat.statusRow.todo.status.abandoned': '중단됨',
   'chat.statusRow.todo.priority.high': '높은 우선순위',
   'chat.statusRow.todo.priority.medium': '중간 우선순위',

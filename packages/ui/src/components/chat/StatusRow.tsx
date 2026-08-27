@@ -109,6 +109,15 @@ const TodoItemRow: React.FC<TodoItemRowProps> = ({ todo }) => {
         )}
       >
         {todo.content}
+        {todo.status === "blocked" && todo.blocker ? (
+          <span className="ml-1 text-muted-foreground truncate">
+            ({t("chat.statusRow.todo.status.blockedBy", { reason: todo.blocker })})
+          </span>
+        ) : todo.status === "blocked" ? (
+          <span className="ml-1 text-muted-foreground">
+            ({t("chat.statusRow.todo.status.blockedBare")})
+          </span>
+        ) : null}
       </span>
       <Tooltip>
         <TooltipTrigger asChild>

@@ -2073,6 +2073,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.statusRow.todo.status.completed': '已完成',
   'chat.statusRow.todo.status.cancelled': '已取消',
   'chat.statusRow.todo.status.blocked': '已封鎖',
+
+  'chat.statusRow.todo.status.blockedBy': '被 {reason} 封鎖',
+  'chat.statusRow.todo.status.blockedBare': '已封鎖',
   'chat.statusRow.todo.status.abandoned': '已放棄',
   'chat.statusRow.todo.priority.high': '高優先級',
   'chat.statusRow.todo.priority.medium': '中優先級',

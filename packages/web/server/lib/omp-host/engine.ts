@@ -1642,7 +1642,8 @@ export class OmpHostEngine {
         const todos = (event.todos ?? []).map((todo) => ({
           content: todo.content ?? '',
           status: todo.status ?? 'pending',
-          priority: todo.priority ?? 'medium'
+          priority: todo.priority ?? 'medium',
+          ...(typeof todo.blocker === 'string' && todo.blocker ? { blocker: todo.blocker } : {}),
         }));
         // Transient reminder surface only (TUI TodoReminderComponent parity:
         // event-controller.ts presents a reminder, never rewrites the todo

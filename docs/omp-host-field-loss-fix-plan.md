@@ -115,7 +115,7 @@
 
 - **`session.deleted` 缺 `info` 字段——关闭（won't-fix）**：项目不再支持外部 OpenCode 客户端，该字段仅服务外部消费方，OpenChamber 自身消费链均按 sessionID 容忍。
 - `getTelemetry`/`getEntries`/`getCustomMessages` 三个结构化端点零生产消费方 → **规格化**：docs/omp-parity/11-structured-read-surfaces.md（遥测种子/时间线 Tab/自定义消息冷读对账）。
-- Todo `blocker` 丢弃 → **规格化**：docs/omp-parity/10-todo-blocker-surface.md（omp.todo.updated 原生事件 + wire 追加字段）。
+- Todo `blocker` 丢弃 → **规格化**：docs/omp-parity/10-todo-blocker-surface.md（wire Todo 重合面直接补 `blocker?` 字段——D1 边界澄清后不开并行 omp 通道，见 00-MASTER D1 [REVISED 2026-08-28]）。
 - 工具意图状态行（原 P12 可选项）→ **规格化**：docs/omp-parity/12-tool-intent-status.md。
 - 单数 `skill` 根分组失效 → **规格化**：docs/omp-parity/13-skill-group-roots.md。
 - `parseCustomMessageEntry` 丢 `text` 字段 → 随 11 章 §4.3 一并修。

@@ -25,9 +25,9 @@ OpenChamber 现状 = **OpenCode 产品骨架 + omp 引擎**,概念层三类错�
 ## 3. 架构总决策(所有章节必须遵守)
 
 ### D1 双轨契约策略
-- **OpenCode wire 契约**(`packages/ui/src/lib/opencode/wire/`,vendored 生成代码)**不再扩张**。omp-host 继续用它承载与 OpenCode 语义重合的部分(session/message/todo/SSE 基础面),残留面按第 07 章清单停用。唯一例外:`message.part.removed` 由 05 章首次投产(retry 超越撤回),07 章删除守卫不含它;`message.removed` 仍按残留清理。
+- **OpenCode wire 契约**(`packages/ui/src/lib/opencode/wire/`,vendored 生成代码)**不再扩张**。omp-host 继续用它承载与 OpenCode 语义重合的部分(session/message/todo/SSE 基础面),残留面按第 07 章清单停用。唯一例外:`message.part.removed` 由 05 章首次投产(retry 超越撤回),07 章删除守卫不含它;`message.removed` 仍按残留清理。**[REVISED 2026-08-28 边界澄清]**"不再扩张"约束的是**概念面**:禁止把 omp 原生概念(model roles、Agent Hub、URI schemes 等)塞进 wire gen 类型;**不禁止重合面的字段补齐**——wire client 是 OpenChamber 拥有的契约拷贝(文件头自述 "OMPChamber's owned wire contract"),todo/session/message 等重合面上的可选字段增补(如 `Todo.blocker`,第 10 章)直接改 gen 类型即可,不开并行 omp 通道、不加能力协商。真正不可修改的红线只有一处:**omp SDK 本体**(`node_modules/@oh-my-pi/pi-coding-agent`)。re-vendor 时增补字段被再生覆盖属编译期响亮失败(显式引用处 tsc 报错),在文件头豁免清单登记后重放补丁即恢复。
 - **omp 原生概念**(model roles、会话树、Agent Hub、URI schemes、模式、jobs、审批)一律走 **OpenChamber 自有面**:`RuntimeAPIs` + `runtimeFetch`(`packages/ui/src/lib/api/`)新增 omp-parity 端点组(前缀 `/api/omp/...`),**事件一律走 05 章定义的唯一 `OmpEventBus → /api/omp/events` SSE 通道**(envelope/事件 ID/directory 作用域/`Last-Event-ID` 重放/schema 版本以 05 章为唯一权威),不硬塞进 OpenCode wire 生成类型。事件命名统一 `omp.<域>.<事件>`(如 `omp.model.changed`、`omp.dialog.requested`、`omp.mode.changed`);**禁止** `ompchamber:omp-*` 等并行命名。
-- 理由:wire gen 是 vendored 生成物,手改不可维护;RuntimeAPIs 是 OpenChamber 已有的自有 API 通道(ui-api-decoupling skill 管辖)。
+- 理由:wire gen 是 vendored 生成物,手改不可维护;RuntimeAPIs 是 OpenChamber 已有的自有 API 通道(ui-api-decoupling skill 管辖)。[REVISED 2026-08-28]前半句的适用范围见上——重合面字段补齐不属"手改不可维护"的禁区,豁免登记 + 编译期响亮失败已覆盖其维护成本。
 
 ### D2 投影与状态权威
 - 引擎事件 → wire/RuntimeAPIs 事件的映射集中在 omp-host;UI 端 reducer 遵循 sync-state-invariants(权威状态、乐观更新、重连对账)。

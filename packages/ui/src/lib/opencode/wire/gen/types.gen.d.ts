@@ -506,6 +506,12 @@ export type Todo = {
      * Priority level of the task: high, medium, low
      */
     priority: string;
+    /**
+     * OpenChamber overlap-surface field addition (master D1 REVISED 2026-08-28):
+     * reason a `blocked` todo is waiting on (SDK TodoItem.blocker). Optional —
+     * absent on older payloads. Re-apply after re-vendoring this file.
+     */
+    blocker?: string;
 };
 export type SessionStatus = {
     type: "idle";

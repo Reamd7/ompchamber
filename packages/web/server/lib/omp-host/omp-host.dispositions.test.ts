@@ -326,6 +326,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const h = await harness();
     h.emit({
       type: 'irc_message',
+
       message: {
         role: 'custom',
         customType: 'irc:incoming',
@@ -354,6 +355,22 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     });
     expect(h.wireOf('message.updated')).toHaveLength(wireBefore); // no card for hidden types (T3)
     expect(h.ompOf('omp.custom.appended').at(-1).payload.message.display).toBe(false);
+  });
+
+  test('todo_reminder carries blocker on blocked todos (10 章 wire 重合面补齐)', async () => {
+    const h = await harness();
+    h.emit({
+      type: 'todo_reminder',
+      todos: [
+        { content: 'ship it', status: 'blocked', blocker: 'waiting on review' },
+        { content: 'blocked without reason', status: 'blocked' },
+        { content: 'plain task', status: 'in_progress' },
+      ],
+    });
+    const todos = h.wireOf('todo.updated').at(-1).properties.todos;
+    expect(todos[0]).toEqual({ content: 'ship it', status: 'blocked', priority: 'medium', blocker: 'waiting on review' });
+    expect('blocker' in todos[1]).toBe(false);
+    expect('blocker' in todos[2]).toBe(false);
   });
 
   test('thinking/goal/ttsr/compaction dispositions emit their registered omp events', async () => {
