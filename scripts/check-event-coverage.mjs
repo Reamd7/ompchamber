@@ -6,7 +6,7 @@
 //      SDK AgentSessionEvent member set (core AgentEvent + session
 //      extensions). A new SDK event without a registered disposition fails.
 //   2. engine coverage — every manifest member has an explicit case in
-//      engine.js #handleEngineEvent (ignore members too; no silent default).
+//      engine.ts #handleEngineEvent (ignore members too; no silent default).
 //   3. omp registry wiring — manifest members with an omp track list their
 //      public names, and every listed name exists in omp-event-registry.json.
 //   4. bootstrap matrix — every durable registry entry's snapshotEndpoints
@@ -132,7 +132,7 @@ for (const member of manifestMembers) {
 }
 
 // ---- 2. engine case coverage ------------------------------------------------
-const engineSource = fs.readFileSync(path.join(ompHostDir, 'engine.js'), 'utf8');
+const engineSource = fs.readFileSync(path.join(ompHostDir, 'engine.ts'), 'utf8');
 const handlerStart = engineSource.indexOf('#handleEngineEvent(hostSession, event)');
 const switchStart = engineSource.indexOf('switch (event.type)', handlerStart);
 const switchEnd = engineSource.indexOf('\n  }\n', switchStart);
@@ -140,10 +140,10 @@ const switchBody = engineSource.slice(switchStart, switchEnd);
 const engineCases = new Set();
 for (const match of switchBody.matchAll(/case '([a-z_]+)':/g)) engineCases.add(match[1]);
 for (const member of manifestMembers) {
-  if (!engineCases.has(member)) fail(`engine.js #handleEngineEvent has no explicit case for "${member}"`);
+  if (!engineCases.has(member)) fail(`engine.ts #handleEngineEvent has no explicit case for "${member}"`);
 }
 for (const engineCase of engineCases) {
-  if (!manifestMembers.has(engineCase)) fail(`engine.js case "${engineCase}" is not in the disposition manifest`);
+  if (!manifestMembers.has(engineCase)) fail(`engine.ts case "${engineCase}" is not in the disposition manifest`);
 }
 
 // ---- 3. omp registry wiring --------------------------------------------------

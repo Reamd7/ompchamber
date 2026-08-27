@@ -1,7 +1,7 @@
 /**
  * omp ask tool result model (spec 03 §5.4.1): the SDK AskToolDetails object
  * the omp projection carries in the tool part's state.metadata.details
- * (packages/web/server/lib/omp-host/projection.js). Two answer shapes — a
+ * (packages/web/server/lib/omp-host/projection.ts). Two answer shapes — a
  * flat single-question answer and a multi-question `results` array — plus
  * the "Chat about this" redirect outcome. Anything else parses to null so
  * ToolPart falls through to the generic output rendering.

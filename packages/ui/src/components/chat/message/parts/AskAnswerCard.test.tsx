@@ -9,7 +9,7 @@ import { parseAskToolDetails } from './askToolDetails';
 
 /**
  * The stub mirrors the wire tool part the omp projection emits for a settled
- * ask tool call (packages/web/server/lib/omp-host/projection.js): the SDK
+ * ask tool call (packages/web/server/lib/omp-host/projection.ts): the SDK
  * AskToolDetails ride in state.metadata.details.
  */
 const stubAskToolPart = (details: unknown): ToolPartType => ({

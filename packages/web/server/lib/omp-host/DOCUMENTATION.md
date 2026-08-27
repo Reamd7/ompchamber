@@ -4,7 +4,7 @@ The managed engine behind OpenChamber's OpenCode-compatible API surface.
 
 ## What this module is
 
-`host.js` is an HTTP+SSE server (run under Bun) that embeds
+`host.ts` is an HTTP+SSE server (run under Bun) that embeds
 `@oh-my-pi/pi-coding-agent` sessions and serves the wire contract the shared
 UI consumes. It replaces the previously managed `opencode serve` child
 process: same launch shape (`serve --hostname --port`), same readiness stdout
@@ -16,7 +16,7 @@ The wire contract itself is owned by OpenChamber and lives in
 route table implemented here is exactly the subset of that contract the UI,
 sync engine, and web server call; everything else answers 404.
 
-- `worker-dispatch.js` — `__omp_worker_*` selector dispatch, run by the
+- `worker-dispatch.ts` — `__omp_worker_*` selector dispatch, run by the
   entrypoint BEFORE serving. The embedded SDK relaunches its own executable
   (`process.execPath` = omp-host itself in packaged builds) into worker modes
   (daemon broker, LSP mux, blob broker, ONNX inference workers, the JS-eval
@@ -30,7 +30,7 @@ sync engine, and web server call; everything else answers 404.
   unrecognized self-spawn can never become a zombie host. The table must be
   re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
   `worker-dispatch.test.js` pins the full selector list.
-- `engine.js` — `OmpHostEngine`: model/auth boot, session materialization
+- `engine.ts` — `OmpHostEngine`: model/auth boot, session materialization
   (cold reads via `SessionManager` transcript projection, live turns via
   `createAgentSession` + event pump), session operations, idle sweeping.
   Materialization injects the per-directory keyed `Settings` instance
@@ -43,24 +43,24 @@ sync engine, and web server call; everything else answers 404.
   the tool context; a lease present before first materialization is applied
   directly before publishing the host session. This keeps both custom-command
   dialogs and tool approvals interactive on the first turn.
-- `projection.js` — pure omp→wire translation with deterministic ids;
+- `projection.ts` — pure omp→wire translation with deterministic ids;
   projects dividers (`compactionSummary`/`branchSummary`), execution roles
   (`bashExecution`/`pythonExecution`), `fileMention`, and streaming partial
   tool output (`toolPartial`, never terminal).
-- `events.js` — `RingEventBus` (durable/volatile replay split) with the wire
+- `events.ts` — `RingEventBus` (durable/volatile replay split) with the wire
   `WireEventBus` on top, plus `OmpEventBus`: the single omp-native channel
   (envelope `{id,type,directory,sessionID?,schemaVersion,createdAt,payload}`,
   process-global monotonic ids, 512-durable ring, gap/restart detection
   feeding `omp.stream.resync`).
-- `registry.js` — per-project sidecar metadata, written atomically.
-- `endpoints.js` — wire route handlers + the `/omp/*` parity group:
+- `registry.ts` — per-project sidecar metadata, written atomically.
+- `endpoints.ts` — wire route handlers + the `/omp/*` parity group:
   capabilities, the omp SSE channel, transcript structured reads
   (custom-messages/telemetry/entries), `GET /agent-dir` (the Node web server
   cannot import this SDK — it resolves the profile-scoped omp agent dir
   here), and mounts for the domain modules below.
-- `omp-parity.js` — `ompFeatures()` capability table (the server-adjudicated
+- `omp-parity.ts` — `ompFeatures()` capability table (the server-adjudicated
   switchboard, master R2) + registry access.
-- `domain-models.js` (specs 01/06) — per-directory keyed Settings store
+- `domain-models.ts` (specs 01/06) — per-directory keyed Settings store
   (`cloneForCwd` derivation, boot instance as global-write executor; a
   successful global-scope write invalidates the cached clones so the next
   read or session for those directories re-derives with the post-write
@@ -68,7 +68,7 @@ sync engine, and web server call; everything else answers 404.
   `/omp/models` role payload, `/omp/settings` proxy with credential
   sanitization (R9) and modelRoles-only project writes (R6), legacy
   defaultModel detect/import.
-- `domain-providers.js` — OpenChamber-owned GUI CRUD over the engine's
+- `domain-providers.ts` — OpenChamber-owned GUI CRUD over the engine's
   custom provider file (`~/.omp/agent/models.yml`; capability `providers.v1`).
   `GET /omp/providers` tags each engine provider `file` (models.yml-defined,
   editable, key masked as `hasApiKey`) or `engine` (builtin/login, read-only);
@@ -82,11 +82,11 @@ sync engine, and web server call; everything else answers 404.
   atomically rename, keep a one-time `models.yml.backup` anchor, then
   `engine.refreshModels()` (mtime-checked static reload) makes the change
   live without a host restart.
-- `domain-dialogs.js` (spec 03) — `UiLeaseTable` (per-session UI attachment
+- `domain-dialogs.ts` (spec 03) — `UiLeaseTable` (per-session UI attachment
   (atomic respond/abort, presented-ack `T_answer` + `T_present` TTLs, orphan
   settle on lease loss, R11 shutdown settle-all), the WebUIContext bridge,
   and the always-allow write-first transaction.
-- `domain-modes.js` (spec 02) — mode tracker (mode_change persistence +
+- `domain-modes.ts` (spec 02) — mode tracker (mode_change persistence +
   cold recovery), plan review bridge (`setPlanProposalHandler`), persona
   resolution (`personaFor`: build/plan/unset → standard; unknown → degrade +
   notice), agent-definitions CRUD backed by the omp discovery chain
@@ -96,20 +96,20 @@ sync engine, and web server call; everything else answers 404.
   (SDK frontmatter contract round-trip), `migrateSidecarAgents` (one-time
   `openchamber-agents.json` → `.md` + persona mirror, §6.2), and personas
   CRUD over the personas sidecar.
-- `domain-uri.js` (spec 04) — local:// bridge (session-pinned to each
+- `domain-uri.ts` (spec 04) — local:// bridge (session-pinned to each
   session's own artifacts dir — TUI parity, spec 04 §5.2.3: transcript
   sibling dir, never the project-level session dir; zero global
   mutation), URI token service (no absolute sourcePath echo, R7), session
   tree, `AgentRunsAggregator` (250ms coalesced `omp.agents.updated`),
   parked/historical split, jobs 501 steady state (R12).
-- `domain-commands.js` (spec 08 §5.4) — `GET /api/omp/commands?directory=`:
+- `domain-commands.ts` (spec 08 §5.4) — `GET /api/omp/commands?directory=`:
   omp slash-command discovery for the UI's three-layer pipeline. Tier A rows
   (`client-builtin`) are the full reserved builtin registry; Tier B rows
   (`engine`) come from a headless `buildAvailableSlashCommands` session
   (skills via `discoverSkills` + file commands from the directory; extension/
   custom TS commands need a live session and stay absent). Gated by
   `commands.v1`; discovery failure degrades to the builtin-only list.
-- `domain-plugins.js` (spec 09/OMP plugin parity) — `/api/omp/plugins` reads the SDK `PluginManager` and marketplace registries, exposes only sanitized metadata (never install paths), and `/api/omp/plugins/extensions/*` reads the profile-scoped `.omp/agent/extensions` files. Mutations return deferred-restart outcomes because extension discovery is session-start state.
+- `domain-plugins.ts` (spec 09/OMP plugin parity) — `/api/omp/plugins` reads the SDK `PluginManager` and marketplace registries, exposes only sanitized metadata (never install paths), and `/api/omp/plugins/extensions/*` reads the profile-scoped `.omp/agent/extensions` files. Mutations return deferred-restart outcomes because extension discovery is session-start state.
 - `event-dispositions.json` / `omp-event-registry.json` /
   `omp-bootstrap-matrix.json` — machine-checked contracts.
   `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)
@@ -214,7 +214,7 @@ sync engine, and web server call; everything else answers 404.
    (`bun build --compile`, staged by the desktop packaging).
 2. Bundled `resources/omp-host/omp-host(.exe)`.
 3. Bun runtime (`OMPCHAMBER_OMP_HOST_RUNTIME` → current process → PATH)
-   launching `host.js` from source — the development path.
+   launching `host.ts` from source — the development path.
 
 ## Known engine gaps (explicit, not silent)
 
@@ -233,3 +233,15 @@ Permission/question protocols answer authoritatively empty until their UI
 SDK by specifier including its deep `config/...` paths, and the real SDK
 graph executes Bun globals at module top level, so vitest (Node) excludes
 this directory and the web package's `test` script chains both runners.
+
+## Type checking
+
+The module is TypeScript, checked by `tsc --noEmit -p tsconfig.server.json`
+(chained into the web package's `type-check` script). That config extends
+the package tsconfig but runs non-strict with `types: ["node"]` — the code
+carries real named contracts (every factory exports its return/deps
+interfaces; SDK types import via `import type`) without yet paying full
+strict-mode annotations; ratcheting strictness is future work. `bun.d.ts`
+in this directory ambiently declares the small Bun runtime surface used
+(`Bun.serve`, `NodeJS.ProcessVersions.bun`, and module `bun:test`); replace
+it with the official bun-types if that package ever becomes a dependency.

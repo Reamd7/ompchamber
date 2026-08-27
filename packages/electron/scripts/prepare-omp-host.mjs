@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const electronRoot = path.resolve(__dirname, '..');
 const workspaceRoot = path.resolve(electronRoot, '../..');
 const outputDir = path.join(electronRoot, 'resources', 'omp-host');
-const hostEntry = path.join(workspaceRoot, 'packages', 'web', 'server', 'lib', 'omp-host', 'host.js');
+const hostEntry = path.join(workspaceRoot, 'packages', 'web', 'server', 'lib', 'omp-host', 'host.ts');
 
 const targetForPlatform = (platform, targetArchitecture) => {
   const arch = targetArchitecture.opencode;

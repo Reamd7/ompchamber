@@ -148,7 +148,7 @@ const readWindowsImageName = (pid: number): string | null => {
 };
 
 // The managed engine is the omp host (`omp-host.exe` /
-// `.../lib/omp-host/host.js serve`); the legacy `opencode serve` shape stays
+// `.../lib/omp-host/host.ts serve`); the legacy `opencode serve` shape stays
 // accepted so an older build's entries still reap. Keep in sync with
 // packages/web/server/lib/opencode/managed-process-registry.js.
 const commandIdentifiesOurServer = (command: string, entry: ManagedProcessEntry): boolean => {

@@ -11,7 +11,7 @@
 |---|---|---|
 | Bun | 1.3.x(仓库锁定 `bun@1.3.14`) | 包管理 + 运行时;`package.json` 的 `packageManager` 字段是权威 |
 | Node | ≥22 | 少量脚本(vitest、isolated 测试运行器、**CDP 浏览器驱动**)必须用 node 跑,见 §6 |
-| omp 引擎 | 自动 | web 服务器会自行 spawn `packages/web/server/lib/omp-host/host.js` 子进程,无需手动启动 |
+| omp 引擎 | 自动 | web 服务器会自行 spawn `packages/web/server/lib/omp-host/host.ts` 子进程,无需手动启动 |
 
 ```bash
 git clone https://github.com/Reamd7/ompchamber
@@ -169,7 +169,7 @@ await page.goto("http://localhost:3903");
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | 改了服务端代码,日志一片寂静 | **引擎子进程的 stdio 只在启动握手期被接管,之后全部丢弃**(`server/lib/opencode/lifecycle.js`) | 要看引擎日志就单飞引擎,见下 |
-| 想直接调试引擎(扩展/域模块) | — | `cd packages/web && OPENCODE_SERVER_PASSWORD=dev bun server/lib/omp-host/host.js serve --hostname 127.0.0.1 --port 3905`,日志直落终端;认证 = Basic `opencode:<密码>` |
+| 想直接调试引擎(扩展/域模块) | — | `cd packages/web && OPENCODE_SERVER_PASSWORD=dev bun server/lib/omp-host/host.ts serve --hostname 127.0.0.1 --port 3905`,日志直落终端;认证 = Basic `opencode:<密码>` |
 | 会话 widget/数据"明明有却查不到" | 目录键形态不一致(正斜杠/反斜杠/大小写) | 全链路统一走 `normalizeDirectoryKey`;curl 用 `--get --data-urlencode` |
 | 扩展命令/工具没出现 | 扩展 runner 只存在于**物化会话**;headless 命令发现天然不含扩展 | 先建会话 + 拿 UI 租约,再查 `/api/omp/commands` |
 | UI 租约(lease)拿到但扩展没初始化 | 租约可能先于会话惰性物化 | 已修复:attach 会自行物化;若复现,查 `#attachDialogUi` 路径 |

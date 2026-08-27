@@ -1,7 +1,7 @@
 // Launch-spec resolution for the managed omp host process.
 //
 // The managed engine is no longer the `opencode` CLI: it is the OMPChamber
-// omp host (server/lib/omp-host/host.js) run under Bun. The host embeds
+// omp host (server/lib/omp-host/host.ts) run under Bun. The host embeds
 // @oh-my-pi/pi-coding-agent and serves the OpenCode-compatible wire surface,
 // so everything around the child process (ports, Basic auth, readiness line,
 // health checks, orphan reaping) works exactly as it did for `opencode serve`.
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export const OMP_HOST_ENTRY = path.join(__dirname, '..', 'omp-host', 'host.js');
+export const OMP_HOST_ENTRY = path.join(__dirname, '..', 'omp-host', 'host.ts');
 
 const isBunRuntime = () => Boolean(process.versions?.bun) && !process.env.ELECTRON_RUN_AS_NODE;
 const hostBinaryName = () => (process.platform === 'win32' ? 'omp-host.exe' : 'omp-host');

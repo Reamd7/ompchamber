@@ -155,7 +155,7 @@ const readWindowsImageName = (pid) => {
 };
 
 // The managed engine is the omp host: either a compiled `omp-host(.exe)`
-// binary or a Bun runtime launching `.../lib/omp-host/host.js serve`. Accept
+// binary or a Bun runtime launching `.../lib/omp-host/host.ts serve`. Accept
 // the legacy `opencode serve` shape too so an older build's registry entries
 // still reap.
 const isManagedEngineIdentifier = (command) => {

@@ -19,7 +19,7 @@ afterEach(() => {
 
 describe('managed process identification', () => {
   // The reaper once matched only `opencode`; the managed engine has been the
-  // omp host (`omp-host.exe` / `.../lib/omp-host/host.js serve`) ever since,
+  // omp host (`omp-host.exe` / `.../lib/omp-host/host.ts serve`) ever since,
   // which made orphan reaping dead code — leaked engines were never killed.
   describe('commandIdentifiesOurServer', () => {
     it('identifies a compiled omp-host serve command line', () => {
@@ -31,10 +31,10 @@ describe('managed process identification', () => {
       ).toBe(true);
     });
 
-    it('identifies a from-source host.js launch', () => {
+    it('identifies a from-source host.ts launch', () => {
       expect(
         commandIdentifiesOurServer(
-          'bun /repo/packages/web/server/lib/omp-host/host.js serve --hostname 127.0.0.1 --port 3902',
+          'bun /repo/packages/web/server/lib/omp-host/host.ts serve --hostname 127.0.0.1 --port 3902',
           { port: 3902 },
         ),
       ).toBe(true);
@@ -50,7 +50,7 @@ describe('managed process identification', () => {
     });
 
     it('ties the match to the registered port', () => {
-      const command = 'bun /repo/packages/web/server/lib/omp-host/host.js serve --hostname 127.0.0.1 --port 3902';
+      const command = 'bun /repo/packages/web/server/lib/omp-host/host.ts serve --hostname 127.0.0.1 --port 3902';
       expect(commandIdentifiesOurServer(command, { port: 3902 })).toBe(true);
       expect(commandIdentifiesOurServer(command, { port: 4000 })).toBe(false);
     });

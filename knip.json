@@ -33,12 +33,13 @@
         "src/main.tsx",
         "src/sw.ts",
         "bin/**/*.{test,spec}.{js,cjs,mjs}",
-        "server/**/*.{test,spec}.{js,cjs,mjs}",
+        "server/lib/omp-host/host.ts",
+        "server/**/*.{test,spec}.{js,cjs,mjs,ts}",
         "src/**/*.{test,spec}.{ts,tsx}"
       ],
       "project": [
         "bin/**/*.js",
-        "server/**/*.{js,mjs,cjs}",
+        "server/**/*.{js,mjs,cjs,ts}",
         "src/**/*.{ts,tsx}"
       ]
     },

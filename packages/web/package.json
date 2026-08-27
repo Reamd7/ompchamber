@@ -17,7 +17,7 @@
     "dev:server:watch": "nodemon --watch server --ext js --exec \"bun server/index.js\"",
     "build": "rsbuild build",
     "build:watch": "rsbuild build --watch",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "lint": "eslint \"./src/**/*.{ts,tsx}\" --config ../../eslint.config.js",
     "test": "vitest run && bun test server/lib/omp-host/",
     "start": "node bin/cli.js serve"
