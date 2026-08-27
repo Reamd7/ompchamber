@@ -113,6 +113,26 @@ const plainValue = (doc, node) => (node == null ? null : node.toJS(doc, { maxAli
 
 const isRecord = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 
+// Canonical effort vocabulary and order (models-config-schema EffortSchema /
+// EFFORT_ORDER — not exported by the SDK, mirrored here).
+const THINKING_EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * Efforts for UI prefill from canonical or legacy shapes. Mirrors
+ * ModelThinkingSchema normalization (efforts beats levels beats the
+ * minLevel..maxLevel range) so a hand-authored range block prefills the
+ * dialog with the efforts the engine itself resolves — otherwise the dialog
+ * shows an empty list and its save silently deletes the block.
+ */
+const deriveThinkingEfforts = (thinking) => {
+  const list = Array.isArray(thinking.efforts) ? thinking.efforts
+    : Array.isArray(thinking.levels) ? thinking.levels : null;
+  if (list !== null) return list.filter((e) => THINKING_EFFORT_ORDER.includes(e));
+  const min = THINKING_EFFORT_ORDER.indexOf(thinking.minLevel);
+  const max = THINKING_EFFORT_ORDER.indexOf(thinking.maxLevel);
+  return min >= 0 && max >= min ? THINKING_EFFORT_ORDER.slice(min, max + 1) : [];
+};
+
 /** Projected file provider for GET / edit prefill. apiKey never leaves this
  * module — only `hasApiKey`. */
 const projectFileProvider = (id, value) => {
@@ -145,11 +165,10 @@ const projectFileProvider = (id, value) => {
         ...(typeof model.baseUrl === 'string' ? { baseUrl: model.baseUrl } : {}),
         ...(typeof model.api === 'string' ? { api: model.api } : {}),
         ...(typeof model.contextPromotionTarget === 'string' ? { contextPromotionTarget: model.contextPromotionTarget } : {}),
-        ...(typeof model.compactionModel === 'string' ? { compactionModel: model.compactionModel } : {}),
         ...(isRecord(model.thinking)
           ? {
               thinking: {
-                ...(Array.isArray(model.thinking.efforts) ? { efforts: model.thinking.efforts.filter((e) => typeof e === 'string') } : {}),
+                efforts: deriveThinkingEfforts(model.thinking),
                 ...(typeof model.thinking.defaultLevel === 'string' ? { defaultLevel: model.thinking.defaultLevel } : {}),
               },
             }
@@ -340,14 +359,23 @@ const applyManagedModelFields = (modelNode, incoming) => {
     if (incoming.thinking === null || efforts.length === 0) {
       modelNode.delete('thinking');
     } else {
-      const thinkingNode = new YAMLMap();
+      // Update in place when a thinking block exists: mode/efforts/defaultLevel
+      // are GUI-managed, but keys the dialog never shows (effortMap,
+      // supportsDisplay) and their comments survive, and the canonical
+      // efforts retire the legacy range vocabulary they replace.
+      const priorThinking = modelNode.get('thinking');
+      const thinkingNode = isMap(priorThinking) ? priorThinking : new YAMLMap();
+      thinkingNode.delete('minLevel');
+      thinkingNode.delete('maxLevel');
+      thinkingNode.delete('levels');
+      const defaultLevel = typeof incoming.thinking.defaultLevel === 'string' && incoming.thinking.defaultLevel
+        ? incoming.thinking.defaultLevel : null;
+      if (!defaultLevel) thinkingNode.delete('defaultLevel');
       thinkingNode.set(new Scalar('mode'), new Scalar(typeof incoming.thinking.mode === 'string' ? incoming.thinking.mode : 'effort'));
       const effortsSeq = new YAMLSeq();
       for (const effort of efforts) effortsSeq.items.push(new Scalar(effort));
       thinkingNode.set(new Scalar('efforts'), effortsSeq);
-      if (typeof incoming.thinking.defaultLevel === 'string' && incoming.thinking.defaultLevel) {
-        thinkingNode.set(new Scalar('defaultLevel'), new Scalar(incoming.thinking.defaultLevel));
-      }
+      if (defaultLevel) thinkingNode.set(new Scalar('defaultLevel'), new Scalar(defaultLevel));
       modelNode.set(new Scalar('thinking'), thinkingNode);
     }
   }
@@ -624,6 +652,12 @@ export const fetchOmpProviderModels = async (input, options = {}) => {
   const baseUrl = draftBaseUrl || (typeof value?.baseUrl === 'string' ? value.baseUrl.trim() : '');
   if (!baseUrl) {
     return { status: 400, body: { error: 'no-base-url', message: `provider ${id} has no baseUrl to fetch from` } };
+  }
+  // Same contract as PUT: http(s) only. The probe runs server-side, and
+  // non-http schemes (Bun's fetch resolves file://) would turn this endpoint
+  // into a local-file read.
+  if (!/^https?:\/\//.test(baseUrl)) {
+    return { status: 400, body: { error: 'validation', message: 'provider.baseUrl must be an http(s) URL' } };
   }
   const apiKey = draftApiKey || (typeof value?.apiKey === 'string' ? value.apiKey : '');
 

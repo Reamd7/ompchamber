@@ -597,7 +597,7 @@ export const OmpProviderForm: React.FC<OmpProviderFormProps> = ({
                   }
                 : r));
             }
-            return [...current.filter((r) => r.id.trim().length > 0), { ...emptyModelRow(), ...draft, thinkingTouched: true }];
+            return [...current.filter((r) => r.id.trim().length > 0), { ...emptyModelRow(), ...draft, thinkingTouched: true, dialogTouched: true }];
           });
           setFieldErrors((c) => ({ ...c, modelId: undefined }));
           setModelDialog({ rowKey: null, draft: null });

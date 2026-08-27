@@ -268,6 +268,53 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     expect(alpha.models.find((m) => m.id === 'a2').input).toEqual(['text', 'image']);
   });
 
+  test('thinking update preserves hand-authored effortMap/supportsDisplay, retires legacy range keys; GET derives legacy efforts', async () => {
+    const { modelsPath } = makeEnv({ template: [
+      'providers:',
+      '  alpha:',
+      '    baseUrl: https://alpha.example.com/v1',
+      '    apiKey: ak-secret-one',
+      '    api: openai-responses',
+      '    models:',
+      '      - id: a1',
+      '        thinking:',
+      '          mode: effort',
+      '          minLevel: low',
+      '          maxLevel: high',
+      '          defaultLevel: low',
+      '          supportsDisplay: true',
+      '          effortMap:',
+      '            low: x-low',
+      '            high: x-high',
+    ].join('\n') });
+
+    // Before any write, GET projects the range as the efforts the engine
+    // itself resolves (ModelThinkingSchema normalization) so the dialog
+    // prefills instead of offering to delete the block.
+    const before = await listOmpProviders({ modelsPath });
+    expect(before.providers[0].models[0].thinking.efforts).toEqual(['low', 'medium', 'high']);
+    expect(before.providers[0].models[0].thinking.defaultLevel).toBe('low');
+
+    const result = await putOmpProvider({
+      provider: {
+        id: 'alpha',
+        baseUrl: 'https://alpha.example.com/v1',
+        models: [{ id: 'a1', thinking: { mode: 'effort', efforts: ['low', 'medium', 'high'] } }],
+      },
+    }, { modelsPath });
+    expect(result.status).toBe(200);
+    const written = readFileSync(modelsPath, 'utf8');
+    // GUI-managed keys replace their legacy vocabulary...
+    expect(written).not.toContain('minLevel');
+    expect(written).not.toContain('maxLevel');
+    expect(written).not.toContain('defaultLevel'); // dialog sent none → cleared
+    expect(written).toContain('- medium');
+    // ...while keys the dialog never shows survive the block update.
+    expect(written).toContain('supportsDisplay: true');
+    expect(written).toContain('x-low');
+    expect(written).toContain('x-high');
+  });
+
   test('dialog null payload clears per-model baseUrl instead of writing literal nulls (engine drops whole models.yml on null)', async () => {
     const { modelsPath } = makeEnv();
     // Establish a per-model endpoint override the dialog will clear.
@@ -556,5 +603,25 @@ describe('POST /omp/providers/{id}/fetch-models (fetchOmpProviderModels)', () =>
     const network = await fetchOmpProviderModels({ id: 'alpha' }, { modelsPath, fetchImpl: async () => { throw new Error('boom'); } });
     expect(network.status).toBe(502);
     expect(network.body.message).toContain('boom');
+  });
+
+  test('rejects non-http(s) baseUrl before any request fires (draft and stored)', async () => {
+    const { modelsPath } = makeEnv();
+    const calls = [];
+    const fetchImpl = async (url) => { calls.push(url); return new Response('[]'); };
+
+    // Draft override: Bun's fetch resolves file://, so the scheme check must
+    // gate the server-side probe, not rely on fetch failing.
+    const draft = await fetchOmpProviderModels({ id: 'brand-new', baseUrl: 'file:///C:/Windows/win.ini' }, { modelsPath, fetchImpl });
+    expect(draft.status).toBe(400);
+    expect(draft.body.error).toBe('validation');
+
+    // Stored value from a hand-authored file: same contract as PUT.
+    const { modelsPath: storedPath } = makeEnv({ template: 'providers:\n  alpha:\n    baseUrl: file:///etc/passwd\n    apiKey: k\n' });
+    const stored = await fetchOmpProviderModels({ id: 'alpha' }, { modelsPath: storedPath, fetchImpl });
+    expect(stored.status).toBe(400);
+    expect(stored.body.error).toBe('validation');
+
+    expect(calls).toEqual([]);
   });
 });
