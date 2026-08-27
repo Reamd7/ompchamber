@@ -737,6 +737,25 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         if (!entry) return [];
         return ['inherit', 'off', 'auto', ...entry.thinking.supported];
     }, [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.models, ompSessionModel?.provider, ompSessionModel?.id]);
+    // GAP-06 draft tail: before a session exists there is no session model to
+    // derive levels from — use the picked model's snapshot entry. The variant
+    // slot carries the pick (undefined = inherit) into
+    // materializeOpenDraftSession, which applies it as the fresh session's
+    // thinking level under model roles.
+    const ompDraftThinkingLevels = React.useMemo(() => {
+        if (!ompModelRoles.modelRolesEnabled || !currentProviderId || !currentModelId) {
+            return [];
+        }
+        const entry = ompModelRoles.snapshot?.models.find(
+            (model) => model.provider === currentProviderId && model.id === currentModelId,
+        );
+        if (!entry) return [];
+        return Array.from(new Set(['off', 'auto', ...entry.thinking.supported]));
+    }, [ompModelRoles.modelRolesEnabled, ompModelRoles.snapshot?.models, currentProviderId, currentModelId]);
+    // Under model roles the variant domain is the picked model's thinking
+    // levels — the wire variant list is empty there and would otherwise clear
+    // every draft thinking pick in the reconcile effect below.
+    const effectiveVariants = ompModelRoles.modelRolesEnabled ? ompDraftThinkingLevels : availableVariants;
     const [ompModeMenuOpen, setOmpModeMenuOpen] = React.useState(false);
     const hasRenderableCurrentSessionSnapshot = useSessionRenderable(
         currentSessionId ?? '',
@@ -912,8 +931,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     }, [closeMobilePanel, setAgentMenuOpen, setSettingsDialogOpen, setSettingsPage]);
 
     // Picking a role applies its resolved model through the model-selection
-    // path and switches the session's model server-side under omp; roles
-    // themselves stay settings-owned (GAP-05 tail handles assignments).
+    // path and switches the session's model server-side under omp; a role
+    // with an explicit thinking level applies it too (TUI applyRoleModel
+    // semantics). Roles themselves stay settings-owned (GAP-05 tail handles
+    // assignments).
     const handleRoleSelect = React.useCallback((slot: OmpRoleSlot) => {
         if (!slot.model) return;
         const result = applyModelSelectionWithVariant(slot.model.provider, slot.model.id, undefined);
@@ -921,10 +942,15 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             console.error('[ModelControls] Role model not available for selection:', { role: slot.id, model: slot.model });
             return;
         }
-        switchOmpSessionModel(slot.model.provider, slot.model.id);
+        // Draft: the variant slot carries the level into the fresh session at
+        // materialize time; a live session gets it through the server switch.
+        if (!currentSessionId && slot.model.thinkingLevel !== undefined) {
+            setCurrentVariant(slot.model.thinkingLevel);
+        }
+        switchOmpSessionModel(slot.model.provider, slot.model.id, slot.model.thinkingLevel);
         setAgentMenuOpen(false);
         closeMobilePanel();
-    }, [applyModelSelectionWithVariant, setAgentMenuOpen, closeMobilePanel, switchOmpSessionModel]);
+    }, [applyModelSelectionWithVariant, currentSessionId, setAgentMenuOpen, closeMobilePanel, setCurrentVariant, switchOmpSessionModel]);
 
     // GAP-06: in-session thinking level change — same endpoint as the model
     // switch; the engine short-circuits to setThinkingLevel when the model is
@@ -947,6 +973,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
         });
     }, [currentSessionId, ompModels, ompPickerDirectory, ompSessionModel?.id, ompSessionModel?.provider, t]);
+
+    // GAP-06 draft tail: with no session yet, the level is a local pick in
+    // the variant slot (undefined = inherit); materializeOpenDraftSession
+    // applies it to the fresh session as its thinking level.
+    const handleDraftThinkingSelect = React.useCallback((level: string) => {
+        const nextVariant = level === 'inherit' ? undefined : level;
+        manualVariantSelectionRef.current = true;
+        setCurrentVariant(nextVariant);
+        if (currentProviderId && currentModelId) {
+            addRecentEffort(currentProviderId, currentModelId, nextVariant);
+        }
+    }, [addRecentEffort, currentModelId, currentProviderId, setCurrentVariant]);
 
     // GAP-05 tail: assign a picker row's model to a role through the settings
     // face (PUT /api/omp/settings modelRoles.<role>; scope defaults to the
@@ -1413,8 +1451,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     React.useEffect(() => {
         if (!contextHydrated || !currentAgentName) {
-            manualVariantSelectionRef.current = false;
-            setCurrentVariant(undefined);
             return;
         }
 
@@ -1424,13 +1460,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (availableVariants.length === 0) {
+        // Under model roles this is the picked model's thinking levels; on
+        // legacy runtimes it stays the wire variant list.
+        const variantDomain = effectiveVariants;
+        if (variantDomain.length === 0) {
             manualVariantSelectionRef.current = false;
             setCurrentVariant(undefined);
             return;
         }
 
-        if (currentVariant && !availableVariants.includes(currentVariant)) {
+        if (currentVariant && !variantDomain.includes(currentVariant)) {
             setCurrentVariant(undefined);
             return;
         }
@@ -1439,7 +1478,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         // user selection while drafting.
         if (!currentSessionId) {
             if (!currentVariant && !manualVariantSelectionRef.current) {
-                const desired = settingsDefaultVariant && availableVariants.includes(settingsDefaultVariant)
+                const desired = settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
                     ? settingsDefaultVariant
                     : undefined;
                 setCurrentVariant(desired);
@@ -1454,16 +1493,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             currentModelId,
         );
 
-        const resolvedSaved = savedVariant && availableVariants.includes(savedVariant)
+        const resolvedSaved = savedVariant && variantDomain.includes(savedVariant)
             ? savedVariant
-            : settingsDefaultVariant && availableVariants.includes(settingsDefaultVariant)
+            : settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
                 ? settingsDefaultVariant
                 : undefined;
 
         setCurrentVariant(resolvedSaved);
         manualVariantSelectionRef.current = false;
     }, [
-        availableVariants,
+        effectiveVariants,
         contextHydrated,
         currentSessionId,
         currentAgentName,
@@ -2983,10 +3022,20 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         // the session's current model; no options → no slot (legacy slot is
         // suppressed because variants are dead under roles).
         if (ompModelRoles.modelRolesEnabled) {
-            if (!isReady || ompThinkingOptions.length === 0 || !currentSessionId) {
+            // A live session reads levels from its session model; a draft
+            // (no session yet) reads them from the picked model and keeps
+            // the pick in the variant slot until the session materializes.
+            const inSession = Boolean(currentSessionId);
+            const levelOptions = inSession
+                ? ompThinkingOptions
+                : ['inherit', ...ompDraftThinkingLevels];
+            if (!isReady || levelOptions.length === 0 || (inSession && ompThinkingOptions.length === 0)) {
                 return null;
             }
-            const activeLevel = ompThinkingState?.configured ?? ompThinkingState?.thinkingLevel ?? ompSessionModelBadge?.thinkingLevel ?? 'inherit';
+            const activeLevel = inSession
+                ? (ompThinkingState?.configured ?? ompThinkingState?.thinkingLevel ?? ompSessionModelBadge?.thinkingLevel ?? 'inherit')
+                : (currentVariant ?? 'inherit');
+            const onSelect = inSession ? handleOmpThinkingSelect : handleDraftThinkingSelect;
             const isDefault = activeLevel === 'inherit';
             const colorClass = isDefault ? 'text-muted-foreground' : 'text-[color:var(--status-info)]';
             const displayLevel = activeLevel.charAt(0).toUpperCase() + activeLevel.slice(1);
@@ -3015,14 +3064,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(200px,calc(100vw-2rem))]">
                         <DropdownMenuLabel className="typography-ui-header font-semibold text-foreground">{t('chat.modelControls.thinking')}</DropdownMenuLabel>
-                        {ompThinkingOptions.map((level) => {
+                        {levelOptions.map((level) => {
                             const selected = (level === 'inherit' ? 'inherit' : level) === activeLevel;
                             const label = level.charAt(0).toUpperCase() + level.slice(1);
                             return (
                                 <DropdownMenuItem
                                     key={level}
                                     className="typography-meta"
-                                    onSelect={() => handleOmpThinkingSelect(level)}
+                                    onSelect={() => onSelect(level)}
                                 >
                                     <div className="flex items-center justify-between gap-2 w-full min-w-0">
                                         <span className="typography-meta font-medium text-foreground truncate min-w-0">{label}</span>

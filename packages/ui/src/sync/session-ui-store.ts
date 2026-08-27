@@ -818,6 +818,7 @@ export const applyOmpSessionModelToFreshSession = async (
   directory: string | null | undefined,
   providerID?: string,
   modelID?: string,
+  thinkingLevel?: string,
 ): Promise<void> => {
   if (!providerID || !modelID) return
   const directoryKey = normalizePath(directory ?? null)
@@ -828,7 +829,12 @@ export const applyOmpSessionModelToFreshSession = async (
     ?.setSessionModel(
       sessionID,
       { providerID, modelID },
-      { directory: directoryKey },
+      {
+        directory: directoryKey,
+        // The draft's picked thinking level rides the same switch; undefined
+        // (inherit) leaves the engine's default resolution alone.
+        ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+      },
     )
     .catch(() => null)
   if (switchResult && !switchResult.ok && !switchResult.unavailable) {
@@ -922,7 +928,7 @@ export async function materializeOpenDraftSession(selection: {
   // model-free, so the picked model must be applied to the fresh session
   // before the first turn routes — otherwise the engine's role/default
   // resolution silently overrides the picker.
-  await applyOmpSessionModelToFreshSession(created.id, createdDirectory, selection.providerID, selection.modelID)
+  await applyOmpSessionModelToFreshSession(created.id, createdDirectory, selection.providerID, selection.modelID, selection.variant)
 
   store.setCurrentSession(created.id, createdDirectory)
 
@@ -2097,7 +2103,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     // Same GAP-02/GAP-04 fix as the chat draft: the execution model must
     // reach the fresh session server-side before the first turn routes.
-    await applyOmpSessionModelToFreshSession(session.id, session.directory ?? sessionDirectory, pID, mID)
+    await applyOmpSessionModelToFreshSession(session.id, session.directory ?? sessionDirectory, pID, mID, execution.variant || undefined)
 
     await get().sendMessage(
       composeForkSessionMessage(execution.instructions, assistantPlanText),

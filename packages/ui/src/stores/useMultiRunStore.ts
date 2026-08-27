@@ -303,7 +303,7 @@ export const useMultiRunStore = create<MultiRunStore>()(
                     // GAP-02/GAP-04: prompts are model-free under omp model
                     // roles, so each run's picked model must be applied to
                     // its fresh session before the first turn routes.
-                    await applyOmpSessionModelToFreshSession(run.sessionId, run.worktreePath, run.providerID, run.modelID);
+                    await applyOmpSessionModelToFreshSession(run.sessionId, run.worktreePath, run.providerID, run.modelID, run.variant);
                     await routeMessage({
                       sessionId: run.sessionId,
                       directory: run.worktreePath,

@@ -136,8 +136,7 @@ interface HarnessOptions {
     directory: string | null;
     authoritativeModel: { provider: string; id: string } | null;
 }
-
-let currentSwitch: ((providerId: string, modelId: string) => void) | null = null;
+let currentSwitch: ((providerId: string, modelId: string, thinkingLevel?: string) => void) | null = null;
 const renderHarness = (root: Root, options: HarnessOptions) => {
     const Harness = () => {
         const hook = useOmpSessionModelSwitch({
@@ -198,6 +197,21 @@ describe('useOmpSessionModelSwitch', () => {
             model: { providerID: 'prov', modelID: 'next' },
             options: { directory: '/repo' },
         }]);
+
+        // An explicit thinking level rides the switch; without one the
+        // option stays absent (never 'inherit' — undefined is the engine's
+        // keep-current contract).
+        await act(async () => {
+            switchModel('prov', 'other', 'xhigh');
+        });
+        expect(calls[1]).toEqual({
+            sessionID: 'ses_1',
+            model: { providerID: 'prov', modelID: 'other' },
+            options: { directory: '/repo', thinkingLevel: 'xhigh' },
+        });
+        await act(async () => {
+            pendingResults[1].resolve({ ok: true, model: 'prov/other' });
+        });
 
         await act(async () => {
             pendingResults[0].resolve({ ok: true, model: 'prov/next' });

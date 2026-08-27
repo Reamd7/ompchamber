@@ -290,23 +290,6 @@ beforeEach(() => {
 })
 
 describe("materializeOpenDraftSession omp model application", () => {
-  test("applies the picked model to the fresh session when the omp gate is on", async () => {
-    ompGateEnabled = true
-    openDraft("/repo")
-
-    const result = await materializeOpenDraftSession({ providerID: "prov", modelID: "next" })
-
-    expect(result?.sessionId).toBe("ses_omp_draft")
-    // Regression pin: the new session must become the current one (an
-    // editing accident once dropped this line while adding the switch).
-    expect(useSessionUIStore.getState().currentSessionId).toBe("ses_omp_draft")
-    expect(setSessionModelCalls).toEqual([{
-      sessionID: "ses_omp_draft",
-      model: { providerID: "prov", modelID: "next" },
-      options: { directory: "/repo" },
-    }])
-  })
-
   test("does not write when the gate is off or no model was picked", async () => {
     openDraft("/repo")
     await materializeOpenDraftSession({ providerID: "prov", modelID: "next" })
@@ -315,6 +298,23 @@ describe("materializeOpenDraftSession omp model application", () => {
     ompGateEnabled = true
     await materializeOpenDraftSession({ agent: "build" })
     expect(setSessionModelCalls).toEqual([])
+  })
+
+  test("applies the picked model to the fresh session when the omp gate is on", async () => {
+    ompGateEnabled = true
+    openDraft("/repo")
+
+    const result = await materializeOpenDraftSession({ providerID: "prov", modelID: "next", variant: "xhigh" })
+
+    expect(result?.sessionId).toBe("ses_omp_draft")
+    // Regression pin: the new session must become the current one (an
+    // editing accident once dropped this line while adding the switch).
+    expect(useSessionUIStore.getState().currentSessionId).toBe("ses_omp_draft")
+    expect(setSessionModelCalls).toEqual([{
+      sessionID: "ses_omp_draft",
+      model: { providerID: "prov", modelID: "next" },
+      options: { directory: "/repo", thinkingLevel: "xhigh" },
+    }])
   })
 
   test("a failed switch degrades to the engine default without blocking the draft", async () => {

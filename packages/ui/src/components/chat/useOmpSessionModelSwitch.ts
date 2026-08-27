@@ -48,7 +48,7 @@ export const useOmpSessionModelSwitch = ({
   const completionRef = React.useRef({ applyLocalModel, changeFailedLabel, authoritativeModel });
   completionRef.current = { applyLocalModel, changeFailedLabel, authoritativeModel };
 
-  const switchSessionModel = React.useCallback((providerId: string, modelId: string) => {
+  const switchSessionModel = React.useCallback((providerId: string, modelId: string, thinkingLevel?: string) => {
     // Mirror of the prompt-omission gate (client.ts reads the same flag at
     // send time): wherever prompts stop carrying the model, the picker owns
     // the switch explicitly. Legacy runtimes keep the prompt-time path.
@@ -59,7 +59,12 @@ export const useOmpSessionModelSwitch = ({
     void ompModels.setSessionModel(
       sessionID,
       { providerID: providerId, modelID: modelId },
-      { directory },
+      {
+        directory,
+        // An explicit thinking level rides the same switch (role picks carry
+        // their resolved level); undefined leaves the session's level alone.
+        ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+      },
     ).then((result) => {
       // A newer selection already owns the UI; this completion is stale.
       if (epoch !== epochRef.current) return;
