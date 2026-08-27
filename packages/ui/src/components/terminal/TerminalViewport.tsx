@@ -91,6 +91,10 @@ export type TerminalController = {
   focus: () => void;
   fit: () => void;
   resizeGrid: (cols: number, rows: number) => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  zoomReset: () => void;
+  getZoom: () => number;
   getSelection: () => { text: string; startLine: number; endLine: number } | null;
 };
 
@@ -104,15 +108,17 @@ type Props = {
   fontSize: number;
   className?: string;
   enableTouchScroll?: boolean;
-  /** Pinch-to-zoom snap target: called with the new integer fontSize. */
-  onZoomFontSize?: (fontSize: number) => void;
+  /** View-zoom change notifier (pure visual scale; 1 = fit). */
+  onZoomChange?: (zoom: number) => void;
   autoFocus?: boolean;
   isVisible?: boolean;
 };
 const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   sessionKey, chunks, onInput, onResize, theme, fontFamily, fontSize, className,
-  enableTouchScroll = false, onZoomFontSize, autoFocus = true, isVisible = true,
+  enableTouchScroll = false, onZoomChange, autoFocus = true, isVisible = true,
 }, ref) => {
+  const scrollRef = React.useRef<HTMLDivElement>(null);
+  const sizerRef = React.useRef<HTMLDivElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const terminalRef = React.useRef<GhosttyTerminal | null>(null);
   const fitRef = React.useRef<FitAddon | null>(null);
@@ -138,9 +144,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   safeResetRef.current = getGhosttySafeResetSequence(theme.background);
 
   React.useLayoutEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const size = getProvisionalTerminalSize(container, fontFamily, fontSize);
+    const scroll = scrollRef.current ?? containerRef.current;
+    if (!scroll) return;
+    const size = getProvisionalTerminalSize(scroll, fontFamily, fontSize);
     provisionalSizeRef.current = size;
     if (size) resizeRef.current(size.cols, size.rows);
   }, [fontFamily, fontSize]);
@@ -152,60 +158,99 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   // device's viewport) is wider than this container, CSS-scale the canvas
   // down so the full grid stays visible. All gesture math is ratio-based
   // against the canvas rect, so the transform doesn't break cell mapping.
+  // View scale, two layers:
+  //   fitScale — automatic: scale the negotiated grid so it fully fits the
+  //              visible viewport (both axes). This is what lets a small
+  //              window show a big window's entire grid.
+  //   viewZoom — user intent: a pure visual multiplier over fit (0.25–4).
+  //              Zooming NEVER changes the grid or font size; zoomed-in
+  //              content pans via the scroll layer's native scrolling.
   const driverScaleRef = React.useRef(1);
-  const applyDriverScale = React.useCallback(() => {
+  const viewZoomRef = React.useRef(1);
+  const zoomApiRef = React.useRef<{ setViewZoom: (next: number) => void } | null>(null);
+  const [viewZoom, setViewZoomState] = React.useState(1);
+  const setViewZoom = React.useCallback((next: number) => {
+    const clamped = Math.max(0.25, Math.min(4, next));
+    viewZoomRef.current = clamped;
+    setViewZoomState(clamped);
+    applyViewScale();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  zoomApiRef.current = { setViewZoom };
+  const applyViewScale = React.useCallback(() => {
+    const scroll = scrollRef.current;
+    const sizer = sizerRef.current;
     const container = containerRef.current;
     const canvas = container?.querySelector('canvas');
-    if (!container || !canvas) return;
+    if (!scroll || !sizer || !container || !canvas) return;
     const naturalWidth = canvas.offsetWidth;
     const naturalHeight = canvas.offsetHeight;
-    const containerWidth = container.clientWidth;
-    const containerHeight = container.clientHeight;
-    if (naturalWidth <= 0 || containerWidth <= 0 || naturalHeight <= 0) return;
+    const viewportWidth = scroll.clientWidth;
+    const viewportHeight = scroll.clientHeight;
+    if (naturalWidth <= 0 || viewportWidth <= 0 || naturalHeight <= 0) return;
     // Fit BOTH axes: a wide grid must not clip bottom rows in a short
-    // container any more than a tall grid may clip columns in a narrow one.
-    const scale = Math.min(1, containerWidth / naturalWidth, naturalHeight > 0 && containerHeight > 0 ? containerHeight / naturalHeight : 1);
-    driverScaleRef.current = scale;
-    if (scale >= 0.999) {
+    // viewport any more than a tall grid may clip columns in a narrow one.
+    const heightRatio = viewportHeight > 0 ? viewportHeight / naturalHeight : 1;
+    const fitScale = Math.min(1, viewportWidth / naturalWidth, heightRatio);
+    driverScaleRef.current = fitScale;
+    const finalScale = Math.max(0.2, Math.min(4, fitScale * viewZoomRef.current));
+    if (finalScale > 0.999 && finalScale < 1.001) {
       canvas.style.transform = '';
       canvas.style.transformOrigin = '';
     } else {
-      canvas.style.transform = `scale(${scale})`;
+      canvas.style.transform = `scale(${finalScale})`;
       canvas.style.transformOrigin = 'top left';
     }
+    // The sizer box carries the SCALED content size so the scroll layer can
+    // pan across zoomed-in content (the canvas's layout box stays natural).
+    sizer.style.width = `${Math.ceil(naturalWidth * finalScale)}px`;
+    sizer.style.height = `${Math.ceil(naturalHeight * finalScale)}px`;
+    // Zoomed in: hand touch-drag to the browser for native panning; at fit,
+    // keep touch-none so terminal gestures own the pointer.
+    const zoomedOutBeyondFit = viewZoomRef.current > 1.001;
+    scroll.style.touchAction = zoomedOutBeyondFit ? 'auto' : 'none';
   }, []);
 
 
+
   const fit = React.useCallback(() => {
-    const container = containerRef.current;
+    const scroll = scrollRef.current;
     const terminal = terminalRef.current;
-    if (!container || !terminal || !fitRef.current || !visibleRef.current) return;
-    const bounds = container.getBoundingClientRect();
+    if (!scroll || !terminal || !visibleRef.current) return;
+    const bounds = scroll.getBoundingClientRect();
     if (bounds.width < 24 || bounds.height < 24) return;
     try {
       const negotiated = negotiatedGridRef.current;
       if (negotiated) {
-        // Multi-device sync: the server set the PTY grid via min-size
-        // negotiation. Clamp this viewport's terminal to that grid —
-        // the canvas renders the negotiated size, not the container size.
+        // Multi-device sync: the server set the PTY grid via negotiation.
+        // Render that grid — the canvas paints the negotiated size and
+        // applyViewScale fits it into the visible viewport.
         if (terminal.cols !== negotiated.cols || terminal.rows !== negotiated.rows) {
           terminal.resize(negotiated.cols, negotiated.rows);
         }
       } else {
-        // Unconstrained fit: report the device's true effective viewport.
-        // The SERVER owns the 80x24 floor (IDLE negotiation + create);
-        // keeping a second floor here would lock narrow drivers out of
-        // zooming their own claimed grid below the floor.
-        fitRef.current.fit();
+        // Unconstrained: propose the grid from the VISIBLE viewport (the
+        // scroll layer), not the ghostty mount (which is sized to the grid
+        // and would feed back). Mirrors FitAddon's math incl. the 15px
+        // scrollbar reservation. No client-side floor: the server owns it.
+        const metrics = (terminal as unknown as { renderer?: { getMetrics?: () => { width: number; height: number } | undefined } }).renderer?.getMetrics?.();
+        if (metrics && metrics.width > 0 && metrics.height > 0) {
+          const style = window.getComputedStyle(scroll);
+          const padX = (Number.parseInt(style.paddingLeft, 10) || 0) + (Number.parseInt(style.paddingRight, 10) || 0);
+          const padY = (Number.parseInt(style.paddingTop, 10) || 0) + (Number.parseInt(style.paddingBottom, 10) || 0);
+          const cols = Math.max(2, Math.floor((scroll.clientWidth - padX - 15) / metrics.width));
+          const rows = Math.max(1, Math.floor((scroll.clientHeight - padY) / metrics.height));
+          if (cols !== terminal.cols || rows !== terminal.rows) terminal.resize(cols, rows);
+        }
       }
       const next = { cols: terminal.cols, rows: terminal.rows };
       if (!lastSizeRef.current || lastSizeRef.current.cols !== next.cols || lastSizeRef.current.rows !== next.rows) {
         lastSizeRef.current = next;
         resizeRef.current(next.cols, next.rows);
       }
-      requestAnimationFrame(() => applyDriverScale());
+      requestAnimationFrame(() => applyViewScale());
     } catch { /* hidden or detached */ }
-  }, [applyDriverScale]);
+  }, [applyViewScale]);
 
 
   const flush = React.useCallback(() => {
@@ -260,8 +305,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   }, []);
 
   React.useEffect(() => {
+    const scroll = scrollRef.current;
     const container = containerRef.current;
-    if (!container) return;
+    if (!scroll || !container) return;
     let disposed = false;
     let terminal: GhosttyTerminal | null = null;
     let observer: ResizeObserver | null = null;
@@ -299,14 +345,15 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       const fitAddon = new module.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(container);
-      // Ctrl+wheel terminal zoom: ghostty's capture-phase wheel handler
+      // Ctrl+wheel view zoom: ghostty's capture-phase wheel handler
       // stopPropagation()s normal wheels, so the only reliable hook is its
-      // custom handler. Return true to claim ctrl-wheels for font zoom;
-      // everything else falls through to ghostty's scroll handling.
+      // custom handler. Return true to claim ctrl-wheels for VIEW zoom
+      // (pure visual scale — grid and font untouched); everything else
+      // falls through to ghostty's scroll handling.
       terminal.attachCustomWheelEventHandler((event) => {
         if (!event.ctrlKey) return false;
-        const next = Math.round(fontSize + (event.deltaY < 0 ? 1 : -1));
-        if (next >= 9 && next <= 52) onZoomFontSize?.(next);
+        const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+        zoomApiRef.current?.setViewZoom(viewZoomRef.current * factor);
         return true;
       });
       terminalRef.current = terminal;
@@ -316,13 +363,13 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         if (resizeTimeout) clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(fit, 80);
       });
-      observer.observe(container);
+      observer.observe(scroll);
       // Canvas-resize observer: the ghostty canvas resizes asynchronously
       // after terminal.resize(), so driver-follow scaling must re-run when
       // the canvas layout size actually settles (not just on requestAnimationFrame).
       const canvas = container.querySelector('canvas');
       if (canvas) {
-        canvasObserver = new ResizeObserver(() => applyDriverScale());
+        canvasObserver = new ResizeObserver(() => applyViewScale());
         canvasObserver.observe(canvas);
       }
       const safeReset = safeResetRef.current;
@@ -462,32 +509,23 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     let appX = 0;
     let appY = 0;
     let wheelBaseY = 0;
-    // Pinch-to-zoom: transient CSS preview during the gesture; snap to an
-    // integer fontSize on release so cellWidth changes drive renegotiation.
+    // Pinch-to-zoom: pure VIEW zoom. The gesture previews the scale live;
+    // release keeps the chosen multiplier (clamped). Grid and font size are
+    // untouched — the negotiated grid stays authoritative for everyone.
     const pinchPointers = new Map<number, { x: number; y: number }>();
     let pinchBaseDistance = 0;
     let pinchScale = 1;
-    const pinchFontBase = fontSize;
+    const pinchZoomBase = viewZoomRef.current;
     const applyPinchPreview = () => {
-      const canvas = container.querySelector('canvas');
-      if (!canvas) return;
-      const total = driverScaleRef.current * pinchScale;
-      if (Math.abs(total - 1) < 0.001) {
-        canvas.style.transform = '';
-      } else {
-        canvas.style.transform = `scale(${total})`;
-        canvas.style.transformOrigin = 'top left';
-      }
+      const clamped = Math.max(0.25, Math.min(4, pinchZoomBase * pinchScale));
+      viewZoomRef.current = clamped;
+      applyViewScale();
     };
     const finishPinch = () => {
       pinchPointers.clear();
       pinchBaseDistance = 0;
-      const snapped = Math.round(pinchFontBase * pinchScale);
       pinchScale = 1;
-      applyDriverScale();
-      if (snapped !== pinchFontBase && snapped >= 9 && snapped <= 52) {
-        onZoomFontSize?.(snapped);
-      }
+      setViewZoom(viewZoomRef.current);
     };
     const lineHeight = Math.max(12, fontSize + 2);
     // Android WebView only raises the soft keyboard for a native tap-focus; the
@@ -759,7 +797,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         if (pinchPointers.size <= 1) {
           gesture = 'idle';
           pinchScale = 1;
-          applyDriverScale();
+          applyViewScale();
         }
         return;
       }
@@ -784,7 +822,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       container.removeEventListener('pointerup', up);
       container.removeEventListener('pointercancel', cancel);
     };
-  }, [enableTouchScroll, fontSize, onZoomFontSize, ready]);
+  }, [enableTouchScroll, fontSize, ready]);
 
 
 
@@ -796,12 +834,16 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       if (!terminal) return;
       negotiatedGridRef.current = { cols, rows };
       if (terminal.cols === cols && terminal.rows === rows) {
-        requestAnimationFrame(() => applyDriverScale());
+        requestAnimationFrame(() => applyViewScale());
         return;
       }
       terminal.resize(cols, rows);
-      requestAnimationFrame(() => applyDriverScale());
+      requestAnimationFrame(() => applyViewScale());
     },
+    zoomIn: () => setViewZoom(viewZoomRef.current * 1.25),
+    zoomOut: () => setViewZoom(viewZoomRef.current / 1.25),
+    zoomReset: () => setViewZoom(1),
+    getZoom: () => viewZoomRef.current,
     getSelection: () => {
       const terminal = terminalRef.current;
       const range = terminal?.getSelectionPosition();
@@ -809,14 +851,21 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       if (!range || !text.trim()) return null;
       return { text, startLine: range.start.y + 1, endLine: range.end.y + 1 };
     },
-  }), [fit, applyDriverScale]);
+  }), [fit, applyViewScale, setViewZoom]);
+
+  React.useEffect(() => { onZoomChange?.(viewZoom); }, [onZoomChange, viewZoom]);
 
   return (
-    <div
-      ref={containerRef}
-      data-terminal-owner="main"
-      className={cn('terminal-viewport-container h-full w-full overflow-hidden touch-none', className)}
-    />
+    <div ref={scrollRef} className="h-full w-full overflow-auto touch-none overscroll-contain">
+      <div ref={sizerRef} className="relative overflow-hidden" style={{ width: '100%', height: '100%' }}>
+        <div
+          ref={containerRef}
+          data-terminal-owner="main"
+          className={cn('terminal-viewport-container touch-none', className)}
+          style={{ width: 'fit-content', height: 'fit-content' }}
+        />
+      </div>
+    </div>
   );
 });
 

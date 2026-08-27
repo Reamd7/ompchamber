@@ -112,9 +112,10 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const [connectionError, setConnectionError] = React.useState<string | null>(null);
     const [isFatalError, setIsFatalError] = React.useState(false);
     const [isReconnectPending, setIsReconnectPending] = React.useState(false);
+    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
+    const [terminalViewZoom, setTerminalViewZoom] = React.useState(1);
     const [activeModifier, setActiveModifier] = React.useState<Modifier | null>(null);
     const [isRestarting, setIsRestarting] = React.useState(false);
-    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
 
     const streamCleanupRef = React.useRef<(() => void) | null>(null);
     const activeTerminalIdRef = React.useRef<string | null>(null);
@@ -1156,8 +1157,8 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                         size="xs"
                                         variant="ghost"
                                         className="h-7 w-7 p-0"
-                                        onClick={() => setTerminalFontSize(terminalFontSize - 1)}
-                                        disabled={terminalFontSize <= 9}
+                                        onClick={() => terminalControllerRef.current?.zoomOut()}
+                                        disabled={terminalViewZoom <= 0.26}
                                         title={t('terminalView.actions.zoomOut')}
                                         aria-label={t('terminalView.actions.zoomOut')}
                                     >
@@ -1165,20 +1166,20 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                     </Button>
                                     <button
                                         type="button"
-                                        className="h-7 min-w-9 px-1 text-xs text-muted-foreground hover:text-foreground cursor-pointer tabular-nums"
-                                        onClick={() => setTerminalFontSize(14)}
+                                        className="h-7 min-w-10 px-1 text-xs text-muted-foreground hover:text-foreground cursor-pointer tabular-nums"
+                                        onClick={() => terminalControllerRef.current?.zoomReset()}
                                         title={t('terminalView.actions.zoomReset')}
                                         aria-label={t('terminalView.actions.zoomReset')}
                                     >
-                                        {terminalFontSize}px
+                                        {Math.round(terminalViewZoom * 100)}%
                                     </button>
                                     <Button
                                         type="button"
                                         size="xs"
                                         variant="ghost"
                                         className="h-7 w-7 p-0"
-                                        onClick={() => setTerminalFontSize(terminalFontSize + 1)}
-                                        disabled={terminalFontSize >= 52}
+                                        onClick={() => terminalControllerRef.current?.zoomIn()}
+                                        disabled={terminalViewZoom >= 3.9}
                                         title={t('terminalView.actions.zoomIn')}
                                         aria-label={t('terminalView.actions.zoomIn')}
                                     >
@@ -1251,7 +1252,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             theme={xtermTheme}
                             fontFamily={resolvedFontStack}
                             fontSize={terminalFontSize}
-                            onZoomFontSize={setTerminalFontSize}
+                            onZoomChange={setTerminalViewZoom}
                             enableTouchScroll={useTouchTerminalInput}
                             autoFocus={isTerminalVisible}
                             isVisible={isTerminalVisible}
