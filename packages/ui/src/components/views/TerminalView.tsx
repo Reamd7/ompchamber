@@ -12,6 +12,7 @@ import { TerminalViewport, type TerminalController } from '@/components/terminal
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { Icon } from "@/components/icon/Icon";
 import { useDeviceInfo } from '@/lib/device';
@@ -1096,20 +1097,46 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         </Button>
 
                         <div className="flex shrink-0 items-center gap-1 overflow-visible">
-                            {terminalSessionId ? (
-                                <Button
-                                    type="button"
-                                    size="xs"
-                                    variant="ghost"
-                                    className={cn('h-7 w-7 p-0', isSelfDriver && 'bg-accent text-accent-foreground')}
-                                    onClick={handleToggleDriver}
-                                    title={isSelfDriver ? t('terminalView.actions.releaseControl') : t('terminalView.actions.takeControl')}
-                                    aria-label={isSelfDriver ? t('terminalView.actions.releaseControl') : t('terminalView.actions.takeControl')}
-                                    aria-pressed={isSelfDriver}
-                                >
-                                    <Icon name={isSelfDriver ? 'fullscreen-exit' : 'fullscreen'} className="h-4 w-4" />
-                                </Button>
-                            ) : null}
+                            {terminalSessionId ? (() => {
+                                const hasDriver = Boolean(driverState?.driverId);
+                                const isFollowing = hasDriver && !isSelfDriver;
+                                const sizeParams = driverState?.cols && driverState?.rows
+                                    ? { cols: driverState.cols, rows: driverState.rows }
+                                    : undefined;
+                                const hint = isSelfDriver
+                                    ? t('terminalView.driverState.drivingHint', sizeParams)
+                                    : isFollowing
+                                        ? t('terminalView.driverState.followingHint', sizeParams)
+                                        : t('terminalView.driverState.idleHint');
+                                const action = isSelfDriver
+                                    ? t('terminalView.actions.releaseControl')
+                                    : t('terminalView.actions.takeControl');
+                                return (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Button
+                                                type="button"
+                                                size="xs"
+                                                variant="ghost"
+                                                className={cn(
+                                                    'h-7 w-7 p-0',
+                                                    isSelfDriver && 'bg-primary text-primary-foreground hover:bg-primary/90',
+                                                    isFollowing && 'text-primary',
+                                                )}
+                                                onClick={handleToggleDriver}
+                                                aria-label={action}
+                                                aria-pressed={isSelfDriver}
+                                            >
+                                                <Icon name={isSelfDriver ? 'target-fill' : 'target'} className="h-4 w-4" />
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom" className="max-w-64">
+                                            <p className="font-medium">{action}</p>
+                                            <p className="text-muted-foreground">{hint}</p>
+                                        </TooltipContent>
+                                    </Tooltip>
+                                );
+                            })() : null}
                             {terminalSessionId ? (
                                 <div className="flex shrink-0 items-center">
                                     <Button
