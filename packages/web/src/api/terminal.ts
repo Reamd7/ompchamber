@@ -7,6 +7,7 @@ import {
   closeTerminal,
   restartTerminalSession,
   forceKillTerminal,
+  listTerminalSessions,
   listTerminalShells,
 } from '@ompchamber/ui/lib/terminalApi';
 import type {
@@ -19,10 +20,13 @@ import type {
 } from '@ompchamber/ui/lib/api/types';
 
 export const createWebTerminalAPI = (): TerminalAPI => ({
+  async listSessions() {
+    return listTerminalSessions();
+  },
+
   async listShells() {
     return listTerminalShells();
   },
-
   async createSession(options: CreateTerminalOptions): Promise<TerminalSession> {
     return createTerminalSession(options);
   },

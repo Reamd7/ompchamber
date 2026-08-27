@@ -64,7 +64,9 @@ interface TerminalStore {
   nextChunkId: number;
   nextTabId: number;
   hasHydrated: boolean;
-
+  /** Tab IDs with unread command-finished events (cleared when tab is viewed). */
+  unreadTabs: Set<string>;
+  setTabUnread: (tabId: string, unread: boolean) => void;
   ensureDirectory: (directory: string) => void;
   getDirectoryState: (directory: string) => DirectoryTerminalState | undefined;
   getActiveTab: (directory: string) => TerminalTab | undefined;
@@ -267,6 +269,14 @@ export const useTerminalStore = create<TerminalStore>()(
         nextChunkId: 1,
         nextTabId: 1,
         hasHydrated: typeof window === 'undefined',
+        unreadTabs: new Set<string>(),
+        setTabUnread: (tabId, unread) => {
+          set((state) => {
+            const next = new Set(state.unreadTabs);
+            if (unread) next.add(tabId); else next.delete(tabId);
+            return { unreadTabs: next };
+          });
+        },
 
         ensureDirectory: (directory: string) => {
           const key = normalizeDirectory(directory);

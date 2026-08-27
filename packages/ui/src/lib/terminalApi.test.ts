@@ -365,4 +365,56 @@ describe('terminal transport', () => {
     ]);
     transport.dispose();
   });
+
+  test('dispatches driverChanged and keeps sequence accounting gap-free', async () => {
+    const socket = new FakeSocket();
+    const transport = new TerminalTransport({ refreshAuth: async () => '', openSocket: () => socket });
+    const events: Array<{ type: string; driverId?: string | null; cols?: number; rows?: number }> = [];
+    transport.subscribe('term-1', { onEvent: (event) => events.push({ type: event.type, driverId: event.driverId, cols: event.cols, rows: event.rows }) });
+    await tick();
+    socket.open();
+    await tick();
+
+    socket.emit({ t: 'snapshot', v: 3, s: 'term-1', q: 1, history: '', status: 'running' });
+    await tick();
+    expect(events.at(-1)?.type).toBe('snapshot');
+
+    // Attach-time driverChanged carries no q — must dispatch without seq accounting.
+    socket.emit({ t: 'driverChanged', v: 3, s: 'term-1', driverId: 'driver-a', cols: 120, rows: 35 });
+    await tick();
+    expect(events.at(-1)).toEqual({ type: 'driverChanged', driverId: 'driver-a', cols: 120, rows: 35 });
+
+    // Published driverChanged consumes a sequence number (q=2); the next
+    // output (q=3) must NOT be misread as a gap triggering resync.
+    socket.emit({ t: 'driverChanged', v: 3, s: 'term-1', q: 2, driverId: null, cols: 40, rows: 23 });
+    await tick();
+    expect(events.at(-1)).toEqual({ type: 'driverChanged', driverId: null, cols: 40, rows: 23 });
+    socket.emit({ t: 'output', v: 3, s: 'term-1', q: 3, d: 'ok\r\n' });
+    await tick();
+    expect(events.at(-1)?.type).toBe('data');
+    const types = events.map((event) => event.type);
+    expect(types).toContain('data');
+    expect(types).not.toContain('reconnecting');
+    transport.dispose();
+  });
+
+  test('claimViewport and releaseViewport send the v3 frames', async () => {
+    const socket = new FakeSocket();
+    const transport = new TerminalTransport({ refreshAuth: async () => '', openSocket: () => socket });
+    transport.subscribe('term-1', { onEvent: () => {} });
+    await tick();
+    socket.open();
+    await tick();
+    transport.claimViewport('term-1', 120, 35);
+    transport.releaseViewport('term-1');
+    expect(socket.sent.filter((message) => message.t === 'claimViewport' || message.t === 'releaseViewport')).toEqual([
+      { t: 'claimViewport', v: 3, s: 'term-1', cols: 120, rows: 35 },
+      { t: 'releaseViewport', v: 3, s: 'term-1' },
+    ]);
+    // connectionId captured from hello
+    socket.emit({ t: 'hello', v: 3, connectionId: 'conn-42' });
+    await tick();
+    expect(transport.ownConnectionId).toBe('conn-42');
+    transport.dispose();
+  });
 });

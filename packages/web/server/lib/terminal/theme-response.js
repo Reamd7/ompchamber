@@ -5,6 +5,12 @@ const MODE_QUERIES = ['\u001b[?996n', '\u001b[?997n'];
 // Fish asks this before an unattached browser terminal can reply.
 const PRIMARY_DEVICE_ATTRIBUTE_QUERIES = ['\u001b[c', '\u001b[0c'];
 const PRIMARY_DEVICE_ATTRIBUTE_RESPONSE = '\u001b[?1;2c';
+// Kitty keyboard protocol queries. Zellij-class clients block on the reply;
+// answering flags=0 ("no enhancements") lets them fall back immediately.
+const KITTY_PRIMARY_QUERY = '\u001b[?u';
+const KITTY_PRIMARY_RESPONSE = '\u001b[?0u';
+const KITTY_SECONDARY_QUERY = '\u001b[?>u';
+const KITTY_SECONDARY_RESPONSE = '\u001b[?>0;0u';
 const OSC_QUERIES = [10, 11].flatMap((code) => [
   { sequence: `\u001b]${code};?\u0007`, code },
   { sequence: `\u001b]${code};?\u001b\\`, code },
@@ -69,6 +75,16 @@ export const consumeTerminalThemeQueries = (
     if (modeQuery) {
       responses.push(terminalThemeModeReport(appearance.themeMode));
       index += modeQuery.length - 1;
+      continue;
+    }
+    if (input.startsWith(KITTY_PRIMARY_QUERY, index)) {
+      responses.push(KITTY_PRIMARY_RESPONSE);
+      index += KITTY_PRIMARY_QUERY.length - 1;
+      continue;
+    }
+    if (input.startsWith(KITTY_SECONDARY_QUERY, index)) {
+      responses.push(KITTY_SECONDARY_RESPONSE);
+      index += KITTY_SECONDARY_QUERY.length - 1;
       continue;
     }
     const primaryDeviceAttributeQuery = PRIMARY_DEVICE_ATTRIBUTE_QUERIES.find((query) => input.startsWith(query, index));

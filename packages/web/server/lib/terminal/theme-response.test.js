@@ -67,4 +67,10 @@ describe('terminal theme responses', () => {
     expect(first.pending).toBe('\u001b[0');
     expect(second.responses).toEqual(['\u001b[?1;2c']);
   });
+
+  test('answers kitty keyboard protocol queries with flags=0 so clients fall back', () => {
+    const result = consumeTerminalThemeQueries('', '\u001b[?u\u001b[?>u', lightAppearance);
+    expect(result.responses).toEqual(['\u001b[?0u', '\u001b[?>0;0u']);
+    expect(result.pending).toBe('');
+  });
 });

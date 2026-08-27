@@ -47,7 +47,7 @@ export interface TerminalShellOption {
 }
 
 export interface TerminalStreamEvent {
-  type: 'snapshot' | 'data' | 'exit' | 'reconnecting';
+  type: 'snapshot' | 'data' | 'exit' | 'reconnecting' | 'resized' | 'command-finished' | 'driverChanged';
   sequence?: number;
   data?: string;
   replayData?: string;
@@ -56,6 +56,9 @@ export interface TerminalStreamEvent {
   signal?: number | null;
   attempt?: number;
   maxAttempts?: number;
+  cols?: number;
+  rows?: number;
+  driverId?: string | null;
 
   runtime?: 'node' | 'bun';
   ptyBackend?: string;
@@ -94,6 +97,7 @@ export interface ForceKillOptions {
 }
 
 export interface TerminalAPI {
+  listSessions?(): Promise<Array<{ sessionId: string; cwd: string; status: string; cols: number; rows: number; shell?: string }>>;
   listShells?(): Promise<TerminalShellOption[]>;
   createSession(options: CreateTerminalOptions): Promise<TerminalSession>;
   connect(sessionId: string, handlers: TerminalHandlers): Subscription;

@@ -12,6 +12,7 @@ import { TerminalViewport, type TerminalController } from '@/components/terminal
 import { cn } from '@/lib/utils';
 import { useUIStore } from '@/stores/useUIStore';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { Icon } from "@/components/icon/Icon";
 import { useDeviceInfo } from '@/lib/device';
@@ -20,6 +21,7 @@ import { extractTerminalPreviewUrl, isTerminalPreviewUrlAvailable } from '@/lib/
 import { useI18n } from '@/lib/i18n';
 import { PROJECT_ACTION_ICON_MAP, type ProjectActionIconKey } from '@/lib/projectActions';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
+import { sendTerminalViewport, claimTerminalViewport, releaseTerminalViewport, getTerminalConnectionId } from '@/lib/terminalApi';
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 
 type TerminalViewProps = {
@@ -36,6 +38,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     terminalAppearanceRef.current = { themeMode: currentTheme.metadata.variant === 'light' ? 'light' : 'dark', terminalBackground: currentTheme.colors.surface.background, terminalForeground: currentTheme.colors.syntax.base.foreground };
     const { monoFont } = useFontPreferences();
     const terminalFontSize = useUIStore(state => state.terminalFontSize);
+    const setTerminalFontSize = useUIStore(state => state.setTerminalFontSize);
     const terminalShell = useUIStore(state => state.terminalShell);
     const terminalLoginShell = useUIStore(state => state.terminalLoginShells.includes(state.terminalShell));
     const { isMobile, isTablet, hasTouchOnlyPointer } = useDeviceInfo();
@@ -109,6 +112,8 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const [connectionError, setConnectionError] = React.useState<string | null>(null);
     const [isFatalError, setIsFatalError] = React.useState(false);
     const [isReconnectPending, setIsReconnectPending] = React.useState(false);
+    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
+    const [terminalViewZoom, setTerminalViewZoom] = React.useState(1);
     const [activeModifier, setActiveModifier] = React.useState<Modifier | null>(null);
     const [isRestarting, setIsRestarting] = React.useState(false);
 
@@ -191,8 +196,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const disconnectStream = React.useCallback(() => {
         streamCleanupRef.current?.();
         streamCleanupRef.current = null;
-        activeTerminalIdRef.current = null;
-        setIsReconnectPending(false);
     }, []);
 
     React.useEffect(
@@ -254,8 +257,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                 return;
             }
 
-            disconnectStream();
-
             // Mark active before connect so early events aren't dropped.
             activeTerminalIdRef.current = terminalId;
 
@@ -292,6 +293,38 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                     appendToBuffer(directory, tabId, event.data, event.sequence, event.replayData);
                                     scanTerminalPreviewOutput(directory, tabId, event.data);
                                 }
+                                break;
+                            }
+                            case 'resized': {
+                                // Multi-device grid sync: the server negotiated a
+                                // new minimum grid across all attached clients.
+                                // Resize this viewport's ghostty terminal to match
+                                // so the canvas doesn't render past the PTY grid.
+                                if (typeof event.cols === 'number' && typeof event.rows === 'number') {
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                }
+                                break;
+                            }
+                            case 'driverChanged': {
+                                // Viewport driver model: the driver (or min-size
+                                // arbitration after release) set the PTY grid.
+                                // Follow it; TerminalViewport CSS-scales if the
+                                // grid is wider than this container.
+                                if (typeof event.cols === 'number' && typeof event.rows === 'number') {
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                }
+                                setDriverState({
+                                    driverId: event.driverId ?? null,
+                                    cols: event.cols ?? null,
+                                    rows: event.rows ?? null,
+                                });
+                                break;
+                            }
+                            case 'command-finished': {
+                                // Shell integration: a command finished (OSC 133;D).
+                                // Mark this terminal tab as unread so the user sees
+                                // a badge when focused elsewhere.
+                                useTerminalStore.getState().setTabUnread(tabId, true);
                                 break;
                             }
                             case 'exit': {
@@ -394,13 +427,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                     ? t('terminalView.empty.noWorkingDirectory')
                     : t('terminalView.empty.selectSession')
             );
-            disconnectStream();
             return;
         }
 
+        const directory = effectiveDirectory;
         const ensureSession = async () => {
-            const directory = effectiveDirectory;
             if (!directoryRef.current || directoryRef.current !== directory) return;
+
 
             const existingState = useTerminalStore.getState().getDirectoryState(directory);
             if (!existingState) {
@@ -454,15 +487,45 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                 setIsReconnectPending(false);
                 setConnecting(directory, tabId, true);
                 try {
-                    const session = await terminal.createSession({
-                        cwd: directory,
-                        sessionId: tabId,
-                        cols: initialSize.cols,
-                        rows: initialSize.rows,
-                        shell: terminalShell,
-                        loginShell: terminalLoginShell,
-                        ...terminalAppearanceRef.current,
-                    });
+                    // Session sync: reuse an already-running session for this
+                    // directory instead of spawning a second PTY. Multiple
+                    // tabs/devices attaching the same sessionId share output
+                    // via the WS fan-out in the terminal runtime.
+                    let session;
+                    if (terminal.listSessions) {
+                        const running = await terminal.listSessions();
+                        const normalizedCwd = directory.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+                        // Session sync is for CROSS-DEVICE sharing: attach to a
+                        // session another device left running in this cwd. A
+                        // session already bound to a tab on THIS device must
+                        // not be reused — a new local tab means the user wants
+                        // a fresh shell, not a mirror of an existing tab.
+                        const locallyBoundSessionIds = new Set<string>();
+                        for (const dirState of useTerminalStore.getState().sessions.values()) {
+                            for (const tab of dirState.tabs) {
+                                if (tab.terminalSessionId) locallyBoundSessionIds.add(tab.terminalSessionId);
+                            }
+                        }
+                        const match = running.find(
+                            (s) => s.status === 'running' &&
+                            s.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalizedCwd &&
+                            !locallyBoundSessionIds.has(s.sessionId)
+                        );
+                        if (match) {
+                            session = { sessionId: match.sessionId, cols: match.cols, rows: match.rows, status: match.status };
+                        }
+                    }
+                    if (!session) {
+                        session = await terminal.createSession({
+                            cwd: directory,
+                            sessionId: tabId,
+                            cols: initialSize.cols,
+                            rows: initialSize.rows,
+                            shell: terminalShell,
+                            loginShell: terminalLoginShell,
+                            ...terminalAppearanceRef.current,
+                        });
+                    }
 
                     const stillActive =
                         !cancelled &&
@@ -724,10 +787,24 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             }
             const terminalId = terminalIdRef.current;
             if (!terminalId) return;
-            void terminal.resize({ sessionId: terminalId, cols, rows }).catch(() => {});
+            // Multi-device grid sync: send the viewport frame so the server can
+            // negotiate the minimum grid across all attached clients.
+            sendTerminalViewport(terminalId, cols, rows);
         },
-        [isTerminalVisible, terminal]
+        [isTerminalVisible]
     );
+
+    const isSelfDriver = Boolean(driverState?.driverId && driverState.driverId === getTerminalConnectionId());
+    const handleToggleDriver = React.useCallback(() => {
+        const terminalId = terminalIdRef.current;
+        if (!terminalId) return;
+        if (driverState?.driverId && driverState.driverId === getTerminalConnectionId()) {
+            releaseTerminalViewport(terminalId);
+            return;
+        }
+        const size = lastViewportSizeRef.current;
+        if (size) claimTerminalViewport(terminalId, size.cols, size.rows);
+    }, [driverState]);
 
     const handleModifierToggle = React.useCallback(
         (modifier: Modifier) => {
@@ -1033,6 +1110,83 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         </Button>
 
                         <div className="flex shrink-0 items-center gap-1 overflow-visible">
+                            {terminalSessionId ? (() => {
+                                const hasDriver = Boolean(driverState?.driverId);
+                                const isFollowing = hasDriver && !isSelfDriver;
+                                const sizeParams = driverState?.cols && driverState?.rows
+                                    ? { cols: driverState.cols, rows: driverState.rows }
+                                    : undefined;
+                                const hint = isSelfDriver
+                                    ? t('terminalView.driverState.drivingHint', sizeParams)
+                                    : isFollowing
+                                        ? t('terminalView.driverState.followingHint', sizeParams)
+                                        : t('terminalView.driverState.idleHint');
+                                const action = isSelfDriver
+                                    ? t('terminalView.actions.releaseControl')
+                                    : t('terminalView.actions.takeControl');
+                                return (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Button
+                                                type="button"
+                                                size="xs"
+                                                variant="ghost"
+                                                className={cn(
+                                                    'h-7 w-7 p-0',
+                                                    isSelfDriver && 'bg-primary text-primary-foreground hover:bg-primary/90',
+                                                    isFollowing && 'text-primary',
+                                                )}
+                                                onClick={handleToggleDriver}
+                                                aria-label={action}
+                                                aria-pressed={isSelfDriver}
+                                            >
+                                                <Icon name={isSelfDriver ? 'target-fill' : 'target'} className="h-4 w-4" />
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom" className="max-w-64">
+                                            <p className="font-medium">{action}</p>
+                                            <p className="text-muted-foreground">{hint}</p>
+                                        </TooltipContent>
+                                    </Tooltip>
+                                );
+                            })() : null}
+                            {terminalSessionId ? (
+                                <div className="flex shrink-0 items-center">
+                                    <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0"
+                                        onClick={() => terminalControllerRef.current?.zoomOut()}
+                                        disabled={terminalViewZoom <= 0.26}
+                                        title={t('terminalView.actions.zoomOut')}
+                                        aria-label={t('terminalView.actions.zoomOut')}
+                                    >
+                                        <Icon name="subtract" className="h-4 w-4" />
+                                    </Button>
+                                    <button
+                                        type="button"
+                                        className="h-7 min-w-10 px-1 text-xs text-muted-foreground hover:text-foreground cursor-pointer tabular-nums"
+                                        onClick={() => terminalControllerRef.current?.zoomReset()}
+                                        title={t('terminalView.actions.zoomReset')}
+                                        aria-label={t('terminalView.actions.zoomReset')}
+                                    >
+                                        {Math.round(terminalViewZoom * 100)}%
+                                    </button>
+                                    <Button
+                                        type="button"
+                                        size="xs"
+                                        variant="ghost"
+                                        className="h-7 w-7 p-0"
+                                        onClick={() => terminalControllerRef.current?.zoomIn()}
+                                        disabled={terminalViewZoom >= 3.9}
+                                        title={t('terminalView.actions.zoomIn')}
+                                        aria-label={t('terminalView.actions.zoomIn')}
+                                    >
+                                        <Icon name="add" className="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            ) : null}
                             <Button type="button" size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => void handleRestart()} disabled={isRestarting} title={t('terminalView.actions.restart')} aria-label={t('terminalView.actions.restart')}>
                                 <Icon name="restart" className="h-4 w-4" />
                             </Button>
@@ -1098,12 +1252,19 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             theme={xtermTheme}
                             fontFamily={resolvedFontStack}
                             fontSize={terminalFontSize}
+                            onZoomChange={setTerminalViewZoom}
                             enableTouchScroll={useTouchTerminalInput}
                             autoFocus={isTerminalVisible}
                             isVisible={isTerminalVisible}
                         />
                     ) : null}
                 </div>
+                {isReconnectPending && (
+                    <div className="absolute inset-x-0 bottom-0 bg-[var(--status-warning-background,var(--surface-muted))] px-3 py-2 text-xs text-[var(--status-warning-foreground,var(--muted-foreground))] flex items-center gap-2">
+                        <span className="inline-block size-3 animate-pulse rounded-full bg-current" />
+                        <span>{t('terminalView.stream.reconnecting')}</span>
+                    </div>
+                )}
                 {!isReconnectPending && connectionError && (
                     <div className="absolute inset-x-0 bottom-0 bg-[var(--status-error-background)] px-3 py-2 text-xs text-[var(--status-error-foreground)] flex items-center justify-between gap-2">
                         <span>{connectionError}</span>

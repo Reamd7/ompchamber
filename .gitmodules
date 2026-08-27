@@ -1,3 +1,4 @@
 [submodule "references/ghostty-web"]
 	path = references/ghostty-web
 	url = https://github.com/Reamd7/ghostty-web
+	branch = terminal-enhancer

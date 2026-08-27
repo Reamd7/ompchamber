@@ -77,6 +77,8 @@ export class TerminalTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly viewports = new Map<string, { cols: number; rows: number }>();
+  private connectionId: string | null = null;
   private failures = 0;
   private wakeCleanup: (() => void) | null = null;
   private generation = 0;
@@ -88,13 +90,14 @@ export class TerminalTransport {
     clearUrlAuthToken: clearRuntimeUrlAuthToken,
   }) {}
 
-  subscribe(sessionId: string, handlers: TerminalHandlers): () => void {
+  subscribe(sessionId: string, handlers: TerminalHandlers, viewport?: { cols: number; rows: number }): () => void {
     this.cancelIdleClose();
     const subscriber = { handlers, lastSequence: -1 };
     const set = this.subscribers.get(sessionId) ?? new Set<Subscriber>();
     const first = set.size === 0;
     set.add(subscriber);
     this.subscribers.set(sessionId, set);
+    if (viewport) this.viewports.set(sessionId, { ...viewport });
     const projection = this.projections.get(sessionId);
     if (projection) {
       subscriber.lastSequence = projection.sequence;
@@ -104,7 +107,8 @@ export class TerminalTransport {
     this.ensureConnected().then(() => {
       const current = this.subscribers.get(sessionId);
       if (first && socketWasOpen && current === set && current.size > 0) {
-        this.send({ t: 'attach', v: 3, s: sessionId });
+        const vp = this.viewports.get(sessionId);
+        this.send({ t: 'attach', v: 3, s: sessionId, ...(vp ? { cols: vp.cols, rows: vp.rows } : {}) });
       }
     }).catch((error) => {
       if (!set.has(subscriber)) return;
@@ -212,7 +216,10 @@ export class TerminalTransport {
             opened = true;
             this.failures = 0;
             this.send({ t: 'hello', v: 3 });
-            for (const sessionId of this.subscribers.keys()) this.send({ t: 'attach', v: 3, s: sessionId });
+            for (const sessionId of this.subscribers.keys()) {
+              const vp = this.viewports.get(sessionId);
+              this.send({ t: 'attach', v: 3, s: sessionId, ...(vp ? { cols: vp.cols, rows: vp.rows } : {}) });
+            }
             this.startKeepalive();
             finish();
           };
@@ -251,10 +258,14 @@ export class TerminalTransport {
       }
     }
   }
-
   private async handleMessage(raw: unknown): Promise<void> {
     const message = await decode(raw);
-    if (!message || message.t === 'hello' || message.t === 'pong') return;
+    if (!message) return;
+    if (message.t === 'hello') {
+      if (typeof message.connectionId === 'string') this.connectionId = message.connectionId;
+      return;
+    }
+    if (message.t === 'pong') return;
     if (message.t === 'error') {
       const error = new Error(typeof message.message === 'string' ? message.message : 'Terminal error') as TerminalError;
       if (typeof message.code === 'string') error.code = message.code;
@@ -282,21 +293,91 @@ export class TerminalTransport {
       }
       return;
     }
+    // driverChanged may arrive without q (sent directly during attach, not via publish)
+    if (message.t === 'driverChanged') {
+      // Frames sent via publish() consume a sequence number; track it so the
+      // next output frame isn't misread as a gap.
+      const previous = this.projections.get(message.s);
+      if (previous && typeof message.q === 'number' && message.q > previous.sequence) {
+        this.projections.set(message.s, { ...previous, sequence: message.q });
+      }
+      for (const sub of subscribers) {
+        sub.handlers.onEvent({
+          type: 'driverChanged',
+          driverId: typeof message.driverId === 'string' ? message.driverId : null,
+          cols: typeof message.cols === 'number' ? message.cols : undefined,
+          rows: typeof message.rows === 'number' ? message.rows : undefined,
+        });
+      }
+      return;
+    }
     if (typeof message.q !== 'number') return;
     const previous = this.projections.get(message.s);
+    // Seq-gap detection: if this frame's sequence jumps past the projection's
+    // last known sequence, we lost frames. Request a full resync instead of
+    // appending (which would create a hole in the scrollback).
+    if (previous && message.q > previous.sequence + 1 && message.t === 'output') {
+      this.requestResync(message.s);
+      return;
+    }
     if (previous && message.q > previous.sequence) {
       if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
+      else if (message.t === 'resized') this.projections.set(message.s, { ...previous, sequence: message.q });
     }
     for (const sub of subscribers) {
       if (message.q <= sub.lastSequence) continue;
       sub.lastSequence = message.q;
       if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '', replayData: typeof message.r === 'string' ? message.r : undefined });
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
-      else if (message.t === 'restarted') sub.handlers.onEvent({ type: 'snapshot', sequence: message.q, data: typeof message.history === 'string' ? message.history : '', status: 'running' });
+      else if (message.t === 'resized') sub.handlers.onEvent({ type: 'resized', sequence: message.q, cols: typeof message.cols === 'number' ? message.cols : undefined, rows: typeof message.rows === 'number' ? message.rows : undefined });
+      else if (message.t === 'command-finished') sub.handlers.onEvent({ type: 'command-finished', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined });
     }
   }
+
+  private readonly resyncAttempts = new Map<string, { count: number; timer: ReturnType<typeof setTimeout> | null }>();
+
+  private requestResync(sessionId: string): void {
+    const state = this.resyncAttempts.get(sessionId) ?? { count: 0, timer: null };
+    if (state.timer) return; // already resyncing
+    state.count += 1;
+    // Backoff: first gap is immediate, then 500ms → 2s → 5s cap
+    const delay = state.count === 1 ? 0 : Math.min(500 * 2 ** (state.count - 2), 5000);
+    const notifySubs = () => {
+      for (const sub of this.subscribers.get(sessionId) ?? []) {
+        sub.handlers.onEvent({ type: 'reconnecting', attempt: state.count, maxAttempts: Number.POSITIVE_INFINITY });
+      }
+    };
+    const doResync = () => {
+      state.timer = null;
+      this.send({ t: 'resync', v: 3, s: sessionId });
+      notifySubs();
+      // Reset attempt count after a clean snapshot arrives (30s window)
+      setTimeout(() => {
+        const current = this.resyncAttempts.get(sessionId);
+        if (current && current === state && !current.timer) current.count = 0;
+      }, 30_000);
+    };
+    if (delay === 0) doResync();
+    else state.timer = setTimeout(doResync, delay);
+    this.resyncAttempts.set(sessionId, state);
+  }
+
+  sendViewport(sessionId: string, cols: number, rows: number): void {
+    this.viewports.set(sessionId, { cols, rows });
+    this.send({ t: 'viewport', v: 3, s: sessionId, cols, rows });
+  }
+
+  claimViewport(sessionId: string, cols: number, rows: number): void {
+    this.send({ t: 'claimViewport', v: 3, s: sessionId, cols, rows });
+  }
+
+  releaseViewport(sessionId: string): void {
+    this.send({ t: 'releaseViewport', v: 3, s: sessionId });
+  }
+
+  get ownConnectionId(): string | null { return this.connectionId; }
 
   private send(message: Message): boolean {
     if (!this.socket || this.socket.readyState !== SOCKET_OPEN) return false;
@@ -356,6 +437,23 @@ export async function createTerminalSession(options: CreateTerminalOptions): Pro
   if (!response.ok) throw await responseError(response, 'Failed to create terminal session');
   return response.json() as Promise<TerminalSession>;
 }
+
+export interface TerminalSessionInfo {
+  sessionId: string;
+  cwd: string;
+  status: string;
+  cols: number;
+  rows: number;
+  shell?: string;
+}
+
+export async function listTerminalSessions(): Promise<TerminalSessionInfo[]> {
+  const response = await runtimeFetch('/api/terminal/list');
+  if (!response.ok) return [];
+  const payload = await response.json().catch(() => []);
+  return Array.isArray(payload) ? payload.filter((s) => s && typeof s.sessionId === 'string') : [];
+}
+
 export async function listTerminalShells(): Promise<TerminalShellOption[]> {
   const response = await runtimeFetch('/api/terminal/shells');
   if (!response.ok) throw await responseError(response, 'Failed to list terminal shells');
@@ -368,6 +466,10 @@ export async function listTerminalShells(): Promise<TerminalShellOption[]> {
 }
 export function connectTerminalStream(sessionId: string, onEvent: TerminalHandlers['onEvent'], onError?: TerminalHandlers['onError']): () => void { return transport.subscribe(sessionId, { onEvent, onError }); }
 export async function sendTerminalInput(sessionId: string, data: string): Promise<void> { await transport.write(sessionId, data); }
+export function sendTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.sendViewport(sessionId, cols, rows); }
+export function claimTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.claimViewport(sessionId, cols, rows); }
+export function releaseTerminalViewport(sessionId: string): void { transport.releaseViewport(sessionId); }
+export function getTerminalConnectionId(): string | null { return transport.ownConnectionId; }
 
 async function command(path: string, method: string, body?: unknown): Promise<Response> {
   const options: RequestInit = { method };
