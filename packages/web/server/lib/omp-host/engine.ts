@@ -300,6 +300,7 @@ export class OmpHostEngine {
             return false;
           }
         },
+        readFile: async (filePath) => fs.promises.readFile(filePath, 'utf8'),
         // Hot reload (02 §5.2 refresh): the SDK memoizes create-time discovery
         // per cwd and every task tool advertises that list to the model;
         // refreshAgentDiscovery republishes the fresh set to live sessions.

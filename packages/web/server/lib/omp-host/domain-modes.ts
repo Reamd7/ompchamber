@@ -34,7 +34,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { BUILTIN_TOOLS } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.ts';
 import { featureUnavailable, ompFeatures } from './omp-parity.ts';
@@ -517,7 +517,14 @@ const definitionToRecord = (agent: DiscoveredAgent): OmpAgentRecord => ({
 });
 
 /** Definition input to serializeAgentMarkdown: name + description are required
- * by the SDK frontmatter parser; the rest ride the omp frontmatter fields. */
+ * by the SDK frontmatter parser; the rest ride the omp frontmatter fields.
+ * `rawFrontmatter` is the update path's lossless carrier: the full parsed
+ * frontmatter record of the file being rewritten — unknown keys (incl. the
+ * SDK's autoloadSkills/blocking/output) survive verbatim, while whitelist
+ * keys follow the merged values (undefined clears the key). The SDK has no
+ * round-trip serializer and its read parser mutates on load (yield
+ * injection, spawns inference), so raw-record preservation is the only
+ * lossless write (plan P9). */
 export interface AgentDefinitionSerialization {
   name: string;
   description: string;
@@ -529,21 +536,23 @@ export interface AgentDefinitionSerialization {
   prewalk?: boolean | string;
   advisor?: boolean | string;
   readSummarize?: boolean;
+  rawFrontmatter?: AgentFrontmatterRecord;
 }
 
-/** omp agent markdown frontmatter (discovery/helpers.ts parseAgentFields). */
-interface AgentMarkdownFrontmatter {
-  name: string;
-  description: string;
-  tools?: string[];
-  model?: string[];
-  thinkingLevel?: string;
-  spawns?: '*' | string[];
-  prewalk?: boolean | string;
-  advisor?: boolean | string;
-  readSummarize?: boolean;
-}
+/** Frontmatter keys the whitelist merge owns; raw passthrough covers the rest. */
+const SERIALIZED_MERGED_KEYS = ['tools', 'model', 'thinkingLevel', 'spawns', 'prewalk', 'advisor', 'readSummarize'] as const;
 
+/** Parsed agent-frontmatter value: user-authored YAML, arbitrary shapes. */
+export type AgentFrontmatterValue =
+  | string
+  | number
+  | boolean
+  | null
+  | AgentFrontmatterValue[]
+  | { [key: string]: AgentFrontmatterValue };
+
+/** The whole parsed frontmatter record of an agent .md file. */
+export type AgentFrontmatterRecord = { [key: string]: AgentFrontmatterValue };
 /**
  * Serialize a definition to the omp agent markdown shape: YAML frontmatter
  * (name + description are required by the SDK parser,
@@ -553,19 +562,32 @@ interface AgentMarkdownFrontmatter {
  * authority returned to clients.
  */
 export function serializeAgentMarkdown(definition: AgentDefinitionSerialization): string {
-  const frontmatter: AgentMarkdownFrontmatter = { name: definition.name, description: definition.description };
-  if (Array.isArray(definition.tools) && definition.tools.length > 0) frontmatter.tools = definition.tools;
-  if (Array.isArray(definition.model) && definition.model.length > 0) frontmatter.model = definition.model;
-  if (definition.thinkingLevel) frontmatter.thinkingLevel = definition.thinkingLevel;
-  if (definition.spawns !== undefined && definition.spawns !== null) frontmatter.spawns = definition.spawns;
-  if (definition.prewalk !== undefined && definition.prewalk !== null) frontmatter.prewalk = definition.prewalk;
-  if (definition.advisor !== undefined && definition.advisor !== null) frontmatter.advisor = definition.advisor;
-  if (definition.readSummarize !== undefined && definition.readSummarize !== null) {
-    frontmatter.readSummarize = definition.readSummarize;
+  // Raw path (update): start from the file's verbatim frontmatter record so
+  // unknown keys survive; whitelist keys follow the merged values, where
+  // undefined/null means the patch cleared the key.
+  const frontmatter: AgentFrontmatterRecord = definition.rawFrontmatter
+    ? { ...definition.rawFrontmatter }
+    : { name: definition.name, description: definition.description };
+  for (const key of SERIALIZED_MERGED_KEYS) {
+    const value = definition[key];
+    if (!definition.rawFrontmatter) {
+      if (value === undefined || value === null) continue;
+      if (key === 'tools' || key === 'model') {
+        if (Array.isArray(value) && value.length > 0) frontmatter[key] = value;
+        continue;
+      }
+      frontmatter[key] = value;
+      continue;
+    }
+    if (value === undefined || value === null) delete frontmatter[key];
+    else frontmatter[key] = value;
   }
+  frontmatter.name = definition.name;
+  frontmatter.description = definition.description;
   const body = typeof definition.systemPrompt === 'string' ? definition.systemPrompt : '';
   return `---\n${stringifyYaml(frontmatter)}---\n\n${body}\n`;
 }
+
 
 /**
  * File/discovery adapters injected by the engine (02 §5.2): reads come from
@@ -575,6 +597,10 @@ export interface AgentDefinitionAdapter {
   discover: (directory: string | null) => Promise<AgentDiscoveryResult>;
   writeFile: (filePath: string, content: string) => Promise<void>;
   deleteFile: (filePath: string) => Promise<boolean>;
+  /** Lossless-update reader (P9): fetches an existing definition file so its
+   * raw frontmatter survives a GUI edit. Optional — without it updates keep
+   * the whitelist-only write. */
+  readFile?: (filePath: string) => Promise<string>;
   /** Hot-reload hook (refreshAgentDiscovery in the engine process). */
   onDefinitionsChanged?: (directory: string | null) => void | Promise<void>;
   /** Reveal the definition file in the platform file manager. */
@@ -588,6 +614,7 @@ export interface AgentDefinitionHandlersOptions {
   discover?: (directory: string | null) => Promise<AgentDiscoveryResult>;
   writeFile?: (filePath: string, content: string) => Promise<void>;
   deleteFile?: (filePath: string) => Promise<boolean>;
+  readFile?: (filePath: string) => Promise<string>;
   userAgentsDir?: string;
   projectAgentsDirFor?: (directory: string) => string;
   onDefinitionsChanged?: (directory: string | null) => void | Promise<void>;
@@ -620,10 +647,36 @@ export interface AgentDefinitionHandlers {
  * @param {AgentDefinitionHandlersOptions} options discovery + file adapters,
  *        plus the tool allowlist / project-scope gate / settings overrides.
  */
+/**
+ * Parse the leading YAML frontmatter record of an agent .md file (update
+ * path, plan P9). Returns null when there is no reader, no file path, no
+ * frontmatter block, or the YAML fails to parse — callers degrade to the
+ * whitelist-only write.
+ */
+const readExistingFrontmatter = async (
+  filePath: string | undefined,
+  readFile: ((filePath: string) => Promise<string>) | undefined,
+): Promise<AgentFrontmatterRecord | null> => {
+  try {
+    const content = await readFile(filePath);
+    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    if (!match) return null;
+    const parsed = parseYaml(match[1]);
+    // SAFETY: parseYaml returns unknown; the guards above establish a plain
+    // non-array object, which is exactly AgentFrontmatterRecord's shape.
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { ...(parsed as AgentFrontmatterRecord) }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 export function createAgentDefinitionHandlers({
   discover,
   writeFile,
   deleteFile,
+  readFile,
   userAgentsDir,
   projectAgentsDirFor,
   allowedTools,
@@ -776,7 +829,15 @@ export function createAgentDefinitionHandlers({
       const nextScope = gateProjectScope(definitionScope(body) ?? currentScope, settingsProjectScopes);
       const targetName = renameTo ?? name;
       const nextPath = path.join(scopeDir(nextScope, directory), `${targetName}.md`);
-      await writeFile(nextPath, serializeAgentMarkdown({ ...mergeDefinition(existing, patch), name: targetName }));
+      // P9 lossless update: re-serialize from the existing file's verbatim
+      // frontmatter so unknown keys survive the GUI edit. A missing reader
+      // or unreadable file degrades to the whitelist-only write.
+      const rawFrontmatter = await readExistingFrontmatter(existing.filePath, readFile);
+      await writeFile(nextPath, serializeAgentMarkdown({
+        ...mergeDefinition(existing, patch),
+        name: targetName,
+        ...(rawFrontmatter ? { rawFrontmatter } : {}),
+      }));
       if (existing.filePath && path.resolve(nextPath) !== path.resolve(existing.filePath)) {
         await deleteFile(existing.filePath);
       }

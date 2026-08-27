@@ -380,6 +380,11 @@ const definitionHarness = (overrides: Partial<AgentDefinitionHandlersOptions> = 
       deletes.push(p);
       return true;
     },
+    readFile: async (p) => {
+      const content = files.get(p);
+      if (content === undefined) throw new Error(`ENOENT: ${p}`);
+      return content;
+    },
     userAgentsDir,
     projectAgentsDirFor: (directory) => path.join(path.resolve(directory ?? root), '.omp', 'agents'),
     allowedTools: new Set(['read', 'bash', 'write', 'task', 'yield', 'mcp__custom']),
@@ -449,6 +454,50 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
     expect(removed.status).toBe(204);
     expect(deletes).toEqual([filePath]);
   });
+  test('update preserves hand-authored frontmatter keys the form never shows (P9)', async () => {
+    const harness = definitionHarness();
+    const filePath = path.join(harness.userAgentsDir, 'custom.md');
+    harness.files.set(filePath, [
+      '---',
+      'name: custom',
+      'description: Hand-authored with extra keys',
+      'autoloadSkills:',
+      '  - theme-system',
+      'blocking: true',
+      'output: json',
+      'vibe: spicy   # unknown-to-SDK key with a comment',
+      'tools:',
+      '  - read',
+      '---',
+      '',
+      'Original prompt.',
+      '',
+    ].join('\n'));
+    const response = await harness.handlers.update(
+      new Request('http://x/omp/agent-definitions/custom', {
+        method: 'PUT',
+        body: JSON.stringify({ definition: { description: 'Edited in the GUI' } }),
+      }),
+      ctxForName('custom', PROJ_DIR),
+    );
+    expect(response.status).toBe(200);
+    const written = harness.writes.at(-1)?.content ?? '';
+    // Unknown + SDK-extra keys survive verbatim.
+    expect(written).toContain('autoloadSkills:');
+    expect(written).toContain('- theme-system');
+    expect(written).toContain('blocking: true');
+    expect(written).toContain('output: json');
+    expect(written).toContain('vibe: spicy');
+    // Patched key lands; untouched keys keep their values.
+    expect(written).toContain('description: Edited in the GUI');
+    expect(written).toContain('- read');
+    // Unpatched systemPrompt survives (merge carried it from discovery).
+    expect(written).toContain('Original prompt.');
+    // The write still round-trips through the SDK parser (discover → 200 record).
+    const reread = await harness.handlers.get(new Request('http://x/omp/agent-definitions/custom'), ctxForName('custom', PROJ_DIR));
+    expect(reread.status).toBe(200);
+  });
+
 
   test('duplicate create and unknown-name delete throw the documented domain errors', async () => {
     const { handlers } = definitionHarness();
