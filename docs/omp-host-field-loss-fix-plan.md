@@ -1,6 +1,6 @@
 # omp-host 数据变形丢失问题：问题点、根因与实施计划
 
-> 状态：**批次 1 已完成**（P1 `e043fa4c` / P2 `4c5f0b03` / P4 `390cf005` / P5 `ae766150`；门禁全绿：bun 314/0、双项目 tsc 0、oxlint 新增类 0、check:events OK、打包重编+verify 19 features）；批次 2/3 待实施；已完成 TUI 参照重审（见每条"TUI 裁决"）
+> 状态：**批次 1+2 已完成**（批次 1：P1 `e043fa4c` / P2 `4c5f0b03` / P4 `390cf005` / P5 `ae766150`；批次 2：P6 `0accee54` / P7 `27996b7e` / P8 `8b1b9475` / P9 `7c5feeb0` / P10 `f214897b`；门禁全绿：bun 318/0、双包 tsc 0、oxlint 新增类 0、check:events OK、打包重编+verify 19 features、staged 二进制 capabilities 含 commands.v1=true）；批次 3 待实施；已完成 TUI 参照重审（见每条"TUI 裁决"）
 
 ## 零、四类根因
 
