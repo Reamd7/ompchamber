@@ -702,6 +702,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.handoff': 'przekazanie',
   'chat.chat.ompDivider.modelChange': 'Zmieniono model',
   'chat.chat.ompDivider.modeChange': 'Tryb',
+  'chat.chat.ompDivider.modelChange.role': 'Przełączono przez rolę: {role}',
+  'chat.chat.ompDivider.modelChange.fallback': 'Model zastępczy po ponownej próbie',
   'chat.chat.ompDivider.fromTokens': 'z {tokens} tokenów',
   'chat.chat.ompDivider.expand': 'Rozwiń podsumowanie',
   'chat.chat.ompDivider.collapse': 'Zwiń podsumowanie',

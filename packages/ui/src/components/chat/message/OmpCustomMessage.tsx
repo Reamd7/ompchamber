@@ -37,6 +37,10 @@ export interface OmpCustomMessageData {
     fromId?: string;
     /** modeChange dividers: the raw mode value (none/plan/goal/vibe). */
     mode?: string;
+    /** modelChange dividers: the switch's role attribution tag. */
+    role?: string;
+    /** modelChange dividers: the switch landed on a retry-fallback model. */
+    fallback?: boolean;
 }
 
 const readTextOfPart = (part: Part): string => {
@@ -63,6 +67,8 @@ export function parseOmpCustomMessage(info: Message, parts: Part[]): OmpCustomMe
     const fromId = typeof metadata?.fromId === 'string' ? metadata.fromId : undefined;
     const warning = typeof metadata?.warning === 'string' && metadata.warning.length > 0 ? metadata.warning : undefined;
     const mode = typeof metadata?.mode === 'string' && metadata.mode.length > 0 ? metadata.mode : undefined;
+    const role = typeof metadata?.role === 'string' && metadata.role.length > 0 ? metadata.role : undefined;
+    const fallback = metadata?.fallback === true ? true : undefined;
 
     return {
         tier,
@@ -72,8 +78,9 @@ export function parseOmpCustomMessage(info: Message, parts: Part[]): OmpCustomMe
         sessionId: info.sessionID,
         tokensBefore,
         warning,
-        fromId,
         mode,
+        role,
+        fallback,
     };
 }
 
@@ -290,7 +297,13 @@ const OmpSummaryDivider: React.FC<{ data: OmpCustomMessageData }> = ({ data }) =
         : null;
     const summary = data.customType === 'modeChange' && modeLabelKey !== null
         ? t(modeLabelKey)
-        : data.body;
+        : data.customType === 'modelChange'
+            ? [
+                data.body,
+                data.role ? t('chat.chat.ompDivider.modelChange.role', { role: data.role }) : null,
+                data.fallback ? t('chat.chat.ompDivider.modelChange.fallback') : null,
+            ].filter((line): line is string => line !== null).join('\n')
+            : data.body;
     return (
         <SummaryDividerView
             expanded={expanded}

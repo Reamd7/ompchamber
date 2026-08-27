@@ -1979,6 +1979,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.handoff': '交接',
   'chat.chat.ompDivider.modelChange': '切換模型',
   'chat.chat.ompDivider.modeChange': '模式',
+  'chat.chat.ompDivider.modelChange.role': '經角色 {role} 切換',
+  'chat.chat.ompDivider.modelChange.fallback': '重試降級模型',
   'chat.chat.ompDivider.fromTokens': '自 {tokens} 權杖',
   'chat.chat.ompDivider.expand': '展開摘要',
   'chat.chat.ompDivider.collapse': '摺疊摘要',

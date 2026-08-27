@@ -146,9 +146,9 @@ describe('OmpHostEngine prompt dispatch', () => {
         ompRole: item.info.metadata?.ompRole,
       }));
       expect(rows).toEqual([
-        { role: 'assistant', text: '[omp:modelChange] p1/old · default', ompRole: 'modelChange' },
+        { role: 'assistant', text: '[omp:modelChange] p1/old', ompRole: 'modelChange' },
         { role: 'user', text: 'before', ompRole: undefined },
-        { role: 'assistant', text: '[omp:modelChange] p1/new · temporary', ompRole: 'modelChange' },
+        { role: 'assistant', text: '[omp:modelChange] p1/new', ompRole: 'modelChange' },
         { role: 'assistant', text: '[omp:modeChange] plan', ompRole: 'modeChange' },
       ]);
     } finally {

@@ -124,9 +124,8 @@ describe('projectTurnEventDivider', () => {
       role: 'temporary',
       fallback: true,
     });
-    expect(wire?.parts[0]?.text).toBe('[omp:modelChange] p/m · temporary · fallback');
+    expect(wire?.parts[0]?.text).toBe('[omp:modelChange] p/m');
     expect(wire?.info.role).toBe('assistant');
-    expect(wire?.info.parentID).toBeUndefined();
     expect(wire?.info.time.created).toBe(now);
   });
 

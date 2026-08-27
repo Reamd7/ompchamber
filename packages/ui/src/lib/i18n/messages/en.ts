@@ -2009,6 +2009,8 @@ export const dict = {
   'chat.chat.ompDivider.handoff': 'handoff',
   'chat.chat.ompDivider.modelChange': 'Switched model',
   'chat.chat.ompDivider.modeChange': 'Mode',
+  'chat.chat.ompDivider.modelChange.role': 'Switched via role: {role}',
+  'chat.chat.ompDivider.modelChange.fallback': 'Retry fallback model',
   'chat.chat.ompDivider.fromTokens': 'from {tokens} tokens',
   'chat.chat.ompDivider.expand': 'Expand summary',
   'chat.chat.ompDivider.collapse': 'Collapse summary',

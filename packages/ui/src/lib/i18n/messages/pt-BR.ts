@@ -1987,6 +1987,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.chat.ompDivider.handoff": "entrega",
   "chat.chat.ompDivider.modelChange": "Modelo alterado",
   "chat.chat.ompDivider.modeChange": "Modo",
+  "chat.chat.ompDivider.modelChange.role": "Alterado via função: {role}",
+  "chat.chat.ompDivider.modelChange.fallback": "Modelo reserva de nova tentativa",
   "chat.chat.ompDivider.fromTokens": "de {tokens} tokens",
   "chat.chat.ompDivider.expand": "Expandir resumo",
   "chat.chat.ompDivider.collapse": "Recolher resumo",

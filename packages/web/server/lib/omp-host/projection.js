@@ -305,9 +305,10 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
   if (entry.type === 'model_change') {
     if (typeof entry.model !== 'string' || entry.model.length === 0) return null;
     if (typeof entry.role !== 'string' || entry.role.length === 0) return null;
-    const suffixParts = [entry.role];
-    if (entry.resolvedModelIsFallback === true) suffixParts.push('fallback');
-    const body = `${entry.model} · ${suffixParts.join(' · ')}`;
+    // Body stays the model selector alone — the role tag is attribution, not
+    // a variant/level; rendering it inline read like a thinking level next to
+    // the message snapshots. It rides metadata for the expanded detail.
+    const body = entry.model;
     const id = wireMessageId('custom', timestamp, `[omp:modelChange] ${body}`);
     return {
       info: {

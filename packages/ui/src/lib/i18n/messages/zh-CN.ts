@@ -1975,6 +1975,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.handoff': '交接',
   'chat.chat.ompDivider.modelChange': '切换模型',
   'chat.chat.ompDivider.modeChange': '模式',
+  'chat.chat.ompDivider.modelChange.role': '经角色 {role} 切换',
+  'chat.chat.ompDivider.modelChange.fallback': '重试降级模型',
   'chat.chat.ompDivider.fromTokens': '自 {tokens} 令牌',
   'chat.chat.ompDivider.expand': '展开摘要',
   'chat.chat.ompDivider.collapse': '折叠摘要',

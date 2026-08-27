@@ -2005,6 +2005,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chat.ompDivider.handoff': 'ハンドオフ',
   'chat.chat.ompDivider.modelChange': 'モデル切替',
   'chat.chat.ompDivider.modeChange': 'モード',
+  'chat.chat.ompDivider.modelChange.role': 'ロール {role} 経由で切替',
+  'chat.chat.ompDivider.modelChange.fallback': 'リトライ時のフォールバックモデル',
   'chat.chat.ompDivider.fromTokens': '{tokens} トークンから',
   'chat.chat.ompDivider.expand': '要約を展開',
   'chat.chat.ompDivider.collapse': '要約を折りたたむ',

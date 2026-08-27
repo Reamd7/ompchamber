@@ -1767,6 +1767,8 @@ export const dict = {
   'chat.chat.ompDivider.handoff': 'transfert',
   'chat.chat.ompDivider.modelChange': 'Modèle changé',
   'chat.chat.ompDivider.modeChange': 'Mode',
+  'chat.chat.ompDivider.modelChange.role': 'Changé via le rôle : {role}',
+  'chat.chat.ompDivider.modelChange.fallback': 'Modèle de repli après nouvelle tentative',
   'chat.chat.ompDivider.fromTokens': 'à partir de {tokens} jetons',
   'chat.chat.ompDivider.expand': 'Déplier le résumé',
   'chat.chat.ompDivider.collapse': 'Replier le résumé',

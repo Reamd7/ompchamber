@@ -1835,6 +1835,8 @@ export const dict = {
   'chat.chat.ompDivider.handoff': 'Übergabe',
   'chat.chat.ompDivider.modelChange': 'Modell gewechselt',
   'chat.chat.ompDivider.modeChange': 'Modus',
+  'chat.chat.ompDivider.modelChange.role': 'Gewechselt über Rolle: {role}',
+  'chat.chat.ompDivider.modelChange.fallback': 'Fallback-Modell bei Wiederholung',
   'chat.chat.ompDivider.fromTokens': 'aus {tokens} Tokens',
   'chat.chat.ompDivider.expand': 'Zusammenfassung ausklappen',
   'chat.chat.ompDivider.collapse': 'Zusammenfassung einklappen',
