@@ -109,9 +109,13 @@ describe('projectConversation turn-state threading', () => {
 });
 
 describe('projectTurnEventDivider', () => {
+  // Transcript entries persist ISO string timestamps — the numeric-only guard
+  // once silently dropped every real entry.
+  const isoStamp = new Date(now).toISOString();
+
   test('projects a role-tagged model change with fallback flag as a divider', () => {
     const wire = projectTurnEventDivider(
-      { type: 'model_change', model: 'p/m', role: 'temporary', resolvedModelIsFallback: true, timestamp: now },
+      { type: 'model_change', model: 'p/m', role: 'temporary', resolvedModelIsFallback: true, timestamp: isoStamp },
       { sessionID: 's1' },
     );
     expect(wire?.info.metadata).toEqual({
@@ -123,15 +127,16 @@ describe('projectTurnEventDivider', () => {
     expect(wire?.parts[0]?.text).toBe('[omp:modelChange] p/m · temporary · fallback');
     expect(wire?.info.role).toBe('assistant');
     expect(wire?.info.parentID).toBeUndefined();
+    expect(wire?.info.time.created).toBe(now);
   });
 
   test('skips role-less init bookkeeping and unknown kinds', () => {
     expect(projectTurnEventDivider(
-      { type: 'model_change', model: 'p/m', timestamp: now },
+      { type: 'model_change', model: 'p/m', timestamp: isoStamp },
       { sessionID: 's1' },
     )).toBeNull();
     expect(projectTurnEventDivider(
-      { type: 'thinking_level_change', thinkingLevel: 'high', timestamp: now },
+      { type: 'thinking_level_change', thinkingLevel: 'high', timestamp: isoStamp },
       { sessionID: 's1' },
     )).toBeNull();
     expect(projectTurnEventDivider(null, { sessionID: 's1' })).toBeNull();
@@ -139,7 +144,7 @@ describe('projectTurnEventDivider', () => {
 
   test('projects a mode change carrying the mode value', () => {
     const wire = projectTurnEventDivider(
-      { type: 'mode_change', mode: 'plan', timestamp: now },
+      { type: 'mode_change', mode: 'plan', timestamp: isoStamp },
       { sessionID: 's1' },
     );
     expect(wire?.info.metadata).toEqual({ ompRole: 'modeChange', mode: 'plan' });

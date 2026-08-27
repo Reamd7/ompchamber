@@ -290,22 +290,31 @@ export const projectCustomMessage = (message, { sessionID, agent, parentID }) =>
  * shows where the session's model or mode changed. Standalone (no parentID):
  * turn pairing never anchors on it. Entries without a role tag are the
  * session's init/restore bookkeeping, not user-visible switches — skipped.
+ * Timestamps arrive as ISO strings (transcript persistence) or numeric ms.
  */
 export const projectTurnEventDivider = (entry, { sessionID }) => {
-  if (!entry || typeof entry !== 'object' || typeof entry.timestamp !== 'number') return null;
+  if (!entry || typeof entry !== 'object') return null;
+  // Transcript entries persist ISO string timestamps (getEntries Date.parses
+  // them); tolerate numeric ms too. Wire time.created is numeric ms.
+  const timestamp = typeof entry.timestamp === 'number'
+    ? entry.timestamp
+    : typeof entry.timestamp === 'string' && entry.timestamp.length > 0
+      ? Date.parse(entry.timestamp)
+      : Number.NaN;
+  if (!Number.isFinite(timestamp)) return null;
   if (entry.type === 'model_change') {
     if (typeof entry.model !== 'string' || entry.model.length === 0) return null;
     if (typeof entry.role !== 'string' || entry.role.length === 0) return null;
     const suffixParts = [entry.role];
     if (entry.resolvedModelIsFallback === true) suffixParts.push('fallback');
     const body = `${entry.model} · ${suffixParts.join(' · ')}`;
-    const id = wireMessageId('custom', entry.timestamp, `[omp:modelChange] ${body}`);
+    const id = wireMessageId('custom', timestamp, `[omp:modelChange] ${body}`);
     return {
       info: {
         id,
         sessionID,
         role: 'assistant',
-        time: { created: entry.timestamp, completed: entry.timestamp },
+        time: { created: timestamp, completed: timestamp },
         model: { providerID: '', modelID: '' },
         metadata: {
           ompRole: 'modelChange',
@@ -322,20 +331,20 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
           type: 'text',
           text: `[omp:modelChange] ${body}`,
           synthetic: true,
-          time: { start: entry.timestamp },
+          time: { start: timestamp },
         },
       ],
     };
   }
   if (entry.type === 'mode_change') {
     if (typeof entry.mode !== 'string' || entry.mode.length === 0) return null;
-    const id = wireMessageId('custom', entry.timestamp, `[omp:modeChange] ${entry.mode}`);
+    const id = wireMessageId('custom', timestamp, `[omp:modeChange] ${entry.mode}`);
     return {
       info: {
         id,
         sessionID,
         role: 'assistant',
-        time: { created: entry.timestamp, completed: entry.timestamp },
+        time: { created: timestamp, completed: timestamp },
         model: { providerID: '', modelID: '' },
         metadata: { ompRole: 'modeChange', mode: entry.mode },
       },
@@ -347,7 +356,7 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
           type: 'text',
           text: `[omp:modeChange] ${entry.mode}`,
           synthetic: true,
-          time: { start: entry.timestamp },
+          time: { start: timestamp },
         },
       ],
     };
