@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.ts';
 import { WireEventBus } from './events.ts';
-import { promptPayloadFromWire } from './endpoints.ts';
+import { promptPayloadFromWire, wireSkillRows } from './endpoints.ts';
 import {
   StreamProjector,
   normalizeToolExecutionResult,
@@ -613,5 +613,35 @@ describe('promptPayloadFromWire', () => {
     expect(payload.text).toBe('legacy text');
     expect(payload.images).toEqual([{ data: 'AAAA', mimeType: 'image/png' }]);
     expect(payload.messageID).toBeUndefined();
+  });
+});
+
+describe('wireSkillRows', () => {
+  test('projects discovered skills onto wire rows with frontmatter-stripped content', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-host-skills-'));
+    const withFrontmatter = path.join(dir, 'front', 'SKILL.md');
+    const withoutFrontmatter = path.join(dir, 'plain', 'SKILL.md');
+    fs.mkdirSync(path.dirname(withFrontmatter), { recursive: true });
+    fs.mkdirSync(path.dirname(withoutFrontmatter), { recursive: true });
+    fs.writeFileSync(withFrontmatter, '---\nname: front\ndescription: has frontmatter\n---\n\nFrontmatter body.\n');
+    fs.writeFileSync(withoutFrontmatter, 'Plain body, no frontmatter.\n');
+
+    const rows = await wireSkillRows([
+      { name: 'front', description: 'has frontmatter', filePath: withFrontmatter },
+      { name: 'plain', description: '', filePath: withoutFrontmatter },
+    ]);
+
+    expect(rows).toEqual([
+      { name: 'front', description: 'has frontmatter', location: withFrontmatter, content: '\nFrontmatter body.\n' },
+      { name: 'plain', description: '', location: withoutFrontmatter, content: 'Plain body, no frontmatter.\n' },
+    ]);
+    expect(rows[0]!.content.startsWith('---')).toBe(false);
+    expect(rows[0]!.location).not.toBe('');
+  });
+
+  test('degrades an unreadable SKILL.md to empty content instead of dropping the row', async () => {
+    const missing = path.join(os.tmpdir(), `omp-host-skills-gone-${process.pid}`, 'SKILL.md');
+    const rows = await wireSkillRows([{ name: 'gone', description: '', filePath: missing }]);
+    expect(rows).toEqual([{ name: 'gone', description: '', location: missing, content: '' }]);
   });
 });

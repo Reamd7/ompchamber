@@ -101,6 +101,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         path.join(ancestor, '.opencode'),
         path.join(ancestor, '.claude', 'skills'),
         path.join(ancestor, '.agents', 'skills'),
+        path.join(ancestor, '.omp', 'skills'),
       ];
       return candidates.some((candidate) => isPathInside(resolvedPath, candidate));
     });
@@ -108,10 +109,10 @@ export const registerSkillRoutes = (app, dependencies) => {
     if (isProjectScoped) {
       return { scope: SKILL_SCOPE.PROJECT, source };
     }
-
     const userRoots = [
       path.join(home, '.config', 'opencode'),
       path.join(home, '.opencode'),
+      path.join(home, '.omp', 'agent', 'skills'),
       path.join(home, '.claude', 'skills'),
       path.join(home, '.agents', 'skills'),
       process.env.OPENCODE_CONFIG_DIR ? path.resolve(process.env.OPENCODE_CONFIG_DIR) : null,

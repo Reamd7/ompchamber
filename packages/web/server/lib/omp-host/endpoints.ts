@@ -17,7 +17,7 @@ import { registerCommandsDomainRoutes } from './domain-commands.ts';
 import { registerChromeDomainRoutes } from './domain-chrome.ts';
 import { registerPluginsDomainRoutes } from './domain-plugins.ts';
 import { registerProvidersDomainRoutes } from './domain-providers.ts';
-import type { Settings } from '@oh-my-pi/pi-coding-agent';
+import type { Settings, Skill } from '@oh-my-pi/pi-coding-agent';
 import type { OmpHostEngine } from './engine.ts';
 import type { PublishFn } from './domain-models.ts';
 import type { ProjectedMessage } from './projection.ts';
@@ -315,6 +315,46 @@ export interface SessionModelBody {
   thinkingLevel?: string;
 }
 
+
+/** Wire app/skills row (AppSkillsResponses 200 element, types.gen.d.ts). */
+export interface WireSkillRow {
+  name: string;
+  description: string;
+  location: string;
+  content: string;
+}
+
+/**
+ * Strip a leading YAML frontmatter block (`---\n...\n---\n`) from a SKILL.md
+ * file. Mirrors the SDK's own display-layer semantics (extensibility/skills.ts
+ * buildSkillPromptMessage strips the same block; discovery/helpers.ts fills
+ * `content` with the parseFrontmatter body). A file without frontmatter is
+ * returned verbatim.
+ */
+const stripSkillFrontmatter = (content: string): string =>
+  content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
+
+/**
+ * Project discovered SDK skills onto the wire app/skills rows the vendored
+ * client consumes: `location` is the SKILL.md path (the wire field name —
+ * the SDK calls it `filePath`) and `content` is the frontmatter-stripped
+ * body. An unreadable SKILL.md degrades to empty content rather than
+ * dropping the row: discovery just scanned it, so one vanished file must
+ * not hide the surviving skills behind the route-wide `[]` fallback.
+ */
+export const wireSkillRows = async (skills: readonly Pick<Skill, 'name' | 'description' | 'filePath'>[]): Promise<WireSkillRow[]> =>
+  Promise.all(
+    skills.map(async (skill) => ({
+      name: skill.name,
+      description: skill.description ?? '',
+      location: skill.filePath,
+      content: await fs.promises.readFile(skill.filePath, 'utf8').then(
+        stripSkillFrontmatter,
+        () => '',
+      ),
+    })),
+  );
+
 /**
  * Register every consumed route.
  * @param {(method: string, pattern: string, handler: Function) => void} route
@@ -595,22 +635,11 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   route('GET', '/skill', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     try {
+      // Dynamic import on purpose: a failed SDK load must degrade this one
+      // request to `[]` (the catch below), not break host startup.
       const { discoverSkills } = await import('@oh-my-pi/pi-coding-agent');
       const { skills } = await discoverSkills(directory);
-      return json(
-        (skills ?? []).map((skill) => {
-          // SAFETY: SDK Skill exposes filePath, not path (extensibility/
-          // skills.ts): the untyped read always saw a missing key, so the
-          // cast intentionally reads a key the SDK does not declare — keep
-          // that exactly (the `?? ''` below absorbs the undefined).
-          const wirePath: string | undefined = (skill as { path?: string }).path;
-          return {
-            name: skill.name,
-            description: skill.description ?? '',
-            path: wirePath ?? '',
-          };
-        }),
-      );
+      return json(await wireSkillRows(skills ?? []));
     } catch {
       return json([]);
     }

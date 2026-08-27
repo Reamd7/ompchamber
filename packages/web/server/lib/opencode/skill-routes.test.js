@@ -28,14 +28,25 @@ const createTempProject = () => {
   return projectRoot;
 };
 
-const startSkillsApp = ({ projectRoot }) => {
+const startSkillsApp = ({ projectRoot, engineSkills = null, homeDir = null }) => {
   const app = express();
   app.use(express.json());
+
+  // Fake omp-host engine face: serves GET /skill with engine-shaped wire rows
+  // ({name, description, location, content}) exactly as the host emits them.
+  let engineServer = null;
+  let enginePort = 0;
+  if (engineSkills) {
+    const engine = express();
+    engine.get('/skill', (_req, res) => res.json(engineSkills));
+    engineServer = engine.listen(0);
+    enginePort = engineServer.address().port;
+  }
 
   registerSkillRoutes(app, {
     fs,
     path,
-    os,
+    os: homeDir ? { homedir: () => homeDir } : os,
     resolveProjectDirectory: async () => ({ directory: projectRoot, error: null }),
     resolveOptionalProjectDirectory: async (req) => {
       const queryDirectory = Array.isArray(req.query?.directory)
@@ -51,9 +62,9 @@ const startSkillsApp = ({ projectRoot }) => {
     isUnsafeSkillRelativePath: () => false,
     refreshOpenCodeAfterConfigChange: async () => {},
     clientReloadDelayMs: 0,
-    buildOpenCodeUrl: () => 'http://127.0.0.1:9/',
+    buildOpenCodeUrl: () => `http://127.0.0.1:${enginePort}/`,
     getOpenCodeAuthHeaders: () => ({}),
-    getOpenCodePort: () => 0,
+    getOpenCodePort: () => enginePort,
     getSkillSources,
     discoverSkills,
     mergeDiscoveredSkills,
@@ -83,7 +94,18 @@ const startSkillsApp = ({ projectRoot }) => {
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
+      server.close((appError) => {
+        if (!engineServer) {
+          return appError ? reject(appError) : resolve();
+        }
+        engineServer.close((engineError) => {
+          if (appError || engineError) {
+            reject(appError || engineError);
+          } else {
+            resolve();
+          }
+        });
+      });
     }),
   };
 };
@@ -211,6 +233,97 @@ describe('skill-routes directory soft fallback', () => {
         recursive: true,
         force: true,
       });
+    }
+  });
+});
+
+describe('skill-routes engine skills merge and scope inference', () => {
+  /** @type {string | null} */
+  let projectRoot = null;
+  /** @type {{ close: () => Promise<void> } | null} */
+  let appHandle = null;
+
+  afterEach(async () => {
+    if (appHandle) {
+      await appHandle.close();
+      appHandle = null;
+    }
+    if (projectRoot) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      projectRoot = null;
+    }
+  });
+
+  it('keeps engine-shaped rows through the fetchOpenCodeDiscoveredSkills merge', async () => {
+    projectRoot = createTempProject();
+    const engineSkillPath = path.join(projectRoot, '.agents', 'skills', 'engine-row', 'SKILL.md');
+
+    appHandle = startSkillsApp({
+      projectRoot,
+      engineSkills: [
+        {
+          name: 'engine-row',
+          description: 'Discovered by the engine',
+          location: engineSkillPath,
+          content: 'Engine body without frontmatter',
+        },
+      ],
+    });
+
+    const listResponse = await fetch(
+      `${appHandle.baseUrl}/api/config/skills?directory=${encodeURIComponent(projectRoot)}`,
+    );
+    expect(listResponse.status).toBe(200);
+    const payload = await listResponse.json();
+
+    const merged = payload.skills.find((entry) => entry.name === 'engine-row');
+    expect(merged).toBeTruthy();
+    expect(merged.path).toBe(engineSkillPath);
+    expect(merged.description).toBe('Discovered by the engine');
+    expect(merged.content).toBe('Engine body without frontmatter');
+    expect(merged.scope).toBe(SKILL_SCOPE.PROJECT);
+  });
+
+  it('classifies .omp/skills engine locations to project and user scopes', async () => {
+    projectRoot = createTempProject();
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-home-'));
+    const projectSkillPath = path.join(projectRoot, '.omp', 'skills', 'deploy-helper', 'SKILL.md');
+    const userSkillPath = path.join(fakeHome, '.omp', 'agent', 'skills', 'global-helper', 'SKILL.md');
+
+    try {
+      appHandle = startSkillsApp({
+        projectRoot,
+        homeDir: fakeHome,
+        engineSkills: [
+          {
+            name: 'deploy-helper',
+            description: 'Project omp skill',
+            location: projectSkillPath,
+            content: 'Project omp body',
+          },
+          {
+            name: 'global-helper',
+            description: 'User omp skill',
+            location: userSkillPath,
+            content: 'User omp body',
+          },
+        ],
+      });
+
+      const listResponse = await fetch(
+        `${appHandle.baseUrl}/api/config/skills?directory=${encodeURIComponent(projectRoot)}`,
+      );
+      expect(listResponse.status).toBe(200);
+      const payload = await listResponse.json();
+
+      const projectSkill = payload.skills.find((entry) => entry.name === 'deploy-helper');
+      const userSkill = payload.skills.find((entry) => entry.name === 'global-helper');
+      expect(projectSkill).toBeTruthy();
+      expect(projectSkill.scope).toBe(SKILL_SCOPE.PROJECT);
+      expect(userSkill).toBeTruthy();
+      expect(userSkill.scope).toBe(SKILL_SCOPE.USER);
+    } finally {
+      fs.rmSync(fakeHome, { recursive: true, force: true });
     }
   });
 });
