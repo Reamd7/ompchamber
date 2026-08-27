@@ -3,7 +3,7 @@
  * space for a hardware keyboard's minimized on-screen widget.
  *
  * With a hardware keyboard attached (Magic Keyboard et al.), focusing a
- * text field on iOS/iPadOS still reserves a bottom strip for the minimized
+ * text field on iOS/iPadOS reserves a bottom strip for the minimized
  * on-screen keyboard widget. WebKit takes that strip only from the VISUAL
  * viewport — the layout viewport (and 100dvh) keeps full height — so a
  * full-height shell extends under the strip: the strip renders as dead
@@ -11,6 +11,13 @@
  * scrollbar). Sizing the shell to the actually visible height removes
  * both. Same class of fix as VS Code's iOS workbench sizing, which trusts
  * `visualViewport` over `innerHeight` (microsoft/vscode#122390).
+ *
+ * The RESERVED GEOMETRY is the trigger, not focus state: iPadOS 26 keeps
+ * the widget strip after blur, and WebKit does not reliably fire
+ * visualViewport resize when the strip appears (bugs.webkit.org 198347),
+ * so a focus-gated, event-driven clamp can miss both edges. Events remain
+ * fast-path triggers; an rAF loop (only while an editable is focused or
+ * the clamp is active) covers missing events.
  *
  * Scope guard: a REAL software keyboard reserves far more than the widget
  * strip, and those flows already have their own handling
@@ -35,7 +42,6 @@ const CLAMP_HEIGHT_VAR = '--oc-vv-clamp-height';
  * WKWebView. iPadOS reports a desktop Mac UA, so touch points are the tell.
  */
 const isIOSWebKitRuntime = (): boolean => {
-  if (typeof navigator === 'undefined') return false;
   const userAgent = navigator.userAgent || '';
   const maxTouchPoints = navigator.maxTouchPoints ?? 0;
   return /iPhone|iPad|iPod/i.test(userAgent)
@@ -51,8 +57,6 @@ export interface ViewportClampInput {
   layoutHeight: number;
   /** `visualViewport.scale` — pinch zoom also shrinks the visual viewport. */
   scale: number;
-  /** A text-editable element currently holds focus (the widget is up). */
-  editableFocused: boolean;
 }
 
 export interface ViewportClampResult {
@@ -65,11 +69,14 @@ export interface ViewportClampResult {
 /**
  * Decide the clamp from viewport measurements. Pure: every WebKit timing
  * quirk lives in the hook below, every geometry decision lives here.
+ *
+ * No focus term on purpose: the geometry IS the question. At scale 1 the
+ * only thing that shrinks the visual viewport without shrinking the layout
+ * viewport is reserved keyboard space (browser chrome moves both, pinch
+ * zoom is excluded by the scale guard) — so a widget-band strip clamps
+ * even while the widget lingers after blur.
  */
 export const resolveIOSKeyboardViewportClamp = (input: ViewportClampInput): ViewportClampResult => {
-  if (!input.editableFocused) {
-    return { active: false, heightPx: null };
-  }
   // Pinch zoom shrinks the visual viewport the same way — that loss is the
   // user's zoom, not keyboard space, and must not resize the shell.
   if (input.scale > 1.02) {
@@ -86,7 +93,7 @@ export const resolveIOSKeyboardViewportClamp = (input: ViewportClampInput): View
   return { active: true, heightPx: Math.round(visibleBottom) };
 };
 
-const isEditableElement = (node: unknown): node is HTMLElement =>
+const isEditableElement = (node: Element | null): node is HTMLElement =>
   node instanceof HTMLElement
   && (node.tagName === 'TEXTAREA' || node.tagName === 'INPUT' || node.isContentEditable);
 
@@ -94,9 +101,13 @@ const isEditableElement = (node: unknown): node is HTMLElement =>
  * Keep `--oc-vv-clamp-height` / `.oc-vv-clamp` on <html> in step with the
  * reserved widget strip. Mount once per app root (SyncAppEffects).
  *
- * The style writes are change-gated: events fire in bursts while the widget
- * appears and while Safari pans, but each evaluate is a few reads plus at
- * most one toggle and one property write.
+ * Event coverage: focusin/focusout, visualViewport resize/scroll, window
+ * resize/orientationchange. Frame coverage: an rAF loop that runs only
+ * while an editable is focused OR the clamp is active, because WebKit can
+ * skip the visualViewport events when the widget strip appears
+ * (bugs.webkit.org 198347). Both paths share one evaluate; style writes
+ * are change-gated, so the loop is a few reads per frame and a write only
+ * when the geometry actually moves.
  */
 export function useIOSKeyboardViewportClamp(): void {
   React.useEffect(() => {
@@ -107,14 +118,8 @@ export function useIOSKeyboardViewportClamp(): void {
     const root = document.documentElement;
     let lastActive = false;
     let lastHeight: number | null = null;
-    let releaseTimer: number | null = null;
-
-    const clearReleaseTimer = () => {
-      if (releaseTimer !== null) {
-        window.clearTimeout(releaseTimer);
-        releaseTimer = null;
-      }
-    };
+    let frame = 0;
+    let loopWanted = false;
 
     const evaluate = () => {
       const { active, heightPx } = resolveIOSKeyboardViewportClamp({
@@ -122,11 +127,19 @@ export function useIOSKeyboardViewportClamp(): void {
         visualOffsetTop: vv.offsetTop,
         layoutHeight: root.clientHeight,
         scale: vv.scale,
-        editableFocused: isEditableElement(document.activeElement),
       });
       if (active !== lastActive) {
         lastActive = active;
         root.classList.toggle(CLAMP_CLASS, active);
+        if (active) {
+          // Engage from a panned state (Safari scrolled the full-height
+          // shell into the strip): snap the pan back first, then measure —
+          // the clamped document fits, so there is nothing to scroll into.
+          if (window.scrollY > 0) {
+            window.scrollTo(0, 0);
+            return evaluate();
+          }
+        }
       }
       if (heightPx !== lastHeight) {
         lastHeight = heightPx;
@@ -136,39 +149,53 @@ export function useIOSKeyboardViewportClamp(): void {
           root.style.setProperty(CLAMP_HEIGHT_VAR, `${heightPx}px`);
         }
       }
+      return { active };
     };
 
-    const evaluateOnFocusIn = () => {
-      // Focus moving directly between two inputs fires focusout → focusin
-      // before paint; cancel the pending release so the clamp holds.
-      clearReleaseTimer();
-      evaluate();
+    // The loop runs only while it can matter: an editable focused (strip
+    // may appear/disappear) or the clamp active (strip may vanish — widget
+    // dismissed, keyboard detached, Split View resize). Otherwise zero cost.
+    const track = (): void => {
+      const editableFocused = isEditableElement(document.activeElement);
+      const { active } = evaluate();
+      loopWanted = editableFocused || active;
+      if (loopWanted) {
+        frame = requestAnimationFrame(track);
+      } else {
+        frame = 0;
+      }
     };
-
-    const evaluateOnFocusOut = () => {
-      // Deferred like the Capacitor bridge's focusout (mobileNativeChrome):
-      // at timeout, activeElement is the final target — a plain blur clears
-      // the clamp, a same-frame refocus (canceled above) keeps it.
-      clearReleaseTimer();
-      releaseTimer = window.setTimeout(evaluate, 0);
+    const kickLoop = (): void => {
+      if (frame === 0) {
+        frame = requestAnimationFrame(track);
+      }
+    };
+    // Track while focused even before any strip exists: the loop is what
+    // catches a silent strip appearance when vv events never fire.
+    const onFocusIn = (): void => {
+      if (isEditableElement(document.activeElement)) kickLoop();
     };
 
     evaluate();
-    document.addEventListener('focusin', evaluateOnFocusIn, true);
-    document.addEventListener('focusout', evaluateOnFocusOut, true);
-    vv.addEventListener('resize', evaluate);
-    vv.addEventListener('scroll', evaluate);
-    window.addEventListener('resize', evaluate);
-    window.addEventListener('orientationchange', evaluate);
+    kickLoop();
+    document.addEventListener('focusin', onFocusIn, true);
+    document.addEventListener('focusout', kickLoop, true);
+    vv.addEventListener('resize', kickLoop);
+    vv.addEventListener('scroll', kickLoop);
+    window.addEventListener('resize', kickLoop);
+    window.addEventListener('orientationchange', kickLoop);
 
     return () => {
-      clearReleaseTimer();
-      document.removeEventListener('focusin', evaluateOnFocusIn, true);
-      document.removeEventListener('focusout', evaluateOnFocusOut, true);
-      vv.removeEventListener('resize', evaluate);
-      vv.removeEventListener('scroll', evaluate);
-      window.removeEventListener('resize', evaluate);
-      window.removeEventListener('orientationchange', evaluate);
+      if (frame !== 0) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      document.removeEventListener('focusin', onFocusIn, true);
+      document.removeEventListener('focusout', kickLoop, true);
+      vv.removeEventListener('resize', kickLoop);
+      vv.removeEventListener('scroll', kickLoop);
+      window.removeEventListener('resize', kickLoop);
+      window.removeEventListener('orientationchange', kickLoop);
       root.classList.remove(CLAMP_CLASS);
       root.style.removeProperty(CLAMP_HEIGHT_VAR);
     };

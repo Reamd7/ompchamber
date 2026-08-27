@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 
 import { resolveIOSKeyboardViewportClamp } from './iosKeyboardViewportClamp';
 
-// Geometry-only contract: the WebKit event wiring around it is not
-// meaningfully testable off-device (same stance as useMobileViewportPin).
+// Geometry-only contract: the resolver has no focus term on purpose — the
+// reserved strip itself is the trigger (iPadOS 26 keeps the widget after
+// blur), and the WebKit event wiring around it is not meaningfully testable
+// off-device (same stance as useMobileViewportPin).
 // Layout 820 / visual 760 = the ~60px strip iPadOS reserves for the
 // minimized keyboard widget while a hardware keyboard is attached.
 const widgetStrip = (overrides: Partial<Parameters<typeof resolveIOSKeyboardViewportClamp>[0]> = {}) => ({
@@ -11,20 +13,12 @@ const widgetStrip = (overrides: Partial<Parameters<typeof resolveIOSKeyboardView
   visualOffsetTop: 0,
   layoutHeight: 820,
   scale: 1,
-  editableFocused: true,
   ...overrides,
 });
 
 describe('resolveIOSKeyboardViewportClamp', () => {
-  test('a widget-band strip with an editable focused clamps to the visible height', () => {
+  test('a widget-band strip clamps to the visible height', () => {
     expect(resolveIOSKeyboardViewportClamp(widgetStrip())).toEqual({ active: true, heightPx: 760 });
-  });
-
-  test('no editable focus means no clamp, whatever the viewport says', () => {
-    expect(resolveIOSKeyboardViewportClamp(widgetStrip({ editableFocused: false }))).toEqual({
-      active: false,
-      heightPx: null,
-    });
   });
 
   test('top chrome offsets count: clamp to offsetTop + height, not raw height', () => {
