@@ -1088,6 +1088,40 @@ export class OmpHostEngine {
     this.wireIdOverrides.set(`${hostSession.directory}\u0000${hostSession.sessionId}\u0000${coldId}`, liveId);
   }
 
+  /**
+   * Wire join key for a retry update (P4, field-loss plan). The SDK's
+   * persistenceKey addresses the persisted assistant entry
+   * ('assistant:<ts>:<provider>:<model>:<responseId>:<stopReason>'); the UI
+   * joins omp.retry.ended notes by projected WIRE id (the TUI joins the same
+   * update onto its component by persistenceKey — entryId is persistence
+   * layer only). Resolve the timestamp segment to the live assistant
+   * message, derive its wire id (cold form, bridged to the live streaming id
+   * via wireIdOverrides), then fall back to the most recent settled
+   * assistant wire id (the TUI's FIFO analog). The raw key is the last
+   * resort so the payload stays joinable-shaped even when nothing matches.
+   */
+  #retryWireIdFor(hostSession: HostSession, update: { entryId?: string; persistenceKey?: string }): string {
+    const key = update.persistenceKey ?? update.entryId ?? '';
+    const timestamp = Number.parseInt(key.split(':')[1] ?? '', 10);
+    const messages = hostSession.agentSession?.messages ?? [];
+    const isAssistant = (m: AgentSession['messages'][number]): m is AgentSession['messages'][number] & { role: 'assistant' } =>
+      m?.role === 'assistant';
+    const match = Number.isFinite(timestamp)
+      ? [...messages].filter(isAssistant).reverse().find((m) => m.timestamp === timestamp)
+      : undefined;
+    if (match) {
+      const seed = textOfContent(match.content)
+        || (Array.isArray(match.content) && match.content[0]?.type === 'toolCall'
+          ? (match.content[0].name ?? '')
+          : '');
+      const coldId = wireMessageId('assistant', match.timestamp, seed);
+      return this.wireIdOverrides.get(
+        `${hostSession.directory}\u0000${hostSession.sessionId}\u0000${coldId}`,
+      ) ?? coldId;
+    }
+    return hostSession.lastAssistantWireId ?? key;
+  }
+
   #resolveModel(selector) {
     if (!selector) return undefined;
     const available = this.modelRegistry.getAvailable();
@@ -1709,21 +1743,16 @@ export class OmpHostEngine {
       }
       case 'auto_retry_end': {
         this.bus.emit('session.status', { sessionID: sessionId, status: { type: 'busy' } }, directory);
-        this.#ompPublish(
-          hostSession,
-          'omp.retry.ended',
-          {
-            success: Boolean(event.success),
-            attempt: event.attempt,
-            ...(event.finalError ? { finalError: event.finalError } : {}),
-            retryErrors: (event.retryErrors ?? []).map((update) => ({
-              messageID: update.persistenceKey ?? update.entryId,
-              note: update.note,
-              retryRecovery: update.retryRecovery
-            }))
-          },
-          { durable: true }
-        );
+        this.#ompPublish(hostSession, 'omp.retry.ended', {
+          success: Boolean(event.success),
+          attempt: event.attempt,
+          ...(event.finalError ? { finalError: event.finalError } : {}),
+          retryErrors: (event.retryErrors ?? []).map((update) => ({
+            messageID: this.#retryWireIdFor(hostSession, update),
+            note: update.note,
+            retryRecovery: update.retryRecovery,
+          })),
+        }, { durable: true });
         return;
       }
       case 'retry_fallback_applied': {

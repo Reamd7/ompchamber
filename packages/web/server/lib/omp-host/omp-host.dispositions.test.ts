@@ -17,6 +17,7 @@ const sessionDir = path.join(agentDir, 'sessions');
 
 const sessionFiles = [{ id: 's1', path: path.join(sessionDir, 's1.jsonl') }];
 const listenersBySession = new Map();
+const fakeSessions = new Map();
 
 const makeFakeSession = (id) => ({
   model: { provider: 'p1', id: 'current-model' },
@@ -62,9 +63,9 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ),
   createAgentSession: async (options) => {
     const id = options.sessionManager?.getSessionId?.() ?? 's1';
-    return { session: makeFakeSession(id) };
+    if (!fakeSessions.has(id)) fakeSessions.set(id, makeFakeSession(id));
+    return { session: fakeSessions.get(id) };
   },
-  // The SDK Settings constructor is private (a type-level gate); the harness
   // only serves the `Settings.init` seam, and the stub it returns already
   // carries every member the boot path touches — so a standalone class
   // replaces the extends with zero runtime change.
@@ -104,6 +105,7 @@ const harness = async () => {
   return {
     engine,
     emit,
+    session: fakeSessions.get('s1'),
     wire,
     omp,
     wireOf: (type) => wire.filter((e) => e.type === type),
@@ -138,22 +140,42 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
   test('auto_retry_end emits wire busy + durable omp.retry.ended with recovery notes', async () => {
     const h = await harness();
+    h.emit({ type: 'agent_start' });
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 1 } });
+    const liveId = h.wireOf('message.updated').at(-1).properties.info.id;
+    const settled = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'boom' }],
+      model: 'p1/m1',
+      timestamp: 2,
+      usage: { input: 1, output: 1 },
+      stopReason: 'stop',
+    };
+    // The resolver matches persistenceKey timestamps against the persisted
+    // message list — seed it the way a real transcript would hold it.
+    h.session.messages.push(settled);
+    h.emit({ type: 'message_end', message: settled });
     h.emit({
       type: 'auto_retry_end',
       success: false,
       attempt: 3,
       finalError: 'gave up',
-      retryErrors: [{ entryId: 'e1', persistenceKey: 'p1', note: 'credential', retryRecovery: { status: 'recovered' } }],
+      retryErrors: [
+        // Real persistenceKey shape: the timestamp segment resolves to the
+        // settled assistant message; the join key must be its WIRE id, not
+        // the raw SDK key (UI joins notes by projected message id).
+        { entryId: 'e1', persistenceKey: 'assistant:2:p1:m1:resp-1:stop', note: 'credential', retryRecovery: { status: 'recovered' } },
+        // No matching message: falls back to the latest settled assistant
+        // wire id (the TUI's FIFO analog), never the raw key.
+        { entryId: 'e2', persistenceKey: 'assistant:999:p1:m1:resp-2:stop', note: 'fallback', retryRecovery: { status: 'superseded' } },
+      ],
     });
     expect(h.wireOf('session.status').at(-1).properties.status.type).toBe('busy');
     const ended = h.ompOf('omp.retry.ended').at(-1);
     expect(ended.payload.success).toBe(false);
-    expect(ended.payload.retryErrors[0]).toEqual({
-      messageID: 'p1',
-      note: 'credential',
-      retryRecovery: { status: 'recovered' },
-    });
-    expect(engine => engine).toBeTruthy();
+    expect(ended.payload.retryErrors[0].messageID).toBe(liveId);
+    expect(ended.payload.retryErrors[0].note).toBe('credential');
+    expect(ended.payload.retryErrors[1].messageID).toBe(liveId);
     // durable → replayable
     const replayed = [];
     h.engine.ompBus.subscribeSince(0, (entry) => replayed.push(entry.envelope.type));
