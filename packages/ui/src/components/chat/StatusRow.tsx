@@ -32,6 +32,14 @@ const statusConfig: Record<TodoStatus, { textClassName: string }> = {
   cancelled: {
     textClassName: "text-muted-foreground line-through",
   },
+  // SDK statuses (tools/todo.ts): blocked = waiting on something (warning);
+  // abandoned = dropped (error tone + strikethrough, TUI parity).
+  blocked: {
+    textClassName: "text-[var(--status-warning)]",
+  },
+  abandoned: {
+    textClassName: "text-[var(--status-error)] line-through",
+  },
 };
 
 const priorityClassName: Record<TodoPriority, string> = {
@@ -51,6 +59,8 @@ const statusLabelKey: Record<TodoStatus, string> = {
   pending: "chat.statusRow.todo.status.pending",
   completed: "chat.statusRow.todo.status.completed",
   cancelled: "chat.statusRow.todo.status.cancelled",
+  blocked: "chat.statusRow.todo.status.blocked",
+  abandoned: "chat.statusRow.todo.status.abandoned",
 };
 
 const priorityLabelKey: Record<TodoPriority, string> = {
@@ -74,6 +84,10 @@ const TodoItemRow: React.FC<TodoItemRowProps> = ({ todo }) => {
       <Icon name="record-circle" className="h-3.5 w-3.5 text-[var(--status-info)]"  aria-hidden="true"/>
     ) : todo.status === "completed" ? (
       <Icon name="checkbox-circle" className="h-3.5 w-3.5 text-[var(--status-success)]"  aria-hidden="true"/>
+    ) : todo.status === "blocked" ? (
+      <Icon name="error-warning" className="h-3.5 w-3.5 text-[var(--status-warning)]"  aria-hidden="true"/>
+    ) : todo.status === "abandoned" ? (
+      <Icon name="close-circle" className="h-3.5 w-3.5 text-[var(--status-error)]"  aria-hidden="true"/>
     ) : (
       <Icon name="time" className="h-3.5 w-3.5 text-muted-foreground"  aria-hidden="true"/>
     );

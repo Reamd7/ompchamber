@@ -2098,6 +2098,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.statusRow.todo.status.pending': '保留中',
   'chat.statusRow.todo.status.completed': '完了',
   'chat.statusRow.todo.status.cancelled': 'キャンセル',
+  'chat.statusRow.todo.status.blocked': 'ブロック中',
+  'chat.statusRow.todo.status.abandoned': '中断',
   'chat.statusRow.todo.priority.high': '高優先度',
   'chat.statusRow.todo.priority.medium': '中優先度',
   'chat.statusRow.todo.priority.low': '低優先度',

@@ -1844,6 +1844,8 @@ export const dict = {
   'chat.statusRow.todo.status.pending': 'En attente',
   'chat.statusRow.todo.status.completed': 'Complété',
   'chat.statusRow.todo.status.cancelled': 'Annulé',
+  'chat.statusRow.todo.status.blocked': 'Bloqué',
+  'chat.statusRow.todo.status.abandoned': 'Abandonné',
   'chat.statusRow.todo.priority.high': 'Haute priorité',
   'chat.statusRow.todo.priority.medium': 'Priorité moyenne',
   'chat.statusRow.todo.priority.low': 'Faible priorité',

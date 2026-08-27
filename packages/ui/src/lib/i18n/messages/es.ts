@@ -2080,6 +2080,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.statusRow.todo.status.pending": "Pendiente",
   "chat.statusRow.todo.status.completed": "Completado",
   "chat.statusRow.todo.status.cancelled": "Cancelado",
+  "chat.statusRow.todo.status.blocked": "Bloqueado",
+  "chat.statusRow.todo.status.abandoned": "Abandonado",
   "chat.statusRow.todo.priority.high": "Prioridad alta",
   "chat.statusRow.todo.priority.medium": "Prioridad media",
   "chat.statusRow.todo.priority.low": "Prioridad baja",

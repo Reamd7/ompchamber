@@ -2080,6 +2080,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.statusRow.todo.status.pending": "В очікуванні",
   "chat.statusRow.todo.status.completed": "Виконано",
   "chat.statusRow.todo.status.cancelled": "Скасовано",
+  "chat.statusRow.todo.status.blocked": "Заблоковано",
+  "chat.statusRow.todo.status.abandoned": "Покинуто",
   "chat.statusRow.todo.priority.high": "Високий пріоритет",
   "chat.statusRow.todo.priority.medium": "Середній пріоритет",
   "chat.statusRow.todo.priority.low": "Низький пріоритет",
