@@ -1,3 +1,4 @@
+import React from 'react';
 import type { Message, Part, ReasoningPart, TextPart, ToolPart } from '@/lib/opencode/wire'
 
 import type { MessageStreamPhase } from '@/stores/types/sessionTypes';
