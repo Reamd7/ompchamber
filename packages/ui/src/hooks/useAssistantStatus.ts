@@ -118,6 +118,10 @@ const WORKING_PHRASES = [
 type ParsedStatusResult = {
     activePartType: 'text' | 'tool' | 'reasoning' | 'editing' | undefined;
     activeToolName: string | undefined;
+    /** Model-stated reason for the running tool call (SDK ToolCall.intent via
+     * the omp projection's state.metadata.intent) — the TUI's working-message
+     * slot, shown in preference to the generic tool phrase (ch 12). */
+    activeToolIntent: string | undefined;
     statusText: string;
     isGenericStatus: boolean;
 };
@@ -138,9 +142,22 @@ const getStableWorkingPhrase = (key: string): string => {
     return WORKING_PHRASES[hashString(key) % WORKING_PHRASES.length] ?? 'working';
 };
 
-const createParsedStatus = (parts: Part[], genericKey: string): ParsedStatusResult => {
+
+/** Tool-call intent as projected by omp (state.metadata.intent); the UI's
+ * ToolPart reads the same slot for ask details. Widen follows the ToolPart
+ * precedent (state union carries metadata only on running/completed). */
+const readToolIntent = (part: ToolPart): string | undefined => {
+    // SAFETY: wire ToolState carries metadata only on some variants; this
+    // reads the single projected field through the narrowest field view.
+    const state = part.state as { metadata?: { intent?: unknown } } | undefined;
+    const intent = state?.metadata?.intent;
+    return typeof intent === 'string' && intent.trim().length > 0 ? intent.trim() : undefined;
+};
+
+export const createParsedStatus = (parts: Part[], genericKey: string): ParsedStatusResult => {
     let activePartType: ParsedStatusResult['activePartType'] = undefined;
     let activeToolName: string | undefined = undefined;
+    let activeToolIntent: string | undefined = undefined;
 
     if (!isFullySyntheticMessage(parts)) {
         for (let index = parts.length - 1; index >= 0; index -= 1) {
@@ -167,6 +184,7 @@ const createParsedStatus = (parts: Part[], genericKey: string): ParsedStatusResu
                             activePartType = 'tool';
                             activeToolName = toolName;
                         }
+                        activeToolIntent = readToolIntent(part) ?? activeToolIntent;
                     }
                     break;
                 }
@@ -189,6 +207,9 @@ const createParsedStatus = (parts: Part[], genericKey: string): ParsedStatusResu
 
     const isGenericStatus = activePartType === undefined;
     const statusText = (() => {
+        if (activeToolIntent) {
+            return activeToolIntent.length > 60 ? `${activeToolIntent.slice(0, 60)}…` : activeToolIntent;
+        }
         if (activePartType === 'editing') return activeToolName === 'multiedit' ? getToolStatusPhrase(activeToolName) : 'editing file';
         if (activePartType === 'tool' && activeToolName) return getToolStatusPhrase(activeToolName);
         if (activePartType === 'reasoning') return 'thinking';
@@ -196,7 +217,7 @@ const createParsedStatus = (parts: Part[], genericKey: string): ParsedStatusResu
         return getStableWorkingPhrase(genericKey);
     })();
 
-    return { activePartType, activeToolName, statusText, isGenericStatus };
+    return { activePartType, activeToolName, activeToolIntent, statusText, isGenericStatus };
 };
 
 const encodeParsedStatus = (status: ParsedStatusResult): string => {
@@ -215,6 +236,7 @@ const decodeParsedStatus = (signature: string): ParsedStatusResult => {
             ? activePartType
             : undefined,
         activeToolName: activeToolName || undefined,
+        activeToolIntent: undefined,
         statusText,
         isGenericStatus: isGenericStatus === '1',
     };

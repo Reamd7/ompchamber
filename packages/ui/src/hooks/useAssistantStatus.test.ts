@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import type { Message } from '@/lib/opencode/wire'
+import type { Message, Part } from '@/lib/opencode/wire'
 
-import { getActiveAssistantContext } from './useAssistantStatus';
+import { createParsedStatus, getActiveAssistantContext } from './useAssistantStatus';
 
 const userMessage = (id: string, providerID: string, modelID: string): Message => ({
     id,
@@ -56,5 +56,43 @@ describe('getActiveAssistantContext', () => {
             assistantId: assistant.id,
             model: null,
         });
+    });
+});
+describe('createParsedStatus tool intent (ch 12: working-message slot)', () => {
+    const runningTool = (intent?: string): Part => ({
+        id: 'prt_1',
+        sessionID: 'ses_1',
+        messageID: 'msg_1',
+        type: 'tool',
+        callID: 'call_1',
+        tool: 'grep',
+        state: intent === undefined
+            ? { status: 'running', input: {}, time: { start: 1 } }
+            : { status: 'running', input: {}, time: { start: 1 }, metadata: { intent } },
+    });
+
+    test('running tool with intent shows the intent, not the tool phrase', () => {
+        const result = createParsedStatus([runningTool('locating the auth guard')], 'generic-key');
+        expect(result.statusText).toBe('locating the auth guard');
+        expect(result.activeToolIntent).toBe('locating the auth guard');
+        expect(result.activeToolName).toBe('grep');
+    });
+
+    test('running tool without intent falls back to the tool phrase', () => {
+        const result = createParsedStatus([runningTool()], 'generic-key');
+        expect(result.statusText).toBe('searching content');
+        expect(result.activeToolIntent).toBeUndefined();
+    });
+
+    test('long intent truncates to 60 chars with an ellipsis', () => {
+        const long = 'a'.repeat(80);
+        const result = createParsedStatus([runningTool(long)], 'generic-key');
+        expect(result.statusText).toBe(`${'a'.repeat(60)}…`);
+    });
+
+    test('blank intent is ignored (whitespace-only does not override the phrase)', () => {
+        const result = createParsedStatus([runningTool('   ')], 'generic-key');
+        expect(result.activeToolIntent).toBeUndefined();
+        expect(result.statusText).toBe('searching content');
     });
 });
