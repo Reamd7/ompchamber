@@ -1,6 +1,6 @@
 # 第 12 章 · 工具意图状态行(Tool Intent Status)
 
-状态:设计定稿,待实施(可选增强)
+状态:**已实施**(`b42e4a1a`,2026-08-28)——createParsedStatus 在 tool 分支读取 `state.metadata.intent`(60 字符截断),statusText 优先显示 intent、缺失/空白回落工具短语;ParsedStatusResult 增 activeToolIntent,签名编解码以 statusText 为载体,WorkingSummary 及下游消费者零改动。推导即文档中 4.2 的"part 流推导"形态:parts 快照每次重算,completed/error/idle 清除由"不再是 running part"自然成立,无需显式状态机。
 日期基线:2026-08-28(omp SDK 18.0.4)
 上游依据:docs/omp-host-field-loss-fix-plan.md P12(TUI 裁决:行标题=tool.label ?? toolName,intent 属状态行);TUI event-controller.ts:1377-1380、:490-499
 
