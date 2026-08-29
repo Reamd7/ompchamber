@@ -16,6 +16,7 @@ const DiffView = lazyWithChunkRecovery(() => import('@/components/views/DiffView
 const FilesView = lazyWithChunkRecovery(() => import('@/components/views/FilesView').then((m) => ({ default: m.FilesView })));
 const GitView = lazyWithChunkRecovery(() => import('@/components/views/GitView').then((m) => ({ default: m.GitView })));
 const PlanView = lazyWithChunkRecovery(() => import('@/components/views/PlanView').then((m) => ({ default: m.PlanView })));
+const SessionTimelineTab = lazyWithChunkRecovery(() => import('@/components/session/SessionTimelineTab').then((m) => ({ default: m.SessionTimelineTab })));
 import { ProjectContextPanel } from './RightSidebarTabs';
 import { SidebarFilesTree } from './SidebarFilesTree';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -114,6 +115,8 @@ const getModeLabel = (
 ): string => {
   if (mode === 'chat') return t('contextPanel.mode.chat');
   if (mode === 'localFile') return t('contextPanel.localFiles.title');
+  if (mode === 'timeline') return t('contextPanel.mode.timeline');
+  if (mode === 'file') return t('contextPanel.mode.files');
   if (mode === 'diff') return t('contextPanel.mode.diff');
   if (mode === 'walkthrough') return t('contextPanel.mode.walkthrough');
   if (mode === 'plan') return t('contextPanel.mode.plan');
@@ -227,6 +230,10 @@ const getTabIcon = (
 
   if (tab.mode === 'notes') {
     return <Icon name="sticky-note" className="h-3.5 w-3.5" />;
+  }
+
+  if (tab.mode === 'timeline') {
+    return <Icon name="history" className="h-3.5 w-3.5" />;
   }
 
   if (tab.mode === 'terminal') {
@@ -999,6 +1006,8 @@ export const ContextPanel: React.FC = () => {
                 ? <PullRequestView />
             : activeTab?.mode === 'notes'
                 ? <ProjectContextPanel />
+            : activeTab?.mode === 'timeline'
+                ? <React.Suspense fallback={null}><SessionTimelineTab /></React.Suspense>
         : activeTab?.mode === 'plan'
             ? <React.Suspense fallback={null}><PlanView targetPath={activeTab.targetPath} projectPlanId={activeTab.projectPlanId} /></React.Suspense>
             : null;

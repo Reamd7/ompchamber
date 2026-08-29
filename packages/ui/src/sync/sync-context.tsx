@@ -12,7 +12,7 @@ import { useOmpDialogStore } from "./useOmpDialogStore"
 import { ompDialogController } from "./omp-dialog-controller"
 import { showOmpNoticeToast } from "./omp-notice-toast"
 import type { OmpEventEffect } from "./omp-event-reducer"
-import { OMP_ENDPOINTS, parseOmpChromeSnapshotPayload, parseOmpDialogsSnapshotPayload } from "@/lib/api/omp"
+import { OMP_ENDPOINTS, parseOmpChromeSnapshotPayload, parseOmpCustomMessagesPayload, parseOmpDialogsSnapshotPayload, parseOmpTelemetryEntriesPayload } from "@/lib/api/omp"
 import { formatMessage, useI18nStore } from "@/lib/i18n/store"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { isVSCodeRuntime } from "@/lib/desktop"
@@ -2450,6 +2450,67 @@ export function SyncProvider(props: {
           const chrome = parseOmpChromeSnapshotPayload(result.data)
           if (chrome === null) return
           useOmpSessionStore.getState().reconcileChromeSnapshot(runtimeKey, directory, chrome)
+        },
+        consumeTelemetry: (directory, sessionID, result) => {
+          // Ch 11 §4.1: seed the usage-row slot by replaying entries as
+          // omp.usage.turn frames — the reducer dedupes by messageID and
+          // applies the per-session cap, so reconnects are idempotent.
+          if (!result.ok) return
+          const entries = parseOmpTelemetryEntriesPayload(result.data)
+          if (entries === null) return
+          const apply = useOmpSessionStore.getState().applyEvent
+          for (const entry of entries) {
+            apply(runtimeKey, directory, {
+              id: -1,
+              type: "omp.usage.turn",
+              directory,
+              sessionID,
+              createdAt: entry.timestamp ?? 0,
+              payload: {
+                messageID: entry.messageID,
+                ...(entry.input !== undefined || entry.output !== undefined || entry.cacheRead !== undefined || entry.cacheWrite !== undefined || entry.reasoningTokens !== undefined || entry.totalTokens !== undefined
+                  ? {
+                      usage: {
+                        ...(entry.input !== undefined ? { input: entry.input } : {}),
+                        ...(entry.output !== undefined ? { output: entry.output } : {}),
+                        ...(entry.cacheRead !== undefined ? { cacheRead: entry.cacheRead } : {}),
+                        ...(entry.cacheWrite !== undefined ? { cacheWrite: entry.cacheWrite } : {}),
+                        ...(entry.reasoningTokens !== undefined ? { reasoningTokens: entry.reasoningTokens } : {}),
+                        ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
+                      },
+                    }
+                  : {}),
+                ...(entry.ttftMs !== undefined ? { ttftMs: entry.ttftMs } : {}),
+              },
+            })
+          }
+        },
+        consumeCustomMessages: (directory, sessionID, result) => {
+          // Ch 11 §4.3: same shape as the live omp.custom.appended frames;
+          // display:false rows are dropped by the reducer itself (T3).
+          if (!result.ok) return
+          const entries = parseOmpCustomMessagesPayload(result.data)
+          if (entries === null) return
+          const apply = useOmpSessionStore.getState().applyEvent
+          for (const entry of entries) {
+            apply(runtimeKey, directory, {
+              id: -1,
+              type: "omp.custom.appended",
+              directory,
+              sessionID,
+              createdAt: entry.timestamp ?? 0,
+              payload: {
+                message: {
+                  wireMessageID: entry.wireMessageID,
+                  customType: entry.customType,
+                  ...(entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}),
+                  ...(entry.attribution !== undefined ? { attribution: entry.attribution } : {}),
+                  ...(entry.text !== undefined ? { text: entry.text } : {}),
+                  ...(entry.details !== undefined ? { details: entry.details } : {}),
+                },
+              },
+            })
+          }
         },
       },
     })

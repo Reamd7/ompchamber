@@ -3326,6 +3326,17 @@ export const dict = {
   'contextPanel.localFiles.scopeAria': 'Switch file tree scope',
   'contextPanel.localFiles.browseHint': 'Pick a file from this session’s tree.',
   'contextPanel.localFiles.previewFailed': 'Could not load this file for preview.',
+  'contextPanel.mode.timeline': 'Timeline',
+  'contextRail.surface.timeline.description': 'Structured events of the active session',
+  'contextPanel.timeline.empty': 'No events',
+  'contextPanel.timeline.emptyNoSession': 'No active session',
+  'contextPanel.timeline.loading': 'Loading timeline…',
+  'contextPanel.timeline.kind.compaction': 'Compaction',
+  'contextPanel.timeline.kind.branch_summary': 'Branch',
+  'contextPanel.timeline.kind.model_change': 'Model change',
+  'contextPanel.timeline.kind.mode_change': 'Mode change',
+  'contextPanel.timeline.kind.ttsr_injection': 'Rule injection',
+  'contextPanel.timeline.kind.retry_recovery': 'Retry',
 } as const;
 
 export type I18nKey = keyof typeof dict;

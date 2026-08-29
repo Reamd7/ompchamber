@@ -13,7 +13,8 @@ export type ContextSurfaceId =
   | 'notes'
   | 'context'
   | 'browser'
-  | 'chat';
+  | 'chat'
+  | 'timeline';
 
 export type ContextSurfaceDescriptor = {
   id: ContextSurfaceId;
@@ -120,6 +121,15 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
     mode: 'plan',
     icon: 'file-text',
     labelKey: 'contextPanel.mode.plan',
+    availability: 'always',
+  },
+  {
+    id: 'timeline',
+    descriptionKey: 'contextRail.surface.timeline.description',
+    defaultWidthFraction: 0.45,
+    mode: 'timeline',
+    icon: 'time',
+    labelKey: 'contextPanel.mode.timeline',
     availability: 'always',
   },
   {

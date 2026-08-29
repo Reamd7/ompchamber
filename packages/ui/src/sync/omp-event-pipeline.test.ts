@@ -199,6 +199,34 @@ describe('runOmpResync', () => {
     expect(requests).toEqual(['wire:/repo']);
   });
 
+  test('transcript scope seeds structured reads when consumers are provided (ch 11)', async () => {
+    const requests: string[] = [];
+    const telemetry: Array<[string, string]> = [];
+    const customs: Array<[string, string]> = [];
+    await runOmpResync(['transcript'], {
+      ...trackContext(requests),
+      fetchOmpJson: async (path, query) => {
+        requests.push(`${path}?${query.directory}`);
+        return { ok: false, unavailable: true };
+      },
+      consumeTelemetry: (directory, sessionID) => {
+        telemetry.push([directory, sessionID]);
+      },
+      consumeCustomMessages: (directory, sessionID) => {
+        customs.push([directory, sessionID]);
+      },
+    });
+    expect(requests).toEqual([
+      'wire:/repo',
+      '/api/omp/sessions/ses_1/telemetry?/repo',
+      '/api/omp/sessions/ses_1/custom-messages?/repo',
+      '/api/omp/sessions/ses_2/telemetry?/repo',
+      '/api/omp/sessions/ses_2/custom-messages?/repo',
+    ]);
+    expect(telemetry).toEqual([['/repo', 'ses_1'], ['/repo', 'ses_2']]);
+    expect(customs).toEqual([['/repo', 'ses_1'], ['/repo', 'ses_2']]);
+  });
+
   test('unknown scope names are ignored (server scope list superset)', async () => {
     const requests: string[] = [];
     await runOmpResync(['not-a-scope', 'model'], {

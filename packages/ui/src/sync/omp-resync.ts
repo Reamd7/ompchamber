@@ -79,6 +79,14 @@ export interface OmpResyncContext {
    */
   consumeChrome?: (directory: string, result: OmpFetchJsonResult<unknown>) => void;
   /**
+   * Structured-read seed consumers (ch 11 §4.1/§4.3): per session in the
+   * transcript scope. Telemetry seeds the usage-row store slot; custom
+   * messages seed the transcript cards — both through synthesized event
+   * frames, so reducer dedupe/caps apply. Same contract as consumeDialogs.
+   */
+  consumeTelemetry?: (directory: string, sessionID: string, result: OmpFetchJsonResult<unknown>) => void;
+  consumeCustomMessages?: (directory: string, sessionID: string, result: OmpFetchJsonResult<unknown>) => void;
+  /**
    * Test seam over runtimeFetch for omp GETs. Production default resolves
    * `{ok:false, unavailable:true}` for 404/501 and `{ok:false,
    * unavailable:false}` for transport failure.
@@ -148,13 +156,30 @@ export async function runOmpResync(
       continue;
     }
     if (scope === 'transcript') {
-      // Wire transcript refresh shares the wire resync; structured omp reads
-      // (custom-messages/telemetry/entries) belong to session surfaces that
-      // land with their chapters — the wire refresh reconciles the transcript
-      // truth now.
+      // Wire transcript refresh shares the wire resync; the structured reads
+      // (ch 11) seed volatile slots per session through the same reducer the
+      // live events use, so dedupe/caps apply and reconnects are idempotent.
       for (const directory of directories) {
         if (aborted()) return;
         context.refetchWire(directory);
+        if (context.consumeTelemetry || context.consumeCustomMessages) {
+          for (const sessionID of context.listSessions(directory)) {
+            if (aborted()) return;
+            if (context.consumeTelemetry) {
+              context.consumeTelemetry(directory, sessionID, await fetchOmpJson(
+                OMP_ENDPOINTS.sessionTelemetry(sessionID),
+                { directory },
+              ));
+            }
+            if (aborted()) return;
+            if (context.consumeCustomMessages) {
+              context.consumeCustomMessages(directory, sessionID, await fetchOmpJson(
+                OMP_ENDPOINTS.sessionCustomMessages(sessionID),
+                { directory },
+              ));
+            }
+          }
+        }
       }
       continue;
     }

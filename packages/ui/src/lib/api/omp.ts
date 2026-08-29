@@ -50,6 +50,8 @@ export interface OmpCustomMessageEntry {
   customType: string;
   timestamp?: number;
   attribution?: string;
+  /** Advisor/IRC body text — the cold-read seed for transcript cards. */
+  text?: string;
   details?: unknown;
 }
 
@@ -176,6 +178,7 @@ const parseCustomMessageEntry = (value: unknown): OmpCustomMessageEntry | null =
     customType: record.customType,
     ...(typeof record.timestamp === 'number' ? { timestamp: record.timestamp } : {}),
     ...(typeof record.attribution === 'string' ? { attribution: record.attribution } : {}),
+    ...(typeof record.text === 'string' ? { text: record.text } : {}),
     ...('details' in record ? { details: record.details } : {}),
   };
 };
@@ -193,6 +196,13 @@ const parseSessionEntry = (value: unknown): OmpSessionEntry | null => {
   if (typeof record.kind !== 'string') return null;
   return record as OmpSessionEntry;
 };
+
+/** Cold-read seed parsers (ch 11 §4.1/§4.3): validate the structured-read
+ * payloads outside the OmpSessionAPI object so resync and the timeline tab
+ * can consume them without instantiating the API. */
+export const parseOmpCustomMessagesPayload = parseArrayPayload(parseCustomMessageEntry);
+export const parseOmpTelemetryEntriesPayload = parseArrayPayload(parseTelemetryEntry);
+export const parseOmpSessionEntriesPayload = parseArrayPayload(parseSessionEntry);
 
 export interface OmpJsonApiOptions {
   /** Injection seam for tests; production callers omit it. */
