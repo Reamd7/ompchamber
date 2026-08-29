@@ -1,6 +1,6 @@
 # 第 11 章 · 结构化读取面(Structured Read Surfaces)
 
-状态:设计定稿,待实施
+状态:**已实施**(`e6eef595`,2026-08-28)——与设计的偏差:遥测/自定义消息种子未走独立引导步骤,而是并入 resync 矩阵 transcript scope(OmpResyncContext 增 consumeTelemetry/consumeCustomMessages,合成帧写入既有 slot,reducer 幂等);Timeline 未挂会话抽屉(仓内无此面),改为 context-panel 新 surface `timeline`(registry + ContextPanelMode + 懒加载 SessionTimelineTab,读当前会话);组件落位 components/session/(非 sections/session/)。OQ-1 由此关闭。
 日期基线:2026-08-28(omp SDK 18.0.4)
 上游依据:05 章 §5.2.1(结构化读取端点)、§5.6(重连矩阵推迟裁定);docs/omp-host-field-loss-fix-plan.md 遗留项 2
 
