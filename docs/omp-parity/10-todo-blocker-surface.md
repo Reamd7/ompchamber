@@ -1,6 +1,6 @@
 # 第 10 章 · Todo 阻塞信息面(Todo Blocker Surface)
 
-状态:设计定稿,待实施
+状态:**已实施**(`a30bb0fb`,2026-08-28)——三处改动照设计落地:投影携带 blocker(非空才带键)、Todo 类型补可选字段(注释含 re-vendor 重放说明)、StatusRow 渲染 `(被 {reason} 阻塞)`/裸标记,blockedBy/blockedBare 键全 11 语言;reducer 类型透传零改动。
 日期基线:2026-08-28(omp SDK 18.0.4;证据锚点以当日树为准)
 上游依据:00-MASTER D1(todo 属 wire 承载的重合面——重合面字段补齐合法;不可动的只有 omp SDK 本体);docs/omp-host-field-loss-fix-plan.md P14 遗留项
 
