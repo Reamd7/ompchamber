@@ -19,12 +19,6 @@ const MAX_HISTORY_BYTES = 512 * 1024;
 const MAX_INPUT_CHARS = 65_536;
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const TERMINATION_GRACE_MS = 1000;
-// Universal grid floor: TUI apps (btop, htop, vim) misrender or refuse to
-// start below the 80x24 VT standard. Viewports narrower than the floor render
-// the grid CSS-scaled (TerminalViewport driverScale) instead of shrinking the
-// PTY, so one narrow window never cripples every attached device.
-const MIN_TERMINAL_COLS = 80;
-const MIN_TERMINAL_ROWS = 24;
 const validateSize = (value, max) => Number.isInteger(value) && value >= 1 && value <= max;
 const trimHistory = (history) => {
   const bytes = Buffer.from(history);
@@ -278,10 +272,6 @@ export function createTerminalRuntime({
 
   const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false }) => {
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
-    // Floor the initial grid too: the first paint (before attach negotiation)
-    // must satisfy the same TUI minimum as the negotiated grid.
-    cols = Math.max(MIN_TERMINAL_COLS, cols);
-    rows = Math.max(MIN_TERMINAL_ROWS, rows);
     if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
     const normalizedShell = normalizeTerminalShell(shell);
     if (!normalizedShell) throw new Error('Invalid terminal shell');
@@ -321,16 +311,14 @@ export function createTerminalRuntime({
     for (const connection of connections) {
       const attachment = connection.attachments.get(sessionId);
       if (attachment && attachment.cols > 0 && attachment.rows > 0) {
-        sizes.push({ cols: attachment.cols, rows: attachment.rows });
+        sizes.push({ connectionId: connection.connectionId, cols: attachment.cols, rows: attachment.rows });
       }
     }
     return sizes;
   };
   const recomputeGrid = (session) => {
-    // DRIVEN mode: PTY size is the driver's viewport, not min-size. The 80x24
-    // floor does NOT apply here: claiming control is an explicit act, and a
-    // narrow-screen user zooming in below 80 columns is choosing bigger text
-    // over TUI compatibility for this session (followers can reclaim anytime).
+    // DRIVEN (forced ownership): the grid is locked to the claimer's effective
+    // width and follows their container/zoom changes. No floor, no negotiation.
     if (session.viewportDriver) {
       const { cols, rows } = session.viewportDriver;
       if (cols === session.cols && rows === session.rows) return;
@@ -341,19 +329,23 @@ export function createTerminalRuntime({
       publish(session, { t: 'driverChanged', driverId: session.viewportDriver.connectionId, cols, rows });
       return;
     }
-    // IDLE mode: min-size across all attachments, floored to the TUI minimum.
-    // Passive narrow devices must not drag the shared grid below 80x24;
-    // devices narrower than the floor CSS-scale the grid client-side.
+    // IDLE (implicit ownership): the grid is the pure minimum effective width
+    // across attachments — no floor. The narrowest device IS the owner; the
+    // identity rides along on the broadcast so clients can badge it. Ownership
+    // is bidirectional: any device narrowing below the current min takes it,
+    // and the owner widening past a sibling hands it back.
     const sizes = collectViewportSizes(session.id);
     if (sizes.length === 0) return;
-    const cols = Math.max(MIN_TERMINAL_COLS, Math.min(...sizes.map((s) => s.cols)));
-    const rows = Math.max(MIN_TERMINAL_ROWS, Math.min(...sizes.map((s) => s.rows)));
-    if (cols === session.cols && rows === session.rows) return;
-    session.cols = cols; session.rows = rows;
+    let owner = sizes[0];
+    for (const size of sizes) if (size.cols < owner.cols || (size.cols === owner.cols && size.rows < owner.rows)) owner = size;
+    const cols = owner.cols;
+    const rows = Math.min(...sizes.map((s) => s.rows));
+    if (cols === session.cols && rows === session.rows && session.implicitOwnerId === owner.connectionId) return;
+    session.cols = cols; session.rows = rows; session.implicitOwnerId = owner.connectionId;
     if (session.status === 'running' && session.process) {
       try { session.process.resize(cols, rows); } catch { /* process exited */ }
     }
-    publish(session, { t: 'resized', cols, rows });
+    publish(session, { t: 'resized', ownerId: owner.connectionId, cols, rows });
   };
 
   const broadcastDriverChanged = (session) => {
@@ -534,15 +526,13 @@ export function createTerminalRuntime({
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     const { cols, rows } = req.body ?? {};
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) return res.status(400).json({ error: 'Invalid terminal dimensions' });
-    // Same TUI floor as the negotiated grid; a direct resize must not
-    // reintroduce sub-80 widths, and other devices must follow the change.
-    const flooredCols = Math.max(MIN_TERMINAL_COLS, cols);
-    const flooredRows = Math.max(MIN_TERMINAL_ROWS, rows);
+    // Direct resize still broadcasts so other devices follow; no floor —
+    // the negotiation model owns sizing policy, this route just applies.
     try {
-      if (session.status === 'running') session.process?.resize(flooredCols, flooredRows);
-      session.cols = flooredCols; session.rows = flooredRows;
-      publish(session, { t: 'resized', cols: flooredCols, rows: flooredRows });
-      res.json({ success: true, cols: flooredCols, rows: flooredRows });
+      if (session.status === 'running') session.process?.resize(cols, rows);
+      session.cols = cols; session.rows = rows;
+      publish(session, { t: 'resized', cols, rows });
+      res.json({ success: true, cols, rows });
     }
     catch (error) { res.status(500).json({ error: error?.message || 'Failed to resize terminal' }); }
   });

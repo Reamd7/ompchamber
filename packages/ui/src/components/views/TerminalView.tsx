@@ -66,6 +66,11 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const appendToBuffer = useTerminalStore((s) => s.appendToBuffer);
     const replaceBuffer = useTerminalStore((s) => s.replaceBuffer);
     const setTabPreviewUrl = useTerminalStore((s) => s.setTabPreviewUrl);
+    // Unread marks change only when a command finishes in a tab the user is not
+    // viewing, so this subscription rerenders the strip at command granularity
+    // rather than streaming frequency.
+    const unreadTabs = useTerminalStore((s) => s.unreadTabs);
+    const setTabUnread = useTerminalStore((s) => s.setTabUnread);
     const addContextDraft = useInlineCommentDraftStore((s) => s.addDraft);
 
     const openContextPreview = useUIStore((state) => state.openContextPreview);
@@ -97,11 +102,19 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             label: tab.label,
             title: tab.label,
             closeLabel: t('terminalView.tabs.closeTabTitle'),
+            trailing: unreadTabs.has(tab.id) ? (
+                <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--status-info)]"
+                    aria-label={t('terminalView.tabs.unreadTitle')}
+                    title={t('terminalView.tabs.unreadTitle')}
+                />
+            ) : undefined,
         }));
-    }, [directoryTerminalState?.tabs, t]);
-
+    }, [directoryTerminalState?.tabs, t, unreadTabs]);
     const terminalSessionId = activeTab?.terminalSessionId ?? null;
     const terminalLifecycle = activeTab?.lifecycle ?? 'idle';
+    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
+    const [implicitOwner, setImplicitOwner] = React.useState<string | null>(null);
     // Scrollback is a leaf subscription: streaming output must not rerender the tab strip.
     const bufferChunks = useTerminalStore((s) => (
         effectiveDirectory && activeTabId ? s.getBuffer(effectiveDirectory, activeTabId).chunks : EMPTY_TERMINAL_BUFFER.chunks
@@ -112,7 +125,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const [connectionError, setConnectionError] = React.useState<string | null>(null);
     const [isFatalError, setIsFatalError] = React.useState(false);
     const [isReconnectPending, setIsReconnectPending] = React.useState(false);
-    const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
     const [terminalViewZoom, setTerminalViewZoom] = React.useState(1);
     const [activeModifier, setActiveModifier] = React.useState<Modifier | null>(null);
     const [isRestarting, setIsRestarting] = React.useState(false);
@@ -156,12 +168,25 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const isTerminalActive = activeSurface === 'terminal';
     const isTerminalVisible = visible ?? isTerminalActive;
     const [hasOpenedTerminalViewport, setHasOpenedTerminalViewport] = React.useState(isTerminalVisible);
+    // Event handlers below are long-lived (they outlive renders of the active
+    // tab), so visibility travels through a ref like directoryRef/activeTabIdRef.
+    const terminalVisibleRef = React.useRef(isTerminalVisible);
 
     React.useEffect(() => {
+        terminalVisibleRef.current = isTerminalVisible;
         if (isTerminalVisible) {
             setHasOpenedTerminalViewport(true);
         }
     }, [isTerminalVisible]);
+
+    // Viewing a tab clears its unread mark: switching to the tab, or reopening
+    // the terminal surface while that tab is active.
+    React.useEffect(() => {
+        if (!isTerminalVisible || !activeTabId) return;
+        if (useTerminalStore.getState().unreadTabs.has(activeTabId)) {
+            setTabUnread(activeTabId, false);
+        }
+    }, [activeTabId, isTerminalVisible, unreadTabs, setTabUnread]);
 
     React.useEffect(() => {
         terminalIdRef.current = terminalSessionId;
@@ -276,6 +301,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 setIsReconnectPending(false);
                                 focusTerminalWhenWindowActive();
 
+                                // The snapshot confirms the attach round-trip, so
+                                // the socket is open. Re-send the last measured
+                                // effective viewport: the first fit() report can
+                                // race the socket handshake and be dropped by the
+                                // transport, after which an unchanged effective
+                                // size would never be re-reported and this device
+                                // would sit at 0x0 in the server's negotiation.
+                                const pendingViewport = lastViewportSizeRef.current;
+                                if (pendingViewport) {
+                                    sendTerminalViewport(terminalId, pendingViewport.cols, pendingViewport.rows);
+                                }
+
                                 replaceBuffer(directory, tabId, event.data ?? '', event.sequence ?? 0);
                                 scanTerminalPreviewOutput(directory, tabId, event.data ?? '');
                                 if (event.status === 'exited') setTabLifecycle(directory, tabId, 'exited');
@@ -296,22 +333,22 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 break;
                             }
                             case 'resized': {
-                                // Multi-device grid sync: the server negotiated a
-                                // new minimum grid across all attached clients.
-                                // Resize this viewport's ghostty terminal to match
-                                // so the canvas doesn't render past the PTY grid.
+                                // Implicit ownership: the grid is the pure min
+                                // effective width; this frame carries the
+                                // narrowest device's ownerId. Render natively;
+                                // wider containers letterbox — no auto-scaling.
                                 if (typeof event.cols === 'number' && typeof event.rows === 'number') {
-                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows, { driven: false });
                                 }
+                                setImplicitOwner(typeof event.ownerId === 'string' ? event.ownerId : null);
                                 break;
                             }
                             case 'driverChanged': {
-                                // Viewport driver model: the driver (or min-size
-                                // arbitration after release) set the PTY grid.
-                                // Follow it; TerminalViewport CSS-scales if the
-                                // grid is wider than this container.
+                                // Forced ownership: driverId names the claimer.
+                                // Non-owners auto-fit-scale the whole grid into
+                                // their container (driven display mode).
                                 if (typeof event.cols === 'number' && typeof event.rows === 'number') {
-                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows, { driven: true });
                                 }
                                 setDriverState({
                                     driverId: event.driverId ?? null,
@@ -322,9 +359,15 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             }
                             case 'command-finished': {
                                 // Shell integration: a command finished (OSC 133;D).
-                                // Mark this terminal tab as unread so the user sees
-                                // a badge when focused elsewhere.
-                                useTerminalStore.getState().setTabUnread(tabId, true);
+                                // Mark the tab unread so the strip shows a badge —
+                                // unless the user is already looking at this tab,
+                                // where a badge would only state the obvious.
+                                const isViewed = directoryRef.current === directory
+                                    && activeTabIdRef.current === tabId
+                                    && terminalVisibleRef.current;
+                                if (!isViewed) {
+                                    useTerminalStore.getState().setTabUnread(tabId, true);
+                                }
                                 break;
                             }
                             case 'exit': {
@@ -726,22 +769,40 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const handleCloseTab = React.useCallback(
         (tabId: string) => {
             if (!effectiveDirectory) return;
-
+            // Session lifecycle: closing a tab only DETACHES this device —
+            // the PTY lives on the server and outlives every browser. A real
+            // kill is the explicit destructive action (handleKillSession).
             if (tabId === activeTabId) {
                 disconnectStream();
             }
-
             setConnectionError(null);
             setIsFatalError(false);
             setIsReconnectPending(false);
-            const sessionId = useTerminalStore.getState().getDirectoryState(effectiveDirectory)?.tabs.find((tab) => tab.id === tabId)?.terminalSessionId;
-            void (async () => {
-                if (sessionId) await terminal.close(sessionId);
-                closeTab(effectiveDirectory, tabId);
-            })().catch((error) => setConnectionError(error instanceof Error ? error.message : t('terminalView.error.sessionEnded')));
+            closeTab(effectiveDirectory, tabId);
         },
-        [activeTabId, closeTab, disconnectStream, effectiveDirectory, t, terminal]
+        [activeTabId, closeTab, disconnectStream, effectiveDirectory]
     );
+
+    const handleKillSession = React.useCallback(() => {
+        if (!effectiveDirectory || !terminalSessionId) return;
+        void terminal.close(terminalSessionId)
+            .catch((error) => setConnectionError(error instanceof Error ? error.message : t('terminalView.error.sessionEnded')));
+    }, [effectiveDirectory, t, terminal, terminalSessionId]);
+    const [killArmed, setKillArmed] = React.useState(false);
+    React.useEffect(() => {
+        if (!killArmed) return;
+        const timer = setTimeout(() => setKillArmed(false), 3000);
+        return () => clearTimeout(timer);
+    }, [killArmed]);
+    const handleKillClick = React.useCallback(() => {
+        if (!killArmed) {
+            setKillArmed(true);
+            return;
+        }
+        setKillArmed(false);
+        handleKillSession();
+    }, [handleKillSession, killArmed]);
+
 
     const handleViewportInput = React.useCallback(
         (data: string) => {
@@ -1201,6 +1262,19 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             >
                                 <Icon name="attachment-2" className="h-4 w-4" />
                             </Button>
+                            {terminalSessionId ? (
+                                <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="ghost"
+                                    className={cn('h-7 w-7 p-0', killArmed && 'bg-destructive text-destructive-foreground hover:bg-destructive/90')}
+                                    onClick={handleKillClick}
+                                    title={killArmed ? t('terminalView.actions.killSessionArmed') : t('terminalView.actions.killSession')}
+                                    aria-label={killArmed ? t('terminalView.actions.killSessionArmed') : t('terminalView.actions.killSession')}
+                                >
+                                    <Icon name="delete-bin" className="h-4 w-4" />
+                                </Button>
+                            ) : null}
                             {previewUrl ? (
                                 <Button
                                     type="button"

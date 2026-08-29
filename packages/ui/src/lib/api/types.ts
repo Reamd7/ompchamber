@@ -58,6 +58,7 @@ export interface TerminalStreamEvent {
   maxAttempts?: number;
   cols?: number;
   rows?: number;
+  ownerId?: string;
   driverId?: string | null;
 
   runtime?: 'node' | 'bun';

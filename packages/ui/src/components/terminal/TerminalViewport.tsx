@@ -90,7 +90,8 @@ const getProvisionalTerminalSize = (
 export type TerminalController = {
   focus: () => void;
   fit: () => void;
-  resizeGrid: (cols: number, rows: number) => void;
+  resizeGrid: (cols: number, rows: number, options?: { driven?: boolean }) => void;
+  setDriven: (driven: boolean) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   zoomReset: () => void;
@@ -117,9 +118,11 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   sessionKey, chunks, onInput, onResize, theme, fontFamily, fontSize, className,
   enableTouchScroll = false, onZoomChange, autoFocus = true, isVisible = true,
 }, ref) => {
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const sizerRef = React.useRef<HTMLDivElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  // Forced-ownership mode flag: when a device has claimed the grid, non-owners
+  // auto-fit-scale the grid into their container; in implicit mode everyone
+  // renders natively and wider devices letterbox.
+  const drivenRef = React.useRef(false);
   const terminalRef = React.useRef<GhosttyTerminal | null>(null);
   const fitRef = React.useRef<FitAddon | null>(null);
   const inputRef = React.useRef(onInput);
@@ -144,9 +147,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   safeResetRef.current = getGhosttySafeResetSequence(theme.background);
 
   React.useLayoutEffect(() => {
-    const scroll = scrollRef.current ?? containerRef.current;
-    if (!scroll) return;
-    const size = getProvisionalTerminalSize(scroll, fontFamily, fontSize);
+    const container = containerRef.current;
+    if (!container) return;
+    const size = getProvisionalTerminalSize(container, fontFamily, fontSize);
     provisionalSizeRef.current = size;
     if (size) resizeRef.current(size.cols, size.rows);
   }, [fontFamily, fontSize]);
@@ -158,42 +161,36 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   // device's viewport) is wider than this container, CSS-scale the canvas
   // down so the full grid stays visible. All gesture math is ratio-based
   // against the canvas rect, so the transform doesn't break cell mapping.
-  // View scale, two layers:
-  //   fitScale — automatic: scale the negotiated grid so it fully fits the
-  //              visible viewport (both axes). This is what lets a small
-  //              window show a big window's entire grid.
-  //   viewZoom — user intent: a pure visual multiplier over fit (0.25–4).
-  //              Zooming NEVER changes the grid or font size; zoomed-in
-  //              content pans via the scroll layer's native scrolling.
-  const driverScaleRef = React.useRef(1);
+  // View zoom — the user's display scale, clamped to (0.25, 1]: the control
+  // can only zoom OUT. It participates in the reported effective width
+  // (capacity x zoom), so zooming out can WIN implicit ownership (a narrower
+  // effective width) exactly like narrowing the container.
   const viewZoomRef = React.useRef(1);
   const zoomApiRef = React.useRef<{ setViewZoom: (next: number) => void } | null>(null);
   const [viewZoom, setViewZoomState] = React.useState(1);
   const setViewZoom = React.useCallback((next: number) => {
-    const clamped = Math.max(0.25, Math.min(4, next));
+    const clamped = Math.max(0.25, Math.min(1, next));
     viewZoomRef.current = clamped;
     setViewZoomState(clamped);
     applyViewScale();
+    fit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   zoomApiRef.current = { setViewZoom };
   const applyViewScale = React.useCallback(() => {
-    const scroll = scrollRef.current;
-    const sizer = sizerRef.current;
     const container = containerRef.current;
     const canvas = container?.querySelector('canvas');
-    if (!scroll || !sizer || !container || !canvas) return;
+    if (!container || !canvas) return;
     const naturalWidth = canvas.offsetWidth;
     const naturalHeight = canvas.offsetHeight;
-    const viewportWidth = scroll.clientWidth;
-    const viewportHeight = scroll.clientHeight;
-    if (naturalWidth <= 0 || viewportWidth <= 0 || naturalHeight <= 0) return;
-    // Fit BOTH axes: a wide grid must not clip bottom rows in a short
-    // viewport any more than a tall grid may clip columns in a narrow one.
-    const heightRatio = viewportHeight > 0 ? viewportHeight / naturalHeight : 1;
-    const fitScale = Math.min(1, viewportWidth / naturalWidth, heightRatio);
-    driverScaleRef.current = fitScale;
-    const finalScale = Math.max(0.2, Math.min(4, fitScale * viewZoomRef.current));
+    if (naturalWidth <= 0 || naturalHeight <= 0 || container.clientWidth <= 0) return;
+    // Forced mode: a non-owner must fit the WHOLE claimed grid into its
+    // container — auto-scale, bounded above by the user's zoom. Implicit mode:
+    // no auto-fit ever; the grid already fits (it is the minimum) and wider
+    // devices letterbox.
+    const heightRatio = container.clientHeight > 0 ? container.clientHeight / naturalHeight : 1;
+    const fitScale = drivenRef.current ? Math.min(1, container.clientWidth / naturalWidth, heightRatio) : 1;
+    const finalScale = Math.max(0.2, Math.min(1, fitScale * viewZoomRef.current));
     if (finalScale > 0.999 && finalScale < 1.001) {
       canvas.style.transform = '';
       canvas.style.transformOrigin = '';
@@ -201,56 +198,63 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       canvas.style.transform = `scale(${finalScale})`;
       canvas.style.transformOrigin = 'top left';
     }
-    // The sizer box carries the SCALED content size so the scroll layer can
-    // pan across zoomed-in content (the canvas's layout box stays natural).
-    sizer.style.width = `${Math.ceil(naturalWidth * finalScale)}px`;
-    sizer.style.height = `${Math.ceil(naturalHeight * finalScale)}px`;
-    // Zoomed in: hand touch-drag to the browser for native panning; at fit,
-    // keep touch-none so terminal gestures own the pointer.
-    const zoomedOutBeyondFit = viewZoomRef.current > 1.001;
-    scroll.style.touchAction = zoomedOutBeyondFit ? 'auto' : 'none';
   }, []);
 
 
 
   const fit = React.useCallback(() => {
-    const scroll = scrollRef.current;
+    const container = containerRef.current;
     const terminal = terminalRef.current;
-    if (!scroll || !terminal || !visibleRef.current) return;
-    const bounds = scroll.getBoundingClientRect();
+    if (!container || !terminal || !visibleRef.current) return;
+    const bounds = container.getBoundingClientRect();
     if (bounds.width < 24 || bounds.height < 24) return;
     try {
-      const negotiated = negotiatedGridRef.current;
-      if (negotiated) {
-        // Multi-device sync: the server set the PTY grid via negotiation.
-        // Render that grid — the canvas paints the negotiated size and
-        // applyViewScale fits it into the visible viewport.
-        if (terminal.cols !== negotiated.cols || terminal.rows !== negotiated.rows) {
-          terminal.resize(negotiated.cols, negotiated.rows);
-        }
-      } else {
-        // Unconstrained: propose the grid from the VISIBLE viewport (the
-        // scroll layer), not the ghostty mount (which is sized to the grid
-        // and would feed back). Mirrors FitAddon's math incl. the 15px
-        // scrollbar reservation. No client-side floor: the server owns it.
-        const metrics = (terminal as unknown as { renderer?: { getMetrics?: () => { width: number; height: number } | undefined } }).renderer?.getMetrics?.();
-        if (metrics && metrics.width > 0 && metrics.height > 0) {
-          const style = window.getComputedStyle(scroll);
-          const padX = (Number.parseInt(style.paddingLeft, 10) || 0) + (Number.parseInt(style.paddingRight, 10) || 0);
-          const padY = (Number.parseInt(style.paddingTop, 10) || 0) + (Number.parseInt(style.paddingBottom, 10) || 0);
-          const cols = Math.max(2, Math.floor((scroll.clientWidth - padX - 15) / metrics.width));
-          const rows = Math.max(1, Math.floor((scroll.clientHeight - padY) / metrics.height));
-          if (cols !== terminal.cols || rows !== terminal.rows) terminal.resize(cols, rows);
-        }
+      const metrics = (terminal as unknown as { renderer?: { getMetrics?: () => { width: number; height: number } | undefined } }).renderer?.getMetrics?.();
+      if (!metrics || metrics.width <= 0 || metrics.height <= 0) {
+        requestAnimationFrame(() => fit());
+        return;
       }
-      const next = { cols: terminal.cols, rows: terminal.rows };
-      if (!lastSizeRef.current || lastSizeRef.current.cols !== next.cols || lastSizeRef.current.rows !== next.rows) {
-        lastSizeRef.current = next;
-        resizeRef.current(next.cols, next.rows);
+      const style = window.getComputedStyle(container);
+      const padX = (Number.parseInt(style.paddingLeft, 10) || 0) + (Number.parseInt(style.paddingRight, 10) || 0);
+      const padY = (Number.parseInt(style.paddingTop, 10) || 0) + (Number.parseInt(style.paddingBottom, 10) || 0);
+      // a = columns the container displays at 100% zoom (FitAddon math incl.
+      // the 15px scrollbar reservation). The REPORTED effective width is
+      // a x zoom per the negotiation spec: zooming out makes this device
+      // narrower and more likely to (implicitly) own the grid.
+      const zoom = viewZoomRef.current;
+      const natural = {
+        cols: Math.max(2, Math.floor((container.clientWidth - padX - 15) / metrics.width)),
+        rows: Math.max(1, Math.floor((container.clientHeight - padY) / metrics.height)),
+      };
+      const effective = {
+        cols: Math.max(2, Math.floor(natural.cols * zoom)),
+        rows: Math.max(1, Math.floor(natural.rows * zoom)),
+      };
+      const negotiated = negotiatedGridRef.current;
+      // Render the negotiated grid when the server set one; implicit-mode
+      // letterboxing comes free — a smaller grid in a bigger container.
+      const render = negotiated ?? effective;
+      if (terminal.cols !== render.cols || terminal.rows !== render.rows) {
+        terminal.resize(render.cols, render.rows);
+      }
+      // Always report the EFFECTIVE size, never the rendered grid — the
+      // report is this device's negotiation input, and the rendered grid is
+      // the negotiation OUTPUT; feeding it back would pin the grid forever.
+      const last = lastSizeRef.current;
+      if (!last || last.cols !== effective.cols || last.rows !== effective.rows) {
+        lastSizeRef.current = effective;
+        resizeRef.current(effective.cols, effective.rows);
       }
       requestAnimationFrame(() => applyViewScale());
     } catch { /* hidden or detached */ }
   }, [applyViewScale]);
+
+  // Zoom divides the cell size in the capacity formula, so every zoom step
+  // must renegotiate the grid (more columns out, fewer in) — rescaling the
+  // canvas alone would leave the same grid shrunk with margins.
+  React.useEffect(() => {
+    fit();
+  }, [viewZoom, fit]);
 
 
   const flush = React.useCallback(() => {
@@ -305,9 +309,8 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   }, []);
 
   React.useEffect(() => {
-    const scroll = scrollRef.current;
     const container = containerRef.current;
-    if (!scroll || !container) return;
+    if (!container) return;
     let disposed = false;
     let terminal: GhosttyTerminal | null = null;
     let observer: ResizeObserver | null = null;
@@ -363,7 +366,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         if (resizeTimeout) clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(fit, 80);
       });
-      observer.observe(scroll);
+      observer.observe(container);
       // Canvas-resize observer: the ghostty canvas resizes asynchronously
       // after terminal.resize(), so driver-follow scaling must re-run when
       // the canvas layout size actually settles (not just on requestAnimationFrame).
@@ -829,16 +832,21 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
     fit,
-    resizeGrid: (cols: number, rows: number) => {
+    resizeGrid: (cols: number, rows: number, options?: { driven?: boolean }) => {
       const terminal = terminalRef.current;
       if (!terminal) return;
       negotiatedGridRef.current = { cols, rows };
+      drivenRef.current = options?.driven === true;
       if (terminal.cols === cols && terminal.rows === rows) {
         requestAnimationFrame(() => applyViewScale());
         return;
       }
       terminal.resize(cols, rows);
       requestAnimationFrame(() => applyViewScale());
+    },
+    setDriven: (driven: boolean) => {
+      drivenRef.current = driven;
+      applyViewScale();
     },
     zoomIn: () => setViewZoom(viewZoomRef.current * 1.25),
     zoomOut: () => setViewZoom(viewZoomRef.current / 1.25),
@@ -856,16 +864,11 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useEffect(() => { onZoomChange?.(viewZoom); }, [onZoomChange, viewZoom]);
 
   return (
-    <div ref={scrollRef} className="h-full w-full overflow-auto touch-none overscroll-contain">
-      <div ref={sizerRef} className="relative overflow-hidden" style={{ width: '100%', height: '100%' }}>
-        <div
-          ref={containerRef}
-          data-terminal-owner="main"
-          className={cn('terminal-viewport-container touch-none', className)}
-          style={{ width: 'fit-content', height: 'fit-content' }}
-        />
-      </div>
-    </div>
+    <div
+      ref={containerRef}
+      data-terminal-owner="main"
+      className={cn('terminal-viewport-container h-full w-full overflow-hidden touch-none', className)}
+    />
   );
 });
 

@@ -158,3 +158,43 @@ describe('default terminal tab labels', () => {
     expect(labels()).toEqual(['build', 'Terminal']);
   });
 });
+
+describe('terminal tab unread marks', () => {
+  afterEach(() => useTerminalStore.getState().clearAll());
+
+  test('marks a tab unread and clears it on view', () => {
+    const tabId = setup();
+    useTerminalStore.getState().setTabUnread(tabId, true);
+    expect(useTerminalStore.getState().unreadTabs.has(tabId)).toBe(true);
+
+    useTerminalStore.getState().setTabUnread(tabId, false);
+    expect(useTerminalStore.getState().unreadTabs.has(tabId)).toBe(false);
+  });
+
+  test('closing a tab drops its unread mark', () => {
+    const first = setup();
+    const second = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabUnread(second, true);
+
+    useTerminalStore.getState().closeTab('/repo', second);
+    expect(useTerminalStore.getState().unreadTabs.has(second)).toBe(false);
+    expect(useTerminalStore.getState().unreadTabs.size).toBe(0);
+
+    // A close of a tab that was never marked must not disturb other marks.
+    useTerminalStore.getState().setTabUnread(first, true);
+    useTerminalStore.getState().createTab('/repo');
+    expect(useTerminalStore.getState().unreadTabs.has(first)).toBe(true);
+  });
+
+  test('removing a directory drops its tabs unread marks but keeps other directories intact', () => {
+    const repoTab = setup();
+    useTerminalStore.getState().ensureDirectory('/other');
+    const otherTab = useTerminalStore.getState().getDirectoryState('/other')!.tabs[0].id;
+    useTerminalStore.getState().setTabUnread(repoTab, true);
+    useTerminalStore.getState().setTabUnread(otherTab, true);
+
+    useTerminalStore.getState().removeDirectory('/repo');
+    expect(useTerminalStore.getState().unreadTabs.has(repoTab)).toBe(false);
+    expect(useTerminalStore.getState().unreadTabs.has(otherTab)).toBe(true);
+  });
+});
