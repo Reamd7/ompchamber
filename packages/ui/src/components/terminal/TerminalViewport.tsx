@@ -90,8 +90,7 @@ const getProvisionalTerminalSize = (
 export type TerminalController = {
   focus: () => void;
   fit: () => void;
-  resizeGrid: (cols: number, rows: number, options?: { driven?: boolean }) => void;
-  setDriven: (driven: boolean) => void;
+  resizeGrid: (cols: number, rows: number) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   zoomReset: () => void;
@@ -122,7 +121,6 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   // Forced-ownership mode flag: when a device has claimed the grid, non-owners
   // auto-fit-scale the grid into their container; in implicit mode everyone
   // renders natively and wider devices letterbox.
-  const drivenRef = React.useRef(false);
   const terminalRef = React.useRef<GhosttyTerminal | null>(null);
   const fitRef = React.useRef<FitAddon | null>(null);
   const inputRef = React.useRef(onInput);
@@ -161,15 +159,15 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   // device's viewport) is wider than this container, CSS-scale the canvas
   // down so the full grid stays visible. All gesture math is ratio-based
   // against the canvas rect, so the transform doesn't break cell mapping.
-  // View zoom — the user's display scale, clamped to (0.25, 1]: the control
-  // can only zoom OUT. It participates in the reported effective width
-  // (capacity x zoom), so zooming out can WIN implicit ownership (a narrower
-  // effective width) exactly like narrowing the container.
+  // View zoom — the display scale, clamped to (0.25, 4]. It participates in
+  // the reported effective width as capacity / zoom: zooming out reports
+  // MORE columns (smaller cells, pane stays full), zooming in reports
+  // fewer, bigger cells.
   const viewZoomRef = React.useRef(1);
   const zoomApiRef = React.useRef<{ setViewZoom: (next: number) => void } | null>(null);
   const [viewZoom, setViewZoomState] = React.useState(1);
   const setViewZoom = React.useCallback((next: number) => {
-    const clamped = Math.max(0.25, Math.min(1, next));
+    const clamped = Math.max(0.25, Math.min(4, next));
     viewZoomRef.current = clamped;
     setViewZoomState(clamped);
     applyViewScale();
@@ -184,13 +182,14 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const naturalWidth = canvas.offsetWidth;
     const naturalHeight = canvas.offsetHeight;
     if (naturalWidth <= 0 || naturalHeight <= 0 || container.clientWidth <= 0) return;
-    // Forced mode: a non-owner must fit the WHOLE claimed grid into its
-    // container — auto-scale, bounded above by the user's zoom. Implicit mode:
-    // no auto-fit ever; the grid already fits (it is the minimum) and wider
-    // devices letterbox.
+    // One display rule for every mode: the rendered grid is drawn at
+    // min(zoom, fit-both-axes). At the device's own negotiated size the grid
+    // x zoom fills the container exactly (fit = 1). When another device's
+    // grid is narrower, fit stays 1 and the leftover space letterboxes; when
+    // it is wider (forced claim by a bigger screen), fit shrinks the whole
+    // grid into view.
     const heightRatio = container.clientHeight > 0 ? container.clientHeight / naturalHeight : 1;
-    const fitScale = drivenRef.current ? Math.min(1, container.clientWidth / naturalWidth, heightRatio) : 1;
-    const finalScale = Math.max(0.2, Math.min(1, fitScale * viewZoomRef.current));
+    const finalScale = Math.max(0.2, Math.min(viewZoomRef.current, container.clientWidth / naturalWidth, heightRatio));
     if (finalScale > 0.999 && finalScale < 1.001) {
       canvas.style.transform = '';
       canvas.style.transformOrigin = '';
@@ -219,16 +218,18 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       const padY = (Number.parseInt(style.paddingTop, 10) || 0) + (Number.parseInt(style.paddingBottom, 10) || 0);
       // a = columns the container displays at 100% zoom (FitAddon math incl.
       // the 15px scrollbar reservation). The REPORTED effective width is
-      // a x zoom per the negotiation spec: zooming out makes this device
-      // narrower and more likely to (implicitly) own the grid.
+      // a / zoom: zooming OUT shrinks the cells, so MORE grid columns fit
+      // in the same container — the pane stays completely full and TUIs
+      // that need >=80 columns keep working on small panels. Zooming in
+      // shows fewer, bigger cells.
       const zoom = viewZoomRef.current;
       const natural = {
         cols: Math.max(2, Math.floor((container.clientWidth - padX - 15) / metrics.width)),
         rows: Math.max(1, Math.floor((container.clientHeight - padY) / metrics.height)),
       };
       const effective = {
-        cols: Math.max(2, Math.floor(natural.cols * zoom)),
-        rows: Math.max(1, Math.floor(natural.rows * zoom)),
+        cols: Math.max(2, Math.floor(natural.cols / zoom)),
+        rows: Math.max(1, Math.floor(natural.rows / zoom)),
       };
       const negotiated = negotiatedGridRef.current;
       // Render the negotiated grid when the server set one; implicit-mode
@@ -832,21 +833,16 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
     fit,
-    resizeGrid: (cols: number, rows: number, options?: { driven?: boolean }) => {
+    resizeGrid: (cols: number, rows: number) => {
       const terminal = terminalRef.current;
       if (!terminal) return;
       negotiatedGridRef.current = { cols, rows };
-      drivenRef.current = options?.driven === true;
       if (terminal.cols === cols && terminal.rows === rows) {
         requestAnimationFrame(() => applyViewScale());
         return;
       }
       terminal.resize(cols, rows);
       requestAnimationFrame(() => applyViewScale());
-    },
-    setDriven: (driven: boolean) => {
-      drivenRef.current = driven;
-      applyViewScale();
     },
     zoomIn: () => setViewZoom(viewZoomRef.current * 1.25),
     zoomOut: () => setViewZoom(viewZoomRef.current / 1.25),

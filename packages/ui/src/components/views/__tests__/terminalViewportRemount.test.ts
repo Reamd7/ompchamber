@@ -103,23 +103,24 @@ describe('terminal viewport remount guard', () => {
 });
 
 describe('terminal viewport zoom contract', () => {
-    test('reported effective width is natural capacity multiplied by zoom', () => {
-        // Spec: effective = a x zoom (zoom <= 1). Zooming out narrows this
-        // device and can win implicit ownership, exactly like shrinking the
-        // container.
+    test('reported effective width is natural capacity divided by zoom', () => {
+        // Spec: effective = a / zoom. Zooming OUT shrinks cells so MORE
+        // columns fit — the pane stays full and >=80-column TUIs keep
+        // working on small panels; zooming in shows fewer, bigger cells.
         expect(terminalViewportSource).toContain('const natural = {');
-        expect(terminalViewportSource).toContain('Math.floor(natural.cols * zoom)');
-        expect(terminalViewportSource).toContain('Math.floor(natural.rows * zoom)');
+        expect(terminalViewportSource).toContain('Math.floor(natural.cols / zoom)');
+        expect(terminalViewportSource).toContain('Math.floor(natural.rows / zoom)');
     });
 
-    test('implicit mode never auto-fits; forced mode fits the claimed grid', () => {
-        // Implicit: fitScale is a constant 1 (grid is already the min, wider
-        // devices letterbox). Forced: a non-owner scales the whole claimed
-        // grid into its container, capped above by the user's zoom.
+    test('display scale is mode-independent: min(zoom, fit-both-axes)', () => {
+        // One rule for implicit and forced alike: at the device's own
+        // negotiated size grid x zoom fills the container exactly (fit = 1);
+        // a narrower sibling grid letterboxes (fit stays 1); a wider claimed
+        // grid shrinks to fit.
         const scaleStart = terminalViewportSource.indexOf('const applyViewScale = React.useCallback(');
         const scaleBody = terminalViewportSource.slice(scaleStart, scaleStart + 2200);
-        expect(scaleBody).toContain("drivenRef.current ? Math.min(1, container.clientWidth / naturalWidth, heightRatio) : 1");
-        expect(scaleBody).toContain('Math.min(1, fitScale * viewZoomRef.current)');
+        expect(scaleBody).toContain('Math.min(viewZoomRef.current, container.clientWidth / naturalWidth, heightRatio)');
+        expect(scaleBody).not.toContain('drivenRef');
     });
 
     test('zoom changes re-run fit so the renegotiated report reaches the server', () => {
@@ -137,7 +138,7 @@ describe('terminal viewport zoom contract', () => {
         expect(fitBody).toContain('resizeRef.current(effective.cols, effective.rows);');
     });
 
-    test('view zoom is clamped to (0.25, 1] — the control only zooms out', () => {
-        expect(terminalViewportSource).toContain('Math.max(0.25, Math.min(1, next))');
+    test('view zoom is clamped to (0.25, 4]', () => {
+        expect(terminalViewportSource).toContain('Math.max(0.25, Math.min(4, next))');
     });
 });

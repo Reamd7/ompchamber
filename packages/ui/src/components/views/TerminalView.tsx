@@ -335,20 +335,21 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             case 'resized': {
                                 // Implicit ownership: the grid is the pure min
                                 // effective width; this frame carries the
-                                // narrowest device's ownerId. Render natively;
-                                // wider containers letterbox — no auto-scaling.
+                                // narrowest device's ownerId.
                                 if (typeof event.cols === 'number' && typeof event.rows === 'number') {
-                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows, { driven: false });
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
                                 }
                                 setImplicitOwner(typeof event.ownerId === 'string' ? event.ownerId : null);
                                 break;
                             }
                             case 'driverChanged': {
                                 // Forced ownership: driverId names the claimer.
-                                // Non-owners auto-fit-scale the whole grid into
-                                // their container (driven display mode).
+                                // Display handling is mode-independent: the
+                                // viewport scales whatever grid it is given to
+                                // fit (own grid fills exactly, a bigger claimed
+                                // grid shrinks to fit).
                                 if (typeof event.cols === 'number' && typeof event.rows === 'number') {
-                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows, { driven: true });
+                                    terminalControllerRef.current?.resizeGrid(event.cols, event.rows);
                                 }
                                 setDriverState({
                                     driverId: event.driverId ?? null,
