@@ -29,6 +29,8 @@ export type SortableTabsStripItem = {
   title?: string;
   closable?: boolean;
   closeLabel?: string;
+  /** Non-interactive status node rendered after the label (e.g. an unread dot). */
+  trailing?: React.ReactNode;
 };
 
 type SortableTabsStripProps = {
@@ -571,6 +573,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                         </span>
                       ) : null}
                       {shouldShowLabel ? <span className="animated-tabs__label truncate">{item.label}</span> : null}
+                      {shouldShowLabel ? item.trailing : null}
                     </>
                   ) : (
                     <span className={cn('flex min-w-0 flex-nowrap items-center gap-1.5', !isScrollable && 'justify-center')}>
@@ -603,6 +606,7 @@ export const SortableTabsStrip: React.FC<SortableTabsStripProps> = ({
                         </span>
                       ) : null}
                       <span className="truncate leading-[1.2]">{item.label}</span>
+                      {item.trailing}
                     </span>
                   )}
                 </button>

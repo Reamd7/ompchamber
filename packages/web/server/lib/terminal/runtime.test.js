@@ -625,9 +625,9 @@ describe('terminal runtime', () => {
       small.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-drv', cols: 60, rows: 20 }));
       await small.next('snapshot');
       await new Promise((resolve) => setTimeout(resolve, 5));
-      // IDLE min-size: the smaller viewport shrinks the grid, floored to
-      // the 80x24 TUI minimum (narrow clients CSS-scale instead).
-      expect(resizes.at(-1)).toEqual([80, 24]);
+      // IDLE min-size: the grid is the pure minimum effective width across
+      // attachments (no floor); the narrowest device implicitly owns it.
+      expect(resizes.at(-1)).toEqual([60, 20]);
 
       // Claim: the big screen takes control; PTY follows its viewport even
       // though the small screen is narrower.
@@ -649,7 +649,7 @@ describe('terminal runtime', () => {
       big.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-drv' }));
       const released = await small.next('driverChanged');
       expect(released.driverId).toBeNull();
-      expect(resizes.at(-1)).toEqual([80, 24]);
+      expect(resizes.at(-1)).toEqual([50, 15]);
       const bigSeesRelease = await big.next('driverChanged');
       expect(bigSeesRelease.driverId).toBeNull();
       // Re-claim from the other side, then drop the driver connection:
@@ -666,6 +666,99 @@ describe('terminal runtime', () => {
       big.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-drv' }));
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(resizes.at(-1)).toEqual([100, 30]);
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      await runtime.shutdown();
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 15_000);
+
+  it('implicit ownership is the dynamic minimum and moves with resizes', async () => {
+    const app = express();
+    app.use(express.json());
+    const server = http.createServer(app);
+    const events = [];
+    const loadPtyProvider = async () => ({
+      backend: 'fake-pty',
+      spawn: () => ({
+        pid: 99777,
+        writes: [],
+        write() {},
+        resize(cols, rows) { events.push(['resize', cols, rows]); },
+        kill() {},
+        onData() { return { dispose() {} }; },
+        onExit() { return { dispose() {} }; },
+      }),
+    });
+    const runtime = createRuntime(server, {
+      app, loadPtyProvider,
+      terminalTerminationGraceMs: 10,
+      fs: { promises: { stat: async () => ({ isDirectory: () => true }) } },
+      searchPathFor: () => '/bin/sh', isExecutable: () => true,
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const socketUrl = `ws://127.0.0.1:${server.address().port}/api/terminal/ws`;
+    const sockets = [];
+
+    const open = async () => {
+      const socket = new WebSocket(socketUrl);
+      sockets.push(socket);
+      const messages = [];
+      socket.on('message', (raw) => messages.push(readTerminalWsControlFrame(raw)));
+      await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+      const next = async (type) => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const index = messages.findIndex((message) => message?.t === type && (type === 'hello' || message.s === 'term-imp'));
+          if (index >= 0) return messages.splice(index, 1)[0];
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        throw new Error(`Timed out waiting for ${type}`);
+      };
+      await next('hello');
+      return { socket, next };
+    };
+
+    try {
+      await fetch(`${base}/api/terminal/create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'term-imp', cwd: '/repo', cols: 90, rows: 30 }),
+      });
+
+      // A alone: implicit owner is A, grid follows A's viewport exactly.
+      const a = await open();
+      a.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-imp', cols: 100, rows: 30 }));
+      const alone = await a.next('resized');
+      expect(alone).toMatchObject({ ownerId: expect.any(String), cols: 100, rows: 30 });
+      const ownerA = alone.ownerId;
+
+      // B joins narrower: grid drops to B's width (pure minimum, no floor)
+      // and ownership moves to B's connection.
+      const b = await open();
+      b.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-imp', cols: 60, rows: 20 }));
+      const narrowed = await a.next('resized');
+      expect(narrowed).toMatchObject({ cols: 60, rows: 20 });
+      expect(narrowed.ownerId).not.toBe(ownerA);
+
+      // B widens past A: ownership falls back to A and the grid grows.
+      b.socket.send(createTerminalWsControlFrame({ t: 'viewport', v: 3, s: 'term-imp', cols: 120, rows: 40 }));
+      const widened = await a.next('resized');
+      expect(widened).toMatchObject({ ownerId: ownerA, cols: 100, rows: 30 });
+
+      // A claims forced ownership: B cannot retake it by narrowing further;
+      // the grid stays locked to A's effective width.
+      a.socket.send(createTerminalWsControlFrame({ t: 'claimViewport', v: 3, s: 'term-imp', cols: 100, rows: 30 }));
+      await b.next('driverChanged');
+      b.socket.send(createTerminalWsControlFrame({ t: 'viewport', v: 3, s: 'term-imp', cols: 40, rows: 15 }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(events.at(-1)).toEqual(['resize', 100, 30]);
+
+      // A releases: implicit negotiation resumes at the new minimum (B's 40).
+      a.socket.send(createTerminalWsControlFrame({ t: 'releaseViewport', v: 3, s: 'term-imp' }));
+      const released = await b.next('driverChanged');
+      expect(released.driverId).toBeNull();
+      expect(events.at(-1)).toEqual(['resize', 40, 15]);
     } finally {
       for (const socket of sockets) socket.terminate();
       await runtime.shutdown();

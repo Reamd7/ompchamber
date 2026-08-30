@@ -457,6 +457,13 @@ export const useTerminalStore = create<TerminalStore>()(
             const nextBuffers = state.buffers.has(closedBufferKey)
               ? dropBufferKeys(state.buffers, (bufferEntryKey) => bufferEntryKey === closedBufferKey)
               : null;
+            // The unread mark is tab-scoped; dropping it here keeps the set from
+            // accumulating ids of tabs that no longer exist.
+            let nextUnreadTabs = state.unreadTabs;
+            if (state.unreadTabs.has(tabId)) {
+              nextUnreadTabs = new Set(state.unreadTabs);
+              nextUnreadTabs.delete(tabId);
+            }
 
             if (nextTabs.length === 0) {
               const newTabId = createTerminalTabId();
@@ -467,6 +474,7 @@ export const useTerminalStore = create<TerminalStore>()(
                 nextTabId: state.nextTabId + 1,
                 ...(nextBuffers ? { buffers: nextBuffers } : {}),
                 ...(runsChanged ? { projectActionRuns: nextRuns } : {}),
+                unreadTabs: nextUnreadTabs,
               };
             }
 
@@ -486,6 +494,7 @@ export const useTerminalStore = create<TerminalStore>()(
               sessions: newSessions,
               ...(nextBuffers ? { buffers: nextBuffers } : {}),
               ...(runsChanged ? { projectActionRuns: nextRuns } : {}),
+              unreadTabs: nextUnreadTabs,
             };
           });
         },
@@ -758,16 +767,26 @@ export const useTerminalStore = create<TerminalStore>()(
             const nextRuns = Object.fromEntries(
               Object.entries(state.projectActionRuns).filter(([, run]) => run.directory !== key)
             );
+            // Same tab-scoped cleanup as closeTab: the directory's tabs are gone.
+            const removedTabIds = new Set(state.sessions.get(key)?.tabs.map((tab) => tab.id) ?? []);
+            let nextUnreadTabs = state.unreadTabs;
+            for (const tabId of removedTabIds) {
+              if (nextUnreadTabs.has(tabId)) {
+                if (nextUnreadTabs === state.unreadTabs) nextUnreadTabs = new Set(state.unreadTabs);
+                nextUnreadTabs.delete(tabId);
+              }
+            }
             return {
               sessions: newSessions,
               ...(nextBuffers ? { buffers: nextBuffers } : {}),
               projectActionRuns: nextRuns,
+              unreadTabs: nextUnreadTabs,
             };
           });
         },
 
         clearAll: () => {
-          set({ sessions: new Map(), buffers: new Map(), projectActionRuns: {}, nextChunkId: 1, nextTabId: 1 });
+          set({ sessions: new Map(), buffers: new Map(), projectActionRuns: {}, nextChunkId: 1, nextTabId: 1, unreadTabs: new Set() });
         },
       }),
       {

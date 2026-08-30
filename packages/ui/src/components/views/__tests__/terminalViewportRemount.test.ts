@@ -101,3 +101,44 @@ describe('terminal viewport remount guard', () => {
         expect(terminalViewportSource).toContain('...(provisionalSizeRef.current ?? {})');
     });
 });
+
+describe('terminal viewport zoom contract', () => {
+    test('reported effective width is natural capacity divided by zoom', () => {
+        // Spec: effective = a / zoom. Zooming OUT shrinks cells so MORE
+        // columns fit — the pane stays full and >=80-column TUIs keep
+        // working on small panels; zooming in shows fewer, bigger cells.
+        expect(terminalViewportSource).toContain('const natural = {');
+        expect(terminalViewportSource).toContain('Math.floor(natural.cols / zoom)');
+        expect(terminalViewportSource).toContain('Math.floor(natural.rows / zoom)');
+    });
+
+    test('display scale is mode-independent: min(zoom, fit-both-axes)', () => {
+        // One rule for implicit and forced alike: at the device's own
+        // negotiated size grid x zoom fills the container exactly (fit = 1);
+        // a narrower sibling grid letterboxes (fit stays 1); a wider claimed
+        // grid shrinks to fit.
+        const scaleStart = terminalViewportSource.indexOf('const applyViewScale = React.useCallback(');
+        const scaleBody = terminalViewportSource.slice(scaleStart, scaleStart + 2200);
+        expect(scaleBody).toContain('Math.min(viewZoomRef.current, container.clientWidth / naturalWidth, heightRatio)');
+        expect(scaleBody).not.toContain('drivenRef');
+    });
+
+    test('zoom changes re-run fit so the renegotiated report reaches the server', () => {
+        const setZoomStart = terminalViewportSource.indexOf('const setViewZoom = React.useCallback(');
+        const setZoomBody = terminalViewportSource.slice(setZoomStart, setZoomStart + 700);
+        expect(setZoomBody).toContain('fit();');
+    });
+
+    test('capacity reports survive the first negotiation round', () => {
+        // The rendered grid stays pinned to the negotiated size; the report
+        // must track the local EFFECTIVE capacity so resizes renegotiate.
+        const fitStart = terminalViewportSource.indexOf('const fit = React.useCallback(');
+        const fitBody = terminalViewportSource.slice(fitStart, terminalViewportSource.indexOf('}, [applyViewScale]);', fitStart));
+        expect(fitBody).toContain('lastSizeRef.current = effective;');
+        expect(fitBody).toContain('resizeRef.current(effective.cols, effective.rows);');
+    });
+
+    test('view zoom is clamped to (0.25, 4]', () => {
+        expect(terminalViewportSource).toContain('Math.max(0.25, Math.min(4, next))');
+    });
+});

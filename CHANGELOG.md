@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Terminal: multi-device grid ownership per the negotiated-width spec.** The grid is the pure minimum effective width across devices with no floor — the narrowest device implicitly owns it, ownership moves dynamically as anyone narrows or widens, and wider devices letterbox instead of auto-scaling. A forced claim locks the grid to the claimer's width and every other device (current or later) auto-scales to show the whole grid; release or disconnect returns to implicit negotiation. Tab close only detaches this device — the session lives on the server and dies only via the explicit trash action or idle timeout.
+- Terminal: the grid now follows window and panel resizes instead of staying pinned to the size from when the terminal opened — after the first size negotiation the viewport stopped reporting its size, so resizing left the canvas scaled down with blank margins (or too small when the window grew).
+- Terminal: a command that finishes while you are elsewhere in the app marks the terminal's tab with an unread dot, cleared the moment you view it.
+- Terminal: the zoom controls' tooltips say zoom instead of font size, matching what the controls actually do.
 - **Setup: first launch now opens the app directly.** The engine ships inside the app, so the startup screen that told you to install a CLI is gone; if the local engine still fails to start, you get a retry screen instead of setup instructions.
 - Settings: the "OpenCode CLI" section is gone from the OMPChamber settings page — the engine is bundled with the app and there is no CLI path to configure.
 
