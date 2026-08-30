@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.22.0] - 2026-08-29
 
 - **Terminal: multi-device grid ownership per the negotiated-width spec.** The grid is the pure minimum effective width across devices with no floor — the narrowest device implicitly owns it, ownership moves dynamically as anyone narrows or widens, and wider devices letterbox instead of auto-scaling. A forced claim locks the grid to the claimer's width and every other device (current or later) auto-scales to show the whole grid; release or disconnect returns to implicit negotiation. Tab close only detaches this device — the session lives on the server and dies only via the explicit trash action or idle timeout.
 - Terminal: the grid now follows window and panel resizes instead of staying pinned to the size from when the terminal opened — after the first size negotiation the viewport stopped reporting its size, so resizing left the canvas scaled down with blank margins (or too small when the window grew).
