@@ -427,8 +427,8 @@ export function createTerminalRuntime({
           send(socket, { t: 'error', v: 3, s: id, code: 'NOT_ATTACHED', message: 'Attach before claiming the viewport', fatal: false });
           return;
         }
-        const cols = Number.isFinite(message.cols) ? Math.max(1, Math.min(message.cols, 1000)) : session.cols;
-        const rows = Number.isFinite(message.rows) ? Math.max(1, Math.min(message.rows, 500)) : session.rows;
+        const cols = Number.isFinite(message.cols) ? Math.max(2, Math.min(message.cols, 1000)) : session.cols;
+        const rows = Number.isFinite(message.rows) ? Math.max(2, Math.min(message.rows, 500)) : session.rows;
         session.viewportDriver = { connectionId: connection.connectionId, cols, rows };
         // changes; only broadcast explicitly for the same-size claim.
         if (cols === session.cols && rows === session.rows) broadcastDriverChanged(session);
