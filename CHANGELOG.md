@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.23.0] - 2026-08-31
+
+- **Terminal: fixed the "memory access out of bounds" crash that could take down a terminal session.** A grid squeezed below 2×2 — for example a single-column terminal after a large paste — corrupted the engine's memory while writing output. Degenerate grids are now refused before they reach the engine, and a failed write drops that chunk of output instead of crashing the session.
+
 ## [1.22.0] - 2026-08-29
 
 - **Terminal: multi-device grid ownership per the negotiated-width spec.** The grid is the pure minimum effective width across devices with no floor — the narrowest device implicitly owns it, ownership moves dynamically as anyone narrows or widens, and wider devices letterbox instead of auto-scaling. A forced claim locks the grid to the claimer's width and every other device (current or later) auto-scales to show the whole grid; release or disconnect returns to implicit negotiation. Tab close only detaches this device — the session lives on the server and dies only via the explicit trash action or idle timeout.
