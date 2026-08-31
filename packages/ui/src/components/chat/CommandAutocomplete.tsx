@@ -208,6 +208,16 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       ? [{ id: 'ompchamber:tree', name: 'tree', source: 'ompchamber' as const, description: t('chat.commandAutocomplete.command.treeDescription'), isBuiltIn: true }]
       : []
     ),
+    // /fork and /branch — the omp builtins, implemented client-side (Tier A;
+    // commands.v1 off means no omp row carries them). /fork snapshots the
+    // whole conversation; /branch opens the user-message picker.
+    ...(hasSession
+      ? [
+          { id: 'ompchamber:fork', name: 'fork', source: 'ompchamber' as const, description: t('chat.commandAutocomplete.command.forkDescription'), isBuiltIn: true },
+          { id: 'ompchamber:branch', name: 'branch', source: 'ompchamber' as const, description: t('chat.commandAutocomplete.command.branchDescription'), isBuiltIn: true },
+        ]
+      : []
+    ),
   ], [canStartSessionCommand, canUseReviewHandoffFlow, hasMessagesInCurrentSession, hasSession, ompOwnsDebug, ompTreeEnabled, t]);
 
   const ompCommands = React.useMemo(

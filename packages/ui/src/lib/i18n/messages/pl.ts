@@ -810,6 +810,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.revert.toast.undo': 'Cofnięte do {preview}',
   'chat.revert.toast.undoPrefilled': 'Cofnięto. Wiadomość wróciła do pola wprowadzania.',
   'chat.commandAutocomplete.command.treeDescription': 'Przeglądaj drzewo gałęzi tej sesji',
+  'chat.commandAutocomplete.command.forkDescription': 'Sforkuj tę rozmowę do nowej sesji',
+  'chat.commandAutocomplete.command.branchDescription': 'Rozgałęź od wcześniejszej wiadomości',
   'chat.workStatus.subagent.parked': 'wstrzymany',
   'chat.workStatus.subagent.aborted': 'przerwany',
   'chat.workStatus.goal.status.active': 'aktywny',

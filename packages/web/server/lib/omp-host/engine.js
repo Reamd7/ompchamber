@@ -585,6 +585,11 @@ export class OmpHostEngine {
       projectID: this.#projectId(directoryKey),
       directory: normalizeDirectoryKey(info.cwd || directoryKey),
       parentID: meta?.parentID,
+      // Fork lineage rides a dedicated field: wire `parentID` means subagent
+      // parentage and the shared UI makes parentID sessions read-only
+      // ("subagent sessions cannot be prompted"). A user fork must stay a
+      // normal promptable session.
+      forkParentID: meta?.forkParentID,
       title: meta?.title ?? info.title ?? 'Untitled',
       ...(personaKeyFor(meta?.persona ?? meta?.agent) !== 'standard'
         ? { agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)) }
@@ -1867,17 +1872,46 @@ export class OmpHostEngine {
     return true;
   }
 
-  async fork({ sessionID, directory }) {
+  async fork({ sessionID, directory, messageID }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
     if (!file) return null;
     const forked = await SessionManager.forkFrom(file.path, directoryKey, this.#sessionDirFor(directoryKey));
     const forkId = forked.getSessionId();
+    // Wire contract: an optional messageID bounds the fork. TUI /branch
+    // semantics — the selected user message and everything after it leave
+    // the active path (the caller restores its text into the composer);
+    // without one the fork keeps the whole transcript (TUI /fork semantics).
+    if (messageID) {
+      const entryId = resolveWireIdToEntryId(forked.getEntries?.() ?? [], messageID, {
+        wireIdFor: this.#wireIdResolver(directoryKey, sessionID),
+      });
+      // Compat: native entry ids pass through unchanged (the same fallback
+      // revert uses) before giving up and forking at the leaf.
+      const boundary = forked.getEntry?.(entryId ?? messageID);
+      if (!boundary) {
+        console.warn(`[omp-host] fork boundary ${messageID} not found; forking at the leaf`);
+      } else {
+        // branch()/resetLeaf() move the leaf in memory only — the loader
+        // rebuilds the active path from the last physical entry — so an
+        // invisible marker entry appended at the new leaf makes the rewind
+        // durable. Empty custom entries project to nothing (dropped by the
+        // projection's empty-content rule), so the fork's transcript starts
+        // clean at the boundary.
+        const parentId = boundary.parentId ?? null;
+        if (parentId) forked.branch(parentId);
+        else forked.resetLeaf();
+        forked.appendCustomEntry('ompchamber.forkBoundary', { from: sessionID, at: messageID });
+      }
+    }
     const now = Date.now();
     const meta = this.registry.get(directoryKey, sessionID);
     this.registry.update(directoryKey, forkId, {
-      parentID: sessionID,
+      // Fork lineage for the session-tree projection (§5.4). NOT wire
+      // `parentID` — that field is subagent parentage, and the shared UI
+      // flips sessions carrying it into a read-only subagent composer.
+      forkParentID: sessionID,
       title: meta?.title ? `${meta.title} (fork)` : 'Forked session',
       timeCreated: now,
       timeUpdated: now,

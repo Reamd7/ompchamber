@@ -611,6 +611,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         ]);
         if (!isMobile && !isVSCodeRuntime()) names.add('handoff-review');
         if (ompTreeEnabled) names.add('tree');
+        names.add('fork');
+        names.add('branch');
         if (ompOwnsDebug) names.add('troubleshoot');
         for (const command of availableCommands) names.add(command.name.toLowerCase());
         for (const skill of availableSkills) names.add(skill.name.toLowerCase());
@@ -1222,6 +1224,19 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             }
             if (commandName === 'tree' && currentSessionId && ompTreeEnabled) {
                 setSessionTreeDialogOpen(true);
+                return;
+            }
+            // omp /branch: the TUI opens a user-message picker; the timeline
+            // dialog is that picker here (message list with per-message fork).
+            if (commandName === 'branch' && currentSessionId) {
+                setTimelineDialogOpen(true);
+                return;
+            }
+            // omp /fork: whole-conversation fork — the new session carries the
+            // full transcript and an empty composer (TUI parity: no picker).
+            if (commandName === 'fork' && currentSessionId) {
+                await useSessionUIStore.getState().forkSession(currentSessionId);
+                scrollToBottom?.();
                 return;
             }
             if (commandName === 'handoff-review' && currentSessionId && !isMobile && !isVSCodeRuntime()) {

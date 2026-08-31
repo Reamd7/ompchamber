@@ -2121,6 +2121,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.revert.toast.undo': '{preview}(으)로 되돌림',
   'chat.revert.toast.undoPrefilled': '되돌렸습니다. 메시지가 입력창에 다시 들어 있습니다.',
   'chat.commandAutocomplete.command.treeDescription': '이 세션의 브랜치 트리 탐색',
+  'chat.commandAutocomplete.command.forkDescription': '이 대화를 새 세션으로 포크',
+  'chat.commandAutocomplete.command.branchDescription': '이전 메시지에서 분기',
   'chat.workStatus.subagent.parked': '대기 중',
   'chat.workStatus.subagent.aborted': '중단됨',
   'chat.workStatus.goal.status.active': '진행 중',

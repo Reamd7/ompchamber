@@ -8,6 +8,15 @@
 // stores that metadata next to the omp session directory in one JSON file per
 // project directory, keyed by omp session id.
 //
+// Parent linkage is two distinct contracts:
+// - `parentID` — subagent parentage (wire POST /session body.parentID). The
+//   shared UI treats a wire session with parentID as a subagent session
+//   (read-only composer, hidden from the switcher, listed under the parent's
+//   work-status subagents).
+// - `forkParentID` — fork lineage for the session-tree projection (§5.4).
+//   A user fork is a normal promptable session, so it must NOT carry
+//   parentID. engine.fork is the only writer.
+//
 // Invariants:
 // - Registry writes are atomic (temp file + rename) so a crash never leaves
 //   a torn index.
@@ -61,7 +70,21 @@ export class SessionMetaRegistry {
       entries = {};
     }
     const map = new Map(Object.entries(entries));
+    // One-time migration: every released version wrote fork lineage into
+    // `parentID` (engine.fork was its only writer), which made user forks
+    // project as read-only subagent sessions on the wire. Move those edges
+    // to `forkParentID`. Entries that already carry `forkParentID` keep any
+    // `parentID` untouched — that pairing means genuine subagent parentage.
+    let migrated = false;
+    for (const [id, meta] of map) {
+      if (typeof meta?.parentID === 'string' && meta.parentID.length > 0 && !('forkParentID' in meta)) {
+        const { parentID, ...rest } = meta;
+        map.set(id, { ...rest, forkParentID: parentID });
+        migrated = true;
+      }
+    }
     this.cache.set(directoryKey, map);
+    if (migrated) this.#persist(directoryKey, map);
     return map;
   }
 

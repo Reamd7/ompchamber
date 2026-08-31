@@ -2097,6 +2097,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.revert.toast.undo": "Revertido para {preview}",
   "chat.revert.toast.undoPrefilled": "Revertido. A mensagem voltou para o composer.",
   "chat.commandAutocomplete.command.treeDescription": "Explorar a árvore de ramificações desta sessão",
+  'chat.commandAutocomplete.command.forkDescription': 'Criar uma ramificação desta conversa em uma nova sessão',
+  'chat.commandAutocomplete.command.branchDescription': 'Criar ramificação a partir de uma mensagem anterior',
   "chat.workStatus.subagent.parked": "em espera",
   "chat.workStatus.subagent.aborted": "abortado",
   "chat.workStatus.goal.status.active": "ativo",

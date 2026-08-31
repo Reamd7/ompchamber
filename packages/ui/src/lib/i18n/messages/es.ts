@@ -2097,6 +2097,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.revert.toast.undo": "Revertido a {preview}",
   "chat.revert.toast.undoPrefilled": "Revertido. El mensaje volvió al composer.",
   "chat.commandAutocomplete.command.treeDescription": "Explorar el árbol de ramas de esta sesión",
+  'chat.commandAutocomplete.command.forkDescription': 'Bifurcar esta conversación en una sesión nueva',
+  'chat.commandAutocomplete.command.branchDescription': 'Bifurcar desde un mensaje anterior',
   "chat.workStatus.subagent.parked": "en espera",
   "chat.workStatus.subagent.aborted": "abortado",
   "chat.workStatus.goal.status.active": "activo",

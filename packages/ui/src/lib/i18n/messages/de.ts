@@ -1931,6 +1931,8 @@ export const dict = {
   'chat.revert.toast.undo': 'Zurückgesetzt auf {preview}',
   'chat.revert.toast.undoPrefilled': 'Zurückgesetzt. Die Nachricht liegt wieder im Composer.',
   'chat.commandAutocomplete.command.treeDescription': 'Verzweigungsbaum dieser Sitzung durchsuchen',
+  'chat.commandAutocomplete.command.forkDescription': 'Diese Unterhaltung in eine neue Sitzung forken',
+  'chat.commandAutocomplete.command.branchDescription': 'Von einer früheren Nachricht abzweigen',
   'chat.workStatus.subagent.parked': 'geparkt',
   'chat.workStatus.subagent.aborted': 'abgebrochen',
   'chat.workStatus.goal.status.active': 'aktiv',
