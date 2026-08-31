@@ -3167,6 +3167,7 @@ export const dict = {
   'chat.workStatus.goal.status.budgetLimited': 'budget-limited',
   'chat.workStatus.goal.status.dropped': 'dropped',
   'chat.workStatus.section.contextBreakdown': 'Context sources',
+  'chat.workStatus.section.localFiles': 'Session local files',
   'chat.workStatus.breakdown.skills': 'Skills',
   'chat.workStatus.breakdown.pinnedNote': 'note',
   'chat.workStatus.breakdown.unpin': 'Unpin from context',
@@ -3298,6 +3299,20 @@ export const dict = {
   'dialogs.internalUri.error.unavailable': 'This server does not expose internal resources.',
   'dialogs.internalUri.error.tooLarge': 'Resource is too large to display ({size}).',
   'dialogs.internalUri.error.resolveFailed': 'Could not resolve this resource.',
+  'dialogs.internalUri.error.binaryFailed': 'Could not load this file for preview.',
+'contextPanel.localFiles.title': 'Session local files',
+'contextPanel.localFiles.description': 'Read-only browse of this session’s private local:// files.',
+'contextPanel.localFiles.noDirectory': 'No project directory is active.',
+'contextPanel.localFiles.noSession': 'No session is selected.',
+'contextPanel.localFiles.filesLoading': 'Loading files…',
+'contextPanel.localFiles.filesError': 'Could not load files.',
+'contextPanel.localFiles.emptyFiles': 'This session has no local:// files.',
+'contextPanel.localFiles.openFile': 'Open {ref}',
+'contextPanel.localFiles.truncated': 'List truncated — more files exist.',
+  'contextPanel.localFiles.backToFiles': 'Workspace files',
+  'contextPanel.localFiles.scopeAria': 'Switch file tree scope',
+  'contextPanel.localFiles.browseHint': 'Pick a file from this session’s tree.',
+  'contextPanel.localFiles.previewFailed': 'Could not load this file for preview.',
 } as const;
 
 export type I18nKey = keyof typeof dict;

@@ -96,7 +96,9 @@ sync engine, and web server call; everything else answers 404.
   (SDK frontmatter contract round-trip), `migrateSidecarAgents` (one-time
   `openchamber-agents.json` → `.md` + persona mirror, §6.2), and personas
   CRUD over the personas sidecar.
-- `domain-uri.js` (spec 04) — local:// bridge (session-pinned, zero global
+- `domain-uri.js` (spec 04) — local:// bridge (session-pinned to each
+  session's own artifacts dir — TUI parity, spec 04 §5.2.3: transcript
+  sibling dir, never the project-level session dir; zero global
   mutation), URI token service (no absolute sourcePath echo, R7), session
   tree, `AgentRunsAggregator` (250ms coalesced `omp.agents.updated`),
   parked/historical split, jobs 501 steady state (R12).

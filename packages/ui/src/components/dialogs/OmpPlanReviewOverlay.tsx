@@ -114,7 +114,7 @@ export const OmpPlanReviewOverlay: React.FC<OmpPlanReviewOverlayProps> = ({ dire
     void ompUri.resolve({ url: pending.details.planFilePath, sessionID: sessionId, directory }).then((result) => {
       if (cancelled) return;
       if (result.ok) {
-        setPlanContent(result.resource.content);
+        setPlanContent(result.resource.content ?? null);
         setContentState('ready');
       } else {
         setPlanContent(null);

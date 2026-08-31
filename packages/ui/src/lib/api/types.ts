@@ -12,6 +12,7 @@ import type {
   OmpSettingsAPI,
   OmpProvidersAPI,
   OmpUriAPI,
+  OmpArtifactsAPI,
 } from './omp';
 
 type RuntimePlatform = 'web' | 'desktop' | 'vscode';
@@ -1287,6 +1288,7 @@ export interface RuntimeAPIs {
   ompSettings: OmpSettingsAPI;
   ompProviders: OmpProvidersAPI;
   ompUri: OmpUriAPI;
+  ompArtifacts: OmpArtifactsAPI;
   tools: ToolsAPI;
   editor?: EditorAPI;
   vscode?: VSCodeAPI;

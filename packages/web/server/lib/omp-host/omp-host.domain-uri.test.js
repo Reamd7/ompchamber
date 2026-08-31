@@ -27,6 +27,7 @@ import {
   ParkedAgentDescriptors,
   handleAgentRunAction,
   handleJobsRequest,
+  artifactsDirForSessionFile,
   JOBS_UNAVAILABLE_REASON,
   createUriDomain,
 } from './domain-uri.js';
@@ -93,6 +94,27 @@ describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', 
     const source = readFileSync(new URL('./domain-uri.js', import.meta.url), 'utf8');
     expect(/registerArtifactsDir\(/.test(source)).toBe(false);
     expect(/\.setOverride\(/.test(source)).toBe(false);
+  });
+
+  test('artifactsDirForSessionFile derives the per-session dir, rejects non-transcripts', () => {
+    expect(artifactsDirForSessionFile('C:/sess/2026-08-27T10-00-00Z_ses_A.jsonl')).toBe(
+      'C:/sess/2026-08-27T10-00-00Z_ses_A',
+    );
+    expect(artifactsDirForSessionFile('C:/sess/notes.txt')).toBeNull();
+    expect(artifactsDirForSessionFile(undefined)).toBeNull();
+  });
+
+  test('resolve accepts an async localOptionsFor hook (engine cold path)', async () => {
+    const { status, body } = await handleUriResolve({
+      body: { scheme: 'local', ref: 'scratch.md', sessionID: 'ses_A', directory: DIRECTORY },
+      localOptionsFor: async (sessionID, directory) => {
+        await Promise.resolve();
+        return createLocalProtocolOptions(sessionID, directory, artifactsOf(sessionID));
+      },
+      tokens,
+    }).then((r) => r.json().then((data) => ({ status: r.status, body: data })));
+    expect(status).toBe(200);
+    expect(body.content).toBe('alpha session secret');
   });
 });
 
@@ -831,11 +853,181 @@ describe('createUriDomain + mount (integration surface)', () => {
       fakeRequest('http://x/omp/agent-runs/ses_A/Anna', { kind: 'kill', directory: DIRECTORY }),
       ctxFor('http://x/omp/agent-runs/ses_A/Anna', { sessionID: 'ses_A', agentId: 'Anna' }),
     );
-    // no engine actions injected → gating passed, hook reports missing cleanly
     expect(action.status).toBe(500);
     expect((await action.json()).error).toBe('hook-unavailable');
 
     expect(published.some((e) => e.type === OMP_AGENTS_UPDATED && e.scope.directory === DIRECTORY)).toBe(true);
+    domain.dispose();
+  });
+});
+
+
+describe('artifacts browse (spec 04 — host-level read-only local:// listing)', () => {
+  const registerRoutes = (domain) => {
+    const routes = new Map();
+    domain.mount((method, pattern, handler) => routes.set(`${method} ${pattern}`, handler));
+    return routes;
+  };
+  const ctxFor = (url, params = {}) => ({ params, url: new URL(url), headers: new Headers() });
+
+  const localFilesOf = {
+    ses_A: {
+      files: [
+        { ref: 'PLAN.md', size: 10, modifiedAt: 5 },
+        { ref: 'scratch/notes.md', size: 20, modifiedAt: 9 },
+      ],
+      truncated: false,
+    },
+    // Session with no local:// root yet — authoritative empty, still indexed.
+    ses_B: { files: [], truncated: false },
+  };
+  const localFiles = async (sessionID) => localFilesOf[sessionID] ?? null;
+  const sessionTreeData = async () => [
+    { id: 'ses_A', title: 'Alpha', time: { created: 1, updated: 10 } },
+    { id: 'ses_B', title: '', time: { created: 2, updated: 20 } },
+  ];
+
+  test('per-session only: missing sessionID → 400 session-required (no index form)', async () => {
+    const domain = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: true }),
+      localFiles,
+      sessionTreeData,
+    });
+    const res = await domain.artifacts.list({ directory: DIRECTORY });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'session-required' });
+    domain.dispose();
+  });
+
+  test('session form: rows mtime desc; unknown session → 404; missing directory → 400', async () => {
+    const domain = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: true }),
+      localFiles,
+      sessionTreeData,
+    });
+    const files = await domain.artifacts.list({ directory: DIRECTORY, sessionID: 'ses_A' });
+    const filesBody = await files.json();
+    expect(files.status).toBe(200);
+    expect(filesBody.files.map((file) => file.ref)).toEqual(['scratch/notes.md', 'PLAN.md']);
+    expect(filesBody.truncated).toBe(false);
+
+    const unknown = await domain.artifacts.list({ directory: DIRECTORY, sessionID: 'ses_X' });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: 'session-not-found' });
+
+    const missing = await domain.artifacts.list({ directory: null });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: 'directory-required' });
+    domain.dispose();
+  });
+
+  test('truncated flag survives the composed handler; malformed rows are dropped', async () => {
+    const domain = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: true }),
+      localFiles: async () => ({
+        files: [
+          { ref: 'a.md', size: 1, modifiedAt: 2 },
+          { ref: '', size: 1, modifiedAt: 3 }, // malformed — dropped, not fatal
+          { ref: 'b.md', size: 1, modifiedAt: 4, extra: 'ignored' },
+        ],
+        truncated: true,
+      }),
+      sessionTreeData: async () => [{ id: 'ses_A', title: 'Alpha', time: { created: 1, updated: 1 } }],
+    });
+    const res = await domain.artifacts.list({ directory: DIRECTORY, sessionID: 'ses_A' });
+    const body = await res.json();
+    expect(body.files).toEqual([
+      { ref: 'b.md', size: 1, modifiedAt: 4 },
+      { ref: 'a.md', size: 1, modifiedAt: 2 },
+    ]);
+    expect(body.truncated).toBe(true);
+    domain.dispose();
+  });
+
+  test('mounted route: capability off → 501 artifacts-unavailable; hook missing → 500; happy path via route', async () => {
+    const off = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: false }),
+      localFiles,
+      sessionTreeData,
+    });
+    const routes = registerRoutes(off);
+    const blocked = await routes.get('GET /omp/artifacts')(
+      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}` },
+      ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}`),
+    );
+    expect(blocked.status).toBe(501);
+    expect(await blocked.json()).toEqual({ error: 'artifacts-unavailable' });
+    off.dispose();
+
+    const noHook = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: true }),
+    });
+    const noHookRoutes = registerRoutes(noHook);
+    const hookless = await noHookRoutes.get('GET /omp/artifacts')(
+      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A` },
+      ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
+    );
+    expect(hookless.status).toBe(500);
+    expect(await hookless.json()).toEqual({ error: 'hook-unavailable', hook: 'localFiles' });
+    noHook.dispose();
+
+    const on = createUriDomain({
+      features: () => ({ ...ompFeatures(), artifacts: true }),
+      localFiles,
+      sessionTreeData,
+    });
+    const onRoutes = registerRoutes(on);
+    const ok = await onRoutes.get('GET /omp/artifacts')(
+      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A` },
+      ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
+    );
+    expect(ok.status).toBe(200);
+    expect((await ok.json()).files).toHaveLength(2);
+    on.dispose();
+  });
+});
+
+describe('local:// binary preview (spec 04 §5.2.4 — token byte stream)', () => {
+  const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
+  fs.writeFileSync(path.join(artifactsOf('ses_A'), 'local', 'shot.png'), PNG_BYTES);
+
+  test('image resolve answers a binary descriptor: mime + token, no placeholder content', async () => {
+    const { status, body } = await resolveBody({
+      scheme: 'local',
+      ref: 'shot.png',
+      sessionID: 'ses_A',
+      directory: DIRECTORY,
+    });
+    expect(status).toBe(200);
+    expect(body.binary).toBe(true);
+    expect(body.contentType).toBe('image/png');
+    expect(body.immutable).toBe(true);
+    expect(body.size).toBe(PNG_BYTES.byteLength);
+    expect(body.content).toBeUndefined();
+    expect('sourcePath' in body).toBe(false);
+  });
+
+  test('uri.content streams the raw bytes with the mime and honors token scope', async () => {
+    const domain = createUriDomain({
+      features: () => ({ ...ompFeatures(), 'uri.v1': true }),
+      localOptionsFor,
+      tokens,
+    });
+    const { body } = await resolveBody({
+      scheme: 'local',
+      ref: 'shot.png',
+      sessionID: 'ses_A',
+      directory: DIRECTORY,
+    });
+    const res = await domain.uri.content({ id: body.token.id, directory: DIRECTORY });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    const bytes = Buffer.from(await res.arrayBuffer());
+    expect(bytes.subarray(0, 8).equals(PNG_BYTES.subarray(0, 8))).toBe(true);
+
+    const scoped = await domain.uri.content({ id: body.token.id, directory: 'C:/other' });
+    expect(scoped.status).toBe(403);
     domain.dispose();
   });
 });

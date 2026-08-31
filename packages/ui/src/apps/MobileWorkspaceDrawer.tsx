@@ -16,6 +16,7 @@ import { useMcpStore } from '@/stores/useMcpStore';
 
 import { MobileChangesSurface } from './MobileChangesSurface';
 import { MobileFilesSurface } from './MobileFilesSurface';
+import { MobileFilesSurfaceRouter } from './MobileFilesSurfaceRouter';
 
 const DRAWER_ROOT_ID = 'mobile-surface-root';
 const ENTER_DELAY_MS = 16;
@@ -237,9 +238,7 @@ export const MobileWorkspaceDrawer: React.FC<{
         ) : null}
         {visitedTabs.has('files') ? (
           <div className={cn('h-full', tab !== 'files' && 'hidden')}>
-            <ErrorBoundary>
-              <MobileFilesSurface />
-            </ErrorBoundary>
+              <MobileFilesSurfaceRouter />
           </div>
         ) : null}
         {visitedTabs.has('terminal') ? (

@@ -56,6 +56,29 @@ import { ompFeatures, featureUnavailable } from './omp-parity.js';
 
 const json = (data, init) => Response.json(data, init);
 
+/** Previewable binary mime types by file extension (local:// media — the
+ *  SDK's non-visual image fallback writes PNGs here). Text stays on the JSON
+ *  resolve/open path; these switch the viewer to the byte-stream token URL. */
+const BINARY_MIME_BY_EXT = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'],
+  ['.bmp', 'image/bmp'],
+  ['.ico', 'image/x-icon'],
+]);
+
+/** Cap for one raw token redemption (spec §5.2.4 byte stream; the artifact
+ *  inline ceiling — previewable media, not arbitrary large-file transfer). */
+const MAX_RAW_BYTES = 8 * 1024 * 1024;
+
+const extensionOf = (value) => {
+  const base = String(value ?? '').replaceAll('\\', '/').split('/').pop() ?? '';
+  const dot = base.lastIndexOf('.');
+  return dot === -1 ? '' : base.slice(dot).toLowerCase();
+};
+
 // ---------------------------------------------------------------------------
 // §5.2 local:// URI bridge
 // ---------------------------------------------------------------------------
@@ -120,6 +143,22 @@ export const createLocalProtocolOptions = (sessionId, directory, artifactsDir) =
     },
   };
 };
+
+/**
+ * Per-session artifacts directory (TUI parity): the transcript file with its
+ * '.jsonl' suffix stripped — the sibling directory SessionManager.getArtifactsDir()
+ * resolves (session-manager.ts:109-112, artifactsDirectoryFor — not exported).
+ * Every local:// root must be derived through this per-session dir, never the
+ * project-level session directory, so sessions in one directory keep private
+ * roots (spec 04 §5.2.3 session pinning; cross-boundary copy is explicit).
+ *
+ * @param {string} sessionFile absolute transcript path ending in '.jsonl'.
+ * @returns {string | null} artifacts dir, or null for non-transcript paths.
+ */
+export const artifactsDirForSessionFile = (sessionFile) =>
+  typeof sessionFile === 'string' && sessionFile.endsWith('.jsonl')
+    ? sessionFile.slice(0, -'.jsonl'.length)
+    : null;
 
 /**
  * Opaque resource tokens — the authorized stand-in for the SDK
@@ -245,6 +284,34 @@ export class UriTokenService {
     });
   }
 
+  /**
+   * Redeem a token for RAW BYTES (GET /omp/uri/tokens/{id}/content,
+   * §5.2.4). Streams previewable binaries (images) without utf8 coercion;
+   * consumes one read; same scope/expiry rules as open().
+   * @returns {{ ok: true, bytes: Buffer, contentType: string, filename: string } | { ok: false, response: Response }}
+   */
+  async openRaw(id, { directory } = {}) {
+    const found = this.#lookup(id, directory);
+    if (!found.ok) return found;
+    const { entry } = found;
+    let bytes;
+    try {
+      bytes = await fs.readFile(entry.absolutePath);
+    } catch {
+      return { ok: false, response: json({ error: 'token-not-found' }, { status: 404 }) };
+    }
+    if (bytes.byteLength > MAX_RAW_BYTES) {
+      return { ok: false, response: json({ error: 'too-large', size: bytes.byteLength }, { status: 413 }) };
+    }
+    entry.reads += 1;
+    if (entry.reads >= entry.maxReads) this.#entries.delete(id);
+    return {
+      ok: true,
+      bytes,
+      contentType: entry.contentType ?? 'application/octet-stream',
+      filename: path.basename(entry.absolutePath),
+    };
+  }
 }
 
 /**
@@ -261,7 +328,7 @@ export class UriTokenService {
  *    Traversal/not-found errors surface the handler's own message (404);
  *    missing-options (should be unreachable) → 409 per §5.2.3.
  *
- * @param {{ body: object, localOptionsFor: (sessionID: string, directory: string) => object | null,
+ * @param {{ body: object, localOptionsFor: (sessionID: string, directory: string) => object | null | Promise<object | null>,
  *           tokens: UriTokenService, router?: object }} input
  */
 export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, router }) => {
@@ -290,7 +357,7 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
   if (!sessionID) return json({ error: 'session-required' }, { status: 400 });
   if (!directory) return json({ error: 'directory-required' }, { status: 400 });
 
-  const localProtocolOptions = localOptionsFor(sessionID, directory);
+  const localProtocolOptions = await localOptionsFor(sessionID, directory);
   if (!localProtocolOptions) return json({ error: 'session-not-found' }, { status: 404 });
 
   let resource;
@@ -315,6 +382,32 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
   }
   // R7: sourcePath never leaves the process. It exists only inside the token.
   const { sourcePath, ...safe } = resource;
+  // Previewable binaries (local:// image fallback): the SDK handler answers
+  // with a placeholder text body; swap the response to a binary descriptor —
+  // real mime + real size + token — so the viewer streams bytes via the
+  // token content endpoint instead of rendering the placeholder (§5.2.4).
+  const binaryMime = typeof sourcePath === 'string' ? BINARY_MIME_BY_EXT.get(extensionOf(sourcePath)) : undefined;
+  if (binaryMime) {
+    const stat = await fs.stat(sourcePath).catch(() => null);
+    const binaryToken = tokens.issue({
+      resourceUrl: resource.url,
+      directory,
+      sessionID,
+      contentType: binaryMime,
+      size: stat?.size,
+      immutable: true,
+      absolutePath: sourcePath,
+    });
+    return json({
+      url: resource.url,
+      contentType: binaryMime,
+      size: stat?.size ?? 0,
+      immutable: true,
+      binary: true,
+      notes: resource.notes ?? [],
+      token: binaryToken,
+    });
+  }
   const token =
     typeof sourcePath === 'string' && sourcePath.length > 0
       ? tokens.issue({
@@ -959,6 +1052,60 @@ export const handleJobsRequest = async ({ liveSessionIds = [], jobsEnabled = fal
 };
 
 // ---------------------------------------------------------------------------
+// artifacts browsing — host-level read-only supervision of local:// roots
+// (spec 04 §1 "artifacts 目录浏览"; capability `artifacts`)
+// ---------------------------------------------------------------------------
+
+/** Max file rows reported per session; the engine walk stops one past this
+ *  so `truncated` is exact and no listing response grows unbounded. */
+export const ARTIFACTS_MAX_FILES_PER_SESSION = 2000;
+
+const normalizedArtifactsRows = (files) =>
+  (Array.isArray(files) ? files : [])
+    .filter((file) => file && typeof file.ref === 'string' && file.ref.length > 0)
+    .map((file) => ({
+      ref: file.ref,
+      size: Number(file.size) || 0,
+      modifiedAt: Number(file.modifiedAt) || 0,
+    }));
+
+/**
+ * GET /omp/artifacts handler core (public path /api/omp/artifacts).
+ *
+ * ONE session's file rows: `ref` is the local:// suffix (e.g. 'PLAN.md',
+ * 'scratch/notes.md'), mtime desc, bounded per session. The browser is
+ * per-session by design (files belong to the session; switching sessions
+ * switches trees), so no directory-wide session index is offered.
+ *
+ * `filesFor` returning null means "session unknown to this directory"
+ * (→ 404 session-not-found); an absent local:// root is authoritative empty
+ * (`files: []`), never failure. Responses carry no absolute paths (R7): refs
+ * are relative to the session's own root.
+ *
+ * @param {{ directory: string | null, sessionID?: string | null,
+ *           filesFor: (sessionID: string, directory: string) => Promise<{ files: Array<{ref: string, size: number, modifiedAt: number}>, truncated?: boolean } | null> }} input
+ */
+export const handleArtifactsList = async ({ directory, sessionID, filesFor }) => {
+  if (typeof directory !== 'string' || directory.length === 0) {
+    return json({ error: 'directory-required' }, { status: 400 });
+  }
+  if (typeof sessionID !== 'string' || sessionID.length === 0) {
+    return json({ error: 'session-required' }, { status: 400 });
+  }
+  const result = await filesFor(sessionID, directory);
+  if (!result) return json({ error: 'session-not-found' }, { status: 404 });
+  const files = normalizedArtifactsRows(result.files)
+    .sort((a, b) => b.modifiedAt - a.modifiedAt)
+    .slice(0, ARTIFACTS_MAX_FILES_PER_SESSION);
+  return json({
+    directory,
+    sessionID,
+    files,
+    truncated: Boolean(result.truncated) || files.length >= ARTIFACTS_MAX_FILES_PER_SESSION,
+  });
+};
+
+// ---------------------------------------------------------------------------
 // Domain assembly + mount surface (coordinator integration)
 // ---------------------------------------------------------------------------
 
@@ -990,6 +1137,9 @@ const directoryOf = ({ query, headers, body } = {}) => {
  * - agentsSnapshot() → [{ sessionID, directory, registry }] (private
  *     registries of live host sessions; engine retains them at #materialize).
  * - diskScan(directory) → cold rows for historical projection (optional).
+ * - localFiles(sessionID, directory) → { files: [{ref,size,modifiedAt}],
+ *     truncated } | null (engine walk of that session's local:// root; null
+ *     = session unknown; absent root = authoritative empty). Artifacts browse.
  * - publish(type, payload, scope) → engine.ompBus.publish.
  * - liveSessionIds() → ordered live session ids (jobs owner).
  * - actions.{revive,kill,chat} → agent-run behaviors (§5.5.2).
@@ -1001,6 +1151,7 @@ export const createUriDomain = ({
   router,
   localOptionsFor,
   sessionTreeData,
+  localFiles,
   entryTreeFor,
   agentsSnapshot,
   diskScan,
@@ -1025,9 +1176,29 @@ export const createUriDomain = ({
     }
     return handleUriResolve({ body, localOptionsFor, tokens, ...(router ? { router } : {}) });
   };
+  const artifactsList = ({ directory, sessionID }) => {
+    if (typeof localFiles !== 'function') {
+      // Only reachable with artifacts flipped on but no engine hook wired.
+      return json({ error: 'hook-unavailable', hook: 'localFiles' }, { status: 500 });
+    }
+    return handleArtifactsList({ directory, sessionID, filesFor: localFiles });
+  };
   const uriOpen = async ({ body, directory }) => tokens.open(body?.token, { directory });
   const uriInfo = ({ query, directory }) => tokens.describe(query?.get?.('token') ?? query?.token, { directory });
-
+  const uriContent = async ({ id, directory }) => {
+    const result = await tokens.openRaw(id, { directory });
+    if (!result.ok) return result.response;
+    return new Response(result.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': result.contentType,
+        'Content-Length': String(result.bytes.byteLength),
+        'Cache-Control': 'no-store',
+        'Content-Disposition': `inline; filename="${result.filename.replaceAll('"', '')}"`,
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+  };
   const sessionTree = async ({ directory }) =>
     buildSessionTree((await sessionTreeData?.(directory)) ?? []);
   const entryTree = async ({ sessionID, directory }) => {
@@ -1060,6 +1231,15 @@ export const createUriDomain = ({
       const body = await readJsonBody(request);
       return uriOpen({ body, directory: directoryOf({ body, query: ctx?.url?.searchParams, headers: ctx?.headers }) });
     });
+    route('GET', '/omp/uri/tokens/{tokenID}/content', async (request, ctx) => {
+      const blocked = gate('uri.v1');
+      if (blocked) return blocked;
+      const url = new URL(request.url);
+      return uriContent({
+        id: ctx.params.tokenID,
+        directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }),
+      });
+    });
     route('GET', '/omp/uri/info', async (request, ctx) => {
       const blocked = gate('uri.v1');
       if (blocked) return blocked;
@@ -1076,6 +1256,15 @@ export const createUriDomain = ({
       // §5.4 task shape {leafId, nodes:[{id,parentId,title,time}]}. The
       // per-session ENTRY tree (spec §5.4.1) is tree.entryTree / buildEntryTreeSnapshot.
       return json(subtree);
+    });
+    route('GET', '/omp/artifacts', async (request, ctx) => {
+      const blocked = gate('artifacts');
+      if (blocked) return blocked;
+      const url = new URL(request.url);
+      return artifactsList({
+        directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }),
+        sessionID: url.searchParams.get('sessionID'),
+      });
     });
     route('GET', '/omp/agent-runs', async (request, ctx) => {
       const blocked = gate('agentRuns.v1');
@@ -1105,8 +1294,8 @@ export const createUriDomain = ({
   return {
     tokens,
     aggregator: runs,
-    descriptors,
-    uri: { resolve: uriResolve, open: uriOpen, info: uriInfo },
+    artifacts: { list: artifactsList },
+    uri: { resolve: uriResolve, open: uriOpen, info: uriInfo, content: uriContent },
     tree: { sessionTree, entryTree },
     agentRuns: { list: agentRuns, action: agentRunAction },
     jobs,

@@ -20,7 +20,7 @@ export type WorkspaceSurface = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | '
 /** @deprecated Use WorkspaceSurface. */
 export type MainTab = WorkspaceSurface;
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch';
-export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'notes' | 'terminal';
+export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'localFile' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'notes' | 'terminal';
 export type MermaidRenderingMode = 'svg' | 'ascii';
 export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
@@ -750,6 +750,10 @@ interface UIStore {
   isTimelineDialogOpen: boolean;
   /** omp session fork-tree dialog (spec 04 §5.4; /tree command). */
   isSessionTreeDialogOpen: boolean;
+  /** Context panel editor-tree scope (spec 04 artifacts browse): 'session'
+   *  shows the active session's private local:// files instead of the
+   *  workspace tree; per-directory so switching projects resets it. */
+  contextTreeScopeByDirectory: Record<string, 'workspace' | 'session'>;
   isPromptNavigatorPanelOpen: boolean;
   isImagePreviewOpen: boolean;
   nativeNotificationsEnabled: boolean;
@@ -949,6 +953,12 @@ interface UIStore {
   setDiffLayoutPreference: (mode: 'dynamic' | 'inline' | 'side-by-side') => void;
   setDiffFileLayout: (filePath: string, mode: 'inline' | 'side-by-side') => void;
   setDiffWrapLines: (wrap: boolean) => void;
+  /** Open the context panel's editor tree on the active session's local://
+   *  files (browse tab with no target = empty preview until a file is picked). */
+  openSessionFilesTree: (directory: string, sessionID: string) => void;
+  /** Open one local:// file of a session as a read-only context-panel tab. */
+  openContextLocalFile: (directory: string, sessionID: string, ref: string) => void;
+  setContextTreeScope: (directory: string, scope: 'workspace' | 'session') => void;
   setWalkthroughTocWidth: (width: number) => void;
   setGitChangesViewMode: (mode: 'flat' | 'tree') => void;
   setTimelineDialogOpen: (open: boolean) => void;
@@ -1114,6 +1124,7 @@ export const useUIStore = create<UIStore>()(
         walkthroughTocWidth: 224,
         isTimelineDialogOpen: false,
         isSessionTreeDialogOpen: false,
+        contextTreeScopeByDirectory: {},
         isPromptNavigatorPanelOpen: false,
         isImagePreviewOpen: false,
         nativeNotificationsEnabled: false,
@@ -2325,6 +2336,60 @@ export const useUIStore = create<UIStore>()(
         setSessionTreeDialogOpen: (open) => {
           set({ isSessionTreeDialogOpen: open });
         },
+
+        openSessionFilesTree: (directory, sessionID) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          if (!normalizedDirectory) return;
+          get().setContextTreeScope(normalizedDirectory, 'session');
+          // The tree column must be visible and wide enough to read filenames:
+          // a hidden or minimum-width column shows only icons and sizes.
+          set((state) => ({
+            contextEditorTreeVisible: true,
+            ...(state.contextEditorTreeWidth < 280
+              ? { contextEditorTreeWidth: 280 }
+              : {}),
+          }));
+          // Browse tab without a target mirrors file tabs without one: the
+          // editor area shows its empty state and the tree does the picking.
+          get().openContextPanelTab(normalizedDirectory, {
+            mode: 'localFile',
+            targetPath: null,
+            dedupeKey: `localFile:browse:${sessionID}`,
+            label: null,
+            readOnly: true,
+          });
+        },
+
+        openContextLocalFile: (directory, sessionID, ref) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          const normalizedRef = (ref || '').trim().replace(/^\/+/, '');
+          if (!normalizedDirectory || !normalizedRef || !sessionID) return;
+          get().setContextTreeScope(normalizedDirectory, 'session');
+          get().openContextPanelTab(normalizedDirectory, {
+            mode: 'localFile',
+            targetPath: normalizedRef,
+            dedupeKey: `localFile:${sessionID}:${normalizedRef}`,
+            label: null,
+            readOnly: true,
+          });
+        },
+
+        setContextTreeScope: (directory, scope) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          if (!normalizedDirectory) return;
+          set((state) => {
+            if ((state.contextTreeScopeByDirectory[normalizedDirectory] ?? 'workspace') === scope) {
+              return state;
+            }
+            return {
+              contextTreeScopeByDirectory: {
+                ...state.contextTreeScopeByDirectory,
+                [normalizedDirectory]: scope,
+              },
+            };
+          });
+        },
+
 
         setPromptNavigatorPanelOpen: (open) => {
           set({ isPromptNavigatorPanelOpen: open });

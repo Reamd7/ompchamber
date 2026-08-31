@@ -8,7 +8,7 @@ import { createVSCodeGitAPI } from './git';
 import { createVSCodeActionsAPI } from './vscode';
 import { createVSCodeGitHubAPI } from './github';
 import { createVSCodeNotificationsAPI } from './notifications';
-import { createOmpAgentDefinitionsAPI, createOmpCapabilitiesAPI, createOmpEventsAPI, createOmpModesAPI, createOmpModelsAPI, createOmpPersonasAPI, createOmpPluginsAPI, createOmpProvidersAPI, createOmpSessionAPI, createOmpSettingsAPI, createOmpUriAPI } from '@ompchamber/ui/lib/api/omp';
+import { createOmpAgentDefinitionsAPI, createOmpArtifactsAPI, createOmpCapabilitiesAPI, createOmpEventsAPI, createOmpModesAPI, createOmpModelsAPI, createOmpPersonasAPI, createOmpPluginsAPI, createOmpProvidersAPI, createOmpSessionAPI, createOmpSettingsAPI, createOmpUriAPI } from '@ompchamber/ui/lib/api/omp';
 
 const terminalUnsupported = async (): Promise<never> => {
   throw new Error('Terminal is not supported in the VS Code runtime');
@@ -43,6 +43,7 @@ export const createVSCodeAPIs = (): RuntimeAPIs => ({
   ompProviders: createOmpProvidersAPI(),
   ompModes: createOmpModesAPI(),
   ompUri: createOmpUriAPI(),
+  ompArtifacts: createOmpArtifactsAPI(),
   ompAgentDefinitions: createOmpAgentDefinitionsAPI(),
   ompPersonas: createOmpPersonasAPI(),
   ompPlugins: createOmpPluginsAPI(),
