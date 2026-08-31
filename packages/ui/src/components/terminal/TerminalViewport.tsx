@@ -275,11 +275,19 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     }
     writingRef.current = true;
     const epoch = writeEpochRef.current;
-    terminal.write(rewritten.data, () => {
-      if (terminalRef.current !== terminal || writeEpochRef.current !== epoch) return;
+    try {
+      terminal.write(rewritten.data, () => {
+        if (terminalRef.current !== terminal || writeEpochRef.current !== epoch) return;
+        writingRef.current = false;
+        if (writeQueueRef.current) flush();
+      });
+    } catch (error) {
+      // The wasm allocator refuses oversized allocations by throwing (rather
+      // than corrupting wasm memory). Dropping the chunk is the only safe
+      // degradation; the stream continues with the next frame.
       writingRef.current = false;
-      if (writeQueueRef.current) flush();
-    });
+      console.error('[terminal] write failed, dropping chunk', error);
+    }
   }, []);
 
   /**
@@ -833,9 +841,14 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   React.useImperativeHandle(ref, () => ({
     focus: () => terminalRef.current?.focus(),
     fit,
-    resizeGrid: (cols: number, rows: number) => {
+    resizeGrid: (rawCols: number, rawRows: number) => {
       const terminal = terminalRef.current;
       if (!terminal) return;
+      // A degenerate grid (0/1 cols) reaching the WASM terminal corrupts it
+      // (out-of-bounds traps deep in the VT parser), so clamp before resize.
+      const cols = Math.max(2, Math.min(1000, Math.floor(rawCols)));
+      const rows = Math.max(2, Math.min(500, Math.floor(rawRows)));
+      if (!Number.isFinite(cols) || !Number.isFinite(rows)) return;
       negotiatedGridRef.current = { cols, rows };
       if (terminal.cols === cols && terminal.rows === rows) {
         requestAnimationFrame(() => applyViewScale());
