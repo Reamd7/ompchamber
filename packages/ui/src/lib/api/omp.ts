@@ -118,6 +118,8 @@ export const OMP_ENDPOINTS = {
   providerFetch: (id: string) => `/api/omp/providers/${encodeURIComponent(id)}/fetch-models`,
   uriResolve: '/api/omp/uri/resolve',
   uriOpen: '/api/omp/uri/open',
+  uriTokenContent: (id: string) => `/api/omp/uri/tokens/${encodeURIComponent(id)}/content`,
+  artifacts: '/api/omp/artifacts',
   plugins: '/api/omp/plugins',
   plugin: (id: string) => `/api/omp/plugins/${encodeURIComponent(id)}`,
   pluginExtension: (id: string) => `/api/omp/plugins/extensions/${encodeURIComponent(id)}`,
@@ -2125,18 +2127,21 @@ export interface OmpUriToken {
   expiresAt: number;
 }
 
+
 /** POST /api/omp/uri/resolve payload — InternalResource minus sourcePath, plus the token. */
 export interface OmpUriResource {
   url: string;
-  content: string;
+  /** Text body. Absent for previewable binaries — those render via fetchContent. */
+  content?: string;
   contentType: string;
   size?: number;
   immutable?: boolean;
+  /** Previewable binary (image): render via fetchContent bytes, not `content`. */
+  binary?: boolean;
   isDirectory?: boolean;
   notes?: string[];
   token?: OmpUriToken;
 }
-
 /** POST /api/omp/uri/open payload — token redemption result (same content shape, no token). */
 export interface OmpUriOpenPayload {
   url: string;
@@ -2147,7 +2152,6 @@ export interface OmpUriOpenPayload {
   contentType?: string;
   immutable?: boolean;
 }
-
 /**
  * Failure half shared by resolve/open. Only 501 maps to `unavailable: true`
  * (uri.v1 off / scheme not enabled — the surface is not offered). A 404 here
@@ -2166,9 +2170,10 @@ const UriTokenSchema = z.object({ id: z.string().min(1), expiresAt: z.number() }
 
 const UriResourceSchema = z.looseObject({
   url: z.string().min(1),
-  content: z.string(),
+  /** Text body; absent for previewable binaries (fetched as bytes separately). */
+  content: z.string().optional(),
   contentType: z.string().min(1),
-  size: z.number().optional(),
+  binary: z.boolean().optional(),
   immutable: z.boolean().optional(),
   isDirectory: z.boolean().optional(),
   notes: z.array(z.string()).optional(),
@@ -2226,6 +2231,12 @@ export interface OmpUriAPI {
    * (server-side defense in depth); expired/exhausted tokens 404.
    */
   open(options: { token: string; directory: string }): Promise<OmpUriOpenResult>;
+  /**
+   * GET /api/omp/uri/tokens/{id}/content (04 §5.2.4): redeem a resolve-issued
+   * token for RAW bytes (previewable images). Small-asset pattern: fetch via
+   * runtimeFetch, read a blob, render an object URL — no URL-token allowlist.
+   */
+  fetchContent(options: { token: string; directory: string }): Promise<{ ok: true; blob: Blob; contentType?: string } | OmpUriFailure>;
 }
 
 export const createOmpUriAPI = (apiOptions: OmpJsonApiOptions = {}): OmpUriAPI => {
@@ -2279,6 +2290,107 @@ export const createOmpUriAPI = (apiOptions: OmpJsonApiOptions = {}): OmpUriAPI =
       const parsed = UriOpenSchema.safeParse(payload);
       return parsed.success
         ? { ok: true, payload: parsed.data }
+        : { ok: false, unavailable: false, status };
+    },
+
+    async fetchContent({ token, directory }) {
+      let response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.uriTokenContent(token), {
+          method: 'GET',
+          headers: { Accept: '*/*' },
+          query: { directory },
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      if (response.status === 501) return { ok: false, unavailable: true };
+      if (!response.ok) {
+        let payload: { error?: string; message?: string; size?: number } | null = null;
+        try {
+          payload = await response.json();
+        } catch {
+          payload = null;
+        }
+        return uriFailure(response.status, payload);
+      }
+      return { ok: true, blob: await response.blob(), contentType: response.headers.get('content-type') ?? undefined };
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Artifacts browse API — host-level read-only local:// listing (spec 04;
+// capability `artifacts`). Refs are relative to each session's private
+// local:// root; responses never carry absolute paths.
+// ---------------------------------------------------------------------------
+
+/** One file row: `ref` is the local:// suffix (e.g. 'PLAN.md', 'scratch/notes.md'). */
+export interface OmpArtifactsFileRow {
+  ref: string;
+  size: number;
+  modifiedAt: number;
+}
+
+export type OmpArtifactsFilesResult =
+  | { ok: true; files: OmpArtifactsFileRow[]; truncated: boolean }
+  | OmpUriFailure;
+
+const ArtifactsFilesSchema = z.looseObject({
+  directory: z.string(),
+  sessionID: z.string(),
+  files: z.array(
+    z.looseObject({
+      ref: z.string().min(1),
+      size: z.number(),
+      modifiedAt: z.number(),
+    }),
+  ),
+  truncated: z.boolean(),
+});
+
+export interface OmpArtifactsAPI {
+  /**
+   * GET /api/omp/artifacts?directory=&sessionID= (spec 04): ONE session's
+   * file rows, mtime desc — the browser is per-session by design. `ok:false`
+   * with 404 means the session is unknown to the directory (deleted while
+   * browsing); failure is never empty success.
+   */
+  listSessionArtifacts(options: { directory: string; sessionID: string }): Promise<OmpArtifactsFilesResult>;
+}
+
+
+/**
+ * GET /api/omp/artifacts — payload misses (absent/malformed JSON) are
+ * payload-level nulls, not transport failures; 501 maps to unavailable.
+ */
+export const createOmpArtifactsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpArtifactsAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+
+  const get = async (query: { directory: string; sessionID?: string }) => {
+    try {
+      const response = await fetchImpl(OMP_ENDPOINTS.artifacts, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        query,
+      });
+      if (response.status === 501) {
+        return { unavailable: true, status: response.status, payload: null };
+      }
+      const payload = await response.json().catch(() => null);
+      return { unavailable: false, status: response.status, payload, ok: response.ok };
+    } catch {
+      return { unavailable: false, status: 0, payload: null, ok: false };
+    }
+  };
+  return {
+    async listSessionArtifacts({ directory, sessionID }) {
+      const { unavailable, status, payload, ok } = await get({ directory, sessionID });
+      if (unavailable) return { ok: false, unavailable: true };
+      if (!ok) return uriFailure(status, payload);
+      const parsed = ArtifactsFilesSchema.safeParse(payload);
+      return parsed.success
+        ? { ok: true, files: parsed.data.files, truncated: parsed.data.truncated }
         : { ok: false, unavailable: false, status };
     },
   };

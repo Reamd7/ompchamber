@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -19,12 +19,17 @@ const registries = [];
 const toolUiContextCalls = [];
 const extensionUiInitCalls = [];
 
-const makeFakeSession = () => ({
+const makeFakeSession = (id) => ({
   model: { provider: 'p1', id: 'current-model' },
   isStreaming: false,
   messages: [],
   subscribe: () => () => {},
-  sessionManager: { getSessionName: () => 'stub-session-name' },
+  sessionManager: {
+    getSessionName: () => 'stub-session-name',
+    // Live-session artifacts dir parity (SessionManager.getArtifactsDir:
+    // sessionFile minus '.jsonl') — the per-session local:// root source.
+    getArtifactsDir: () => path.join(sessionDir, id),
+  },
   setModel: mock(async () => ({ switched: true })),
   setThinkingLevel: mock(() => {}),
   maybeStartTitleGeneration: () => {},
@@ -35,7 +40,7 @@ const makeFakeSession = () => ({
 
 const fakeSessions = new Map();
 const sessionFor = (id) => {
-  if (!fakeSessions.has(id)) fakeSessions.set(id, makeFakeSession());
+  if (!fakeSessions.has(id)) fakeSessions.set(id, makeFakeSession(id));
   return fakeSessions.get(id);
 };
 
@@ -74,6 +79,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
           getEntries: () => [],
           getCwd: () => undefined,
           getSessionName: () => undefined,
+          getArtifactsDir: () => file.slice(0, -'.jsonl'.length),
           close: async () => {},
         };
       },
@@ -325,5 +331,68 @@ describe('OmpHostEngine prompt dispatch', () => {
     const personaOptions = createdOptions.at(-1);
     expect(personaOptions.systemPrompt).toBe('Be grumpy.');
     expect(personaOptions.toolNames).toEqual(['read']);
+  });
+});
+
+
+describe('local:// per-session root wiring (spec 04 §5.2.3, TUI parity)', () => {
+  test('cold resolve pins the session-private artifacts dir, never the project session dir', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    // No file on disk: the resolve fails 404, but the SDK handler materializes
+    // the session's root (resolveLocalTarget mkdir) — where it lands is the
+    // wiring assertion: <sessionDir>/s1/local, not the shared <sessionDir>/local.
+    const res = await engine.uriDomain.uri.resolve({
+      body: { scheme: 'local', ref: 'scratch.md', sessionID: 's1', directory: '/repo' },
+    });
+    expect(res.status).toBe(404);
+    expect(existsSync(path.join(sessionDir, 's1', 'local'))).toBe(true);
+    expect(existsSync(path.join(sessionDir, 'local'))).toBe(false);
+    expect(existsSync(path.join(sessionDir, 's2', 'local'))).toBe(false);
+  });
+
+  test('unknown session answers 404 session-not-found without creating roots', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const res = await engine.uriDomain.uri.resolve({
+      body: { scheme: 'local', ref: 'x.md', sessionID: 's_missing', directory: '/repo' },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'session-not-found' });
+    expect(existsSync(path.join(sessionDir, 's_missing'))).toBe(false);
+  });
+
+  test('materialized session pins its own manager artifacts dir into createAgentSession', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'hi' });
+    const options = createdOptions.at(-1);
+    expect(options.localProtocolOptions.getSessionId()).toBe('s3');
+    expect(options.localProtocolOptions.getArtifactsDir()).toBe(path.join(sessionDir, 's3'));
+
+    // Live path: a resolve after materialization reads the same session's
+    // artifacts dir from its live manager, and only that session's root
+    // materializes.
+    const res = await engine.uriDomain.uri.resolve({
+      body: { scheme: 'local', ref: 'note.md', sessionID: 's3', directory: '/repo' },
+    });
+    expect(res.status).toBe(404);
+    expect(existsSync(path.join(sessionDir, 's3', 'local'))).toBe(true);
+    expect(existsSync(path.join(sessionDir, 's2', 'local'))).toBe(false);
+  });
+
+  test('artifacts.list walks a session local root from disk with relative refs only', async () => {
+    mkdirSync(path.join(sessionDir, 's3', 'local', 'scratch'), { recursive: true });
+    writeFileSync(path.join(sessionDir, 's3', 'local', 'PLAN.md'), '# plan');
+    writeFileSync(path.join(sessionDir, 's3', 'local', 'scratch', 'notes.md'), 'n');
+    const engine = new OmpHostEngine({ agentDir });
+    const res = await engine.uriDomain.artifacts.list({ directory: '/repo', sessionID: 's3' });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.files.map((file) => file.ref).sort()).toEqual(['PLAN.md', 'scratch/notes.md']);
+    expect(body.files.every((file) => !file.ref.includes(':') && !file.ref.includes('\\'))).toBe(true);
+    expect(body.files.every((file) => typeof file.size === 'number' && file.size > 0)).toBe(true);
+    expect(body.truncated).toBe(false);
+
+    const unknown = await engine.uriDomain.artifacts.list({ directory: '/repo', sessionID: 's_missing' });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: 'session-not-found' });
   });
 });

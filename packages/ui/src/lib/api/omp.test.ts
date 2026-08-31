@@ -10,6 +10,7 @@ import {
   createOmpSessionAPI,
   createOmpSettingsAPI,
   createOmpTreeAPI,
+  createOmpArtifactsAPI,
   createOmpUriAPI,
   parseOmpEnvelope,
   parseOmpSseBlock,
@@ -889,5 +890,58 @@ describe('createOmpPluginsAPI (OMP plugin manager)', () => {
       fetchImpl: (async () => jsonResponse(200, { plugins: [{ name: 'missing-fields' }], extensions: [] })) as unknown as typeof fetch,
     });
     expect(await malformed.list({ directory: '/repo' })).toEqual({ ok: false, unavailable: false });
+  });
+});
+
+
+describe('createOmpArtifactsAPI (spec 04 — per-session local:// listing)', () => {
+  const filesBody = {
+    directory: '/repo',
+    sessionID: 'ses_A',
+    files: [{ ref: 'scratch/notes.md', size: 20, modifiedAt: 9 }],
+    truncated: false,
+  };
+
+  test('GET carries directory + sessionID and returns files + truncated', async () => {
+    const calls: Array<{ path: string; method: string; query?: Query }> = [];
+    const api = createOmpArtifactsAPI({
+      fetchImpl: (async (path: string, init?: { method?: string; query?: Query }) => {
+        calls.push({ path, method: init?.method ?? '', query: init?.query });
+        return jsonResponse(200, filesBody);
+      }) as unknown as typeof fetch,
+    });
+    const result = await api.listSessionArtifacts({ directory: '/repo', sessionID: 'ses_A' });
+    expect(result).toEqual({ ok: true, files: filesBody.files, truncated: false });
+    expect(calls).toEqual([{ path: '/api/omp/artifacts', method: 'GET', query: { directory: '/repo', sessionID: 'ses_A' } }]);
+  });
+
+  test('501 → unavailable (artifacts capability off)', async () => {
+    const api = createOmpArtifactsAPI({
+      fetchImpl: (async () => jsonResponse(501, { error: 'artifacts-unavailable' })) as unknown as typeof fetch,
+    });
+    expect(await api.listSessionArtifacts({ directory: '/repo', sessionID: 's' })).toEqual({ ok: false, unavailable: true });
+  });
+
+  test('404 unknown session surfaces error fields, never empty success', async () => {
+    const api = createOmpArtifactsAPI({
+      fetchImpl: (async () => jsonResponse(404, { error: 'session-not-found' })) as unknown as typeof fetch,
+    });
+    expect(await api.listSessionArtifacts({ directory: '/repo', sessionID: 'gone' })).toEqual({
+      ok: false,
+      unavailable: false,
+      status: 404,
+      error: 'session-not-found',
+    });
+  });
+
+  test('transport failure and malformed payloads never become success', async () => {
+    const dead = createOmpArtifactsAPI({
+      fetchImpl: (async () => { throw new Error('network down'); }) as unknown as typeof fetch,
+    });
+    expect(await dead.listSessionArtifacts({ directory: '/repo', sessionID: 's' })).toEqual({ ok: false, unavailable: false });
+    const malformed = createOmpArtifactsAPI({
+      fetchImpl: (async () => jsonResponse(200, { nope: true })) as unknown as typeof fetch,
+    });
+    expect(await malformed.listSessionArtifacts({ directory: '/repo', sessionID: 's' })).toEqual({ ok: false, unavailable: false, status: 200 });
   });
 });

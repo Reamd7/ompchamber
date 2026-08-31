@@ -1,5 +1,6 @@
 ## [Unreleased]
 
+- The context panel's editor tree gains a "Session local files" scope switch: it shows the selected session's private `local://` files (plans, scratch notes, generated images) with size and date. Switching sessions switches to each one's own files; opening an image previews it inline. Each session's files are now private to it — sessions in one project no longer share a scratch area, and files written to the old shared location are not migrated.
 - The extension now presents itself as OMPChamber — its commands, views, and settings moved to the `ompchamber.*` namespace, so custom keybindings and user settings referencing the old `openchamber.*` IDs need re-binding once. Installing or updating shows the new name.
 - Command titles, the sidebar label, and the marketplace description now read OMPChamber and name the omp engine; engine-start errors no longer tell you to install the OpenCode CLI, and French localization keys match the updated strings again.
 - Shared settings now read from `~/.config/ompchamber` (previously `~/.config/openchamber`, not migrated — the new location starts fresh) to match the renamed app data directory.

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Sessions: browse a session's local files in the file panel.** The context panel's editor tree gains a "Session local files" scope switch beside "Workspace files": it shows the selected session's private `local://` files (plans, scratch notes, generated images) with size and date. Switching sessions switches to each one's own files; opening an image previews it inline in the editor area, like a regular file tab.
+- Sessions: `local://` files are now private to each session, matching the engine's own semantics — sessions in one project no longer share a single scratch area, and files only travel between sessions through explicit copies (forking, plan approval). Files written to the old shared location before this update are not migrated and no longer appear.
 - Branding: display names across the web app, PWA, VS Code extension, and mobile now read OMPChamber; the About and update dialogs link to this repository instead of the upstream one.
 - Setup: onboarding now installs the ompchamber CLI from this repository instead of telling you to install the OpenCode CLI, and text that called the engine OpenCode (status, restart prompts, onboarding, error messages) now says engine, translated in every language.
 

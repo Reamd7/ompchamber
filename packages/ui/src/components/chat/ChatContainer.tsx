@@ -606,7 +606,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     const setTimelineDialogOpen = useUIStore((s) => s.setTimelineDialogOpen);
     const isSessionTreeDialogOpen = useUIStore((s) => s.isSessionTreeDialogOpen);
     const setSessionTreeDialogOpen = useUIStore((s) => s.setSessionTreeDialogOpen);
-
     // Streaming state
     const streamingMessageId = useStreamingStore(
         React.useCallback(

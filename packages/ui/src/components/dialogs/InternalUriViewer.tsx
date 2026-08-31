@@ -60,14 +60,58 @@ const errorTextOf = (failure: OmpUriFailure, t: I18nContextValue['t']): string =
   return t('dialogs.internalUri.error.resolveFailed');
 };
 
-const ViewerBody: React.FC<{ resource: OmpUriResource }> = ({ resource }) => {
+const BinaryImageBody: React.FC<{ resource: OmpUriResource; directory: string }> = ({ resource, directory }) => {
+  const { ompUri } = useRuntimeAPIs();
+  const { t } = useI18n();
+  const [imageSrc, setImageSrc] = React.useState<string | null>(null);
+  const [failed, setFailed] = React.useState(false);
+  const tokenId = resource.token?.id;
+
+  React.useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    if (tokenId === undefined) {
+      setFailed(true);
+      return;
+    }
+    void ompUri.fetchContent({ token: tokenId, directory }).then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setFailed(true);
+        return;
+      }
+      objectUrl = URL.createObjectURL(result.blob);
+      setImageSrc(objectUrl);
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+    };
+  }, [ompUri, tokenId, directory]);
+
+  if (failed) {
+    return <p className="typography-meta text-muted-foreground">{t('dialogs.internalUri.error.binaryFailed')}</p>;
+  }
+  if (imageSrc === null) {
+    return <p className="typography-meta animate-pulse text-muted-foreground">{t('dialogs.internalUri.loading')}</p>;
+  }
+  return (
+    <div className="flex max-h-[60vh] justify-center overflow-auto rounded-md border border-border/40">
+      <img src={imageSrc} alt={resource.url} className="max-h-[60vh] w-auto object-contain" />
+    </div>
+  );
+};
+
+const ViewerBody: React.FC<{ resource: OmpUriResource; directory: string }> = ({ resource, directory }) => {
+  if (resource.binary === true) return <BinaryImageBody resource={resource} directory={directory} />;
   const kind = contentKindOf(resource);
+  const text = resource.content ?? '';
   if (kind === 'markdown') {
-    return <SimpleMarkdownRenderer content={resource.content} variant="tool" />;
+    return <SimpleMarkdownRenderer content={text} variant="tool" />;
   }
   if (kind === 'json') {
     try {
-      const parsed: unknown = JSON.parse(resource.content);
+      const parsed: unknown = JSON.parse(text);
       if (parsed !== null && typeof parsed === 'object') {
         return <JsonTreeViewer data={parsed} className="max-h-[60vh]" />;
       }
@@ -75,7 +119,7 @@ const ViewerBody: React.FC<{ resource: OmpUriResource }> = ({ resource }) => {
       /* fall through to the plain-text view */
     }
   }
-  const lines: CodeLine[] = resource.content.split('\n').map((text) => ({ text }));
+  const lines: CodeLine[] = text.split('\n').map((lineText) => ({ text: lineText }));
   return <VirtualizedCodeBlock lines={lines} language="text" maxHeight="60vh" />;
 };
 
@@ -84,27 +128,35 @@ export const InternalUriViewer: React.FC<InternalUriViewerProps> = ({ directory,
   const { ompUri } = useRuntimeAPIs();
   const enabled = useOmpFeatureEnabled('uri.v1');
   const url = useInternalUriViewerStore((state) => state.url);
+  const target = useInternalUriViewerStore((state) => state.target);
   const close = useInternalUriViewerStore((state) => state.close);
   const [state, setState] = React.useState<ViewerState>({ phase: 'idle' });
 
-  const open = enabled && url !== null && typeof directory === 'string' && directory.length > 0
-    && typeof sessionId === 'string' && sessionId.length > 0;
+  // Host-level supervision (artifacts browser): a `target` pins BOTH resolve
+  // ids to the session that owns the file, so one session's local:// content
+  // stays openable while another session is in view. Without a target the
+  // active (directory, sessionId) behavior is unchanged.
+  const resolveSessionId = target?.sessionID ?? sessionId;
+  const resolveDirectory = target?.directory ?? directory;
+
+  const open = enabled && url !== null && resolveDirectory !== undefined && resolveDirectory.length > 0
+    && resolveSessionId !== undefined && resolveSessionId.length > 0;
 
   React.useEffect(() => {
-    if (url === null || directory === undefined || sessionId === undefined) {
+    if (url === null || resolveDirectory === undefined || resolveSessionId === undefined) {
       setState({ phase: 'idle' });
       return;
     }
     let cancelled = false;
     setState({ phase: 'loading' });
-    void ompUri.resolve({ url, sessionID: sessionId, directory }).then((result) => {
+    void ompUri.resolve({ url, sessionID: resolveSessionId, directory: resolveDirectory }).then((result) => {
       if (cancelled) return;
       setState(result.ok ? { phase: 'ready', resource: result.resource } : { phase: 'error', failure: result });
     });
     return () => {
       cancelled = true;
     };
-  }, [ompUri, url, directory, sessionId]);
+  }, [ompUri, url, resolveDirectory, resolveSessionId]);
 
   const copyUrl = React.useCallback(() => {
     if (url === null) return;
@@ -151,7 +203,7 @@ export const InternalUriViewer: React.FC<InternalUriViewerProps> = ({ directory,
             <span className="min-w-0 break-words">{errorTextOf(state.failure, t)}</span>
           </div>
         ) : state.phase === 'ready' ? (
-          <ViewerBody resource={state.resource} />
+          <ViewerBody resource={state.resource} directory={resolveDirectory ?? ''} />
         ) : null}
       </DialogContent>
     </Dialog>

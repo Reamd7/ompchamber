@@ -7,6 +7,7 @@ import { TitlebarLeftControls } from './TitlebarLeftControls';
 import { ProjectContextPanel } from './RightSidebarTabs';
 import { ContextPanel } from './ContextPanel';
 import { ContextPanelRail } from './ContextPanelRail';
+const MobileFilesSurfaceRouter = lazyWithChunkRecovery(() => import('@/apps/MobileFilesSurfaceRouter').then((m) => ({ default: m.MobileFilesSurfaceRouter })));
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { CommandPalette } from '../ui/CommandPalette';
 import { HelpDialog } from '../ui/HelpDialog';
@@ -276,7 +277,7 @@ export const MainLayout: React.FC = () => {
             case 'terminal':
                 return <TerminalView />;
             case 'files':
-                return <React.Suspense fallback={null}><FilesView /></React.Suspense>;
+                return <React.Suspense fallback={null}><MobileFilesSurfaceRouter /></React.Suspense>;
             case 'context':
                 return <React.Suspense fallback={null}><ProjectContextPanel /></React.Suspense>;
             case 'diagram':

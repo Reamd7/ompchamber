@@ -52,7 +52,14 @@ import {
 import { createDomainChrome } from './domain-chrome.js';
 import { ompFeatures } from './omp-parity.js';
 import { revealCommand } from './domain-plugins.js';
-import { createUriDomain, createLocalProtocolOptions, buildEntryTreeSnapshot } from './domain-uri.js';
+import {
+  ARTIFACTS_MAX_FILES_PER_SESSION,
+  artifactsDirForSessionFile,
+  createLocalProtocolOptions,
+  createUriDomain,
+  buildEntryTreeSnapshot,
+} from './domain-uri.js';
+import { resolveLocalUrlToPath } from '@oh-my-pi/pi-coding-agent/internal-urls/local-protocol';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Cap on concurrently live top-level sessions; idle sessions beyond this
 // are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
@@ -208,8 +215,10 @@ export class OmpHostEngine {
     // endpoints.js at route-registration time.
     this.uriDomain = createUriDomain({
       features: () => ompFeatures(),
-      localOptionsFor: (sessionId, directoryKey) =>
-        createLocalProtocolOptions(sessionId, directoryKey, this.#sessionDirFor(directoryKey)),
+      localOptionsFor: async (sessionId, directoryKey) => {
+        const artifactsDir = await this.#artifactsDirFor(sessionId, directoryKey);
+        return artifactsDir ? createLocalProtocolOptions(sessionId, directoryKey, artifactsDir) : null;
+      },
       sessionTreeData: async (directory) => this.listSessions({ directory }),
       entryTreeFor: async (sessionID, directory) => {
         const file = await this.#findSessionFile(sessionID, normalizeDirectoryKey(directory));
@@ -217,6 +226,8 @@ export class OmpHostEngine {
         const manager = await SessionManager.open(file.path);
         return { manager };
       },
+      localFiles: (sessionID, directory) =>
+        this.#listLocalFiles(sessionID, normalizeDirectoryKey(directory)),
       agentsSnapshot: () =>
         [...this.sessions.values()]
           .filter((hostSession) => hostSession.agentRegistry && hostSession.agentSession)
@@ -482,6 +493,76 @@ export class OmpHostEngine {
   #projectId(directoryKey) {
     const hash = crypto.createHash('sha256').update(directoryKey).digest('hex');
     return `prj_${hash.slice(0, 20)}`;
+  }
+
+  /**
+   * Per-session artifacts directory for local:// root pinning (TUI parity,
+   * spec 04 §5.2.3): live sessions answer from their own SessionManager;
+   * cold sessions derive it from the transcript path (sessionFile minus
+   * '.jsonl'). Never the project-level session directory — sessions in one
+   * directory keep private local:// roots, and cross-session carry-over is
+   * the SDK's explicit copy semantics (fork/plan-approve), not shared state.
+   * Null when the session is unknown to this directory.
+   */
+  async #artifactsDirFor(sessionId, directoryKey) {
+    const manager = this.sessions.get(sessionId)?.agentSession?.sessionManager;
+    const liveDir = manager?.getArtifactsDir?.();
+    if (typeof liveDir === 'string' && liveDir) return liveDir;
+    const file = await this.#findSessionFile(sessionId, directoryKey);
+    return file ? artifactsDirForSessionFile(file.path) : null;
+  }
+
+  /** Bounded walk depth for #listLocalFiles — local:// roots are shallow
+   *  (plans, handoff notes, scratch); anything deeper is a runaway, not data. */
+  static #LOCAL_WALK_MAX_DEPTH = 8;
+
+  /**
+   * Read-only file rows for one session's local:// root (artifacts browse,
+   * spec 04). Returns null when the session is unknown to the directory;
+   * an absent root is authoritative empty. Pure stat walk — no content
+   * leaves this method; refs are '/'-joined relatives, never absolute paths.
+   */
+  async #listLocalFiles(sessionId, directoryKey) {
+    const artifactsDir = await this.#artifactsDirFor(sessionId, directoryKey);
+    if (!artifactsDir) return null;
+    const options = createLocalProtocolOptions(sessionId, directoryKey, artifactsDir);
+    const root = resolveLocalUrlToPath('local://', options);
+    const files = [];
+    let truncated = false;
+    const walk = async (relative, depth) => {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(relative ? path.join(root, relative) : root, {
+          withFileTypes: true,
+        });
+      } catch (error) {
+        if (error?.code === 'ENOENT') return; // no local root yet — authoritative empty
+        throw error;
+      }
+      for (const entry of entries) {
+        const childRef = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (depth >= OmpHostEngine.#LOCAL_WALK_MAX_DEPTH) {
+            truncated = true;
+            continue;
+          }
+          await walk(childRef, depth + 1);
+        } else if (entry.isFile()) {
+          if (files.length >= ARTIFACTS_MAX_FILES_PER_SESSION) {
+            truncated = true;
+            return;
+          }
+          const stat = await fs.promises.stat(path.join(root, childRef)).catch(() => null);
+          files.push({
+            ref: childRef,
+            size: stat?.size ?? 0,
+            modifiedAt: stat?.mtimeMs ?? 0,
+          });
+        }
+      }
+    };
+    await walk('', 0);
+    return { files, truncated };
   }
 
   /**
@@ -876,11 +957,10 @@ export class OmpHostEngine {
       // R13: hasUI authority is the per-session UI lease, never the
       // capability. No lease at creation → fail-closed for approval tools.
       hasUI: this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI,
-      // R7/R8: local:// resolution stays session-pinned; zero global mutation.
-      localProtocolOptions: createLocalProtocolOptions(
-        sessionId,
-        directoryKey,
-        this.#sessionDirFor(directoryKey),
+      // R7/R8: local:// resolution stays session-pinned to THIS session's
+      // artifacts dir (TUI parity, spec 04 §5.2.3); zero global mutation.
+      localProtocolOptions: createLocalProtocolOptions(sessionId, directoryKey, () =>
+        manager.getArtifactsDir(),
       ),
       ...(model ? { model } : {}),
       // Persona overlay (02 §5.1 D-B2): constructor-time systemPrompt and

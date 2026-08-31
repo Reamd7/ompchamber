@@ -19,6 +19,8 @@ const PlanView = lazyWithChunkRecovery(() => import('@/components/views/PlanView
 import { ProjectContextPanel } from './RightSidebarTabs';
 import { SidebarFilesTree } from './SidebarFilesTree';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
+import { SessionFilesTree } from './SessionFilesTree';
+import { LocalFilePreview } from './LocalFilePreview';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
@@ -111,7 +113,7 @@ const getModeLabel = (
   t: TranslateFn
 ): string => {
   if (mode === 'chat') return t('contextPanel.mode.chat');
-  if (mode === 'file') return t('contextPanel.mode.files');
+  if (mode === 'localFile') return t('contextPanel.localFiles.title');
   if (mode === 'diff') return t('contextPanel.mode.diff');
   if (mode === 'walkthrough') return t('contextPanel.mode.walkthrough');
   if (mode === 'plan') return t('contextPanel.mode.plan');
@@ -179,6 +181,11 @@ const getTabLabel = (
     return getFileNameFromPath(tab.targetPath) || t('contextPanel.mode.files');
   }
 
+  if (tab.mode === 'localFile') {
+    return getFileNameFromPath(tab.targetPath) || t('contextPanel.localFiles.title');
+  }
+
+
   if (tab.mode === 'diff') {
     return t('contextPanel.mode.diff');
   }
@@ -194,6 +201,12 @@ const getTabIcon = (
     return tab.targetPath
       ? <FileTypeIcon filePath={tab.targetPath} className="h-3.5 w-3.5" />
       : undefined;
+  }
+
+  if (tab.mode === 'localFile') {
+    return tab.targetPath
+      ? <FileTypeIcon filePath={tab.targetPath} className="h-3.5 w-3.5" />
+      : <Icon name="folder" className="h-3.5 w-3.5" />;
   }
 
   if (tab.mode === 'diff') {
@@ -254,13 +267,17 @@ const browserFaviconFor = (url: string, faviconByOrigin: Record<string, string>)
 
 const EDITOR_TREE_MIN_WIDTH = 200;
 const EDITOR_TREE_MAX_WIDTH = 480;
-
 // The editor surface's file-tree column: docked on the right, resizable from
 // its left edge, and animated open/closed like the app sidebars.
 const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
   const { t } = useI18n();
   const width = useUIStore((state) => state.contextEditorTreeWidth);
   const setWidth = useUIStore((state) => state.setContextEditorTreeWidth);
+  const effectiveDirectory = useEffectiveDirectory() ?? '';
+  const treeScope = useUIStore(
+    (state) => state.contextTreeScopeByDirectory[normalizeDirectoryKey(effectiveDirectory)] ?? 'workspace',
+  );
+  const setContextTreeScope = useUIStore((state) => state.setContextTreeScope);
   const [isResizing, setIsResizing] = React.useState(false);
   const startXRef = React.useRef(0);
   const startWidthRef = React.useRef(width);
@@ -370,7 +387,37 @@ const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
         style={{ width: 'var(--oc-editor-tree-width)' }}
         aria-hidden={!visible}
       >
-        <SidebarFilesTree />
+        <div className="flex h-7 shrink-0 items-center border-b border-border/40 px-1.5" role="tablist" aria-label={t('contextPanel.localFiles.scopeAria')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={treeScope === 'workspace'}
+            onClick={() => setContextTreeScope(effectiveDirectory, 'workspace')}
+            className={cn(
+              'flex-1 truncate typography-meta px-1 py-0.5 rounded-md text-muted-foreground',
+              treeScope === 'workspace' && 'bg-interactive-selection text-foreground',
+            )}
+          >
+            {t('contextPanel.localFiles.backToFiles')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={treeScope === 'session'}
+            onClick={() => setContextTreeScope(effectiveDirectory, 'session')}
+            className={cn(
+              'flex-1 truncate typography-meta px-1 py-0.5 rounded-md text-muted-foreground',
+              treeScope === 'session' && 'bg-interactive-selection text-foreground',
+            )}
+          >
+            {t('contextPanel.localFiles.title')}
+          </button>
+        </div>
+        {treeScope === 'session' && effectiveDirectory ? (
+          <SessionFilesTree directory={effectiveDirectory} />
+        ) : (
+          <SidebarFilesTree />
+        )}
       </div>
     </div>
   );
@@ -382,6 +429,20 @@ const getSessionIDFromDedupeKey = (dedupeKey: string | undefined): string | null
   }
 
   const sessionID = dedupeKey.slice('session:'.length).trim();
+  return sessionID || null;
+};
+
+/** Parse `localFile:<sessionID>:<ref>` — the sessionID is everything between
+ *  the prefix and the LAST colon-separated ref segment (refs contain slashes,
+ *  not colons, so splitting on the first colon after the prefix is safe). */
+const getSessionIDFromLocalFileDedupeKey = (dedupeKey: string | undefined): string | null => {
+  if (!dedupeKey || !dedupeKey.startsWith('localFile:')) {
+    return null;
+  }
+  const rest = dedupeKey.slice('localFile:'.length);
+  const colonIndex = rest.indexOf(':');
+  if (colonIndex === -1) return null;
+  const sessionID = rest.slice(0, colonIndex).trim();
   return sessionID || null;
 };
 
@@ -897,7 +958,6 @@ export const ContextPanel: React.FC = () => {
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
   }, [postChatSettingsSyncToEmbeddedChat, postEmbeddedVisibilityToChat, postThemeSyncToEmbeddedChat, setThemeMode, themeMode]);
-
   React.useLayoutEffect(() => {
     const hasAnyChatTab = tabs.some((tab) => tab.mode === 'chat');
     if (!hasAnyChatTab) {
@@ -912,7 +972,7 @@ export const ContextPanel: React.FC = () => {
   // The rail switches between surfaces (modes); the in-panel strip only lists
   // instances of the active multi-instance surface (open files, split chats,
   // browser targets).
-  const isMultiInstanceMode = activeTab?.mode === 'file' || activeTab?.mode === 'chat' || activeTab?.mode === 'browser';
+  const isMultiInstanceMode = activeTab?.mode === 'file' || activeTab?.mode === 'localFile' || activeTab?.mode === 'chat' || activeTab?.mode === 'browser';
   const activeModeTabs = React.useMemo(
     () => (activeTab ? tabs.filter((tab) => tab.mode === activeTab.mode) : []),
     [activeTab, tabs],
@@ -970,6 +1030,11 @@ export const ContextPanel: React.FC = () => {
     [tabs],
   );
 
+  const hasLocalFileTabs = React.useMemo(
+    () => tabs.some((tab) => tab.mode === 'localFile'),
+    [tabs],
+  );
+  const isLocalFileTabActive = activeTab?.mode === 'localFile';
   const isFileTabActive = activeTab?.mode === 'file';
 
   const header = (
@@ -1167,6 +1232,20 @@ export const ContextPanel: React.FC = () => {
             <EditorTreeColumn visible={contextEditorTreeVisible} />
           </div>
         ) : null}
+        {hasLocalFileTabs ? (
+          <div className={cn('absolute inset-0 flex', isLocalFileTabActive ? 'flex' : 'hidden')}>
+            <div className="h-full min-w-0 flex-1">
+              {activeTab?.mode === 'localFile' ? (
+                <LocalFilePreview
+                  directory={directoryKey}
+                  sessionID={getSessionIDFromLocalFileDedupeKey(activeTab.dedupeKey) ?? ''}
+                  fileRef={activeTab.targetPath}
+                />
+              ) : null}
+            </div>
+            <EditorTreeColumn visible={contextEditorTreeVisible} />
+          </div>
+        ) : null}
         {activeChatTab && activeChatSessionID && activeChatSrc ? (
           <iframe
             key={activeChatTab.id}
@@ -1232,7 +1311,7 @@ export const ContextPanel: React.FC = () => {
             </React.Suspense>
           </div>
         ) : null}
-        {activeTab?.mode !== 'chat' && !isFileTabActive && activeTab?.mode !== 'browser' && activeTab?.mode !== 'diff' && activeTab?.mode !== 'terminal' && activeTab?.mode !== 'walkthrough' ? activeNonChatContent : null}
+        {activeTab?.mode !== 'chat' && !isFileTabActive && !isLocalFileTabActive && activeTab?.mode !== 'browser' && activeTab?.mode !== 'diff' && activeTab?.mode !== 'terminal' && activeTab?.mode !== 'walkthrough' ? activeNonChatContent : null}
       </div>
       </div>
     </aside>

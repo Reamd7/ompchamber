@@ -45,6 +45,9 @@ export const ompFeatures = () => ({
   'uri.v1': true,
   'tree.v1': true,
   'agentRuns.v1': true,
+  // 04: artifacts browse — host-level read-only listing of every session's
+  // private local:// root (spec 04 §1 P2 item; endpoint /api/omp/artifacts).
+  artifacts: true,
   // OMP plugin manager surface (npm + marketplace registries).
   'plugins.v1': true,
   // 09: extension chrome projection — widget/status strings via the dialog
