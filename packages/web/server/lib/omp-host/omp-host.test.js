@@ -360,6 +360,23 @@ describe('SessionMetaRegistry', () => {
     expect(new SessionMetaRegistry({ agentDir: dir }).get('/repo', 's1')).toBeNull();
   });
 
+  test('migrates legacy fork-lineage parentID to forkParentID and persists it', () => {
+    // Released builds wrote fork lineage into `parentID` (engine.fork was its
+    // only writer). On load those edges must move to `forkParentID` so the
+    // fork stops projecting as a read-only subagent session on the wire.
+    registry.update('/repo', 'fork_1', { parentID: 'ses_root', title: 'ses_root (fork)', timeCreated: 1 });
+    registry.update('/repo', 'sub_1', { parentID: 'ses_main', forkParentID: 'ses_root', timeCreated: 2 });
+
+    const reloaded = new SessionMetaRegistry({ agentDir: dir });
+    expect(reloaded.get('/repo', 'fork_1')).toMatchObject({ forkParentID: 'ses_root', title: 'ses_root (fork)' });
+    expect(reloaded.get('/repo', 'fork_1').parentID).toBeUndefined();
+    // An entry that already carries forkParentID keeps parentID untouched:
+    // that pairing is genuine subagent parentage.
+    expect(reloaded.get('/repo', 'sub_1')).toMatchObject({ parentID: 'ses_main', forkParentID: 'ses_root' });
+    // The migration is persisted, not just in-memory.
+    expect(new SessionMetaRegistry({ agentDir: dir }).get('/repo', 'fork_1')).toMatchObject({ forkParentID: 'ses_root' });
+  });
+
   test('move transfers metadata between directories', () => {
     registry.update('/from', 's1', { title: 'moved one' });
     const moved = registry.move('/from', '/to', 's1');

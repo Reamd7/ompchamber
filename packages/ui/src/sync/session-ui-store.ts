@@ -57,6 +57,7 @@ import {
 } from "./session-directory-resolution"
 import { markSessionViewed } from "./notification-store"
 import { setActiveSession } from "./sync-context"
+import { toast } from "sonner"
 import {
   createSession as createSessionAction,
   deleteSession as deleteSessionAction,
@@ -71,6 +72,7 @@ import {
   revertToMessage as revertToMessageAction,
   unrevertSession as unrevertSessionAction,
   forkFromMessage as forkFromMessageAction,
+  forkSession as forkSessionAction,
   fetchMessagesForSession,
   type ArchiveSessionsOptions,
   type DeleteSessionOptions,
@@ -383,6 +385,7 @@ export type SessionUIState = {
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>
   revertToMessage: (sessionId: string, messageId: string, options?: { skipRedoPush?: boolean }) => Promise<void>
   forkFromMessage: (sessionId: string, messageId: string) => Promise<void>
+  forkSession: (sessionId: string) => Promise<void>
   handleSlashUndo: (sessionId: string) => Promise<void>
   handleSlashRedo: (sessionId: string, options?: { fullUnrevert?: boolean }) => Promise<void>
   createSessionFromAssistantMessage: (sourceMessageId: string, execution: AssistantMessageSessionExecution) => Promise<void>
@@ -1992,6 +1995,21 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // forkSession — leaf-level fork (omp /fork): full transcript, empty composer
+  // ---------------------------------------------------------------------------
+  forkSession: async (sessionId) => {
+    const sessions = getSyncSessions()
+    const existingSession = sessions.find((s) => s.id === sessionId)
+    if (!existingSession) return
+
+    try {
+      await forkSessionAction(sessionId)
+    } catch (error) {
+      console.error("Failed to fork session:", error)
+      toast.error("Failed to fork session")
+    }
+  },
   // ---------------------------------------------------------------------------
   // createSessionFromAssistantMessage — reads from sync
   // ---------------------------------------------------------------------------

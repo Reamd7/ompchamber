@@ -2089,6 +2089,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.revert.toast.undo': '已收回至 {preview}',
   'chat.revert.toast.undoPrefilled': '已收回。該訊息已回到輸入框。',
   'chat.commandAutocomplete.command.treeDescription': '瀏覽此工作階段的分支樹',
+  'chat.commandAutocomplete.command.forkDescription': '將此對話分岔為新工作階段',
+  'chat.commandAutocomplete.command.branchDescription': '從先前的訊息分支',
   'chat.workStatus.subagent.parked': '已駐留',
   'chat.workStatus.subagent.aborted': '已中止',
   'chat.workStatus.goal.status.active': '進行中',

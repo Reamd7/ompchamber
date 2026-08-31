@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- **Chat: forking a conversation works again.** A session forked with "Fork from this message" opened as a read-only dead end — the composer said "Subagent sessions cannot be prompted" and the fork was missing from the session switcher, because the app read every fork as a subagent's session. Forks are normal, promptable sessions again (existing forks recover on load), and the branch tree still shows where each fork came from.
+- **Chat: "Fork from this message" now forks from that message.** The engine ignored which message you clicked and always copied the whole conversation, so the fork still contained every later message and only the composer's restored text hinted otherwise. The fork now ends just before the message you branched from — matching the engine TUI's /branch — and forking from the first message starts a clean fork with just that prompt restored.
+- Chat: /fork and /branch work as commands instead of being sent to the model as plain text. /fork snapshots the whole conversation into a new session you switch to; /branch opens the message picker.
+
 ## [1.22.0] - 2026-08-29
 
 - **Terminal: multi-device grid ownership per the negotiated-width spec.** The grid is the pure minimum effective width across devices with no floor — the narrowest device implicitly owns it, ownership moves dynamically as anyone narrows or widens, and wider devices letterbox instead of auto-scaling. A forced claim locks the grid to the claimer's width and every other device (current or later) auto-scales to show the whole grid; release or disconnect returns to implicit negotiation. Tab close only detaches this device — the session lives on the server and dies only via the explicit trash action or idle timeout.

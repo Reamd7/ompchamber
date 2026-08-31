@@ -2028,19 +2028,13 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
 
   const forkedSession = await opencodeClient.forkSession(sessionId, messageId, directory)
 
-  // Insert new session into child store so sidebar updates immediately
-  const current = store.getState()
-  const sessions = [...current.session]
-  const searchResult = Binary.search(sessions, forkedSession.id, (s) => s.id)
-  if (!searchResult.found) {
-    sessions.splice(searchResult.index, 0, forkedSession)
-    store.setState({ session: sessions })
-  }
+  // Insert new session into child store (sidebar updates immediately), then
+  // switch to it.
+  insertForkAndSwitch(store, forkedSession)
 
-  // Switch to new session
-  useSessionUIStore.getState().setCurrentSession(forkedSession.id)
-
-  // Restore forked message text and file attachments to input
+  // Restore forked message text and file attachments to input. The engine
+  // bounds the fork BEFORE this message (omp /branch semantics), so the
+  // composer refill is the re-ask affordance.
   if (messageText) {
     useInputStore.setState({
       pendingInputText: messageText,
@@ -2049,6 +2043,29 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
   }
   // Clear existing attachments and restore file parts from the forked message.
   restoreFilePartsToInput(fileParts)
+}
+
+/**
+ * Fork the whole conversation (omp TUI /fork semantics): the new session
+ * carries the full transcript and the composer starts empty — a snapshot to
+ * continue in, leaving the original untouched.
+ */
+export async function forkSession(sessionId: string): Promise<void> {
+  const { store, directory } = dirStoreForSession(sessionId)
+  const forkedSession = await opencodeClient.forkSession(sessionId, undefined, directory)
+  insertForkAndSwitch(store, forkedSession)
+}
+
+/** Insert a server-confirmed fork into its directory child store and switch to it. */
+function insertForkAndSwitch(store: DirectoryStoreApi, forkedSession: Session): void {
+  const current = store.getState()
+  const sessions = [...current.session]
+  const searchResult = Binary.search(sessions, forkedSession.id, (s) => s.id)
+  if (!searchResult.found) {
+    sessions.splice(searchResult.index, 0, forkedSession)
+    store.setState({ session: sessions })
+  }
+  useSessionUIStore.getState().setCurrentSession(forkedSession.id)
 }
 
 export async function fetchMessagesForSession(sessionID: string, directory?: string | null): Promise<void> {

@@ -14,6 +14,13 @@ const sessionFiles = [
   // the pre-existing mock behavior for the other ids).
   { id: 's3', path: path.join(sessionDir, 's3.jsonl'), cwd: '/repo' },
 ];
+const fakeForkEntries = [
+  { type: 'message', id: 'e1', parentId: null, message: { role: 'user', timestamp: 1, content: 'first' } },
+  { type: 'message', id: 'e2', parentId: 'e1', message: { role: 'assistant', timestamp: 2, content: 'reply' } },
+  { type: 'message', id: 'e3', parentId: 'e2', message: { role: 'user', timestamp: 3, content: 'second' } },
+  { type: 'message', id: 'e4', parentId: 'e3', message: { role: 'assistant', timestamp: 4, content: 'reply 2' } },
+];
+const forkMutations = [];
 const fakeManagerEntries = [];
 const createdOptions = [];
 const registries = [];
@@ -83,6 +90,20 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
         return sessionFiles.filter((file) => !file.cwd || !cwd || file.cwd === cwd);
       },
       getDefaultSessionDir: () => sessionDir,
+      async forkFrom(filePath) {
+        return {
+          getSessionId: () => `${path.basename(filePath, '.jsonl')}_fork`,
+          getEntries: () => fakeForkEntries,
+          getEntry: (id) => fakeForkEntries.find((entry) => entry.id === id),
+          branch: (leafId) => { forkMutations.push({ op: 'branch', leafId }); },
+          resetLeaf: () => { forkMutations.push({ op: 'resetLeaf' }); },
+          appendCustomEntry: (customType, data) => {
+            forkMutations.push({ op: 'marker', customType, data });
+            return 'marker_1';
+          },
+          close: async () => {},
+        };
+      },
     },
   ),
   createAgentSession: async (options) => {
@@ -372,5 +393,76 @@ describe('OmpHostEngine prompt dispatch', () => {
     const personaOptions = createdOptions.at(-1);
     expect(personaOptions.systemPrompt).toBe('Be grumpy.');
     expect(personaOptions.toolNames).toEqual(['read']);
+  });
+});
+
+describe('OmpHostEngine fork lineage', () => {
+  test('records forkParentID lineage and never emits subagent parentID', async () => {
+    // engine.fork must NOT write wire `parentID`: the shared UI treats a
+    // parentID session as a read-only subagent session ("subagent sessions
+    // cannot be prompted"), and a user fork is a normal promptable session.
+    const engine = new OmpHostEngine({ agentDir });
+    engine.registry.update('/repo', 's1', { title: 'root work' });
+
+    const forked = await engine.fork({ sessionID: 's1', directory: '/repo' });
+
+    expect(forked.id).toBe('s1_fork');
+    expect(forked.title).toBe('root work (fork)');
+    expect(forked.parentID).toBeUndefined();
+    expect(forked.forkParentID).toBe('s1');
+    expect(engine.registry.get('/repo', 's1_fork')).toMatchObject({ forkParentID: 's1' });
+    // The listing projection carries the same split — the session-tree
+    // builder reads forkParentID, the UI subagent checks read parentID.
+    const listed = (await engine.listSessions({ directory: '/repo' })).find((s) => s.id === 's1_fork');
+    expect(listed.parentID).toBeUndefined();
+    expect(listed.forkParentID).toBe('s1');
+  });
+});
+
+describe('OmpHostEngine fork boundary (wire messageID)', () => {
+  test('bounds the fork before the selected message (omp /branch semantics)', async () => {
+    forkMutations.length = 0;
+    const engine = new OmpHostEngine({ agentDir });
+    engine.registry.update('/repo', 's1', { title: 'root work' });
+
+    const forked = await engine.fork({ sessionID: 's1', directory: '/repo', messageID: 'e3' });
+
+    expect(forked.forkParentID).toBe('s1');
+    // The leaf moves to the boundary entry's parent (e3 and its tail leave
+    // the active path), and an appended marker entry makes the rewind durable.
+    expect(forkMutations).toEqual([
+      { op: 'branch', leafId: 'e2' },
+      { op: 'marker', customType: 'ompchamber.forkBoundary', data: { from: 's1', at: 'e3' } },
+    ]);
+  });
+
+  test('a root boundary rewinds to a fresh leaf', async () => {
+    forkMutations.length = 0;
+    const engine = new OmpHostEngine({ agentDir });
+
+    await engine.fork({ sessionID: 's1', directory: '/repo', messageID: 'e1' });
+
+    expect(forkMutations).toEqual([
+      { op: 'resetLeaf' },
+      { op: 'marker', customType: 'ompchamber.forkBoundary', data: { from: 's1', at: 'e1' } },
+    ]);
+  });
+
+  test('an unknown boundary falls back to the whole-transcript fork', async () => {
+    forkMutations.length = 0;
+    const engine = new OmpHostEngine({ agentDir });
+
+    await engine.fork({ sessionID: 's1', directory: '/repo', messageID: 'msg_nope' });
+
+    expect(forkMutations).toEqual([]);
+  });
+
+  test('no messageID keeps the whole transcript (omp /fork semantics)', async () => {
+    forkMutations.length = 0;
+    const engine = new OmpHostEngine({ agentDir });
+
+    await engine.fork({ sessionID: 's1', directory: '/repo' });
+
+    expect(forkMutations).toEqual([]);
   });
 });

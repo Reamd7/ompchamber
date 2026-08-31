@@ -2119,6 +2119,8 @@ export const dict = {
   'chat.revert.toast.undo': 'Reverted to {preview}',
   'chat.revert.toast.undoPrefilled': 'Reverted. The message is back in the composer.',
   'chat.commandAutocomplete.command.treeDescription': "Browse this session's branch tree",
+  'chat.commandAutocomplete.command.forkDescription': 'Fork this conversation into a new session',
+  'chat.commandAutocomplete.command.branchDescription': 'Branch from a previous message',
   'chat.revert.toast.redo': 'Redone',
   'chat.revert.toast.restored': 'Restored all messages',
   'chat.toast.opencodeRestartInterrupted.title': 'Chat interrupted',

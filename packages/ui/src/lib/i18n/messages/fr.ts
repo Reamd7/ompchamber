@@ -1861,6 +1861,8 @@ export const dict = {
   'chat.revert.toast.undo': 'Revenu à {preview}',
   'chat.revert.toast.undoPrefilled': "Rétabli. Le message est de retour dans le composeur.",
   'chat.commandAutocomplete.command.treeDescription': "Parcourir l'arborescence des branches de cette session",
+  'chat.commandAutocomplete.command.forkDescription': 'Forker cette conversation dans une nouvelle session',
+  'chat.commandAutocomplete.command.branchDescription': "Créer une branche à partir d'un message précédent",
   'chat.workStatus.subagent.parked': 'en attente',
   'chat.workStatus.subagent.aborted': 'interrompu',
   'chat.workStatus.goal.status.active': 'actif',

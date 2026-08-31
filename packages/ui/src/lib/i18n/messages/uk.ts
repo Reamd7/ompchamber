@@ -2097,6 +2097,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.revert.toast.undo": "Відкочено до {preview}",
   "chat.revert.toast.undoPrefilled": "Відкочено. Повідомлення знову в полі введення.",
   "chat.commandAutocomplete.command.treeDescription": "Переглянути дерево гілок цієї сесії",
+  'chat.commandAutocomplete.command.forkDescription': 'Форкнути цю розмову в нову сесію',
+  'chat.commandAutocomplete.command.branchDescription': 'Створити гілку від попереднього повідомлення',
   "chat.workStatus.subagent.parked": "призупинений",
   "chat.workStatus.subagent.aborted": "перерваний",
   "chat.workStatus.goal.status.active": "активна",

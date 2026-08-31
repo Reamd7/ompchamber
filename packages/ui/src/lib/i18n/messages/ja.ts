@@ -2115,6 +2115,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.revert.toast.undo': '{preview}に元に戻しました',
   'chat.revert.toast.undoPrefilled': '元に戻しました。メッセージは入力欄に戻っています。',
   'chat.commandAutocomplete.command.treeDescription': 'このセッションのブランチツリーを表示',
+  'chat.commandAutocomplete.command.forkDescription': 'この会話を新しいセッションにフォーク',
+  'chat.commandAutocomplete.command.branchDescription': '過去のメッセージからブランチする',
   'chat.workStatus.subagent.parked': '待機中',
   'chat.workStatus.subagent.aborted': '中断',
   'chat.workStatus.goal.status.active': '進行中',

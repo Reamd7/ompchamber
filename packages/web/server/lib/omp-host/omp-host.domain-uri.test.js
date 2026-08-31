@@ -265,23 +265,27 @@ describe('resource tokens (spec 04 §5.2.4, R7)', () => {
 
 const wireSessions = [
   { id: 'ses_1', title: 'root work', time: { created: 100, updated: 500 } },
-  { id: 'ses_2', parentID: 'ses_1', title: 'fork of root', time: { created: 200, updated: 900 } },
-  { id: 'ses_3', parentID: 'ses_2', title: 'grandchild', time: { created: 300, updated: 300 } },
-  { id: 'ses_4', parentID: 'ses_gone', title: 'orphan fork', time: { created: 400, updated: 400 } },
+  { id: 'ses_2', forkParentID: 'ses_1', title: 'fork of root', time: { created: 200, updated: 900 } },
+  { id: 'ses_3', forkParentID: 'ses_2', title: 'grandchild', time: { created: 300, updated: 300 } },
+  { id: 'ses_4', forkParentID: 'ses_gone', title: 'orphan fork', time: { created: 400, updated: 400 } },
+  // Subagent parentage is not fork lineage: a wire parentID session stays a
+  // root in the fork tree.
+  { id: 'ses_sub', parentID: 'ses_1', title: 'subagent child', time: { created: 350, updated: 350 } },
 ];
 
 describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
   test('projects registry fork metadata into the flat {leafId, nodes} shape', () => {
     const tree = buildSessionTree(wireSessions);
     expect(tree.leafId).toBe('ses_2'); // most recently updated
-    expect(tree.nodes.map((n) => n.id)).toEqual(['ses_1', 'ses_2', 'ses_3', 'ses_4']);
+    expect(tree.nodes.map((n) => n.id)).toEqual(['ses_1', 'ses_2', 'ses_3', 'ses_sub', 'ses_4']);
     expect(tree.nodes[1]).toEqual({
       id: 'ses_2',
       parentId: 'ses_1',
       title: 'fork of root',
       time: { created: 200, updated: 900 },
     });
-    expect(tree.nodes[3].parentId).toBeNull(); // parent not in the set
+    expect(tree.nodes[4].parentId).toBeNull(); // fork parent not in the set
+    expect(tree.nodes[3].parentId).toBeNull(); // subagent parentID is not lineage
     expect(tree.nodes.every((n) => !('sourcePath' in n))).toBe(true);
   });
 
@@ -293,8 +297,8 @@ describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
 
   test('cycles in fork metadata are cut instead of hanging', () => {
     const cyclic = [
-      { id: 'a', parentID: 'b', title: 'a', time: { created: 1, updated: 1 } },
-      { id: 'b', parentID: 'a', title: 'b', time: { created: 2, updated: 2 } },
+      { id: 'a', forkParentID: 'b', title: 'a', time: { created: 1, updated: 1 } },
+      { id: 'b', forkParentID: 'a', title: 'b', time: { created: 2, updated: 2 } },
     ];
     const tree = buildSessionTree(cyclic);
     // exactly enough edges are cut that every parent walk terminates

@@ -355,7 +355,13 @@ export const registerEndpoints = (route, engine, { version }) => {
   route('POST', '/session/{sessionID}/fork', async (request, ctx) => {
     const body = await readJsonBody(request);
     const directory = body.directory ?? projectDirectory(ctx);
-    const session = await engine.fork({ sessionID: ctx.params.sessionID, directory });
+    // messageID (wire contract) bounds the fork at that message — TUI /branch
+    // semantics. Absent → whole-transcript fork (TUI /fork semantics).
+    const session = await engine.fork({
+      sessionID: ctx.params.sessionID,
+      directory,
+      ...(typeof body.messageID === 'string' && body.messageID ? { messageID: body.messageID } : {}),
+    });
     return session ? json(session) : notFound('session not found');
   });
   route('POST', '/session/{sessionID}/share', async () =>

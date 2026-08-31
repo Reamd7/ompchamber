@@ -338,8 +338,10 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
  * Directory-level session tree (fork/parent graph) from engine registry
  * data. Input = wire session records as produced by engine.listSessions
  * ({directory}) — id/title/time come from SessionManager.list plus the
- * SessionMetaRegistry sidecar (registry.js), parentID from fork metadata
- * (engine.fork writes registry parentID).
+ * SessionMetaRegistry sidecar (registry.js), forkParentID from fork lineage
+ * (engine.fork writes registry forkParentID). Wire `parentID` is subagent
+ * parentage, not lineage, and is ignored here — subagent children must not
+ * sprout fork-tree branches.
  *
  * Shape: { leafId, nodes: [{id, parentId, title, time}] } — flat array, UI
  * builds the hierarchy by parentId. leafId = most recently updated session
@@ -360,7 +362,7 @@ export const buildSessionTree = (engineRegistryData) => {
     .sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
     .map((session) => {
       const parentId =
-        typeof session.parentID === 'string' && byId.has(session.parentID) ? session.parentID : null;
+        typeof session.forkParentID === 'string' && byId.has(session.forkParentID) ? session.forkParentID : null;
       return {
         id: session.id,
         parentId,
