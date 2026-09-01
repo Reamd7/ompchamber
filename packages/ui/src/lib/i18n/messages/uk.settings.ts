@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.projects.page.field.projectAgent': 'Project Agent',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Завжди показувати смуги прокручування',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Залишати смуги прокручування видимими, щоб можна було перетягнути повзунок без попереднього прокручування. Лише на цьому пристрої.',
   'settings.providers.page.openCodeGo.title': 'Відстеження використання OpenCode Go',
@@ -1524,7 +1525,6 @@ export const settingsDict = {
   'settings.providers.page.custom.optionLabel': 'Інший / Власний',
   'settings.providers.page.custom.title': 'Власний провайдер',
   'settings.providers.page.custom.editTitle': 'Редагувати власного провайдера',
-
   'settings.providers.page.custom.description': 'Додайте провайдера з базовою URL-адресою, обліковими даними, списком моделей і підтримуваним протоколом API. Зберігається в конфігурації OpenCode для використання в чаті.',
   'settings.providers.page.custom.field.providerID.label': 'ID провайдера',
   'settings.providers.page.custom.field.providerID.placeholder': 'mij-provider',

@@ -1301,6 +1301,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     void activateConfigForDirectory(configDirectory).then(async () => {
       const ompDefaults = await resolveOmpDefaults(configDirectory)
       useConfigStore.getState().applyDefaultModelAgentSelection({
+        projectDefaultAgent: selectedProject?.defaultAgent,
         projectDefaultModel: selectedProject?.defaultModel,
         ...(ompDefaults.modelRolesEnabled && ompDefaults.model
           ? { ompDefaultModel: { providerId: ompDefaults.model.providerID, modelId: ompDefaults.model.modelID } }

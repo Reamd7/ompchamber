@@ -828,6 +828,44 @@ describe('useConfigStore provider persistence', () => {
     expect(state.currentVariant).toBe('high');
   });
 
+  test('a project default agent overrides the global default agent for fresh drafts', () => {
+    useConfigStore.setState({
+      activeDirectoryKey: DIRECTORY,
+      providers: [provider('openai', 'gpt-5.5')],
+      agents: [testAgent('build'), testAgent('plan')],
+      currentProviderId: '',
+      currentModelId: '',
+      currentVariant: undefined,
+      settingsDefaultAgent: 'build',
+      settingsDefaultModel: 'openai/gpt-5.5',
+      selectionSource: 'auto',
+      directoryScoped: {},
+    });
+
+    useConfigStore.getState().applyDefaultModelAgentSelection({ projectDefaultAgent: 'plan' });
+
+    expect(useConfigStore.getState().currentAgentName).toBe('plan');
+  });
+
+  test('an unknown project default agent falls back to the global default agent', () => {
+    useConfigStore.setState({
+      activeDirectoryKey: DIRECTORY,
+      providers: [provider('openai', 'gpt-5.5')],
+      agents: [testAgent('build'), testAgent('plan')],
+      currentProviderId: '',
+      currentModelId: '',
+      currentVariant: undefined,
+      settingsDefaultAgent: 'build',
+      settingsDefaultModel: 'openai/gpt-5.5',
+      selectionSource: 'auto',
+      directoryScoped: {},
+    });
+
+    useConfigStore.getState().applyDefaultModelAgentSelection({ projectDefaultAgent: 'missing' });
+
+    expect(useConfigStore.getState().currentAgentName).toBe('build');
+  });
+
   test('a fresh session applies the settings thinking level instead of the previous override', () => {
     useConfigStore.setState({
       activeDirectoryKey: DIRECTORY,

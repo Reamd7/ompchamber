@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.projects.page.field.projectAgent': 'Project Agent',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Mostrar siempre las barras de desplazamiento',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Mantén las barras visibles para poder arrastrarlas sin desplazarte primero. Solo se aplica en este dispositivo.',
   'settings.providers.page.openCodeGo.title': 'Seguimiento de uso de OpenCode Go',
@@ -1524,7 +1525,6 @@ export const settingsDict = {
   'settings.providers.page.custom.optionLabel': 'Otro / Personalizado',
   'settings.providers.page.custom.title': 'Proveedor personalizado',
   'settings.providers.page.custom.editTitle': 'Editar proveedor personalizado',
-
   'settings.providers.page.custom.description': 'Añade un proveedor con URL base, credenciales, lista de modelos y un protocolo de API compatible. Se guarda en la configuración de OpenCode para usarlo en el chat.',
   'settings.providers.page.custom.field.providerID.label': 'ID del proveedor',
   'settings.providers.page.custom.field.providerID.placeholder': 'mi-proveedor',

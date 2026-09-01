@@ -1001,7 +1001,7 @@ interface ConfigStore {
     cycleCurrentVariant: () => string | undefined;
     getCurrentModelVariants: () => string[];
     setAgent: (agentName: string | undefined) => void;
-    applyDefaultModelAgentSelection: (options?: { projectDefaultModel?: string; projectDefaultVariant?: string; ompDefaultModel?: { providerId: string; modelId: string } }) => void;
+    applyDefaultModelAgentSelection: (options?: { projectDefaultAgent?: string; projectDefaultModel?: string; projectDefaultVariant?: string; ompDefaultModel?: { providerId: string; modelId: string } }) => void;
     applyOpenCodeConfigDefaults: (directory?: string | null, source?: string, config?: Config) => void;
     setSelectedProvider: (providerId: string) => void;
     setSettingsDefaultModel: (model: string | undefined) => void;
@@ -2568,6 +2568,7 @@ export const useConfigStore = create<ConfigStore>()(
                     } = resolveDefaultAgentModelSelection({
                         agents,
                         providers,
+                        projectDefaultAgent: options?.projectDefaultAgent,
                         projectDefaultModel: options?.projectDefaultModel,
                         projectDefaultVariant: options?.projectDefaultVariant,
                         settingsDefaultAgent,
