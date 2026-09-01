@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-09-02
+
+- **Terminal: fixed the display corruption when typing with an IME.** Typing the first character with a Chinese/Japanese/Korean input method — for example into btop's filter — shifted the terminal content out of place and clipped its bottom rows, and the misplacement stayed after the input ended. IME composition now targets the terminal's hidden input field, so the display never moves.
+- Terminal: full-screen TUI apps (btop, vim) scroll far more smoothly on large terminals during fast scrolling and heavy output, and an idle terminal no longer keeps the CPU busy with a permanent animation loop.
+
 ## [1.24.0] - 2026-09-01
 
 - **Sessions: browse a session's local files in the file panel.** The context panel's editor tree gains a "Session local files" scope switch beside "Workspace files": it shows the selected session's private `local://` files (plans, scratch notes, generated images) with size and date. Switching sessions switches to each one's own files; opening an image previews it inline in the editor area, like a regular file tab.
