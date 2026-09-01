@@ -71,6 +71,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
   - Includes session activity snapshot bridge handler used by webview parity routes (`/api/session-activity`).
   - Includes Zen utility model parity handler used by shared notification settings (`/api/zen/models`).
   - Provider handlers cover source lookup, disconnect (`DELETE /api/provider/:id/auth`), and custom provider upsert (`PUT /api/provider`; create/update OpenAI-compatible config with explicit `scope` for user/project/custom layers; requires `env` or stored auth; secrets via OpenCode auth API).
+  - Quota handlers keep managed exe.dev, Ollama Cloud, and Cursor credentials in the extension data directory with the same private-file contract as the web runtime. exe.dev uses one command-scoped usage token for the aggregate billing shared by every `exe-*` model provider.
 
 - `bridge-permission-auto-accept-runtime.ts`
   - Owns the persisted VS Code permission auto-accept policy and its GET/PUT bridge contract.

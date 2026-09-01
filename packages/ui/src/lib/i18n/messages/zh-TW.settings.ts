@@ -21,6 +21,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': '刪除',
   'settings.providers.page.quotaCredentials.saved': '已儲存 {provider} 憑證。',
   'settings.providers.page.quotaCredentials.accessToken': '存取權杖',
+  'settings.providers.page.quotaCredentials.usageToken': '用量 API 權杖',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': '在終端機中執行此命令，然後在下方貼上權杖。該權杖只能讀取 LLM 點數用量，並將在 30 天後到期。',
   'settings.providers.page.quotaCredentials.refreshToken': '重新整理權杖',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': '貼上權杖',
   'settings.providers.page.openCodeGo.saveFailed': '無法驗證 OpenCode Go 憑證。',

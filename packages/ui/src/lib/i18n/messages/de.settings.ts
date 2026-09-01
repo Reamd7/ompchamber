@@ -2423,6 +2423,8 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.followUpBehavior.queue.label': 'Warteschlange',
 
   'settings.providers.page.quotaCredentials.accessToken': 'Zugriffstoken',
+  'settings.providers.page.quotaCredentials.usageToken': 'Nutzungs-API-Token',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Führen Sie diesen Befehl im Terminal aus und fügen Sie dann das Token unten ein. Es kann nur die LLM-Guthabennutzung lesen und läuft nach 30 Tagen ab.',
   'settings.providers.page.quotaCredentials.refreshToken': 'Aktualisierungstoken',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'Token einfügen',
   'settings.view.nav.group.general': 'OMPChamber',

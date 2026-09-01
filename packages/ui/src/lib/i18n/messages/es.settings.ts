@@ -21,6 +21,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': 'Eliminar',
   'settings.providers.page.quotaCredentials.saved': 'Credenciales de {provider} guardadas.',
   'settings.providers.page.quotaCredentials.accessToken': 'Token de acceso',
+  'settings.providers.page.quotaCredentials.usageToken': 'Token de API de uso',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Ejecuta este comando en tu terminal y pega el token abajo. Solo puede leer el uso de créditos de LLM y caduca después de 30 días.',
   'settings.providers.page.quotaCredentials.refreshToken': 'Token de actualización',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'Pega el token',
   'settings.providers.page.openCodeGo.saveFailed': 'No se pudieron validar las credenciales de OpenCode Go.',

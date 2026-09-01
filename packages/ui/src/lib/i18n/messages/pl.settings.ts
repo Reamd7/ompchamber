@@ -20,6 +20,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': 'Usuń',
   'settings.providers.page.quotaCredentials.saved': 'Dane uwierzytelniające {provider} zostały zapisane.',
   'settings.providers.page.quotaCredentials.accessToken': 'Token dostępu',
+  'settings.providers.page.quotaCredentials.usageToken': 'Token API użycia',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Uruchom to polecenie w terminalu, a następnie wklej token poniżej. Może on tylko odczytywać użycie środków LLM i wygasa po 30 dniach.',
   'settings.providers.page.quotaCredentials.refreshToken': 'Token odświeżania',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'Wklej token',
   'settings.providers.page.openCodeGo.saveFailed': 'Nie udało się sprawdzić danych OpenCode Go.',

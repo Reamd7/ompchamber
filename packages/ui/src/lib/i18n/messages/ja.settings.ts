@@ -21,6 +21,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': '削除',
   'settings.providers.page.quotaCredentials.saved': '{provider} の認証情報を保存しました。',
   'settings.providers.page.quotaCredentials.accessToken': 'アクセストークン',
+  'settings.providers.page.quotaCredentials.usageToken': '使用量 API トークン',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'このコマンドをターミナルで実行し、下にトークンを貼り付けてください。LLM クレジット使用量の読み取りのみが可能で、30 日後に期限切れになります。',
   'settings.providers.page.quotaCredentials.refreshToken': '更新トークン',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'トークンを貼り付け',
   'settings.providers.page.openCodeGo.saveFailed': 'OpenCode Go の認証情報を検証できませんでした。',

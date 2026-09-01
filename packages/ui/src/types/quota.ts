@@ -20,8 +20,7 @@ export type QuotaProviderId =
   | 'crof'
   | 'deepseek'
  | 'exe-dev'
-  | 'hyper'  | 'neuralwatt'
-  | 'xai';
+  | 'neuralwatt'  | 'xai';
 
 export interface UsageWindow {
   usedPercent: number | null;

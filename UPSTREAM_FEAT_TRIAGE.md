@@ -18,7 +18,7 @@
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 4/4 (3吸/1跳) |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
-| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 5/7 (1吸/1跳/3半) |
+| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 6/7 (1吸/1跳/4半) |
 | Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 0/5 |
 | 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
 | MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
@@ -188,7 +188,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | - [x] | `f70f18150` | feat(usage): add ClinePass quota provider | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota provider 子系统,JS 参考保留) |
 | - [ ] | `2dfd1190e` | feat(work-status): add opt-in turn statistics (#3177) | `引擎耦合?` `服务端` |  |
 | - [x] | `fbdd80fa2` | feat: add Charm Hyper quota provider (#3368) | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota provider 子系统) |
-| - [ ] | `a189fb43f` | feat: add exe.dev usage tracking | `服务端` |  |
+| - [x] | `a189fb43f` | feat: add exe.dev usage tracking | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota 子系统) |
 | - [x] | `7f3b94652` | feat: add exe.dev provider logo | `自身` | PORTED(干净落地) |
 
 ## - [ ] Routing/模型选择 — 🟡 中价值 / 部分引擎依赖

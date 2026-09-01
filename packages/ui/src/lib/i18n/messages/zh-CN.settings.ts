@@ -21,6 +21,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': '删除',
   'settings.providers.page.quotaCredentials.saved': '已保存 {provider} 凭据。',
   'settings.providers.page.quotaCredentials.accessToken': '访问令牌',
+  'settings.providers.page.quotaCredentials.usageToken': '用量 API 令牌',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': '在终端中运行此命令，然后在下方粘贴令牌。该令牌只能读取 LLM 积分用量，并将在 30 天后过期。',
   'settings.providers.page.quotaCredentials.refreshToken': '刷新令牌',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': '粘贴令牌',
   'settings.providers.page.openCodeGo.saveFailed': '无法验证 OpenCode Go 凭据。',
