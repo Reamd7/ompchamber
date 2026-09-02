@@ -15,6 +15,7 @@ describe('tierFor (05 §5.8.2 tier table)', () => {
             'live-delegation',
             'collab-prompt',
             'background-tan-dispatch',
+            'launch-completion',
         ]) {
             expect(tierFor(customType)).toBe('T1');
         }
@@ -40,6 +41,10 @@ describe('tierFor (05 §5.8.2 tier table)', () => {
         }
         expect(tierFor('prewalk-subagent')).toBe('T3');
         expect(tierFor('plan-mode-injection')).toBe('T3');
+    });
+
+    test('T5 — collapsed developer notes', () => {
+        expect(tierFor('developer')).toBe('T5');
     });
 
     test('T4 — unregistered and extension types fall back', () => {

@@ -24,7 +24,7 @@
  */
 
 import { create } from 'zustand';
-import { applyOmpEvent, createEmptyOmpDirectoryState, type OmpDirectoryState, type OmpEventEffect, type OmpSessionLoaders } from './omp-event-reducer';
+import { applyOmpEvent, createEmptyOmpDirectoryState, type OmpDirectoryState, type OmpEventEffect, type OmpSessionLoaders, type OmpTtsrWarning } from './omp-event-reducer';
 import type { OmpChromeSnapshot, OmpEventEnvelope } from '@/lib/api/omp';
 
 /** Volatile TTLs — missed terminal frames must not pin state forever. */
@@ -72,6 +72,9 @@ interface OmpSessionStoreActions {
   ) => void;
   /** Pipeline (re)mount — adopt the runtime identity and drop stale slices. */
   clearAll: (runtimeKey: string) => void;
+  /** Manual ttsr-warning dismissal — drop the block so a later trigger
+   * raises a fresh one instead of merging into the dismissed block. */
+  dismissTtsrWarning: (directory: string, sessionID: string) => void;
 }
 
 export type OmpSessionStore = OmpSessionStoreState & OmpSessionStoreActions;
@@ -356,6 +359,21 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
     clearAll(runtimeKey) {
       set({ directories: {}, runtimeKey });
     },
+
+    dismissTtsrWarning(directory, sessionID) {
+      set((state) => {
+        const slice = state.directories[directory];
+        if (!slice?.ttsr[sessionID]) return state;
+        const nextTtsr = { ...slice.ttsr };
+        delete nextTtsr[sessionID];
+        return {
+          directories: {
+            ...state.directories,
+            [directory]: { ...slice, ttsr: nextTtsr },
+          },
+        };
+      });
+    },
   };
 });
 
@@ -409,6 +427,8 @@ export const useOmpSessionLoaders = (directory: string, sessionID: string | unde
 
 export const useOmpCustomDetails = (directory: string, wireMessageID: string | undefined) =>
   useOmpSessionStore((state) => (wireMessageID ? state.directories[directory]?.customDetails[wireMessageID] ?? null : null));
+export const useOmpTtsrWarning = (directory: string, sessionID: string | undefined): OmpTtsrWarning | null =>
+  useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.ttsr[sessionID] ?? null : null));
 
 export const useOmpSessionModelBadge = (directory: string, sessionID: string | undefined) =>
   useOmpSessionStore((state) => (sessionID ? state.directories[directory]?.sessionModel[sessionID] ?? null : null));

@@ -8,6 +8,8 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useOmpSessionStore } from '@/sync/useOmpSessionStore';
 import { createEmptyOmpDirectoryState, type OmpDirectoryState } from '@/sync/omp-event-reducer';
 import {
+    CollapsedNoteView,
+    cardDetailLinesFrom,
     cardChromeFrom,
     OmpCustomCardView,
     OmpCustomMessage,
@@ -130,6 +132,49 @@ describe('T1 card chrome derivation (cardChromeFrom)', () => {
         }).jobId).toBe('job_a');
     });
 
+    test('launch-completion meta names the first daemon and counts the batch', () => {
+        expect(cardChromeFrom('launch-completion', {
+            customType: 'launch-completion',
+            details: { daemons: [{ name: 'dev-server', state: 'exited', exitCode: 0 }, { name: 'worker', state: 'exited' }] },
+        }).meta).toBe('dev-server (exited) +1');
+        expect(cardChromeFrom('launch-completion', {
+            customType: 'launch-completion',
+            details: { daemons: [{ name: 'worker', state: 'running' }] },
+        }).meta).toBe('worker (running)');
+        expect(cardChromeFrom('launch-completion', { customType: 'launch-completion', details: {} }).meta ?? null).toBeNull();
+    });
+
+    test('collab-prompt author comes from details.from', () => {
+        expect(cardChromeFrom('collab-prompt', {
+            customType: 'collab-prompt',
+            details: { from: ' alice ' },
+        }).author).toBe('alice');
+        expect(cardChromeFrom('collab-prompt', { customType: 'collab-prompt', details: {} }).author ?? null).toBeNull();
+    });
+
+    test('cardDetailLinesFrom extracts per-type structured lines', () => {
+        expect(cardDetailLinesFrom('skill-prompt', {
+            customType: 'skill-prompt',
+            details: { name: 'review', path: '~/.omp/skills/review/SKILL.md', args: 'src' },
+        }).lines).toEqual(['~/.omp/skills/review/SKILL.md', 'src']);
+        expect(cardDetailLinesFrom('background-tan-dispatch', {
+            customType: 'background-tan-dispatch',
+            details: { jobId: 'job_7', work: 'run the suite' },
+        }).lines).toEqual(['job_7', 'run the suite']);
+        const lsp = cardDetailLinesFrom('lsp-late-diagnostic', {
+            customType: 'lsp-late-diagnostic',
+            details: {
+                files: [
+                    { path: 'a.ts', summary: '2 errors' },
+                    { path: 'b.ts', errored: true },
+                    ...Array.from({ length: 6 }, (_, i) => ({ path: `f${i}.ts` })),
+                ],
+            },
+        });
+        expect(lsp.lines).toEqual(['a.ts (2 errors)', 'b.ts [error]', 'f0.ts', 'f1.ts', 'f2.ts']);
+        expect(lsp.moreCount).toBe(3);
+        expect(cardDetailLinesFrom('advisor', { customType: 'advisor', details: { notes: [] } }).lines).toEqual([]);
+    });
 
 
     test('card chrome joins omp details by wireMessageID through the resolved directory', () => {
@@ -220,6 +265,32 @@ describe('T2 summary divider (collapse/expand)', () => {
         expect(markup).toContain('data-omp-summary-divider');
         expect(markup).toContain('compacted');
         expect(markup).toContain('from 9.5K tokens');
+    });
+});
+
+describe('T5 collapsed developer note', () => {
+    test('parses as T5 and mounts collapsed with the first line as summary', () => {
+        const { info, parts } = wireMessage('msg_dev', '[omp:developer] first reminder line\nsecond line', {
+            ompRole: 'developer',
+        });
+        const parsed = parseOmpCustomMessage(info, parts);
+        expect(parsed?.tier).toBe('T5');
+        if (parsed === null) throw new Error('T5 parse unexpectedly failed');
+        const markup = render(<OmpCustomMessage data={parsed} />);
+        // Disclosure starts closed; only the first line shows as the summary.
+        expect(markup).toContain('data-omp-collapsed-note');
+        expect(markup).toContain('aria-expanded="false"');
+        expect(markup).toContain('first reminder line');
+        expect(markup).not.toContain('second line');
+    });
+
+    test('expanded view mounts the full body', () => {
+        const markup = render(
+            <CollapsedNoteView expanded onToggle={() => {}} label="injected note" body={'first reminder line\nsecond line'} />,
+        );
+        expect(markup).toContain('aria-expanded="true"');
+        expect(markup).toContain('first reminder line');
+        expect(markup).toContain('second line');
     });
 });
 

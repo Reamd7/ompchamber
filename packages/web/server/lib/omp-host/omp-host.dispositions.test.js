@@ -23,6 +23,9 @@ const makeFakeSession = (id) => ({
   setModel: async () => ({}),
   maybeStartTitleGeneration: () => {},
   prompt: async () => true,
+  skillsSettings: { enableSkillCommands: true },
+  skills: [{ name: 'find-skills', filePath: 'C:/Users/reamd/.agents/skills/find-skills/SKILL.md', baseDir: 'C:/Users/reamd/.agents/skills/find-skills' }],
+  promptCustomMessage: async () => true,
 });
 
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
@@ -196,6 +199,60 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     expect(todos.at(-1).properties.todos).toEqual([]);
   });
 
+  test('todo tool_execution_end emits todo.updated with the full phases list', async () => {
+    const h = await harness();
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 50 } });
+    const before = h.wireOf('todo.updated').length;
+    h.emit({
+      type: 'tool_execution_end',
+      toolCallId: 't1',
+      toolName: 'todo',
+      result: {
+        content: [{ type: 'text', text: 'updated' }],
+        details: {
+          op: 'write',
+          phases: [
+            {
+              name: 'Tasks',
+              tasks: [
+                { content: '任务一：完成第一项工作', status: 'completed' },
+                { content: '任务二：完成第二项工作', status: 'pending' },
+              ],
+            },
+          ],
+        },
+      },
+      isError: false,
+    });
+    const todos = h.wireOf('todo.updated').slice(before).at(-1)?.properties.todos;
+    // The completed item survives — the reminder payload would drop it.
+    expect(todos).toEqual([
+      { content: '任务一：完成第一项工作', status: 'completed', priority: 'medium' },
+      { content: '任务二：完成第二项工作', status: 'pending', priority: 'medium' },
+    ]);
+  });
+
+  test('todo tool errors and other tools emit no todo.updated', async () => {
+    const h = await harness();
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 60 } });
+    const before = h.wireOf('todo.updated').length;
+    h.emit({
+      type: 'tool_execution_end',
+      toolCallId: 't2',
+      toolName: 'todo',
+      result: { content: [{ type: 'text', text: 'refused' }], details: { phases: [{ name: 'Tasks', tasks: [] }] } },
+      isError: true,
+    });
+    h.emit({
+      type: 'tool_execution_end',
+      toolCallId: 't3',
+      toolName: 'read',
+      result: { content: [{ type: 'text', text: 'data' }], details: { filePath: '/x' } },
+      isError: false,
+    });
+    expect(h.wireOf('todo.updated').length).toBe(before);
+  });
+
   test('irc_message projects a wire card and structured omp payload; display:false stays cardless', async () => {
     const h = await harness();
     h.emit({
@@ -356,5 +413,90 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     h.emit({ type: 'agent_start' });
     h.emit({ type: 'agent_end', messages: [] });
     expect(h.wireOf('message.updated').length).toBe(count);
+  });
+
+  test('skill slash command prompts the skill-prompt message instead of a plain prompt', async () => {
+    const h = await harness();
+    const live = h.engine.sessions.get('s1');
+    const calls = [];
+    live.agentSession.prompt = async (text) => { calls.push({ kind: 'prompt', text }); return true; };
+    live.agentSession.promptCustomMessage = async (payload) => { calls.push({ kind: 'custom', customType: payload.customType, details: payload.details }); return true; };
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/skill:find-skills node test runner' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].kind).toBe('custom');
+    expect(calls[0].customType).toBe('skill-prompt');
+    expect(calls[0].details.name).toBe('find-skills');
+    expect(calls[0].details.path).toContain('find-skills/SKILL.md');
+  });
+
+  test('unknown skill commands and plain prompts fall through to session.prompt', async () => {
+    const h = await harness();
+    const live = h.engine.sessions.get('s1');
+    const calls = [];
+    live.agentSession.prompt = async (text) => { calls.push(text); return true; };
+    live.agentSession.promptCustomMessage = async () => { throw new Error('must not run'); };
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/grill-me' });
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'hello there' });
+    expect(calls).toEqual(['/grill-me', 'hello there']);
+  });
+
+  test('message_start developer emits the note live and anchors the next assistant turn', async () => {
+    const h = await harness();
+    const before = h.wireOf('message.updated').length;
+    h.emit({
+      type: 'message_start',
+      message: { role: 'developer', content: [{ type: 'text', text: 'queued follow-up' }], attribution: 'user', timestamp: 40 },
+    });
+    const note = h.wireOf('message.updated').slice(before).map((e) => e.properties.info).at(-1);
+    expect(note.role).toBe('user');
+    expect(note.metadata).toEqual({ ompRole: 'developer' });
+    const notePart = h.wireOf('message.part.updated').map((e) => e.properties.part).filter((p) => p.messageID === note.id).at(-1);
+    expect(notePart.text).toBe('[omp:developer] queued follow-up');
+
+    // The synthetic prompt occupies the user turn slot: the next assistant
+    // message anchors to it.
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 41 } });
+    const assistantInfo = h.wireOf('message.updated').map((e) => e.properties.info).at(-1);
+    expect(assistantInfo.parentID).toBe(note.id);
+  });
+
+  test('tail-sync projects unannounced developer notes and stays idempotent', async () => {
+    const h = await harness();
+    const live = h.engine.sessions.get('s1');
+    live.agentSession.messages.push(
+      { role: 'user', content: 'hi', timestamp: 50 },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }], model: 'p1/m1', timestamp: 51 },
+      { role: 'developer', content: [{ type: 'text', text: 'empty-stop retry reminder' }], attribution: 'agent', timestamp: 52 },
+    );
+    const before = h.wireOf('message.updated').length;
+    h.emit({ type: 'agent_start' });
+    h.emit({ type: 'agent_end', messages: [] });
+    const note = h.wireOf('message.updated').slice(before).map((e) => e.properties.info)
+      .find((info) => info?.metadata?.ompRole === 'developer');
+    expect(note?.role).toBe('assistant');
+    // Idempotent: a second agent_end does not re-emit the note.
+    const count = h.wireOf('message.updated').length;
+    h.emit({ type: 'agent_start' });
+    h.emit({ type: 'agent_end', messages: [] });
+    expect(h.wireOf('message.updated').length).toBe(count);
+  });
+
+  test('todo_reminder emits only the transient notice toast, never todo.updated', async () => {
+    const h = await harness();
+    const wireBefore = h.wireOf('todo.updated').length;
+    h.emit({
+      type: 'todo_reminder',
+      todos: [{ content: 'wire the plan', status: 'in_progress' }],
+      attempt: 2,
+      maxAttempts: 3,
+    });
+    // No wire todo.updated: the payload lists incomplete items only
+    // (todo-tracker.ts:269); emitting it would replace the panel's full
+    // list from the todo tool result mapping and drop completed items.
+    expect(h.wireOf('todo.updated').length).toBe(wireBefore);
+    const notice = h.ompOf('omp.notice.raised').at(-1)?.payload;
+    expect(notice.level).toBe('info');
+    expect(notice.message).toContain('(2/3)');
+    expect(notice.message).toContain('wire the plan');
   });
 });
