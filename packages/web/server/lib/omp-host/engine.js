@@ -43,6 +43,11 @@ const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // it was missing entirely and killed the engine on the first 60s sweep.
 const MAX_LIVE_SESSIONS = 16;
 
+// Bound on how long engine.abort waits for AgentSession.abort's teardown
+// (post-prompt drain + agent idle). The pi drain has no internal timeout on
+// the abort path (dispose caps it at 5s; abort does not), so one signal-blind
+// tool or never-settling post-prompt task would park the stop request forever.
+const ABORT_TEARDOWN_TIMEOUT_MS = 10_000;
 /**
  * Session-level persona key (02 §5.1 D-B3): unset and the deleted
  * build/plan pair map to the standard session; any other name is a persona.
@@ -67,11 +72,13 @@ export class OmpHostEngine {
   /** In-flight #materialize dedup (`${directory}\0${sessionId}` → promise); prevents duplicate AgentSessions on lease/prompt races. */
   #materializeInFlight = new Map();
 
-  constructor({ agentDir } = {}) {
+  constructor({ agentDir, abortTeardownTimeoutMs } = {}) {
     this.authStorage = null;
     this.modelRegistry = null;
     this.registry = new SessionMetaRegistry({ agentDir });
     this.bus = new WireEventBus();
+    /** How long abort() waits for the agent teardown before force-disposing (test injectable). */
+    this.abortTeardownTimeoutMs = abortTeardownTimeoutMs ?? ABORT_TEARDOWN_TIMEOUT_MS;
     /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
     this.ompBus = new OmpEventBus();
     /** @type {Map<string, HostSession>} */
@@ -2021,7 +2028,58 @@ export class OmpHostEngine {
     await this.#boot();
     const live = this.sessions.get(sessionID);
     if (!live?.agentSession) return false;
-    await live.agentSession.abort({ reason: 'User aborted' });
+    // AgentSession.abort() delivers the cancellation signal synchronously,
+    // then awaits the full turn teardown (post-prompt drain + agent idle).
+    // pi caps that drain on its dispose paths but not on abort, so a single
+    // signal-blind tool call or never-settling post-prompt task parks the
+    // await forever — this route then never answered, the stop request hung,
+    // and the session stayed busy until a server restart. Bound the wait; a
+    // healthy teardown settles well under a second.
+    let timeoutTimer = null;
+    const settled = await Promise.race([
+      live.agentSession.abort({ reason: 'User aborted' }).then(
+        () => true,
+        (error) => {
+          // The cancellation signal was still delivered; a rejected teardown
+          // step must not break the stop contract — but leave a trace.
+          console.warn('[omp-host] abort teardown rejected:', error?.message ?? error);
+          return true;
+        }
+      ),
+      new Promise((resolve) => {
+        timeoutTimer = setTimeout(resolve, this.abortTeardownTimeoutMs);
+      }).then(() => false)
+    ]);
+    clearTimeout(timeoutTimer);
+    if (settled) {
+      // A settled abort with nothing streaming means the busy state was the
+      // engine-level awaiting-async limbo: the turn ended with isTerminal
+      // false (async delivery was supposed to resume it) and the resume
+      // never came, so pi is idle while the session stays busy — Stop looked
+      // dead while a new steer "magically" healed it (agent_start clears
+      // awaitingAsyncSince). Stop must be authoritative instead: drop the
+      // limbo and settle clients, mirroring the terminal agent_end path. A
+      // genuine async resume starts with agent_start, which re-raises busy.
+      // Optional chaining: a concurrent delete/dispose may have nulled
+      // agentSession while the race was pending.
+      if (!live.agentSession?.isStreaming && live.awaitingAsyncSince !== null) {
+        live.awaitingAsyncSince = null;
+        this.bus.emit('session.idle', { sessionID }, live.directory);
+      }
+      return true;
+    }
+    // The teardown is stuck and the session is bricked with it (pi leaves
+    // #abortInProgress set and ignores further input). Force-dispose: pi's
+    // dispose caps its own drains, the next prompt() rebuilds a live session
+    // from the persisted transcript, and the emitted session.idle unsticks
+    // every client immediately (module invariant: events carry the session's
+    // own directory).
+    console.warn(
+      `[omp-host] abort teardown did not settle within ${this.abortTeardownTimeoutMs}ms; force-disposing session ${sessionID}`
+    );
+    this.#disposeSession(live);
+    this.sessions.delete(sessionID);
+    this.bus.emit('session.idle', { sessionID }, live.directory);
     return true;
   }
 

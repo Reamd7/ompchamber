@@ -44,6 +44,7 @@ const makeFakeSession = (id) => ({
   prompt: mock(async () => true),
   steer: mock(async () => {}),
   abort: mock(async () => {}),
+  dispose: mock(async () => {}),
 });
 
 const fakeSessions = new Map();
@@ -247,6 +248,66 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(engine.registry.get('/repo', 's1')?.timeArchived).toBe(123);
     expect(engine.registry.get('/elsewhere', 's1')).toBe(null);
     expect(updated?.time?.archived).toBe(123);
+  });
+
+  test('abort force-disposes a session whose teardown never settles and emits session.idle', async () => {
+    const engine = new OmpHostEngine({ agentDir, abortTeardownTimeoutMs: 25 });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'stuck turn' });
+    const session = sessionFor('s2');
+    // One signal-blind tool / never-settling post-prompt task: abort's own
+    // teardown promise parks forever (pi-agent-session abort awaits it bare).
+    session.abort = mock(() => new Promise(() => {}));
+
+    await expect(engine.abort({ sessionID: 's2', directory: '/repo' })).resolves.toBe(true);
+    expect(engine.sessions.has('s2')).toBe(false);
+    expect(session.dispose).toHaveBeenCalled();
+
+    // Escalation must settle every client: one durable session.idle, routed
+    // under the session's own directory (module invariant).
+    const idle = engine.bus.replay.filter(
+      (entry) => entry.envelope.type === 'session.idle' && entry.envelope.properties.sessionID === 's2'
+    );
+    expect(idle).toHaveLength(1);
+    expect(idle[0].directory).toBe('/repo');
+  });
+
+  test('abort survives a rejecting teardown without escalating', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm up' });
+    const session = sessionFor('s1');
+    session.abort = mock(async () => {
+      throw new Error('teardown blew up');
+    });
+
+    await expect(engine.abort({ sessionID: 's1', directory: '/repo' })).resolves.toBe(true);
+    expect(engine.sessions.has('s1')).toBe(true);
+    expect(engine.bus.replay.some((entry) => entry.envelope.type === 'session.idle')).toBe(false);
+  });
+
+  test('abort settles an awaiting-async session that has nothing running', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'ended awaiting async' });
+    const session = sessionFor('s2');
+    // agent_end(isTerminal=false) put the session in the engine-level
+    // awaiting-async limbo and the resume never came: pi is idle (nothing to
+    // abort) while the engine keeps reporting busy — Stop looked dead and
+    // only a fresh steer healed it (agent_start clears awaitingAsyncSince).
+    // Fake sessions are shared across tests; restore a healthy abort (an
+    // earlier test parks s2's) and clear dispose's call history (an earlier
+    // test exercised it).
+    session.abort = mock(async () => {});
+    session.dispose = mock(async () => {});
+    const live = engine.sessions.get('s2');
+    live.awaitingAsyncSince = Date.now();
+    const before = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle').length;
+
+    await expect(engine.abort({ sessionID: 's2', directory: '/repo' })).resolves.toBe(true);
+    expect(live.awaitingAsyncSince).toBe(null);
+    expect(engine.sessions.has('s2')).toBe(true);
+    expect(session.dispose).not.toHaveBeenCalled();
+    const idle = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle');
+    expect(idle.length).toBe(before + 1);
+    expect(idle.at(-1).directory).toBe('/repo');
   });
 
   test('updateSession refuses a mis-addressed update for an idle session', async () => {
