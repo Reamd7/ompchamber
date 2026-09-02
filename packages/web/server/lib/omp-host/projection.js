@@ -25,7 +25,10 @@ const toBase36 = (value, pad = 8) => {
 };
 
 const contentDigest = (text) => {
-  const hash = crypto.createHash('sha256').update(String(text ?? '')).digest('hex');
+  const hash = crypto
+    .createHash('sha256')
+    .update(String(text ?? ''))
+    .digest('hex');
   return hash.slice(0, 4);
 };
 
@@ -34,7 +37,7 @@ export const splitModelSelector = (modelId) => {
   if (separator === -1) return { providerID: '', modelID: String(modelId ?? '') };
   return {
     providerID: String(modelId).slice(0, separator),
-    modelID: String(modelId).slice(separator + 1),
+    modelID: String(modelId).slice(separator + 1)
   };
 };
 
@@ -49,9 +52,7 @@ export const wireMessageId = (role, timestamp, seedText) => {
  * the first content block's name).
  */
 export const deterministicWireId = (message) => {
-  const seed = message.role === 'assistant' && !textOfContent(message.content)
-    ? (message.content?.[0]?.name ?? '')
-    : textOfContent(message.content);
+  const seed = message.role === 'assistant' && !textOfContent(message.content) ? (message.content?.[0]?.name ?? '') : textOfContent(message.content);
   return wireMessageId(message.role, message.timestamp, seed);
 };
 
@@ -87,9 +88,7 @@ export const paginateProjectedMessages = (messages, { limit, before } = {}) => {
     const boundary = messages.findIndex((message) => message?.info?.id === before);
     windowed = boundary === -1 ? [] : messages.slice(0, boundary);
   }
-  const pageLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0
-    ? Math.floor(limit)
-    : undefined;
+  const pageLimit = typeof limit === 'number' && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
   if (pageLimit === undefined || windowed.length <= pageLimit) {
     return { messages: windowed, cursor: undefined };
   }
@@ -106,13 +105,13 @@ export const projectUsage = (usage) => {
       reasoning: u.reasoningTokens ?? 0,
       cache: {
         read: u.cacheRead ?? 0,
-        write: u.cacheWrite ?? 0,
-      },
+        write: u.cacheWrite ?? 0
+      }
     },
     // omp reports cost through usage reports rather than per-message totals;
     // per-message cost is surfaced as zero and session aggregates come from
     // usage reports when available.
-    cost: typeof u.cost === 'number' ? u.cost : 0,
+    cost: typeof u.cost === 'number' ? u.cost : 0
   };
 };
 
@@ -126,11 +125,7 @@ const textOfContent = (content) => {
 };
 
 /** True when a tool result carries structured, non-empty details. */
-const hasDetails = (result) =>
-  result.details !== null &&
-  result.details !== undefined &&
-  typeof result.details === 'object' &&
-  Object.keys(result.details).length > 0;
+const hasDetails = (result) => result.details !== null && result.details !== undefined && typeof result.details === 'object' && Object.keys(result.details).length > 0;
 
 /**
  * Normalize a tool_execution_end `result` into the transcript
@@ -145,15 +140,14 @@ export const normalizeToolExecutionResult = (result) => {
     return {
       content,
       text: textOfContent(content),
-      ...(hasDetails(result) ? { details: result.details } : {}),
+      ...(hasDetails(result) ? { details: result.details } : {})
     };
   }
   const text = typeof result === 'string' ? result : '';
   return { content: text ? [{ type: 'text', text }] : [], text };
 };
 
-const imageBlocks = (content) =>
-  Array.isArray(content) ? content.filter((block) => block && block.type === 'image') : [];
+const imageBlocks = (content) => (Array.isArray(content) ? content.filter((block) => block && block.type === 'image') : []);
 
 const partId = (messageWireId, seq) => `prt_${messageWireId.slice(4)}_${seq}`;
 
@@ -182,7 +176,13 @@ export const projectUserMessage = (message, { sessionID, agent, model, thinkingL
   const parts = [];
   let seq = 0;
   if (text.length > 0) {
-    parts.push({ id: partId(id, seq++), sessionID, messageID: id, type: 'text', text });
+    parts.push({
+      id: partId(id, seq++),
+      sessionID,
+      messageID: id,
+      type: 'text',
+      text
+    });
   }
   for (const image of imageBlocks(message.content)) {
     parts.push({
@@ -191,14 +191,10 @@ export const projectUserMessage = (message, { sessionID, agent, model, thinkingL
       messageID: id,
       type: 'file',
       mime: image.mimeType || 'image/png',
-      url: `data:${image.mimeType || 'image/png'};base64,${image.data}`,
+      url: `data:${image.mimeType || 'image/png'};base64,${image.data}`
     });
   }
-  const selector = model
-    ? typeof model === 'string'
-      ? splitModelSelector(model)
-      : { providerID: model.provider ?? '', modelID: model.id ?? '' }
-    : { providerID: '', modelID: '' };
+  const selector = model ? (typeof model === 'string' ? splitModelSelector(model) : { providerID: model.provider ?? '', modelID: model.id ?? '' }) : { providerID: '', modelID: '' };
   const info = {
     id,
     sessionID,
@@ -208,8 +204,8 @@ export const projectUserMessage = (message, { sessionID, agent, model, thinkingL
     model: {
       providerID: selector.providerID,
       modelID: selector.modelID,
-      ...(typeof thinkingLevel === 'string' && thinkingLevel.length > 0 ? { variant: thinkingLevel } : {}),
-    },
+      ...(typeof thinkingLevel === 'string' && thinkingLevel.length > 0 ? { variant: thinkingLevel } : {})
+    }
   };
   return { info, parts };
 };
@@ -231,17 +227,13 @@ export const buildTurnStateStamper = (entries, { wireIdFor } = {}) => {
     if (entry.type === 'model_change' && typeof entry.model === 'string' && entry.model.length > 0) {
       model = entry.model;
     } else if (entry.type === 'thinking_level_change') {
-      thinkingLevel = typeof entry.thinkingLevel === 'string' && entry.thinkingLevel.length > 0
-        ? entry.thinkingLevel
-        : null;
+      thinkingLevel = typeof entry.thinkingLevel === 'string' && entry.thinkingLevel.length > 0 ? entry.thinkingLevel : null;
     } else if (entry.type === 'message' && entry.message?.role === 'user') {
       const key = wireIdFor?.(entry.message) ?? deterministicWireId(entry.message);
       stateByWireId.set(key, { model, thinkingLevel });
     }
   }
-  return (message) => (message?.role === 'user'
-    ? stateByWireId.get(wireIdFor?.(message) ?? deterministicWireId(message)) ?? null
-    : null);
+  return (message) => (message?.role === 'user' ? (stateByWireId.get(wireIdFor?.(message) ?? deterministicWireId(message)) ?? null) : null);
 };
 
 /**
@@ -252,11 +244,15 @@ export const buildTurnStateStamper = (entries, { wireIdFor } = {}) => {
  * output. Entries the engine marked `display: false`, and empty ones, are
  * dropped.
  */
+const unwrapFullBodyXml = (text) => {
+  const wrapped = text.match(/^<([a-zA-Z-]+)[^>]*>\s*([\s\S]*?)\s*<\/\1>\s*$/);
+  return wrapped ? wrapped[2] : text;
+};
+
 export const projectCustomMessage = (message, { sessionID, agent, parentID }) => {
   const text = textOfContent(message.content);
   const label = message.customType ? `[omp:${message.customType}] ` : '[omp] ';
-  const wrapped = text.match(/^<([a-zA-Z-]+)[^>]*>\s*([\s\S]*?)\s*<\/\1>\s*$/);
-  const body = wrapped ? wrapped[2] : text;
+  const body = unwrapFullBodyXml(text);
   const id = wireMessageId('custom', message.timestamp, label + body);
   return {
     info: {
@@ -268,7 +264,7 @@ export const projectCustomMessage = (message, { sessionID, agent, parentID }) =>
       ...(parentID ? { parentID } : {}),
       time: { created: message.timestamp, completed: message.timestamp },
       agent: agent ?? 'build',
-      model: { providerID: '', modelID: '' },
+      model: { providerID: '', modelID: '' }
     },
     parts: [
       {
@@ -278,9 +274,72 @@ export const projectCustomMessage = (message, { sessionID, agent, parentID }) =>
         type: 'text',
         text: label + body,
         synthetic: true,
-        time: { start: message.timestamp },
+        time: { start: message.timestamp }
+      }
+    ]
+  };
+};
+
+const developerTextPart = (id, sessionID, label, text, timestamp) => ({
+  id: partId(id, 0),
+  sessionID,
+  messageID: id,
+  type: 'text',
+  text: label + text,
+  synthetic: true,
+  time: { start: timestamp }
+});
+
+/**
+ * Project a `developer` role message (harness-injected transcript input) into
+ * the wire model. The TUI renders both attributions as collapsed synthetic
+ * rows at the user position (chat-transcript-builder.ts `#appendChatMessage`,
+ * user/developer case); the wire shape keeps the turn structure intact:
+ * - attribution 'user' (synthetic prompts, todo-command reminders,
+ *   image-bearing custom-message conversions): user-side synthetic message
+ *   occupying the user turn slot, so the following assistant message anchors
+ *   to it exactly like a real prompt.
+ * - attribution 'agent' (mid-turn injections: turn-recovery reminders,
+ *   auto-continue, side-channel nudges): assistant-side `[omp:developer]`
+ *   note riding the current turn (projectCustomMessage's shape), so it never
+ *   splits the turn it was injected into.
+ */
+export const projectDeveloperMessage = (message, { sessionID, agent, parentID }) => {
+  const text = textOfContent(message.content);
+  const label = '[omp:developer] ';
+  const userSlot = message.attribution === 'user';
+  // Reminder injections wrap their body in <system-reminder>...</system-reminder>;
+  // the UI's synthetic-part filter drops parts containing that tag, so the part
+  // text carries the unwrapped body. The id seed stays on the raw text so
+  // already-persisted notes keep their wire ids across this unwrap.
+  const body = unwrapFullBodyXml(text);
+  const id = wireMessageId(userSlot ? 'user' : 'custom', message.timestamp, label + text);
+  if (userSlot) {
+    return {
+      info: {
+        id,
+        sessionID,
+        role: 'user',
+        time: { created: message.timestamp },
+        agent: agent ?? 'build',
+        model: { providerID: '', modelID: '' },
+        metadata: { ompRole: 'developer' }
       },
-    ],
+      parts: [developerTextPart(id, sessionID, label, body, message.timestamp)]
+    };
+  }
+  return {
+    info: {
+      id,
+      sessionID,
+      role: 'assistant',
+      ...(parentID ? { parentID } : {}),
+      time: { created: message.timestamp, completed: message.timestamp },
+      agent: agent ?? 'build',
+      model: { providerID: '', modelID: '' },
+      metadata: { ompRole: 'developer' }
+    },
+    parts: [developerTextPart(id, sessionID, label, body, message.timestamp)]
   };
 };
 
@@ -296,11 +355,7 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
   if (!entry || typeof entry !== 'object') return null;
   // Transcript entries persist ISO string timestamps (getEntries Date.parses
   // them); tolerate numeric ms too. Wire time.created is numeric ms.
-  const timestamp = typeof entry.timestamp === 'number'
-    ? entry.timestamp
-    : typeof entry.timestamp === 'string' && entry.timestamp.length > 0
-      ? Date.parse(entry.timestamp)
-      : Number.NaN;
+  const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : typeof entry.timestamp === 'string' && entry.timestamp.length > 0 ? Date.parse(entry.timestamp) : Number.NaN;
   if (!Number.isFinite(timestamp)) return null;
   if (entry.type === 'model_change') {
     if (typeof entry.model !== 'string' || entry.model.length === 0) return null;
@@ -321,8 +376,8 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
           ompRole: 'modelChange',
           model: entry.model,
           ...(typeof entry.role === 'string' ? { role: entry.role } : {}),
-          ...(entry.resolvedModelIsFallback === true ? { fallback: true } : {}),
-        },
+          ...(entry.resolvedModelIsFallback === true ? { fallback: true } : {})
+        }
       },
       parts: [
         {
@@ -332,9 +387,9 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
           type: 'text',
           text: `[omp:modelChange] ${body}`,
           synthetic: true,
-          time: { start: timestamp },
-        },
-      ],
+          time: { start: timestamp }
+        }
+      ]
     };
   }
   if (entry.type === 'mode_change') {
@@ -347,7 +402,7 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
         role: 'assistant',
         time: { created: timestamp, completed: timestamp },
         model: { providerID: '', modelID: '' },
-        metadata: { ompRole: 'modeChange', mode: entry.mode },
+        metadata: { ompRole: 'modeChange', mode: entry.mode }
       },
       parts: [
         {
@@ -357,9 +412,9 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
           type: 'text',
           text: `[omp:modeChange] ${entry.mode}`,
           synthetic: true,
-          time: { start: timestamp },
-        },
-      ],
+          time: { start: timestamp }
+        }
+      ]
     };
   }
   return null;
@@ -389,10 +444,10 @@ export const projectDividerMessage = (message, { sessionID, agent, parentID }) =
         ...(role === 'compactionSummary'
           ? {
               tokensBefore: message.tokensBefore,
-              ...(message.warning ? { warning: message.warning } : {}),
+              ...(message.warning ? { warning: message.warning } : {})
             }
-          : { fromId: message.fromId }),
-      },
+          : { fromId: message.fromId })
+      }
     },
     parts: [
       {
@@ -402,9 +457,9 @@ export const projectDividerMessage = (message, { sessionID, agent, parentID }) =
         type: 'text',
         text: label + summary,
         synthetic: true,
-        time: { start: message.timestamp },
-      },
-    ],
+        time: { start: message.timestamp }
+      }
+    ]
   };
 };
 
@@ -430,7 +485,12 @@ export const projectExecutionMessage = (message, { sessionID, agent }) => {
       time: { created: message.timestamp },
       agent: agent ?? 'build',
       model: { providerID: '', modelID: '' },
-      metadata: { ompRole: kind, command, exitCode: message.exitCode, cancelled: Boolean(message.cancelled) },
+      metadata: {
+        ompRole: kind,
+        command,
+        exitCode: message.exitCode,
+        cancelled: Boolean(message.cancelled)
+      }
     },
     parts: [
       {
@@ -440,9 +500,9 @@ export const projectExecutionMessage = (message, { sessionID, agent }) => {
         type: 'text',
         text: `${label}$ ${command}${exit}${cancelled}${output ? `\n${output}` : ''}`,
         synthetic: true,
-        time: { start: message.timestamp },
-      },
-    ],
+        time: { start: message.timestamp }
+      }
+    ]
   };
 };
 
@@ -452,9 +512,7 @@ export const projectExecutionMessage = (message, { sessionID, agent }) => {
  */
 export const projectFileMentionMessage = (message, { sessionID, agent }) => {
   const files = Array.isArray(message.files) ? message.files : [];
-  const lines = files
-    .map((file) => `└ Read ${file.path ?? '(unknown)'}${file.lineCount !== undefined ? ` (${file.lineCount} lines)` : ''}`)
-    .join('\n');
+  const lines = files.map((file) => `└ Read ${file.path ?? '(unknown)'}${file.lineCount !== undefined ? ` (${file.lineCount} lines)` : ''}`).join('\n');
   const label = '[omp:file-mention] ';
   const id = wireMessageId('custom', message.timestamp, label + lines);
   return {
@@ -465,7 +523,13 @@ export const projectFileMentionMessage = (message, { sessionID, agent }) => {
       time: { created: message.timestamp },
       agent: agent ?? 'build',
       model: { providerID: '', modelID: '' },
-      metadata: { ompRole: 'file-mention', files: files.map((file) => ({ path: file.path, lines: file.lineCount })) },
+      metadata: {
+        ompRole: 'file-mention',
+        files: files.map((file) => ({
+          path: file.path,
+          lines: file.lineCount
+        }))
+      }
     },
     parts: [
       {
@@ -475,9 +539,9 @@ export const projectFileMentionMessage = (message, { sessionID, agent }) => {
         type: 'text',
         text: label + lines,
         synthetic: true,
-        time: { start: message.timestamp },
-      },
-    ],
+        time: { start: message.timestamp }
+      }
+    ]
   };
 };
 
@@ -486,14 +550,13 @@ export const projectFileMentionMessage = (message, { sessionID, agent }) => {
  * wire `{ info, parts }`. Tool results are matched by toolCallId; unpaired
  * calls are rendered in their last observed state.
  */
-export const projectAssistantMessage = (
-  message,
-  toolResults,
-  { sessionID, agent, directory, parentID, wireId },
-) => {
+export const projectAssistantMessage = (message, toolResults, { sessionID, agent, directory, parentID, wireId }) => {
   const seed = textOfContent(message.content) || (message.content?.[0]?.name ?? '');
   const id = wireId ?? wireMessageId('assistant', message.timestamp, seed);
-  const selector = { providerID: message.provider ?? splitModelSelector(message.model ?? '').providerID, modelID: message.model ?? '' };
+  const selector = {
+    providerID: message.provider ?? splitModelSelector(message.model ?? '').providerID,
+    modelID: message.model ?? ''
+  };
   const { tokens, cost } = projectUsage(message.usage);
 
   const parts = [];
@@ -504,7 +567,7 @@ export const projectAssistantMessage = (
     id: partId(id, seq++),
     sessionID,
     messageID: id,
-    type: 'step-start',
+    type: 'step-start'
   });
 
   for (const block of message.content ?? []) {
@@ -516,7 +579,7 @@ export const projectAssistantMessage = (
         messageID: id,
         type: 'text',
         text: block.text,
-        time: { start: message.timestamp },
+        time: { start: message.timestamp }
       });
     } else if (block.type === 'thinking') {
       pushPart({
@@ -525,7 +588,7 @@ export const projectAssistantMessage = (
         messageID: id,
         type: 'reasoning',
         text: block.thinking ?? '',
-        time: { start: message.timestamp, end: message.timestamp },
+        time: { start: message.timestamp, end: message.timestamp }
       });
     } else if (block.type === 'toolCall') {
       const result = toolResults.get(block.id);
@@ -533,16 +596,14 @@ export const projectAssistantMessage = (
       // The model states its reason for each call in `intent`; it is the
       // human-readable heading for the tool row (the raw name/command stays
       // available through state fallbacks).
-      const intent = typeof block.intent === 'string' && block.intent.trim()
-        ? block.intent.trim()
-        : null;
+      const intent = typeof block.intent === 'string' && block.intent.trim() ? block.intent.trim() : null;
       const base = {
         id: partId(id, seq++),
         sessionID,
         messageID: id,
         type: 'tool',
         callID: block.id,
-        tool: block.name,
+        tool: block.name
       };
       if (!result) {
         pushPart({
@@ -551,14 +612,17 @@ export const projectAssistantMessage = (
             status: message.stopReason === 'aborted' ? 'error' : 'completed',
             input,
             ...(message.stopReason === 'aborted'
-              ? { error: 'Aborted', time: { start: message.timestamp, end: message.timestamp } }
+              ? {
+                  error: 'Aborted',
+                  time: { start: message.timestamp, end: message.timestamp }
+                }
               : {
                   output: '',
                   title: intent ?? block.name,
                   metadata: intent ? { intent } : {},
-                  time: { start: message.timestamp, end: message.timestamp },
-                }),
-          },
+                  time: { start: message.timestamp, end: message.timestamp }
+                })
+          }
         });
       } else if (result.isError) {
         pushPart({
@@ -567,8 +631,11 @@ export const projectAssistantMessage = (
             status: 'error',
             input,
             error: textOfContent(result.content) || 'Tool error',
-            time: { start: message.timestamp, end: result.timestamp ?? message.timestamp },
-          },
+            time: {
+              start: message.timestamp,
+              end: result.timestamp ?? message.timestamp
+            }
+          }
         });
       } else {
         // Structured tool details (the ask tool's AskToolDetails, spec 03
@@ -583,32 +650,40 @@ export const projectAssistantMessage = (
             title: intent ?? block.name,
             metadata: {
               ...(intent ? { intent } : {}),
-              ...(hasDetails(result) ? { details: result.details } : {}),
+              ...(hasDetails(result) ? { details: result.details } : {})
             },
-            time: { start: message.timestamp, end: result.timestamp ?? message.timestamp },
-          },
+            time: {
+              start: message.timestamp,
+              end: result.timestamp ?? message.timestamp
+            }
+          }
         });
       }
     }
-}
+  }
 
-  const completedAt = message.stopReason === 'error' || message.stopReason === 'aborted'
-    ? undefined
-    : message.timestamp;
+  const completedAt = message.stopReason === 'error' || message.stopReason === 'aborted' ? undefined : message.timestamp;
 
   const info = {
     id,
     sessionID,
     role: 'assistant',
-    time: { created: message.timestamp, ...(completedAt !== undefined ? { completed: completedAt } : {}) },
+    time: {
+      created: message.timestamp,
+      ...(completedAt !== undefined ? { completed: completedAt } : {})
+    },
     ...(message.errorMessage
       ? {
           error: {
             name: 'UnknownError',
-            data: { message: message.errorMessage },
-          },
+            data: { message: message.errorMessage }
+          }
         }
       : {}),
+    // Branch/fork history rewrite strips unpaired tool calls and stamps the
+    // count (SDK session-context.ts StrippedToolCallsMarker); the UI renders
+    // an elided-activity line from it (TUI StrippedToolCallsPlaceholder).
+    ...(typeof message.strippedToolCalls === 'number' && message.strippedToolCalls > 0 ? { metadata: { ompStrippedToolCalls: message.strippedToolCalls } } : {}),
     parentID: parentID ?? '',
     modelID: selector.modelID,
     providerID: selector.providerID,
@@ -616,7 +691,7 @@ export const projectAssistantMessage = (
     agent: agent ?? 'build',
     path: { cwd: directory ?? '', root: directory ?? '' },
     cost,
-    tokens,
+    tokens
   };
   return { info, parts };
 };
@@ -636,11 +711,13 @@ export const projectConversation = (messages, options) => {
   const flushAssistant = () => {
     if (!pendingAssistant) return;
     const wireId = options?.wireIdFor?.(pendingAssistant);
-    out.push(projectAssistantMessage(pendingAssistant, pendingResults, {
-      ...options,
-      ...(wireId ? { wireId } : {}),
-      parentID: lastUserWireId,
-    }));
+    out.push(
+      projectAssistantMessage(pendingAssistant, pendingResults, {
+        ...options,
+        ...(wireId ? { wireId } : {}),
+        parentID: lastUserWireId
+      })
+    );
     pendingAssistant = null;
     pendingResults = new Map();
   };
@@ -657,7 +734,7 @@ export const projectConversation = (messages, options) => {
         ...options,
         ...(turnState?.model ? { model: turnState.model } : {}),
         ...(turnState?.thinkingLevel ? { thinkingLevel: turnState.thinkingLevel } : {}),
-        ...(wireId ? { wireId } : {}),
+        ...(wireId ? { wireId } : {})
       });
       lastUserWireId = projected.info.id;
       out.push(projected);
@@ -668,10 +745,20 @@ export const projectConversation = (messages, options) => {
       if (message.display === false) continue;
       if (!textOfContent(message.content).trim()) continue;
       flushAssistant();
-      out.push(projectCustomMessage(message, { ...options, parentID: lastUserWireId || undefined }));
+      out.push(
+        projectCustomMessage(message, {
+          ...options,
+          parentID: lastUserWireId || undefined
+        })
+      );
     } else if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
       flushAssistant();
-      out.push(projectDividerMessage(message, { ...options, parentID: lastUserWireId || undefined }));
+      out.push(
+        projectDividerMessage(message, {
+          ...options,
+          parentID: lastUserWireId || undefined
+        })
+      );
     } else if (message.role === 'bashExecution' || message.role === 'pythonExecution') {
       // Standalone user-side segment: never anchors turn pairing (05 §5.10).
       out.push(projectExecutionMessage(message, options));
@@ -680,6 +767,21 @@ export const projectConversation = (messages, options) => {
     } else if (message.role === 'toolResult') {
       if (!pendingAssistant) continue;
       pendingResults.set(message.toolCallId, message);
+    } else if (message.role === 'developer') {
+      // TUI parity: developer-role transcript messages render in the TUI as
+      // collapsed synthetic rows. Empty ones stay invisible there too.
+      if (!textOfContent(message.content).trim()) continue;
+      flushAssistant();
+      const projected = projectDeveloperMessage(message, {
+        ...options,
+        parentID: lastUserWireId || undefined
+      });
+      if (message.attribution === 'user') {
+        // A synthetic prompt occupies the user turn slot: the following
+        // assistant message anchors to it like a real prompt.
+        lastUserWireId = projected.info.id;
+      }
+      out.push(projected);
     }
   }
   flushAssistant();
@@ -738,7 +840,12 @@ export class StreamProjector {
       agent: this.agent ?? 'build',
       path: { cwd: this.directory ?? '', root: this.directory ?? '' },
       cost: 0,
-      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      tokens: {
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 }
+      }
     };
     this.seq = 0;
     this.textPartId = null;
@@ -752,7 +859,12 @@ export class StreamProjector {
     this.toolPartialMeta = new Map();
     this.emit('message.updated', { sessionID: this.sessionID, info: this.current }, this.directory);
     const stepStartId = this.#newPartId();
-    this.#emitPartUpdated({ id: stepStartId, sessionID: this.sessionID, messageID: this.current.id, type: 'step-start' });
+    this.#emitPartUpdated({
+      id: stepStartId,
+      sessionID: this.sessionID,
+      messageID: this.current.id,
+      type: 'step-start'
+    });
     return this.current;
   }
 
@@ -765,7 +877,7 @@ export class StreamProjector {
       messageID: this.current.id,
       type: 'text',
       text: '',
-      time: { start: Date.now() },
+      time: { start: Date.now() }
     });
     return this.textPartId;
   }
@@ -781,9 +893,9 @@ export class StreamProjector {
         messageID: this.current.id,
         partID: partIdNow,
         field: 'text',
-        delta,
+        delta
       },
-      this.directory,
+      this.directory
     );
   }
 
@@ -796,7 +908,7 @@ export class StreamProjector {
       messageID: this.current.id,
       type: 'reasoning',
       text: '',
-      time: { start: Date.now() },
+      time: { start: Date.now() }
     });
     return this.reasoningPartId;
   }
@@ -812,9 +924,9 @@ export class StreamProjector {
         messageID: this.current.id,
         partID: partIdNow,
         field: 'text',
-        delta,
+        delta
       },
-      this.directory,
+      this.directory
     );
   }
 
@@ -842,8 +954,8 @@ export class StreamProjector {
         status: 'running',
         input: input ?? {},
         ...(title ? { title } : {}),
-        time: { start: Date.now() },
-      },
+        time: { start: Date.now() }
+      }
     });
   }
 
@@ -880,8 +992,8 @@ export class StreamProjector {
         input: this.toolInputs.get(callID) ?? {},
         ...(output ? { output } : {}),
         ...(metadata ? { metadata } : {}),
-        time: { start: startedAt },
-      },
+        time: { start: startedAt }
+      }
     });
   }
 
@@ -903,7 +1015,7 @@ export class StreamProjector {
             status: 'error',
             input: this.toolInputs.get(callID) ?? {},
             error,
-            time: { start: startedAt, end: Date.now() },
+            time: { start: startedAt, end: Date.now() }
           }
         : {
             status: 'completed',
@@ -911,8 +1023,8 @@ export class StreamProjector {
             output: output ?? '',
             title: toolName,
             metadata: metadata ?? {},
-            time: { start: startedAt, end: Date.now() },
-          },
+            time: { start: startedAt, end: Date.now() }
+          }
     });
   }
 
@@ -928,7 +1040,7 @@ export class StreamProjector {
       directory: this.directory,
       agent: this.agent,
       parentID: this.parentID,
-      wireId: this.current.id,
+      wireId: this.current.id
     });
     this.current = info;
     this.emit('message.updated', { sessionID: this.sessionID, info }, this.directory);

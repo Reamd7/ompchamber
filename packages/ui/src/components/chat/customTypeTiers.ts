@@ -20,33 +20,36 @@
  *   drops them, so the UI normally never sees them. Classified defensively so
  *   an unfiltered path (or an older projection) renders nothing, matching the
  *   "hidden but never re-shown" rule (05 §5.8.2).
+ * - T5 collapsed notes — harness-injected developer-role inputs (TUI
+ *   `CollapsedSyntheticMessageComponent`): potentially hundreds of KiB, so
+ *   the body renders only after expanding the one-line summary.
  * - T4 fallback — unknown / extension-registered types keep the plain
  *   `[omp:<type>]` text rendering.
  */
-
-export type OmpCustomTier = 'T1' | 'T2' | 'T3' | 'T4';
+export type OmpCustomTier = 'T1' | 'T2' | 'T3' | 'T4' | 'T5';
 
 /** T1 — visible cards with dedicated chrome (05 §5.8.2 tier table). */
 const T1_CUSTOM_TYPES: Record<string, true> = {
-    advisor: true,
-    'irc:incoming': true,
-    'irc:autoreply': true,
-    'irc:relay': true,
-    'async-result': true,
-    'skill-prompt': true,
-    'lsp-late-diagnostic': true,
-    'live-delegation': true,
-    'collab-prompt': true,
-    'background-tan-dispatch': true,
+  advisor: true,
+  'irc:incoming': true,
+  'irc:autoreply': true,
+  'irc:relay': true,
+  'async-result': true,
+  'skill-prompt': true,
+  'lsp-late-diagnostic': true,
+  'live-delegation': true,
+  'collab-prompt': true,
+  'background-tan-dispatch': true,
+  'launch-completion': true
 };
 
 /** T2 — history-collapse points rendered as slim collapsible dividers. */
 const T2_CUSTOM_TYPES: Record<string, true> = {
-    compactionSummary: true,
-    branchSummary: true,
-    handoff: true,
-    modelChange: true,
-    modeChange: true,
+  compactionSummary: true,
+  branchSummary: true,
+  handoff: true,
+  modelChange: true,
+  modeChange: true
 };
 
 /**
@@ -55,43 +58,49 @@ const T2_CUSTOM_TYPES: Record<string, true> = {
  * families are matched by prefix because the SDK mints suffixed variants.
  */
 const T3_CUSTOM_TYPES: Record<string, true> = {
-    'eager-todo-prelude': true,
-    'mid-run-todo-nudge': true,
-    'todo-error-reminder': true,
-    'ultrathink-notice': true,
-    'orchestrate-notice': true,
-    'workflow-notice': true,
-    'goal-mode-context': true,
-    'vibe-mode-context': true,
-    'checkpoint-active-reminder': true,
-    'interrupted-thinking': true,
-    'resolve-reminder': true,
-    'tool-call-loop-redirect': true,
-    'thinking-loop-redirect': true,
-    'image-attachment-description': true,
-    'ttsr-injection': true,
-    'goal-continuation': true,
-    'session-stop-continuation': true,
-    'gemini-tool-call-reminder': true,
+  'eager-todo-prelude': true,
+  'mid-run-todo-nudge': true,
+  'todo-error-reminder': true,
+  'ultrathink-notice': true,
+  'orchestrate-notice': true,
+  'workflow-notice': true,
+  'goal-mode-context': true,
+  'vibe-mode-context': true,
+  'checkpoint-active-reminder': true,
+  'interrupted-thinking': true,
+  'resolve-reminder': true,
+  'tool-call-loop-redirect': true,
+  'thinking-loop-redirect': true,
+  'image-attachment-description': true,
+  'ttsr-injection': true,
+  'goal-continuation': true,
+  'session-stop-continuation': true,
+  'gemini-tool-call-reminder': true
+};
+
+/** T5 — collapsed harness-injected notes (developer-role transcript inputs). */
+const T5_CUSTOM_TYPES: Record<string, true> = {
+  developer: true
 };
 
 const T3_CUSTOM_TYPE_PREFIXES: readonly string[] = ['prewalk-', 'plan-mode-'];
 
 /** Classify a customType; unregistered types (and extensions) fall back to T4. */
 export function tierFor(customType: string): OmpCustomTier {
-    if (T1_CUSTOM_TYPES[customType]) return 'T1';
-    if (T2_CUSTOM_TYPES[customType]) return 'T2';
-    if (T3_CUSTOM_TYPES[customType]) return 'T3';
-    for (const prefix of T3_CUSTOM_TYPE_PREFIXES) {
-        if (customType.startsWith(prefix)) return 'T3';
-    }
-    return 'T4';
+  if (T1_CUSTOM_TYPES[customType]) return 'T1';
+  if (T2_CUSTOM_TYPES[customType]) return 'T2';
+  if (T3_CUSTOM_TYPES[customType]) return 'T3';
+  if (T5_CUSTOM_TYPES[customType]) return 'T5';
+  for (const prefix of T3_CUSTOM_TYPE_PREFIXES) {
+    if (customType.startsWith(prefix)) return 'T3';
+  }
+  return 'T4';
 }
 
 export interface ParsedOmpCustomText {
-    customType: string;
-    /** Text after the `[omp:<type>] ` label. */
-    body: string;
+  customType: string;
+  /** Text after the `[omp:<type>] ` label. */
+  body: string;
 }
 
 /**
@@ -100,14 +109,14 @@ export interface ParsedOmpCustomText {
  * default rendering path untouched.
  */
 export function parseOmpCustomText(text: string): ParsedOmpCustomText | null {
-    if (!text.startsWith('[omp:')) return null;
-    const close = text.indexOf(']', '[omp:'.length);
-    if (close <= '[omp:'.length) return null;
-    const customType = text.slice('[omp:'.length, close);
-    if (customType.length === 0 || /\s/.test(customType)) return null;
-    const afterClose = close + 1;
-    // The label always carries one trailing space; tolerate a missing body.
-    if (afterClose >= text.length) return { customType, body: '' };
-    if (text[afterClose] !== ' ') return null;
-    return { customType, body: text.slice(afterClose + 1) };
+  if (!text.startsWith('[omp:')) return null;
+  const close = text.indexOf(']', '[omp:'.length);
+  if (close <= '[omp:'.length) return null;
+  const customType = text.slice('[omp:'.length, close);
+  if (customType.length === 0 || /\s/.test(customType)) return null;
+  const afterClose = close + 1;
+  // The label always carries one trailing space; tolerate a missing body.
+  if (afterClose >= text.length) return { customType, body: '' };
+  if (text[afterClose] !== ' ') return null;
+  return { customType, body: text.slice(afterClose + 1) };
 }

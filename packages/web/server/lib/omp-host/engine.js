@@ -12,45 +12,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {
-  AgentRegistry,
-  ModelRegistry,
-  SessionManager,
-  BUILTIN_TOOLS,
-  createAgentSession,
-  discoverAuthStorage,
-} from '@oh-my-pi/pi-coding-agent';
+import { AgentRegistry, ModelRegistry, SessionManager, BUILTIN_TOOLS, createAgentSession, discoverAuthStorage } from '@oh-my-pi/pi-coding-agent';
 import { discoverAgents, refreshAgentDiscovery } from '@oh-my-pi/pi-coding-agent/task';
 import { getConfigDirs } from '@oh-my-pi/pi-coding-agent/config';
 import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
+import { isTodoPhase } from '@oh-my-pi/pi-coding-agent/tools/todo';
+import { buildSkillPromptMessage, parseSkillInvocation } from '@oh-my-pi/pi-coding-agent/extensibility/skills';
+import { SKILL_PROMPT_MESSAGE_TYPE } from '@oh-my-pi/pi-coding-agent/session/messages';
 import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.js';
 import { WireEventBus, OmpEventBus } from './events.js';
-import {
-  StreamProjector,
-  normalizeToolExecutionResult,
-  projectConversation,
-  projectCustomMessage,
-  projectDividerMessage,
-  projectUserMessage,
-  buildTurnStateStamper,
-  projectTurnEventDivider,
-  wireMessageId,
-  deterministicWireId,
-  resolveWireIdToEntryId,
-  splitModelSelector,
-  paginateProjectedMessages,
-} from './projection.js';
+import { StreamProjector, normalizeToolExecutionResult, projectConversation, projectDeveloperMessage, projectCustomMessage, projectDividerMessage, projectUserMessage, buildTurnStateStamper, projectTurnEventDivider, wireMessageId, deterministicWireId, resolveWireIdToEntryId, splitModelSelector, paginateProjectedMessages } from './projection.js';
 import { createSettingsStore } from './domain-models.js';
 import { createDomainDialogs } from './domain-dialogs.js';
-import {
-  ModeDomainError,
-  createModesDomain,
-  mapBackedStore,
-  migrateSidecarAgents,
-  personaFor,
-  serializeAgentMarkdown,
-} from './domain-modes.js';
+import { ModeDomainError, createModesDomain, mapBackedStore, migrateSidecarAgents, personaFor, serializeAgentMarkdown } from './domain-modes.js';
 import { createDomainChrome } from './domain-chrome.js';
 import { ompFeatures } from './omp-parity.js';
 import { revealCommand } from './domain-plugins.js';
@@ -80,7 +55,10 @@ const wireAgentFor = (personaKey) => (personaKey === 'standard' ? 'build' : pers
 const textOfContent = (content) => {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
-  return content.filter((b) => b && b.type === 'text').map((b) => b.text).join('');
+  return content
+    .filter((b) => b && b.type === 'text')
+    .map((b) => b.text)
+    .join('');
 };
 
 const modelSelector = (model) => (model ? `${model.provider}/${model.id}` : undefined);
@@ -125,16 +103,18 @@ export class OmpHostEngine {
         });
       },
       onSessionUiDetached: ({ directory, sessionId }) => this.#detachDialogUi(directory, sessionId),
-      onDiagnostic: (note) => console.warn('[omp-host] dialog lifecycle:', note),
+      onDiagnostic: (note) => console.warn('[omp-host] dialog lifecycle:', note)
     });
     // Modes/plan/goal/personas/agent-definitions domain (spec 02).
     this.modesDomain = createModesDomain({
-      publishFor: (sessionId, directoryKey) => (type, payload, options = {}) =>
-        this.ompBus.publish(type, payload, {
-          directory: directoryKey,
-          sessionID: sessionId,
-          durable: options.durable !== false,
-        }),
+      publishFor:
+        (sessionId, directoryKey) =>
+        (type, payload, options = {}) =>
+          this.ompBus.publish(type, payload, {
+            directory: directoryKey,
+            sessionID: sessionId,
+            durable: options.durable !== false
+          }),
       appendFor: (sessionId, directoryKey) => (mode, data) => {
         const hostSession = this.sessions.get(sessionId);
         const manager = hostSession?.agentSession?.sessionManager;
@@ -181,7 +161,7 @@ export class OmpHostEngine {
           await promisify(execFile)(command, args, { windowsHide: true });
         },
         userAgentsDir: this.#userAgentsDir(),
-        projectAgentsDirFor: (directory) => path.join(path.resolve(directory), '.omp', 'agents'),
+        projectAgentsDirFor: (directory) => path.join(path.resolve(directory), '.omp', 'agents')
       },
       personasStore: mapBackedStore(this.personas, () => this.savePersonas()),
       allowedTools: new Set(Object.keys(BUILTIN_TOOLS ?? {})),
@@ -197,19 +177,22 @@ export class OmpHostEngine {
             disabledAgents: settings.get('task.disabledAgents'),
             modelOverrides: settings.get('task.agentModelOverrides'),
             prewalk: settings.get('task.agentPrewalk'),
-            advisor: settings.get('task.agentAdvisor'),
+            advisor: settings.get('task.agentAdvisor')
           };
         } catch {
           return null;
         }
-      },
+      }
     });
     // Extension chrome table (spec 09 §5): string-payload widget/status
     // projection mirroring RpcExtensionUIRequest. Volatile events; the
     // snapshot GET is the reconnect authority (D2).
     this.chrome = createDomainChrome({
       publishFor: (directory, payload) =>
-        this.ompBus.publish('omp.chrome.updated', payload, { directory, durable: false }),
+        this.ompBus.publish('omp.chrome.updated', payload, {
+          directory,
+          durable: false
+        })
     });
     // URI bridge / session tree / agent-runs / jobs (spec 04). The factory
     // is synchronous and every engine dependency is a lazy closure, so it is
@@ -236,10 +219,10 @@ export class OmpHostEngine {
           .map((hostSession) => ({
             sessionID: hostSession.sessionId,
             directory: hostSession.directory,
-            registry: hostSession.agentRegistry,
+            registry: hostSession.agentRegistry
           })),
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
-      liveSessionIds: () => [...this.sessions.keys()],
+      liveSessionIds: () => [...this.sessions.keys()]
     });
     this.bootError = null;
     this.bootPromise = null;
@@ -266,7 +249,7 @@ export class OmpHostEngine {
         try {
           this.settingsStore = await createSettingsStore({
             cwd: process.cwd(),
-            agentDir: this.registry.agentDir,
+            agentDir: this.registry.agentDir
           });
         } catch (error) {
           // Degrade to no-injection (pre-R6 behavior) instead of bricking
@@ -289,7 +272,7 @@ export class OmpHostEngine {
   async #setDialogUiContext(hostSession, directory, sessionId, hasUI) {
     const uiContext = hasUI
       ? this.dialogs.uiContextFor(directory, sessionId, {
-          chrome: this.chrome.bridgeHandlersFor(directory, sessionId),
+          chrome: this.chrome.bridgeHandlersFor(directory, sessionId)
         })
       : undefined;
     if (hasUI && !hostSession.extensionUiInitialized) {
@@ -303,12 +286,14 @@ export class OmpHostEngine {
           reportRuntimeError: (error) => {
             console.warn('[omp-host] extension runtime error:', error?.error ?? error);
           },
-          onShutdown: () => {},
-        }).then(() => {
-          hostSession.extensionUiInitialized = true;
-        }).finally(() => {
-          hostSession.extensionUiPromise = null;
-        });
+          onShutdown: () => {}
+        })
+          .then(() => {
+            hostSession.extensionUiInitialized = true;
+          })
+          .finally(() => {
+            hostSession.extensionUiPromise = null;
+          });
       }
       await hostSession.extensionUiPromise;
     }
@@ -323,8 +308,7 @@ export class OmpHostEngine {
    * extension UI initialization on the floor.
    */
   async #attachDialogUi(directory, sessionId) {
-    const hostSession = this.sessions.get(sessionId)
-      ?? await this.#materialize(sessionId, directory);
+    const hostSession = this.sessions.get(sessionId) ?? (await this.#materialize(sessionId, directory));
     if (!hostSession) return;
     await this.#setDialogUiContext(hostSession, directory, sessionId, true);
   }
@@ -372,10 +356,7 @@ export class OmpHostEngine {
 
   savePersonas() {
     fs.mkdirSync(this.registry.registryRoot, { recursive: true });
-    fs.writeFileSync(
-      this.#personasConfigPath(),
-      JSON.stringify({ personas: [...this.personas.values()] }, null, 2),
-    );
+    fs.writeFileSync(this.#personasConfigPath(), JSON.stringify({ personas: [...this.personas.values()] }, null, 2));
   }
 
   /** Public settings-store accessor for endpoint handlers. */
@@ -391,8 +372,7 @@ export class OmpHostEngine {
    */
   #userAgentsDir() {
     try {
-      const entry = getConfigDirs('agents', { project: false })
-        .find((dir) => dir?.source === '.omp' && typeof dir?.path === 'string');
+      const entry = getConfigDirs('agents', { project: false }).find((dir) => dir?.source === '.omp' && typeof dir?.path === 'string');
       if (entry) return entry.path;
     } catch {
       // Derived fallback below.
@@ -426,13 +406,11 @@ export class OmpHostEngine {
           path.join(userAgentsDir, `${record.name}.md`),
           serializeAgentMarkdown({
             name: record.name,
-            description: typeof record.description === 'string' && record.description.trim()
-              ? record.description
-              : record.name,
+            description: typeof record.description === 'string' && record.description.trim() ? record.description : record.name,
             systemPrompt: typeof record.prompt === 'string' ? record.prompt : '',
-            ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {}),
+            ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {})
           }),
-          'utf8',
+          'utf8'
         );
       },
       personaExists: (name) => this.personas.has(name),
@@ -441,7 +419,7 @@ export class OmpHostEngine {
           name: record.name,
           ...(record.description ? { description: record.description } : {}),
           ...(typeof record.prompt === 'string' && record.prompt ? { systemPrompt: record.prompt } : {}),
-          ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {}),
+          ...(Array.isArray(record.tools) && record.tools.length > 0 ? { tools: record.tools } : {})
         });
       },
       markDone: () => {
@@ -453,7 +431,7 @@ export class OmpHostEngine {
           console.warn('[omp-host] sidecar migration markDone failed:', error?.message ?? error);
         }
       },
-      log: (message, error) => console.warn('[omp-host] agent sidecar migration:', message, error ?? ''),
+      log: (message, error) => console.warn('[omp-host] agent sidecar migration:', message, error ?? '')
     });
     if (done && result.migrated > 0) {
       console.log(`[omp-host] migrated ${result.migrated} sidecar agent(s) to ${userAgentsDir} (+persona mirrors)`);
@@ -480,10 +458,13 @@ export class OmpHostEngine {
     session.unsubscribe = null;
     // Domain release: modes tracker + pending dialogs for this session (R11).
     this.modesDomain?.release?.(session.sessionId, session.directory);
-    this.dialogs?.registry?.abortForSession?.({
-      directory: session.directory,
-      sessionId: session.sessionId,
-    }, 'session disposed');
+    this.dialogs?.registry?.abortForSession?.(
+      {
+        directory: session.directory,
+        sessionId: session.sessionId
+      },
+      'session disposed'
+    );
     const agentSession = session.agentSession;
     session.agentSession = null;
     void agentSession.dispose().catch(() => {});
@@ -577,7 +558,10 @@ export class OmpHostEngine {
     const selector = meta?.model
       ? splitModelSelector(meta.model)
       : live?.agentSession?.model
-        ? { providerID: live.agentSession.model.provider, modelID: live.agentSession.model.id }
+        ? {
+            providerID: live.agentSession.model.provider,
+            modelID: live.agentSession.model.id
+          }
         : null;
     return {
       id: info.id,
@@ -591,16 +575,14 @@ export class OmpHostEngine {
       // normal promptable session.
       forkParentID: meta?.forkParentID,
       title: meta?.title ?? info.title ?? 'Untitled',
-      ...(personaKeyFor(meta?.persona ?? meta?.agent) !== 'standard'
-        ? { agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)) }
-        : {}),
+      ...(personaKeyFor(meta?.persona ?? meta?.agent) !== 'standard' ? { agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)) } : {}),
       ...(selector ? { model: { id: selector.modelID, providerID: selector.providerID } } : {}),
       ...(meta?.metadata ? { metadata: meta.metadata } : {}),
       time: {
         created: info.created instanceof Date ? info.created.getTime() : Date.parse(info.created) || Date.now(),
         updated: info.modified instanceof Date ? info.modified.getTime() : Date.parse(info.modified) || Date.now(),
-        ...(meta?.timeArchived ? { archived: meta.timeArchived } : {}),
-      },
+        ...(meta?.timeArchived ? { archived: meta.timeArchived } : {})
+      }
     };
   }
 
@@ -626,11 +608,11 @@ export class OmpHostEngine {
             cwd: directory,
             title: meta.title,
             created: new Date(meta.timeCreated ?? Date.now()),
-            modified: new Date(meta.timeUpdated ?? Date.now()),
+            modified: new Date(meta.timeUpdated ?? Date.now())
           },
           directoryKey,
-          meta,
-        ),
+          meta
+        )
       );
     }
     return out;
@@ -666,7 +648,7 @@ export class OmpHostEngine {
       // The wire `agent` param is a persona name (or the legacy build/plan
       // ids, which normalize away); store the normalized persona key.
       ...(agent && personaKeyFor(agent) !== 'standard' ? { persona: personaKeyFor(agent) } : {}),
-      ...(model ? { model } : {}),
+      ...(model ? { model } : {})
     });
     await manager.close();
     const session = this.#wireSession(
@@ -675,10 +657,10 @@ export class OmpHostEngine {
         cwd,
         title,
         created: new Date(now),
-        modified: new Date(now),
+        modified: new Date(now)
       },
       cwd,
-      this.registry.get(cwd, sessionId),
+      this.registry.get(cwd, sessionId)
     );
     this.bus.emit('session.created', { sessionID: sessionId, info: session }, cwd);
     return session;
@@ -711,7 +693,7 @@ export class OmpHostEngine {
       cwd: manager.getCwd() || directoryKey,
       title: manager.getSessionName(),
       created: new Date(created),
-      modified: new Date(Number.isFinite(modified) ? modified : created),
+      modified: new Date(Number.isFinite(modified) ? modified : created)
     };
   }
 
@@ -732,9 +714,7 @@ export class OmpHostEngine {
     // directory would return and broadcast an update that was never applied,
     // and strand the patch as a phantom registry entry that listings under
     // the owning directory never read.
-    const directoryKey = live
-      ? normalizeDirectoryKey(live.directory)
-      : normalizeDirectoryKey(directory);
+    const directoryKey = live ? normalizeDirectoryKey(live.directory) : normalizeDirectoryKey(directory);
     if (!live) {
       // Idle sessions are on-disk records owned by exactly one directory:
       // transcript and registry entry both live there. An update addressed to
@@ -756,11 +736,26 @@ export class OmpHostEngine {
     if (live && typeof title === 'string') {
       await live.agentSession?.setSessionName(title, 'user').catch(() => {});
     }
-    const session = await this.getSession({ sessionID, directory: directoryKey });
+    const session = await this.getSession({
+      sessionID,
+      directory: directoryKey
+    });
     if (session) {
       this.bus.emit('session.updated', { sessionID, info: session }, directoryKey);
     }
-    return session ?? this.#wireSession({ id: sessionID, cwd: directoryKey, created: new Date(), modified: new Date() }, directoryKey, meta);
+    return (
+      session ??
+      this.#wireSession(
+        {
+          id: sessionID,
+          cwd: directoryKey,
+          created: new Date(),
+          modified: new Date()
+        },
+        directoryKey,
+        meta
+      )
+    );
   }
 
   async deleteSession({ sessionID, directory }) {
@@ -792,14 +787,13 @@ export class OmpHostEngine {
         cwd: live.directory,
         title: agentSession?.sessionManager.getSessionName() ?? meta?.title,
         created: new Date(meta?.timeCreated ?? now),
-        modified: new Date(meta?.timeUpdated ?? now),
+        modified: new Date(meta?.timeUpdated ?? now)
       },
       live.directory,
       meta,
-      live,
+      live
     );
   }
-
 
   /** Cold message projection from the persisted transcript. */
   async getMessages({ sessionID, directory }) {
@@ -844,22 +838,26 @@ export class OmpHostEngine {
         // switches render as slim dividers at their point in the log.
         const mergeDividers = (projected) => this.#mergeTurnEventDividers(projected, entries, sessionID);
         if (liveCount >= 0 && liveCount >= fileMessages.length) {
-          return mergeDividers(projectConversation(live.agentSession.messages, {
-            sessionID,
-            directory: directoryKey,
-            agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
-            wireIdFor,
-            turnStateFor,
-          }));
+          return mergeDividers(
+            projectConversation(live.agentSession.messages, {
+              sessionID,
+              directory: directoryKey,
+              agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
+              wireIdFor,
+              turnStateFor
+            })
+          );
         }
         if (fileMessages.length > 0 || liveCount < 0) {
-          return mergeDividers(projectConversation(fileMessages, {
-            sessionID,
-            directory: directoryKey,
-            agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
-            wireIdFor,
-            turnStateFor,
-          }));
+          return mergeDividers(
+            projectConversation(fileMessages, {
+              sessionID,
+              directory: directoryKey,
+              agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
+              wireIdFor,
+              turnStateFor
+            })
+          );
         }
       } finally {
         await manager.close().catch(() => {});
@@ -870,7 +868,7 @@ export class OmpHostEngine {
         sessionID,
         directory: directoryKey,
         agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
-        wireIdFor,
+        wireIdFor
       });
     }
     return null;
@@ -892,9 +890,7 @@ export class OmpHostEngine {
     if (dividers.length === 0) return projected;
     const out = [...projected];
     for (const wire of dividers) {
-      const at = out.findIndex(
-        (item) => (item.info.time?.created ?? 0) >= (wire.info.time?.created ?? 0),
-      );
+      const at = out.findIndex((item) => (item.info.time?.created ?? 0) >= (wire.info.time?.created ?? 0));
       out.splice(at === -1 ? out.length : at, 0, wire);
     }
     return out;
@@ -911,9 +907,7 @@ export class OmpHostEngine {
     }
     const model = session.model;
     if (!model?.provider || !model?.id) return undefined;
-    const entry = this.availableModels().find(
-      (candidate) => candidate.provider === model.provider && candidate.id === model.id,
-    );
+    const entry = this.availableModels().find((candidate) => candidate.provider === model.provider && candidate.id === model.id);
     const defaultLevel = entry?.thinking?.defaultLevel;
     return typeof defaultLevel === 'string' && defaultLevel.length > 0 ? defaultLevel : undefined;
   }
@@ -923,9 +917,7 @@ export class OmpHostEngine {
     const prefix = `${directoryKey}\u0000${sessionID}\u0000`;
     return (message) => {
       if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
-      return this.wireIdOverrides.get(
-        prefix + deterministicWireId(message),
-      );
+      return this.wireIdOverrides.get(prefix + deterministicWireId(message));
     };
   }
 
@@ -949,10 +941,7 @@ export class OmpHostEngine {
     if (!selector) return undefined;
     const available = this.modelRegistry.getAvailable();
     const wanted = `${selector.providerID}/${selector.modelID}`;
-    return (
-      available.find((model) => `${model.provider}/${model.id}` === wanted) ??
-      available.find((model) => model.id === selector.modelID)
-    );
+    return available.find((model) => `${model.provider}/${model.id}` === wanted) ?? available.find((model) => model.id === selector.modelID);
   }
 
   async #materialize(sessionId, directoryKey) {
@@ -983,9 +972,7 @@ export class OmpHostEngine {
     // defaultProvider) exactly like the TUI. Pinning getAvailable()[0] here
     // used to override the user's configured default with whichever model
     // happened to sort first.
-    const model = this.#resolveModel(
-      meta?.model ? splitModelSelector(meta.model) : undefined,
-    );
+    const model = this.#resolveModel(meta?.model ? splitModelSelector(meta.model) : undefined);
     // Persona overlay (02 §5.1 D-B2): 'build'/'plan'/unset → standard
     // session; a persona name → top-level systemPrompt/toolset override;
     // unknown name (deleted persona) → degrade to standard with a notice.
@@ -1003,9 +990,7 @@ export class OmpHostEngine {
       // Per-directory keyed Settings injection (spec 06 §5.1, master R6):
       // the session consumes this directory's global+project layering.
       // Absent store (degraded boot) falls back to the SDK singleton.
-      ...(this.settingsStore
-        ? { settings: await this.settingsStore.settingsFor(directoryKey) }
-        : {}),
+      ...(this.settingsStore ? { settings: await this.settingsStore.settingsFor(directoryKey) } : {}),
       // One registry per session: the SDK's global registry admits a single
       // "Main" agent per process generation, and omp-host embeds several
       // concurrent top-level sessions. The instance is retained on the
@@ -1025,9 +1010,7 @@ export class OmpHostEngine {
       // agent pair and the planYolo mapping never reach createAgentSession
       // (plan mode is a session mode driven by the mode endpoints, §5.8).
       ...(persona?.systemPrompt ? { systemPrompt: persona.systemPrompt } : {}),
-      ...(Array.isArray(persona?.tools) && persona.tools.length > 0
-        ? { toolNames: persona.tools }
-        : {}),
+      ...(Array.isArray(persona?.tools) && persona.tools.length > 0 ? { toolNames: persona.tools } : {})
     });
     const hostSession = existing ?? {
       sessionId,
@@ -1059,7 +1042,7 @@ export class OmpHostEngine {
       // session bound at materialization — feeds the Settings → Plugins
       // "applied in sessions" projection and stays frozen for the session's
       // lifetime (TS extension modules are not rebound by reload).
-      appliedPlugins: null,
+      appliedPlugins: null
     };
     hostSession.appliedPlugins = await this.#snapshotAppliedPlugins(directoryKey);
     hostSession.agentSession = session;
@@ -1084,14 +1067,13 @@ export class OmpHostEngine {
       const info = this.#wireSessionFromLive(hostSession);
       this.registry.update(directoryKey, sessionId, {
         title: info.title,
-        timeUpdated: Date.now(),
+        timeUpdated: Date.now()
       });
       this.bus.emit('session.updated', { sessionID: sessionId, info }, directoryKey);
     });
     this.sessions.set(sessionId, hostSession);
     return hostSession;
   }
-
 
   /**
    * Discovery-set snapshot for a freshly materialized session (plugins.v1).
@@ -1104,14 +1086,11 @@ export class OmpHostEngine {
       const { discoverExtensionPaths } = await import('@oh-my-pi/pi-coding-agent/extensibility/extensions');
       const { getEnabledPlugins } = await import('@oh-my-pi/pi-coding-agent/extensibility/plugins');
       const directory = directoryKey ?? process.cwd();
-      const [extensionPaths, plugins] = await Promise.all([
-        discoverExtensionPaths([], directory),
-        getEnabledPlugins(directory),
-      ]);
+      const [extensionPaths, plugins] = await Promise.all([discoverExtensionPaths([], directory), getEnabledPlugins(directory)]);
       return {
         appliedAt: Date.now(),
         extensionPaths: extensionPaths.map((item) => path.resolve(item)),
-        pluginNames: plugins.map((plugin) => plugin.name),
+        pluginNames: plugins.map((plugin) => plugin.name)
       };
     } catch (error) {
       console.warn('[omp-host] applied-plugins snapshot failed:', error?.message ?? error);
@@ -1126,7 +1105,7 @@ export class OmpHostEngine {
       .map((hostSession) => ({
         sessionId: hostSession.sessionId,
         directory: hostSession.directory,
-        ...hostSession.appliedPlugins,
+        ...hostSession.appliedPlugins
       }));
   }
 
@@ -1179,7 +1158,7 @@ export class OmpHostEngine {
     return this.ompBus.publish(type, payload, {
       directory: hostSession.directory,
       sessionID: hostSession.sessionId,
-      durable: Boolean(durable),
+      durable: Boolean(durable)
     });
   }
 
@@ -1194,7 +1173,7 @@ export class OmpHostEngine {
     const projected = projectCustomMessage(message, {
       sessionID: sessionId,
       agent: wireAgentFor(hostSession.currentPersona),
-      parentID: hostSession.lastUserWireId || undefined,
+      parentID: hostSession.lastUserWireId || undefined
     });
     const text = textOfContent(message.content);
     if (message.display !== false) {
@@ -1203,17 +1182,22 @@ export class OmpHostEngine {
         this.bus.emit('message.part.updated', { sessionID: sessionId, part, time: Date.now() }, directory);
       }
     }
-    this.#ompPublish(hostSession, 'omp.custom.appended', {
-      message: {
-        wireMessageID: projected.info.id,
-        customType: message.customType ?? '',
-        attribution: message.attribution,
-        timestamp: message.timestamp,
-        text,
-        ...(message.details !== undefined ? { details: message.details } : {}),
-        display: message.display !== false,
+    this.#ompPublish(
+      hostSession,
+      'omp.custom.appended',
+      {
+        message: {
+          wireMessageID: projected.info.id,
+          customType: message.customType ?? '',
+          attribution: message.attribution,
+          timestamp: message.timestamp,
+          text,
+          ...(message.details !== undefined ? { details: message.details } : {}),
+          display: message.display !== false
+        }
       },
-    }, { durable: true });
+      { durable: true }
+    );
     hostSession.syncedEntryKeys?.add(`${message.role}:${message.customType ?? ''}:${message.timestamp}`);
     return projected.info.id;
   }
@@ -1234,7 +1218,7 @@ export class OmpHostEngine {
       const message = messages[i];
       if (!message || typeof message !== 'object') continue;
       const role = message.role;
-      if (role !== 'custom' && role !== 'hookMessage' && role !== 'compactionSummary' && role !== 'branchSummary') continue;
+      if (role !== 'custom' && role !== 'hookMessage' && role !== 'compactionSummary' && role !== 'branchSummary' && role !== 'developer') continue;
       const key = `${role}:${message.customType ?? ''}:${message.timestamp}`;
       if (hostSession.syncedEntryKeys?.has(key)) break;
       pending.push(message);
@@ -1243,11 +1227,26 @@ export class OmpHostEngine {
     for (const message of pending) {
       const key = `${message.role}:${message.customType ?? ''}:${message.timestamp}`;
       hostSession.syncedEntryKeys?.add(key);
-      if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
+      if (message.role === 'developer') {
+        if (!textOfContent(message.content).trim()) continue;
+        const projected = projectDeveloperMessage(message, {
+          sessionID: hostSession.sessionId,
+          agent: wireAgentFor(hostSession.currentPersona),
+          parentID: hostSession.lastUserWireId || undefined
+        });
+        this.bus.emit('message.updated', { sessionID: hostSession.sessionId, info: projected.info }, hostSession.directory);
+        for (const part of projected.parts) {
+          this.bus.emit('message.part.updated', { sessionID: hostSession.sessionId, part, time: Date.now() }, hostSession.directory);
+        }
+        out.projected.push({ wireId: projected.info.id, role: message.role });
+        if (message.attribution === 'user') {
+          hostSession.lastUserWireId = projected.info.id;
+        }
+      } else if (message.role === 'compactionSummary' || message.role === 'branchSummary') {
         const projected = projectDividerMessage(message, {
           sessionID: hostSession.sessionId,
           agent: wireAgentFor(hostSession.currentPersona),
-          parentID: hostSession.lastUserWireId || undefined,
+          parentID: hostSession.lastUserWireId || undefined
         });
         this.bus.emit('message.updated', { sessionID: hostSession.sessionId, info: projected.info }, hostSession.directory);
         for (const part of projected.parts) {
@@ -1281,12 +1280,28 @@ export class OmpHostEngine {
           const pending = hostSession.pendingUserWireId;
           hostSession.pendingUserWireId = null;
           if (pending) {
-            const canonicalId = wireMessageId(
-              'user',
-              event.message.timestamp,
-              textOfContent(event.message.content),
-            );
+            const canonicalId = wireMessageId('user', event.message.timestamp, textOfContent(event.message.content));
             this.wireIdOverrides.set(`${directory}\u0000${sessionId}\u0000${canonicalId}`, pending);
+          }
+          return;
+        }
+        if (event.message?.role === 'developer') {
+          // Synthetic prompt (prompt(synthetic:true) yields a developer-role
+          // message, agent-session.ts:5597): project immediately and occupy
+          // the user turn slot so the following assistant message anchors to
+          // it. Mark synced so the tail-sync pass never re-emits it.
+          const projected = projectDeveloperMessage(event.message, {
+            sessionID: sessionId,
+            agent: wireAgentFor(hostSession.currentPersona),
+            parentID: hostSession.lastUserWireId || undefined
+          });
+          this.bus.emit('message.updated', { sessionID: sessionId, info: projected.info }, directory);
+          for (const part of projected.parts) {
+            this.bus.emit('message.part.updated', { sessionID: sessionId, part, time: Date.now() }, directory);
+          }
+          hostSession.syncedEntryKeys?.add(`developer::${event.message.timestamp}`);
+          if (event.message.attribution === 'user') {
+            hostSession.lastUserWireId = projected.info.id;
           }
           return;
         }
@@ -1295,7 +1310,7 @@ export class OmpHostEngine {
           sessionID: sessionId,
           directory,
           agent: wireAgentFor(hostSession.currentPersona),
-          emit: (type, properties, dir) => this.bus.emit(type, properties, dir),
+          emit: (type, properties, dir) => this.bus.emit(type, properties, dir)
         });
         hostSession.projector.setParentID(hostSession.lastUserWireId ?? '');
         hostSession.projector.startAssistant(event.message);
@@ -1317,27 +1332,29 @@ export class OmpHostEngine {
       }
       case 'message_end': {
         if (event.message?.role !== 'assistant' || !hostSession.projector) return;
-        const finished = hostSession.projector.finishAssistant(
-          event.message,
-          hostSession.turnToolResults ?? new Map(),
-        );
+        const finished = hostSession.projector.finishAssistant(event.message, hostSession.turnToolResults ?? new Map());
         this.#bridgeAssistantWireId(hostSession, event.message);
         if (finished?.id) {
           hostSession.lastAssistantWireId = finished.id;
           const usage = event.message.usage ?? {};
-          this.#ompPublish(hostSession, 'omp.usage.turn', {
-            messageID: finished.id,
-            usage,
-            ...(event.message.ttft !== undefined ? { ttftMs: event.message.ttft } : {}),
-            ...(event.message.duration !== undefined ? { durationMs: event.message.duration } : {}),
-            timestamp: event.message.timestamp ?? Date.now(),
-          }, { durable: true });
+          this.#ompPublish(
+            hostSession,
+            'omp.usage.turn',
+            {
+              messageID: finished.id,
+              usage,
+              ...(event.message.ttft !== undefined ? { ttftMs: event.message.ttft } : {}),
+              ...(event.message.duration !== undefined ? { durationMs: event.message.duration } : {}),
+              timestamp: event.message.timestamp ?? Date.now()
+            },
+            { durable: true }
+          );
         }
         return;
       }
       case 'tool_execution_start': {
         hostSession.projector?.toolStarted(event.toolCallId, event.toolName, event.args, {
-          ...(event.intent ? { title: event.intent } : {}),
+          ...(event.intent ? { title: event.intent } : {})
         });
         return;
       }
@@ -1345,10 +1362,8 @@ export class OmpHostEngine {
         // Partial results (05 §5.6): running-state append; never terminal —
         // tool_execution_end owns completion.
         hostSession.projector?.toolPartial(event.toolCallId, {
-          text: typeof event.partialResult === 'string'
-            ? event.partialResult
-            : event.partialResult?.text ?? event.partialResult?.output,
-          asyncState: event.partialResult?.details?.async?.state,
+          text: typeof event.partialResult === 'string' ? event.partialResult : (event.partialResult?.text ?? event.partialResult?.output),
+          asyncState: event.partialResult?.details?.async?.state
         });
         return;
       }
@@ -1359,17 +1374,36 @@ export class OmpHostEngine {
         const { content, text, details } = normalizeToolExecutionResult(event.result);
         hostSession.projector?.toolFinished(event.toolCallId, {
           output: text,
-          error: event.isError ? (text || 'Tool error') : undefined,
-          ...(details ? { metadata: { details } } : {}),
+          error: event.isError ? text || 'Tool error' : undefined,
+          ...(details ? { metadata: { details } } : {})
         });
         const results = hostSession.turnToolResults ?? new Map();
         results.set(event.toolCallId, {
           content,
           ...(details ? { details } : {}),
           isError: Boolean(event.isError),
-          timestamp: Date.now(),
+          timestamp: Date.now()
         });
         hostSession.turnToolResults = results;
+        // TUI parity (event-controller.ts:1656-1660): the todo tool result's
+        // details.phases is the authoritative full list. todo_reminder's
+        // payload carries incomplete items only (todo-tracker.ts:269), so
+        // without this mapping the todo panel never sees todo writes and a
+        // reminder drops completed items from it.
+        if (
+          event.toolName === 'todo'
+          && !event.isError
+          && details
+          && Array.isArray(details.phases)
+          && details.phases.every(isTodoPhase)
+        ) {
+          const todos = details.phases.flatMap((phase) => phase.tasks.map((task) => ({
+            content: task.content,
+            status: task.status,
+            priority: task.priority ?? 'medium'
+          })));
+          this.bus.emit('todo.updated', { sessionID: sessionId, todos }, directory);
+        }
         return;
       }
       case 'turn_start':
@@ -1389,8 +1423,13 @@ export class OmpHostEngine {
         const projector = hostSession.projector;
         if (projector?.current) {
           const finished = projector.finishAssistant(
-            session.getLastAssistantMessage() ?? { content: [], timestamp: Date.now(), usage: {}, model: '' },
-            hostSession.turnToolResults ?? new Map(),
+            session.getLastAssistantMessage() ?? {
+              content: [],
+              timestamp: Date.now(),
+              usage: {},
+              model: ''
+            },
+            hostSession.turnToolResults ?? new Map()
           );
           if (finished?.id) hostSession.lastAssistantWireId = finished.id;
         }
@@ -1417,9 +1456,26 @@ export class OmpHostEngine {
         const todos = (event.todos ?? []).map((todo) => ({
           content: todo.content ?? '',
           status: todo.status ?? 'pending',
-          priority: todo.priority ?? 'medium',
+          priority: todo.priority ?? 'medium'
         }));
-        this.bus.emit('todo.updated', { sessionID: sessionId, todos }, directory);
+        // Transient reminder surface only (TUI TodoReminderComponent parity:
+        // event-controller.ts presents a reminder, never rewrites the todo
+        // panel). The event payload lists incomplete items only
+        // (todo-tracker.ts:269), so emitting wire todo.updated here would
+        // replace the panel's authoritative full list from the todo tool
+        // result mapping (tool_execution_end) and drop completed items.
+        this.#ompPublish(
+          hostSession,
+          'omp.notice.raised',
+          {
+            level: 'info',
+            message: `Unfinished todos (${event.attempt ?? 1}/${event.maxAttempts ?? 1}): ${todos
+              .map((todo) => todo.content)
+              .filter(Boolean)
+              .join('; ')}`
+          },
+          { durable: false }
+        );
         return;
       }
       case 'todo_auto_clear': {
@@ -1428,104 +1484,153 @@ export class OmpHostEngine {
       }
       case 'notice': {
         if (event.level === 'error') console.error('[omp-host]', event.message);
-        this.#ompPublish(hostSession, 'omp.notice.raised', {
-          level: event.level,
-          message: event.message,
-          ...(event.source ? { source: event.source } : {}),
-        }, { durable: false });
+        this.#ompPublish(
+          hostSession,
+          'omp.notice.raised',
+          {
+            level: event.level,
+            message: event.message,
+            ...(event.source ? { source: event.source } : {})
+          },
+          { durable: false }
+        );
         return;
       }
       case 'auto_compaction_start': {
-        this.#ompPublish(hostSession, 'omp.compaction.started', {
-          reason: event.reason,
-          action: event.action,
-        }, { durable: false });
+        this.#ompPublish(
+          hostSession,
+          'omp.compaction.started',
+          {
+            reason: event.reason,
+            action: event.action
+          },
+          { durable: false }
+        );
         return;
       }
       case 'auto_compaction_end': {
         const sync = this.#tailSyncTranscript(hostSession);
-        this.#ompPublish(hostSession, 'omp.compaction.ended', {
-          action: event.action,
-          aborted: Boolean(event.aborted),
-          willRetry: Boolean(event.willRetry),
-          ...(event.skipped !== undefined ? { skipped: event.skipped } : {}),
-          ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
-          ...(event.result?.tokensBefore !== undefined ? { tokensBefore: event.result.tokensBefore } : {}),
-          ...(sync.lastCompactionId ? { wireMessageID: sync.lastCompactionId } : {}),
-        }, { durable: false });
+        this.#ompPublish(
+          hostSession,
+          'omp.compaction.ended',
+          {
+            action: event.action,
+            aborted: Boolean(event.aborted),
+            willRetry: Boolean(event.willRetry),
+            ...(event.skipped !== undefined ? { skipped: event.skipped } : {}),
+            ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+            ...(event.result?.tokensBefore !== undefined ? { tokensBefore: event.result.tokensBefore } : {}),
+            ...(sync.lastCompactionId ? { wireMessageID: sync.lastCompactionId } : {})
+          },
+          { durable: false }
+        );
         return;
       }
       case 'auto_retry_start': {
         // P1 (05 §5.3.2): status + superseded overlay only. Zero wire
         // mutation — message.part.removed stays P2-gated (master R14).
-        this.bus.emit('session.status', {
-          sessionID: sessionId,
-          status: {
-            type: 'retry',
-            attempt: event.attempt,
-            message: event.errorMessage,
-            next: Date.now() + event.delayMs,
+        this.bus.emit(
+          'session.status',
+          {
+            sessionID: sessionId,
+            status: {
+              type: 'retry',
+              attempt: event.attempt,
+              message: event.errorMessage,
+              next: Date.now() + event.delayMs
+            }
           },
-        }, directory);
-        this.#ompPublish(hostSession, 'omp.retry.started', {
-          attempt: event.attempt,
-          maxAttempts: event.maxAttempts,
-          delayMs: event.delayMs,
-          errorMessage: event.errorMessage,
-          ...(hostSession.lastAssistantWireId ? { supersededMessageID: hostSession.lastAssistantWireId } : {}),
-        }, { durable: false });
+          directory
+        );
+        this.#ompPublish(
+          hostSession,
+          'omp.retry.started',
+          {
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            delayMs: event.delayMs,
+            errorMessage: event.errorMessage,
+            ...(hostSession.lastAssistantWireId ? { supersededMessageID: hostSession.lastAssistantWireId } : {})
+          },
+          { durable: false }
+        );
         return;
       }
       case 'auto_retry_end': {
         this.bus.emit('session.status', { sessionID: sessionId, status: { type: 'busy' } }, directory);
-        this.#ompPublish(hostSession, 'omp.retry.ended', {
-          success: Boolean(event.success),
-          attempt: event.attempt,
-          ...(event.finalError ? { finalError: event.finalError } : {}),
-          retryErrors: (event.retryErrors ?? []).map((update) => ({
-            messageID: update.persistenceKey ?? update.entryId,
-            note: update.note,
-            retryRecovery: update.retryRecovery,
-          })),
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.retry.ended',
+          {
+            success: Boolean(event.success),
+            attempt: event.attempt,
+            ...(event.finalError ? { finalError: event.finalError } : {}),
+            retryErrors: (event.retryErrors ?? []).map((update) => ({
+              messageID: update.persistenceKey ?? update.entryId,
+              note: update.note,
+              retryRecovery: update.retryRecovery
+            }))
+          },
+          { durable: true }
+        );
         return;
       }
       case 'retry_fallback_applied': {
         // Registry truth sync only; the SDK guarantees a follow-up
         // model_changed which emits the wire session.updated (05 §5.4).
         this.registry.update(directory, sessionId, { model: event.to });
-        this.#ompPublish(hostSession, 'omp.fallback.applied', {
-          from: event.from,
-          to: event.to,
-          role: event.role,
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.fallback.applied',
+          {
+            from: event.from,
+            to: event.to,
+            role: event.role
+          },
+          { durable: true }
+        );
         return;
       }
       case 'retry_fallback_succeeded': {
         // Success happened on the fallback model; no registry writeback.
-        this.#ompPublish(hostSession, 'omp.fallback.succeeded', {
-          model: event.model,
-          role: event.role,
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.fallback.succeeded',
+          {
+            model: event.model,
+            role: event.role
+          },
+          { durable: true }
+        );
         return;
       }
       case 'model_changed': {
         const selector = modelSelector(session.model);
-        this.registry.update(directory, sessionId, { ...(selector ? { model: selector } : {}) });
+        this.registry.update(directory, sessionId, {
+          ...(selector ? { model: selector } : {})
+        });
         const info = this.#wireSessionFromLive(hostSession);
         this.bus.emit('session.updated', { sessionID: sessionId, info }, directory);
-        this.#ompPublish(hostSession, 'omp.model.changed', {
-          model: session.model
-            ? { provider: session.model.provider, id: session.model.id }
-            : null,
-          ...(session.thinkingLevel !== undefined ? { thinkingLevel: session.thinkingLevel } : {}),
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.model.changed',
+          {
+            model: session.model ? { provider: session.model.provider, id: session.model.id } : null,
+            ...(session.thinkingLevel !== undefined ? { thinkingLevel: session.thinkingLevel } : {})
+          },
+          { durable: true }
+        );
         return;
       }
       case 'ttsr_triggered': {
-        this.#ompPublish(hostSession, 'omp.ttsr.triggered', {
-          rules: (event.rules ?? []).map((rule) => ({ name: rule.name })),
-        }, { durable: false });
+        this.#ompPublish(
+          hostSession,
+          'omp.ttsr.triggered',
+          {
+            rules: (event.rules ?? []).map((rule) => ({ name: rule.name }))
+          },
+          { durable: false }
+        );
         return;
       }
       case 'irc_message': {
@@ -1533,19 +1638,29 @@ export class OmpHostEngine {
         return;
       }
       case 'thinking_level_changed': {
-        this.#ompPublish(hostSession, 'omp.thinking.changed', {
-          thinkingLevel: event.thinkingLevel ?? null,
-          ...(event.configured !== undefined ? { configured: event.configured } : {}),
-          ...(event.resolved !== undefined ? { resolved: event.resolved } : {}),
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.thinking.changed',
+          {
+            thinkingLevel: event.thinkingLevel ?? null,
+            ...(event.configured !== undefined ? { configured: event.configured } : {}),
+            ...(event.resolved !== undefined ? { resolved: event.resolved } : {})
+          },
+          { durable: true }
+        );
         return;
       }
       case 'goal_updated': {
         this.modesDomain?.trackerFor(sessionId, directory)?.applyGoalUpdate?.(event.goal, event.state);
-        this.#ompPublish(hostSession, 'omp.goal.updated', {
-          goal: event.goal ?? null,
-          ...(event.state !== undefined ? { state: event.state } : {}),
-        }, { durable: true });
+        this.#ompPublish(
+          hostSession,
+          'omp.goal.updated',
+          {
+            goal: event.goal ?? null,
+            ...(event.state !== undefined ? { state: event.state } : {})
+          },
+          { durable: true }
+        );
         return;
       }
       default: {
@@ -1566,14 +1681,9 @@ export class OmpHostEngine {
     const statuses = {};
     for (const [id, live] of this.sessions) {
       if (live.directory !== normalizeDirectoryKey(directory)) continue;
-      const stale =
-        live.awaitingAsyncSince !== null &&
-        now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
+      const stale = live.awaitingAsyncSince !== null && now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
       if (stale) live.awaitingAsyncSince = null;
-      statuses[id] =
-        live.agentSession?.isStreaming || live.awaitingAsyncSince !== null
-          ? { type: 'busy' }
-          : { type: 'idle' };
+      statuses[id] = live.agentSession?.isStreaming || live.awaitingAsyncSince !== null ? { type: 'busy' } : { type: 'idle' };
     }
     return statuses;
   }
@@ -1594,7 +1704,7 @@ export class OmpHostEngine {
         timestamp: message.timestamp,
         attribution: message.attribution,
         text: textOfContent(message.content),
-        ...(message.details !== undefined ? { details: message.details } : {}),
+        ...(message.details !== undefined ? { details: message.details } : {})
       });
     }
     return out;
@@ -1621,10 +1731,9 @@ export class OmpHostEngine {
         cacheRead: usage.cacheRead ?? 0,
         cacheWrite: usage.cacheWrite ?? 0,
         ...(usage.reasoning !== undefined ? { reasoningTokens: usage.reasoning } : {}),
-        totalTokens:
-          (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
+        totalTokens: (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0),
         ...(message.ttft !== undefined ? { ttftMs: message.ttft } : {}),
-        ...(message.duration !== undefined ? { durationMs: message.duration } : {}),
+        ...(message.duration !== undefined ? { durationMs: message.duration } : {})
       });
     }
     return out;
@@ -1643,19 +1752,13 @@ export class OmpHostEngine {
       String(kinds ?? '')
         .split(',')
         .map((kind) => kind.trim())
-        .filter(Boolean),
+        .filter(Boolean)
     );
     const out = [];
     const manager = await SessionManager.open(file.path);
     try {
       for (const entry of manager.getEntries() ?? []) {
-        const kind =
-          entry.type === 'compaction' ? 'compaction'
-          : entry.type === 'branch_summary' ? 'branch_summary'
-          : entry.type === 'model_change' ? 'model_change'
-          : entry.type === 'mode_change' ? 'mode_change'
-          : entry.type === 'ttsr_injection' ? 'ttsr_injection'
-          : null;
+        const kind = entry.type === 'compaction' ? 'compaction' : entry.type === 'branch_summary' ? 'branch_summary' : entry.type === 'model_change' ? 'model_change' : entry.type === 'mode_change' ? 'mode_change' : entry.type === 'ttsr_injection' ? 'ttsr_injection' : null;
         if (!kind || (wanted.size > 0 && !wanted.has(kind))) continue;
         out.push({
           kind,
@@ -1665,13 +1768,18 @@ export class OmpHostEngine {
             ? {
                 summary: entry.summary,
                 tokensBefore: entry.tokensBefore,
-                ...(entry.warning ? { warning: entry.warning } : {}),
+                ...(entry.warning ? { warning: entry.warning } : {})
               }
             : {}),
           ...(kind === 'branch_summary' ? { fromId: entry.fromId, summary: entry.summary } : {}),
-          ...(kind === 'model_change' ? { model: entry.model, ...(entry.role ? { role: entry.role } : {}) } : {}),
+          ...(kind === 'model_change'
+            ? {
+                model: entry.model,
+                ...(entry.role ? { role: entry.role } : {})
+              }
+            : {}),
           ...(kind === 'mode_change' ? { mode: entry.mode, ...(entry.data ? { data: entry.data } : {}) } : {}),
-          ...(kind === 'ttsr_injection' ? { rules: entry.rules } : {}),
+          ...(kind === 'ttsr_injection' ? { rules: entry.rules } : {})
         });
       }
     } finally {
@@ -1689,7 +1797,7 @@ export class OmpHostEngine {
           kind: 'retry_recovery',
           messageID: wireIdFor?.(message) ?? baseId,
           timestamp: message.timestamp,
-          retryRecovery: message.retryRecovery,
+          retryRecovery: message.retryRecovery
         });
       }
     }
@@ -1712,7 +1820,7 @@ export class OmpHostEngine {
   async prompt({ sessionID, directory, text, model, agent, images, delivery, messageID }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    const hostSession = (await this.#materialize(sessionID, directoryKey));
+    const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return null;
     const session = hostSession.agentSession;
     if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
@@ -1725,7 +1833,9 @@ export class OmpHostEngine {
         await session.setModel(target).catch((error) => {
           console.error('[omp-host] model switch failed:', error?.message ?? error);
         });
-        this.registry.update(directoryKey, sessionID, { model: modelSelector(target) });
+        this.registry.update(directoryKey, sessionID, {
+          model: modelSelector(target)
+        });
       }
     }
 
@@ -1738,7 +1848,10 @@ export class OmpHostEngine {
     // its current persona and the message is not dispatched.
     const nextPersona = personaKeyFor(agent ?? meta?.persona ?? meta?.agent);
     if (nextPersona !== 'standard' && !this.personas.has(nextPersona)) {
-      throw new ModeDomainError(404, { error: 'persona-not-found', name: nextPersona });
+      throw new ModeDomainError(404, {
+        error: 'persona-not-found',
+        name: nextPersona
+      });
     }
     if (nextPersona !== hostSession.currentPersona) {
       // The persona shapes the session's system prompt and toolset at
@@ -1746,11 +1859,20 @@ export class OmpHostEngine {
       this.#disposeSession(hostSession);
       this.registry.update(directoryKey, sessionID, {
         persona: nextPersona === 'standard' ? undefined : nextPersona,
-        agent: undefined,
+        agent: undefined
       });
       const rebuilt = await this.#materialize(sessionID, directoryKey);
       if (!rebuilt) return null;
-      return this.prompt({ sessionID, directory: directoryKey, text, model, agent: nextPersona, images, delivery, messageID });
+      return this.prompt({
+        sessionID,
+        directory: directoryKey,
+        text,
+        model,
+        agent: nextPersona,
+        images,
+        delivery,
+        messageID
+      });
     }
 
     const content = [];
@@ -1759,14 +1881,14 @@ export class OmpHostEngine {
       content.push({
         type: 'image',
         data: image.data,
-        mimeType: image.mimeType || 'image/png',
+        mimeType: image.mimeType || 'image/png'
       });
     }
     const wire = projectUserMessage(
       {
         role: 'user',
         content: content.length === 1 && content[0].type === 'text' ? content[0].text : content,
-        timestamp: Date.now(),
+        timestamp: Date.now()
       },
       {
         sessionID,
@@ -1775,22 +1897,20 @@ export class OmpHostEngine {
         // Exact send-time snapshot: the effective level the turn runs with
         // (explicit pick, else the model's default) rides model.variant.
         thinkingLevel: this.#effectiveThinkingLevel(session),
-        ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {}),
-      },
+        ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {})
+      }
     );
     hostSession.pendingUserWireId = typeof messageID === 'string' && messageID ? messageID : null;
     hostSession.lastUserWireId = wire.info.id;
     this.bus.emit('message.updated', { sessionID, info: wire.info }, directoryKey);
     for (const part of wire.parts) {
-      this.bus.emit(
-        'message.part.updated',
-        { sessionID, part, time: Date.now() },
-        directoryKey,
-      );
+      this.bus.emit('message.part.updated', { sessionID, part, time: Date.now() }, directoryKey);
     }
 
     if (!meta?.timeCreated) {
-      this.registry.update(directoryKey, sessionID, { timeCreated: wire.info.time.created });
+      this.registry.update(directoryKey, sessionID, {
+        timeCreated: wire.info.time.created
+      });
     }
     // Title generation mirrors the TUI: attempted at submission time on every
     // user message, while the turn runs. pi skips internally once the session
@@ -1802,17 +1922,54 @@ export class OmpHostEngine {
       session.maybeStartTitleGeneration(text);
     }
 
-    const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : text ?? '';
+    const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : (text ?? '');
     const imageContents = content.filter((block) => block.type === 'image');
     // Dispatch mirrors the TUI input loop: every submission carries a
     // streaming behavior so a live turn never rejects the prompt. steer
     // injects into the running turn (the TUI's Enter-while-streaming);
-    // delivery "queue" waits for the next turn. The behavior is a no-op
     // when idle, and routing through prompt() rather than steer() keeps
     // "/" extension commands working mid-turn (steer() rejects them).
     const streamingBehavior = delivery === 'queue' ? 'followUp' : 'steer';
-    await session.prompt(textOnly, { images: imageContents, streamingBehavior });
+    // TUI/RPC parity (rpc-mode.ts tryRunRpcSkillCommand): a slash command
+    // naming a skill runs as a skill-prompt custom message so the transcript
+    // carries the invocation card; plain prompt() executes the command with
+    // no card at all.
+    if (imageContents.length === 0 && await this.#tryRunSkillCommand(hostSession, textOnly, streamingBehavior)) {
+      return wire;
+    }
+    await session.prompt(textOnly, {
+      images: imageContents,
+      streamingBehavior
+    });
     return wire;
+  }
+
+  /**
+   * Mirror of rpc-mode's tryRunRpcSkillCommand: when the text is a slash
+   * invocation of a known skill and skill commands are enabled, send the
+   * skill-prompt custom message (display card, user attribution) instead of a
+   * plain prompt. Returns false when the text is not a skill command so the
+   * normal dispatch proceeds.
+   */
+  async #tryRunSkillCommand(hostSession, text, streamingBehavior) {
+    const session = hostSession.agentSession;
+    if (!session?.skillsSettings?.enableSkillCommands) return false;
+    const parsed = parseSkillInvocation(text);
+    if (!parsed) return false;
+    const skill = (session.skills ?? []).find((candidate) => candidate?.name === parsed.name);
+    if (!skill) return false;
+    const built = await buildSkillPromptMessage(skill, parsed.args, 'user');
+    await session.promptCustomMessage(
+      {
+        customType: SKILL_PROMPT_MESSAGE_TYPE,
+        content: built.message,
+        display: true,
+        details: built.details,
+        attribution: 'user'
+      },
+      { streamingBehavior }
+    );
+    return true;
   }
 
   /**
@@ -1839,7 +1996,9 @@ export class OmpHostEngine {
       await session.setModel(target).catch((error) => {
         console.error('[omp-host] model switch failed:', error?.message ?? error);
       });
-      this.registry.update(directoryKey, sessionID, { model: modelSelector(target) });
+      this.registry.update(directoryKey, sessionID, {
+        model: modelSelector(target)
+      });
     }
     if (thinkingLevel !== undefined && typeof session.setThinkingLevel === 'function') {
       // SDK contract: setThinkingLevel returns void (agent-session.d.ts:736)
@@ -1852,7 +2011,10 @@ export class OmpHostEngine {
         console.error('[omp-host] thinking level switch failed:', error?.message ?? error);
       }
     }
-    return { ok: true, model: modelSelector(session.model) ?? modelSelector(target) };
+    return {
+      ok: true,
+      model: modelSelector(session.model) ?? modelSelector(target)
+    };
   }
 
   async abort({ sessionID, directory }) {
@@ -1885,7 +2047,7 @@ export class OmpHostEngine {
     // without one the fork keeps the whole transcript (TUI /fork semantics).
     if (messageID) {
       const entryId = resolveWireIdToEntryId(forked.getEntries?.() ?? [], messageID, {
-        wireIdFor: this.#wireIdResolver(directoryKey, sessionID),
+        wireIdFor: this.#wireIdResolver(directoryKey, sessionID)
       });
       // Compat: native entry ids pass through unchanged (the same fallback
       // revert uses) before giving up and forking at the leaf.
@@ -1902,7 +2064,10 @@ export class OmpHostEngine {
         const parentId = boundary.parentId ?? null;
         if (parentId) forked.branch(parentId);
         else forked.resetLeaf();
-        forked.appendCustomEntry('ompchamber.forkBoundary', { from: sessionID, at: messageID });
+        forked.appendCustomEntry('ompchamber.forkBoundary', {
+          from: sessionID,
+          at: messageID
+        });
       }
     }
     const now = Date.now();
@@ -1917,13 +2082,18 @@ export class OmpHostEngine {
       timeUpdated: now,
       ...(meta?.persona ? { persona: meta.persona } : {}),
       ...(meta?.agent ? { agent: meta.agent } : {}),
-      ...(meta?.model ? { model: meta.model } : {}),
+      ...(meta?.model ? { model: meta.model } : {})
     });
     await forked.close();
     const session = this.#wireSession(
-      { id: forkId, cwd: directoryKey, created: new Date(now), modified: new Date(now) },
+      {
+        id: forkId,
+        cwd: directoryKey,
+        created: new Date(now),
+        modified: new Date(now)
+      },
       directoryKey,
-      this.registry.get(directoryKey, forkId),
+      this.registry.get(directoryKey, forkId)
     );
     this.bus.emit('session.created', { sessionID: forkId, info: session }, directoryKey);
     return session;
@@ -1943,13 +2113,13 @@ export class OmpHostEngine {
     // wants the engine entry id. Resolve through the same projection the UI
     // saw (native ids pass through unchanged for compat).
     const entryId = resolveWireIdToEntryId(manager.getEntries?.() ?? [], messageID, {
-      wireIdFor: this.#wireIdResolver(directoryKey, sessionID),
+      wireIdFor: this.#wireIdResolver(directoryKey, sessionID)
     });
     manager.branch(entryId ?? messageID);
     const previousLeaf = manager.getLeafId();
     this.registry.update(directoryKey, sessionID, {
       revert: { messageID, previousLeaf },
-      timeUpdated: Date.now(),
+      timeUpdated: Date.now()
     });
     const session = this.#wireSessionFromLive(hostSession);
     session.revert = { messageID };
@@ -1973,13 +2143,13 @@ export class OmpHostEngine {
       if (!session?.extensionRunner) continue;
       try {
         const commands = getSessionSlashCommands(session) ?? [];
-        return Promise.resolve(commands.map((command) => ({
-          name: command.name,
-          ...(typeof command.description === 'string' && command.description
-            ? { description: command.description }
-            : {}),
-          source: command.source ?? 'extension',
-        })));
+        return Promise.resolve(
+          commands.map((command) => ({
+            name: command.name,
+            ...(typeof command.description === 'string' && command.description ? { description: command.description } : {}),
+            source: command.source ?? 'extension'
+          }))
+        );
       } catch {
         return Promise.resolve([]);
       }
@@ -2000,7 +2170,10 @@ export class OmpHostEngine {
     } else {
       manager.resetLeaf();
     }
-    this.registry.update(directoryKey, sessionID, { revert: undefined, timeUpdated: Date.now() });
+    this.registry.update(directoryKey, sessionID, {
+      revert: undefined,
+      timeUpdated: Date.now()
+    });
     const session = this.#wireSessionFromLive(hostSession);
     this.bus.emit('session.updated', { sessionID, info: session }, directoryKey);
     return session;
@@ -2016,10 +2189,9 @@ export class OmpHostEngine {
     return (latest?.items ?? latest?.todos ?? []).map((todo) => ({
       content: todo.content ?? '',
       status: todo.status ?? 'pending',
-      priority: todo.priority ?? 'medium',
+      priority: todo.priority ?? 'medium'
     }));
   }
-
 
   async shutdown() {
     clearInterval(this.sweeper);
@@ -2074,8 +2246,7 @@ export class OmpHostEngine {
     await this.#boot();
     const toKey = normalizeDirectoryKey(destination);
     const live = this.sessions.get(sessionID);
-    const fromKey = live?.directory
-      ?? (await this.#locateDirectory(sessionID));
+    const fromKey = live?.directory ?? (await this.#locateDirectory(sessionID));
     if (!fromKey) return null;
     const file = await this.#findSessionFile(sessionID, fromKey);
     if (file) {

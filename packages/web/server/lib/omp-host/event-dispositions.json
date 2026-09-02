@@ -44,7 +44,7 @@
   },
   "tool_execution_end": {
     "track": "wire-existing",
-    "note": "toolFinished"
+    "note": "toolFinished; todo tool results also emit todo.updated with the full details.phases list (TUI event-controller.ts:1656 parity)"
   },
   "auto_compaction_start": {
     "track": "omp",
@@ -103,8 +103,11 @@
     ]
   },
   "todo_reminder": {
-    "track": "wire-existing",
-    "note": "todo.updated"
+    "track": "omp",
+    "note": "omp.notice.raised transient reminder with attempt counts (TUI TodoReminderComponent parity). No wire todo.updated: the payload lists incomplete items only (todo-tracker.ts:269) and would replace the panel's full list from the todo tool result mapping (tool_execution_end)",
+    "ompEvents": [
+      "omp.notice.raised"
+    ]
   },
   "todo_auto_clear": {
     "track": "wire-new",

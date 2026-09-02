@@ -206,6 +206,89 @@ describe('projection', () => {
     expect(plain[1].parts.find((p) => p.type === 'tool').state.metadata).toEqual({});
   });
 
+  test('developer agent-attribution note rides the turn without splitting it', () => {
+    const messages = [
+      userMessage('run'),
+      assistantMessage([{ type: 'text', text: 'first' }], { timestamp: now + 10 }),
+      { role: 'developer', content: [{ type: 'text', text: 'retry reminder' }], attribution: 'agent', timestamp: now + 30 },
+      assistantMessage([{ type: 'text', text: 'second' }], { timestamp: now + 40 }),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo', agent: 'build' });
+    // user, assistant#1, note, assistant#2 — the note stays between the two
+    // assistant messages of the same turn.
+    expect(projected.map((m) => m.info.role)).toEqual(['user', 'assistant', 'assistant', 'assistant']);
+    const note = projected[2];
+    expect(note.info.metadata).toEqual({ ompRole: 'developer' });
+    expect(note.parts[0].text).toBe('[omp:developer] retry reminder');
+    expect(note.parts[0].synthetic).toBe(true);
+    // Deterministic id derivation the live paths share.
+    expect(note.info.id).toBe(wireMessageId('custom', now + 30, '[omp:developer] retry reminder'));
+    // Both assistant messages anchor to the real user message; the note
+    // never became the turn's user parent.
+    expect(projected[1].info.parentID).toBe(projected[0].info.id);
+    expect(projected[3].info.parentID).toBe(projected[0].info.id);
+  });
+
+  test('developer user-attribution synthetic prompt occupies the user turn slot', () => {
+    const messages = [
+      userMessage('run'),
+      assistantMessage([{ type: 'text', text: 'done' }], { timestamp: now + 10 }),
+      { role: 'developer', content: 'queued follow-up', attribution: 'user', timestamp: now + 30 },
+      assistantMessage([{ type: 'text', text: 'follow-up answer' }], { timestamp: now + 40 }),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo', agent: 'build' });
+    const note = projected[2];
+    expect(note.info.role).toBe('user');
+    expect(note.info.metadata).toEqual({ ompRole: 'developer' });
+    expect(note.parts[0].text).toBe('[omp:developer] queued follow-up');
+    expect(note.parts[0].synthetic).toBe(true);
+    expect(note.info.id).toBe(wireMessageId('user', now + 30, '[omp:developer] queued follow-up'));
+    // The following assistant message anchors to the synthetic prompt, like
+    // a real prompt — the turn model only renders assistants parented to a
+    // user message.
+    expect(projected[3].info.parentID).toBe(note.info.id);
+  });
+
+  test('empty developer messages are skipped', () => {
+    const messages = [
+      userMessage('run'),
+      { role: 'developer', content: '   ', attribution: 'agent', timestamp: now + 5 },
+      assistantMessage([{ type: 'text', text: 'done' }]),
+    ];
+    const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
+    expect(projected).toHaveLength(2);
+  });
+
+  test('developer reminder <system-reminder> wrapper is stripped from the part text, id stays on raw text', () => {
+    const raw = '<system-reminder>\nYou stopped with 2 incomplete todo item(s):\n- task\n</system-reminder>';
+    const message = { role: 'developer', content: [{ type: 'text', text: raw }], attribution: 'agent', timestamp: now + 30 };
+    const projected = projectConversation(
+      [userMessage('run'), assistantMessage([{ type: 'text', text: 'stopping' }]), message],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    const note = projected[2];
+    // The UI's synthetic filter drops parts containing the tag, so the part
+    // must carry the unwrapped body while the wire id seeds on the raw text.
+    expect(note.parts[0].text).toBe('[omp:developer] You stopped with 2 incomplete todo item(s):\n- task');
+    expect(note.info.id).toBe(wireMessageId('custom', now + 30, '[omp:developer] ' + raw));
+  });
+
+  test('strippedToolCalls marker rides assistant metadata for elided branch activity', () => {
+    const stripped = assistantMessage([{ type: 'text', text: 'partial turn' }]);
+    stripped.strippedToolCalls = 3;
+    const projected = projectConversation(
+      [userMessage('run'), stripped],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    expect(projected[1].info.metadata).toEqual({ ompStrippedToolCalls: 3 });
+    // No marker / zero → no metadata field at all.
+    const plain = projectConversation(
+      [userMessage('run'), assistantMessage([{ type: 'text', text: 'clean turn' }])],
+      { sessionID: 's1', directory: '/repo' },
+    );
+    expect('metadata' in plain[1].info).toBe(false);
+  });
+
   test('normalizeToolExecutionResult accepts AgentToolResult objects and plain strings', () => {
     expect(normalizeToolExecutionResult({ content: [{ type: 'text', text: 'ans' }], details: { timedOut: true } })).toEqual({
       content: [{ type: 'text', text: 'ans' }],

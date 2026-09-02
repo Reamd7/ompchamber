@@ -254,8 +254,9 @@ P0/P1 分期对应总纲 D4 + D6-R6:P1 = 全部 24 成员的显式处置(D2 强�
 | 4 | `auto_retry_end {success, attempt, finalError?, retryErrors?}` | **双轨** | wire `session.status {type:'busy'}`(若 loop 继续;最终 `session.idle` 仍由 agent_end 发)+ `omp.retry.ended {success, attempt, finalError?, retryErrors:[{messageID, note, retryRecovery}]}`(durable) | loader 撤;恢复注记 chip 挂到 superseded 消息;终端失败置顶错误条 "Retry failed after N attempts: …" | event-controller.ts:1979-2034 | P1 / P1 |
 | 5 | `retry_fallback_applied {from,to,role}` / `retry_fallback_succeeded {model,role}` | **双轨**:真值走 wire,提示走 omp | `omp.fallback.applied {from, to, role}` / `omp.fallback.succeeded {model, role}`;wire 真值刷新由随后 `model_changed` 承担(SDK 保证,agent-session.ts:7271-7273;§5.4) | warning toast "Fallback: A -> B" / status toast "Fallback succeeded on M";徽章 fallbackActive 角标 | event-controller.ts:2036-2046 | P1 / P1 |
 | 6 | `model_changed`(无 payload,真值读 `session.model`)| **双轨**:真值走 wire | wire `session.updated`(registry model 字段同步,§5.4)+ `omp.model.changed {model:{provider,id}, thinkingLevel, role?}`(durable,01 §5.6 形状) | 会话徽章/模型指示即时换真值;与 fallback 联动防"静默换模型" | event-controller.ts:255-258;agent-session.ts:7257-7273 | P1 / P1 |
-| 7 | `ttsr_triggered {rules}` | **omp 轨** | `omp.ttsr.triggered {rules:[{name}]}`(volatile;UI 端合并连续块) | transcript 尾部逆流警告卡 "⚠ Injecting rule: <name> ⟲",可折叠 | event-controller.ts:2048-2068 | **P1 / P2**(R6 拆分) |
-| 8 | `todo_auto_clear` | **wire 轨** | `todo.updated {todos:[]}`(与 ACP 映射一致) | WorkStatusTasksSection/StatusRow 清空(live 置空,persist 兜底自然失活) | event-controller.ts:2074-2076 | P1 / P1 |
+| 7 | `ttsr_triggered {rules}` | **omp 轨** | `omp.ttsr.triggered {rules:[{name}]}`(volatile;UI 端合并连续块) | transcript 顶部警告条(OmpTtsrWarning:规则名列表、TTL 2min 自动消失、可手动关闭,新触发块重新出现) | event-controller.ts:2048-2068 | P1 / 已落地 |
+| 8 | `todo_reminder {todos, attempt, maxAttempts}` | **omp 轨** | `omp.notice.raised {level:'info', message:'Unfinished todos (a/b): …'}`(volatile) | 提醒走 notice toast 带 attempt/maxAttempts(TUI TodoReminderComponent 对齐)。**不发 wire `todo.updated`**:payload 只含未完成项(todo-tracker.ts:269),发出去会整表覆盖面板、丢已完成项;todo 面板权威来源 = `tool_execution_end` 的 todo 工具结果映射(details.phases 全量) | event-controller.ts:2070-2073 | P1 / 已落地 |
+| 8b | `todo_auto_clear` | **wire 轨** | `todo.updated {todos:[]}`(与 ACP 映射一致) | WorkStatusTasksSection/StatusRow 清空(live 置空,persist 兜底自然失活) | event-controller.ts:2074-2076 | P1 / P1 |
 | 9 | `irc_message {message:CustomMessage}` | **双轨** | wire `message.updated`+`message.part.updated`(复用 `projectCustomMessage`,确定性 id,冷热一致)+ `omp.custom.appended {message:{wireMessageID, customType, attribution, timestamp, text, details?, display}}` | live irc 卡(不再等 refetch);冷读同 id 去重;TTL/上限语义见 §8.2 | event-controller.ts:856-914 | P1 / P1 |
 | 10 | `notice {level, message, source?}` | **omp 轨**(error 级保留现有 console.error) | `omp.notice.raised {level, message, source?}`(volatile) | toast:error/warning/info 三级(复用 permission-toast 基建模式,sync-context.tsx:1527-1560);去重键 (level,source,message) | event-controller.ts:976-985;engine.js:607-610 | P1 / P1 |
 | 11 | `thinking_level_changed {thinkingLevel?, configured?, resolved?}` | **omp 轨** | `omp.thinking.changed {thinkingLevel, configured?, resolved?}`(durable,01 定名) | composer 思考档位指示与 reasoning 折叠可见性同步(消费面 01/02 章) | event-controller.ts:259-283 | **P1 / P2**(R6 拆分) |
@@ -470,11 +471,11 @@ wire Text part 没有 customType 字段,且 D1 禁止扩类型。三个候选:
 #### 5.8.2 渲染分层与映射表
 
 | 层 | 判据 | customType 清单 | 渲染 | 数据源 |
-|---|---|---|---|---|
-| **T1 可见卡片** | 需独立视觉身份 | `advisor`、`irc:incoming`、`irc:autoreply`、`irc:relay`、`async-result`、`skill-prompt`、`lsp-late-diagnostic`、`live-delegation`、`collab-prompt`、`background-tan-dispatch` | 专属 React 卡组件(advisor 卡带 severity 轨、irc 卡带作者/时间、async-result 带 jobId 等) | 文本(前缀剥离)+ omp 结构 details |
+| **T1 可见卡片** | 需独立视觉身份 | `advisor`、`irc:incoming`、`irc:autoreply`、`irc:relay`、`async-result`、`skill-prompt`、`lsp-late-diagnostic`、`live-delegation`、`collab-prompt`、`background-tan-dispatch`、`launch-completion` | 专属 React 卡组件(advisor 卡带 severity 轨、irc 卡带作者/时间、async-result 带 jobId、launch-completion 带 daemon name/state、skill/lsp/tan 结构化明细行) | 文本(前缀剥离)+ omp 结构 details |
 | **T2 折叠分隔线** | 历史折叠点 | `compactionSummary`、`branchSummary`、handoff 类 custom(对齐 compaction-summary-message.ts:122-126) | slim divider,默认折叠,展开见 summary;warning 徽标 | 文本 + `entries` 端点(tokensBefore/warning/fromId) |
-| **T3 隐藏** | `display:false`(投影已丢弃,projection.js:361) | `eager-todo-prelude`、`mid-run-todo-nudge`、`todo-error-reminder`、`ultrathink-notice`、`orchestrate-notice`、`workflow-notice`、`prewalk-*`、`plan-mode-*`、`goal-mode-context`、`vibe-mode-context`、`checkpoint-active-reminder`、`interrupted-thinking`、`resolve-reminder`、`tool-call-loop-redirect`、`thinking-loop-redirect`、`image-attachment-description`、`ttsr-injection`、`goal-continuation`、`session-stop-continuation`、`gemini-tool-call-reminder` 等 | **不渲染**(现状保持) | 无 |
+| **T3 隐藏** | `display:false`(投影已丢弃,projection.js:361) | `eager-todo-prelude`、`mid-run-todo-nudge`、`todo-error-reminder`、`ultrathink-notice`、`orchestrate-notice`、`workflow-notice`、`prewalk-*`、`plan-mode-*`、`goal-mode-context`、`vibe-mode-context`、`checkpoint-active-reminder`、`interrupted-thinking`、`resolve-reminder`、`tool-call-loop-redirect`、`thinking-loop-redirect`、`image-attachment-description`、`ttsr-injection`、`goal-continuation`、`session-stop-continuat...
 | **T4 兜底** | 未登记/扩展注册类型 | 其余全部(含扩展 `sendMessage` 任意 customType) | 现有 `[omp:<type>]` 文本卡 + 边框样式(对齐 TUI message-frame 兜底) | 文本 |
+| **T5 折叠注入备注** | harness 注入的 developer 角色消息 | `developer` | 一行摘要 + 点击展开(CollapsedNoteView);正文可达数百 KiB(advisor 重放 dump),展开才挂载 | 文本(`[omp:developer]` 前缀)+ `info.metadata.ompRole`(§5.10 developer 行) |
 
 - **T3 的"隐藏但不重显"规则**:live `omp.custom.appended` 带 `display:false` 一律不建卡(仅 syncDebug 日志);重连重放、tail-sync、冷读三条路径统一按 `display:false` 过滤——与现状冷投影过滤(projection.js:361)形成双保险。
 - **T1/T2 live 事件**:`omp.custom.appended` 到达时若同 `wireMessageID` 的 wire 消息已渲染,只注入结构 details,不重复建卡(wire 轨才是消息权威)。
@@ -499,6 +500,10 @@ wire Text part 没有 customType 字段,且 D1 禁止扩类型。三个候选:
 | `fileMention {files[]}` | user 侧合成消息,每文件一行 `[omp:file-mention] └ Read <path> (N lines)` | 细引用行组 | messages.ts:294-302;TUI fileMention 行 |
 | `hookMessage` | assistant 侧合成消息 `[omp:hook]`(T4 边框卡) | glyph 折叠卡 | messages.ts:280-285 |
 | `compactionSummary`/`branchSummary` | §5.5(T2) | 折叠分隔线 | messages.ts:286-293 |
+
+| `developer`(harness 注入输入) | attribution `user`(synthetic prompt、todo 命令提醒、图片承载转换)→ **user 侧**合成消息 `[omp:developer]`,占用户轮槽(后续 assistant 消息锚定其 id,projectConversation 更新 lastUserWireId);attribution `agent`(turn-recovery/auto-continue/side-channel)→ **assistant 侧**合成 note 骑乘当前轮(parentID=lastUserWireId),不拆分轮次;两侧都走 T5 折叠渲染 | TUI CollapsedSyntheticMessageComponent(两类 attribution 都在 user 位置折叠渲染) | chat-transcript-builder.ts:252-273 |
+
+- **developer 直播路径**:synthetic prompt 经 `message_start`(role developer)即时投影并更新 lastUserWireId;`appendMessage` 注入无 SDK 事件,由 tail-sync(§5.5,role 过滤已含 developer)在 agent_end/compaction_end 兜底,键 `developer::<ts>` 幂等;冷投影 `projectDeveloperMessage` 与两侧直播共享确定性 id。**strippedToolCalls**:分支/回退重写把未配对 toolCall 计数标在消息上(SDK session-context.ts:521-549),冷投影写入 `info.metadata.ompStrippedToolCalls`,UI 在该 assistant 消息工具区末尾渲染省略行(TUI StrippedToolCallsPlaceholder 对齐);直播 `message_end` 事件不带标记,由权威 refetch(冷投影同 id)补齐。
 
 - 合成 user 消息以 `parentID=''` 独立成段,turn grouping(projectTurnRecords)按前缀分类跳过 turn 锚定,不干扰 user→assistant 配对(`projectCustomMessage` 已用同一技巧让 note 骑乘 parentID,projection.js:170-172)。
 - 备选(否决):折叠进前一 user 消息的 additionalParts——交错出现在 assistant 后(bash 执行可以跟在回答后)时会错锚,且改变既有 part id 序列破坏冷热确定性。

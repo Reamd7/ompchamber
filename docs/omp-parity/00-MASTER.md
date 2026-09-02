@@ -142,6 +142,10 @@ OpenChamber 现状 = **OpenCode 产品骨架 + omp 引擎**,概念层三类错�
 
 第一批(2026-08-20 验收)交付:服务端六域模块(dialogs/modes/models/uri + 租约/registry)、24 SDK 事件显式处置+CI 守卫、`/api/omp/events` SSE 通道+断线对账、流内渲染(T1-T4 分层/usage row/cache-miss/retry 徽标/notice toast/IRC 卡)、输入面(角色芯片/模式芯片)、BehaviorPage→omp AGENTS.md、share/session.error 等提前清扫。
 
+2026-09-01 transcript 对齐补充批(05 章):developer 角色投影(冷 + message_start + tail-sync,T5 折叠渲染)、`strippedToolCalls` 省略行、ttsr 警告条、todo 提醒 notice toast、`launch-completion` T1 卡与 T1 结构化明细(skill/lsp/tan/collab)。
+
+2026-09-01 追加:todo 工具写入映射 `todo.updated`(全量 details.phases,TUI event-controller.ts:1656 对齐)——修复任务面板不随 todo 写入更新、提醒负载(仅未完成项)挤掉已完成项的存量缺口。
+
 全量对账结论(**全集 109 项 = ✅32 + 🟡33 + ❌39 + 03 章 P3 删除 4 项未启动 + 01 GAP-09 未验证**):✅ 全落地 32(29%)/ 🟡 半落地 33(30%,几乎全部=服务端就绪+UI 消费面缺失)/ ❌ 未落地 39(其中到期欠账 23、P2/P3 未到期 16)。03 章 P3 删除 4 项 = C1/C2/C6/C11,与 07 章删除批同列车。
 
 三个结构性断层:

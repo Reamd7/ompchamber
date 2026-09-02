@@ -12,7 +12,9 @@ import {
   createOmpTreeAPI,
   createOmpArtifactsAPI,
   createOmpUriAPI,
+  parseOmpDialogsSnapshotPayload,
   parseOmpEnvelope,
+  parseOmpPendingDialog,
   parseOmpSseBlock,
   type OmpEventEnvelope,
 } from './omp';
@@ -943,5 +945,52 @@ describe('createOmpArtifactsAPI (spec 04 — per-session local:// listing)', () 
       fetchImpl: (async () => jsonResponse(200, { nope: true })) as unknown as typeof fetch,
     });
     expect(await malformed.listSessionArtifacts({ directory: '/repo', sessionID: 's' })).toEqual({ ok: false, unavailable: false, status: 200 });
+  });
+});
+describe('parseOmpPendingDialog — ask wire contract', () => {
+  // The omp-host bridge passes the SDK ask question through verbatim
+  // (domain-dialogs.js askDialog), so `recommended` arrives as the SDK's
+  // 0-indexed option number. A schema that expected a label string dropped
+  // the whole dialog whenever the model marked a recommended option, leaving
+  // the ask tool pending with no modal to answer it.
+  const wireAskDialog = {
+    id: 'dlg_ask',
+    sessionId: 'ses_1',
+    createdAt: 200,
+    kind: 'ask',
+    ask: {
+      questions: [{
+        id: 'q1',
+        question: '确认是否允许绕过钩子改消息',
+        options: [{ label: '允许' }, { label: '不允许' }],
+        recommended: 1,
+      }],
+      timeoutMs: 0,
+    },
+  };
+
+  test('parses a numeric recommended index instead of dropping the dialog', () => {
+    const dialog = parseOmpPendingDialog(wireAskDialog);
+    expect(dialog).toEqual({
+      id: 'dlg_ask',
+      sessionId: 'ses_1',
+      createdAt: 200,
+      kind: 'ask',
+      ask: {
+        questions: [{
+          id: 'q1',
+          question: '确认是否允许绕过钩子改消息',
+          options: [{ label: '允许' }, { label: '不允许' }],
+          recommended: 1,
+        }],
+        timeoutMs: 0,
+      },
+    });
+  });
+
+  test('snapshot parser keeps the dialog instead of silently skipping it', () => {
+    expect(parseOmpDialogsSnapshotPayload({ dialogs: [wireAskDialog] })).toEqual([
+      parseOmpPendingDialog(wireAskDialog),
+    ]);
   });
 });

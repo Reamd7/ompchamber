@@ -14,6 +14,7 @@ import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import MessageList, { type MessageListHandle } from './MessageList';
 import { PermissionCard } from './PermissionCard';
 import { QuestionCard } from './QuestionCard';
+import { OmpTtsrWarning } from './OmpTtsrWarning';
 import { OmpDialogLayer } from '@/components/dialogs/OmpDialogLayer';
 import { OmpPlanReviewOverlay } from '@/components/dialogs/OmpPlanReviewOverlay';
 import { InternalUriViewer } from '@/components/dialogs/InternalUriViewer';
@@ -344,6 +345,7 @@ const ChatViewport = React.memo(({
                     data-scrollbar="chat"
                 >
                     <div className="relative z-0 min-h-full">
+                        <OmpTtsrWarning sessionId={currentSessionId} />
                         {showLoadOlderButton && (
                             <div className="flex justify-center pt-3 pb-1">
                                 <Button
@@ -1233,6 +1235,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     aria-hidden={isDesktopExpandedInput}
                 >
                     <div className="absolute inset-0 overflow-y-auto overflow-x-hidden bg-background pt-6" style={CHAT_SCROLL_STYLE}>
+                        <OmpTtsrWarning sessionId={currentSessionId ?? undefined} />
                         <div className="space-y-4">
                             {HYDRATING_SKELETON_ITEMS.map((item) => (
                                 <div key={item.id} className="group w-full">
@@ -1271,6 +1274,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                     )}
                     aria-hidden={isDesktopExpandedInput}
                 >
+                    {!isDesktopExpandedInput ? <OmpTtsrWarning sessionId={currentSessionId ?? undefined} /> : null}
                     {!isDesktopExpandedInput ? (
                         <div className="absolute inset-0 flex items-center justify-center">
                             <ChatEmptyState />

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat: the engine's injected notes and questions now reach the conversation.** Agent-side ask prompts failed to open their dialog whenever a question marked a recommended option, leaving the turn stuck on "using ask" until you interrupted it — the answer dialog now opens reliably. Harness-injected inputs the terminal shows (todo reminders, recovery nudges, queued prompts) also appear in the chat as collapsed notes you can expand, instead of vanishing.
+- Chat: background process exits get their own card naming the process and its state, skill prompts show the skill's path and arguments, late language-server diagnostics list the affected files, and collab prompts carry their author.
+- Chat: when steering rules kick in mid-turn, a dismissible warning names the triggered rules; unfinished-todo reminders surface as a toast with the attempt count; and branched history shows a line for tool calls that were elided because their results belong to another branch.
+- Chat: the session's Tasks panel now follows the agent's todo list as it changes and keeps finished items — todo writes used to never reach the panel, and a continue-reminder overwrote it with only the unfinished items, so completed tasks vanished from the side panel (the transcript's todo snapshots were always correct).
+- Chat: invoking a skill as `/skill:<name>` now shows the skill's card in the transcript — the skill's file path and arguments, matching the terminal — instead of silently running with no record.
+
 ## [1.24.1] - 2026-09-02
 
 - **Terminal: fixed the display corruption when typing with an IME.** Typing the first character with a Chinese/Japanese/Korean input method — for example into btop's filter — shifted the terminal content out of place and clipped its bottom rows, and the misplacement stayed after the input ended. IME composition now targets the terminal's hidden input field, so the display never moves.
