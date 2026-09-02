@@ -155,6 +155,9 @@ interface WireSessionRecord {
   projectID: string;
   directory: string;
   parentID?: string;
+  /** Fork lineage (§5.4): wire parentID stays subagent-only; a user fork
+   * must remain a normal promptable session in the shared UI. */
+  forkParentID?: string;
   title: string;
   agent?: string;
   model?: { id: string; providerID: string };
@@ -1576,17 +1579,20 @@ export class OmpHostEngine {
         // payload carries incomplete items only (todo-tracker.ts:269), so
         // without this mapping the todo panel never sees todo writes and a
         // reminder drops completed items from it.
+        // SAFETY: boundary cast — the todo tool's details is the SDK's
+        // { phases: TodoPhase[] } marker (tools/todo.ts result details);
+        // isTodoPhase re-narrows every element before the projection reads it.
+        const todoPhases = (details as { phases?: unknown } | undefined)?.phases;
         if (
           event.toolName === 'todo'
           && !event.isError
-          && details
-          && Array.isArray(details.phases)
-          && details.phases.every(isTodoPhase)
+          && Array.isArray(todoPhases)
+          && todoPhases.every(isTodoPhase)
         ) {
-          const todos = details.phases.flatMap((phase) => phase.tasks.map((task) => ({
+          const todos = todoPhases.flatMap((phase) => phase.tasks.map((task) => ({
             content: task.content,
             status: task.status,
-            priority: task.priority ?? 'medium',
+            priority: 'medium',
             // ch10 wire 重合面: the SDK task carries the blocker note; the
             // reminder projection is transient (notice.raised), so this
             // mapping is the only carrier that puts it on the wire.
@@ -2002,7 +2008,25 @@ export class OmpHostEngine {
     }
   }
 
-  async prompt({ sessionID, directory, text, model, agent, images, delivery, messageID }) {
+  async prompt({
+    sessionID,
+    directory,
+    text,
+    model,
+    agent,
+    images,
+    delivery,
+    messageID,
+  }: {
+    sessionID: string;
+    directory: string;
+    text: string;
+    model?: { providerID?: string; modelID?: string };
+    agent?: string;
+    images?: Array<{ data?: string; mimeType?: string }>;
+    delivery?: string;
+    messageID?: string;
+  }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
@@ -2270,7 +2294,7 @@ export class OmpHostEngine {
     return true;
   }
 
-  async fork({ sessionID, directory, messageID }) {
+  async fork({ sessionID, directory, messageID }: { sessionID: string; directory: string; messageID?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);

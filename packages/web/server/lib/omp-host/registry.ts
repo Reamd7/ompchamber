@@ -46,6 +46,9 @@ const defaultAgentDir = () => path.join(os.homedir(), '.omp', 'agent');
 export interface SessionMeta {
   title?: string;
   parentID?: string;
+  /** Fork lineage (engine.fork writes it): wire `parentID` stays reserved
+   * for subagent sessions; the session-tree projection reads this. */
+  forkParentID?: string;
   persona?: string;
   agent?: string;
   model?: string;

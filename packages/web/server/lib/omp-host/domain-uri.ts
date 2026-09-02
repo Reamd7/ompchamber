@@ -341,9 +341,12 @@ export class UriTokenService {
    * consumes one read; same scope/expiry rules as open().
    * @returns {{ ok: true, bytes: Buffer, contentType: string, filename: string } | { ok: false, response: Response }}
    */
-  async openRaw(id, { directory } = {}) {
+  async openRaw(
+    id: string | null | undefined,
+    { directory }: { directory?: string | null } = {},
+  ): Promise<{ ok: true; bytes: Buffer; contentType: string; filename: string } | { ok: false; response: Response }> {
     const found = this.#lookup(id, directory);
-    if (!found.ok) return found;
+    if (found.ok === false) return found;
     const { entry } = found;
     let bytes;
     try {
@@ -374,9 +377,17 @@ export interface UriResolveBody {
   pathOnly?: unknown;
 }
 
+/** Engine hook: local:// protocol options for one session. Cold paths
+ * resolve the session file first, so async returns are part of the contract
+ * (spec 04 §5.2.3: the hook may hit the SessionManager index). */
+export type LocalOptionsForHook = (
+  sessionID: string,
+  directory: string,
+) => LocalProtocolOptions | null | Promise<LocalProtocolOptions | null>;
+
 export interface UriResolveInput {
   body?: UriResolveBody;
-  localOptionsFor: (sessionID: string, directory: string) => LocalProtocolOptions | null;
+  localOptionsFor: LocalOptionsForHook;
   tokens: UriTokenService;
   router?: InternalUrlRouter;
 }
@@ -498,6 +509,9 @@ export interface WireSessionRecord {
   id: string;
   title?: string;
   parentID?: string;
+  /** Fork lineage (registry forkParentID): the wire parentID stays reserved
+   * for subagent sessions; the session tree reads this instead. */
+  forkParentID?: string;
   time?: { created?: number; updated?: number };
 }
 
@@ -1484,12 +1498,18 @@ export interface UriTokenQueryLike {
 /** Injected engine hooks + overridable services for createUriDomain. Every
  * member is optional; routes fail loudly when a required hook is absent
  * (see createUriDomain JSDoc for the per-hook contracts). */
+/** One session's local:// artifacts listing (engine #listLocalFiles). */
+export interface ArtifactsListResult {
+  files: Array<{ ref: string; size?: number; modifiedAt?: number }>;
+  truncated?: boolean;
+}
+
 export interface UriDomainDeps {
   features?: () => OmpFeatures;
   tokens?: UriTokenService;
   descriptors?: ParkedAgentDescriptors;
   router?: InternalUrlRouter;
-  localOptionsFor?: (sessionID: string, directory: string) => LocalProtocolOptions | null;
+  localOptionsFor?: LocalOptionsForHook;
   sessionTreeData?: (directory: string | null) => Promise<SessionTreeData>;
   entryTreeFor?: (sessionID: string, directory: string | null) => Promise<{ manager: EntryTreeManagerLike } | null>;
   agentsSnapshot?: () => AgentsSnapshotEntry[];
@@ -1497,6 +1517,8 @@ export interface UriDomainDeps {
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
   liveSessionIds?: () => string[];
   actions?: AgentRunActions;
+  /** Per-session local:// file rows (artifacts.v1); null = unknown session. */
+  localFiles?: (sessionID: string, directory: string) => ArtifactsListResult | null | Promise<ArtifactsListResult | null>;
 }
 
 /** Route-registration context supplied by the host router (host.ts fetch:
@@ -1518,10 +1540,14 @@ export interface UriDomain {
   tokens: UriTokenService;
   aggregator: AgentRunsAggregator;
   descriptors: ParkedAgentDescriptors;
+  artifacts: { list: (input: { directory?: string | null; sessionID?: string | null }) => Response | Promise<Response> };
   uri: {
     resolve: (input: { body?: UriResolveBody | null }) => Promise<Response>;
     open: (input: { body?: { token?: string | null } | null; directory?: string | null }) => Promise<Response>;
     info: (input: { query?: UriTokenQueryLike | null; directory?: string | null }) => Response;
+    /** Raw bytes endpoint (GET /omp/uri/tokens/{id}/content): streams the
+     * token's file body with its stored content type. */
+    content: (input: { id?: string | null; directory?: string | null }) => Promise<Response>;
   };
   tree: {
     sessionTree: (input: { directory?: string | null }) => Promise<SessionTreeProjection>;
@@ -1598,7 +1624,7 @@ export const createUriDomain = ({
   const uriInfo = ({ query, directory }) => tokens.describe(query?.get?.('token') ?? query?.token, { directory });
   const uriContent = async ({ id, directory }) => {
     const result = await tokens.openRaw(id, { directory });
-    if (!result.ok) return result.response;
+    if (result.ok === false) return result.response;
     return new Response(result.bytes, {
       status: 200,
       headers: {
@@ -1705,6 +1731,7 @@ export const createUriDomain = ({
   return {
     tokens,
     aggregator: runs,
+    descriptors,
     artifacts: { list: artifactsList },
     uri: { resolve: uriResolve, open: uriOpen, info: uriInfo, content: uriContent },
     tree: { sessionTree, entryTree },

@@ -307,6 +307,9 @@ export interface MoveSessionBody {
 /** JSON body of the directory-scoped session POST routes (unrevert, summarize, fork). */
 export interface SessionDirectoryBody {
   directory?: string;
+  /** Fork boundary (wire message id): present bounds the fork at that
+   * message (TUI /branch); absent forks the whole transcript (TUI /fork). */
+  messageID?: string;
 }
 
 /** JSON body of POST /omp/sessions/{id}/model (spec 01 GAP-02/04). */

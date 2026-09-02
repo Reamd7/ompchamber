@@ -539,7 +539,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const live = h.engine.sessions.get('s1');
     const calls = [];
     live.agentSession.prompt = async (text) => { calls.push({ kind: 'prompt', text }); return true; };
-    live.agentSession.promptCustomMessage = async (payload) => { calls.push({ kind: 'custom', customType: payload.customType, details: payload.details }); return true; };
+    live.agentSession.promptCustomMessage = async (payload) => { calls.push({ kind: 'custom', customType: payload.customType, details: payload.details }); };
     await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/skill:find-skills node test runner' });
     expect(calls).toHaveLength(1);
     expect(calls[0].kind).toBe('custom');
@@ -584,7 +584,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const live = h.engine.sessions.get('s1');
     live.agentSession.messages.push(
       { role: 'user', content: 'hi', timestamp: 50 },
-      { role: 'assistant', content: [{ type: 'text', text: 'ok' }], model: 'p1/m1', timestamp: 51 },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }], api: 'anthropic', provider: 'p1', model: 'p1/m1', timestamp: 51, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop' },
       { role: 'developer', content: [{ type: 'text', text: 'empty-stop retry reminder' }], attribution: 'agent', timestamp: 52 },
     );
     const before = h.wireOf('message.updated').length;

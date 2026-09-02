@@ -76,10 +76,14 @@ export interface UserMessageInput {
   timestamp: number;
 }
 
-/** omp DeveloperMessage — flows through conversation lists; not projected. */
+/** omp DeveloperMessage — harness-injected transcript input; projected as
+ * synthetic rows (attribution 'user' occupies the user turn slot, anything
+ * else rides the current turn as an assistant-side note). */
 export interface DeveloperMessageInput {
   role: 'developer';
   content?: ProjectedContentInput;
+  /** Injection origin ('user' synthetic prompts, 'agent' mid-turn nudges). */
+  attribution?: 'user' | 'agent';
   timestamp: number;
 }
 
@@ -92,6 +96,8 @@ export interface AssistantMessageInput {
   provider?: string;
   usage?: UsageInput;
   stopReason?: string;
+  /** Tool calls stripped by branch/fork history rewrite (StrippedToolCallsMarker). */
+  strippedToolCalls?: number;
   errorMessage?: string;
 }
 
@@ -199,6 +205,9 @@ export interface WirePartTime {
 /** Wire message metadata — the `ompRole`-keyed variant payloads the UI branches on. */
 export interface WireMessageMetadata {
   ompRole?: string;
+  /** Count of tool calls stripped by branch/fork history rewrite (SDK
+   * StrippedToolCallsMarker); the UI renders an elided-activity line. */
+  ompStrippedToolCalls?: number;
   command?: string;
   exitCode?: number;
   cancelled?: boolean;
@@ -718,7 +727,13 @@ export const projectCustomMessage = (
   };
 };
 
-const developerTextPart = (id, sessionID, label, text, timestamp) => ({
+const developerTextPart = (
+  id: string,
+  sessionID: string,
+  label: string,
+  text: string,
+  timestamp: number,
+): WireMessagePart => ({
   id: partId(id, 0),
   sessionID,
   messageID: id,
@@ -742,7 +757,10 @@ const developerTextPart = (id, sessionID, label, text, timestamp) => ({
  *   note riding the current turn (projectCustomMessage's shape), so it never
  *   splits the turn it was injected into.
  */
-export const projectDeveloperMessage = (message, { sessionID, agent, parentID }) => {
+export const projectDeveloperMessage = (
+  message: DeveloperMessageInput,
+  { sessionID, agent, parentID }: { sessionID: string; agent?: string; parentID?: string },
+): ProjectedMessage => {
   const text = textOfContent(message.content);
   const label = '[omp:developer] ';
   const userSlot = message.attribution === 'user';

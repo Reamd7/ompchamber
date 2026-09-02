@@ -67,6 +67,12 @@ interface ResolveResponseBody {
   scheme?: string;
   error?: string;
   message?: string;
+  /** Binary descriptor arm (previewable images): bytes stream via the token
+   * content endpoint instead of an inline body. */
+  binary?: boolean;
+  immutable?: boolean;
+  size?: number;
+  revivable?: boolean;
   token?: { id: string; expiresAt: number };
 }
 
@@ -128,7 +134,10 @@ describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', 
         return createLocalProtocolOptions(sessionID, directory, artifactsOf(sessionID));
       },
       tokens,
-    }).then((r) => r.json().then((data) => ({ status: r.status, body: data })));
+    }).then((r) =>
+      // SAFETY: the resolve endpoint answers the ResolveResponseBody wire shape.
+      r.json().then((data) => ({ status: r.status, body: data as ResolveResponseBody })),
+    );
     expect(status).toBe(200);
     expect(body.content).toBe('alpha session secret');
   });
@@ -690,7 +699,10 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
         aggregator: historicalCtx.aggregator,
         descriptors: ctx.descriptors,
         body: typeof kind === 'string' ? { kind } : kind,
-      }).then((r) => r.json().then((data) => ({ status: r.status, body: data })));
+      }).then((r) =>
+        // SAFETY: the agent-run action endpoint answers the ResolveResponseBody wire shape.
+        r.json().then((data) => ({ status: r.status, body: data as ResolveResponseBody })),
+      );
       expect(result.status).toBe(409);
       expect(result.body).toEqual({ error: 'historical', revivable: false });
     }
@@ -952,7 +964,9 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       sessionTreeData,
     });
     const files = await domain.artifacts.list({ directory: DIRECTORY, sessionID: 'ses_A' });
-    const filesBody = await files.json();
+    const filesBody =
+      // SAFETY: the artifacts endpoint answers {files, truncated}.
+      (await files.json()) as { files: Array<{ ref: string; size?: number }>; truncated?: boolean };
     expect(files.status).toBe(200);
     expect(filesBody.files.map((file) => file.ref)).toEqual(['scratch/notes.md', 'PLAN.md']);
     expect(filesBody.truncated).toBe(false);
@@ -981,7 +995,8 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       sessionTreeData: async () => [{ id: 'ses_A', title: 'Alpha', time: { created: 1, updated: 1 } }],
     });
     const res = await domain.artifacts.list({ directory: DIRECTORY, sessionID: 'ses_A' });
-    const body = await res.json();
+    // SAFETY: the artifacts endpoint answers {files, truncated}.
+    const body = (await res.json()) as { files: Array<{ ref: string; size?: number; modifiedAt?: number }>; truncated?: boolean };
     expect(body.files).toEqual([
       { ref: 'b.md', size: 1, modifiedAt: 4 },
       { ref: 'a.md', size: 1, modifiedAt: 2 },

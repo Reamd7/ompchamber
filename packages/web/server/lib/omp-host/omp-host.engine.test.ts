@@ -544,7 +544,8 @@ describe('local:// per-session root wiring (spec 04 §5.2.3, TUI parity)', () =>
     writeFileSync(path.join(sessionDir, 's3', 'local', 'scratch', 'notes.md'), 'n');
     const engine = new OmpHostEngine({ agentDir });
     const res = await engine.uriDomain.artifacts.list({ directory: '/repo', sessionID: 's3' });
-    const body = await res.json();
+    // SAFETY: the artifacts endpoint answers {files, truncated}.
+    const body = (await res.json()) as { files: Array<{ ref: string; size?: number }>; truncated?: boolean };
     expect(res.status).toBe(200);
     expect(body.files.map((file) => file.ref).sort()).toEqual(['PLAN.md', 'scratch/notes.md']);
     expect(body.files.every((file) => !file.ref.includes(':') && !file.ref.includes('\\'))).toBe(true);

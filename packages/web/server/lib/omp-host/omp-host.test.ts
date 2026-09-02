@@ -347,7 +347,7 @@ describe('projection', () => {
     const messages = [
       userMessage('run'),
       assistantMessage([{ type: 'text', text: 'first' }], { timestamp: now + 10 }),
-      { role: 'developer', content: [{ type: 'text', text: 'retry reminder' }], attribution: 'agent', timestamp: now + 30 },
+      { role: 'developer' as const, content: [{ type: 'text', text: 'retry reminder' }], attribution: 'agent' as const, timestamp: now + 30 },
       assistantMessage([{ type: 'text', text: 'second' }], { timestamp: now + 40 }),
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo', agent: 'build' });
@@ -370,7 +370,7 @@ describe('projection', () => {
     const messages = [
       userMessage('run'),
       assistantMessage([{ type: 'text', text: 'done' }], { timestamp: now + 10 }),
-      { role: 'developer', content: 'queued follow-up', attribution: 'user', timestamp: now + 30 },
+      { role: 'developer' as const, content: 'queued follow-up', attribution: 'user' as const, timestamp: now + 30 },
       assistantMessage([{ type: 'text', text: 'follow-up answer' }], { timestamp: now + 40 }),
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo', agent: 'build' });
@@ -389,7 +389,7 @@ describe('projection', () => {
   test('empty developer messages are skipped', () => {
     const messages = [
       userMessage('run'),
-      { role: 'developer', content: '   ', attribution: 'agent', timestamp: now + 5 },
+      { role: 'developer' as const, content: '   ', attribution: 'agent' as const, timestamp: now + 5 },
       assistantMessage([{ type: 'text', text: 'done' }]),
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
@@ -398,7 +398,7 @@ describe('projection', () => {
 
   test('developer reminder <system-reminder> wrapper is stripped from the part text, id stays on raw text', () => {
     const raw = '<system-reminder>\nYou stopped with 2 incomplete todo item(s):\n- task\n</system-reminder>';
-    const message = { role: 'developer', content: [{ type: 'text', text: raw }], attribution: 'agent', timestamp: now + 30 };
+    const message = { role: 'developer' as const, content: [{ type: 'text', text: raw }], attribution: 'agent' as const, timestamp: now + 30 };
     const projected = projectConversation(
       [userMessage('run'), assistantMessage([{ type: 'text', text: 'stopping' }]), message],
       { sessionID: 's1', directory: '/repo' },
