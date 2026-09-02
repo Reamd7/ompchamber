@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-09-02
+
 - **Chat: the engine's injected notes and questions now reach the conversation.** Agent-side ask prompts failed to open their dialog whenever a question marked a recommended option, leaving the turn stuck on "using ask" until you interrupted it — the answer dialog now opens reliably. Harness-injected inputs the terminal shows (todo reminders, recovery nudges, queued prompts) also appear in the chat as collapsed notes you can expand, instead of vanishing.
 - Chat: background process exits get their own card naming the process and its state, skill prompts show the skill's path and arguments, late language-server diagnostics list the affected files, and collab prompts carry their author.
 - Chat: when steering rules kick in mid-turn, a dismissible warning names the triggered rules; unfinished-todo reminders surface as a toast with the attempt count; and branched history shows a line for tool calls that were elided because their results belong to another branch.
