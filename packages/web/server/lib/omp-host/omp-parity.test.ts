@@ -321,7 +321,7 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     registerEndpoints(route, stubEngine, { version: 'test' });
     const deleteRoute = routes.find((r) => r.method === 'DELETE' && r.pattern === '/session/{sessionID}');
     const url = new URL('http://host/session/ses_1?directory=/repo');
-    const response = await deleteRoute.handler(new Request(url), {
+    const response = await deleteRoute.handler(new Request(url.toString()), {
       url,
       headers: new Headers(),
       params: { sessionID: 'ses_1' },
@@ -360,7 +360,7 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     );
     expect(abortRoute).toBeDefined();
     const url = new URL('http://host/session/ses_1/abort?directory=/repo');
-    const response = await abortRoute.handler(new Request(url, { method: 'POST' }), {
+    const response = await abortRoute.handler(new Request(url.toString(), { method: 'POST' }), {
       url,
       headers: new Headers(),
       params: { sessionID: 'ses_1' },
@@ -433,11 +433,11 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     const listRoute = routes.find((r) => r.method === 'GET' && r.pattern === '/experimental/session');
 
     const scopedUrl = new URL('http://host/experimental/session?directory=/repo');
-    const scoped = await listRoute.handler(new Request(scopedUrl), { url: scopedUrl, headers: new Headers(), params: {} });
+    const scoped = await listRoute.handler(new Request(scopedUrl.toString()), { url: scopedUrl, headers: new Headers(), params: {} });
     expect((await scoped.json()).map((session) => session.id)).toEqual(['ses_repo']);
 
     const globalUrl = new URL('http://host/experimental/session');
-    const global = await listRoute.handler(new Request(globalUrl), { url: globalUrl, headers: new Headers(), params: {} });
+    const global = await listRoute.handler(new Request(globalUrl.toString()), { url: globalUrl, headers: new Headers(), params: {} });
     expect((await global.json()).map((session) => session.id)).toEqual(['ses_repo', 'ses_other']);
   });
 });

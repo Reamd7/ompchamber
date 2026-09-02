@@ -170,15 +170,20 @@ export const resolveWorkerDispatch = (arg: string): WorkerDispatchEntry | null =
 
 // The js-eval kernel requires a rejection interceptor (SDK `RejectionInterceptor`
 const interceptUnhandledRejections: RejectionInterceptor = (interceptor) => {
-  const listener = (reason) => {
+  // Route through the generic EventEmitter view: bun-types' NodeJS.Process
+  // merge redeclares `off` with only its memoryPressure overload, hiding the
+  // generic removal the SDK type graph pulls in (see packages/web
+  // tsconfig.server.json + @types/node 24 / bun-types overrides.d.ts).
+  const bus: NodeJS.EventEmitter = process;
+  const listener = (reason: unknown, _promise: Promise<unknown>) => {
     try {
       interceptor(reason);
     } catch {
       // The kernel's own handling must never take the worker down.
     }
   };
-  process.on('unhandledRejection', listener);
-  return () => process.off('unhandledRejection', listener);
+  bus.on('unhandledRejection', listener);
+  return () => bus.off('unhandledRejection', listener);
 };
 
 // Port of cli.ts `runIpcSubprocessWorker` (child side): wire the worker's
@@ -252,9 +257,13 @@ const runIpcSubprocessWorker = async (
     send,
     sendAndFlush,
     onMessage(handler) {
-      const wrap = (data) => handler(data);
-      process.on('message', wrap);
-      return () => process.off('message', wrap);
+      // SAFETY: process 'message' payloads on this channel are the starter's
+      // JSON frames; the transport ferries them verbatim by contract. The
+      // generic EventEmitter view avoids the bun-types `off` merge (above).
+      const bus: NodeJS.EventEmitter = process;
+      const wrap = (data: IpcWorkerMessage) => handler(data);
+      bus.on('message', wrap);
+      return () => bus.off('message', wrap);
     },
   });
   const keepalive = setInterval(() => {}, 2 ** 30);

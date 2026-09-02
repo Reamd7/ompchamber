@@ -123,7 +123,8 @@ export interface OmpProviderDeleteOptions {
 
 export interface FetchOmpProviderModelsOptions {
   modelsPath?: string;
-  fetchImpl?: typeof fetch;
+  /** Callable subset of fetch; @types/node 24 requires preconnect on typeof fetch. */
+  fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
 /** PUT input — unvalidated wire payload; every field is re-checked before use. */
