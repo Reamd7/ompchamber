@@ -7,7 +7,6 @@ import {
 } from '@/lib/api/omp';
 import { useI18n } from '@/lib/i18n';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { Icon } from '@/components/icon/Icon';
 import type { IconName } from '@/components/icon/icons';
 
@@ -63,7 +62,10 @@ const describeEntry = (entry: OmpSessionEntry): string => {
 export const SessionTimelineTab: React.FC = () => {
   const { t } = useI18n();
   const sessionID = useSessionUIStore((s) => s.currentSessionId);
-  const directory = useDirectoryStore((s) => s.currentDirectory);
+  // Session-scoped resolution (matches ChatInput): a session opened from
+  // another project must query that project's directory, not the app's
+  // currently-active one.
+  const directory = useSessionUIStore((s) => (s.currentSessionId ? s.getDirectoryForSession(s.currentSessionId) : null))
   const [entries, setEntries] = React.useState<OmpSessionEntry[] | null>(null);
   const [loading, setLoading] = React.useState(false);
 
