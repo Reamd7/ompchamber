@@ -1586,7 +1586,11 @@ export class OmpHostEngine {
           const todos = details.phases.flatMap((phase) => phase.tasks.map((task) => ({
             content: task.content,
             status: task.status,
-            priority: task.priority ?? 'medium'
+            priority: task.priority ?? 'medium',
+            // ch10 wire 重合面: the SDK task carries the blocker note; the
+            // reminder projection is transient (notice.raised), so this
+            // mapping is the only carrier that puts it on the wire.
+            ...(typeof task.blocker === 'string' && task.blocker ? { blocker: task.blocker } : {}),
           })));
           this.bus.emit('todo.updated', { sessionID: sessionId, todos }, directory);
         }

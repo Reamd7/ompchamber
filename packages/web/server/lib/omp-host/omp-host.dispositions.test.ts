@@ -357,8 +357,12 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     expect(h.ompOf('omp.custom.appended').at(-1).payload.message.display).toBe(false);
   });
 
-  test('todo_reminder carries blocker on blocked todos (10 章 wire 重合面补齐)', async () => {
+  test('todo blocker rides the todo tool result mapping (10 章 wire 重合面补齐)', async () => {
     const h = await harness();
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 55 } });
+    // Reminders stay transient (TUI parity): a reminder never rewrites the
+    // todo panel, so no wire todo.updated frame may leave this event.
+    const before = h.wireOf('todo.updated').length;
     h.emit({
       type: 'todo_reminder',
       todos: [
@@ -366,6 +370,32 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
         { content: 'blocked without reason', status: 'blocked' },
         { content: 'plain task', status: 'in_progress' },
       ],
+    });
+    expect(h.wireOf('todo.updated').length).toBe(before);
+    expect(h.ompOf('omp.notice.raised').at(-1).payload.level).toBe('info');
+    // The blocker reaches the wire on the authoritative carrier: the todo
+    // tool result's full phases list.
+    h.emit({
+      type: 'tool_execution_end',
+      toolCallId: 't-blocker',
+      toolName: 'todo',
+      result: {
+        content: [{ type: 'text', text: 'updated' }],
+        details: {
+          op: 'write',
+          phases: [
+            {
+              name: 'Tasks',
+              tasks: [
+                { content: 'ship it', status: 'blocked', blocker: 'waiting on review' },
+                { content: 'blocked without reason', status: 'blocked' },
+                { content: 'plain task', status: 'in_progress' },
+              ],
+            },
+          ],
+        },
+      },
+      isError: false,
     });
     const todos = h.wireOf('todo.updated').at(-1).properties.todos;
     expect(todos[0]).toEqual({ content: 'ship it', status: 'blocked', priority: 'medium', blocker: 'waiting on review' });
