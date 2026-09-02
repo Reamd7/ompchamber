@@ -11,11 +11,20 @@ import {
   resolveWireIdToEntryId,
   wireMessageId,
 } from './projection.ts';
+import type { AssistantMessageInput, ProjectedContentBlock, TranscriptEntryInput, UserMessageInput } from './projection.ts';
 
 const TS = 1_700_000_000_000;
 
-const inner = (role, content, timestamp) => ({ role, timestamp, content });
-const entry = (id, message, parentId = null) => ({
+type FixtureBlock = { type: string } & Record<string, string>;
+type FixtureMessage = UserMessageInput | AssistantMessageInput;
+type FixtureEntry = { type: 'message'; id: string; parentId: string | null; timestamp: string; message: FixtureMessage };
+
+const inner = (role: 'user' | 'assistant', content: string | FixtureBlock[], timestamp: number): FixtureMessage => {
+  if (role === 'user') return { role: 'user', timestamp, content };
+  // SAFETY: assistant fixtures always pass block arrays (see call sites).
+  return { role: 'assistant', timestamp, content: content as readonly ProjectedContentBlock[] };
+};
+const entry = (id: string, message: FixtureMessage, parentId: string | null = null): FixtureEntry => ({
   type: 'message',
   id,
   parentId,
@@ -27,10 +36,12 @@ const userMessage = inner('user', [{ type: 'text', text: 'reply with exactly: ok
 const assistantText = inner('assistant', [{ type: 'text', text: 'ok' }], TS + 10);
 const assistantToolOnly = inner('assistant', [{ type: 'toolCall', name: 'bash', callId: 't1' }], TS + 20);
 
-const entries = [
+// SAFETY: fixture rows satisfy TranscriptEntryInput structurally (typed
+// entry rows + a bare divider row); the label routes them into the resolver.
+const entries: TranscriptEntryInput[] = [
   entry('e1', userMessage),
   entry('e2', assistantText, 'e1'),
-  { type: 'thinking_level_change', id: 'e3', parentId: 'e2', timestamp: '', thinkingLevel: 'max' },
+  { type: 'thinking_level_change', id: 'e3' },
 ];
 
 describe('resolveWireIdToEntryId', () => {
@@ -43,18 +54,21 @@ describe('resolveWireIdToEntryId', () => {
 
   test('non-message entries are skipped; assistant-without-text seeds from block name', () => {
     const toolWire = wireMessageId('assistant', TS + 20, 'bash');
-    expect(resolveWireIdToEntryId([{ ...entry('e9', assistantToolOnly) }], toolWire)).toBe('e9');
+    // SAFETY: the e9 row is a message entry; the label routes it to the resolver.
+    const e9Row: TranscriptEntryInput = entry('e9', assistantToolOnly);
+    expect(resolveWireIdToEntryId([e9Row], toolWire)).toBe('e9');
     expect(resolveWireIdToEntryId(entries, 'e3')).toBeNull();
   });
 
   test('wireIdFor overrides win (client-echoed user ids)', () => {
     const override = 'msg_echoed-client-id';
-    const wireIdFor = (message) => (message === userMessage ? override : undefined);
+    const wireIdFor = (message: { role?: string }) => (message === userMessage ? override : undefined);
     expect(resolveWireIdToEntryId(entries, override, { wireIdFor })).toBe('e1');
     expect(resolveWireIdToEntryId(entries, override)).toBeNull();
   });
 
   test('degenerate inputs resolve null', () => {
+    // SAFETY: userMessage is a user-role message (inner('user', …)).
     expect(resolveWireIdToEntryId([], deterministicWireId(userMessage))).toBeNull();
     expect(resolveWireIdToEntryId(entries, 'msg_nope')).toBeNull();
     expect(resolveWireIdToEntryId(entries, '')).toBeNull();

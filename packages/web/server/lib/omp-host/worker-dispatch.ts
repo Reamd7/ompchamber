@@ -24,13 +24,13 @@ const SDK = '@oh-my-pi/pi-coding-agent';
 
 export const WORKER_SELECTOR_PREFIX = '__omp_worker_';
 
-export const isWorkerSelector = (value) =>
-  typeof value === 'string' && value.startsWith(WORKER_SELECTOR_PREFIX);
+export const isWorkerSelector = (value: string | undefined): value is string =>
+  value !== undefined && value.startsWith(WORKER_SELECTOR_PREFIX);
 
 // `browser-relay` is not a worker selector but the browser relay daemon spawns
 // this exact argv when relay mode is enabled; without this guard it would
 // leak a host exactly like the broker selectors did.
-export const isDispatchableInvocation = (value) =>
+export const isDispatchableInvocation = (value: string | undefined): boolean =>
   isWorkerSelector(value) || value === 'browser-relay';
 /** Starter export every dispatchable module provides by name; dispatch validates callability with a typeof check before invoking (its parse step). */
 export type WorkerStarter = (
@@ -175,7 +175,7 @@ const interceptUnhandledRejections: RejectionInterceptor = (interceptor) => {
   // generic removal the SDK type graph pulls in (see packages/web
   // tsconfig.server.json + @types/node 24 / bun-types overrides.d.ts).
   const bus: NodeJS.EventEmitter = process;
-  const listener = (reason: unknown, _promise: Promise<unknown>) => {
+  const listener = (reason: Error | undefined, _promise: Promise<unknown>) => {
     try {
       interceptor(reason);
     } catch {
@@ -225,7 +225,7 @@ const runIpcSubprocessWorker = async (
 ): Promise<void> => {
   const { promise: shuttingDown, resolve: shutdown } = Promise.withResolvers<void>();
   const ipcSend = () => process.send;
-  const send = (message) => {
+  const send = (message: IpcWorkerMessage) => {
     const sender = ipcSend();
     if (!sender) {
       shutdown();
@@ -238,7 +238,7 @@ const runIpcSubprocessWorker = async (
       shutdown();
     }
   };
-  const sendAndFlush = (message) => {
+  const sendAndFlush = (message: IpcWorkerMessage) => {
     const sender = ipcSend();
     if (!sender) {
       shutdown();

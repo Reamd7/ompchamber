@@ -135,7 +135,7 @@ const conflictFor = (mode: string): string => {
   return mode;
 };
 
-const modeConflict = (mode) =>
+const modeConflict = (mode: string) =>
   new ModeDomainError(409, {
     error: 'mode-conflict',
     conflict: conflictFor(mode),
@@ -288,6 +288,10 @@ export interface AgentDefinitionInput {
 }
 
 /** Validated definition patch; `null` clears an optional field. */
+/** The seven task-override keys shared by patch and serialization. */
+const AGENT_OVERRIDE_KEYS = ['model', 'thinkingLevel', 'tools', 'spawns', 'prewalk', 'advisor', 'readSummarize'] as const;
+type AgentOverrideKey = (typeof AGENT_OVERRIDE_KEYS)[number];
+
 export interface AgentDefinitionPatch {
   description?: string;
   systemPrompt?: string;
@@ -421,10 +425,13 @@ export type OverridesFor = (directory: string | null) => Promise<TaskOverrideVal
 const recordEntryFor = (
   name: string,
   value: TaskOverrideValues['modelOverrides'] | TaskOverrideValues['prewalk'] | TaskOverrideValues['advisor'],
-): string | undefined =>
-  (value && typeof value === 'object' && !Array.isArray(value) && typeof value[name] === 'string' && value[name]
-    ? value[name]
-    : undefined);
+): string | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  // SAFETY: plain-object overrides hold string fields (YAML discovery output);
+  // only a confirmed string field is returned.
+  const fields = value as Record<string, string>;
+  return typeof fields[name] === 'string' ? fields[name] : undefined;
+}
 
 /** Join the settings-level per-agent overrides onto definition records (02 §5.2). */
 const withTaskOverrides = async (records: OmpAgentRecord[], overridesFor: OverridesFor | undefined, directory: string | null): Promise<OmpAgentRecord[]> => {
@@ -758,14 +765,21 @@ export function createAgentDefinitionHandlers({
   const scopeDir = (scope: 'user' | 'project', directory: string | null): string =>
     (scope === 'project' ? projectAgentsDirFor(directory ?? process.cwd()) : userAgentsDir);
   const mergeDefinition = (existing: Partial<AgentDefinitionSerialization> & { name: string }, patch: AgentDefinitionPatch): AgentDefinitionSerialization => {
-    const merged = {
+    const merged: AgentDefinitionSerialization = {
       name: existing.name,
       description: patch.description ?? existing.description,
       systemPrompt: patch.systemPrompt !== undefined ? patch.systemPrompt : existing.systemPrompt,
     };
-    for (const key of ['model', 'thinkingLevel', 'tools', 'spawns', 'prewalk', 'advisor', 'readSummarize']) {
+    // SAFETY: the merge walks the seven declared override keys shared by
+    // AgentDefinitionPatch and the serialized record; presence wins and the
+    // key-union write needs the never-widened assignment TS demands.
+    for (const key of AGENT_OVERRIDE_KEYS) {
       const value = patch[key] !== undefined ? patch[key] : existing[key];
-      if (value !== null && value !== undefined) merged[key] = value;
+      if (value !== null && value !== undefined) {
+        // SAFETY: key-union write; value comes from the same field of
+        // patch/existing, so the target field type already admits it.
+        merged[key] = value as never;
+      }
     }
     return merged;
   };
@@ -949,7 +963,7 @@ export async function migrateSidecarAgents({
   markDone,
   log = () => {},
 }: SidecarMigrationOptions = {}): Promise<SidecarMigrationResult> {
-  let records = [];
+  let records: SidecarAgentRecord[] = [];
   try {
     records = loadRecords();
   } catch (error) {

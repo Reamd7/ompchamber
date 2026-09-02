@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { BUILTIN_TOOLS, getAgentDir } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.ts';
+import type { SessionMetadataValue } from './registry.ts';
 import { buildCapabilities, featureUnavailable, ompFeatures } from './omp-parity.ts';
 import { registerModelSettingsRoutes, buildModelsPayload } from './domain-models.ts';
 import { ModeDomainError, registerModesDomainRoutes } from './domain-modes.ts';
@@ -168,8 +169,8 @@ export const promptPayloadFromWire = (body: WirePromptBody): PromptPayload => {
       messageID,
     };
   }
-  const texts = [];
-  const images = [];
+  const texts: string[] = [];
+  const images: PromptImage[] = [];
   for (const part of parts) {
     if (part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
       texts.push(part.text);
@@ -267,13 +268,7 @@ export interface SessionInitBody {
  * opaquely (the host stores and returns them verbatim, never reading
  * individual entries).
  */
-export type SessionMetadataValue =
-  | string
-  | number
-  | boolean
-  | null
-  | readonly SessionMetadataValue[]
-  | { [field: string]: SessionMetadataValue };
+export type { SessionMetadataValue };
 
 /** JSON body of PATCH /session/{sessionID}. */
 export interface SessionUpdateBody {
@@ -375,8 +370,9 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const providers = [...byProvider.entries()].map(([id, list]) => ({
       id,
       name: id,
-      env: [],
-      models: list.map((model) => ({
+      // SAFETY: wire env list is empty in the omp payload (no env passthrough yet).
+      env: [] as string[],
+      models: list.map((model: { id: string; name?: string; reasoning?: boolean; contextWindow?: number; maxTokens?: number }) => ({
         id: model.id,
         name: model.name ?? model.id,
         ...(model.reasoning ? { reasoning: true } : {}),
@@ -397,12 +393,13 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       ...(await defaultModelPointer(engine)),
       // Agent definitions are the omp discovery chain (02 §5.2); the legacy
       // wire payload carries no custom-agent list anymore.
-      agents: [],
+      // SAFETY: wire payload carries no custom-agent list anymore (comment above).
+      agents: [] as never[],
       // OpenCode-specific keys with no omp equivalent are absent.
     };
   };
 
-  const projectDirectory = (requestContext) =>
+  const projectDirectory = (requestContext: { url?: URL }) =>
     directoryFromRequest(requestContext) ?? process.cwd();
 
   // ---- global ----
@@ -760,8 +757,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const query = (ctx.url.searchParams.get('pattern') ?? ctx.url.searchParams.get('query') ?? '').toLowerCase();
     const directory = projectDirectory(ctx);
     if (!query) return json({ hits: [], total: 0, processing: false });
-    const hits = [];
-    const walk = (dir, depth) => {
+    const hits: Array<{ type: string; name: string; path: string; score: number }> = [];
+    const walk = (dir: string, depth: number) => {
       if (depth > 6 || hits.length >= 50) return;
       let entries;
       try {
@@ -899,7 +896,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const url = new URL(request.url);
     const directory = directoryFromRequest({ url, headers: request.headers });
     if (!directory) return badRequest('directory is required');
-    const kinds = url.searchParams.get('kinds') ?? '';
+    const kindsRaw = url.searchParams.get('kinds') ?? '';
+    const kinds = kindsRaw ? kindsRaw.split(',').filter(Boolean) : undefined;
     const entries = await engine.getEntries({
       sessionID: ctx.params.id,
       directory,
@@ -939,7 +937,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const stream = new ReadableStream({
       start(controller) {
         const encoder = new TextEncoder();
-        const send = (text) => {
+        const send = (text: string) => {
           if (closed) return;
           try {
             controller.enqueue(encoder.encode(text));
@@ -989,14 +987,14 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   });
 
   // ---- SSE ----
-  const sseHandler = (request, { global }) => {
+  const sseHandler = (request: Request, { global }: { global: boolean }) => {
     const directory = global ? null : directoryFromRequest({ url: new URL(request.url), headers: request.headers });
     const lastEventId = Number(request.headers.get('last-event-id') ?? 0) || 0;
     let closed = false;
     const stream = new ReadableStream({
       start(controller) {
         const encoder = new TextEncoder();
-        const send = (text) => {
+        const send = (text: string) => {
           if (closed) return;
           try {
             controller.enqueue(encoder.encode(text));

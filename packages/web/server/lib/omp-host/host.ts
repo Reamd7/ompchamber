@@ -49,7 +49,7 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
     : null;
   const routes: { method: string; regex: RegExp; names: string[]; handler: RouteHandler }[] = [];
   const route: RouteMount = (method, pattern, handler) => {
-    const names = [];
+    const names: string[] = [];
     const regex = new RegExp(
       '^' +
         pattern.replace(/\{(\w+)\}/g, (_, name) => {

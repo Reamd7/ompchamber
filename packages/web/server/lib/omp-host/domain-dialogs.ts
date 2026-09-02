@@ -911,7 +911,8 @@ export class PendingDialogRegistry {
   #settle(record: DialogRecord, outcome: string, { result = null, reason = null }: { result?: RespondResult | null; reason?: string | null } = {}) {
     if (record.settled) return false;
     record.settled = { outcome, ...(result ? { result } : {}) };
-    for (const key of Object.keys(record.timers)) {
+    // SAFETY: timer keys are the three declared DialogTimerHandle slots.
+    for (const key of Object.keys(record.timers) as Array<keyof typeof record.timers>) {
       if (record.timers[key] !== null) {
         this.#cancel(record.timers[key]);
         record.timers[key] = null;

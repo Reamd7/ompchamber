@@ -12,6 +12,7 @@ import {
   PRESENT_TTL_MS,
 } from './domain-dialogs.ts';
 import { OmpEventBus } from './events.ts';
+import type { BusEntry, OmpEventEnvelope } from './events.ts';
 import type {
   ApproveOutcome,
   DialogSettlement,
@@ -75,7 +76,7 @@ interface ManualClock {
   pending(): number;
 }
 
-const rejectionOf = async (promise) => {
+const rejectionOf = async (promise: Promise<unknown>) => {
   try {
     await promise;
     return null;
@@ -103,7 +104,7 @@ describe('UiLeaseTable', () => {
 
   test('holder expires after the TTL (3 missed heartbeats) and detach fires exactly once', async () => {
     const clock = makeClock();
-    const events = [];
+    const events: Array<[string, unknown]> = [];
     const table = new UiLeaseTable({ ...clock, onDetach: (info) => events.push(['detach', info]) });
     table.acquire({ directory: DIR, sessionId: SESSION, clientId: CLIENT_A });
     // 3 heartbeats missed = TTL elapsed; the sweep timer ends the lease.
@@ -128,7 +129,7 @@ describe('UiLeaseTable', () => {
 
   test('reference counting: two holders, both must leave before detach', () => {
     const clock = makeClock();
-    const detaches = [];
+    const detaches: unknown[] = [];
     const table = new UiLeaseTable({ ...clock, onDetach: (info) => detaches.push(info) });
     table.acquire({ directory: DIR, sessionId: SESSION, clientId: CLIENT_A });
     table.acquire({ directory: DIR, sessionId: SESSION, clientId: CLIENT_B });
@@ -153,7 +154,7 @@ describe('UiLeaseTable', () => {
 
   test('attach/detach transitions fire exactly once through a full cycle', () => {
     const clock = makeClock();
-    const transitions = [];
+    const transitions: Array<'attach' | 'detach'> = [];
     const table = new UiLeaseTable({
       ...clock,
       onAttach: () => transitions.push('attach'),
@@ -203,7 +204,7 @@ describe('UiLeaseTable', () => {
 describe('PendingDialogRegistry', () => {
   const setup = ({ clock, ...rest }: { clock?: ManualClock } & Partial<PendingDialogRegistryOptions> = {}) => {
     const bus = new OmpEventBus();
-    const diagnostics = [];
+    const diagnostics: unknown[] = [];
     const registry = new PendingDialogRegistry({
       bus,
       ...clock,
@@ -213,7 +214,7 @@ describe('PendingDialogRegistry', () => {
     return { bus, registry, diagnostics, clock };
   };
 
-  const registerApproval = (registry, { directory = DIR, sessionId = SESSION } = {}) =>
+  const registerApproval = (registry: { register: (dialog: { directory: string; sessionId: string; kind: 'approval'; payload: { approval: { prompt: string } } }) => { id: string; promise: Promise<unknown> } }, { directory = DIR, sessionId = SESSION }: { directory?: string; sessionId?: string } = {}) =>
     registry.register({
       directory,
       sessionId,
@@ -224,7 +225,7 @@ describe('PendingDialogRegistry', () => {
   test('register emits the requested event and snapshot carries the payload', () => {
     const clock = makeClock();
     const { bus, registry } = setup({ clock });
-    const seen = [];
+    const seen: Array<BusEntry<OmpEventEnvelope>> = [];
     bus.subscribeSince(0, (entry) => seen.push(entry));
     const entry = registerApproval(registry);
     expect(entry.id.startsWith('dlg_')).toBe(true);
@@ -233,14 +234,17 @@ describe('PendingDialogRegistry', () => {
     expect(seen[0].envelope.directory).toBe(DIR);
     expect(seen[0].envelope.sessionID).toBe(SESSION);
     expect(seen[0].durable).toBe(true);
-    expect(seen[0].envelope.payload.dialog).toMatchObject({
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((seen[0].envelope.payload as { dialog: object }).dialog).toMatchObject({
       id: entry.id,
       sessionId: SESSION,
       kind: 'approval',
       approval: { prompt: 'Allow tool: bash\nCommand: rm -rf /tmp/x' },
     });
-    expect(seen[0].envelope.payload.dialog.presentedAt).toBeUndefined();
-    expect(seen[0].envelope.payload.directory).toBeUndefined(); // envelope carries scope
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((seen[0].envelope.payload as { dialog?: { presentedAt?: unknown } }).dialog)?.presentedAt).toBeUndefined();
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((seen[0].envelope.payload as { directory?: string }).directory).toBeUndefined(); // envelope carries scope
     const snapshot = registry.snapshot({ directory: DIR });
     expect(snapshot.dialogs.length).toBe(1);
     expect(snapshot.dialogs[0].id).toBe(entry.id);
@@ -379,7 +383,7 @@ describe('PendingDialogRegistry', () => {
     const askError = await rejectionOf(ask.promise);
     expect(askError.name).toBe('AbortError'); // ask abort path (ask.ts:982-984)
     expect(askError.outcome).toBe('timeout');
-    expect(diagnostics.filter((note) => note.outcome === 'timeout').length).toBe(2);
+    expect(diagnostics.filter((note: { outcome?: string }) => note.outcome === 'timeout').length).toBe(2);
   });
 
   test('T_answer runs from the presented-ack, not from registration', async () => {
@@ -503,7 +507,7 @@ describe('PendingDialogRegistry', () => {
     expect(registry.snapshot({ directory: DIR }).dialogs.length).toBe(1);
     // Signal path is a no-op on settled dialogs.
     expect(registry.abortIfPendingSignal(one.id, 'signal')).toBe(false);
-    expect(diagnostics.filter((note) => note.outcome === 'aborted').length).toBe(2);
+    expect(diagnostics.filter((note: { outcome?: string }) => note.outcome === 'aborted').length).toBe(2);
     // otherSession stays pending by design (untouched by the batch abort);
     // its manual-clock T_present never fires, so nothing leaks.
   });
@@ -511,7 +515,7 @@ describe('PendingDialogRegistry', () => {
   test('settleAll: every pending settles aborted, events fire, snapshot empties, later responds 409', async () => {
     const clock = makeClock();
     const { bus, registry } = setup({ clock });
-    const settled = [];
+    const settled: unknown[] = [];
     bus.subscribeSince(0, (entry) => {
       if (entry.envelope.type === 'omp.dialog.settled') settled.push(entry.envelope.payload);
     });
@@ -530,7 +534,7 @@ describe('PendingDialogRegistry', () => {
     expect(bError.name).toBe('AbortError'); // ask takes the abort path (R11)
     expect(registry.snapshot({ directory: DIR }).dialogs).toEqual([]);
     expect(registry.snapshot({ directory: DIR_B }).dialogs).toEqual([]);
-    expect(settled.filter((payload) => payload.outcome === 'aborted').length).toBe(2);
+    expect(settled.filter((payload: { outcome?: string }) => payload.outcome === 'aborted').length).toBe(2);
     expect(registry.respond(a.id, { directory: DIR, result: { kind: 'cancel' } })).toMatchObject({
       ok: false,
       status: 409,
@@ -793,7 +797,7 @@ describe('createDialogBridge', () => {
 
   test('notify forwards to the hook; terminal-only members are inert no-ops', async () => {
     const { leases, registry } = setup();
-    const notes = [];
+    const notes: Array<{ message?: string; type?: string; directory?: string; sessionId?: string }> = [];
     const bridge = createDialogBridge({
       leases,
       registry,
@@ -840,7 +844,7 @@ describe('createDialogBridge', () => {
 // ---------------------------------------------------------------------------
 describe('alwaysAllowTransaction', () => {
   test('successful write approves exactly once after the write lands', async () => {
-    const order = [];
+    const order: string[] = [];
     const result = await alwaysAllowTransaction(
       async () => {
         order.push('write');
@@ -901,7 +905,7 @@ describe('registerDialogEndpoints', () => {
     const clock = makeClock();
     const domain = createDomainDialogs({ clock, bus: new OmpEventBus() });
     const routes = new Map();
-    const route = (method, pattern, handler) => routes.set(`${method} ${pattern}`, handler);
+    const route = (method: string, pattern: string, handler: (request: Request, ctx?: { params?: Record<string, string> }) => Promise<Response>) => routes.set(`${method} ${pattern}`, handler);
     domain.mount(route, { feature });
     /** Per-call invocation init: path params, JSON body, absolute URL. */
     interface RouteCallInit {
@@ -1022,7 +1026,7 @@ describe('registerDialogEndpoints', () => {
 describe('createDomainDialogs', () => {
   test('lease transitions drive orphan windows and engine hooks in order', async () => {
     const clock = makeClock();
-    const calls = [];
+    const calls: Array<[string, string | undefined]> = [];
     const domain = createDomainDialogs({
       clock,
       bus: new OmpEventBus(),
@@ -1050,7 +1054,7 @@ describe('createDomainDialogs', () => {
 
   test('dispose settles everything aborted and empties the lease table (R11)', async () => {
     const clock = makeClock();
-    const diagnostics = [];
+    const diagnostics: unknown[] = [];
     const domain = createDomainDialogs({
       clock,
       bus: new OmpEventBus(),

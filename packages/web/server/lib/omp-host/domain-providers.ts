@@ -311,12 +311,20 @@ const THINKING_EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max
  * dialog with the efforts the engine itself resolves — otherwise the dialog
  * shows an empty list and its save silently deletes the block.
  */
-const deriveThinkingEfforts = (thinking) => {
+const deriveThinkingEfforts = (thinking: { efforts?: unknown; levels?: unknown; minLevel?: unknown; maxLevel?: unknown }) => {
   const list = Array.isArray(thinking.efforts) ? thinking.efforts
     : Array.isArray(thinking.levels) ? thinking.levels : null;
-  if (list !== null) return list.filter((e) => THINKING_EFFORT_ORDER.includes(e));
-  const min = THINKING_EFFORT_ORDER.indexOf(thinking.minLevel);
-  const max = THINKING_EFFORT_ORDER.indexOf(thinking.maxLevel);
+  if (list !== null) {
+    const isEffort = (e: string): e is (typeof THINKING_EFFORT_ORDER)[number] =>
+      // SAFETY: includes() itself is the membership check; the assertion
+      // only satisfies its parameter's declared level-union type.
+      THINKING_EFFORT_ORDER.includes(e as (typeof THINKING_EFFORT_ORDER)[number]);
+    // SAFETY: efforts/levels arrays hold effort names (provider config);
+    // non-members are dropped by the predicate itself.
+    return (list as string[]).filter(isEffort);
+  }
+  const min = typeof thinking.minLevel === 'string' ? THINKING_EFFORT_ORDER.indexOf(thinking.minLevel) : -1;
+  const max = typeof thinking.maxLevel === 'string' ? THINKING_EFFORT_ORDER.indexOf(thinking.maxLevel) : -1;
   return min >= 0 && max >= min ? THINKING_EFFORT_ORDER.slice(min, max + 1) : [];
 };
 /**
@@ -570,7 +578,9 @@ const MANAGED_MODEL_SCALAR_KEYS = [
 ];
 
 const applyManagedModelFields = (modelNode: YAMLMap, incoming: NormalizedIncomingModel) => {
-  for (const key of MANAGED_MODEL_SCALAR_KEYS) {
+  // SAFETY: MANAGED_MODEL_SCALAR_KEYS names exactly the NormalizedIncomingModel scalar members.
+  const managedKeys = MANAGED_MODEL_SCALAR_KEYS as Array<keyof NormalizedIncomingModel>;
+  for (const key of managedKeys) {
     if (incoming[key] === undefined) continue;
     // `null` clears the key (documented contract) — a literal null is
     // never written: the engine schema rejects any null model value by
@@ -930,8 +940,11 @@ export const fetchOmpProviderModels = async (input: FetchOmpProviderModelsInput,
   if (!response.ok) {
     return { status: 502, body: { error: 'fetch-failed', message: `${url} answered ${response.status}` } };
   }
-  const payload = await response.json().catch(() => null);
-  const data = isRecord(payload) ? payload.data : undefined;
+  const payload: unknown = await response.json().catch((): null => null);
+  // SAFETY: response.json() yields JSON; isRecord narrows the record arm and
+  // its JsonRecord guard makes the narrowed read type-safe.
+  const record = isRecord(payload as ProviderRuntimeValue | undefined) ? (payload as JsonRecord) : null;
+  const data = record?.data;
   const list = Array.isArray(data) ? data : (Array.isArray(payload) ? payload : null);
   if (list === null) {
     // A 2xx with an unrecognized body is a failure, not an empty success
@@ -953,8 +966,9 @@ export const fetchOmpProviderModels = async (input: FetchOmpProviderModelsInput,
 const routeJsonBody = async (request: Request): Promise<JsonRecord> => {
   // SAFETY: Request.json() parses JSON by construction, so its fulfillment
   // value is always a JsonValue; the catch collapses parse failures to null.
-  const value = (await request.json().catch(() => null)) as JsonValue | null;
-  return isRecord(value) ? value : {};
+  const value = (await request.json().catch((): null => null)) as JsonValue | null;
+  // SAFETY: isRecord's JsonRecord guard certifies the record arm.
+  return isRecord(value as ProviderRuntimeValue | undefined) ? (value as JsonRecord) : {};
 };
 
 /**

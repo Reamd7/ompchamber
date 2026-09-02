@@ -728,10 +728,10 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
 });
 
 describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirror)', () => {
-  const record = (name) => ({ name, description: `${name} desc`, prompt: `${name} prompt.`, tools: ['read'] });
+  const record = (name: string) => ({ name, description: `${name} desc`, prompt: `${name} prompt.`, tools: ['read'] });
 
   test('writes every record, mirrors personas, and marks the sidecar done', async () => {
-    const written = [];
+    const written: unknown[] = [];
     const personas = new Map();
     let done = false;
     const result = await migrateSidecarAgents({
@@ -751,7 +751,7 @@ describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirr
   });
 
   test('a name already present in discovery skips the write but still mirrors the persona', async () => {
-    const written = [];
+    const written: unknown[] = [];
     const personas = new Map();
     const result = await migrateSidecarAgents({
       loadRecords: () => [record('exists')],
@@ -769,7 +769,7 @@ describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirr
   });
 
   test('an existing persona is never clobbered by the mirror', async () => {
-    const mirrored = [];
+    const mirrored: unknown[] = [];
     await migrateSidecarAgents({
       loadRecords: () => [record('kept')],
       agentExists: async () => false,
@@ -915,7 +915,7 @@ interface PlanReviewTextResult extends PlanReviewToolResult {
 
 describe('planReviewBridge (spec 02 §5.5)', () => {
   test('hook publishes omp.plan.review_requested (durable) with the PlanApprovalDetails and holds pending', async () => {
-    const events = [];
+    const events: unknown[] = [];
     const bridge = planReviewBridge({
       publish: (type, payload, opts) => events.push({ type, payload, opts }),
       prepare: async () => PREPARE_RESULT,

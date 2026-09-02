@@ -224,7 +224,7 @@ const asJsonRecord = (value: JsonValue | null | undefined): JsonRecord | null =>
 const jsonBody = async (request: Request): Promise<JsonRecord> => {
   // SAFETY: Request.json() parses JSON by construction, so its fulfillment
   // value is always a JsonValue; the catch collapses parse failures to null.
-  const value = (await request.json().catch(() => null)) as JsonValue | null;
+  const value = (await request.json().catch((): null => null)) as JsonValue | null;
   return asJsonRecord(value) ?? {};
 };
 

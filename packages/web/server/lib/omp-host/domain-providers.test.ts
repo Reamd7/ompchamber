@@ -33,7 +33,7 @@ interface ListedProviderRow {
 // keeps the excess-property and weak-type checks satisfied at both calls.
 const aliasLimitOptions: ParseOptions & { maxAliasCount: number } = { maxAliasCount: -1 };
 
-const cleanupDirs = [];
+const cleanupDirs: string[] = [];
 const makeDir = () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'omp-domain-providers-'));
   cleanupDirs.push(dir);
@@ -523,7 +523,7 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
 
   test('calls refreshModels after a successful write; first write creates the backup anchor', async () => {
     const { modelsPath } = makeEnv();
-    const refreshes = [];
+    const refreshes: number[] = [];
     const result = await putOmpProvider({
       provider: { id: 'delta', baseUrl: 'https://delta.example/v1', api: 'openai-responses', apiKey: 'dk', models: [{ id: 'd1' }] },
     }, { modelsPath, refreshModels: async () => { refreshes.push(1); } });
@@ -538,7 +538,7 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
 describe('DELETE /omp/providers/{id} (deleteOmpProvider)', () => {
   test('removes a file provider, keeps others and comments; 404 unknown; refresh called', async () => {
     const { modelsPath } = makeEnv();
-    const refreshes = [];
+    const refreshes: number[] = [];
     const removed = await deleteOmpProvider({ id: 'beta' }, { modelsPath, refreshModels: async () => { refreshes.push(1); } });
     expect(removed.status).toBe(200);
     expect(refreshes).toHaveLength(1);
@@ -559,8 +559,8 @@ describe('DELETE /omp/providers/{id} (deleteOmpProvider)', () => {
 
 describe('route mounting', () => {
   test('mounts the three routes; capability off answers explicit 501', async () => {
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const routes: Array<{ method: string; pattern: string; handler: import('./domain-providers.ts').ProvidersRouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: import('./domain-providers.ts').ProvidersRouteHandler) => routes.push({ method, pattern, handler });
     registerProvidersDomainRoutes(route, {
       features: { 'providers.v1': false },
       modelsPath: path.join(makeDir(), 'models.yml'),
@@ -579,8 +579,8 @@ describe('route mounting', () => {
 
   test('PUT + DELETE wire through the routes', async () => {
     const { modelsPath } = makeEnv();
-    const routes = [];
-    registerProvidersDomainRoutes((m, p, h) => routes.push({ m, p, h }), { modelsPath });
+    const routes: Array<{ m: string; p: string; h: import('./domain-providers.ts').ProvidersRouteHandler }> = [];
+    registerProvidersDomainRoutes((m: string, p: string, h: import('./domain-providers.ts').ProvidersRouteHandler) => routes.push({ m, p, h }), { modelsPath });
     const put = routes.find((r) => r.m === 'PUT' && r.p === '/omp/providers').h;
     const del = routes.find((r) => r.m === 'DELETE' && r.p === '/omp/providers/{id}').h;
 
@@ -603,7 +603,7 @@ describe('route mounting', () => {
 describe('POST /omp/providers/{id}/fetch-models (fetchOmpProviderModels)', () => {
   test('queries {baseUrl}/models with the stored key and returns deduped ids', async () => {
     const { modelsPath } = makeEnv();
-    const calls = [];
+    const calls: Array<{ url: string; auth?: string } | string> = [];
     const result = await fetchOmpProviderModels(
       { id: 'alpha' },
       {
@@ -625,7 +625,7 @@ describe('POST /omp/providers/{id}/fetch-models (fetchOmpProviderModels)', () =>
 
   test('draft baseUrl/apiKey overrides let an unsaved provider fetch', async () => {
     const { modelsPath } = makeEnv({ template: 'providers:\n' });
-    const calls = [];
+    const calls: Array<{ url: string; auth?: string } | string> = [];
     const result = await fetchOmpProviderModels(
       { id: 'brand-new', baseUrl: 'https://draft.example.com/v1', apiKey: 'dk-1' },
       {
@@ -679,8 +679,8 @@ describe('POST /omp/providers/{id}/fetch-models (fetchOmpProviderModels)', () =>
 
   test('rejects non-http(s) baseUrl before any request fires (draft and stored)', async () => {
     const { modelsPath } = makeEnv();
-    const calls = [];
-    const fetchImpl = async (url) => { calls.push(url); return new Response('[]'); };
+    const calls: Array<{ url: string; auth?: string } | string> = [];
+    const fetchImpl = async (url: string) => { calls.push(url); return new Response('[]'); };
 
     // Draft override: Bun's fetch resolves file://, so the scheme check must
     // gate the server-side probe, not rely on fetch failing.

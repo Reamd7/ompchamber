@@ -66,7 +66,7 @@ describe('worker-dispatch selector recognition', () => {
 
 describe('worker-dispatch execution', () => {
   const captureStderr = () => {
-    const chunks = [];
+    const chunks: string[] = [];
     const original = process.stderr.write.bind(process.stderr);
     process.stderr.write = (chunk) => {
       chunks.push(String(chunk));
@@ -91,7 +91,7 @@ describe('worker-dispatch execution', () => {
   test('ipc-worker selectors hand the starter a transport over process IPC', async () => {
     const starter = mock((_transport: IpcWorkerTransport) => {});
     const loadModule = mock(async () => ({ startSttWorker: starter }));
-    let started;
+    let started: boolean | undefined;
     const ipcWorker = mock(async (start: (transport: IpcWorkerTransport) => void, options?: IpcWorkerRunOptions) => {
       started = true;
       expect(options).toBeUndefined();
@@ -107,7 +107,7 @@ describe('worker-dispatch execution', () => {
   test('js eval process receives a rejection interceptor and rethrowing sends', async () => {
     const starter = mock((_transport: IpcWorkerTransport, _interceptor: RejectionInterceptor) => {});
     const loadModule = mock(async () => ({ startJsEvalProcess: starter }));
-    let seenOptions;
+    let seenOptions: unknown;
     await runWorkerDispatch('__omp_worker_js_eval_process', {
       loadModule,
       ipcWorker: async (start, options) => {

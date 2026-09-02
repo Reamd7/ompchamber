@@ -64,7 +64,7 @@ describe('builtinOmpCommands (Tier A reservation)', () => {
 
 describe('listOmpCommands aggregation', () => {
   test('appends engine rows after builtins, name-deduped, directory-scoped', async () => {
-    const seenCwds = [];
+    const seenCwds: string[] = [];
     const rows = await listOmpCommands({
       directory: '/repo',
       // filePath/baseDir/source satisfy Skill's required fields; they are
@@ -120,10 +120,10 @@ describe('listOmpCommands aggregation', () => {
 describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
   const makeRoute = () => {
     const handlers = new Map();
-    const route = (method, pattern, handler) => handlers.set(`${method} ${pattern}`, handler);
+    const route = (method: string, pattern: string, handler: (request: Request, ctx?: { params?: Record<string, string> }) => Promise<Response>) => handlers.set(`${method} ${pattern}`, handler);
     return { handlers, route };
   };
-  const request = (url) => new Request(url);
+  const request = (url: string) => new Request(url);
 
   test('capability off answers an explicit 501 without calling the loader', async () => {
     const { handlers, route } = makeRoute();
@@ -143,7 +143,7 @@ describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
 
   test('capability on returns the list and threads ?directory=', async () => {
     const { handlers, route } = makeRoute();
-    const directories = [];
+    const directories: string[] = [];
     registerCommandsDomainRoutes(route, {
       features: { 'commands.v1': true },
       list: async ({ directory }) => {

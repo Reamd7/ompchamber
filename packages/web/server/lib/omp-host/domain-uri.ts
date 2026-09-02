@@ -76,7 +76,7 @@ const BINARY_MIME_BY_EXT = new Map([
  *  inline ceiling — previewable media, not arbitrary large-file transfer). */
 const MAX_RAW_BYTES = 8 * 1024 * 1024;
 
-const extensionOf = (value) => {
+const extensionOf = (value: string) => {
   const base = String(value ?? '').replaceAll('\\', '/').split('/').pop() ?? '';
   const dot = base.lastIndexOf('.');
   return dot === -1 ? '' : base.slice(dot).toLowerCase();
@@ -95,7 +95,7 @@ const ENABLED_READ_SCHEMES = ['local'];
  *  (router.ts:147-150 throws), so `write` stays empty — local:// writes are
  *  performed by the session's own write tool against the same pinned
  *  localProtocolOptions (master R8: P1 local-only, same directory+session). */
-const ENABLED_WRITE_SCHEMES = [];
+const ENABLED_WRITE_SCHEMES: string[] = [];
 
 /** §5.2.2: `u` length ≤ 2 KiB. */
 const MAX_URL_LENGTH = 2048;
@@ -168,7 +168,7 @@ export const createLocalProtocolOptions = (
  * @param {string} sessionFile absolute transcript path ending in '.jsonl'.
  * @returns {string | null} artifacts dir, or null for non-transcript paths.
  */
-export const artifactsDirForSessionFile = (sessionFile) =>
+export const artifactsDirForSessionFile = (sessionFile: string | { path: string }) =>
   typeof sessionFile === 'string' && sessionFile.endsWith('.jsonl')
     ? sessionFile.slice(0, -'.jsonl'.length)
     : null;
@@ -466,7 +466,7 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
   // token content endpoint instead of rendering the placeholder (§5.2.4).
   const binaryMime = typeof sourcePath === 'string' ? BINARY_MIME_BY_EXT.get(extensionOf(sourcePath)) : undefined;
   if (binaryMime) {
-    const stat = await fs.stat(sourcePath).catch(() => null);
+    const stat = await fs.stat(sourcePath).catch((): null => null);
     const binaryToken = tokens.issue({
       resourceUrl: resource.url,
       directory,
@@ -1156,11 +1156,12 @@ export class AgentRunsAggregator {
     const wanted = directory ? normalizeDirectoryKey(directory) : null;
     return [...this.#rows.values()]
       .filter((row) => !wanted || row.directory === wanted)
-      .sort(
-        (a, b) =>
-          (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9) ||
-          (b.lastActivity ?? 0) - (a.lastActivity ?? 0),
-      );
+      .sort((a, b) => {
+        // SAFETY: both statuses are AgentRunStatus members (rows come from the
+        // aggregator); unknown values intentionally rank last via `?? 9`.
+        const rank = (status: string) => STATUS_ORDER[status as keyof typeof STATUS_ORDER] ?? 9;
+        return (rank(a.status) - rank(b.status)) || (b.lastActivity ?? 0) - (a.lastActivity ?? 0);
+      });
   }
 
   /** GET /omp/agent-runs snapshot: { agentRuns, generatedAt, revision }. */
@@ -1400,9 +1401,11 @@ export const handleJobsRequest = async ({ liveSessionIds = [], jobsEnabled = fal
  *  so `truncated` is exact and no listing response grows unbounded. */
 export const ARTIFACTS_MAX_FILES_PER_SESSION = 2000;
 
-const normalizedArtifactsRows = (files) =>
+type ArtifactsFileRow = { ref?: unknown; size?: unknown; modifiedAt?: unknown };
+
+const normalizedArtifactsRows = (files: ArtifactsFileRow[] | null | undefined) =>
   (Array.isArray(files) ? files : [])
-    .filter((file) => file && typeof file.ref === 'string' && file.ref.length > 0)
+    .filter((file): file is ArtifactsFileRow & { ref: string } => file !== null && file !== undefined && typeof file.ref === 'string' && file.ref.length > 0)
     .map((file) => ({
       ref: file.ref,
       size: Number(file.size) || 0,
@@ -1425,7 +1428,7 @@ const normalizedArtifactsRows = (files) =>
  * @param {{ directory: string | null, sessionID?: string | null,
  *           filesFor: (sessionID: string, directory: string) => Promise<{ files: Array<{ref: string, size: number, modifiedAt: number}>, truncated?: boolean } | null> }} input
  */
-export const handleArtifactsList = async ({ directory, sessionID, filesFor }) => {
+export const handleArtifactsList = async ({ directory, sessionID, filesFor }: { directory?: unknown; sessionID?: unknown; filesFor?: (sessionID: string, directory: string) => ArtifactsListResult | null | Promise<ArtifactsListResult | null> }) => {
   if (typeof directory !== 'string' || directory.length === 0) {
     return json({ error: 'directory-required' }, { status: 400 });
   }
@@ -1596,7 +1599,14 @@ export const createUriDomain = ({
   liveSessionIds = () => [],
   actions = {},
 }: UriDomainDeps = {}): UriDomain => {
-  const featureOn = (key) => Boolean(features?.()[key] ?? features?.[key]);
+  // SAFETY: OmpFeatures is a boolean flag record; the hook form returns it,
+  // the raw form is the record itself — both reads are flag lookups.
+  const flags = (): Record<string, boolean> => {
+    const source = features?.() ?? features;
+    // SAFETY: OmpFeatures members are boolean flags (omp-parity contract).
+    return (source ?? {}) as Record<string, boolean>;
+  };
+  const featureOn = (key: string) => Boolean(flags()[key]);
 
   const runs = new AgentRunsAggregator({
     snapshot: () => (typeof agentsSnapshot === 'function' ? agentsSnapshot() : []),
@@ -1604,25 +1614,25 @@ export const createUriDomain = ({
     ...(diskScan ? { diskScan } : {}),
   });
 
-  const gate = (key) => (featureOn(key) ? null : featureUnavailable(key));
+  const gate = (key: string) => (featureOn(key) ? null : featureUnavailable(key));
 
-  const uriResolve = async ({ body }) => {
+  const uriResolve = async ({ body }: { body?: UriResolveBody | null }) => {
     if (typeof localOptionsFor !== 'function') {
       // Only reachable with uri.v1 flipped on but no engine hook wired.
       return json({ error: 'hook-unavailable', hook: 'localOptionsFor' }, { status: 500 });
     }
     return handleUriResolve({ body, localOptionsFor, tokens, ...(router ? { router } : {}) });
   };
-  const artifactsList = ({ directory, sessionID }) => {
+  const artifactsList = ({ directory, sessionID }: { directory: string; sessionID: string }) => {
     if (typeof localFiles !== 'function') {
       // Only reachable with artifacts flipped on but no engine hook wired.
       return json({ error: 'hook-unavailable', hook: 'localFiles' }, { status: 500 });
     }
     return handleArtifactsList({ directory, sessionID, filesFor: localFiles });
   };
-  const uriOpen = async ({ body, directory }) => tokens.open(body?.token, { directory });
-  const uriInfo = ({ query, directory }) => tokens.describe(query?.get?.('token') ?? query?.token, { directory });
-  const uriContent = async ({ id, directory }) => {
+  const uriOpen = async ({ body, directory }: { body?: { token?: string }; directory?: string }) => tokens.open(body?.token, { directory });
+  const uriInfo = ({ query, directory }: { query?: { get?: (k: string) => string | null; token?: string }; directory?: string }) => tokens.describe(query?.get?.('token') ?? query?.token, { directory });
+  const uriContent = async ({ id, directory }: { id: string; directory?: string }) => {
     const result = await tokens.openRaw(id, { directory });
     if (result.ok === false) return result.response;
     return new Response(result.bytes, {
@@ -1636,17 +1646,17 @@ export const createUriDomain = ({
       },
     });
   };
-  const sessionTree = async ({ directory }) =>
+  const sessionTree = async ({ directory }: { directory?: string }) =>
     buildSessionTree((await sessionTreeData?.(directory)) ?? []);
-  const entryTree = async ({ sessionID, directory }) => {
+  const entryTree = async ({ sessionID, directory }: { sessionID?: string; directory?: string }) => {
     const found = await entryTreeFor?.(sessionID, directory);
     if (!found?.manager) return json({ error: 'session-not-found' }, { status: 404 });
     return json(buildEntryTreeSnapshot({ sessionID, directory, manager: found.manager }));
   };
-  const agentRuns = ({ directory }) => json(runs.snapshot(directory));
-  const agentRunAction = ({ sessionID, agentId, directory, body }) =>
+  const agentRuns = ({ directory }: { directory?: string }) => json(runs.snapshot(directory));
+  const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string; body?: unknown }) =>
     handleAgentRunAction({ aggregator: runs, descriptors, actions, sessionID, agentId, directory, body });
-  const jobs = ({ recentLimit }) =>
+  const jobs = ({ recentLimit }: { recentLimit?: number }) =>
     handleJobsRequest({
       liveSessionIds: liveSessionIds(),
       jobsEnabled: featureOn('jobs.v1'),
@@ -1655,20 +1665,20 @@ export const createUriDomain = ({
     });
 
   /** Mount /omp routes on the omp-host router (public paths /api/omp/...). */
-  const mount = (route) => {
+  const mount = (route: UriRoute) => {
     route('POST', '/omp/uri/resolve', async (request) => {
       const blocked = gate('uri.v1');
       if (blocked) return blocked;
       const body = await readJsonBody(request);
       return uriResolve({ body });
     });
-    route('POST', '/omp/uri/open', async (request, ctx) => {
+    route('POST', '/omp/uri/open', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('uri.v1');
       if (blocked) return blocked;
       const body = await readJsonBody(request);
       return uriOpen({ body, directory: directoryOf({ body, query: ctx?.url?.searchParams, headers: ctx?.headers }) });
     });
-    route('GET', '/omp/uri/tokens/{tokenID}/content', async (request, ctx) => {
+    route('GET', '/omp/uri/tokens/{tokenID}/content', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('uri.v1');
       if (blocked) return blocked;
       const url = new URL(request.url);
@@ -1677,13 +1687,13 @@ export const createUriDomain = ({
         directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }),
       });
     });
-    route('GET', '/omp/uri/info', async (request, ctx) => {
+    route('GET', '/omp/uri/info', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('uri.v1');
       if (blocked) return blocked;
       const url = new URL(request.url);
       return uriInfo({ query: url.searchParams, directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }) });
     });
-    route('GET', '/omp/sessions/{sessionID}/tree', async (request, ctx) => {
+    route('GET', '/omp/sessions/{sessionID}/tree', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('tree.v1');
       if (blocked) return blocked;
       const url = new URL(request.url);
@@ -1694,7 +1704,7 @@ export const createUriDomain = ({
       // per-session ENTRY tree (spec §5.4.1) is tree.entryTree / buildEntryTreeSnapshot.
       return json(subtree);
     });
-    route('GET', '/omp/artifacts', async (request, ctx) => {
+    route('GET', '/omp/artifacts', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('artifacts');
       if (blocked) return blocked;
       const url = new URL(request.url);
@@ -1703,13 +1713,13 @@ export const createUriDomain = ({
         sessionID: url.searchParams.get('sessionID'),
       });
     });
-    route('GET', '/omp/agent-runs', async (request, ctx) => {
+    route('GET', '/omp/agent-runs', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('agentRuns.v1');
       if (blocked) return blocked;
       const url = new URL(request.url);
       return agentRuns({ directory: url.searchParams.get('directory') });
     });
-    route('POST', '/omp/agent-runs/{sessionID}/{agentId}', async (request, ctx) => {
+    route('POST', '/omp/agent-runs/{sessionID}/{agentId}', async (request: Request, ctx?: UriRouteContext) => {
       const blocked = gate('agentRuns.v1');
       if (blocked) return blocked;
       const body = await readJsonBody(request);

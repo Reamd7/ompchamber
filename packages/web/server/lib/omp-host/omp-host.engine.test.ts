@@ -20,17 +20,23 @@ const fakeForkEntries = [
   { type: 'message', id: 'e3', parentId: 'e2', message: { role: 'user', timestamp: 3, content: 'second' } },
   { type: 'message', id: 'e4', parentId: 'e3', message: { role: 'assistant', timestamp: 4, content: 'reply 2' } },
 ];
-const forkMutations = [];
-const fakeManagerEntries = [];
-const createdOptions = [];
-const registries = [];
-const toolUiContextCalls = [];
-const extensionUiInitCalls = [];
+type ForkMutation = { op: string; leafId?: string; customType?: string; data?: unknown };
+type FakeSessionContext = { messages: unknown[] };
 
-const makeFakeSession = (id) => ({
+const forkMutations: ForkMutation[] = [];
+const fakeManagerEntries: unknown[] = [];
+type CreatedOptions = { cwd?: string; sessionManager?: { getSessionId?: () => string }; localProtocolOptions?: { getSessionId: () => string; getArtifactsDir: () => string }; toolNames?: string[]; systemPrompt?: string; model?: unknown; agentRegistry?: unknown; settings?: unknown; hasUI?: boolean; planYolo?: boolean };
+const createdOptions: CreatedOptions[] = [];
+const registries: unknown[] = [];
+const toolUiContextCalls: Array<{ uiContext: unknown; hasUI: boolean }> = [];
+type ExtensionInitCall = { session: unknown; options: { mode?: string; uiContext?: { askDialog?: unknown } } };
+const extensionUiInitCalls: ExtensionInitCall[] = [];
+
+const makeFakeSession = (id: string) => ({
   model: { provider: 'p1', id: 'current-model' },
   isStreaming: false,
-  messages: [],
+  // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+  messages: [] as unknown[],
   subscribe: () => () => {},
   sessionManager: {
     getSessionName: () => 'stub-session-name',
@@ -42,14 +48,14 @@ const makeFakeSession = (id) => ({
   setThinkingLevel: mock(() => {}),
   maybeStartTitleGeneration: () => {},
   prompt: mock(async () => true),
-  getTodoPhases: () => [],
+  getTodoPhases: (): [] => [],
   steer: mock(async () => {}),
   abort: mock(async () => {}),
   dispose: mock(async () => {}),
 });
 
 const fakeSessions = new Map();
-const sessionFor = (id) => {
+const sessionFor = (id: string) => {
   if (!fakeSessions.has(id)) fakeSessions.set(id, makeFakeSession(id));
   return fakeSessions.get(id);
 };
@@ -58,7 +64,7 @@ const realSdk = await import('@oh-my-pi/pi-coding-agent');
 const realRuntimeInit = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
 mock.module('@oh-my-pi/pi-coding-agent/modes/runtime-init', () => ({
   ...realRuntimeInit,
-  initializeExtensions: async (session, options) => {
+  initializeExtensions: async (session: { id?: string }, options: ExtensionInitCall['options']) => {
     extensionUiInitCalls.push({ session, options });
   },
 }));
@@ -66,6 +72,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
   AgentRegistry: class {
     constructor() {
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       registries.push(this);
     }
   },
@@ -79,33 +86,33 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   SessionManager: Object.assign(
     class {},
     {
-      async open(file) {
+      async open(file: string) {
         return {
           getSessionId: () => path.basename(file, '.jsonl'),
           onSessionNameChanged: () => {},
           // Idle-session reads (#infoFromManager) need the transcript reader
           // surface; an empty header/entries set is enough for wire building.
-          getHeader: () => null,
+          getHeader: (): null => null,
           getEntries: () => fakeManagerEntries,
-          buildSessionContext: () => ({ messages: [] }),
-          getCwd: () => undefined,
-          getSessionName: () => undefined,
+          buildSessionContext: (): FakeSessionContext => ({ messages: [] }),
+          getCwd: (): undefined => undefined,
+          getSessionName: (): undefined => undefined,
           getArtifactsDir: () => file.slice(0, -'.jsonl'.length),
           close: async () => {},
         };
       },
-      async list(cwd) {
+      async list(cwd?: string) {
         return sessionFiles.filter((file) => !file.cwd || !cwd || file.cwd === cwd);
       },
       getDefaultSessionDir: () => sessionDir,
-      async forkFrom(filePath) {
+      async forkFrom(filePath: string) {
         return {
           getSessionId: () => `${path.basename(filePath, '.jsonl')}_fork`,
           getEntries: () => fakeForkEntries,
-          getEntry: (id) => fakeForkEntries.find((entry) => entry.id === id),
-          branch: (leafId) => { forkMutations.push({ op: 'branch', leafId }); },
+          getEntry: (id: string) => fakeForkEntries.find((entry: { id: string }) => entry.id === id),
+          branch: (leafId: string) => { forkMutations.push({ op: 'branch', leafId }); },
           resetLeaf: () => { forkMutations.push({ op: 'resetLeaf' }); },
-          appendCustomEntry: (customType, data) => {
+          appendCustomEntry: (customType: string, data: ForkMutation['data']) => {
             forkMutations.push({ op: 'marker', customType, data });
             return 'marker_1';
           },
@@ -114,11 +121,12 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       },
     },
   ),
-  createAgentSession: async (options) => {
+  createAgentSession: async (options: CreatedOptions) => {
     createdOptions.push(options);
     return {
-      session: sessionFor(options.sessionManager?.getSessionId?.() ?? 's1'),
-      setToolUIContext: (uiContext, hasUI) => toolUiContextCalls.push({ uiContext, hasUI }),
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      session: sessionFor((options.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() ?? 's1'),
+      setToolUIContext: (uiContext: { askDialog?: unknown }, hasUI: boolean) => toolUiContextCalls.push({ uiContext, hasUI }),
     };
   },
   // The SDK Settings constructor is private (a type-level gate); the harness
@@ -141,7 +149,8 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   },
   VERSION: 'test',
   discoverAuthStorage: () => ({}),
-  BUILTIN_TOOLS: [],
+  // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+  BUILTIN_TOOLS: [] as string[],
 }));
 
 const { OmpHostEngine } = await import('./engine.ts');
@@ -444,7 +453,8 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(options.localProtocolOptions).toBeTruthy();
     expect(typeof options.localProtocolOptions).toBe('object');
     // Retained for the agent-runs aggregator (04 §5.5).
-    expect(engine.sessions.get('s1').agentRegistry).toBe(options.agentRegistry);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((engine.sessions.get('s1') as { agentRegistry: unknown }).agentRegistry).toBe(options.agentRegistry);
     // A lease flip drives hasUI on the next materialization.
     engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's2', clientId: 'c1' });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'with lease', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
@@ -464,11 +474,14 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(createdOptions.at(-1).hasUI).toBe(true);
     const attach = toolUiContextCalls.slice(beforeTool).at(-1);
     expect(attach?.hasUI).toBe(true);
-    expect(typeof attach?.uiContext?.askDialog).toBe('function');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(typeof (attach?.uiContext as { askDialog?: unknown } | undefined)?.askDialog).toBe('function');
     const extensionInit = extensionUiInitCalls.slice(beforeExtension);
     expect(extensionInit).toHaveLength(1);
-    expect(extensionInit[0].options.mode).toBe('json');
-    expect(typeof extensionInit[0].options.uiContext.askDialog).toBe('function');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((extensionInit[0] as { options: { mode?: string } }).options).mode).toBe('json');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(typeof ((extensionInit[0] as { options: { uiContext: { askDialog?: unknown } } }).options.uiContext).askDialog).toBe('function');
   });
 
   test('legacy build/plan metas normalize to the standard session; planYolo never reaches createAgentSession', async () => {
@@ -524,8 +537,10 @@ describe('local:// per-session root wiring (spec 04 §5.2.3, TUI parity)', () =>
     const engine = new OmpHostEngine({ agentDir });
     await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'hi' });
     const options = createdOptions.at(-1);
-    expect(options.localProtocolOptions.getSessionId()).toBe('s3');
-    expect(options.localProtocolOptions.getArtifactsDir()).toBe(path.join(sessionDir, 's3'));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((options as { localProtocolOptions: { getSessionId: () => string } }).localProtocolOptions).getSessionId()).toBe('s3');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((options as { localProtocolOptions: { getArtifactsDir: () => string } }).localProtocolOptions).getArtifactsDir()).toBe(path.join(sessionDir, 's3'));
 
     // Live path: a resolve after materialization reads the same session's
     // artifacts dir from its live manager, and only that session's root

@@ -3,7 +3,8 @@
   "compilerOptions": {
     "types": ["node"],
     "lib": ["ES2022", "ES2024.Promise"],
-    "strict": false
+    "strict": false,
+    "noImplicitAny": true
   },
   "include": ["server/lib/omp-host/**/*.ts"]
 }

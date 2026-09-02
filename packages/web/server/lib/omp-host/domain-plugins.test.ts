@@ -12,8 +12,8 @@ import {
 import type { PluginListResult } from './domain-plugins.ts';
 
 const makeRoute = () => {
-  const handlers = new Map();
-  const route = (method, pattern, handler) => handlers.set(`${method} ${pattern}`, handler);
+  const handlers = new Map<string, unknown>();
+  const route = (method: string, pattern: string, handler: import('./domain-plugins.ts').DomainRouteHandler) => handlers.set(`${method} ${pattern}`, handler);
   return { handlers, route };
 };
 
@@ -38,7 +38,8 @@ describe('OMP plugin domain', () => {
         return { plugins: [], extensions: [] };
       },
     });
-    const response = await handlers.get('GET /omp/plugins')(request('http://host/omp/plugins'));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (handlers.get('GET /omp/plugins') as (request: Request) => Promise<Response>)(request('http://host/omp/plugins'));
     expect(response.status).toBe(501);
     expect(await response.json()).toEqual({ error: 'plugins.v1-unavailable' });
     expect(calls).toBe(0);
@@ -68,7 +69,7 @@ describe('OMP plugin domain', () => {
   });
   test('lists OMP plugins under the explicit directory scope', async () => {
     const { handlers, route } = makeRoute();
-    const directories = [];
+    const directories: string[] = [];
     registerPluginsDomainRoutes(route, {
       features: { 'plugins.v1': true },
       list: async (directory) => {
@@ -82,7 +83,8 @@ describe('OMP plugin domain', () => {
         };
       },
     });
-    const response = await handlers.get('GET /omp/plugins')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (handlers.get('GET /omp/plugins') as (request: Request) => Promise<Response>)(
       request('http://host/omp/plugins?directory=%2Frepo'),
     );
     expect(response.status).toBe(200);

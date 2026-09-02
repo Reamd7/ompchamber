@@ -40,7 +40,7 @@ import {
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.ts';
-import type { UsageInput } from './projection.ts';
+import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMessageInput, WireIdMessageInput } from './projection.ts';
 import { createSettingsStore } from './domain-models.ts';
 import { createDomainDialogs } from './domain-dialogs.ts';
 import {
@@ -51,6 +51,7 @@ import {
   personaFor,
   serializeAgentMarkdown,
 } from './domain-modes.ts';
+import type { PreparePlanReviewResult } from './domain-modes.ts';
 import { createDomainChrome } from './domain-chrome.ts';
 import { ompFeatures } from './omp-parity.ts';
 import { revealCommand } from './domain-plugins.ts';
@@ -62,7 +63,8 @@ import {
   artifactsDirForSessionFile,
 } from './domain-uri.ts';
 import { resolveLocalUrlToPath } from '@oh-my-pi/pi-coding-agent/internal-urls/local-protocol';
-import type { AgentSession, AuthStorage, CreateAgentSessionResult, SessionInfo } from '@oh-my-pi/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, AuthStorage, CreateAgentSessionResult, SessionInfo, SessionEntry } from '@oh-my-pi/pi-coding-agent';
+import type { CustomMessage, HookMessage } from '@oh-my-pi/pi-coding-agent';
 import type { SettingsStore } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
@@ -90,12 +92,12 @@ const asExtensionUiContext = <T,>(bridge: T): ExtensionUIContext | undefined =>
  * Session-level persona key (02 §5.1 D-B3): unset and the deleted
  * build/plan pair map to the standard session; any other name is a persona.
  */
-const personaKeyFor = (name) => (!name || name === 'build' || name === 'plan' ? 'standard' : name);
+const personaKeyFor = (name: string | undefined): string => (!name || name === 'build' || name === 'plan' ? 'standard' : name);
 
 /** Wire `agent` projection: the standard session keeps the legacy 'build' id. */
-const wireAgentFor = (personaKey) => (personaKey === 'standard' ? 'build' : personaKey);
+const wireAgentFor = (personaKey: string): string => (personaKey === 'standard' ? 'build' : personaKey);
 
-const textOfContent = (content) => {
+const textOfContent = (content: ProjectedContentInput | null | undefined): string => {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content
@@ -104,7 +106,7 @@ const textOfContent = (content) => {
     .join('');
 };
 
-const modelSelector = (model) => (model ? `${model.provider}/${model.id}` : undefined);
+const modelSelector = (model: { provider: string; id: string } | null | undefined): string | undefined => (model ? `${model.provider}/${model.id}` : undefined);
 
 /** Persona record (spec 02 §5.2): mirrored into the personas sidecar. */
 interface Persona {
@@ -144,7 +146,24 @@ interface HostSession {
   extensionUiPromise: Promise<unknown> | null;
   planHandlerAttached: boolean;
   appliedPlugins: AppliedPluginsSnapshot | null;
+  /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
+  turnToolResults?: Map<string, { content?: unknown; isError?: boolean; timestamp?: number }> | null;
   unsubscribe?: () => void;
+}
+
+/** The SessionManager surface #infoFromManager reads (SDK SessionManager). */
+type SessionManagerLike = {
+  getHeader(): { timestamp?: string } | null | undefined;
+  getEntries(): Array<{ timestamp?: string }> | null | undefined;
+  getSessionId(): string;
+  getCwd(): string | undefined;
+  getSessionName(): string | undefined;
+};
+
+/** #tailSyncTranscript result: wire ids emitted this pass + divider anchor. */
+interface TailSyncTail {
+  projected: Array<{ wireId: string | null; role: string }>;
+  lastCompactionId: string | null;
 }
 
 /** Wire `Session` record as projected by #wireSession (vendored contract's
@@ -425,7 +444,7 @@ export class OmpHostEngine {
     return this.bootPromise;
   }
 
-  async #setDialogUiContext(hostSession, directory, sessionId, hasUI) {
+  async #setDialogUiContext(hostSession: HostSession, directory: string, sessionId: string, hasUI: boolean) {
     const uiContext = hasUI
       ? this.dialogs.uiContextFor(directory, sessionId, {
           chrome: this.chrome.bridgeHandlersFor(directory, sessionId)
@@ -453,7 +472,9 @@ export class OmpHostEngine {
       }
       await hostSession.extensionUiPromise;
     }
-    hostSession.sdkResult.setToolUIContext(uiContext, hasUI);
+    // SAFETY: DialogBridge is the deliberate web degradation of ExtensionUIContext
+    // (asExtensionUiContext seam); setToolUIContext consumes the same subset.
+    hostSession.sdkResult.setToolUIContext(asExtensionUiContext(uiContext), hasUI);
   }
 
   /**
@@ -463,13 +484,13 @@ export class OmpHostEngine {
    * lazy materialization pulls the session in instead of dropping the
    * extension UI initialization on the floor.
    */
-  async #attachDialogUi(directory, sessionId) {
+  async #attachDialogUi(directory: string, sessionId: string) {
     const hostSession = this.sessions.get(sessionId) ?? (await this.#materialize(sessionId, directory));
     if (!hostSession) return;
     await this.#setDialogUiContext(hostSession, directory, sessionId, true);
   }
 
-  #detachDialogUi(directory, sessionId) {
+  #detachDialogUi(directory: string, sessionId: string) {
     const hostSession = this.sessions.get(sessionId);
     if (!hostSession) return;
     try {
@@ -483,11 +504,25 @@ export class OmpHostEngine {
    * Plan mode ↔ xd://propose bridge (spec 02 §5.5): entering plan attaches
    * the review bridge; any other mode clears the handler.
    */
-  #syncPlanProposalHandler(hostSession, mode) {
+  #syncPlanProposalHandler(hostSession: HostSession, mode: string) {
     if (!hostSession?.agentSession?.setPlanProposalHandler) return;
     if (mode === 'plan') {
       const bridge = this.modesDomain.bridgeFor(hostSession.sessionId, hostSession.directory);
-      hostSession.agentSession.setPlanProposalHandler(bridge.hookFor(hostSession.agentSession));
+      // SAFETY: AgentSession satisfies PlanProposalSession (preparePlanForReview)
+      // structurally; the mode domain narrows to the single member it calls.
+      // The mode domain consumes only preparePlanForReview (PlanProposalSession);
+      // delegate through an adapter so the SDK AgentSession keeps its own type.
+      const planSession = {
+        preparePlanForReview: async (title: string): Promise<PreparePlanReviewResult> => {
+          // SAFETY: AgentToolResult<PlanApprovalDetails> IS the
+          // PreparePlanReviewResult shape by design (02 §5.5): { content, details }.
+          return (await hostSession.agentSession.preparePlanForReview(title)) as PreparePlanReviewResult;
+        }
+      };
+      // SAFETY: PlanReviewToolResult is the AgentToolResult shape by design
+      // (02 §5.5); the SDK handler and the mode hook return the same wire form.
+      const hook = bridge.hookFor(planSession) as (title: string) => ReturnType<Parameters<typeof hostSession.agentSession.setPlanProposalHandler>[0]>;
+      hostSession.agentSession.setPlanProposalHandler(hook);
       hostSession.planHandlerAttached = true;
     } else if (hostSession.planHandlerAttached) {
       hostSession.agentSession.setPlanProposalHandler(null);
@@ -608,7 +643,7 @@ export class OmpHostEngine {
     }
   }
 
-  #disposeSession(session) {
+  #disposeSession(session: HostSession | undefined | Record<string, never>) {
     if (!session.agentSession) return;
     session.unsubscribe?.();
     session.unsubscribe = null;
@@ -625,11 +660,11 @@ export class OmpHostEngine {
     session.agentSession = null;
     void agentSession.dispose().catch(() => {});
   }
-  #sessionDirFor(cwd) {
+  #sessionDirFor(cwd: string) {
     return SessionManager.getDefaultSessionDir(cwd, this.registry.agentDir);
   }
 
-  #projectId(directoryKey) {
+  #projectId(directoryKey: string) {
     const hash = crypto.createHash('sha256').update(directoryKey).digest('hex');
     return `prj_${hash.slice(0, 20)}`;
   }
@@ -642,7 +677,7 @@ export class OmpHostEngine {
    * the SDK's explicit copy semantics (fork/plan-approve), not shared state.
    * Null when the session is unknown to this directory.
    */
-  async #artifactsDirFor(sessionId, directoryKey) {
+  async #artifactsDirFor(sessionId: string, directoryKey: string) {
     const manager = this.sessions.get(sessionId)?.agentSession?.sessionManager;
     const liveDir = manager?.getArtifactsDir?.();
     if (typeof liveDir === 'string' && liveDir) return liveDir;
@@ -660,14 +695,14 @@ export class OmpHostEngine {
    * an absent root is authoritative empty. Pure stat walk — no content
    * leaves this method; refs are '/'-joined relatives, never absolute paths.
    */
-  async #listLocalFiles(sessionId, directoryKey) {
+  async #listLocalFiles(sessionId: string, directoryKey: string) {
     const artifactsDir = await this.#artifactsDirFor(sessionId, directoryKey);
     if (!artifactsDir) return null;
     const options = createLocalProtocolOptions(sessionId, directoryKey, artifactsDir);
     const root = resolveLocalUrlToPath('local://', options);
-    const files = [];
+    const files: Array<{ ref: string; size?: number; modifiedAt?: number }> = [];
     let truncated = false;
-    const walk = async (relative, depth) => {
+    const walk = async (relative: string, depth: number) => {
       let entries;
       try {
         entries = await fs.promises.readdir(relative ? path.join(root, relative) : root, {
@@ -690,7 +725,7 @@ export class OmpHostEngine {
             truncated = true;
             return;
           }
-          const stat = await fs.promises.stat(path.join(root, childRef)).catch(() => null);
+          const stat = await fs.promises.stat(path.join(root, childRef)).catch((): null => null);
           files.push({
             ref: childRef,
             size: stat?.size ?? 0,
@@ -741,7 +776,7 @@ export class OmpHostEngine {
     };
   }
 
-  async listSessions({ directory }) {
+  async listSessions({ directory }: { directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const infos = await SessionManager.list(directory, this.#sessionDirFor(directory), undefined);
@@ -788,7 +823,7 @@ export class OmpHostEngine {
     return byDirectory;
   }
 
-  async createSession({ directory, title, parentID, agent, model }) {
+  async createSession({ directory, title, parentID, agent, model }: { directory?: string; title?: string; parentID?: string; agent?: string; model?: { providerID?: string; modelID?: string } }) {
     await this.#boot();
     const cwd = normalizeDirectoryKey(directory);
     const sessionFile = SessionManager.createEmptySessionFile(cwd);
@@ -803,7 +838,7 @@ export class OmpHostEngine {
       // The wire `agent` param is a persona name (or the legacy build/plan
       // ids, which normalize away); store the normalized persona key.
       ...(agent && personaKeyFor(agent) !== 'standard' ? { persona: personaKeyFor(agent) } : {}),
-      ...(model ? { model } : {})
+      ...(model ? { model: `${model.providerID ?? ''}/${model.modelID ?? ''}` || undefined } : {})
     });
     await manager.close();
     const session = this.#wireSession(
@@ -821,7 +856,7 @@ export class OmpHostEngine {
     return session;
   }
 
-  async getSession({ sessionID, directory }) {
+  async getSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const live = this.sessions.get(sessionID);
@@ -837,7 +872,7 @@ export class OmpHostEngine {
     }
   }
 
-  #infoFromManager(manager, filePath, directoryKey) {
+  #infoFromManager(manager: SessionManagerLike, filePath: string, directoryKey: string) {
     const header = manager.getHeader();
     const entries = manager.getEntries();
     const last = entries[entries.length - 1];
@@ -852,7 +887,7 @@ export class OmpHostEngine {
     };
   }
 
-  async #findSessionFile(sessionID, directoryKey) {
+  async #findSessionFile(sessionID: string, directoryKey: string) {
     const dir = this.#sessionDirFor(directoryKey);
     const infos = await SessionManager.list(directoryKey, dir);
     const hit = infos.find((info) => info.id === sessionID);
@@ -860,7 +895,7 @@ export class OmpHostEngine {
     return null;
   }
 
-  async updateSession({ sessionID, directory, title, metadata, timeArchived }) {
+  async updateSession({ sessionID, directory, title, metadata, timeArchived }: { sessionID: string; directory?: string; title?: string; metadata?: Record<string, SessionMetadataValue>; timeArchived?: number }) {
     await this.#boot();
     const live = this.sessions.get(sessionID);
     // A live session owns its registry entry under its own directory, and
@@ -913,7 +948,7 @@ export class OmpHostEngine {
     );
   }
 
-  async deleteSession({ sessionID, directory }) {
+  async deleteSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
@@ -932,7 +967,7 @@ export class OmpHostEngine {
     this.bus.emit('session.deleted', { sessionID }, directoryKey);
     return info;
   }
-  #wireSessionFromLive(live) {
+  #wireSessionFromLive(live: HostSession) {
     const meta = this.registry.get(live.directory, live.sessionId);
     const agentSession = live.agentSession;
     const now = Date.now();
@@ -951,7 +986,7 @@ export class OmpHostEngine {
   }
 
   /** Cold message projection from the persisted transcript. */
-  async getMessages({ sessionID, directory }) {
+  async getMessages({ sessionID, directory }: { sessionID: string; directory?: string }) {
     return this.#projectedMessages(sessionID, directory);
   }
 
@@ -960,12 +995,12 @@ export class OmpHostEngine {
    * limit/before window over the full projection and reports the
    * next-older cursor (see paginateProjectedMessages).
    */
-  async getMessagesPage({ sessionID, directory, limit, before }) {
+  async getMessagesPage({ sessionID, directory, limit, before }: { sessionID: string; directory?: string; limit?: number; before?: string }) {
     const projected = await this.#projectedMessages(sessionID, directory);
     if (!projected) return null;
     return paginateProjectedMessages(projected, { limit, before });
   }
-  async #projectedMessages(sessionID, directory) {
+  async #projectedMessages(sessionID: string, directory: string | null) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
@@ -991,7 +1026,7 @@ export class OmpHostEngine {
         const turnStateFor = buildTurnStateStamper(entries, { wireIdFor });
         // Timeline dividers for the same turn-state entries: model and mode
         // switches render as slim dividers at their point in the log.
-        const mergeDividers = (projected) => this.#mergeTurnEventDividers(projected, entries, sessionID);
+        const mergeDividers = (projected: ProjectedMessage[]) => this.#mergeTurnEventDividers(projected, entries, sessionID);
         if (liveCount >= 0 && liveCount >= fileMessages.length) {
           return mergeDividers(
             projectConversation(live.agentSession.messages, {
@@ -1036,7 +1071,7 @@ export class OmpHostEngine {
    * divider projection rejects (init bookkeeping without a role tag) are
    * skipped, keeping deterministic ids stable across re-projections.
    */
-  #mergeTurnEventDividers(projected, entries, sessionID) {
+  #mergeTurnEventDividers(projected: ProjectedMessage[], entries: readonly SessionEntry[], sessionID: string) {
     const dividers = [];
     for (const entry of entries) {
       const wire = projectTurnEventDivider(entry, { sessionID });
@@ -1056,7 +1091,7 @@ export class OmpHostEngine {
    * pick when set, else the model's configured default (inherit), else
    * unknown (models without a thinking surface).
    */
-  #effectiveThinkingLevel(session) {
+  #effectiveThinkingLevel(session: AgentSession) {
     if (session.thinkingLevel !== undefined && session.thinkingLevel !== null) {
       return session.thinkingLevel;
     }
@@ -1067,10 +1102,10 @@ export class OmpHostEngine {
     return typeof defaultLevel === 'string' && defaultLevel.length > 0 ? defaultLevel : undefined;
   }
 
-  #wireIdResolver(directoryKey, sessionID) {
+  #wireIdResolver(directoryKey: string, sessionID: string) {
     if (this.wireIdOverrides.size === 0) return undefined;
     const prefix = `${directoryKey}\u0000${sessionID}\u0000`;
-    return (message) => {
+    return (message: WireIdMessageInput | null | undefined) => {
       if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
       return this.wireIdOverrides.get(prefix + deterministicWireId(message));
     };
@@ -1083,7 +1118,7 @@ export class OmpHostEngine {
    * message finalizes both, so a re-fetch would otherwise project a second,
    * different id for the same message and the UI would render it twice.
    */
-  #bridgeAssistantWireId(hostSession, finalMessage) {
+  #bridgeAssistantWireId(hostSession: HostSession, finalMessage: AssistantMessageInput) {
     const liveId = hostSession.projector?.current?.id;
     if (!liveId) return;
     const seed = textOfContent(finalMessage.content) || (finalMessage.content?.[0]?.name ?? '');
@@ -1126,14 +1161,14 @@ export class OmpHostEngine {
     return hostSession.lastAssistantWireId ?? key;
   }
 
-  #resolveModel(selector) {
+  #resolveModel(selector: { providerID?: string; modelID?: string } | undefined) {
     if (!selector) return undefined;
     const available = this.modelRegistry.getAvailable();
     const wanted = `${selector.providerID}/${selector.modelID}`;
     return available.find((model) => `${model.provider}/${model.id}` === wanted) ?? available.find((model) => model.id === selector.modelID);
   }
 
-  async #materialize(sessionId, directoryKey) {
+  async #materialize(sessionId: string, directoryKey: string) {
     // Concurrent materialization dedup: a UI-lease attach racing the first
     // prompt (leases.acquire is fire-and-forget) used to build two
     // AgentSessions for one id — the loser never entered `sessions`, leaked
@@ -1149,7 +1184,7 @@ export class OmpHostEngine {
     return run;
   }
 
-  async #materializeNow(sessionId, directoryKey) {
+  async #materializeNow(sessionId: string, directoryKey: string) {
     const existing = this.sessions.get(sessionId);
     if (existing?.agentSession) return existing;
     const file = await this.#findSessionFile(sessionId, directoryKey);
@@ -1270,7 +1305,7 @@ export class OmpHostEngine {
    * and return exactly what the session just bound. Failures degrade to null
    * — never block session setup on the settings projection.
    */
-  async #snapshotAppliedPlugins(directoryKey) {
+  async #snapshotAppliedPlugins(directoryKey: string) {
     try {
       const { discoverExtensionPaths } = await import('@oh-my-pi/pi-coding-agent/extensibility/extensions');
       const { getEnabledPlugins } = await import('@oh-my-pi/pi-coding-agent/extensibility/plugins');
@@ -1305,7 +1340,7 @@ export class OmpHostEngine {
    * commands on every live session of that directory. TS extension module
    * bindings stay frozen (sessions rebind at next materialization).
    */
-  async reloadAppliedPlugins(directory, sessionId = null) {
+  async reloadAppliedPlugins(directory: string | null, sessionId: string | null = null) {
     const directoryKey = normalizeDirectoryKey(directory ?? process.cwd());
     let projectRegistryPath = null;
     try {
@@ -1357,7 +1392,7 @@ export class OmpHostEngine {
    * messages emit only the omp event (UI won't build a card; cold projection
    * drops them too — double guard, 05 §5.8.2 T3).
    */
-  #emitCustomLive(hostSession, message) {
+  #emitCustomLive(hostSession: HostSession, message: CustomMessage | HookMessage) {
     const { sessionId, directory } = hostSession;
     const projected = projectCustomMessage(message, {
       sessionID: sessionId,
@@ -1397,9 +1432,9 @@ export class OmpHostEngine {
    * live without a refetch (spec 05 §5.5). Idempotent per (role,type,ts).
    * @returns {{ projected: Array<{wireId: string, role: string}>, lastCompactionId: string | null }}
    */
-  #tailSyncTranscript(hostSession) {
+  #tailSyncTranscript(hostSession: HostSession) {
     const session = hostSession.agentSession;
-    const out = { projected: [], lastCompactionId: null };
+    const out: TailSyncTail = { projected: [], lastCompactionId: null };
     if (!session?.messages) return out;
     const messages = session.messages;
     const pending = [];
@@ -1408,13 +1443,18 @@ export class OmpHostEngine {
       if (!message || typeof message !== 'object') continue;
       const role = message.role;
       if (role !== 'custom' && role !== 'hookMessage' && role !== 'compactionSummary' && role !== 'branchSummary' && role !== 'developer') continue;
-      const key = `${role}:${message.customType ?? ''}:${message.timestamp}`;
+      // SAFETY: only custom/hook messages carry customType; the read is a
+      // presence probe keyed into syncedEntryKeys.
+      const customTyped = message as { customType?: string; timestamp?: number };
+      const key = `${role}:${customTyped.customType ?? ''}:${message.timestamp}`;
       if (hostSession.syncedEntryKeys?.has(key)) break;
       pending.push(message);
     }
     pending.reverse();
     for (const message of pending) {
-      const key = `${message.role}:${message.customType ?? ''}:${message.timestamp}`;
+      // SAFETY: same presence-probe read as the scan pass above.
+      const customTyped = message as { customType?: string; timestamp?: number };
+      const key = `${message.role}:${customTyped.customType ?? ''}:${message.timestamp}`;
       hostSession.syncedEntryKeys?.add(key);
       if (message.role === 'developer') {
         if (!textOfContent(message.content).trim()) continue;
@@ -1459,7 +1499,7 @@ export class OmpHostEngine {
    * default is defense-in-depth only; scripts/check-event-coverage.mjs is
    * the real CI guard against unregistered SDK additions.
    */
-  #handleEngineEvent(hostSession, event) {
+  #handleEngineEvent(hostSession: HostSession, event: AgentSessionEvent) {
     const { sessionId, directory } = hostSession;
     const session = hostSession.agentSession;
     if (!session) return;
@@ -1649,7 +1689,8 @@ export class OmpHostEngine {
         return;
       }
       case 'todo_reminder': {
-        const todos = (event.todos ?? []).map((todo) => ({
+        // SAFETY: SDK todo rows are the wire todo shape (todo tool contract).
+        const todos = ((event.todos ?? []) as Array<{ content?: string; status?: string; blocker?: string; priority?: string }>).map((todo) => ({
           content: todo.content ?? '',
           status: todo.status ?? 'pending',
           priority: todo.priority ?? 'medium',
@@ -1667,7 +1708,7 @@ export class OmpHostEngine {
           {
             level: 'info',
             message: `Unfinished todos (${event.attempt ?? 1}/${event.maxAttempts ?? 1}): ${todos
-              .map((todo) => todo.content)
+              .map((todo: { content?: string }) => todo.content)
               .filter(Boolean)
               .join('; ')}`
           },
@@ -1759,7 +1800,8 @@ export class OmpHostEngine {
           success: Boolean(event.success),
           attempt: event.attempt,
           ...(event.finalError ? { finalError: event.finalError } : {}),
-          retryErrors: (event.retryErrors ?? []).map((update) => ({
+          // SAFETY: SDK retry-error updates carry the persisted entry ids.
+          retryErrors: ((event.retryErrors ?? []) as Array<{ entryId?: string; persistenceKey?: string; note?: string; retryRecovery?: unknown }>).map((update) => ({
             messageID: this.#retryWireIdFor(hostSession, update),
             note: update.note,
             retryRecovery: update.retryRecovery,
@@ -1819,7 +1861,8 @@ export class OmpHostEngine {
           hostSession,
           'omp.ttsr.triggered',
           {
-            rules: (event.rules ?? []).map((rule) => ({ name: rule.name }))
+            // SAFETY: ttsr rules are name-keyed config rows.
+            rules: ((event.rules ?? []) as Array<{ name?: string }>).map((rule) => ({ name: rule.name }))
           },
           { durable: false }
         );
@@ -1855,19 +1898,21 @@ export class OmpHostEngine {
       default: {
         // Defense-in-depth only (05 §5.1): the manifest + CI guard own the
         // real coverage check. Never silently swallow an unknown member.
-        console.error(`[omp-host] unhandled AgentSessionEvent type: ${event?.type}`);
+        // SAFETY: exhaustive switch leaves `never`; the probe only reads .type.
+        const unknownEvent = event as { type?: string } | null | undefined;
+        console.error(`[omp-host] unhandled AgentSessionEvent type: ${unknownEvent?.type}`);
         this.unknownEventCounts = this.unknownEventCounts ?? new Map();
-        this.unknownEventCounts.set(event?.type, (this.unknownEventCounts.get(event?.type) ?? 0) + 1);
+        this.unknownEventCounts.set(unknownEvent?.type, (this.unknownEventCounts.get(unknownEvent?.type) ?? 0) + 1);
         return;
       }
     }
   }
 
-  async getSessionStatuses({ directory }) {
+  async getSessionStatuses({ directory }: { directory?: string }) {
     await this.#boot();
     const AWAITING_ASYNC_TIMEOUT_MS = 10 * 60 * 1000;
     const now = Date.now();
-    const statuses = {};
+    const statuses: Record<string, { type: 'busy' } | { type: 'idle' }> = {};
     for (const [id, live] of this.sessions) {
       if (live.directory !== normalizeDirectoryKey(directory)) continue;
       const stale = live.awaitingAsyncSince !== null && now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
@@ -1878,7 +1923,7 @@ export class OmpHostEngine {
   }
 
   /** Structured customType inventory for the omp transcript read (05 §5.2.1). */
-  async getCustomMessages({ sessionID, directory }) {
+  async getCustomMessages({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;
     const out = [];
@@ -1900,7 +1945,7 @@ export class OmpHostEngine {
   }
 
   /** Per-turn telemetry (05 §5.9): usage/ttft/duration per assistant message. */
-  async getTelemetry({ sessionID, directory }) {
+  async getTelemetry({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1936,7 +1981,7 @@ export class OmpHostEngine {
    * Structured session entries (05 §5.2.1): compaction dividers, branch
    * summaries, model/mode changes, ttsr injections, retry recovery notes.
    */
-  async getEntries({ sessionID, directory, kinds }) {
+  async getEntries({ sessionID, directory, kinds }: { sessionID: string; directory?: string; kinds?: string[] }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
@@ -1995,7 +2040,7 @@ export class OmpHostEngine {
     return out;
   }
 
-  async #transcriptContext(sessionID, directory) {
+  async #transcriptContext(sessionID: string, directory: string | null) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
@@ -2026,7 +2071,7 @@ export class OmpHostEngine {
     images?: Array<{ data?: string; mimeType?: string }>;
     delivery?: string;
     messageID?: string;
-  }) {
+  }): Promise<ProjectedMessage | null> {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
@@ -2132,7 +2177,8 @@ export class OmpHostEngine {
     }
 
     const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : (text ?? '');
-    const imageContents = content.filter((block) => block.type === 'image');
+    // SAFETY: filtered blocks are image parts; base64+mime is the wire form.
+    const imageContents = content.filter((block) => block.type === 'image') as Array<{ type: 'image'; data: string; mimeType: string }>;
     // Dispatch mirrors the TUI input loop: every submission carries a
     // streaming behavior so a live turn never rejects the prompt. steer
     // injects into the running turn (the TUI's Enter-while-streaming);
@@ -2160,7 +2206,7 @@ export class OmpHostEngine {
    * plain prompt. Returns false when the text is not a skill command so the
    * normal dispatch proceeds.
    */
-  async #tryRunSkillCommand(hostSession, text, streamingBehavior) {
+  async #tryRunSkillCommand(hostSession: HostSession, text: string, streamingBehavior: "steer" | "followUp") {
     const session = hostSession.agentSession;
     if (!session?.skillsSettings?.enableSkillCommands) return false;
     const parsed = parseSkillInvocation(text);
@@ -2189,7 +2235,7 @@ export class OmpHostEngine {
    * degrades to a thinking-level-only change (`setThinkingLevel`) — the
    * in-session thinking slot applies through the same endpoint.
    */
-  async setSessionModel({ sessionID, directory, model, thinkingLevel }) {
+  async setSessionModel({ sessionID, directory, model, thinkingLevel }: { sessionID: string; directory?: string; model?: { providerID?: string; modelID?: string }; thinkingLevel?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     if (!model || !(model.providerID || model.modelID)) {
@@ -2215,7 +2261,9 @@ export class OmpHostEngine {
       // never a return value. 'inherit' is OMPChamber's wire sentinel for
       // clearing the explicit level; the SDK clears via undefined.
       try {
-        session.setThinkingLevel(thinkingLevel === 'inherit' ? undefined : thinkingLevel);
+        // SAFETY: wire thinking levels are the SDK ThinkingLevel vocabulary
+        // ('low'|'medium'|'high'); 'inherit' is the OMP clear sentinel.
+        session.setThinkingLevel(thinkingLevel === 'inherit' ? undefined : (thinkingLevel as Parameters<NonNullable<AgentSession['setThinkingLevel']>>[0]));
       } catch (error) {
         console.error('[omp-host] thinking level switch failed:', error?.message ?? error);
       }
@@ -2226,7 +2274,7 @@ export class OmpHostEngine {
     };
   }
 
-  async abort({ sessionID, directory }) {
+  async abort({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const live = this.sessions.get(sessionID);
     if (!live?.agentSession) return false;
@@ -2285,7 +2333,7 @@ export class OmpHostEngine {
     return true;
   }
 
-  async summarize({ sessionID, directory }) {
+  async summarize({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
@@ -2363,7 +2411,7 @@ export class OmpHostEngine {
    * Revert: move the transcript's active branch so `messageID` becomes the
    * last retained message. Records the previous leaf for unrevert.
    */
-  async revert({ sessionID, directory, messageID }) {
+  async revert({ sessionID, directory, messageID }: { sessionID: string; directory?: string; messageID: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
@@ -2395,7 +2443,7 @@ export class OmpHostEngine {
    * extension factory runs at session creation, so any live session for the
    * directory is a valid source.
    */
-  liveCommandsFor(directory) {
+  liveCommandsFor(directory: string | null) {
     const directoryKey = normalizeDirectoryKey(directory);
     for (const hostSession of this.sessions.values()) {
       if (hostSession.directory !== directoryKey) continue;
@@ -2417,7 +2465,7 @@ export class OmpHostEngine {
     return Promise.resolve([]);
   }
 
-  async unrevert({ sessionID, directory }) {
+  async unrevert({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
@@ -2439,7 +2487,7 @@ export class OmpHostEngine {
     return session;
   }
 
-  async getTodos({ sessionID, directory }) {
+  async getTodos({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = this.sessions.get(sessionID);
@@ -2498,7 +2546,7 @@ export class OmpHostEngine {
     await this.#boot();
   }
 
-  projectIdFor(directoryKey) {
+  projectIdFor(directoryKey: string) {
     return this.#projectId(normalizeDirectoryKey(directoryKey));
   }
 
@@ -2506,7 +2554,7 @@ export class OmpHostEngine {
    * Move a session to another project directory: relocate the transcript via
    * omp's SessionManager.moveTo and migrate the sidecar metadata.
    */
-  async moveSession({ sessionID, destination }) {
+  async moveSession({ sessionID, destination }: { sessionID: string; destination: string }) {
     await this.#boot();
     const toKey = normalizeDirectoryKey(destination);
     const live = this.sessions.get(sessionID);
@@ -2527,13 +2575,13 @@ export class OmpHostEngine {
     return session;
   }
 
-  async #locateDirectory(sessionID) {
+  async #locateDirectory(sessionID: string) {
     for (const [id, live] of this.sessions) {
       if (id === sessionID) return live.directory;
     }
     const byDirectory = await this.listAllSessions({});
     for (const [directory, list] of byDirectory) {
-      if (list.some((session) => session.id === sessionID)) return directory;
+      if (list.some((session: { id: string }) => session.id === sessionID)) return directory;
     }
     return null;
   }

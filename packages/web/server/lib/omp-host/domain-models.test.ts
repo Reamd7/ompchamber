@@ -24,15 +24,20 @@ import {
 } from './domain-models.ts';
 import type { SettingsChangesInput, SettingValue } from './domain-models.ts';
 
-const cleanupDirs = [];
+const cleanupDirs: string[] = [];
 const makeDir = () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'omp-domain-models-'));
   cleanupDirs.push(dir);
   return dir;
 };
 
+/** Partial route ctx the direct handler invocations pass. */
+type ModelsCtxLite = { params?: Record<string, string> };
+type PublishedPayload = { revision?: number };
+type PublishedScope = { directory?: string; durable?: boolean };
+
 /** Write `<dir>/.omp/config.yml` with a modelRoles subtree. */
-const writeProjectConfig = (dir, roles) => {
+const writeProjectConfig = (dir: string, roles: Record<string, string>) => {
   mkdirSync(path.join(dir, '.omp'), { recursive: true });
   const body = Object.entries(roles)
     .map(([role, value]) => `  ${role}: ${value}`)
@@ -40,7 +45,7 @@ const writeProjectConfig = (dir, roles) => {
   writeFileSync(path.join(dir, '.omp', 'config.yml'), `modelRoles:\n${body}\n`);
 };
 
-const readProjectConfig = (dir) => {
+const readProjectConfig = (dir: string) => {
   try {
     return readFileSync(path.join(dir, '.omp', 'config.yml'), 'utf8');
   } catch {
@@ -48,7 +53,7 @@ const readProjectConfig = (dir) => {
   }
 };
 
-const readGlobalConfig = (agentDir) => {
+const readGlobalConfig = (agentDir: string) => {
   try {
     return readFileSync(path.join(agentDir, 'config.yml'), 'utf8');
   } catch {
@@ -58,7 +63,7 @@ const readGlobalConfig = (agentDir) => {
 
 /** Fresh env: isolated agentDir + boot Settings (loadIsolated — no process
  * singleton pollution) + store. Project layers written before boot load. */
-const makeEnv = async ({ projectA = null, projectB = null } = {}) => {
+const makeEnv = async ({ projectA = null, projectB = null }: { projectA?: Record<string, string> | null; projectB?: Record<string, string> | null } = {}) => {
   const agentDir = makeDir();
   const dirA = makeDir();
   const dirB = makeDir();
@@ -69,7 +74,7 @@ const makeEnv = async ({ projectA = null, projectB = null } = {}) => {
   return { agentDir, dirA, dirB, boot, store };
 };
 
-const disarm = async (env) => {
+const disarm = async (env: Awaited<ReturnType<typeof makeEnv>>) => {
   await env.store.disposeAll();
   env.boot.cancelPendingSaves();
 };
@@ -555,8 +560,8 @@ describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
   test('revision is monotonic; failures do not bump; payload carries keys/origin only', async () => {
     const env = await makeEnv();
     const { store } = env;
-    const published = [];
-    const publish = (type, payload, eventScope) => published.push({ type, payload, eventScope });
+    const published: Array<{ type: string; payload?: object; eventScope?: object }> = [];
+    const publish = (type: string, payload: PublishedPayload | undefined, eventScope: PublishedScope | undefined) => published.push({ type, payload, eventScope });
     try {
       const first = await applySettingsChanges(store, {
         changes: { 'todo.reminders': true },
@@ -588,12 +593,15 @@ describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
         keys: ['hindsight.apiToken'],
         origin: 'web',
       });
-      expect(last.eventScope.directory).toBe(store.bootDirectory);
-      expect(last.eventScope.durable).toBe(true);
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      expect((last.eventScope as { directory?: string }).directory).toBe(store.bootDirectory);
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      expect((last.eventScope as { durable?: boolean }).durable).toBe(true);
       // Event payloads never carry credential values.
       expect(JSON.stringify(published)).not.toContain('tok');
       for (let i = 1; i < published.length; i += 1) {
-        expect(published[i].payload.revision).toBeGreaterThan(published[i - 1].payload.revision);
+        // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+        expect(((published[i] as { payload: { revision?: number } }).payload.revision)).toBeGreaterThan(((published[i - 1] as { payload: { revision?: number } }).payload.revision));
       }
     } finally {
       await disarm(env);
@@ -603,10 +611,10 @@ describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
   test('empty changes is an idempotent no-op: no bump, no event', async () => {
     const env = await makeEnv();
     const { store } = env;
-    const published = [];
+    const published: Array<{ type: string; payload?: object; eventScope?: object }> = [];
     try {
       const result = await applySettingsChanges(store, { changes: {} }, {
-        publish: (t, p, s) => published.push({ t, p, s }),
+        publish: (t: string, p: PublishedPayload | undefined, s: PublishedScope | undefined) => published.push({ type: t, payload: p, eventScope: s }),
       });
       expect(result.status).toBe(200);
       expect(result.body).toEqual({ revision: 0, applied: {}, persisted: true, quarantined: null });
@@ -701,25 +709,29 @@ describe('route mounting', () => {
     const { store, dirB } = env;
     const ocPath = path.join(makeDir(), 'settings.json');
     writeFileSync(ocPath, JSON.stringify({ defaultModel: 'oc/legacy-model' }));
-    const published = [];
-    const routes = [];
+    const published: Array<{ type: string; payload?: object; eventScope?: object }> = [];
+    const routes: Array<{ method: string; pattern: string; handler: (request: Request, ctx?: ModelsCtxLite) => Promise<Response> }> = [];
     registerModelSettingsRoutes(
-      (method, pattern, handler) => routes.push({ method, pattern, handler }),
-      { store, publish: (t, p, s) => published.push({ t, p, s }), legacySettingsPath: ocPath },
+      (method: string, pattern: string, handler: (request: Request, ctx?: ModelsCtxLite) => Promise<Response>) => routes.push({ method, pattern, handler }),
+      { store, publish: (t: string, p: PublishedPayload | undefined, s: PublishedScope | undefined) => published.push({ type: t, payload: p, eventScope: s }), legacySettingsPath: ocPath },
     );
     expect(routes.map((r) => `${r.method} ${r.pattern}`)).toEqual([
       'GET /omp/models',
       'GET /omp/settings',
       'PUT /omp/settings',
     ]);
-    const byRoute = (method, pattern) => routes.find((r) => r.method === method && r.pattern === pattern).handler;
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const byRoute = (method: string, pattern: string) => routes.find((r: { method: string; pattern: string; handler: (request: Request, ctx?: ModelsCtxLite) => Promise<Response> }) => r.method === method && r.pattern === pattern).handler as (request: Request, ctx?: ModelsCtxLite) => Promise<Response>;
     try {
       const modelsResponse = await byRoute('GET', '/omp/models')(
         new Request(`http://host/omp/models?directory=${encodeURIComponent(dirB)}`),
       );
-      const models = await modelsResponse.json();
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      const models = await modelsResponse.json() as { roles: { default: unknown }; legacyDefaults: { defaultModel: string; defaultProvider: string } };
       expect(modelsResponse.status).toBe(200);
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       expect(models.roles.default).toBeNull();
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       expect(models.legacyDefaults).toEqual({ defaultModel: 'oc/legacy-model', defaultProvider: 'oc' });
 
       const putResponse = await byRoute('PUT', '/omp/settings')(
@@ -729,17 +741,22 @@ describe('route mounting', () => {
           body: JSON.stringify({ directory: dirB, scope: 'project', changes: { 'modelRoles.default': 'prov/routed' } }),
         }),
       );
-      const putBody = await putResponse.json();
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      const putBody = await putResponse.json() as { applied: Record<string, string> };
       expect(putResponse.status).toBe(200);
-      expect(putBody.applied['modelRoles.default']).toBe('prov/routed');
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      expect(((putBody.applied as Record<string, string>)['modelRoles.default'])).toBe('prov/routed');
 
       const settingsResponse = await byRoute('GET', '/omp/settings')(
         new Request(`http://host/omp/settings?directory=${encodeURIComponent(dirB)}&keys=modelRoles`),
       );
-      const settings = await settingsResponse.json();
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      const settings = await settingsResponse.json() as { keys: { modelRoles: { roles: Record<string, { value: unknown; source?: string }> } } };
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       expect(settings.keys.modelRoles.roles.default.value).toBe('prov/routed');
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       expect(settings.keys.modelRoles.roles.default.source).toBe('project');
-      expect(published.at(-1).t).toBe('omp.settings.updated');
+      expect(published.at(-1)?.type).toBe('omp.settings.updated');
     } finally {
       await disarm(env);
     }

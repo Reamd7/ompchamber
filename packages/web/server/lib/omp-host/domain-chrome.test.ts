@@ -10,6 +10,7 @@
 
 import { describe, expect, test } from 'bun:test';
 import { createDomainChrome, registerChromeDomainRoutes } from './domain-chrome.ts';
+import type { DomainChrome } from './domain-chrome.ts';
 import type { OmpEventEnvelope } from './events.ts';
 
 const DIR = '/repo';
@@ -30,7 +31,7 @@ const envelopeStub: OmpEventEnvelope = {
 const componentStub = { render: (): readonly string[] => [] };
 
 const setup = () => {
-  const published = [];
+  const published: unknown[] = [];
   const chrome = createDomainChrome({
     publishFor: (directory, payload) => published.push({ directory, payload }),
     now: (() => {
@@ -153,24 +154,27 @@ describe('createDomainChrome — bridge handlers (R-E2/R-E3)', () => {
 });
 
 describe('registerChromeDomainRoutes', () => {
-  const mount = (chrome, features) => {
-    const routes = new Map();
-    const route = (method, path, handler) => routes.set(`${method} ${path}`, handler);
-    registerChromeDomainRoutes(route, { chrome, features });
+  const mount = (chrome: DomainChrome | Partial<DomainChrome>, features?: Record<string, boolean>) => {
+    const routes = new Map<string, unknown>();
+    const route = (method: string, path: string, handler: (request: Request) => Response | Promise<Response>) => routes.set(`${method} ${path}`, handler);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    registerChromeDomainRoutes(route, { chrome: chrome as DomainChrome, features: features as Record<string, boolean> | undefined });
     return routes;
   };
 
   test('missing directory answers 400', async () => {
     const { chrome } = setup();
     const routes = mount(chrome, { 'extensionChrome.v1': true });
-    const response = await routes.get('GET /omp/chrome')(new Request('http://x/omp/chrome'));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (routes.get('GET /omp/chrome') as (request: Request) => Promise<Response>)(new Request('http://x/omp/chrome'));
     expect(response.status).toBe(400);
   });
 
   test('feature off answers 501 with the key in the error', async () => {
     const { chrome } = setup();
     const routes = mount(chrome, { 'extensionChrome.v1': false });
-    const response = await routes.get('GET /omp/chrome')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (routes.get('GET /omp/chrome') as (request: Request) => Promise<Response>)(
       new Request('http://x/omp/chrome?directory=%2Frepo'),
     );
     expect(response.status).toBe(501);
@@ -181,19 +185,23 @@ describe('registerChromeDomainRoutes', () => {
     const { chrome } = setup();
     chrome.setWidget(DIR, SESSION, 'zhipu', ['line'], 'aboveEditor');
     const routes = mount(chrome, { 'extensionChrome.v1': true });
-    const response = await routes.get('GET /omp/chrome')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (routes.get('GET /omp/chrome') as (request: Request) => Promise<Response>)(
       new Request(`http://x/omp/chrome?directory=${encodeURIComponent(DIR)}`),
     );
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.widgets).toHaveLength(1);
-    expect(body.widgets[0].key).toBe('zhipu');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((body as { widgets: unknown[] }).widgets).toHaveLength(1);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((body as { widgets: Array<{ key: string }> }).widgets)[0].key).toBe('zhipu');
   });
 
   test('unknown directory snapshots as empty (revision 0), not an error', async () => {
     const { chrome } = setup();
     const routes = mount(chrome, { 'extensionChrome.v1': true });
-    const response = await routes.get('GET /omp/chrome')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (routes.get('GET /omp/chrome') as (request: Request) => Promise<Response>)(
       new Request('http://x/omp/chrome?directory=%2Felsewhere'),
     );
     expect(response.status).toBe(200);

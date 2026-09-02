@@ -16,6 +16,9 @@ import { fileURLToPath } from 'node:url';
 // its test exercises, and registerEndpoints reads nothing beyond it. This is
 // the single test-double seam — no other cast bridges into the engine type.
 const asEngineDouble = <T,>(double: T): OmpHostEngine => double as OmpHostEngine;
+import type { RouteHandler } from './endpoints.ts';
+/** Partial route ctx used when tests invoke mounted handlers directly. */
+type RouteContextLite = { url?: URL; headers?: Headers; params?: Record<string, string> };
 
 const now = 1_700_000_000_000;
 
@@ -24,21 +27,21 @@ describe('RingEventBus', () => {
     const bus = new WireEventBus({ capacity: 8 });
     bus.emit('a', { x: 1 }, 'dir');
     bus.emit('b', { x: 2 }, 'dir');
-    const seen = [];
+    const seen: string[] = [];
     bus.subscribeSince(1, (entry) => seen.push(entry.envelope.type), { directory: 'dir' });
     expect(seen).toEqual(['b']);
   });
 
   test('volatile events reach live subscribers but never replay', () => {
     const bus = new RingEventBus({ capacity: 8 });
-    const seen = [];
+    const seen: string[] = [];
     bus.subscribeSince(0, (entry) => seen.push(entry.envelope.type));
     bus.emit('d1', {}, 'dir', { durable: true });
     bus.emit('v1', {}, 'dir', { durable: false });
     bus.emit('d2', {}, 'dir', { durable: true });
     // Live subscribers see volatile entries; the ring keeps only durable ones.
     expect(seen).toEqual(['d1', 'v1', 'd2']);
-    const replayed = [];
+    const replayed: string[] = [];
     bus.subscribeSince(0, (entry) => replayed.push(entry.envelope.type));
     expect(replayed).toEqual(['d1', 'd2']); // fresh subscriber: ring replay only, volatile never resurrects
     expect(bus.replay.map((entry) => entry.envelope.type)).toEqual(['d1', 'd2']);
@@ -65,7 +68,7 @@ describe('OmpEventBus', () => {
   test('directory scoping filters subscribers', () => {
     const bus = new OmpEventBus();
     bus.publish('omp.notice.raised', { level: 'info' }, { directory: 'a', durable: true });
-    const seen = [];
+    const seen: string[] = [];
     bus.subscribeSince(0, (entry) => seen.push(entry.envelope.directory), { directory: 'b' });
     expect(seen).toEqual([]);
   });
@@ -155,7 +158,7 @@ describe('divider projection (spec 05 §5.5)', () => {
   });
 });
 
-const pointerCleanup = [];
+const pointerCleanup: string[] = [];
 afterAll(() => {
   for (const dir of pointerCleanup) {
     try {
@@ -218,18 +221,18 @@ describe('defaultModelPointer (spec 01 §5.3/GAP-03)', () => {
 describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
   test('mounts every route group against a stub engine without throwing', async () => {
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
     const stubEngine = asEngineDouble({
       ompBus: new OmpEventBus(),
-      dialogs: { mount: (r) => { r('GET', '/omp/dialogs-stub', async () => undefined); } },
+      dialogs: { mount: (r: (m: string, p: string, h: () => Promise<undefined>) => void) => { r('GET', '/omp/dialogs-stub', async (): Promise<undefined> => undefined); } },
       modesDomain: {},
-      uriDomain: { mount: (r) => { r('GET', '/omp/uri-stub', async () => undefined); } },
-      settingsStoreReady: async () => null,
+      uriDomain: { mount: (r: (m: string, p: string, h: () => Promise<undefined>) => void) => { r('GET', '/omp/uri-stub', async (): Promise<undefined> => undefined); } },
+      settingsStoreReady: async (): Promise<null> => null,
       settingsStore: null,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
+      availableModels: (): [] => [],
     });
     expect(() => {
       const { sseHandler } = registerEndpoints(route, stubEngine, { version: 'test' });
@@ -256,22 +259,23 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     // PUT into a 500 settings-write-failed (TypeError swallowed by the
     // generic catch).
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
-    const calls = [];
-    const roles = {};
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
+    const calls: string[] = [];
+    const roles: Record<string, string | undefined> = {};
     const bootStub = {
-      setModelRole: (role, value) => { roles[role] = value; },
-      getModelRole: (role) => roles[role],
+      setModelRole: (role: string, value: string) => { roles[role] = value; },
+      // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+      getModelRole: (role: string) => roles[role] as string | undefined,
       flush: async () => {},
     };
     const storeStub = {
-      settingsFor: async () => ({ get: () => undefined, getCwd: () => '/stub' }),
+      settingsFor: async (): Promise<{ get: () => undefined; getCwd: () => string }> => ({ get: () => undefined, getCwd: () => '/stub' }),
       getRevision: () => 1,
       bumpRevision: () => 2,
-      chainWrites: async (_key, task) => task(),
-      invalidateDerived: async () => { calls.push('invalidateDerived'); },
-      disposeAll: async () => [],
+      chainWrites: async (_key: string, task: () => Promise<void>) => task(),
+      invalidateDerived: async (): Promise<void> => { calls.push('invalidateDerived'); },
+      disposeAll: async (): Promise<never[]> => [],
       boot: bootStub,
       bootDirectory: '/stub',
     };
@@ -280,14 +284,15 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
-      settingsStoreReady: async () => storeStub,
+      settingsStoreReady: async (): Promise<typeof storeStub | null> => storeStub,
       settingsStore: storeStub,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
+      availableModels: (): [] => [],
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
-    const put = routes.find((r) => r.method === 'PUT' && r.pattern === '/omp/settings').handler;
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const put = routes.find((r) => r.method === 'PUT' && r.pattern === '/omp/settings').handler as (request: Request) => Promise<Response>;
     const response = await put(new Request('http://host/omp/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -303,25 +308,26 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     // checks `=== true`), so every managed-runtime delete reported failure
     // even though the engine had already deleted the session.
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
-    const calls = [];
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
+    const calls: Array<{ sessionID: string; directory?: string }> = [];
     const stubEngine = asEngineDouble({
       ompBus: new OmpEventBus(),
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
-      settingsStoreReady: async () => null,
+      settingsStoreReady: async (): Promise<null> => null,
       settingsStore: null,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
-      deleteSession: async (args) => { calls.push(args); return null; },
+      availableModels: (): [] => [],
+      deleteSession: async (args: { sessionID: string; directory?: string }): Promise<null> => { calls.push(args); return null; },
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
     const deleteRoute = routes.find((r) => r.method === 'DELETE' && r.pattern === '/session/{sessionID}');
     const url = new URL('http://host/session/ses_1?directory=/repo');
-    const response = await deleteRoute.handler(new Request(url.toString()), {
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (deleteRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request(url.toString()), {
       url,
       headers: new Headers(),
       params: { sessionID: 'ses_1' },
@@ -339,20 +345,20 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     // and abortCurrentOperation silently swallowed the error — generation
     // could not be stopped on the embedded engine.
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
-    const abortCalls = [];
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
+    const abortCalls: Array<{ sessionID: string; directory?: string }> = [];
     const stubEngine = asEngineDouble({
       ompBus: new OmpEventBus(),
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
-      settingsStoreReady: async () => null,
+      settingsStoreReady: async (): Promise<null> => null,
       settingsStore: null,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
-      abort: async (args) => { abortCalls.push(args); return true; },
+      availableModels: (): [] => [],
+      abort: async (args: { sessionID: string; directory?: string }): Promise<boolean> => { abortCalls.push(args); return true; },
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
     const abortRoute = routes.find(
@@ -360,7 +366,8 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     );
     expect(abortRoute).toBeDefined();
     const url = new URL('http://host/session/ses_1/abort?directory=/repo');
-    const response = await abortRoute.handler(new Request(url.toString(), { method: 'POST' }), {
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (abortRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request(url.toString(), { method: 'POST' }), {
       url,
       headers: new Headers(),
       params: { sessionID: 'ses_1' },
@@ -376,24 +383,25 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     // addressed to a directory that owns neither transcript nor registry
     // entry answered 200 while no listing could ever observe the write.
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
-    const calls = [];
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
+    const calls: Array<{ sessionID: string; directory?: string; title?: string }> = [];
     const stubEngine = asEngineDouble({
       ompBus: new OmpEventBus(),
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
-      settingsStoreReady: async () => null,
+      settingsStoreReady: async (): Promise<null> => null,
       settingsStore: null,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
-      updateSession: async (args) => { calls.push(args); return null; },
+      availableModels: (): [] => [],
+      updateSession: async (args: { sessionID: string; directory?: string; title?: string }): Promise<null> => { calls.push(args); return null; },
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
     const patchRoute = routes.find((r) => r.method === 'PATCH' && r.pattern === '/session/{sessionID}');
-    const response = await patchRoute.handler(new Request('http://host/session/ses_1', {
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const response = await (patchRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request('http://host/session/ses_1', {
       method: 'PATCH',
       body: JSON.stringify({ directory: '/elsewhere', time: { archived: 123 } }),
     }), {
@@ -412,18 +420,18 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     // only the named directory's sessions. Answering with every directory's
     // sessions seeded foreign records into every directory child store.
     const { registerEndpoints } = await import('./endpoints.ts');
-    const routes = [];
-    const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+    const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
+    const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
     const stubEngine = asEngineDouble({
       ompBus: new OmpEventBus(),
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
-      settingsStoreReady: async () => null,
+      settingsStoreReady: async (): Promise<null> => null,
       settingsStore: null,
       customAgents: new Map(),
       ready: async () => {},
-      availableModels: () => [],
+      availableModels: (): [] => [],
       listAllSessions: async () => new Map([
         ['/repo', [{ id: 'ses_repo', directory: '/repo', time: { updated: 2 } }]],
         ['/other', [{ id: 'ses_other', directory: '/other', time: { updated: 1 } }]],
@@ -433,12 +441,16 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     const listRoute = routes.find((r) => r.method === 'GET' && r.pattern === '/experimental/session');
 
     const scopedUrl = new URL('http://host/experimental/session?directory=/repo');
-    const scoped = await listRoute.handler(new Request(scopedUrl.toString()), { url: scopedUrl, headers: new Headers(), params: {} });
-    expect((await scoped.json()).map((session) => session.id)).toEqual(['ses_repo']);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const scoped = await (listRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request(scopedUrl.toString()), { url: scopedUrl, headers: new Headers(), params: {} });
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((await scoped.json()) as Array<{ id: string }>).map((session) => session.id)).toEqual(['ses_repo']);
 
     const globalUrl = new URL('http://host/experimental/session');
-    const global = await listRoute.handler(new Request(globalUrl.toString()), { url: globalUrl, headers: new Headers(), params: {} });
-    expect((await global.json()).map((session) => session.id)).toEqual(['ses_repo', 'ses_other']);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const global = await (listRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request(globalUrl.toString()), { url: globalUrl, headers: new Headers(), params: {} });
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((await global.json()) as Array<{ id: string }>).map((session) => session.id)).toEqual(['ses_repo', 'ses_other']);
   });
 });
 

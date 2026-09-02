@@ -77,7 +77,7 @@ describe('buildTurnStateStamper', () => {
       { type: 'model_change', model: 'p/a', role: 'default', timestamp: now - 1 },
       { type: 'message', message, timestamp: now },
     ];
-    const wireIdFor = (candidate) => (candidate === message ? 'msg_override' : undefined);
+    const wireIdFor = (candidate: { role?: string }) => (candidate === message ? 'msg_override' : undefined);
     const turnStateFor = buildTurnStateStamper(entries, { wireIdFor });
     expect(turnStateFor(message)).toEqual({ model: 'p/a', thinkingLevel: null });
   });

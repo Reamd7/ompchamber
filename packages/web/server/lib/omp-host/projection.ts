@@ -17,6 +17,7 @@ import type {
   CompactionSummaryMessage,
   CustomMessage,
   HookMessage,
+  SessionEntry,
 } from '@oh-my-pi/pi-coding-agent';
 
 // ---------------------------------------------------------------------------
@@ -215,6 +216,12 @@ export interface WireMessageMetadata {
   warning?: string;
   fromId?: string;
   files?: Array<{ path?: string; lines?: number }>;
+  /** Divider attribution (05 §5.5): the model selector a model_change divider
+   * echoes; the mode value a mode_change divider carries. */
+  model?: string;
+  mode?: string;
+  role?: string;
+  fallback?: boolean;
 }
 
 /** Wire tool-part state (running/completed/error snapshot of one tool call). */
@@ -677,7 +684,7 @@ export const buildTurnStateStamper = (
       stateByWireId.set(key, { model, thinkingLevel });
     }
   }
-  return (message) => (message?.role === 'user' ? (stateByWireId.get(wireIdFor?.(message) ?? deterministicWireId(message)) ?? null) : null);
+  return (message: WireIdMessageInput | null | undefined) => (message?.role === 'user' ? (stateByWireId.get(wireIdFor?.(message) ?? deterministicWireId(message)) ?? null) : null);
 };
 
 /**
@@ -807,11 +814,27 @@ export const projectDeveloperMessage = (
  * session's init/restore bookkeeping, not user-visible switches — skipped.
  * Timestamps arrive as ISO strings (transcript persistence) or numeric ms.
  */
-export const projectTurnEventDivider = (entry, { sessionID }) => {
+/** Minimal divider-row contract: the fields the projectors read off a
+ * turn-event entry (SDK SessionEntry satisfies it structurally). */
+export interface DividerEntryInput {
+  type: string;
+  timestamp?: string | number;
+  model?: string;
+  role?: string;
+  resolvedModelIsFallback?: boolean;
+  thinkingLevel?: string;
+  mode?: string;
+}
+
+export const projectTurnEventDivider = (
+  entry: SessionEntry | DividerEntryInput,
+  { sessionID }: { sessionID: string },
+): ProjectedMessage | null => {
   if (!entry || typeof entry !== 'object') return null;
   // Transcript entries persist ISO string timestamps (getEntries Date.parses
   // them); tolerate numeric ms too. Wire time.created is numeric ms.
-  const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : typeof entry.timestamp === 'string' && entry.timestamp.length > 0 ? Date.parse(entry.timestamp) : Number.NaN;
+  const rawTimestamp: unknown = entry.timestamp;
+  const timestamp = typeof rawTimestamp === 'number' ? rawTimestamp : typeof rawTimestamp === 'string' && rawTimestamp.length > 0 ? Date.parse(rawTimestamp) : Number.NaN;
   if (!Number.isFinite(timestamp)) return null;
   if (entry.type === 'model_change') {
     if (typeof entry.model !== 'string' || entry.model.length === 0) return null;
@@ -827,6 +850,7 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
         sessionID,
         role: 'assistant',
         time: { created: timestamp, completed: timestamp },
+        agent: 'build',
         model: { providerID: '', modelID: '' },
         metadata: {
           ompRole: 'modelChange',
@@ -857,6 +881,7 @@ export const projectTurnEventDivider = (entry, { sessionID }) => {
         sessionID,
         role: 'assistant',
         time: { created: timestamp, completed: timestamp },
+        agent: 'build',
         model: { providerID: '', modelID: '' },
         metadata: { ompRole: 'modeChange', mode: entry.mode }
       },

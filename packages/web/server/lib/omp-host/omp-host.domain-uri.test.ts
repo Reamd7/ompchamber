@@ -41,8 +41,8 @@ const DIRECTORY = 'C:/proj/alpha';
 // ---------------------------------------------------------------------------
 
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-domain-uri-'));
-const artifactsOf = (sessionId) => path.join(base, sessionId);
-const writeLocal = (sessionId, file, content) => {
+const artifactsOf = (sessionId: string) => path.join(base, sessionId);
+const writeLocal = (sessionId: string, file: string, content: string) => {
   const target = path.join(artifactsOf(sessionId), 'local', file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
@@ -52,7 +52,7 @@ writeLocal('ses_A', 'scratch.md', 'alpha session secret');
 writeLocal('ses_A', 'notes/deep.md', 'nested note');
 writeLocal('ses_B', 'scratch.md', 'beta session secret');
 
-const localOptionsFor = (sessionID, directory) => {
+const localOptionsFor = (sessionID: string, directory: string) => {
   if (!fs.existsSync(artifactsOf(sessionID))) return null;
   return createLocalProtocolOptions(sessionID, directory, artifactsOf(sessionID));
 };
@@ -376,7 +376,7 @@ describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
 
 describe('buildEntryTreeSnapshot (spec 04 §5.4.1)', () => {
   const manager = {
-    getTree: () => [
+    getTree: (): FixtureTreeNode[] => [
       {
         entry: { type: 'message', id: 'e_1', parentId: null, timestamp: 't1', message: { role: 'user', content: 'explore the repo' } },
         label: '探索阶段',
@@ -467,7 +467,7 @@ describe('navigate/label contracts (spec 04 §5.4.2/§5.4.3, engine hooks)', () 
 // §5.5 agent runs aggregation + parked/historical split
 // ---------------------------------------------------------------------------
 
-const ref = (overrides = {}) => ({
+const ref = (overrides: Partial<import('./domain-uri.ts').AgentRefLike> = {}) => ({
   id: 'Anna',
   displayName: 'Anna',
   kind: 'sub',
@@ -482,7 +482,7 @@ const ref = (overrides = {}) => ({
   ...overrides,
 });
 
-const makeRegistry = (...refs) => ({ list: () => refs });
+const makeRegistry = (...refs: import('./domain-uri.ts').AgentRefLike[]) => ({ list: () => refs });
 
 describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
   test('row carries the two-part key and NO absolute paths', () => {
@@ -502,10 +502,11 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
   /** Manual timer capture: coalescing is asserted deterministically, never
    * via wall-clock sleeps (the real timer path is exercised by the domain
    * integration test). */
+  type ManualTimerState = { fn: (() => void) | null; ms: number | null; cleared: number };
   const manualTimers = () => {
-    const state = { fn: null, ms: null, cleared: 0 };
+    const state: ManualTimerState = { fn: null, ms: null, cleared: 0 };
     return {
-      setTimeout: (fn, ms) => {
+      setTimeout: (fn: () => void, ms?: number) => {
         state.fn = fn;
         state.ms = ms;
         return 1;
@@ -536,7 +537,7 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
   });
 
   test('coalesces bursts into one omp.agents.updated per directory with monotonic revision', () => {
-    const events = [];
+    const events: Array<{ type: string; payload?: { revision?: number; agentRuns?: Array<{ key?: string; status?: string }> }; scope?: { directory?: string; durable?: boolean } }> = [];
     let registry = makeRegistry(ref());
     const timers = manualTimers();
     const aggregator = new AgentRunsAggregator({
@@ -554,15 +555,19 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     expect(events.length).toBe(1);
     expect(events[0].type).toBe(OMP_AGENTS_UPDATED);
     expect(events[0].scope).toEqual({ directory: DIRECTORY, durable: true });
-    expect(events[0].payload.revision).toBe(1);
-    expect(events[0].payload.agentRuns.map((r) => r.key)).toEqual(['ses_A::Anna']);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((events[0].payload as { revision?: number }).revision).toBe(1);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((events[0].payload as { agentRuns?: Array<{ key: string }> }).agentRuns ?? []).map((r) => r.key)).toEqual(['ses_A::Anna']);
 
     registry = makeRegistry(ref({ status: 'idle', activity: undefined }));
     aggregator.refresh();
     aggregator.flush(); // engine-style immediate flush
     expect(events.length).toBe(2);
-    expect(events[1].payload.revision).toBe(2);
-    expect(events[1].payload.agentRuns[0].status).toBe('idle');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((events[1].payload as { revision?: number }).revision).toBe(2);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((((events[1].payload as { agentRuns?: Array<{ status: string }> }).agentRuns ?? [])[0]).status).toBe('idle');
     aggregator.dispose();
     expect(timers.state.cleared).toBeGreaterThan(0);
   });
@@ -586,7 +591,7 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
   });
 
   test('directory filter + emptied-directory publishes a full-replace empty snapshot', () => {
-    const events = [];
+    const events: Array<{ type: string; payload?: { revision?: number; agentRuns?: Array<{ key: string }> }; scope?: { directory?: string } }> = [];
     let snapshot = () => [{ sessionID: 'ses_A', directory: DIRECTORY, registry: makeRegistry(ref()) }];
     const aggregator = new AgentRunsAggregator({
       snapshot: () => snapshot(),
@@ -603,8 +608,10 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     aggregator.refresh();
     aggregator.flush();
     const last = events[events.length - 1];
-    expect(last.scope.directory).toBe(DIRECTORY);
-    expect(last.payload.agentRuns).toEqual([]);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((last.scope as { directory?: string }).directory).toBe(DIRECTORY);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect((last.payload as { agentRuns?: unknown[] }).agentRuns).toEqual([]);
     aggregator.dispose();
   });
 
@@ -642,7 +649,7 @@ interface ActionResponseBody {
 
 
 describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () => {
-  const setup = (rows) => {
+  const setup = (rows: Array<Partial<import('./domain-uri.ts').AgentRefLike>>) => {
     const aggregator = new AgentRunsAggregator({
       snapshot: () => [
         {
@@ -664,7 +671,7 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
     };
     return { aggregator, descriptors, actions, calls };
   };
-  const act = (ctx, agentId, body) =>
+  const act = (ctx: { aggregator: import('./domain-uri.ts').AgentRunsAggregator; descriptors: import('./domain-uri.ts').ParkedAgentDescriptors; actions: { revive: () => Promise<void>; kill: () => Promise<void>; chat: () => Promise<void> } }, agentId: string, body: { kind: string; text?: string; messageId?: string; mode?: string }) =>
     handleAgentRunAction({
       aggregator: ctx.aggregator,
       descriptors: ctx.descriptors,
@@ -680,11 +687,11 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
 
   test('historical rows refuse revive/kill/chat with 409 {historical, revivable:false}', async () => {
     const ctx = setup([{ id: 'Ghost', status: 'parked' }]);
-    ctx.aggregator['#rows']; // no-op touch
+    void ctx; // no-op touch (private #rows access dropped under noImplicitAny)
     // force historical status via disk-scan style row injection
     const historicalCtx = {
       aggregator: {
-        row: (sessionID, agentId) =>
+        row: (sessionID: string, agentId: string) =>
           projectAgentRun({
             sessionID,
             directory: DIRECTORY,
@@ -823,41 +830,54 @@ describe('jobs endpoint (spec 04 §5.6, R12)', () => {
 // domain assembly + mount
 // ---------------------------------------------------------------------------
 
+/** Partial route ctx the direct handler invocations below pass. */
+type UriCtxLite = { params?: Record<string, string>; url?: URL; headers?: Headers };
+
+/** Minimal Request stand-in the uri handlers read (url + json body). */
+type FakeUriRequest = { url: string; json: () => Promise<UriRequestBody | undefined> };
+
+const fakeUriRequest = (url: string, body?: UriRequestBody): FakeUriRequest => ({ url, json: async () => body });
+
+/** Session-tree fixture row (entry + label + children), matching buildSessionTree input. */
+type FixtureTreeNode = { entry: { type: string; id: string; parentId: string | null; timestamp: string; message?: unknown; summary?: string; targetId?: string; label?: string }; label?: string; children: FixtureTreeNode[] };
+
 describe('createUriDomain + mount (integration surface)', () => {
-  const registerRoutes = (domain) => {
-    const routes = new Map();
-    domain.mount((method, pattern, handler) => routes.set(`${method} ${pattern}`, handler));
+  const registerRoutes = (domain: { mount: (route: (m: string, p: string, h: import('./domain-uri.ts').UriRouteHandler) => void) => void }) => {
+    const routes = new Map<string, import('./domain-uri.ts').UriRouteHandler>();
+    domain.mount((method: string, pattern: string, handler: import('./domain-uri.ts').UriRouteHandler) => routes.set(`${method} ${pattern}`, handler));
     return routes;
   };
-  const fakeRequest = (url: string, body?: UriRequestBody) => ({
-    url,
-    json: async () => body,
-  });
-  const ctxFor = (url, params = {}) => ({ params, url: new URL(url), headers: new Headers() });
+  const fakeRequest = fakeUriRequest;
+  const ctxFor = (url: string, params: Record<string, string> = {}) => ({ params, url: new URL(url), headers: new Headers() });
 
   test('features off → explicit 501s per key (fail loudly, R2)', async () => {
     const domain = createUriDomain({ tokens, localOptionsFor, features: () => ({ 'uri.v1': false, 'tree.v1': false, 'agentRuns.v1': false, 'jobs.v1': false }) });
     const routes = registerRoutes(domain);
-    const resolve = await routes.get('POST /omp/uri/resolve')(fakeRequest('http://x/omp/uri/resolve', { scheme: 'local', ref: 'scratch.md', sessionID: 'ses_A', directory: DIRECTORY }));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const resolve = await (routes.get('POST /omp/uri/resolve') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(fakeRequest('http://x/omp/uri/resolve', { scheme: 'local', ref: 'scratch.md', sessionID: 'ses_A', directory: DIRECTORY }));
     expect(resolve.status).toBe(501);
     expect(await resolve.json()).toEqual({ error: 'uri.v1-unavailable' });
-    const tree = await routes.get('GET /omp/sessions/{sessionID}/tree')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const tree = await (routes.get('GET /omp/sessions/{sessionID}/tree') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest(`http://x/omp/sessions/ses_1/tree?directory=${encodeURIComponent(DIRECTORY)}`),
       ctxFor(`http://x/omp/sessions/ses_1/tree?directory=${encodeURIComponent(DIRECTORY)}`, { sessionID: 'ses_1' }),
     );
     expect(tree.status).toBe(501);
     expect(await tree.json()).toEqual({ error: 'tree.v1-unavailable' });
-    const runs = await routes.get('GET /omp/agent-runs')(fakeRequest('http://x/omp/agent-runs?directory=C:/p'), ctxFor('http://x/omp/agent-runs?directory=C:/p'));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const runs = await (routes.get('GET /omp/agent-runs') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(fakeRequest('http://x/omp/agent-runs?directory=C:/p'), ctxFor('http://x/omp/agent-runs?directory=C:/p'));
     expect(runs.status).toBe(501);
     // jobs is ALWAYS mounted — 501 is its steady state, not a gate (R12)
-    const jobs = await routes.get('GET /omp/jobs')(fakeRequest('http://x/omp/jobs'), ctxFor('http://x/omp/jobs'));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const jobs = await (routes.get('GET /omp/jobs') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(fakeRequest('http://x/omp/jobs'), ctxFor('http://x/omp/jobs'));
     expect(jobs.status).toBe(501);
-    expect((await jobs.json()).error).toBe('jobs-unavailable');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((await jobs.json()) as { error: string }).error).toBe('jobs-unavailable');
     domain.dispose();
   });
 
   test('features on → full route flow against real SDK router + registry data', async () => {
-    const published = [];
+    const published: Array<{ type: string; payload?: import('./domain-uri.ts').AgentsUpdatedPayload | { directory?: string }; scope?: import('./domain-uri.ts').AgentRunsPublishScope | { directory?: string } }> = [];
     const domain = createUriDomain({
       features: () => ({ ...ompFeatures(), 'uri.v1': true, 'tree.v1': true, 'agentRuns.v1': true }),
       tokens,
@@ -866,68 +886,83 @@ describe('createUriDomain + mount (integration surface)', () => {
       agentsSnapshot: () => [
         { sessionID: 'ses_A', directory: DIRECTORY, registry: makeRegistry(ref()) },
       ],
-      publish: (type, payload, scope) => published.push({ type, payload, scope }),
+      publish: (type: string, payload: import('./domain-uri.ts').AgentsUpdatedPayload, scope: import('./domain-uri.ts').AgentRunsPublishScope) => {
+        // SAFETY: harness publish rows keep the payload/scope pairs verbatim.
+        published.push({ type, payload, scope });
+      },
       liveSessionIds: () => ['ses_A'],
     });
     const routes = registerRoutes(domain);
     domain.aggregator.refresh();
     await new Promise((resolve) => setTimeout(resolve, 300)); // > default 250ms coalesce
 
-    const resolve = await routes.get('POST /omp/uri/resolve')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const resolve = await (routes.get('POST /omp/uri/resolve') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest('http://x/omp/uri/resolve', { scheme: 'local', ref: 'scratch.md', sessionID: 'ses_A', directory: DIRECTORY }),
     );
     expect(resolve.status).toBe(200);
-    const resource = await resolve.json();
+    // SAFETY: resolve body is the UriResource wire record.
+    const resource = await resolve.json() as { content: string; token: { id: string } };
     expect(resource.content).toBe('alpha session secret');
     expect('sourcePath' in resource).toBe(false);
 
-    const opened = await routes.get('POST /omp/uri/open')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const opened = await (routes.get('POST /omp/uri/open') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest('http://x/omp/uri/open', { token: resource.token.id, directory: DIRECTORY }),
       ctxFor('http://x/omp/uri/open'),
     );
     expect(opened.status).toBe(200);
 
     const treeUrl = `http://x/omp/sessions/ses_2/tree?directory=${encodeURIComponent(DIRECTORY)}`;
-    const tree = await routes.get('GET /omp/sessions/{sessionID}/tree')(fakeRequest(treeUrl), ctxFor(treeUrl, { sessionID: 'ses_2' }));
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const tree = await (routes.get('GET /omp/sessions/{sessionID}/tree') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(fakeRequest(treeUrl), ctxFor(treeUrl, { sessionID: 'ses_2' }));
     expect(tree.status).toBe(200);
-    const treeBody = await tree.json();
+    // SAFETY: tree body is the session-tree snapshot record.
+    const treeBody = await tree.json() as { leafId: string; nodes: Array<{ id: string }> };
     expect(treeBody.leafId).toBe('ses_2');
     expect(treeBody.nodes.map((n) => n.id).sort()).toEqual(['ses_1', 'ses_2', 'ses_3']);
-    const missingTree = await routes.get('GET /omp/sessions/{sessionID}/tree')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const missingTree = await (routes.get('GET /omp/sessions/{sessionID}/tree') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest(treeUrl),
       ctxFor(treeUrl, { sessionID: 'nope' }),
     );
     expect(missingTree.status).toBe(404);
 
-    const runs = await routes.get('GET /omp/agent-runs')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const runs = await (routes.get('GET /omp/agent-runs') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest(`http://x/omp/agent-runs?directory=${encodeURIComponent(DIRECTORY)}`),
       ctxFor(`http://x/omp/agent-runs?directory=${encodeURIComponent(DIRECTORY)}`),
     );
-    const runsBody = await runs.json();
+    // SAFETY: agent-runs body is the aggregator snapshot.
+    const runsBody = await runs.json() as { agentRuns: Array<{ key: string }>; revision: number };
     expect(runsBody.agentRuns.map((r) => r.key)).toEqual(['ses_A::Anna']);
     expect(runsBody.revision).toBeGreaterThan(0);
 
-    const action = await routes.get('POST /omp/agent-runs/{sessionID}/{agentId}')(
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const action = await (routes.get('POST /omp/agent-runs/{sessionID}/{agentId}') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
       fakeRequest('http://x/omp/agent-runs/ses_A/Anna', { kind: 'kill', directory: DIRECTORY }),
       ctxFor('http://x/omp/agent-runs/ses_A/Anna', { sessionID: 'ses_A', agentId: 'Anna' }),
     );
     expect(action.status).toBe(500);
-    expect((await action.json()).error).toBe('hook-unavailable');
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(((await action.json()) as { error: string }).error).toBe('hook-unavailable');
 
-    expect(published.some((e) => e.type === OMP_AGENTS_UPDATED && e.scope.directory === DIRECTORY)).toBe(true);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    expect(published.some((e) => e.type === OMP_AGENTS_UPDATED && ((e.scope as { directory?: string }).directory === DIRECTORY))).toBe(true);
     domain.dispose();
   });
 });
 
 
 describe('artifacts browse (spec 04 — host-level read-only local:// listing)', () => {
-  const registerRoutes = (domain) => {
-    const routes = new Map();
-    domain.mount((method, pattern, handler) => routes.set(`${method} ${pattern}`, handler));
+  const registerRoutes = (domain: { mount: (route: (m: string, p: string, h: import('./domain-uri.ts').UriRouteHandler) => void) => void }) => {
+    const routes = new Map<string, import('./domain-uri.ts').UriRouteHandler>();
+    domain.mount((method: string, pattern: string, handler: import('./domain-uri.ts').UriRouteHandler) => routes.set(`${method} ${pattern}`, handler));
     return routes;
   };
-  const ctxFor = (url, params = {}) => ({ params, url: new URL(url), headers: new Headers() });
+  const ctxFor = (url: string, params: Record<string, string> = {}) => ({ params, url: new URL(url), headers: new Headers() });
 
+  type LocalFilesListing = { files: Array<{ ref: string; size: number; modifiedAt: number }>; truncated: boolean };
   const localFilesOf = {
     ses_A: {
       files: [
@@ -937,9 +972,12 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       truncated: false,
     },
     // Session with no local:// root yet — authoritative empty, still indexed.
-    ses_B: { files: [], truncated: false },
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    ses_B: { files: [] as Array<{ ref: string; size: number; modifiedAt: number }>, truncated: false },
   };
-  const localFiles = async (sessionID) => localFilesOf[sessionID] ?? null;
+  // SAFETY: the fixture declares exactly two session rows; unknown ids read null.
+  const localFiles = async (sessionID: string): Promise<LocalFilesListing | null> =>
+    sessionID === 'ses_A' ? localFilesOf.ses_A : sessionID === 'ses_B' ? localFilesOf.ses_B : null;
   const sessionTreeData = async () => [
     { id: 'ses_A', title: 'Alpha', time: { created: 1, updated: 10 } },
     { id: 'ses_B', title: '', time: { created: 2, updated: 20 } },
@@ -1012,8 +1050,9 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       sessionTreeData,
     });
     const routes = registerRoutes(off);
-    const blocked = await routes.get('GET /omp/artifacts')(
-      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}` },
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const blocked = await (routes.get('GET /omp/artifacts') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
+      fakeUriRequest(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}`),
       ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}`),
     );
     expect(blocked.status).toBe(501);
@@ -1024,8 +1063,9 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       features: () => ({ ...ompFeatures(), artifacts: true }),
     });
     const noHookRoutes = registerRoutes(noHook);
-    const hookless = await noHookRoutes.get('GET /omp/artifacts')(
-      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A` },
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const hookless = await (noHookRoutes.get('GET /omp/artifacts') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
+      fakeUriRequest(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
       ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
     );
     expect(hookless.status).toBe(500);
@@ -1038,12 +1078,14 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
       sessionTreeData,
     });
     const onRoutes = registerRoutes(on);
-    const ok = await onRoutes.get('GET /omp/artifacts')(
-      { url: `http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A` },
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const ok = await (onRoutes.get('GET /omp/artifacts') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
+      fakeUriRequest(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
       ctxFor(`http://x/omp/artifacts?directory=${encodeURIComponent(DIRECTORY)}&sessionID=ses_A`),
     );
     expect(ok.status).toBe(200);
-    expect((await ok.json()).files).toHaveLength(2);
+    // SAFETY: artifacts body is the listing record.
+    expect(((await ok.json()) as { files: unknown[] }).files).toHaveLength(2);
     on.dispose();
   });
 });
