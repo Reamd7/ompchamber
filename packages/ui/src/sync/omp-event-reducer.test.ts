@@ -286,7 +286,7 @@ describe('applyOmpEvent — dialogs (spec 03 §5.6.3)', () => {
           ask: {
             questions: [{
               id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B', description: 'second' }],
-              multi: true, recommended: 'A',
+              multi: true, recommended: 0,
             }],
             timeoutMs: 0,
           },
@@ -301,7 +301,7 @@ describe('applyOmpEvent — dialogs (spec 03 §5.6.3)', () => {
 
     expect(effect.dialog.ask.questions[0]).toEqual({
       id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B', description: 'second' }],
-      multi: true, recommended: 'A',
+      multi: true, recommended: 0,
     });
   });
 });

@@ -1776,7 +1776,9 @@ export interface OmpAskQuestion {
   header?: string;
   options: OmpAskOption[];
   multi?: boolean;
-  recommended?: string;
+  /** 0-indexed option index (SDK `ExtensionAskDialogQuestion`; the omp-host
+   * bridge passes it through verbatim, so the wire carries a number). */
+  recommended?: number;
 }
 
 export interface OmpAskDialogPayload {
@@ -1842,7 +1844,7 @@ const AskPayloadSchema = z.object({
       preview: z.string().optional(),
     })),
     multi: z.boolean().optional(),
-    recommended: z.string().optional(),
+    recommended: z.number().optional(),
   })),
   timeoutMs: z.number(),
 });

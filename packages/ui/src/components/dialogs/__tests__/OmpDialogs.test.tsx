@@ -81,7 +81,7 @@ describe('OmpAskDialogModal — render contract (spec 03 §5.4.1)', () => {
           { label: 'SQLite' },
         ],
         multi: true,
-        recommended: 'Postgres',
+        recommended: 0,
       }],
       timeoutMs: 0,
     },

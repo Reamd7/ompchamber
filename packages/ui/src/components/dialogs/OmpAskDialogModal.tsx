@@ -175,7 +175,7 @@ export const OmpAskDialogModal: React.FC<OmpAskDialogModalProps> = ({ directory,
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{activeQuestion.question}</p>
 
           <div className="flex flex-col gap-1.5" role={activeQuestion.multi === true ? 'group' : 'radiogroup'}>
-            {activeQuestion.options.map((option) => {
+            {activeQuestion.options.map((option, optionIndex) => {
               const checked = !draftOf(activeIndex).customMode && draftOf(activeIndex).selectedOptions.includes(option.label);
               return (
                 <button
@@ -199,7 +199,7 @@ export const OmpAskDialogModal: React.FC<OmpAskDialogModalProps> = ({ directory,
                   <span className="flex min-w-0 flex-col gap-0.5">
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm text-foreground">{option.label}</span>
-                      {activeQuestion.recommended === option.label ? (
+                      {activeQuestion.recommended === optionIndex ? (
                         <span className="rounded border border-border/40 px-1 py-px typography-meta text-muted-foreground">
                           {t('dialogs.omp.ask.recommended')}
                         </span>
