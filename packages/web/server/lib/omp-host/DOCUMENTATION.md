@@ -139,6 +139,17 @@ sync engine, and web server call; everything else answers 404.
 - Failure honesty: unimplemented OpenCode features return explicit 501s
   (session sharing, provider OAuth via API, MCP OAuth bridging, session
   shell), not empty successes.
+- Stop is bounded: `engine.abort` waits up to 10s (constructor-injectable) for
+  the pi teardown, then force-disposes the bricked session, drops it from the
+  live map, and emits `session.idle` under the session's own directory so
+  every client settles; the next prompt rebuilds the live session from the
+  persisted transcript. pi caps its teardown drains on dispose but not on
+  abort, so one signal-blind tool call would otherwise park the stop request
+  forever. Stop is also authoritative over the engine-level awaiting-async
+  limbo: a settled abort with nothing streaming clears `awaitingAsyncSince`
+  (an `agent_end` `isTerminal=false` whose resume never came) and emits
+  `session.idle` the same way; a genuine async resume re-raises busy via
+  `agent_start`.
 - Every emitted event carries the session's directory so `/event?directory=`
   scoping and the web server's hub routing stay correct.
 - Message history paging follows the OpenCode cursor contract:
