@@ -45,7 +45,7 @@ import {
   ModelsConfigFile,
   validateProviderConfiguration,
 } from '@oh-my-pi/pi-coding-agent/config/models-config';
-import { featureUnavailable, ompFeatures } from './omp-parity.ts';
+import { errorText, errorCode, featureUnavailable, ompFeatures } from './omp-parity.ts';
 import { YAMLMap, YAMLSeq, Scalar, isMap, isNode, isSeq, parseDocument, Document, type Node } from 'yaml';
 
 /** What `Response.json` itself accepts — this helper only forwards to it. */
@@ -236,7 +236,7 @@ const readDocument = (modelsPath: string) => {
   try {
     raw = fs.readFileSync(modelsPath, 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT') {
+    if (errorCode(error) === 'ENOENT') {
       return { doc: new Document(), existed: false };
     }
     throw error;
@@ -805,7 +805,7 @@ export const putOmpProvider = async (input: PutOmpProviderInput, options: OmpPro
       models: mergedEntry.models ?? [],
     }, 'models-config');
   } catch (error) {
-    return { status: 400, body: { error: 'validation', message: error?.message ?? String(error) } };
+    return { status: 400, body: { error: 'validation', message: errorText(error) } };
   }
 
   // ── write (one-time backup anchor, atomic replace) ──
@@ -938,7 +938,7 @@ export const fetchOmpProviderModels = async (input: FetchOmpProviderModelsInput,
       signal: AbortSignal.timeout(15000),
     });
   } catch (error) {
-    return { status: 502, body: { error: 'fetch-failed', message: `request to ${url} failed: ${error?.message ?? error}` } };
+    return { status: 502, body: { error: 'fetch-failed', message: `request to ${url} failed: ${errorText(error)}` } };
   }
   if (!response.ok) {
     return { status: 502, body: { error: 'fetch-failed', message: `${url} answered ${response.status}` } };

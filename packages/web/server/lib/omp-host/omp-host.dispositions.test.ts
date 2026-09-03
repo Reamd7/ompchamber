@@ -81,7 +81,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     // Delegated (see omp-host.engine.test.ts): bun's mock.module
     // interception covers file-URL imports too, so same-process suites
     // probe for the real isolated loader instead of re-importing sources.
-    static loadIsolated = realSdk.Settings.loadIsolated.bind(realSdk.Settings);
+    static loadIsolated: typeof realSdk.Settings.loadIsolated = realSdk.Settings.loadIsolated.bind(realSdk.Settings);
   },
   VERSION: 'test',
   discoverAuthStorage: () => ({}),

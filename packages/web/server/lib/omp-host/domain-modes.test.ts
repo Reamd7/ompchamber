@@ -191,15 +191,16 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
       } else {
         tracker.enterMode(active, {});
       }
-      let caught = null;
+      let caught: import('./domain-modes.ts').ModeDomainError | null = null;
       try {
         tracker.enterMode(entering, entering === 'vibe' ? { previousTools: [] } : {});
       } catch (error) {
-        caught = error;
+        // SAFETY: catch value re-typed as the domain error the route threw.
+        caught = error as import('./domain-modes.ts').ModeDomainError;
       }
       expect(caught, `${entering} into ${active} must conflict`).toBeInstanceOf(ModeDomainError);
-      expect(caught.status).toBe(409);
-      expect(caught.body).toEqual({
+      expect(caught?.status).toBe(409);
+      expect(caught?.body).toEqual({
         error: 'mode-conflict',
         conflict,
         message: `Exit ${conflict} mode first.`,
@@ -506,24 +507,26 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
   test('duplicate create and unknown-name delete throw the documented domain errors', async () => {
     const { handlers } = definitionHarness();
     const body = { definition: { name: 'scout', description: 'shadow', systemPrompt: 'p' } };
-    let caught = null;
+    let caught: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(post('http://x', body), ctxForName(undefined, PROJ_DIR));
     } catch (error) {
-      caught = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      caught = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(caught).toBeInstanceOf(ModeDomainError);
-    expect(caught.status).toBe(409);
-    expect(caught.body.error).toBe('agent-definition-exists');
+    expect(caught?.status).toBe(409);
+    expect(caught?.body?.error).toBe('agent-definition-exists');
 
-    let missing = null;
+    let missing: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.remove(dummyRequest(), ctxForName('nope', PROJ_DIR));
     } catch (error) {
-      missing = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      missing = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(missing?.status).toBe(404);
-    expect(missing?.body.error).toBe('not-found');
+    expect(missing?.body?.error).toBe('not-found');
   });
 
   test('bundled definitions are read-only (update and delete → 409 bundled-read-only)', async () => {
@@ -535,11 +538,12 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
       ),
       () => handlers.remove(dummyRequest(), ctxForName('scout', PROJ_DIR)),
     ]) {
-      let caught = null;
+      let caught: import('./domain-modes.ts').ModeDomainError | null = null;
       try {
         await run();
       } catch (error) {
-        caught = error;
+        // SAFETY: catch value re-typed as the domain error the route threw.
+        caught = error as import('./domain-modes.ts').ModeDomainError;
       }
       expect(caught?.status).toBe(409);
       expect(caught?.body.error).toBe('bundled-read-only');
@@ -548,72 +552,77 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
 
   test('tools are validated against the allowlist (unknown-tools 400)', async () => {
     const { handlers } = definitionHarness();
-    let caught = null;
+    let caught: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(
         post('http://x', { definition: { name: 'a1', description: 'd', systemPrompt: 'p', tools: ['read', 'nonsense'] } }),
         ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
-      caught = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      caught = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(caught?.status).toBe(400);
-    expect(caught.body).toEqual({ error: 'unknown-tools', tools: ['nonsense'] });
+    expect(caught?.body).toEqual({ error: 'unknown-tools', tools: ['nonsense'] });
   });
 
   test('thinkingLevel is validated against the SDK selector set (invalid-thinking-level 400)', async () => {
     const { handlers } = definitionHarness();
-    let caught = null;
+    let caught: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(
         post('http://x', { definition: { name: 'a2', description: 'd', systemPrompt: 'p', thinkingLevel: 'ultra' } }),
         ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
-      caught = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      caught = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(caught?.status).toBe(400);
-    expect(caught.body.error).toBe('invalid-thinking-level');
+    expect(caught?.body?.error).toBe('invalid-thinking-level');
   });
 
   test('description + systemPrompt are required (400 invalid-description / invalid-prompt)', async () => {
     const { handlers } = definitionHarness();
-    let noDescription = null;
+    let noDescription: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(
         post('http://x', { definition: { name: 'a3', systemPrompt: 'p' } }),
         ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
-      noDescription = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      noDescription = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(noDescription?.body.error).toBe('invalid-description');
 
-    let noPrompt = null;
+    let noPrompt: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(
         post('http://x', { definition: { name: 'a4', description: 'd' } }),
         ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
-      noPrompt = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      noPrompt = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(noPrompt?.body.error).toBe('invalid-prompt');
   });
 
   test('project scope is gated behind settingsProjectScopes (409 until lit, R2-M4)', async () => {
     const gatedOff = definitionHarness();
-    let caught = null;
+    let caught: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await gatedOff.handlers.create(
         post('http://x', { scope: 'project', definition: { name: 'a5', description: 'd', systemPrompt: 'p' } }),
         ctxForName(undefined, PROJ_DIR),
       );
     } catch (error) {
-      caught = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      caught = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(caught?.status).toBe(409);
-    expect(caught.body.error).toBe('project-scope-unavailable');
+    expect(caught?.body?.error).toBe('project-scope-unavailable');
 
     const gatedOn = definitionHarness({ settingsProjectScopes: true });
     const created = await gatedOn.handlers.create(
@@ -677,20 +686,22 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
     expect(revealed.status).toBe(200);
     expect(revealCalls).toEqual([path.join(userAgentsDir, 'revealable.md')]);
 
-    let bundled = null;
+    let bundled: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.reveal(dummyRequest(), ctxForName('scout', PROJ_DIR));
     } catch (error) {
-      bundled = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      bundled = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(bundled?.status).toBe(409);
     expect(bundled?.body.error).toBe('bundled-read-only');
 
-    let missing = null;
+    let missing: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.reveal(dummyRequest(), ctxForName('ghost', PROJ_DIR));
     } catch (error) {
-      missing = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      missing = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(missing?.status).toBe(404);
   });
@@ -806,7 +817,7 @@ describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirr
 
 /** PersonaHandlers as invoked below: `list()` passes no request (route context is optional). */
 type LoosePersonaHandlers = {
-  [K in keyof PersonaHandlers]: (request?: Request, ctx?: ModesRouteContext) => Response | Promise<Response>;
+  [K in keyof PersonaHandlers]: (request: Request, ctx?: ModesRouteContext) => Response | Promise<Response>;
 };
 
 /** personaHandlers harness product: the sidecar store plus the loose route handlers. */
@@ -824,7 +835,7 @@ const personaHandlers = (): PersonaHarness => {
 describe('personas (spec 02 §5.2a)', () => {
   test('default none: empty list; CRUD round-trip', async () => {
     const { handlers } = personaHandlers();
-    expect(await (await handlers.list()).json()).toEqual({ personas: [] });
+    expect(await (await handlers.list(dummyRequest())).json()).toEqual({ personas: [] });
 
     const created = await handlers.create(
       post('http://x/omp/personas', { persona: { name: 'grumpy', description: 'd', systemPrompt: 'Be grumpy.', tools: ['read'] } }),
@@ -844,25 +855,27 @@ describe('personas (spec 02 §5.2a)', () => {
     );
     expect(await updated.json()).toMatchObject({ systemPrompt: 'Be cheerful.' });
 
-    let dup = null;
+    let dup: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(post('http://x', { persona: { name: 'grumpy' } }), ctxFor('http://x'));
     } catch (error) {
-      dup = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      dup = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(dup?.status).toBe(409);
 
     expect((await handlers.remove(dummyRequest(), { params: { name: 'grumpy' } })).status).toBe(204);
-    expect(await (await handlers.list()).json()).toEqual({ personas: [] });
+    expect(await (await handlers.list(dummyRequest())).json()).toEqual({ personas: [] });
   });
 
   test('persona tools are validated against the allowlist', async () => {
     const { handlers } = personaHandlers();
-    let caught = null;
+    let caught: import('./domain-modes.ts').ModeDomainError | null = null;
     try {
       await handlers.create(post('http://x', { persona: { name: 'p1', tools: ['nope'] } }), ctxFor('http://x'));
     } catch (error) {
-      caught = error;
+      // SAFETY: catch value re-typed as the domain error the route threw.
+      caught = error as import('./domain-modes.ts').ModeDomainError;
     }
     expect(caught?.body.error).toBe('unknown-tools');
   });

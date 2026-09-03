@@ -37,7 +37,7 @@ import path from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { BUILTIN_TOOLS } from '@oh-my-pi/pi-coding-agent';
 import { normalizeDirectoryKey } from './registry.ts';
-import { featureUnavailable, ompFeatures } from './omp-parity.ts';
+import { errorText, errorCode, featureUnavailable, ompFeatures } from './omp-parity.ts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -713,7 +713,7 @@ export function createAgentDefinitionHandlers({
     try {
       await onDefinitionsChanged(directory);
     } catch (error) {
-      console.warn('[omp-host] agent discovery refresh failed:', error?.message ?? error);
+      console.warn('[omp-host] agent discovery refresh failed:', errorText(error));
     }
   };
 
@@ -723,7 +723,7 @@ export function createAgentDefinitionHandlers({
     } catch (error) {
       throw new ModeDomainError(503, {
         error: 'agent-discovery-failed',
-        message: error?.message ?? String(error),
+        message: errorText(error),
       });
     }
   };
@@ -908,7 +908,7 @@ export function createAgentDefinitionHandlers({
         if (!existing.filePath) throw new ModeDomainError(400, { error: 'not-file-backed', name: existing.name });
         await revealFile(path.resolve(existing.filePath));
       } catch (error) {
-        console.warn('[omp-host] failed to reveal agent definition:', error?.message ?? error);
+        console.warn('[omp-host] failed to reveal agent definition:', errorText(error));
         return json({ error: 'reveal-failed' }, { status: 500 });
       }
       return json({ ok: true });

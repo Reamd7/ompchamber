@@ -504,7 +504,9 @@ describe('coverage CI guard (scripts/check-event-coverage.mjs)', () => {
       output = execFileSync('node', [guard, '--sdk-dist', fixture, '--skip-name-scan'], { encoding: 'utf8' });
       throw new Error('guard should have failed');
     } catch (error) {
-      const text = `${error.stderr ?? ''}${error.stdout ?? ''}${output ?? ''}`;
+      // SAFETY: exec errors carry stderr/stdout strings; other throws render empty.
+      const execError = error as { stderr?: string; stdout?: string } | null | undefined;
+      const text = `${execError?.stderr ?? ''}${execError?.stdout ?? ''}${output ?? ''}`;
       expect(text).toMatch(/SDK event "brand_new_sdk_event" has no disposition entry/);
     } finally {
       fs.rmSync(fixture, { recursive: true, force: true });

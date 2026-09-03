@@ -723,8 +723,10 @@ const validateSettingValue = (keyPath: SettingPath, value: JsonValue): string | 
   }
 };
 
-const quarantinePathFromError = (error: { message?: unknown }): string | null => {
-  const match = /moved to (\S+)/.exec(String(error?.message ?? error ?? ''));
+const quarantinePathFromError = (cause: unknown): string | null => {
+  // SAFETY: settings quarantine errors quote the quarantine path in their message.
+  const message = (cause as { message?: unknown } | null | undefined)?.message;
+  const match = /moved to (\S+)/.exec(String(message ?? cause ?? ''));
   return match ? match[1] : null;
 };
 

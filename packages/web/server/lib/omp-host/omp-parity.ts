@@ -107,3 +107,17 @@ export const featureEnabled = (capabilities: OmpCapabilities | null | undefined,
 export const featureUnavailable = (key: string): Response =>
   Response.json({ error: `${key}-unavailable` }, { status: 501 });
 
+/** Catch-variable probe: the message string when the thrown value carries one, else the value rendered. */
+export const errorText = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message;
+  // SAFETY: non-Error throws may carry a message field; anything else renders.
+  return String((cause as { message?: unknown } | null | undefined)?.message ?? cause);
+};
+
+/** Catch-variable probe: a NodeJS-style code string when present. */
+export const errorCode = (cause: unknown): string | undefined => {
+  // SAFETY: NodeJS fs/process errors carry a string code field; absent otherwise.
+  const code = (cause as { code?: unknown } | null | undefined)?.code;
+  // oxlint-disable-next-line no-runtime-typeof
+  return typeof code === 'string' ? code : undefined;
+};
