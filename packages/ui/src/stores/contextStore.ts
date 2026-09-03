@@ -7,6 +7,17 @@ import { extractTokensFromMessage } from "./utils/tokenUtils";
 import { calculateContextUsage } from "./utils/contextUtils";
 import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
 
+/** Serialized (persist) form of the context store: Map fields as entry arrays. */
+interface PartialContextDump {
+    sessionModelSelections?: [string, { providerId: string; modelId: string }][];
+    sessionAgentSelections?: [string, string][];
+    sessionAgentModelSelections?: [string, [string, { providerId: string; modelId: string }][]][];
+    sessionAgentModelVariantSelections?: [string, [string, [string, string][]][]][];
+    sessionAgentEditModes?: [string, [string, import('./types/sessionTypes').EditPermissionMode][]][];
+    currentAgentContext?: [string, string][];
+    sessionContextUsage?: [string, ContextUsage][];
+}
+
 interface ContextUsage {
     totalTokens: number;
     percentage: number;
@@ -49,13 +60,13 @@ interface ContextActions {
     getAgentModelVariantForSession: (sessionId: string, agentName: string, providerId: string, modelId: string) => string | undefined;
 
 
-    getContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => ContextUsage | null;
+    getContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => ContextUsage | null;
 
-    updateSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => void;
+    updateSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => void;
 
-    initializeSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => void;
+    initializeSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => void;
 
-    pollForTokenUpdates: (sessionId: string, messageId: string, messages: Map<string, { info: any; parts: any[] }[]>, maxAttempts?: number) => void;
+    pollForTokenUpdates: (sessionId: string, messageId: string, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>, maxAttempts?: number) => void;
 
     getCurrentAgent: (sessionId: string) => string | undefined;
 
@@ -199,7 +210,7 @@ export const useContextStore = create<ContextStore>()(
                     return modelMap.get(`${providerId}/${modelId}`);
                 },
  
-                getContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => {
+                getContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => {
                     if (!sessionId) return null;
 
                     const limitsUsage = calculateContextUsage(0, contextLimit, outputLimit);
@@ -301,7 +312,7 @@ export const useContextStore = create<ContextStore>()(
                     return result;
                 },
 
-                updateSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => {
+                updateSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => {
                     const sessionMessages = messages.get(sessionId) || [];
                     const assistantMessages = sessionMessages.filter(m => m.info.role === 'assistant');
 
@@ -329,7 +340,7 @@ export const useContextStore = create<ContextStore>()(
                     });
                 },
 
-                initializeSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, { info: any; parts: any[] }[]>) => {
+                initializeSessionContextUsage: (sessionId: string, contextLimit: number, outputLimit: number, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>) => {
                     const state = get();
                     const existingUsage = state.sessionContextUsage.get(sessionId);
 
@@ -338,7 +349,7 @@ export const useContextStore = create<ContextStore>()(
                     }
                 },
 
-                pollForTokenUpdates: (sessionId: string, messageId: string, messages: Map<string, { info: any; parts: any[] }[]>, maxAttempts: number = 10) => {
+                pollForTokenUpdates: (sessionId: string, messageId: string, messages: Map<string, import('../sync/materialization').MaterializedMessageRecord[]>, maxAttempts: number = 10) => {
                     let attempts = 0;
 
                     const poll = () => {
@@ -462,20 +473,24 @@ export const useContextStore = create<ContextStore>()(
                     sessionContextUsage: Array.from(state.sessionContextUsage.entries()),
                     sessionAgentEditModes: Array.from(state.sessionAgentEditModes.entries()).map(([sessionId, agentMap]) => [sessionId, Array.from(agentMap.entries())]),
                 }),
-                merge: (persistedState: any, currentState) => {
+                merge: (_persisted, currentState) => {
+                    // SAFETY: the persisted payload is this store's own
+                    // partial dump (PartialContextDump below); every field is
+                    // re-parsed field by field after this single bridge.
+                    const persistedState = (_persisted ?? {}) as PartialContextDump;
 
                     const agentModelSelections = new Map();
                     if (persistedState?.sessionAgentModelSelections) {
-                        persistedState.sessionAgentModelSelections.forEach(([sessionId, agentArray]: [string, any[]]) => {
+                        persistedState.sessionAgentModelSelections.forEach(([sessionId, agentArray]) => {
                             agentModelSelections.set(sessionId, new Map(agentArray));
                         });
                     }
 
                     const agentModelVariantSelections = new Map();
                     if (persistedState?.sessionAgentModelVariantSelections) {
-                        persistedState.sessionAgentModelVariantSelections.forEach(([sessionId, agentArray]: [string, any[]]) => {
+                        persistedState.sessionAgentModelVariantSelections.forEach(([sessionId, agentArray]) => {
                             const agentMap = new Map();
-                            agentArray.forEach(([agentName, modelArray]: [string, any[]]) => {
+                            agentArray.forEach(([agentName, modelArray]) => {
                                 agentMap.set(agentName, new Map(modelArray));
                             });
                             agentModelVariantSelections.set(sessionId, agentMap);
@@ -484,14 +499,14 @@ export const useContextStore = create<ContextStore>()(
  
                     const agentEditModes = new Map();
                     if (persistedState?.sessionAgentEditModes) {
-                        persistedState.sessionAgentEditModes.forEach(([sessionId, agentArray]: [string, any[]]) => {
+                        persistedState.sessionAgentEditModes.forEach(([sessionId, agentArray]) => {
                             agentEditModes.set(sessionId, new Map(agentArray));
                         });
                     }
 
                     return {
                         ...currentState,
-                        ...(persistedState as object),
+                        ...(persistedState as PartialContextDump),
                         sessionModelSelections: new Map(persistedState?.sessionModelSelections || []),
                         sessionAgentSelections: new Map(persistedState?.sessionAgentSelections || []),
                         sessionAgentModelSelections: agentModelSelections,
