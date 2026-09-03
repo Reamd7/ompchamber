@@ -174,8 +174,10 @@ export class OmpEventBus extends RingEventBus<OmpEventEnvelope> {
   replayState(lastEventId: number): ReplayState {
     if (lastEventId <= 0) return { status: 'ok' };
     if (lastEventId >= this.nextEventId) return { status: 'restart' };
-    const oldest = this.replay.length > 0 ? this.replay[0].eventId : null;
-    if (oldest === null || lastEventId < oldest - 1) return { status: 'gap', oldest };
+    // SAFETY: the gap arm is only reached with a non-empty ring, so the
+    // oldest entry id is present there by construction.
+    const oldest = this.replay.length > 0 ? this.replay[0].eventId : -1;
+    if (this.replay.length === 0 || lastEventId < oldest - 1) return { status: 'gap', oldest: this.replay[0].eventId };
     // lastEventId may point at a volatile id that never entered the ring;
     // replaying everything newer than it is still contiguous.
     return { status: 'ok' };

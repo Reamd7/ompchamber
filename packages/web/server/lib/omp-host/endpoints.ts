@@ -20,7 +20,7 @@ import { registerPluginsDomainRoutes } from './domain-plugins.ts';
 import { registerProvidersDomainRoutes } from './domain-providers.ts';
 import type { Settings, Skill } from '@oh-my-pi/pi-coding-agent';
 import type { OmpHostEngine } from './engine.ts';
-import type { PublishFn } from './domain-models.ts';
+import type { PublishFn, SettingsStore } from './domain-models.ts';
 import type { ProjectedMessage } from './projection.ts';
 
 
@@ -194,8 +194,8 @@ export const promptPayloadFromWire = (body: WirePromptBody): PromptPayload => {
 };
 
 const directoryFromRequest = ({ url, headers }: { url?: URL; headers?: Headers }): string | null => {
-  const fromQuery = url.searchParams.get('directory') ?? url.searchParams.get('location[directory]');
-  const fromHeader = headers.get('x-opencode-directory');
+  const fromQuery = url?.searchParams.get('directory') ?? url?.searchParams.get('location[directory]');
+  const fromHeader = headers?.get('x-opencode-directory');
   const raw = fromQuery ?? (fromHeader ? decodeURIComponent(fromHeader) : null);
   return raw ? normalizeDirectoryKey(raw) : null;
 };
@@ -550,13 +550,14 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     // query string / directory header; engine.abort resolves the live
     // session by ID (sessions are keyed by sessionID, not directory).
     const directory = directoryFromRequest(ctx);
-    return json(await engine.abort({ sessionID: ctx.params.sessionID, directory }));
+    return json(await engine.abort({ sessionID: ctx.params.sessionID, directory: directory ?? undefined }));
   });
   route('POST', '/session/{sessionID}/shell', async (request, ctx) => {
     return unsupported('Interactive session shells are not exposed by the omp engine.');
   });
   route('POST', '/session/{sessionID}/revert', async (request, ctx) => {
     const body = await readJsonBody<SessionRevertBody>(request);
+    if (!body?.messageID) return badRequest('messageID is required');
     const directory = body.directory ?? projectDirectory(ctx);
     const session = await engine.revert({
       sessionID: ctx.params.sessionID,
@@ -819,7 +820,9 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   registerModelSettingsRoutes(route, {
     store: {
       settingsFor: async (directory) => {
-        const store = await engine.settingsStoreReady();
+        // SAFETY: a null store is the boot-degrade path; settings requests
+        // then fail loudly (500) rather than masquerading as empty success.
+        const store = (await engine.settingsStoreReady()) as SettingsStore;
         return store.settingsFor(directory);
       },
       getRevision: () => engine.settingsStore?.getRevision?.() ?? 0,
@@ -829,14 +832,18 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
         return store ? store.chainWrites(targetKey, task) : Promise.resolve();
       },
       invalidateDerived: async () => {
-        const store = await engine.settingsStoreReady();
+        // SAFETY: same boot-degrade stance as settingsFor above.
+        const store = (await engine.settingsStoreReady()) as SettingsStore;
         await store.invalidateDerived();
       },
       get boot() {
-        return engine.settingsStore?.boot;
+        // SAFETY: global writes only run after boot; the degrade path has
+        // no store and PUT /omp/settings fails at settingsFor first.
+        return (engine.settingsStore as SettingsStore).boot;
       },
       get bootDirectory() {
-        return engine.settingsStore?.bootDirectory;
+        // SAFETY: same boot-degrade stance as boot above.
+        return (engine.settingsStore as SettingsStore).bootDirectory;
       },
     },
     publish: ompPublish,
@@ -916,11 +923,11 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const result = await engine.setSessionModel({
       sessionID: ctx.params.id,
       directory,
-      model: body?.model && typeof body.model === 'object' ? body.model : null,
+      model: body?.model && typeof body.model === 'object' ? body.model : undefined,
       thinkingLevel:
         typeof body?.thinkingLevel === 'string' && body.thinkingLevel.length > 0 ? body.thinkingLevel : undefined,
     });
-    if (!result.ok) return badRequest(result.error);
+    if (!result.ok) return badRequest(result.error ?? 'model switch failed');
     return json(result);
   });
 

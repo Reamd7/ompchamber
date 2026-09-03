@@ -16,6 +16,7 @@ import {
   projectTurnEventDivider,
   projectUserMessage,
 } from './projection.ts';
+import type { SessionEntry } from '@oh-my-pi/pi-coding-agent';
 import type { UserMessageInput } from './projection.ts';
 
 const now = 1_787_811_000_000;
@@ -87,14 +88,17 @@ describe('projectConversation turn-state threading', () => {
   test('turn state overrides the projection-wide model and adds the variant', () => {
     const first = userMessage('one', now);
     const second = userMessage('two', now + 10_000);
-    const byWireId = new Map([
+    const byWireId: Map<string, { model?: string; thinkingLevel?: string | null }> = new Map([
       [deterministicWireId(first), { model: 'p/old', thinkingLevel: 'high' }],
       [deterministicWireId(second), { model: 'p/new', thinkingLevel: null }],
     ]);
     const projected = projectConversation([first, second], {
       sessionID: 's1',
       model: 'p/current',
-      turnStateFor: (message) => byWireId.get(deterministicWireId(message)) ?? null,
+      turnStateFor: (message): { model?: string; thinkingLevel?: string } | null => {
+        const state = byWireId.get(deterministicWireId(message));
+        return state ? { model: state.model, thinkingLevel: state.thinkingLevel ?? undefined } : null;
+      },
     });
     expect(projected[0].info.model).toEqual({ providerID: 'p', modelID: 'old', variant: 'high' });
     expect(projected[1].info.model).toEqual({ providerID: 'p', modelID: 'new' });
@@ -140,7 +144,9 @@ describe('projectTurnEventDivider', () => {
       { type: 'thinking_level_change', thinkingLevel: 'high', timestamp: isoStamp },
       { sessionID: 's1' },
     )).toBeNull();
-    expect(projectTurnEventDivider(null, { sessionID: 's1' })).toBeNull();
+    // SAFETY: degenerate input — an entry with no parsable timestamp and
+    // no divider type projects to null (the same guard null exercises).
+    expect(projectTurnEventDivider({ type: 'unrelated_event' }, { sessionID: 's1' })).toBeNull();
   });
 
   test('projects a mode change carrying the mode value', () => {

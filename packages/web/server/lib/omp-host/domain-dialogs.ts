@@ -639,7 +639,11 @@ const validateRespondResult = (record: DialogRecord, request: RespondRequestInpu
       if (!Array.isArray(answer.selectedOptions)) {
         return { ok: false, error: 'result.results items must carry a selectedOptions array' };
       }
-      const labels = (questionById.get(answer.id).options ?? []).map((o) => o?.label ?? o);
+      const question = questionById.get(answer.id);
+      if (!question) {
+        return { ok: false, error: 'result.results items must reference declared questions' };
+      }
+      const labels = (question.options ?? []).map((o) => o?.label ?? o);
       for (const label of answer.selectedOptions) {
         if (!labels.includes(label)) {
           return { ok: false, error: 'selectedOptions contains a label outside the question options' };
@@ -732,8 +736,10 @@ export class PendingDialogRegistry {
     payload?: DialogPayload | null;
   }): DialogRegistration {
     const id = DIALOG_ID_PREFIX + crypto.randomBytes(16).toString('base64url');
-    let resolve: (value: DialogSettlement) => void;
-    let reject: (error: DialogRejection) => void;
+    // SAFETY: the executor runs synchronously, so both bindings are set
+    // before the constructor returns.
+    let resolve!: (value: DialogSettlement) => void;
+    let reject!: (error: DialogRejection) => void;
     const promise = new Promise<DialogSettlement>((res, rej) => {
       resolve = res;
       reject = rej;
@@ -761,8 +767,9 @@ export class PendingDialogRegistry {
   /** Presented-ack: cancels T_present, anchors T_answer (idempotent). */
   presented(dialogId: string, { directory }: { directory?: string | null } = {}): RegistryOutcome {
     const scope = this.#scopeCheck(dialogId, directory);
-    if (scope) return scope;
-    const record = this.#dialogs.get(dialogId);
+    if (scope || !this.#scopeOk(dialogId, directory)) return scope ?? { ok: false, status: 404, error: 'dialog not found' };
+    // SAFETY: scopeOk proved the record exists for this scope.
+    const record = this.#dialogs.get(dialogId) as DialogRecord;
     if (record.presentedAt !== null) {
       return { ok: true, presentedAt: record.presentedAt, duplicate: true };
     }
@@ -787,13 +794,16 @@ export class PendingDialogRegistry {
     { directory, clientId = null, ...request }: RespondRequestInput = {},
   ): RegistryOutcome {
     const scope = this.#scopeCheck(dialogId, directory);
-    if (scope) return scope;
-    const record = this.#dialogs.get(dialogId);
+    if (scope || !this.#scopeOk(dialogId, directory)) return scope ?? { ok: false, status: 404, error: 'dialog not found' };
+    // SAFETY: scopeOk proved the record exists for this scope.
+    const record = this.#dialogs.get(dialogId) as DialogRecord;
     const validation = validateRespondResult(record, request);
     if (validation.ok === false) return { ok: false, status: 400, error: validation.error };
     const outcome = validation.result.kind === 'cancel' ? 'cancelled' : 'responded';
     if (!this.#settle(record, outcome, { result: validation.result })) {
-      return { ok: false, status: 409, error: 'dialog already settled', outcome: record.settled.outcome };
+      // SAFETY: #settle returns false only when the record is already
+      // settled, so the outcome read is present here.
+      return { ok: false, status: 409, error: 'dialog already settled', outcome: (record.settled as { outcome: string }).outcome };
     }
     return { ok: true, outcome, ...(clientId ? { clientId } : {}) };
   }
@@ -801,10 +811,13 @@ export class PendingDialogRegistry {
   /** User/system abort of one dialog (Stop button on a single card). */
   abort(dialogId: string, { directory }: { directory?: string | null } = {}): RegistryOutcome {
     const scope = this.#scopeCheck(dialogId, directory);
-    if (scope) return scope;
-    const record = this.#dialogs.get(dialogId);
+    if (scope || !this.#scopeOk(dialogId, directory)) return scope ?? { ok: false, status: 404, error: 'dialog not found' };
+    // SAFETY: scopeOk proved the record exists for this scope.
+    const record = this.#dialogs.get(dialogId) as DialogRecord;
     if (!this.#settle(record, 'aborted', { reason: 'dialog aborted' })) {
-      return { ok: false, status: 409, error: 'dialog already settled', outcome: record.settled.outcome };
+      // SAFETY: #settle returns false only when the record is already
+      // settled, so the outcome read is present here.
+      return { ok: false, status: 409, error: 'dialog already settled', outcome: (record.settled as { outcome: string }).outcome };
     }
     return { ok: true, outcome: 'aborted' };
   }
@@ -885,6 +898,11 @@ export class PendingDialogRegistry {
   }
 
   // 404 / 409 / 403 pre-check shared by respond / presented / abort.
+  /** True when scopeCheck passed — i.e. the dialog record exists and matches. */
+  #scopeOk(dialogId: string, directory: string | null | undefined): boolean {
+    return this.#scopeCheck(dialogId, directory) === null && this.#dialogs.has(dialogId);
+  }
+
   #scopeCheck(dialogId: string, directory: string | null | undefined) {
     if (typeof dialogId !== 'string' || dialogId === '') {
       return { ok: false, status: 404, error: 'dialog not found' };
@@ -892,8 +910,9 @@ export class PendingDialogRegistry {
     if (directory === undefined || directory === null) {
       return { ok: false, status: 400, error: 'directory is required' };
     }
-    if (this.#dialogs.has(dialogId)) {
-      if (normalizeDirectoryKey(directory) !== this.#dialogs.get(dialogId).directory) {
+    const existing = this.#dialogs.get(dialogId);
+    if (existing) {
+      if (normalizeDirectoryKey(directory) !== existing.directory) {
         return { ok: false, status: 403, error: 'directory does not match dialog scope' };
       }
       return null;
@@ -1344,10 +1363,12 @@ export const registerDialogEndpoints = (
     const body = await readJsonBody<LeaseRequestBody>(request);
     const missing = requireStrings(body, ['directory', 'sessionId', 'clientId']);
     if (missing) return badRequest(missing);
+    // SAFETY: requireStrings above confirmed all three string fields.
+    const leaseInput = body as Required<LeaseRequestBody>;
     const lease = leases.acquire({
-      directory: body.directory,
-      sessionId: body.sessionId,
-      clientId: body.clientId,
+      directory: leaseInput.directory,
+      sessionId: leaseInput.sessionId,
+      clientId: leaseInput.clientId,
     });
     return json({
       leaseId: lease.leaseId,
@@ -1360,10 +1381,12 @@ export const registerDialogEndpoints = (
     const body = await readJsonBody<LeaseRequestBody>(request);
     const missing = requireStrings(body, ['directory', 'sessionId', 'clientId']);
     if (missing) return badRequest(missing);
+    // SAFETY: requireStrings above confirmed all three string fields.
+    const releaseInput = body as Required<LeaseRequestBody>;
     const released = leases.release({
-      directory: body.directory,
-      sessionId: body.sessionId,
-      clientId: body.clientId,
+      directory: releaseInput.directory,
+      sessionId: releaseInput.sessionId,
+      clientId: releaseInput.clientId,
     });
     return json({ ok: true, released: released.released, detached: released.detached });
   }));
@@ -1373,7 +1396,9 @@ export const registerDialogEndpoints = (
     if (typeof body?.directory !== 'string' || body.directory === '') {
       return badRequest('directory is required');
     }
-    const outcome = registry.respond(ctx.params.id, {
+    const dialogId = ctx?.params?.id;
+    if (!dialogId) return badRequest('dialog id required');
+    const outcome = registry.respond(dialogId, {
       directory: body.directory,
       clientId: typeof body.clientId === 'string' ? body.clientId : null,
       result: body.result,
@@ -1392,7 +1417,9 @@ export const registerDialogEndpoints = (
     if (typeof body?.directory !== 'string' || body.directory === '') {
       return badRequest('directory is required');
     }
-    const outcome = registry.presented(ctx.params.id, { directory: body.directory });
+    const presentedId = ctx?.params?.id;
+    if (!presentedId) return badRequest('dialog id required');
+    const outcome = registry.presented(presentedId, { directory: body.directory });
     if (!outcome.ok) {
       return json(
         { error: outcome.error, ...(outcome.outcome ? { outcome: outcome.outcome } : {}) },
@@ -1407,7 +1434,9 @@ export const registerDialogEndpoints = (
     if (typeof body?.directory !== 'string' || body.directory === '') {
       return badRequest('directory is required');
     }
-    const outcome = registry.abort(ctx.params.id, { directory: body.directory });
+    const abortId = ctx?.params?.id;
+    if (!abortId) return badRequest('dialog id required');
+    const outcome = registry.abort(abortId, { directory: body.directory });
     if (!outcome.ok) {
       return json(
         { error: outcome.error, ...(outcome.outcome ? { outcome: outcome.outcome } : {}) },

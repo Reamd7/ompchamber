@@ -203,9 +203,9 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     // SAFETY: retry-ended payload is the settle record the producer writes.
     const ended = (endedRow?.payload ?? {}) as { success: boolean; retryErrors: Array<{ messageID: string; note: string }> };
     expect(ended.success).toBe(false);
-    expect(ended.retryErrors[0].messageID).toBe(liveId);
-    expect(ended.retryErrors[0].note).toBe('credential');
-    expect(ended.retryErrors[1].messageID).toBe(liveId);
+    expect(ended.retryErrors[0]?.messageID).toBe(liveId ?? '');
+    expect(ended.retryErrors[0]?.note).toBe('credential');
+    expect(ended.retryErrors[1]?.messageID).toBe(liveId ?? '');
     // durable → replayable
     const replayed: string[] = [];
     h.engine.ompBus.subscribeSince(0, (entry) => replayed.push(entry.envelope.type));
@@ -219,12 +219,12 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     expect(h.wireOf('session.idle')).toHaveLength(0);
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     expect(wireProps<{ status: FixtureStatus }>(h.wireOf('session.status').at(-1))?.status?.type).toBe('busy');
-    expect(h.ompOf('omp.session.settled').at(-1).payload).toEqual({ isTerminal: false });
+    expect(h.ompOf('omp.session.settled').at(-1)?.payload).toEqual({ isTerminal: false });
     h.emit({ type: 'agent_end', isTerminal: true, messages: [] });
     expect(h.wireOf('session.idle')).toHaveLength(1);
     // Status snapshot must not downgrade while awaiting async delivery.
     const statuses: Record<string, { type: string }> = await h.engine.getSessionStatuses({ directory: '/repo' });
-    expect(statuses.s1.type).toBe('idle');
+    expect(statuses.s1?.type).toBe('idle');
   });
 
   test('model_changed syncs registry + wire truth + omp event; fallback applies without wire double-emit', async () => {
@@ -232,7 +232,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const before = h.wireOf('session.updated').length;
     h.emit({ type: 'retry_fallback_applied', from: 'p1/m1', to: 'p1/fallback', role: 'default' });
     expect(h.wireOf('session.updated')).toHaveLength(before); // no wire emit; model_changed owns it
-    expect(h.ompOf('omp.fallback.applied').at(-1).payload).toEqual({ from: 'p1/m1', to: 'p1/fallback', role: 'default' });
+    expect(h.ompOf('omp.fallback.applied').at(-1)?.payload).toEqual({ from: 'p1/m1', to: 'p1/fallback', role: 'default' });
 
     // SAFETY: the SDK types `model` as readonly and the session as nullable;
     // the harness owns this materialized s1 session and simulates an
@@ -248,10 +248,10 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const changed = (changedRow?.payload ?? {}) as { model: unknown; thinkingLevel: string };
     expect(changed.model).toEqual({ provider: 'p1', id: 'fallback' });
     expect(changed.thinkingLevel).toBe('high');
-    expect(h.engine.registry.get('/repo', 's1').model).toBe('p1/fallback');
+    expect(h.engine.registry.get('/repo', 's1')?.model).toBe('p1/fallback');
 
     h.emit({ type: 'retry_fallback_succeeded', model: 'p1/m1', role: 'default' });
-    expect(h.ompOf('omp.fallback.succeeded').at(-1).payload).toEqual({ model: 'p1/m1', role: 'default' });
+    expect(h.ompOf('omp.fallback.succeeded').at(-1)?.payload).toEqual({ model: 'p1/m1', role: 'default' });
   });
 
   test('notice keeps console.error for error level and emits omp toast channel', async () => {
@@ -285,19 +285,19 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
     h.emit({ type: 'thinking_level_changed', thinkingLevel: 'high' });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect((h.ompOf('omp.thinking.changed').at(-1).payload as { thinkingLevel: string }).thinkingLevel).toBe('high');
+    expect((h.ompOf('omp.thinking.changed').at(-1)?.payload as { thinkingLevel: string }).thinkingLevel).toBe('high');
 
     // Unset session model → no model key (invalidate + refetch semantics;
     // JSON null would fail the UI schema and drop the frame).
     h.session.model = null;
     h.emit({ type: 'model_changed' });
     const noModel = h.ompOf('omp.model.changed').at(-1);
-    expect('model' in noModel.payload).toBe(false);
+    expect('model' in (noModel?.payload ?? {})).toBe(false);
 
     h.session.model = { provider: 'p1', id: 'm1' };
     h.emit({ type: 'model_changed' });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect((h.ompOf('omp.model.changed').at(-1).payload as { model: unknown }).model).toEqual({ provider: 'p1', id: 'm1' });
+    expect((h.ompOf('omp.model.changed').at(-1)?.payload as { model: unknown }).model).toEqual({ provider: 'p1', id: 'm1' });
   });
 
   test('todo_auto_clear emits an empty todo.updated', async () => {
@@ -397,7 +397,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     });
     expect(h.wireOf('message.updated')).toHaveLength(wireBefore); // no card for hidden types (T3)
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect(((h.ompOf('omp.custom.appended').at(-1).payload as { message: { display: boolean } }).message).display).toBe(false);
+    expect(((h.ompOf('omp.custom.appended').at(-1)?.payload as { message: { display: boolean } }).message).display).toBe(false);
   });
 
   test('todo blocker rides the todo tool result mapping (10 章 wire 重合面补齐)', async () => {
@@ -416,7 +416,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     });
     expect(h.wireOf('todo.updated').length).toBe(before);
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect((h.ompOf('omp.notice.raised').at(-1).payload as { level: string }).level).toBe('info');
+    expect((h.ompOf('omp.notice.raised').at(-1)?.payload as { level: string }).level).toBe('info');
     // The blocker reaches the wire on the authoritative carrier: the todo
     // tool result's full phases list.
     h.emit({
@@ -456,14 +456,14 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     h.emit({ type: 'auto_compaction_start', reason: 'threshold', action: 'context-full' });
     h.emit({ type: 'auto_compaction_end', action: 'context-full', result: undefined, aborted: false, willRetry: false });
 
-    expect(h.ompOf('omp.thinking.changed').at(-1).payload).toEqual({
+    expect(h.ompOf('omp.thinking.changed').at(-1)?.payload).toEqual({
       thinkingLevel: 'medium', configured: 'auto', resolved: 'high',
     });
-    expect(h.ompOf('omp.goal.updated').at(-1).payload).toEqual({
+    expect(h.ompOf('omp.goal.updated').at(-1)?.payload).toEqual({
       goal: { text: 'ship it' }, state: { active: true },
     });
-    expect(h.ompOf('omp.ttsr.triggered').at(-1).payload).toEqual({ rules: [{ name: 'no-secrets' }] });
-    expect(h.ompOf('omp.compaction.started').at(-1).payload).toEqual({ reason: 'threshold', action: 'context-full' });
+    expect(h.ompOf('omp.ttsr.triggered').at(-1)?.payload).toEqual({ rules: [{ name: 'no-secrets' }] });
+    expect(h.ompOf('omp.compaction.started').at(-1)?.payload).toEqual({ reason: 'threshold', action: 'context-full' });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     // SAFETY: compaction-ended payload carries the outcome pair.
     const ended = h.ompOf('omp.compaction.ended').at(-1)?.payload as { action: string; aborted: boolean };
@@ -504,13 +504,13 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const parts = h.wireOf('message.part.updated');
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const toolPart = parts.map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool').at(-1);
-    expect(toolPart.state.status).toBe('running');
-    expect(toolPart.state.output).toBe('half');
-    expect(toolPart.state.metadata.asyncState).toBe('running');
+    expect(toolPart?.state?.status).toBe('running');
+    expect(toolPart?.state?.output).toBe('half');
+    expect(toolPart?.state?.metadata?.asyncState).toBe('running');
     h.emit({ type: 'tool_execution_end', toolCallId: 'c1', toolName: 'longjob', result: 'done', isError: false });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const settled = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool').at(-1);
-    expect(settled.state.status).toBe('completed');
+    expect(settled?.state?.status).toBe('completed');
   });
 
   test('tool_execution_end normalizes SDK AgentToolResult so ask details reach the transcript', async () => {
@@ -528,9 +528,9 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const toolParts = () => h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool');
     const transient = toolParts().at(-1);
-    expect(transient.state.status).toBe('completed');
-    expect(transient.state.output).toBe('User answers:\nYes');
-    expect(transient.state.metadata.details).toEqual(askDetails);
+    expect(transient?.state?.status).toBe('completed');
+    expect(transient?.state?.output).toBe('User answers:\nYes');
+    expect(transient?.state?.metadata?.details).toEqual(askDetails);
 
     h.emit({
       type: 'message_end',
@@ -543,8 +543,8 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
       },
     });
     const final = toolParts().at(-1);
-    expect(final.state.output).toBe('User answers:\nYes');
-    expect(final.state.metadata.details).toEqual(askDetails);
+    expect(final?.state?.output).toBe('User answers:\nYes');
+    expect(final?.state?.metadata?.details).toEqual(askDetails);
   });
 
   test('turn_start/turn_end are explicit intentional ignores; unknown members fail loudly', async () => {
@@ -560,7 +560,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
       console.error = original;
     }
     expect(errors.join('\n')).toMatch(/unhandled AgentSessionEvent type: something_new/);
-    expect(h.engine.unknownEventCounts.get('something_new')).toBe(1);
+    expect(h.engine.unknownEventCounts?.get('something_new')).toBe(1);
   });
 
   test('tail-sync projects unannounced dividers on terminal agent_end', async () => {
@@ -569,8 +569,10 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     // SAFETY: a well-formed SDK assistant message — every field the SdkMessage
     // variant declares beyond role/content/model/timestamp is optional and
     // unread by the tail-sync projection under test.
+    if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.messages.push(
       { role: 'user', content: 'hi', timestamp: 30 },
+      // SAFETY: fixture row matches the SDK assistant message shape.
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }], model: 'p1/m1', timestamp: 31 } as SdkMessage,
       { role: 'compactionSummary', summary: 'post-turn compaction', tokensBefore: 5000, timestamp: 32 },
     );
@@ -592,20 +594,26 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     const h = await harness();
     const live = h.engine.sessions.get('s1');
     const calls: Array<{ kind: 'prompt' | 'custom'; text?: string; customType?: string; details?: { name?: string; path?: string } }> = [];
+    if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.prompt = async (text: string) => { calls.push({ kind: 'prompt', text }); return true; };
-    live.agentSession.promptCustomMessage = async (payload: { customType?: string; details?: { name?: string; path?: string } }) => { calls.push({ kind: 'custom', customType: payload.customType, details: payload.details }); };
+    // SAFETY: the SDK call passes the skill-prompt custom message; the
+    // fake reads only the customType/details fields.
+    live.agentSession.promptCustomMessage = (async (message: { customType?: string; details?: { name?: string; path?: string } }) => {
+      calls.push({ kind: 'custom', customType: message.customType, details: message.details });
+    }) as NonNullable<AgentSession['promptCustomMessage']>;
     await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/skill:find-skills node test runner' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].kind).toBe('custom');
-    expect(calls[0].customType).toBe('skill-prompt');
-    expect(calls[0].details.name).toBe('find-skills');
-    expect(calls[0].details.path).toContain('find-skills/SKILL.md');
+    expect(calls[0]?.kind).toBe('custom');
+    expect(calls[0]?.customType).toBe('skill-prompt');
+    expect(calls[0]?.details?.name).toBe('find-skills');
+    expect(calls[0]?.details?.path).toContain('find-skills/SKILL.md');
   });
 
   test('unknown skill commands and plain prompts fall through to session.prompt', async () => {
     const h = await harness();
     const live = h.engine.sessions.get('s1');
     const calls: string[] = [];
+    if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.prompt = async (text: string) => { calls.push(text); return true; };
     live.agentSession.promptCustomMessage = async () => { throw new Error('must not run'); };
     await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/grill-me' });
@@ -622,23 +630,24 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const note = h.wireOf('message.updated').slice(before).map((e) => wireProps<{ info: FixtureInfo }>(e)?.info).at(-1);
-    expect(note.role).toBe('user');
-    expect(note.metadata).toEqual({ ompRole: 'developer' });
+    expect(note?.role).toBe('user');
+    expect(note?.metadata).toEqual({ ompRole: 'developer' });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    const notePart = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p) => p.messageID === note.id).at(-1);
-    expect(notePart.text).toBe('[omp:developer] queued follow-up');
+    const notePart = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p) => p?.messageID === note?.id).at(-1);
+    expect(notePart?.text).toBe('[omp:developer] queued follow-up');
 
     // The synthetic prompt occupies the user turn slot: the next assistant
     // message anchors to it.
     h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 41 } });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const assistantInfo = h.wireOf('message.updated').map((e) => wireProps<{ info: FixtureInfo }>(e)?.info).at(-1);
-    expect(assistantInfo.parentID).toBe(note.id);
+    expect(assistantInfo?.parentID).toBe(note?.id);
   });
 
   test('tail-sync projects unannounced developer notes and stays idempotent', async () => {
     const h = await harness();
     const live = h.engine.sessions.get('s1');
+    if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.messages.push(
       { role: 'user', content: 'hi', timestamp: 50 },
       { role: 'assistant', content: [{ type: 'text', text: 'ok' }], api: 'anthropic', provider: 'p1', model: 'p1/m1', timestamp: 51, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop' },

@@ -144,10 +144,10 @@ describe('projection', () => {
     expect(user.parts[0].text).toBe('list files');
     expect(first.info.role).toBe('assistant');
     const toolPart = first.parts.find((p) => p.type === 'tool');
-    expect(toolPart.callID).toBe('call_1');
-    expect(toolPart.tool).toBe('ls');
-    expect(toolPart.state.status).toBe('completed');
-    expect(toolPart.state.output).toBe('file-a\nfile-b');
+    expect(toolPart?.callID).toBe('call_1');
+    expect(toolPart?.tool).toBe('ls');
+    expect(toolPart?.state?.status).toBe('completed');
+    expect(toolPart?.state?.output).toBe('file-a\nfile-b');
     expect(second.info.parentID).toBe(user.info.id);
     expect(second.info.time.completed).toBe(now + 30);
   });
@@ -162,9 +162,9 @@ describe('projection', () => {
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
     const toolPart = projected[1].parts.find((p) => p.type === 'tool');
-    expect(toolPart.state.status).toBe('error');
-    expect(projected[1].info.error.name).toBe('UnknownError');
-    expect(projected[1].info.time.completed).toBeUndefined();
+    expect(toolPart?.state?.status).toBe('error');
+    expect(projected[1]?.info?.error?.name).toBe('UnknownError');
+    expect(projected[1]?.info?.time?.completed).toBeUndefined();
   });
 
   test('finish maps from stopReason on settled messages only', () => {
@@ -205,7 +205,7 @@ describe('projection', () => {
       .filter((e) => e.type === 'message.updated')
       .map((e) => (e.properties as import('./projection.ts').WireMessageUpdatedProperties).info)
       .at(-1);
-    expect(settledInfo.finish).toBe('stop');
+    expect(settledInfo?.finish).toBe('stop');
   });
 
   test('projectUsage emits the SDK totalTokens as wire tokens.total when present', () => {
@@ -312,14 +312,14 @@ describe('projection', () => {
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
     const toolPart = projected[1].parts.find((p) => p.type === 'tool');
-    expect(toolPart.state.title).toBe('Verifying pack and committing');
-    expect(toolPart.state.metadata).toEqual({ intent: 'Verifying pack and committing' });
+    expect(toolPart?.state?.title).toBe('Verifying pack and committing');
+    expect(toolPart?.state?.metadata).toEqual({ intent: 'Verifying pack and committing' });
     // calls without intent keep the tool name
     const plain = projectConversation(
       [userMessage('go'), assistantMessage([{ type: 'toolCall', id: 'c8', name: 'read', arguments: { path: '/x' } }]), toolResult('c8', 'data')],
       { sessionID: 's1', directory: '/repo' },
     );
-    expect(plain[1].parts.find((p) => p.type === 'tool').state.title).toBe('read');
+    expect(plain[1].parts.find((p) => p.type === 'tool')?.state?.title).toBe('read');
   });
 
   test('tool results carry structured details in tool part metadata (ask answer cards, spec 03 §5.4.1)', () => {
@@ -339,14 +339,14 @@ describe('projection', () => {
     ];
     const projected = projectConversation(messages, { sessionID: 's1', directory: '/repo' });
     const toolPart = projected[1].parts.find((p) => p.type === 'tool');
-    expect(toolPart.state.output).toBe('User answers:\nYes');
-    expect(toolPart.state.metadata).toEqual({ intent: 'Confirm release', details: askDetails });
+    expect(toolPart?.state?.output).toBe('User answers:\nYes');
+    expect(toolPart?.state?.metadata).toEqual({ intent: 'Confirm release', details: askDetails });
     // results without details keep the plain metadata shape
     const plain = projectConversation(
       [userMessage('go'), assistantMessage([{ type: 'toolCall', id: 'c8', name: 'read', arguments: { path: '/x' } }]), toolResult('c8', 'data')],
       { sessionID: 's1', directory: '/repo' },
     );
-    expect(plain[1].parts.find((p) => p.type === 'tool').state.metadata).toEqual({});
+    expect(plain[1].parts.find((p) => p.type === 'tool')?.state?.metadata).toEqual({});
   });
 
   test('developer agent-attribution note rides the turn without splitting it', () => {
@@ -580,6 +580,11 @@ describe('SessionMetaRegistry', () => {
   let dir: string | undefined;
   let registry: import('./registry.ts').SessionMetaRegistry | undefined;
 
+  const reg = (): import('./registry.ts').SessionMetaRegistry => {
+    if (!registry) throw new Error('registry not initialized');
+    return registry;
+  };
+
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-host-registry-'));
     registry = new SessionMetaRegistry({ agentDir: dir });
@@ -591,7 +596,7 @@ describe('SessionMetaRegistry', () => {
   });
 
   test('update/get/remove roundtrips to disk', () => {
-    registry.update('/repo', 's1', { title: 'My session', timeCreated: 1 });
+    reg().update('/repo', 's1', { title: 'My session', timeCreated: 1 });
     const reloaded = new SessionMetaRegistry({ agentDir: dir });
     expect(reloaded.get('/repo', 's1')).toMatchObject({ title: 'My session', timeCreated: 1 });
     reloaded.remove('/repo', 's1');
@@ -602,12 +607,12 @@ describe('SessionMetaRegistry', () => {
     // Released builds wrote fork lineage into `parentID` (engine.fork was its
     // only writer). On load those edges must move to `forkParentID` so the
     // fork stops projecting as a read-only subagent session on the wire.
-    registry.update('/repo', 'fork_1', { parentID: 'ses_root', title: 'ses_root (fork)', timeCreated: 1 });
-    registry.update('/repo', 'sub_1', { parentID: 'ses_main', forkParentID: 'ses_root', timeCreated: 2 });
+    reg().update('/repo', 'fork_1', { parentID: 'ses_root', title: 'ses_root (fork)', timeCreated: 1 });
+    reg().update('/repo', 'sub_1', { parentID: 'ses_main', forkParentID: 'ses_root', timeCreated: 2 });
 
     const reloaded = new SessionMetaRegistry({ agentDir: dir });
     expect(reloaded.get('/repo', 'fork_1')).toMatchObject({ forkParentID: 'ses_root', title: 'ses_root (fork)' });
-    expect(reloaded.get('/repo', 'fork_1').parentID).toBeUndefined();
+    expect(reloaded.get('/repo', 'fork_1')?.parentID).toBeUndefined();
     // An entry that already carries forkParentID keeps parentID untouched:
     // that pairing is genuine subagent parentage.
     expect(reloaded.get('/repo', 'sub_1')).toMatchObject({ parentID: 'ses_main', forkParentID: 'ses_root' });
@@ -616,11 +621,11 @@ describe('SessionMetaRegistry', () => {
   });
 
   test('move transfers metadata between directories', () => {
-    registry.update('/from', 's1', { title: 'moved one' });
-    const moved = registry.move('/from', '/to', 's1');
-    expect(moved.title).toBe('moved one');
-    expect(registry.get('/from', 's1')).toBeNull();
-    expect(registry.get('/to', 's1').title).toBe('moved one');
+    reg().update('/from', 's1', { title: 'moved one' });
+    const moved = reg().move('/from', '/to', 's1');
+    expect(moved?.title).toBe('moved one');
+    expect(reg().get('/from', 's1')).toBeNull();
+    expect(reg().get('/to', 's1')?.title).toBe('moved one');
   });
 });
 

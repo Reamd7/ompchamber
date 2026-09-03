@@ -355,7 +355,7 @@ const projectFileProvider = (id: string, value: JsonRecord): OmpFileProviderProj
     source: 'file',
     ...(typeof value.baseUrl === 'string' ? { baseUrl: value.baseUrl } : {}),
     ...(value.authHeader !== undefined ? { authHeader: Boolean(value.authHeader) } : {}),
-    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
     hasApiKey: typeof value.apiKey === 'string' && value.apiKey.length > 0,
     models: models
       .filter((model): model is JsonRecord & { id: string } => isRecord(model) && typeof model.id === 'string')
@@ -680,8 +680,11 @@ export const putOmpProvider = async (input: PutOmpProviderInput, options: OmpPro
     }
     const seen = new Set<string>();
     for (let index = 0; index < provider.models.length; index += 1) {
-      const { model, error } = normalizeIncomingModel(provider.models[index], index);
-      if (error) return { status: 400, body: { error: 'validation', message: error } };
+      const result = normalizeIncomingModel(provider.models[index], index);
+      if (result.error !== undefined) {
+        return { status: 400, body: { error: 'validation', message: result.error } };
+      }
+      const { model } = result;
       if (seen.has(model.id)) {
         return { status: 400, body: { error: 'validation', message: `models: duplicate id ${model.id}` } };
       }

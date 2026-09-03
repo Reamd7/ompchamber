@@ -86,7 +86,7 @@ export const projectOmpCommand = (internal: ProjectableOmpCommand | null): OmpCo
       ? { description: internal.description }
       : {}),
     tier: tierForSource(internal.source),
-    source: internal.source,
+    source: internal.source ?? 'engine',
     ...(Array.isArray(internal.aliases) && internal.aliases.length > 0
       ? { aliases: internal.aliases.filter((a) => typeof a === 'string' && a) }
       : {}),
@@ -126,7 +126,7 @@ export type OmpLiveCommandsLoader = (
 ) => Promise<readonly ProjectableOmpCommand[] | null | undefined>;
 
 export interface ListOmpCommandsInput {
-  directory?: string;
+  directory: string;
   loadAvailable?: (
     session: AvailableCommandsSession,
   ) => Promise<readonly InternalAvailableSlashCommand[] | null | undefined>;
@@ -148,7 +148,7 @@ export const listOmpCommands = async ({
   loadAvailable = defaultLoadAvailable,
   loadSkills = defaultLoadSkills,
   loadLiveCommands = null,
-}: ListOmpCommandsInput = {}): Promise<OmpCommandRecord[]> => {
+}: ListOmpCommandsInput): Promise<OmpCommandRecord[]> => {
   const commands: OmpCommandRecord[] = [];
   const seen = new Set<string>();
   const append = (record: OmpCommandRecord | null) => {

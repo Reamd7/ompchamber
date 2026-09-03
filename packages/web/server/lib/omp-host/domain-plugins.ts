@@ -364,11 +364,12 @@ const applyProjectOverride = (directory: string, pluginName: string, mutation: P
   if (Array.isArray(mutation.enabledFeatures)) {
     overrides.features = { ...(overrides.features ?? {}), [pluginName]: mutation.enabledFeatures };
   }
-  if (mutation.setting) {
+  const setting = mutation.setting;
+  if (setting && typeof setting.key === 'string' && setting.key) {
     const settings = { ...(overrides.settings ?? {}) };
     const pluginSettings = { ...(settings[pluginName] ?? {}) };
-    if (mutation.setting.remove === true) delete pluginSettings[mutation.setting.key];
-    else pluginSettings[mutation.setting.key] = mutation.setting.value;
+    if (setting.remove === true) delete pluginSettings[setting.key];
+    else pluginSettings[setting.key] = setting.value;
     settings[pluginName] = pluginSettings;
     overrides.settings = settings;
   }
@@ -566,7 +567,9 @@ const listPlugins = async (directory: string): Promise<PluginListResult> => {
 
 
   for (const plugin of plugins) {
-    const raw = pluginRawById.get(plugin.id) ?? marketplaceRawById.get(plugin.id);
+    const raw = pluginRawById.get(plugin.id);
+    // Only installed RawPlugin rows carry the manifest surface the SDK
+    // resolver reads; marketplace rows have no local manifest to walk.
     if (!raw) continue;
     for (const entry of resolvePluginManifestEntries(raw, 'extensions')) {
       const resolved = entry.resolvedPath ? canonicalPath(entry.resolvedPath) : null;
@@ -661,7 +664,9 @@ export const registerPluginsDomainRoutes = (
 
   route('GET', '/omp/plugins/extensions/{id}', async (request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = extensionFilesById.get(ctx.params.id);
+    const id = ctx?.params.id;
+    if (!id) return badRequest('extension id required');
+    const target = extensionFilesById.get(id);
     if (!target) return notFound('extension not found');
     try {
       return json({
@@ -696,17 +701,20 @@ export const registerPluginsDomainRoutes = (
 
   route('DELETE', '/omp/plugins/extensions/{id}', async (_request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = extensionFilesById.get(ctx.params.id);
+    const id = ctx?.params.id;
+    if (!id) return badRequest('extension id required');
+    const target = extensionFilesById.get(id);
     if (!target) return notFound('extension not found');
     if (target.editable !== true) return badRequest('extension entry is read-only');
     fs.unlinkSync(target.path);
-    extensionFilesById.delete(ctx.params.id);
+    extensionFilesById.delete(id);
     return json(restartDeferred('OMP extension removed. Restart the omp engine to apply it.'));
   });
 
   route('PATCH', '/omp/plugins/{id}', async (request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = decodePluginId(ctx.params.id);
+    const id = ctx?.params.id;
+    const target = id ? decodePluginId(id) : null;
     if (!target) return badRequest('invalid plugin id');
     const body = await jsonBody(request);
     const directory = typeof body?.directory === 'string' && body.directory ? body.directory : process.cwd();
@@ -758,7 +766,8 @@ export const registerPluginsDomainRoutes = (
 
   route('DELETE', '/omp/plugins/{id}', async (request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = decodePluginId(ctx.params.id);
+    const id = ctx?.params.id;
+    const target = id ? decodePluginId(id) : null;
     if (!target) return badRequest('invalid plugin id');
     const url = new URL(request.url);
     const directory = url.searchParams.get('directory') ?? process.cwd();
@@ -781,7 +790,8 @@ export const registerPluginsDomainRoutes = (
 
   route('POST', '/omp/plugins/{id}/reveal', async (request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = decodePluginId(ctx.params.id);
+    const id = ctx?.params.id;
+    const target = id ? decodePluginId(id) : null;
     if (!target) return badRequest('invalid plugin id');
     const url = new URL(request.url);
     const directory = url.searchParams.get('directory') ?? process.cwd();
@@ -798,7 +808,9 @@ export const registerPluginsDomainRoutes = (
 
   route('POST', '/omp/plugins/extensions/{id}/reveal', async (_request, ctx) => {
     if (features?.['plugins.v1'] !== true) return featureUnavailable('plugins.v1');
-    const target = extensionFilesById.get(ctx.params.id);
+    const id = ctx?.params.id;
+    if (!id) return badRequest('extension id required');
+    const target = extensionFilesById.get(id);
     if (!target) return notFound('extension not found');
     if (!fs.existsSync(target.path)) return notFound('extension path not found');
     try {

@@ -99,13 +99,15 @@ describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', 
 
   test('options pin sessionId and resolve artifactsDir from constant or provider', () => {
     const fromConstant = createLocalProtocolOptions('ses_A', DIRECTORY, 'X:/artifacts/A');
-    expect(fromConstant.getSessionId()).toBe('ses_A');
-    expect(fromConstant.getArtifactsDir()).toBe('X:/artifacts/A');
+    expect(fromConstant.getSessionId?.()).toBe('ses_A');
+    expect(fromConstant.getArtifactsDir?.()).toBe('X:/artifacts/A');
     const fromProvider = createLocalProtocolOptions('ses_B', DIRECTORY, (sid) =>
       sid === 'ses_B' ? 'X:/artifacts/B' : null,
     );
-    expect(fromProvider.getArtifactsDir()).toBe('X:/artifacts/B');
-    expect(createLocalProtocolOptions('ses_C', DIRECTORY, () => undefined).getArtifactsDir()).toBeNull();
+    expect(fromProvider.getArtifactsDir?.()).toBe('X:/artifacts/B');
+    // SAFETY: the provider overload answers undefined → null artifacts dir.
+    const nullProvider = createLocalProtocolOptions('ses_C', DIRECTORY, () => undefined);
+    expect(nullProvider.getArtifactsDir?.()).toBeNull();
   });
 
   test('sessionId is required', () => {
@@ -123,7 +125,9 @@ describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', 
       'C:/sess/2026-08-27T10-00-00Z_ses_A',
     );
     expect(artifactsDirForSessionFile('C:/sess/notes.txt')).toBeNull();
-    expect(artifactsDirForSessionFile(undefined)).toBeNull();
+    // SAFETY: degenerate input — a missing session file yields no artifacts dir.
+    const noFile: string | { path: string } = '';
+    expect(artifactsDirForSessionFile(noFile)).toBeNull();
   });
 
   test('resolve accepts an async localOptionsFor hook (engine cold path)', async () => {
@@ -160,8 +164,8 @@ describe('local:// resolve (spec 04 §5.2.1, R2-H2/R7)', () => {
     expect(body.url).toBe('local://scratch.md');
     expect('sourcePath' in body).toBe(false);
     expect(JSON.stringify(body)).not.toContain(base.replaceAll('\\', '/'));
-    expect(body.token.id).toMatch(/^ocuri_[A-Za-z0-9_-]{43}$/);
-    expect(typeof body.token.expiresAt).toBe('number');
+    expect(body.token?.id).toMatch(/^ocuri_[A-Za-z0-9_-]{43}$/);
+    expect(typeof body.token?.expiresAt).toBe('number');
   });
 
   test('same directory, different sessions are isolated (session pinning)', async () => {
@@ -249,7 +253,7 @@ describe('resource tokens (spec 04 §5.2.4, R7)', () => {
     });
     // SAFETY: resolve answers { token: { id } } per the §5.2.1 wire contract.
     const resource = (await resolved.json()) as ResolveResponseBody;
-    const opened = await domain.uri.open({ body: { token: resource.token.id }, directory: DIRECTORY });
+    const opened = await domain.uri.open({ body: { token: resource.token?.id ?? '' }, directory: DIRECTORY });
     // SAFETY: open answers the same ResolveResponseBody wire shape.
     const openBody = (await opened.json()) as ResolveResponseBody;
     expect(opened.status).toBe(200);
@@ -272,7 +276,7 @@ describe('resource tokens (spec 04 §5.2.4, R7)', () => {
         body: { scheme: 'local', ref: 'scratch.md', sessionID: 'ses_A', directory: DIRECTORY },
       })
     ).json()) as ResolveResponseBody;
-    const params = new URLSearchParams({ token: resource.token.id });
+    const params = new URLSearchParams({ token: resource.token?.id ?? '' });
     // SAFETY: info answers the metadata subset of ResolveResponseBody.
     const info = (await domain.uri.info({ query: params, directory: DIRECTORY }).json()) as ResolveResponseBody;
     expect(info.url).toBe('local://scratch.md');
@@ -281,7 +285,7 @@ describe('resource tokens (spec 04 §5.2.4, R7)', () => {
     expect('content' in info).toBe(false);
     expect(JSON.stringify(info)).not.toContain(base.replaceAll('\\', '/'));
     // still fully redeemable afterwards
-    const opened = await domain.uri.open({ body: { token: resource.token.id }, directory: DIRECTORY });
+    const opened = await domain.uri.open({ body: { token: resource.token?.id ?? '' }, directory: DIRECTORY });
     expect(opened.status).toBe(200);
   });
 
@@ -357,19 +361,19 @@ describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
     const nodeById = new Map(tree.nodes.map((n) => [n.id, n]));
     for (const node of tree.nodes) {
       const seen = new Set();
-      let cursor = node;
+      let cursor: import('./domain-uri.ts').SessionTreeNodeProjection | undefined = node;
       while (cursor?.parentId) {
         expect(seen.has(cursor.id)).toBe(false);
         seen.add(cursor.id);
-        cursor = nodeById.get(cursor.parentId);
+        cursor = nodeById.get(cursor.parentId ?? '') ?? undefined;
       }
     }
   });
 
   test('subtree returns the lineage + descendants of one session', () => {
     const subtree = buildSessionSubtree('ses_2', wireSessions);
-    expect(subtree.nodes.map((n) => n.id).sort()).toEqual(['ses_1', 'ses_2', 'ses_3']);
-    expect(subtree.leafId).toBe('ses_2');
+    expect(subtree?.nodes.map((n) => n.id).sort()).toEqual(['ses_1', 'ses_2', 'ses_3']);
+    expect(subtree?.leafId).toBe('ses_2');
     expect(buildSessionSubtree('ses_missing', wireSessions)).toBeNull();
   });
 });
@@ -411,10 +415,10 @@ describe('buildEntryTreeSnapshot (spec 04 §5.4.1)', () => {
     expect(snapshot.revision).toBe(4);
     expect(snapshot.nodes.map((n) => n.id)).toEqual(['e_1', 'e_2', 'e_4']);
     expect(snapshot.nodes.find((n) => n.id === 'e_3')).toBeUndefined();
-    expect(snapshot.nodes[0].label).toBe('探索阶段');
-    expect(snapshot.nodes[0].gist).toEqual({ role: 'user', preview: 'explore the repo' });
-    expect(snapshot.nodes[1].gist.toolName).toBe('read');
-    expect(snapshot.nodes[2].gist.preview).toContain('abandoned exploration');
+    expect(snapshot.nodes[0]?.label).toBe('探索阶段');
+    expect(snapshot.nodes[0]?.gist).toEqual({ role: 'user', preview: 'explore the repo' });
+    expect(snapshot.nodes[1]?.gist?.toolName).toBe('read');
+    expect(snapshot.nodes[2]?.gist?.preview).toContain('abandoned exploration');
     expect(snapshot.pathToLeaf).toEqual(['e_1', 'e_2', 'e_4']);
   });
 });
@@ -431,7 +435,7 @@ describe('navigate/label contracts (spec 04 §5.4.2/§5.4.3, engine hooks)', () 
       reanswerAskResult: null,
     });
     expect(normalizeNavigateRequest({}).ok).toBe(false);
-    expect(normalizeNavigateRequest({ targetId: 'e_9', reanswerAskResult: { nope: true } }).response.status).toBe(400);
+    expect(normalizeNavigateRequest({ targetId: 'e_9', reanswerAskResult: { nope: true } }).response?.status).toBe(400);
     const twoPhase = normalizeNavigateRequest({
       targetId: 'e_9',
       reanswerAskResult: { content: [{ type: 'text', text: 'yes' }], details: {}, isError: false },
@@ -451,7 +455,7 @@ describe('navigate/label contracts (spec 04 §5.4.2/§5.4.3, engine hooks)', () 
 
   test('label request: undefined clears, non-string rejected', () => {
     expect(normalizeLabelRequest({ targetId: 'e_1' }).value).toEqual({ targetId: 'e_1', label: undefined });
-    expect(normalizeLabelRequest({ targetId: 'e_1', label: 'phase' }).value.label).toBe('phase');
+    expect(normalizeLabelRequest({ targetId: 'e_1', label: 'phase' }).value?.label).toBe('phase');
     expect(normalizeLabelRequest({ targetId: 'e_1', label: 5 }).ok).toBe(false);
     expect(normalizeLabelRequest({}).ok).toBe(false);
   });
@@ -489,9 +493,9 @@ describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
     const row = projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref() });
     expect(row.key).toBe('ses_1::Anna');
     expect(row.hasTranscript).toBe(true);
-    expect(row.history.outputPath).toBe('agent://Anna');
+    expect(row.history?.outputPath).toBe('agent://Anna');
     expect('sessionFile' in row).toBe(false);
-    expect(row.history.patchPath).toBeUndefined();
+    expect(row.history?.patchPath).toBeUndefined();
     const serialized = JSON.stringify(row);
     expect(serialized).not.toContain('.jsonl');
     expect(serialized).not.toContain('C:/leak');
@@ -508,7 +512,7 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     return {
       setTimeout: (fn: () => void, ms?: number) => {
         state.fn = fn;
-        state.ms = ms;
+        state.ms = ms ?? null;
         return 1;
       },
       clearTimeout: () => {
@@ -583,10 +587,10 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     });
     const { agentRuns } = aggregator.refresh();
     const ghost = agentRuns.find((r) => r.agentId === 'Ghost');
-    expect(ghost.status).toBe('historical');
-    expect(ghost.key).toBe('ses_C::Ghost');
+    expect(ghost?.status).toBe('historical');
+    expect(ghost?.key).toBe('ses_C::Ghost');
     const live = agentRuns.find((r) => r.key === 'ses_A::Anna');
-    expect(live.status).toBe('running'); // registry wins, never historical
+    expect(live?.status).toBe('running'); // registry wins, never historical
     aggregator.dispose();
   });
 
@@ -705,6 +709,9 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
       const result = await handleAgentRunAction({
         aggregator: historicalCtx.aggregator,
         descriptors: ctx.descriptors,
+        actions: {},
+        sessionID: 'ses_A',
+        agentId: 'Ghost',
         body: typeof kind === 'string' ? { kind } : kind,
       }).then((r) =>
         // SAFETY: the agent-run action endpoint answers the ResolveResponseBody wire shape.
@@ -839,7 +846,7 @@ type FakeUriRequest = { url: string; json: () => Promise<UriRequestBody | undefi
 const fakeUriRequest = (url: string, body?: UriRequestBody): FakeUriRequest => ({ url, json: async () => body });
 
 /** Session-tree fixture row (entry + label + children), matching buildSessionTree input. */
-type FixtureTreeNode = { entry: { type: string; id: string; parentId: string | null; timestamp: string; message?: unknown; summary?: string; targetId?: string; label?: string }; label?: string; children: FixtureTreeNode[] };
+type FixtureTreeNode = { entry: { type: string; id: string; parentId: string | null; timestamp: string; message?: { role?: unknown; content?: unknown }; summary?: string; targetId?: string; label?: string }; label?: string; children: FixtureTreeNode[] };
 
 describe('createUriDomain + mount (integration surface)', () => {
   const registerRoutes = (domain: { mount: (route: (m: string, p: string, h: import('./domain-uri.ts').UriRouteHandler) => void) => void }) => {
@@ -908,7 +915,7 @@ describe('createUriDomain + mount (integration surface)', () => {
 
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const opened = await (routes.get('POST /omp/uri/open') as (request: FakeUriRequest, ctx?: UriCtxLite) => Promise<Response>)(
-      fakeRequest('http://x/omp/uri/open', { token: resource.token.id, directory: DIRECTORY }),
+      fakeRequest('http://x/omp/uri/open', { token: resource.token?.id ?? '', directory: DIRECTORY }),
       ctxFor('http://x/omp/uri/open'),
     );
     expect(opened.status).toBe(200);
@@ -1122,14 +1129,14 @@ describe('local:// binary preview (spec 04 §5.2.4 — token byte stream)', () =
       sessionID: 'ses_A',
       directory: DIRECTORY,
     });
-    const res = await domain.uri.content({ id: body.token.id, directory: DIRECTORY });
+    const res = await domain.uri.content({ id: body.token?.id, directory: DIRECTORY });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     const bytes = Buffer.from(await res.arrayBuffer());
     expect(bytes.subarray(0, 8).equals(PNG_BYTES.subarray(0, 8))).toBe(true);
 
-    const scoped = await domain.uri.content({ id: body.token.id, directory: 'C:/other' });
+    const scoped = await domain.uri.content({ id: body.token?.id, directory: 'C:/other' });
     expect(scoped.status).toBe(403);
     domain.dispose();
   });

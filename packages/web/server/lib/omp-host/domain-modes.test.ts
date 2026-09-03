@@ -271,8 +271,8 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
     tracker.setPrewalk(true, { target: '@smol' });
     expect(tracker.snapshot()).toMatchObject({ mode: 'plan', prewalk: { target: '@smol' } });
     const last = rec.modeEvents().at(-1);
-    expect(last.payload).toEqual({ mode: 'prewalk', data: { target: '@smol' } });
-    expect(last.opts.durable).toBe(true);
+    expect(last?.payload).toEqual({ mode: 'prewalk', data: { target: '@smol' } });
+    expect(last?.opts?.durable).toBe(true);
     tracker.setPrewalk(false);
     expect(tracker.snapshot().prewalk).toBeUndefined();
   });
@@ -294,7 +294,7 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
       expect(rec.appended).toEqual([]);
       expect(rec.modeEvents()).toHaveLength(1);
       if (expectedMode === 'plan' || expectedMode === 'plan_paused') {
-        expect(snapshot.plan.planFilePath).toBe(expectedPlanPath);
+        expect(snapshot.plan?.planFilePath).toBe(expectedPlanPath);
       }
       if (expectedMode === 'goal' || expectedMode === 'goal_paused') {
         expect(snapshot.goal).toMatchObject({ id: 'g' });
@@ -361,7 +361,8 @@ const definitionHarness = (overrides: Partial<AgentDefinitionHandlersOptions> = 
       [userAgentsDir, 'user'],
     ] as const) {
       for (const file of [...files.keys()].filter((p) => p.startsWith(dir + path.sep) && p.endsWith('.md')).sort()) {
-        const agent = parseAgent(file, files.get(file), source, 'off');
+        const fileBody = files.get(file) ?? '';
+        const agent = parseAgent(file, fileBody, source, 'off');
         if (!seen.has(agent.name)) { seen.add(agent.name); agents.push(agent); }
       }
     }
@@ -395,9 +396,12 @@ const definitionHarness = (overrides: Partial<AgentDefinitionHandlersOptions> = 
   return { handlers, files, writes, deletes, userAgentsDir, projAgentsDir, root, refreshCalls, revealCalls };
 };
 
+/** Handler-invocation stub: CRUD handlers read only ctx + body fields. */
+const dummyRequest = (): Request => new Request('http://x/omp/agent-definitions');
+
 const ctxForName = (name: string | undefined, directory: string): ModesRouteContext => ({
   params: { name },
-  url: new URL(`http://x/omp/agent-definitions/${name}?directory=${encodeURIComponent(directory)}`),
+  url: new URL(`http://x/omp/agent-definitions/${name ?? ''}?directory=${encodeURIComponent(directory)}`),
   headers: new Headers(),
 });
 
@@ -443,14 +447,14 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
     expect(files.get(filePath)).toContain('description: Review code.');
     expect(writes).toHaveLength(1);
 
-    const listed = await handlers.list(null, ctxForName(undefined, PROJ_DIR));
+    const listed = await handlers.list(dummyRequest(), ctxForName(undefined, PROJ_DIR));
     // SAFETY: list() answers the read projection `{ agents: OmpAgentRecord[] }`
     // (the createAgentDefinitionHandlers contract asserted throughout this block).
     const payload = (await listed.json()) as { agents: OmpAgentRecord[] };
     expect(payload.agents.map((a) => a.name)).toEqual(['reviewer', 'scout', 'task']);
     expect(payload.agents.map((a) => a.source)).toEqual(['user', 'bundled', 'bundled']);
 
-    const removed = await handlers.remove(null, ctxForName('reviewer', PROJ_DIR));
+    const removed = await handlers.remove(dummyRequest(), ctxForName('reviewer', PROJ_DIR));
     expect(removed.status).toBe(204);
     expect(deletes).toEqual([filePath]);
   });
@@ -514,7 +518,7 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
 
     let missing = null;
     try {
-      await handlers.remove(null, ctxForName('nope', PROJ_DIR));
+      await handlers.remove(dummyRequest(), ctxForName('nope', PROJ_DIR));
     } catch (error) {
       missing = error;
     }
@@ -529,7 +533,7 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
         put('http://x/omp/agent-definitions/scout', { definition: { description: 'x' } }),
         ctxForName('scout', PROJ_DIR),
       ),
-      () => handlers.remove(null, ctxForName('scout', PROJ_DIR)),
+      () => handlers.remove(dummyRequest(), ctxForName('scout', PROJ_DIR)),
     ]) {
       let caught = null;
       try {
@@ -655,10 +659,10 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
       put('http://x/omp/agent-definitions/hot-probe', { definition: { systemPrompt: 'p2' } }),
       ctxForName('hot-probe', PROJ_DIR),
     );
-    await handlers.remove(null, ctxForName('hot-probe', PROJ_DIR));
+    await handlers.remove(dummyRequest(), ctxForName('hot-probe', PROJ_DIR));
     expect(refreshCalls).toHaveLength(3);
 
-    const refreshed = await handlers.refresh(null, ctxForName(undefined, PROJ_DIR));
+    const refreshed = await handlers.refresh(dummyRequest(), ctxForName(undefined, PROJ_DIR));
     expect(refreshed.status).toBe(204);
     expect(refreshCalls).toHaveLength(4);
   });
@@ -669,13 +673,13 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
       post('http://x', { scope: 'user', definition: { name: 'revealable', description: 'd', systemPrompt: 'p' } }),
       ctxForName(undefined, PROJ_DIR),
     );
-    const revealed = await handlers.reveal(null, ctxForName('revealable', PROJ_DIR));
+    const revealed = await handlers.reveal(dummyRequest(), ctxForName('revealable', PROJ_DIR));
     expect(revealed.status).toBe(200);
     expect(revealCalls).toEqual([path.join(userAgentsDir, 'revealable.md')]);
 
     let bundled = null;
     try {
-      await handlers.reveal(null, ctxForName('scout', PROJ_DIR));
+      await handlers.reveal(dummyRequest(), ctxForName('scout', PROJ_DIR));
     } catch (error) {
       bundled = error;
     }
@@ -684,7 +688,7 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
 
     let missing = null;
     try {
-      await handlers.reveal(null, ctxForName('ghost', PROJ_DIR));
+      await handlers.reveal(dummyRequest(), ctxForName('ghost', PROJ_DIR));
     } catch (error) {
       missing = error;
     }
@@ -831,7 +835,7 @@ describe('personas (spec 02 §5.2a)', () => {
       name: 'grumpy', description: 'd', systemPrompt: 'Be grumpy.', tools: ['read'],
     });
 
-    const one = await handlers.get(null, { params: { name: 'grumpy' } });
+    const one = await handlers.get(dummyRequest(), { params: { name: 'grumpy' } });
     expect(await one.json()).toMatchObject({ name: 'grumpy' });
 
     const updated = await handlers.update(
@@ -848,7 +852,7 @@ describe('personas (spec 02 §5.2a)', () => {
     }
     expect(dup?.status).toBe(409);
 
-    expect((await handlers.remove(null, { params: { name: 'grumpy' } })).status).toBe(204);
+    expect((await handlers.remove(dummyRequest(), { params: { name: 'grumpy' } })).status).toBe(204);
     expect(await (await handlers.list()).json()).toEqual({ personas: [] });
   });
 
@@ -999,7 +1003,7 @@ describe('planReviewBridge (spec 02 §5.5)', () => {
     const pending = hook('auth');
     await tick();
     bridge.decide({ choice: 'approve-compact' });
-    expect((await pending).details.planFilePath).toBe('local://auth-plan.md');
+    expect((await pending).details?.planFilePath).toBe('local://auth-plan.md');
   });
 });
 
@@ -1160,7 +1164,7 @@ describe('modes domain + route mounting', () => {
       review: PREPARE_RESULT.details,
     });
     // The tracker's plan projection sees the review through the onReview wiring.
-    expect(domain.trackerFor('s5', 'C:/p').snapshot().plan.review).toEqual(PREPARE_RESULT.details);
+    expect(domain.trackerFor('s5', 'C:/p').snapshot().plan?.review).toEqual(PREPARE_RESULT.details);
 
     const decision = await call('POST', '/omp/sessions/{id}/plan/review', {
       url: 'http://x/omp/sessions/s5/plan/review?directory=C:/p',

@@ -165,7 +165,7 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
       },
     }, { modelsPath });
     expect(result.status).toBe(200);
-    expect(result.body.provider.hasApiKey).toBe(true);
+    expect(result.body.provider?.hasApiKey).toBe(true);
     expect(JSON.stringify(result.body)).not.toContain('gk-123');
 
     const written = readFileSync(modelsPath, 'utf8');
@@ -264,7 +264,7 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     const a1 = listed.providers[0].models[0];
     expect(a1.input).toEqual(['text', 'image']);
     expect(a1.supportsTools).toBe(false);
-    expect(a1.cost.cacheWrite).toBe(2.5);
+    expect(a1.cost?.cacheWrite).toBe(2.5);
     expect(a1.contextPromotionTarget).toBe('alpha/a2');
     // null clears
     const cleared = await putOmpProvider({
@@ -324,12 +324,12 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
 
     const listed = await listOmpProviders({ modelsPath });
     const gamma = listed.providers.find((p) => p.id === 'gamma');
-    expect(gamma.models[0].input).toEqual(['text', 'image']);
-    expect(gamma.models[0].cost.cacheRead).toBe(0.5);
-    expect(gamma.models[0].thinking.efforts).toEqual(['low', 'high']);
-    expect(gamma.models[0].thinking.defaultLevel).toBe('low');
+    expect(gamma?.models[0]?.input).toEqual(['text', 'image']);
+    expect(gamma?.models[0]?.cost?.cacheRead).toBe(0.5);
+    expect(gamma?.models[0]?.thinking?.efforts).toEqual(['low', 'high']);
+    expect(gamma?.models[0]?.thinking?.defaultLevel).toBe('low');
     const alpha = listed.providers.find((p) => p.id === 'alpha');
-    expect(alpha.models.find((m) => m.id === 'a2').input).toEqual(['text', 'image']);
+    expect(alpha?.models.find((m) => m.id === 'a2')?.input).toEqual(['text', 'image']);
   });
 
   test('thinking update preserves hand-authored effortMap/supportsDisplay, retires legacy range keys; GET derives legacy efforts', async () => {
@@ -356,8 +356,8 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     // itself resolves (ModelThinkingSchema normalization) so the dialog
     // prefills instead of offering to delete the block.
     const before = await listOmpProviders({ modelsPath });
-    expect(before.providers[0].models[0].thinking.efforts).toEqual(['low', 'medium', 'high']);
-    expect(before.providers[0].models[0].thinking.defaultLevel).toBe('low');
+    expect(before.providers[0]?.models[0]?.thinking?.efforts).toEqual(['low', 'medium', 'high']);
+    expect(before.providers[0]?.models[0]?.thinking?.defaultLevel).toBe('low');
 
     const result = await putOmpProvider({
       provider: {
@@ -466,9 +466,9 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
     expect(seeded.status).toBe(200);
     // GET projection must surface omitMaxOutputTokens so the dialog prefills reality.
     const listed = await listOmpProviders({ modelsPath });
-    const seededModel = listed.providers.find((p) => p.id === 'alpha').models[0];
-    expect(seededModel.reasoning).toBe(true);
-    expect(seededModel.omitMaxOutputTokens).toBe(true);
+    const seededModel = listed.providers.find((p) => p.id === 'alpha')?.models[0];
+    expect(seededModel?.reasoning).toBe(true);
+    expect(seededModel?.omitMaxOutputTokens).toBe(true);
 
     // The dialog saves with both boxes un-checked: explicit false reasoning,
     // null to clear the omit-max override.
@@ -581,8 +581,12 @@ describe('route mounting', () => {
     const { modelsPath } = makeEnv();
     const routes: Array<{ m: string; p: string; h: import('./domain-providers.ts').ProvidersRouteHandler }> = [];
     registerProvidersDomainRoutes((m: string, p: string, h: import('./domain-providers.ts').ProvidersRouteHandler) => routes.push({ m, p, h }), { modelsPath });
-    const put = routes.find((r) => r.m === 'PUT' && r.p === '/omp/providers').h;
-    const del = routes.find((r) => r.m === 'DELETE' && r.p === '/omp/providers/{id}').h;
+    // SAFETY: unreachable fallback — the registered routes always include
+    // the PUT row; the stub only satisfies the type checker.
+    const put = (routes.find((r) => r.m === 'PUT' && r.p === '/omp/providers') ?? { m: '', p: '', h: ((_request: Request): Promise<Response> => Promise.reject(new Error('route missing'))) as import('./domain-providers.ts').ProvidersRouteHandler }).h;
+    // SAFETY: unreachable fallback — the registered routes always include
+    // the DELETE row; the stub only satisfies the type checker.
+    const del = (routes.find((r) => r.m === 'DELETE' && r.p === '/omp/providers/{id}') ?? { m: '', p: '', h: ((_request: Request, _ctx?: { params?: Record<string, string> }): Promise<Response> => Promise.reject(new Error('route missing'))) as import('./domain-providers.ts').ProvidersRouteHandler }).h;
 
     const putResponse = await put(new Request('http://host/omp/providers', {
       method: 'PUT',

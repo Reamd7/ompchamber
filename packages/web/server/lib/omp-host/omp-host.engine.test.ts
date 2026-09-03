@@ -213,13 +213,13 @@ describe('OmpHostEngine prompt dispatch', () => {
     const session = sessionFor('s3');
     // No explicit level and no model default in the registry → no variant.
     const bare = await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'bare', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
-    expect(bare.info.model).toEqual({ providerID: 'p1', modelID: 'current-model' });
+    expect(bare?.info.model).toEqual({ providerID: 'p1', modelID: 'current-model' });
 
     // An explicit session level rides model.variant — the exact send-time
     // snapshot the turn runs with.
     session.thinkingLevel = 'xhigh';
     const stamped = await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'stamped', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
-    expect(stamped.info.model).toEqual({ providerID: 'p1', modelID: 'current-model', variant: 'xhigh' });
+    expect(stamped?.info.model).toEqual({ providerID: 'p1', modelID: 'current-model', variant: 'xhigh' });
     delete session.thinkingLevel;
   });
 
@@ -261,7 +261,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     const engine = new OmpHostEngine({ agentDir });
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'defaults', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
     const options = createdOptions.at(-1);
-    expect(options.model).toBeUndefined();
+    expect(options?.model).toBeUndefined();
   });
 
   test('abort forwards to the live agent session and reports unknown sessions as false', async () => {
@@ -337,16 +337,17 @@ describe('OmpHostEngine prompt dispatch', () => {
     session.abort = mock(async () => {});
     session.dispose = mock(async () => {});
     const live = engine.sessions.get('s2');
+    if (!live) throw new Error('s2 missing');
     live.awaitingAsyncSince = Date.now();
     const before = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle').length;
 
     await expect(engine.abort({ sessionID: 's2', directory: '/repo' })).resolves.toBe(true);
-    expect(live.awaitingAsyncSince).toBe(null);
+    expect(live.awaitingAsyncSince === null).toBe(true);
     expect(engine.sessions.has('s2')).toBe(true);
     expect(session.dispose).not.toHaveBeenCalled();
     const idle = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle');
     expect(idle.length).toBe(before + 1);
-    expect(idle.at(-1).directory).toBe('/repo');
+    expect(idle.at(-1)?.directory).toBe('/repo');
   });
 
   test('updateSession refuses a mis-addressed update for an idle session', async () => {
@@ -445,20 +446,20 @@ describe('OmpHostEngine prompt dispatch', () => {
     const options = createdOptions.at(-1);
     // Settings injection (06 §5.1 / master R6): the boot instance is handed
     // to the SDK instead of the process singleton.
-    expect(options.settings).toBe(await engine.settingsStore.settingsFor('/repo'));
+    expect(options?.settings).toBe(await engine.settingsStore?.settingsFor('/repo'));
     // R13: hasUI comes from the dialog lease snapshot — no lease → false
     // (fail-closed), never from the capability.
-    expect(options.hasUI).toBe(false);
+    expect(options?.hasUI).toBe(false);
     // R7/R8: local:// resolution is session-pinned with zero global mutation.
-    expect(options.localProtocolOptions).toBeTruthy();
-    expect(typeof options.localProtocolOptions).toBe('object');
+    expect(options?.localProtocolOptions).toBeTruthy();
+    expect(typeof options?.localProtocolOptions).toBe('object');
     // Retained for the agent-runs aggregator (04 §5.5).
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect((engine.sessions.get('s1') as { agentRegistry: unknown }).agentRegistry).toBe(options.agentRegistry);
+    expect((engine.sessions.get('s1') as { agentRegistry: unknown }).agentRegistry).toBe(options?.agentRegistry);
     // A lease flip drives hasUI on the next materialization.
     engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's2', clientId: 'c1' });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'with lease', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
-    expect(createdOptions.at(-1).hasUI).toBe(true);
+    expect(createdOptions.at(-1)?.hasUI).toBe(true);
   });
 
   test('attaches both extension and tool UI contexts during first materialization', async () => {
@@ -471,7 +472,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's2', clientId: 'browser-2' });
     await Promise.resolve();
 
-    expect(createdOptions.at(-1).hasUI).toBe(true);
+    expect(createdOptions.at(-1)?.hasUI).toBe(true);
     const attach = toolUiContextCalls.slice(beforeTool).at(-1);
     expect(attach?.hasUI).toBe(true);
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
@@ -492,9 +493,9 @@ describe('OmpHostEngine prompt dispatch', () => {
     engine.registry.update('/repo', 's1', { agent: 'plan', model: 'p1/zzz-first' });
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'plan it', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
     const planOptions = createdOptions.at(-1);
-    expect(planOptions.planYolo).toBeUndefined();
-    expect(planOptions.systemPrompt).toBeUndefined();
-    expect(JSON.stringify(planOptions)).not.toContain('autoApproveOnResolve');
+    expect(planOptions?.planYolo).toBeUndefined();
+    expect(planOptions?.systemPrompt).toBeUndefined();
+    expect(JSON.stringify(planOptions ?? {})).not.toContain('autoApproveOnResolve');
 
     // A persona meta resolves the persona store (02 §5.1 D-B2): the overlay
     // shapes systemPrompt/toolNames at construction.
@@ -502,8 +503,8 @@ describe('OmpHostEngine prompt dispatch', () => {
     engine.registry.update('/repo', 's2', { persona: 'grumpy' });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'hello', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
     const personaOptions = createdOptions.at(-1);
-    expect(personaOptions.systemPrompt).toBe('Be grumpy.');
-    expect(personaOptions.toolNames).toEqual(['read']);
+    expect(personaOptions?.systemPrompt).toBe('Be grumpy.');
+    expect(personaOptions?.toolNames).toEqual(['read']);
   });
 });
 
@@ -582,16 +583,16 @@ describe('OmpHostEngine fork lineage', () => {
 
     const forked = await engine.fork({ sessionID: 's1', directory: '/repo' });
 
-    expect(forked.id).toBe('s1_fork');
-    expect(forked.title).toBe('root work (fork)');
-    expect(forked.parentID).toBeUndefined();
-    expect(forked.forkParentID).toBe('s1');
+    expect(forked?.id).toBe('s1_fork');
+    expect(forked?.title).toBe('root work (fork)');
+    expect(forked?.parentID).toBeUndefined();
+    expect(forked?.forkParentID).toBe('s1');
     expect(engine.registry.get('/repo', 's1_fork')).toMatchObject({ forkParentID: 's1' });
     // The listing projection carries the same split — the session-tree
     // builder reads forkParentID, the UI subagent checks read parentID.
     const listed = (await engine.listSessions({ directory: '/repo' })).find((s) => s.id === 's1_fork');
-    expect(listed.parentID).toBeUndefined();
-    expect(listed.forkParentID).toBe('s1');
+    expect(listed?.parentID).toBeUndefined();
+    expect(listed?.forkParentID).toBe('s1');
   });
 });
 
@@ -603,7 +604,7 @@ describe('OmpHostEngine fork boundary (wire messageID)', () => {
 
     const forked = await engine.fork({ sessionID: 's1', directory: '/repo', messageID: 'e3' });
 
-    expect(forked.forkParentID).toBe('s1');
+    expect(forked?.forkParentID).toBe('s1');
     // The leaf moves to the boundary entry's parent (e3 and its tail leave
     // the active path), and an appended marker entry makes the rewind durable.
     expect(forkMutations).toEqual([
