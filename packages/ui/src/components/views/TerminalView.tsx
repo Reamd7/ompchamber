@@ -61,6 +61,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const createTab = useTerminalStore((s) => s.createTab);
     const setActiveTab = useTerminalStore((s) => s.setActiveTab);
     const closeTab = useTerminalStore((s) => s.closeTab);
+    const dismissTerminalSession = useTerminalStore((s) => s.dismissTerminalSession);
     const setTabSessionId = useTerminalStore((s) => s.setTabSessionId);
     const adoptServerSessions = useTerminalStore((s) => s.adoptServerSessions);
     const setTabLifecycle = useTerminalStore((s) => s.setTabLifecycle);
@@ -242,8 +243,22 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
 
     // The server reaps terminals with no attached socket after an idle timeout,
     // but only the active tab holds an attachment. While this client is open,
-    // periodically mark every session its tabs reference as active so
-    // background tabs (and other directories' terminals) are not reaped.
+    // periodically CLAIM every session its tabs reference so background tabs
+    // (and other directories' terminals) are neither reaped nor killed by a
+    // conditional close from this window. The claim must also fire when the
+    // referenced set GROWS: adoption's session listing resolves after this
+    // effect's synchronous first touch, so a newly adopted foreign session
+    // would otherwise stay unclaimed until the next interval tick — and a tab
+    // close on the originating device within that window would kill it.
+    const referencedSessionIds = useTerminalStore((s) => {
+        const ids: string[] = [];
+        for (const dirState of s.sessions.values()) {
+            for (const tab of dirState.tabs) {
+                if (tab.terminalSessionId) ids.push(tab.terminalSessionId);
+            }
+        }
+        return ids.join('\n');
+    });
     React.useEffect(() => {
         if (!terminal.touchSessions) {
             return;
@@ -261,7 +276,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         touch();
         const interval = setInterval(touch, 10 * 60 * 1000);
         return () => clearInterval(interval);
-    }, [terminal]);
+    }, [terminal, referencedSessionIds]);
 
     React.useEffect(() => {
         if (!showQuickKeys && activeModifier !== null) {
@@ -672,10 +687,16 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 if (tab.terminalSessionId) locallyBoundSessionIds.add(tab.terminalSessionId);
                             }
                         }
+                        // A session this client deliberately released (tab
+                        // close) is equally off-limits: attaching a fresh tab
+                        // to it would re-claim and resurrect what the user
+                        // just closed. It stays alive only for OTHER devices.
+                        const dismissedSessionIds = useTerminalStore.getState().dismissedSessionIds;
                         const match = running.find(
                             (s) => s.status === 'running' &&
                             s.cwd.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === normalizedCwd &&
-                            !locallyBoundSessionIds.has(s.sessionId)
+                            !locallyBoundSessionIds.has(s.sessionId) &&
+                            !dismissedSessionIds.has(s.sessionId)
                         );
                         if (match) {
                             // The cwd-scoped server list carries no geometry;
@@ -703,7 +724,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                     const owningTab = useTerminalStore.getState().getDirectoryState(directory)?.tabs.find((entry) => entry.id === tabId);
                     if (!owningTab) {
                         try {
-                            await terminal.close(session.sessionId);
+                            await terminal.close(session.sessionId, { releaseOnlyIfShared: true });
                         } catch { /* ignored */ }
                         return;
                     }
@@ -894,9 +915,23 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const handleCloseTab = React.useCallback(
         (tabId: string) => {
             if (!effectiveDirectory) return;
-            // Session lifecycle: closing a tab only DETACHES this device —
-            // the PTY lives on the server and outlives every browser. A real
-            // kill is the explicit destructive action (handleKillSession).
+            // Session lifecycle: closing a tab releases THIS window's claim on
+            // the session. The server terminates the PTY only when no other
+            // window/device still claims it (multi-device sharing); with no
+            // other claimant the process dies immediately — a closed tab can
+            // never reattach, so a surviving session would only resurrect as
+            // an adopted tab or leak as a hidden process.
+            const closedSessionId = useTerminalStore
+                .getState()
+                .sessions.get(effectiveDirectory)
+                ?.tabs.find((tab) => tab.id === tabId)?.terminalSessionId ?? null;
+            if (closedSessionId) {
+                // Dismiss BEFORE closing: adoption must never resurrect this
+                // session as a new tab here just because it survives the
+                // conditional close on another device's claim.
+                dismissTerminalSession(closedSessionId);
+                void terminal.close(closedSessionId, { releaseOnlyIfShared: true }).catch(() => { /* the idle sweep stays the backstop */ });
+            }
             if (tabId === activeTabId) {
                 disconnectStream();
             }
@@ -905,7 +940,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             setIsReconnectPending(false);
             closeTab(effectiveDirectory, tabId);
         },
-        [activeTabId, closeTab, disconnectStream, effectiveDirectory]
+        [activeTabId, closeTab, disconnectStream, dismissTerminalSession, effectiveDirectory, terminal]
     );
 
     const handleKillSession = React.useCallback(() => {

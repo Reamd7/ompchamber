@@ -61,8 +61,8 @@ export const createWebTerminalAPI = (): TerminalAPI => ({
     await updateTerminalAppearance(sessionId, appearance);
   },
 
-  async close(sessionId: string): Promise<void> {
-    await closeTerminal(sessionId);
+  async close(sessionId: string, options?: { releaseOnlyIfShared?: boolean }): Promise<void> {
+    await closeTerminal(sessionId, options);
   },
 
   async restartSession(

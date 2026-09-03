@@ -76,6 +76,8 @@ interface TerminalStore {
   hasHydrated: boolean;
   /** Tab IDs with unread command-finished events (cleared when tab is viewed). */
   unreadTabs: Set<string>;
+  /** Sessions this client deliberately released; adoption must not resurrect them as tabs in the same page session. Not persisted. */
+  dismissedSessionIds: Set<string>;
   setTabUnread: (tabId: string, unread: boolean) => void;
   ensureDirectory: (directory: string) => void;
   getDirectoryState: (directory: string) => DirectoryTerminalState | undefined;
@@ -91,6 +93,8 @@ interface TerminalStore {
   setTabLabel: (directory: string, tabId: string, label: string) => void;
   setTabIconKey: (directory: string, tabId: string, iconKey: string | null) => void;
   closeTab: (directory: string, tabId: string) => void;
+  /** Marks a session as deliberately released by this client so session adoption never resurrects it as a tab here. */
+  dismissTerminalSession: (sessionId: string) => void;
 
   setTabSessionId: (directory: string, tabId: string, sessionId: string | null) => void;
   setTabLifecycle: (directory: string, tabId: string, lifecycle: TerminalTabLifecycle) => void;
@@ -284,6 +288,11 @@ export const useTerminalStore = create<TerminalStore>()(
         nextTabId: 1,
         hasHydrated: typeof window === 'undefined',
         unreadTabs: new Set<string>(),
+        // Deliberately released session ids (tab closes). In-memory on purpose:
+        // a reload is a fresh context that may legitimately re-adopt a shared
+        // session, but the SAME page session must never resurrect a tab the
+        // user just closed merely because the session survives elsewhere.
+        dismissedSessionIds: new Set<string>(),
         setTabUnread: (tabId, unread) => {
           set((state) => {
             const next = new Set(state.unreadTabs);
@@ -377,7 +386,10 @@ export const useTerminalStore = create<TerminalStore>()(
               if (tab.terminalSessionId) knownIds.add(tab.terminalSessionId);
             }
 
-            const newcomers = serverSessions.filter((session) => !knownIds.has(session.sessionId));
+            // A session this client deliberately released (tab close) must not
+            // come back as a tab just because it survives on other devices;
+            // otherwise closing shared terminals resurrects them instantly.
+            const newcomers = serverSessions.filter((session) => !knownIds.has(session.sessionId) && !state.dismissedSessionIds.has(session.sessionId));
             if (newcomers.length === 0) return state;
 
             const tabs = [...(existing?.tabs ?? [])];
@@ -603,7 +615,25 @@ export const useTerminalStore = create<TerminalStore>()(
             const nextTabs = [...existing.tabs];
             nextTabs[idx] = nextTab;
             newSessions.set(key, { ...existing, tabs: nextTabs });
-            return { sessions: newSessions, ...(nextBuffers ? { buffers: nextBuffers } : {}) };
+            // Rebinding a tab to a session is a fresh intent to keep it, so a
+            // stale dismissal from an earlier close must not block future
+            // adoption of the same session id.
+            let nextDismissed = state.dismissedSessionIds;
+            if (sessionId && state.dismissedSessionIds.has(sessionId)) {
+              nextDismissed = new Set(state.dismissedSessionIds);
+              nextDismissed.delete(sessionId);
+            }
+            return { sessions: newSessions, ...(nextBuffers ? { buffers: nextBuffers } : {}), ...(nextDismissed !== state.dismissedSessionIds ? { dismissedSessionIds: nextDismissed } : {}) };
+          });
+        },
+
+        dismissTerminalSession: (sessionId: string) => {
+          if (!sessionId) return;
+          set((state) => {
+            if (state.dismissedSessionIds.has(sessionId)) return state;
+            const next = new Set(state.dismissedSessionIds);
+            next.add(sessionId);
+            return { dismissedSessionIds: next };
           });
         },
 
@@ -857,7 +887,7 @@ export const useTerminalStore = create<TerminalStore>()(
         },
 
         clearAll: () => {
-          set({ sessions: new Map(), buffers: new Map(), projectActionRuns: {}, nextChunkId: 1, nextTabId: 1, unreadTabs: new Set() });
+          set({ sessions: new Map(), buffers: new Map(), projectActionRuns: {}, nextChunkId: 1, nextTabId: 1, unreadTabs: new Set(), dismissedSessionIds: new Set() });
         },
       }),
       {

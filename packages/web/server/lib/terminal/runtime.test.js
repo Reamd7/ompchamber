@@ -452,7 +452,7 @@ describe('terminal runtime', () => {
       expect(resize.statusCode).toBe(200);
       const closed = createResponse();
       await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' } }, closed);
-      expect(closed.body).toEqual({ success: true });
+      expect(closed.body).toEqual({ success: true, released: true, killed: true });
     } finally { await harness.runtime.shutdown(); }
   });
 
@@ -462,6 +462,45 @@ describe('terminal runtime', () => {
       await harness.routes.post.get('/api/terminal/create')({ body: { sessionId: 'term-1', cwd: '/repo' } }, createResponse());
       await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' } }, createResponse());
       expect(harness.processes[0].kills).toEqual(['SIGTERM', 'SIGKILL']);
+    } finally { await harness.runtime.shutdown(); }
+  });
+
+  it('releases only the closing claimant and kills when the last claim goes', async () => {
+    const harness = createHarness();
+    try {
+      await harness.routes.post.get('/api/terminal/create')({ body: { sessionId: 'term-1', cwd: '/repo' } }, createResponse());
+      await harness.routes.post.get('/api/terminal/touch')({ body: { sessionIds: ['term-1'], claimant: 'client-a' } }, createResponse());
+      await harness.routes.post.get('/api/terminal/touch')({ body: { sessionIds: ['term-1'], claimant: 'client-b' } }, createResponse());
+
+      // Window A closes; window B still claims the session, so the PTY lives.
+      const released = createResponse();
+      await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' }, query: { claimant: 'client-a' } }, released);
+      expect(released.body).toEqual({ success: true, released: true, killed: false });
+      expect(harness.processes[0].killed).toBe(false);
+      const stillListed = createResponse();
+      harness.routes.get.get('/api/terminal/sessions')({ query: { cwd: '/repo' } }, stillListed);
+      expect(stillListed.body.sessions.map((s) => s.sessionId)).toEqual(['term-1']);
+
+      // The last claimant closing terminates the process and the session.
+      const killed = createResponse();
+      await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' }, query: { claimant: 'client-b' } }, killed);
+      expect(killed.body).toEqual({ success: true, released: true, killed: true });
+      expect(harness.processes[0].kills[0]).toBe('SIGTERM');
+      const after = createResponse();
+      harness.routes.get.get('/api/terminal/sessions')({ query: { cwd: '/repo' } }, after);
+      expect(after.body.sessions).toEqual([]);
+    } finally { await harness.runtime.shutdown(); }
+  });
+
+  it('closes unconditionally without a claimant even while claims are live', async () => {
+    const harness = createHarness();
+    try {
+      await harness.routes.post.get('/api/terminal/create')({ body: { sessionId: 'term-1', cwd: '/repo' } }, createResponse());
+      await harness.routes.post.get('/api/terminal/touch')({ body: { sessionIds: ['term-1'], claimant: 'client-a' } }, createResponse());
+      const closed = createResponse();
+      await harness.routes.delete.get('/api/terminal/:sessionId')({ params: { sessionId: 'term-1' } }, closed);
+      expect(closed.body).toEqual({ success: true, released: true, killed: true });
+      expect(harness.processes[0].kills[0]).toBe('SIGTERM');
     } finally { await harness.runtime.shutdown(); }
   });
 

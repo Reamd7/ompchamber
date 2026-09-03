@@ -115,6 +115,11 @@ Invariants to preserve when editing:
   unchanged; only `buffers` and `nextChunkId` may change.
 - Buffer entries are owned by their tab. `closeTab`, `removeDirectory`, `clearAll`, and
   rebinding a tab to a different terminal session must drop the entry.
+- Closing a tab (`TerminalView` `handleCloseTab`) releases this window's claim on
+  the tab's session: the server terminates the PTY only when no other
+  window/device still claims it (multi-device sharing); with no other claimant
+  the process dies immediately, so a closed tab never resurrects as an adopted
+  tab or leaks as a hidden process refreshing its own idle deadline.
 - Output for an unknown tab is ignored rather than creating an orphan buffer.
 - Only `sessions` and `nextTabId` are persisted. `partialize` reuses its previous
   projection while both are referentially unchanged, and the storage adapter skips a write
