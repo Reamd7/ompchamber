@@ -36,6 +36,17 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 - Send-side flow control bounds server memory per attachment: Bun's server WebSocket exposes no send-buffer signal and buffers unbounded data per socket, so each attachment tracks sent-but-unacknowledged bytes (output frames and snapshots). Past 4 MiB the attachment is suppressed — output frames are skipped for it while sequence numbers keep advancing, so its next live frame gap-triggers the client's existing resync — and once its lag drains below 1 MiB by acknowledgment it receives a snapshot and live output resumes. Connections that never acknowledge are suppressed after 8 MiB as a fail-safe. Non-output events (exit, resized, restarted, command-finished) are never suppressed. A flood therefore completes at PTY speed, other attachments and HTTP keep their service, and server memory stays bounded regardless of output volume.
 - Restarts are serialized per terminal. Each restart spawns and wires the replacement before terminating the old process, retaining the terminal ID.
 - Close uses SIGTERM with bounded SIGKILL escalation. Force-kill, idle cleanup, and runtime shutdown terminate process groups immediately where supported. Removal explicitly sends a fatal scoped closure and evicts client projections even when a PTY backend fails to emit `onExit`; attached terminals are not considered idle.
+- Session lifetime is claim-scoped for multi-device sharing. `POST
+  /api/terminal/touch` with a `claimant` (a per-window client instance id)
+  records a claim on each named session; `DELETE
+  /api/terminal/:sessionId?claimant=…` is a tab close: it releases exactly
+  that claimant's stake and terminates the PTY only when no other live claim
+  remains (another window/device still shows the session; claims older than
+  the idle window are expired first so crashed clients cannot keep sessions
+  undead). A DELETE without `claimant` — the explicit kill button and
+  force-kill — terminates unconditionally. Output does not refresh session
+  lifetime: an unattached chatty orphan (its client crashed without closing)
+  still becomes idle-reapable, while claims/touches/input do refresh it.
 - Windows PTY spawn prefers the `conpty.dll` bundled with node-pty's
   prebuilds (a current Terminal-era build) over the OS-built-in
   pseudoconsole: measured 3x read throughput on output floods (42 vs 14

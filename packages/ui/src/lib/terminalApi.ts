@@ -495,9 +495,38 @@ export async function listTerminalSessions(cwd: string): Promise<TerminalServerS
   }
   return parsed;
 }
+let terminalClientId: string | null = null;
+/**
+ * Identity of this terminal client instance (one browser window / webview /
+ * mobile app). Scoped to sessionStorage: a window keeps its identity across
+ * reloads (claims survive), while every other window is a distinct claimant.
+ * The server treats it as the claim owner for shared-session lifetime: a tab
+ * close releases only this claimant's stake and kills the PTY only when no
+ * other claimant remains.
+ */
+const getTerminalClientId = (): string => {
+  if (terminalClientId) return terminalClientId;
+  try {
+    const storage = globalThis.sessionStorage;
+    const existing = storage?.getItem('openchamber-terminal-client-id');
+    if (existing && /^[a-zA-Z0-9-]{8,128}$/.test(existing)) {
+      terminalClientId = existing;
+      return terminalClientId;
+    }
+    const generated = globalThis.crypto?.randomUUID?.() ?? `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    storage?.setItem('openchamber-terminal-client-id', generated);
+    terminalClientId = generated;
+    return terminalClientId;
+  } catch {
+    // Storage unavailable (private mode, sandbox): an ephemeral identity still
+    // identifies this window for the tab's lifetime.
+    terminalClientId = `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return terminalClientId;
+  }
+};
 export async function touchTerminalSessions(sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return;
-  await command('/api/terminal/touch', 'POST', { sessionIds });
+  await command('/api/terminal/touch', 'POST', { sessionIds, claimant: getTerminalClientId() });
 }
 export async function listTerminalShells(): Promise<TerminalShellOption[]> {
   const response = await runtimeFetch('/api/terminal/shells');
@@ -529,7 +558,14 @@ async function command(path: string, method: string, body?: unknown): Promise<Re
 }
 export async function resizeTerminal(sessionId: string, cols: number, rows: number): Promise<void> { await command(`/api/terminal/${sessionId}/resize`, 'POST', { cols, rows }); }
 export async function updateTerminalAppearance(sessionId: string, appearance: Pick<CreateTerminalOptions, 'themeMode' | 'terminalBackground' | 'terminalForeground'>): Promise<void> { await command(`/api/terminal/${sessionId}/appearance`, 'POST', appearance); }
-export async function closeTerminal(sessionId: string): Promise<void> { await command(`/api/terminal/${sessionId}`, 'DELETE'); transport.forget(sessionId); }
+export async function closeTerminal(sessionId: string, options: { releaseOnlyIfShared?: boolean } = {}): Promise<void> {
+  // Tab close sends the claimant so the server releases only this window's
+  // stake: the PTY dies iff no other window/device still claims the session.
+  // The explicit kill path omits it and terminates unconditionally.
+  const suffix = options.releaseOnlyIfShared ? `?claimant=${encodeURIComponent(getTerminalClientId())}` : '';
+  await command(`/api/terminal/${sessionId}${suffix}`, 'DELETE');
+  transport.forget(sessionId);
+}
 export async function restartTerminalSession(currentSessionId: string, options: CreateTerminalOptions): Promise<TerminalSession> { return (await command(`/api/terminal/${currentSessionId}/restart`, 'POST', options)).json() as Promise<TerminalSession>; }
 export async function forceKillTerminal(options: { sessionId?: string; cwd?: string }): Promise<void> {
   const response = await command('/api/terminal/force-kill', 'POST', options);

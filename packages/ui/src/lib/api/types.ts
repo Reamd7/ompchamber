@@ -116,7 +116,13 @@ export interface TerminalAPI {
   sendInput(sessionId: string, input: string): Promise<void>;
   resize(payload: ResizeTerminalPayload): Promise<void>;
   updateAppearance?(sessionId: string, appearance: Pick<CreateTerminalOptions, 'themeMode' | 'terminalBackground' | 'terminalForeground'>): Promise<void>;
-  close(sessionId: string): Promise<void>;
+  /**
+   * Terminates a terminal session. With `releaseOnlyIfShared` (tab close) the
+   * caller's claim is released first and the PTY dies only when no other
+   * window/device still claims the session; without it (explicit kill) the
+   * termination is unconditional.
+   */
+  close(sessionId: string, options?: { releaseOnlyIfShared?: boolean }): Promise<void>;
   restartSession?(currentSessionId: string, options: CreateTerminalOptions): Promise<TerminalSession>;
   forceKill?(options: ForceKillOptions): Promise<void>;
 }

@@ -353,9 +353,11 @@ export function createTerminalRuntime({
           const sanitized = sanitizeTerminalHistoryChunk(session.pendingHistoryControlSequence, event.data);
           session.pendingHistoryControlSequence = sanitized.pending;
           appendHistory(session, sanitized.visible);
-          const now = Date.now();
-          session.lastActivity = now;
-          session.lastOutputAt = now;
+          // Output is not "activity" for lifetime purposes: an orphaned
+          // chatty process (its client crashed without closing) must still
+          // become idle-reapable. lastOutputAt tracks recency for
+          // diagnostics; lifetime follows claims/touches/input.
+          session.lastOutputAt = Date.now();
           publish(session, { t: 'output', d: event.data, ...(sanitized.visible !== event.data ? { r: sanitized.visible } : {}) });
           // OSC 133 shell integration: detect command boundary markers
           if (!session.osc133) session.osc133 = new Osc133Scanner();
@@ -447,7 +449,7 @@ export function createTerminalRuntime({
     }
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
-      const session = existing ?? { id, sequence: 0, historyChunks: [], historyBytes: 0, pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], queueBytes: 0, draining: false, drainToken: 0, viewportDriver: null, createdAt: Date.now() };
+      const session = existing ?? { id, sequence: 0, historyChunks: [], historyBytes: 0, pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], queueBytes: 0, draining: false, drainToken: 0, viewportDriver: null, createdAt: Date.now(), claims: new Map() };
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
@@ -689,6 +691,11 @@ export function createTerminalRuntime({
   });
   app.post('/api/terminal/touch', (req, res) => {
     const rawIds = Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [];
+    // A claimant is a per-window terminal client instance id. Touching with
+    // one records a claim: the session is referenced by that window's tab
+    // projection and must survive that window closing a DIFFERENT tab, while
+    // a conditional delete (below) can release exactly this claimer's stake.
+    const claimant = typeof req.body?.claimant === 'string' && req.body.claimant.trim() && req.body.claimant.length <= 128 ? req.body.claimant.trim() : null;
     const now = Date.now();
     let touched = 0;
     for (const id of rawIds) {
@@ -696,6 +703,7 @@ export function createTerminalRuntime({
       const session = sessions.get(id);
       if (!session) continue;
       session.lastActivity = now;
+      if (claimant) session.claims.set(claimant, now);
       touched += 1;
     }
     res.json({ touched });
@@ -760,10 +768,28 @@ export function createTerminalRuntime({
   app.delete('/api/terminal/:sessionId', async (req, res) => {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
+    // A delete carrying ?claimant= is a tab close: it releases ONLY that
+    // client's claim and kills the process iff no other live claim remains
+    // (another window/device still shows the session). A claim is live while
+    // its touch is within the idle window — expired claims from crashed
+    // clients must not keep sessions undead. A delete without a claimant is
+    // an explicit destructive kill and ignores claims entirely.
+    const claimant = typeof req.query?.claimant === 'string' && req.query.claimant.trim() && req.query.claimant.length <= 128 ? req.query.claimant.trim() : null;
+    if (claimant && session.claims instanceof Map) {
+      session.claims.delete(claimant);
+      const now = Date.now();
+      for (const [id, touchedAt] of session.claims) {
+        if (now - touchedAt > IDLE_TIMEOUT_MS) session.claims.delete(id);
+      }
+      if (session.claims.size > 0) {
+        res.json({ success: true, released: true, killed: false });
+        return;
+      }
+    }
     sessions.delete(session.id);
     closeAttachments(session.id, 'CLOSED', 'Terminal closed');
     await terminateProcess(session.process);
-    res.json({ success: true });
+    res.json({ success: true, released: true, killed: true });
   });
   app.post('/api/terminal/force-kill', (req, res) => {
     const { sessionId, cwd } = req.body ?? {}; let killedCount = 0;
