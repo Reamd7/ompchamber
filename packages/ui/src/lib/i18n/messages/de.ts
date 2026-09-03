@@ -35,6 +35,7 @@ export const dict = {
   'layout.mainTab.files': 'Dateien',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Kontext',
+  'layout.header.subagentsRunning': 'Läuft: {count}',
   'mobile.nav.aria': 'Mobile Navigation',
   'mobile.connect.welcome.title': 'Mit OMPChamber verbinden',
   'mobile.connect.welcome.description': 'Füge eine Server-URL hinzu oder scanne einen Pairing-QR-Code, um die mobile App zu nutzen.',

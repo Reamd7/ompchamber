@@ -71,6 +71,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': 'Pliki',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Kontekst',
+  'layout.header.subagentsRunning': 'W toku: {count}',
   'mobile.nav.aria': 'Nawigacja mobilna',
   'mobile.connect.welcome.title': 'Połącz z OMPChamber',
   'mobile.connect.welcome.description': 'Dodaj adres URL serwera lub zeskanuj kod QR parowania, aby zacząć korzystać z aplikacji mobilnej.',

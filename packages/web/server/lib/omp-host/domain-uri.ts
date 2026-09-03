@@ -909,12 +909,29 @@ export interface AgentRefLike {
   kind?: string;
   parentId?: string;
   status?: string;
-  session?: unknown;
+  /**
+   * Live AgentSession while the agent is running (SDK: null exactly when
+   * parked/aborted). Structurally narrowed to the public stats accessor —
+   * the only surface the snapshot needs.
+   */
+  session?: {
+    getSessionStats?: () => {
+      tokens?: { total?: number };
+      cost?: number;
+    };
+  } | null;
   sessionFile?: string | null;
   createdAt?: number;
   lastActivity?: number;
   activity?: string;
   history?: AgentRunHistory;
+}
+
+/** Snapshot-time metrics for a running agent; absent once parked/aborted. */
+export interface OmpAgentRunLive {
+  tokens: number;
+  cost: number;
+  durationMs: number;
 }
 
 export interface OmpAgentRun {
@@ -930,6 +947,7 @@ export interface OmpAgentRun {
   lastActivity: number;
   activity?: string;
   history?: AgentRunHistory;
+  live?: OmpAgentRunLive;
   hasTranscript: boolean;
 }
 
@@ -955,7 +973,11 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
         ...(ref.history.outputPath !== undefined ? { outputPath: ref.history.outputPath } : {}),
       }
     : undefined;
-  return {
+  const statsProvider = ref.session?.getSessionStats;
+  const stats = statsProvider ? statsProvider() : undefined;
+  const liveTokens = stats?.tokens?.total;
+  const liveCost = stats?.cost;
+  const row: OmpAgentRun = {
     key: agentRunKey(sessionID, ref.id),
     sessionID,
     directory,
@@ -970,6 +992,14 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
     ...(history && Object.keys(history).length > 0 ? { history } : {}),
     hasTranscript: Boolean(ref.sessionFile),
   };
+  if (stats && liveTokens !== undefined && Number.isFinite(liveTokens)) {
+    row.live = {
+      tokens: liveTokens,
+      cost: liveCost !== undefined && Number.isFinite(liveCost) ? liveCost : 0,
+      durationMs: Math.max(0, (ref.lastActivity ?? 0) - (ref.createdAt ?? 0)),
+    };
+  }
+  return row;
 };
 
 export interface AgentsSnapshotEntry {

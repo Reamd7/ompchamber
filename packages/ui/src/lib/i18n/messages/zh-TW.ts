@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': '檔案',
   'layout.mainTab.terminal': '終端機',
   'layout.mainTab.context': '上下文',
+  'layout.header.subagentsRunning': '執行中：{count}',
   'mobile.nav.aria': '行動導覽',
   'mobile.connect.welcome.title': '連線至 OMPChamber',
   'mobile.connect.welcome.description': '新增伺服器網址或掃描配對 QR 碼，即可開始使用行動應用程式。',

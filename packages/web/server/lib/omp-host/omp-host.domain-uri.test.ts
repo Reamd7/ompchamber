@@ -500,6 +500,35 @@ describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
     expect(serialized).not.toContain('.jsonl');
     expect(serialized).not.toContain('C:/leak');
   });
+
+  test('running rows carry live metrics from the session stats accessor', () => {
+    const row = projectAgentRun({
+      sessionID: 'ses_1',
+      directory: DIRECTORY,
+      ref: ref({
+        session: {
+          getSessionStats: () => ({ tokens: { total: 1500 }, cost: 0.042 }),
+        },
+      }),
+    });
+    // durationMs = lastActivity - createdAt, computed from registry fields.
+    expect(row.live).toEqual({ tokens: 1500, cost: 0.042, durationMs: 9 });
+  });
+
+  test('live metrics are absent without a live session or a stats provider', () => {
+    expect(projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref({ session: null }) }).live).toBeUndefined();
+    expect(projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref({ session: {} }) }).live).toBeUndefined();
+  });
+
+  test('non-finite live tokens degrade to no live payload instead of NaN', () => {
+    const row = projectAgentRun({
+      sessionID: 'ses_1',
+      directory: DIRECTORY,
+      ref: ref({ session: { getSessionStats: () => ({ tokens: { total: Number.NaN }, cost: Number.NaN }) } }),
+    });
+    expect(row.live).toBeUndefined();
+  });
+
 });
 
 describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {

@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': 'ファイル',
   'layout.mainTab.terminal': 'ターミナル',
   'layout.mainTab.context': 'コンテキスト',
+  'layout.header.subagentsRunning': '実行中: {count}',
   'mobile.nav.aria': 'モバイルナビゲーション',
   'mobile.nav.changes': '変更',
   'mobile.nav.settings': '設定',

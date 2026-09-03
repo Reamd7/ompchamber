@@ -2490,7 +2490,13 @@ export interface OmpAgentRunRecord {
   createdAt: number;
   lastActivity: number;
   activity?: unknown;
-}
+  /** Snapshot-time metrics for a running agent; absent once parked/aborted. */
+  live?: {
+    tokens: number;
+    cost: number;
+    durationMs: number;
+  };
+};
 
 export interface OmpAgentRunsSnapshot {
   agentRuns: OmpAgentRunRecord[];
@@ -2508,6 +2514,11 @@ const AgentRunRecordSchema = z.looseObject({
   createdAt: z.number(),
   lastActivity: z.number(),
   activity: z.unknown().optional(),
+  live: z.object({
+    tokens: z.number(),
+    cost: z.number(),
+    durationMs: z.number(),
+  }).optional(),
 });
 
 const AgentRunsSnapshotSchema = z.object({

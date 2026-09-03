@@ -14,7 +14,10 @@
  * failure is never authoritative empty success.
  */
 
+import React from 'react';
 import { create } from 'zustand';
+import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { useOmpSessionStore } from '@/sync/useOmpSessionStore';
 import { createOmpAgentRunsAPI, type OmpAgentRunRecord } from '@/lib/api/omp';
 import { isOmpFeatureEnabled } from '@/lib/omp/capabilityGate';
 import { getRuntimeKey } from '@/lib/runtime-switch';
@@ -83,4 +86,30 @@ export const useOmpAgentRunsForDirectory = (directory: string | null): OmpAgentR
 export const useOmpAgentRunsRevision = (directory: string | null): number | undefined => {
   const key = cacheKey(directory);
   return useOmpAgentRunsStore((state) => (key ? state.revisions[key] : undefined));
+};
+
+/**
+ * Header-badge read: ensures the directory snapshot is loaded (stale-revision
+ * refetch, same protocol as the work-status section) and counts running rows.
+ * Zero when agentRuns.v1 is off — callers hide the badge on zero.
+ */
+export const useOmpAgentRunsBusyCount = (directory: string | null): number => {
+  const enabled = useOmpFeatureEnabled('agentRuns.v1');
+  const agentRuns = useOmpAgentRunsForDirectory(directory);
+  const snapshotRevision = useOmpAgentRunsRevision(directory);
+  const eventRevision = useOmpSessionStore(
+    React.useCallback(
+      (state) => (directory ? state.directories[directory]?.domains.agentsRevision : undefined),
+      [directory],
+    ),
+  );
+  const load = useOmpAgentRunsStore((s) => s.load);
+  React.useEffect(() => {
+    if (!enabled) return;
+    void load(directory, {
+      force: eventRevision !== undefined && snapshotRevision !== undefined && eventRevision > snapshotRevision,
+    });
+  }, [enabled, load, directory, eventRevision, snapshotRevision]);
+  if (!enabled) return 0;
+  return (agentRuns ?? []).filter((row) => row.status === 'running').length;
 };

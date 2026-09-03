@@ -68,6 +68,7 @@ export const dict = {
   'layout.mainTab.files': 'Fichiers',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Contexte',
+  'layout.header.subagentsRunning': 'En cours : {count}',
   'layout.rightSidebar.git': 'Git',
   'layout.rightSidebar.files': 'Fichiers',
   'layout.rightSidebar.context': 'Contexte',

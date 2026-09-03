@@ -69,6 +69,7 @@ export const dict = {
   'layout.mainTab.files': 'Files',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Context',
+  'layout.header.subagentsRunning': 'Running: {count}',
   'mobile.nav.aria': 'Mobile navigation',
   'mobile.connect.welcome.title': 'Connect to OMPChamber',
   'mobile.connect.welcome.description': 'Add a server URL or scan a pairing QR code to start using the mobile app.',

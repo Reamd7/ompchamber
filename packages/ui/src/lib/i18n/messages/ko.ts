@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': '파일',
   'layout.mainTab.terminal': '터미널',
   'layout.mainTab.context': '컨텍스트',
+  'layout.header.subagentsRunning': '실행 중: {count}',
   'mobile.nav.aria': '모바일 내비게이션',
   'mobile.connect.welcome.title': 'OMPChamber에 연결',
   'mobile.connect.welcome.description': '서버 URL을 추가하거나 페어링 QR 코드를 스캔하여 모바일 앱을 시작하세요.',

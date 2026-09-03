@@ -18,6 +18,8 @@ import { useOmpPendingDialogSessions } from '@/sync/useOmpDialogStore';
 import type { OmpAgentRunRecord } from '@/lib/api/omp';
 import { formatCost } from './subagentCost';
 import { useSubagentCostRollup } from './useSubagentCostRollup';
+import { formatCompactTokenCount } from '../message/turnUsage';
+import { formatAgentDuration } from '../message/parts/taskToolModel';
 import type { State } from '@/sync/types';
 
 type Props = {
@@ -131,27 +133,36 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
         summary={busyRuns > 0 ? `${busyRuns}/${runs.length}` : runs.length}
       >
         <div className="max-h-56 overflow-y-auto">
-          {runs.map((row) => {
-            const label = row.displayName?.trim() || row.agentId;
-            const ompBlocked = (ompDialogCounts.get(row.sessionID) ?? 0) > 0;
-            return (
-              <WorkStatusRow
-                key={row.key}
-                label={label}
-                value={ompBlocked && row.status === 'running' ? (
-                  <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
-                ) : row.status === 'running' ? (
-                  <WorkStatusValue tone="info">{t('chat.workStatus.subagent.working')}</WorkStatusValue>
-                ) : row.status === 'parked' ? (
-                  <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.parked')}</WorkStatusValue>
-                ) : row.status === 'aborted' ? (
-                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.aborted')}</WorkStatusValue>
-                ) : (
-                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.done')}</WorkStatusValue>
-                )}
-              />
-            );
-          })}
+        {runs.map((row) => {
+          const label = row.displayName?.trim() || row.agentId;
+          const ompBlocked = (ompDialogCounts.get(row.sessionID) ?? 0) > 0;
+          const live = row.live;
+          const statusValue = ompBlocked && row.status === 'running' ? (
+            <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
+          ) : row.status === 'running' ? (
+            <WorkStatusValue tone="info">{t('chat.workStatus.subagent.working')}</WorkStatusValue>
+          ) : row.status === 'parked' ? (
+            <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.parked')}</WorkStatusValue>
+          ) : row.status === 'aborted' ? (
+            <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.aborted')}</WorkStatusValue>
+          ) : (
+            <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.done')}</WorkStatusValue>
+          );
+          return (
+            <WorkStatusRow
+              key={row.key}
+              label={label}
+              value={(
+                <>
+                  {statusValue}
+                  {live && live.tokens > 0 ? <WorkStatusValue tone="muted">{formatCompactTokenCount(live.tokens)}</WorkStatusValue> : null}
+                  {live && live.durationMs > 0 ? <WorkStatusValue tone="muted">{formatAgentDuration(live.durationMs)}</WorkStatusValue> : null}
+                  {live && live.cost > 0 ? <WorkStatusValue tone="muted">{formatCost(live.cost)}</WorkStatusValue> : null}
+                </>
+              )}
+            />
+          );
+        })}
         </div>
       </WorkStatusCollapsibleSection>
     );

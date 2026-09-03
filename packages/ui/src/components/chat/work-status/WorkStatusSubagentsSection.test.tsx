@@ -23,6 +23,7 @@ let agentRunsEnabled = false;
 let agentRunsRows: Array<{
   key: string; sessionID: string; directory: string; agentId: string;
   displayName: string; status: string; createdAt: number; lastActivity: number;
+  live?: { tokens: number; cost: number; durationMs: number };
 }> | null = null;
 
 mock.module('@/sync/sync-context', () => ({
@@ -127,12 +128,32 @@ describe('WorkStatusSubagentsSection omp agent-runs source (08 GAP-04)', () => {
     ];
     const markup = render();
     expect(markup).toContain('Anna');
-    expect(markup).toContain('is working');
     expect(markup).toContain('Belle');
     expect(markup).toContain('parked');
     // Main and other sessions' rows never appear.
     expect(markup).not.toContain('>Main<');
     expect(markup).not.toContain('Ghost');
+  });
+
+  test('agentRuns.v1 rows surface live usage, duration and cost when present', () => {
+    agentRunsRows = [
+      { key: 'ses_parent::Anna', sessionID: 'ses_parent', directory: '/repo', agentId: 'Anna', displayName: 'Anna', status: 'running', createdAt: 1, lastActivity: 8, live: { tokens: 1500, cost: 0.05, durationMs: 65000 } },
+    ];
+    const markup = render();
+    expect(markup).toContain('Anna');
+    expect(markup).toContain('is working');
+    expect(markup).toContain('1.5K');
+    expect(markup).toContain('1m05s');
+    expect(markup).toContain('$0.05');
+  });
+
+  test('agentRuns.v1 rows stay status-only without live metrics', () => {
+    agentRunsRows = [
+      { key: 'ses_parent::Anna', sessionID: 'ses_parent', directory: '/repo', agentId: 'Anna', displayName: 'Anna', status: 'running', createdAt: 1, lastActivity: 8 },
+    ];
+    const markup = render();
+    expect(markup).toContain('is working');
+    expect(markup).not.toContain('$');
   });
 
   test('agentRuns.v1 with no rows renders nothing even with legacy children present', () => {

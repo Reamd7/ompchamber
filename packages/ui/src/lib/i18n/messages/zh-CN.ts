@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': '文件',
   'layout.mainTab.terminal': '终端',
   'layout.mainTab.context': '上下文',
+  'layout.header.subagentsRunning': '运行中：{count}',
   'mobile.nav.aria': '移动导航',
   'mobile.connect.welcome.title': '连接到 OMPChamber',
   'mobile.connect.welcome.description': '添加服务器 URL 或扫描配对二维码即可开始使用移动应用。',

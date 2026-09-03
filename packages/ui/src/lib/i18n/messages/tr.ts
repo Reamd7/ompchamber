@@ -2718,6 +2718,7 @@ export const dict = {
   'layout.mainTab.files': 'Dosyalar',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Bağlam',
+  'layout.header.subagentsRunning': 'Çalışıyor: {count}',
   'mobile.nav.aria': 'Mobil gezinme',
   'mobile.connect.welcome.title': 'OMPChamber\'a bağlan',
   'mobile.connect.welcome.description': 'Mobil uygulamayı kullanmaya başlamak için bir sunucu URL\'si ekleyin veya eşleştirme QR kodunu tarayın.',

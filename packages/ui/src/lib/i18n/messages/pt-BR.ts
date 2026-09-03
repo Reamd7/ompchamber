@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': 'Arquivos',
   'layout.mainTab.terminal': 'Terminal',
   'layout.mainTab.context': 'Contexto',
+  "layout.header.subagentsRunning": "Em andamento: {count}",
   'mobile.nav.aria': 'Navegação móvel',
   'mobile.connect.welcome.title': 'Conectar ao OMPChamber',
   'mobile.connect.welcome.description': 'Adicione a URL de um servidor ou leia um código QR de pareamento para começar a usar o app móvel.',

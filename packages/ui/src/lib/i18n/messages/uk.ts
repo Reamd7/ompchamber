@@ -70,6 +70,7 @@ export const dict: Record<I18nKey, string> = {
   'layout.mainTab.files': 'Файли',
   'layout.mainTab.terminal': 'Термінал',
   'layout.mainTab.context': 'Контекст',
+  "layout.header.subagentsRunning": "Виконується: {count}",
   'mobile.nav.aria': 'Мобільна навігація',
   'mobile.connect.welcome.title': 'Підключись до OMPChamber',
   'mobile.connect.welcome.description': 'Додай адресу сервера або відскануй QR-код pairing, щоб почати користуватись мобільною апкою.',
