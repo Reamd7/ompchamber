@@ -31,8 +31,7 @@ const getCurrentDirectory = (): string | null => {
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const store = (window as any).__zustand_directory_store__;
+    const store = (window as { __zustand_directory_store__?: { getState: () => { currentDirectory: string } } }).__zustand_directory_store__;
     if (store) {
       return store.getState().currentDirectory;
     }

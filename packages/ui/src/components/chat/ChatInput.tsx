@@ -327,8 +327,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingPastedAttachmentFilenamesRef = React.useRef<Set<string>>(new Set());
 
     // TODO: port sendMessage to session-actions (complex — creates sessions, handles attachments, etc.)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sendMessage = React.useRef((...args: any[]) =>
+    const sendMessage = React.useRef((...args: unknown[]) =>
         Promise.resolve((useSessionUIStore.getState().sendMessage as (...a: unknown[]) => unknown)(...args)),
     ).current;
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);

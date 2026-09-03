@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { AssistantMessage, Message, Part, ToolState } from '@/lib/opencode/wire';
 import { useSessionUIStore, getRememberedSessionDirectory } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -18,6 +18,33 @@ import { useStreamingStore } from '@/sync/streaming';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 
+/** Console-facing per-part summary row (debug dump shape). */
+interface DebugPartSummary {
+  id: string;
+  type: string;
+  text?: string;
+  textLength?: number;
+  tool?: string;
+  state?: ToolState['status'];
+  isStepMarker?: boolean;
+}
+
+/** Truncation write-view of one part: the wire Part plus local enrichment. */
+type DebugTruncatedPart = Part & { textPreview?: string };
+
+/** Write slot for the (possibly absent) text field on a truncated part. */
+interface DebugTextSlot { text?: string }
+
+/** Write slot for the (possibly absent) state field on a truncated part. */
+interface DebugStateSlot { state?: DebugTruncatedState }
+
+/** Truncation write-view of a tool state: wire state plus widened text fields. */
+type DebugTruncatedState = ToolState & {
+  output?: string;
+  error?: string;
+  metadata?: { preview?: string };
+};
+
 export interface DebugMessageInfo {
   messageId: string;
   role: string;
@@ -29,11 +56,11 @@ export interface DebugMessageInfo {
     text?: string;
     textLength?: number;
     tool?: string;
-    state?: any;
+    state?: ToolState['status'];
   }>;
   isEmpty: boolean;
   isEmptyResponse: boolean;
-  raw: any;
+  raw: Message;
 }
 
 export const debugUtils = {
@@ -57,8 +84,8 @@ export const debugUtils = {
       const msg = messages[i];
       if (msg.role === 'assistant') {
         const msgParts = getSyncParts(msg.id) || [];
-        const parts = msgParts.map((part: any) => {
-          const info: any = {
+        const parts = msgParts.map((part: Part) => {
+          const info: DebugPartSummary = {
             id: part.id,
             type: part.type,
           };
@@ -68,7 +95,7 @@ export const debugUtils = {
             info.textLength = part.text?.length || 0;
           } else if (part.type === 'tool') {
             info.tool = part.tool;
-            info.state = part.state?.status;
+            info.state = part.state?.status as ToolState['status'];
           } else if (part.type === 'step-start' || part.type === 'step-finish') {
             info.isStepMarker = true;
           }
@@ -76,16 +103,16 @@ export const debugUtils = {
           return info;
         });
 
-         const hasText = parts.some((p: any) => p.type === 'text' && p.text && p.text.trim().length > 0);
-        const hasTools = parts.some((p: any) => p.type === 'tool');
-        const hasStepMarkers = parts.some((p: any) => p.type === 'step-start' || p.type === 'step-finish');
+         const hasText = parts.some((p) => p.type === 'text');
+        const hasTools = parts.some((p) => p.type === 'tool');
+        const hasStepMarkers = parts.some((p) => p.type === 'step-start' || p.type === 'step-finish');
         const isEmpty = parts.length === 0;
         const isEmptyResponse = !hasText && !hasTools && (!isEmpty || hasStepMarkers);
 
         const info: DebugMessageInfo = {
           messageId: msg.id,
           role: msg.role,
-          timestamp: (msg as any).time?.created || 0,
+          timestamp: msg.time?.created || 0,
           partsCount: parts.length,
           parts,
           isEmpty,
@@ -133,34 +160,37 @@ export const debugUtils = {
     return value.substring(0, maxLength) + '…';
   },
 
-  truncateMessages(messages: any[]): any[] {
+  truncateMessages(messages: Message[]): unknown[] {
     return messages.map((msg) => ({
       ...msg,
-      parts: (getSyncParts(msg.id) || []).map((part: any) => {
-        const truncatedPart: any = { ...part };
+      parts: (getSyncParts(msg.id) || []).map((part: Part) => {
+        const truncatedPart: DebugTruncatedPart = { ...part };
 
         if ('text' in part) {
-          truncatedPart.text = this.truncateString(part.text);
+          (truncatedPart as DebugTextSlot).text = this.truncateString(part.text);
         }
-        if ('textPreview' in part) {
-          truncatedPart.textPreview = this.truncateString(part.textPreview);
+        const textPreview = (part as { textPreview?: string }).textPreview;
+        if (textPreview !== undefined) {
+          truncatedPart.textPreview = this.truncateString(textPreview);
         }
 
-        if (part.state) {
-          truncatedPart.state = { ...part.state };
-
-          if ('output' in part.state) {
-            truncatedPart.state.output = this.truncateString(part.state.output);
+        const state = 'state' in part ? part.state : undefined;
+        if (state) {
+          const stateFields: DebugTruncatedState = { ...state };
+          if ('output' in state) {
+            stateFields.output = this.truncateString(state.output);
           }
-          if ('error' in part.state) {
-            truncatedPart.state.error = this.truncateString(part.state.error);
+          if ('error' in state) {
+            stateFields.error = this.truncateString(state.error);
           }
-          if (part.state.metadata && 'preview' in part.state.metadata) {
-            truncatedPart.state.metadata = {
-              ...part.state.metadata,
-              preview: this.truncateString(part.state.metadata.preview),
+          const metadata = 'metadata' in state ? (state as { metadata?: { preview?: string } }).metadata : undefined;
+          if (metadata && 'preview' in metadata) {
+            stateFields.metadata = {
+              ...metadata,
+              preview: this.truncateString(metadata.preview),
             };
           }
+          (truncatedPart as DebugStateSlot).state = stateFields;
         }
 
         return truncatedPart;
@@ -185,7 +215,7 @@ export const debugUtils = {
       console.log(`[${idx}] ${msg.role} - ${msg.id} - ${msgParts.length} parts`);
     });
 
-    return truncate ? this.truncateMessages(messages as any[]) : messages;
+    return truncate ? this.truncateMessages(messages as Message[]) : messages;
   },
 
   async getAppStatus() {
@@ -560,9 +590,9 @@ export const debugUtils = {
       .filter((msg) => {
         const parts = getSyncParts(msg.id) || [];
         const hasTextContent = parts.some(
-          (p: any) => p.type === 'text' && p.text && p.text.trim().length > 0
+          (p) => p.type === 'text' && p.text !== undefined && p.text.trim().length > 0
         );
-        const hasTools = parts.some((p: any) => p.type === 'tool');
+        const hasTools = parts.some((p) => p.type === 'tool');
 
         return parts.length === 0 || (!hasTextContent && !hasTools);
       });
@@ -574,9 +604,9 @@ export const debugUtils = {
       console.log(`[${idx}] Empty message:`, {
         messageId: msg.id,
         partsCount: parts.length,
-        provider: (msg as any).providerID,
-        model: (msg as any).modelID,
-        timestamp: (msg as any).time?.created,
+        provider: msg.providerID,
+        model: msg.modelID,
+        timestamp: msg.time?.created,
       });
     });
 
@@ -640,33 +670,34 @@ export const debugUtils = {
     };
 
     const rows = targetMessages.map((message, index) => {
-      const info = message as any;
+      const info = message as AssistantMessage;
       const parts = getSyncParts(message.id) || [];
 
       const timeInfo = (info.time ?? {}) as { completed?: number };
       const completedAt = toNumber(timeInfo.completed);
       const hasCompleted = completedAt !== null;
 
-      const toolParts = parts.filter((part: any) => part.type === 'tool');
-      const reasoningParts = parts.filter((part: any) => part.type === 'reasoning');
+      const toolParts = parts.filter((part): part is Extract<Part, { type: 'tool' }> => part.type === 'tool');
+      const reasoningParts = parts.filter((part): part is Extract<Part, { type: 'reasoning' }> => part.type === 'reasoning');
 
       const latestToolTimestamp = getLatestTimestamp(
-        toolParts.map((part: any) =>
-          toNumber(part.state?.time?.end ?? part.state?.time?.start)
-        )
+        toolParts.map((part) => {
+          const stateTime = (part.state as { time?: { start?: number; end?: number } } | undefined)?.time;
+          return toNumber(stateTime?.end ?? stateTime?.start);
+        })
       );
       const latestReasoningTimestamp = getLatestTimestamp(
-        reasoningParts.map((part: any) => toNumber(part.time?.end ?? part.time?.start))
+        reasoningParts.map((part) => toNumber(part.time?.end ?? part.time?.start))
       );
       const latestPartTimestamp = getLatestTimestamp(
         [latestToolTimestamp, latestReasoningTimestamp].filter((value) => value !== null)
       );
 
-      const hasRunningTool = toolParts.some((part: any) =>
-        ['pending', 'running', 'started'].includes(part.state?.status)
+      const hasRunningTool = toolParts.some((part) =>
+        Boolean(part.state && ['pending', 'running', 'started'].includes(part.state.status))
       );
       const reasoningIncomplete = reasoningParts.some(
-        (part: any) => typeof part.time?.end !== 'number'
+        (part) => typeof part.time?.end !== 'number'
       );
 
       if (toolParts.length > 0) {
@@ -753,19 +784,17 @@ export const debugUtils = {
 
     const lastMessage = assistantMessages[assistantMessages.length - 1];
     const lastParts = getSyncParts(lastMessage.id) || [];
-    const stepFinishParts = lastParts.filter((p: any) => p.type === 'step-finish');
-    const hasStopReason = (lastMessage as any).finish === 'stop';
+    const stepFinishParts = lastParts.filter((p): p is Extract<Part, { type: 'step-finish' }> => p.type === 'step-finish');
+    const hasStopReason = lastMessage.finish === 'stop';
 
-    const timeInfo = (lastMessage as any).time;
+    const timeInfo = lastMessage.time;
     const completedAt = timeInfo?.completed;
-    const messageStatus = (lastMessage as any).status;
+    const messageStatus = undefined as string | undefined;
     const hasCompletedFlag = (typeof completedAt === 'number' && completedAt > 0) || messageStatus === 'completed';
     const messageIsComplete = Boolean(hasCompletedFlag && hasStopReason);
 
      const streamingState = useStreamingStore.getState();
-    const streamingMessageId = (lastMessage as any).sessionID
-      ? streamingState.streamingMessageIds.get((lastMessage as any).sessionID as string) ?? null
-      : null;
+    const streamingMessageId = streamingState.streamingMessageIds.get(lastMessage.sessionID) ?? null;
     const lifecycle = streamingState.messageStreamStates.get(lastMessage.id);
     const isStreamingCandidate = lastMessage.id === streamingMessageId;
 
@@ -795,7 +824,7 @@ export const debugUtils = {
 };
 
 if (typeof window !== 'undefined') {
-  (window as any).__opencodeDebug = debugUtils;
+  (window as { __opencodeDebug?: typeof debugUtils }).__opencodeDebug = debugUtils;
   if (streamDebugEnabled()) {
     console.log('[DEBUG] OpenCode Debug Utils loaded! Use window.__opencodeDebug in console');
     console.log('Available commands:');

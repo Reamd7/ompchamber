@@ -74,8 +74,7 @@ const NumberInput = React.forwardRef<HTMLInputElement, NumberInputProps>(
       const handleCaptureClick = (event: MouseEvent) => {
         event.preventDefault()
         event.stopPropagation()
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(event as any).stopImmediatePropagation?.()
+        ;(event as { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
         swallowNextClickCleanupRef.current?.()
       }
 
