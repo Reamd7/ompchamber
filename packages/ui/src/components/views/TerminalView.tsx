@@ -272,6 +272,62 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         [setTabPreviewUrl]
     );
 
+    // Output frames arrive at streaming frequency (hundreds per second under
+    // a flood). Each store append triggers a React reconciliation and a Blink
+    // layout/paint invalidation, and Blink's C++ rendering structures are
+    // allocated from PartitionAlloc, which never returns pages to the OS —
+    // 128K per-frame invalidations accumulate into multi-GB renderer RSS
+    // even though the JS heap stays flat. Coalesce frames into one store
+    // append per animation frame instead.
+    const pendingOutputRef = React.useRef<{
+        directory: string;
+        tabId: string;
+        parts: string[];
+        replayParts?: string[];
+        sequence: number;
+    } | null>(null);
+    const appendToBufferRef = React.useRef(appendToBuffer);
+    appendToBufferRef.current = appendToBuffer;
+    const scanTerminalPreviewOutputRef = React.useRef(scanTerminalPreviewOutput);
+    scanTerminalPreviewOutputRef.current = scanTerminalPreviewOutput;
+
+    const flushPendingOutput = React.useCallback(() => {
+        const pending = pendingOutputRef.current;
+        pendingOutputRef.current = null;
+        if (!pending || pending.parts.length === 0) return;
+        const data = pending.parts.join('');
+        appendToBufferRef.current(
+            pending.directory,
+            pending.tabId,
+            data,
+            pending.sequence,
+            pending.replayParts && pending.replayParts.length > 0 ? pending.replayParts.join('') : undefined,
+        );
+        scanTerminalPreviewOutputRef.current(pending.directory, pending.tabId, data);
+    }, []);
+
+    const enqueueOutputFrame = React.useCallback(
+        (directory: string, tabId: string, data: string, sequence: number | undefined, replayData: string | undefined) => {
+            const existing = pendingOutputRef.current;
+            if (existing && existing.directory === directory && existing.tabId === tabId) {
+                existing.parts.push(data);
+                if (replayData !== undefined) (existing.replayParts ??= []).push(replayData);
+                if (sequence !== undefined) existing.sequence = Math.max(existing.sequence, sequence);
+                return;
+            }
+            if (existing) flushPendingOutput();
+            pendingOutputRef.current = {
+                directory,
+                tabId,
+                parts: [data],
+                replayParts: replayData !== undefined ? [replayData] : undefined,
+                sequence: sequence ?? 0,
+            };
+            requestAnimationFrame(() => flushPendingOutput());
+        },
+        [flushPendingOutput],
+    );
+
     const startStream = React.useCallback(
         (
             directory: string,
@@ -313,6 +369,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                     sendTerminalViewport(terminalId, pendingViewport.cols, pendingViewport.rows);
                                 }
 
+                                flushPendingOutput(); // snapshot replaces everything; don't let stale output race it
                                 replaceBuffer(directory, tabId, event.data ?? '', event.sequence ?? 0);
                                 scanTerminalPreviewOutput(directory, tabId, event.data ?? '');
                                 if (event.status === 'exited') setTabLifecycle(directory, tabId, 'exited');
@@ -327,8 +384,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             }
                             case 'data': {
                                 if (event.data) {
-                                    appendToBuffer(directory, tabId, event.data, event.sequence, event.replayData);
-                                    scanTerminalPreviewOutput(directory, tabId, event.data);
+                                    enqueueOutputFrame(directory, tabId, event.data, event.sequence, event.replayData);
                                 }
                                 break;
                             }
@@ -372,6 +428,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 break;
                             }
                             case 'exit': {
+                                flushPendingOutput(); // terminal output must land before the exit message
                                 const exitCode =
                                     typeof event.exitCode === 'number' ? event.exitCode : null;
                                 const signal = typeof event.signal === 'number' ? event.signal : null;
@@ -446,9 +503,11 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         },
         [
             appendToBuffer,
-            replaceBuffer,
             disconnectStream,
+            enqueueOutputFrame,
+            flushPendingOutput,
             focusTerminalWhenWindowActive,
+            replaceBuffer,
             scanTerminalPreviewOutput,
             setConnecting,
             setTabLifecycle,

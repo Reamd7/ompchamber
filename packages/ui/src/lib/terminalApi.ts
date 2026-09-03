@@ -18,7 +18,6 @@ type TerminalProjection = {
   ptyBackend?: string;
 };
 const TAG = 1;
-const MAX_PROJECTION_BYTES = 512 * 1024;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 /**
@@ -55,13 +54,6 @@ const responseError = async (response: Response, fallback: string): Promise<Erro
   return new Error(typeof body?.error === 'string' ? body.error : fallback);
 };
 
-const trimProjection = (value: string): string => {
-  const bytes = encoder.encode(value);
-  if (bytes.byteLength <= MAX_PROJECTION_BYTES) return value;
-  let start = bytes.byteLength - MAX_PROJECTION_BYTES;
-  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
-  return decoder.decode(bytes.subarray(start));
-};
 
 type TerminalTransportDependencies = {
   refreshAuth: () => Promise<unknown>;
@@ -336,7 +328,7 @@ export class TerminalTransport {
       return;
     }
     if (previous && message.q > previous.sequence) {
-      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
+      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
       else if (message.t === 'resized') this.projections.set(message.s, { ...previous, sequence: message.q });
