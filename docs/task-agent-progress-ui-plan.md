@@ -1,6 +1,6 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 已完成**（2026-09-03）；层 2 未启动，待另立批次。
+> 状态：**层 1 已完成并提交**（`e0a06b2f`，2026-09-03）；层 2 已细化为 A/B/C 三批次，待用户裁决后启动（见文末"待用户裁决"）。
 >
 > 层 1 落地记录：① wire 透传——`omp-host/engine.ts` tool_execution_update 对 task 工具转发 `partialResult.details`，`projection.ts` toolPartial 新增 details 合并（最新快照整体替换，保留 asyncState）；`event-dispositions.json` 注记已更新。② UI 消费——`taskToolModel.ts` 新增 `readTaskAgentRows`（progress=live 行 / results=settled 行，settled 优先，index 排序，畸形忽略）与 `formatAgentDuration`；`ToolPart.tsx` 新增 `TaskAgentRowsList`/`TaskAgentRowItem`（状态色点+agent 名+label+当前工具+tokens+时长+重试文案，memo+签名比较接入流式内容通知），空态条件与 shouldRenderTaskSummary 纳入 agentRows。③ i18n——`chat.toolPart.taskAgent.*` 8 键 × 11 词典（en/de/es/fr/ja/ko/pl/pt-BR/uk/zh-CN/zh-TW）全量真实翻译。
 > 门禁：bun test omp-host 369/0（含新增 task details 透传测试）、ui parts 91/0（含 4 个新模型测试）、双包 type-check 新增 0（剩余 6 个为 @lezer/@codemirror 依赖重复既有噪音）、oxlint 新增类 0、check:events OK；`bun run dead-code` 因 bunx knip 缓存损坏未能运行（环境问题）。浏览器视觉冒烟未做——需真实 omp 会话跑并行 task 工具。
@@ -43,12 +43,59 @@ wire 投影现状（本仓库）：
 - 双包 type-check + `bunx oxlint` 新增路径 0
 - 局限：完整视觉冒烟需要真实 omp 会话跑并行 task 工具，单测 + wire 测试覆盖数据面；UI 渲染面以类型 + 组件结构审查为准（如实报告，未做浏览器目验）。
 
-## 层 2：agent hub 对齐（后续独立批次，未实施）
+## 层 2：agent hub 对齐（已细化，未实施；三批次独立交付）
 
-对齐 TUI 的多 agent 总览体验，工作量显著更大，需先做范围设计：
+### 现状勘定（2026-09-03 调研，修正本文初版判断）
 
-- `agent-hub.ts` / `agents-hub.ts` 等价物：跨会话/会话内所有运行中子 agent 的总览面板（进度、tokens、cost、当前工具、切换查看）。
-- `agent-transcript-viewer` 等价物：单个子 agent 运行 transcript 查看（数据源：SDK `TASK_SUBAGENT_LIFECYCLE_CHANNEL` 事件 / artifacts `outputPaths`，wire 侧尚无对应通道，需新投影）。
-- `running-subagent-badge` 等价物：全局状态行/头部徽章。
-- 层 1 的窄门控（仅 task 工具转发 details）在层 2 视需要泛化；`AgentProgress.inflightTaskDetails`（嵌套子 agent）与 `recentOutput` 流式 tail 亦留待层 2。
-- WorkStatusPanel Subagents 区块目前只列 OpenCode 式子会话（按 parentId）；omp 子 agent 运行不是 wire 子会话，层 2 决定是否并入该面板或另立 surface。
+agent-runs 链路**已存在**，层 2 要做的是补全信息、打通查看、建立联动，不是从零建：
+
+- 服务端：engine 挂 agent-runs 聚合器（spec 04 §5.5，engine.ts:1221/1258 保留 host session）；`GET /omp/agent-runs` 快照 + `POST /omp/agent-runs/{sessionID}/{agentId}` 门控（domain-uri.ts:1716/1722）；`projectAgentRun`（domain-uri.ts:930-968）行含 `activity`（文本）、`history{agent,modelRole,resolvedModel,metrics,readOnly,outputPath(agent:// URL)}`、`hasTranscript`。
+- 事件：`omp.agents.updated`（durable，快照端点 /api/omp/agent-runs，单调 revision）。
+- UI：`useOmpAgentRunsStore`（runtimeKey::directory 键控，`agentRuns.v1` 能力门控，失败不伪装空成功）；WorkStatus Subagents 区块已有 agentRuns 分支（running/parked/aborted/done + blocker）。
+- TUI 参照系：hub = `registry/agent-registry.ts`（AgentRef/AgentStatus）+ `session-observer-registry.ts`（ObservableSession.progress：tokens/requests/tools/cost/durationMs/contextTokens）+ `agent-hub-projection.ts` 聚合 + `agent-transcript-viewer.ts`。
+
+与 TUI hub 的差距（按批次收敛）：
+
+| 差距 | TUI 证据 | 现状 |
+|---|---|---|
+| 运行行缺实时用量指标 | 每行实时显示 token 用量、花费、时长、当前工具 | 行只有 `activity` 一段文本 + 结束后的 `history.metrics`；运行中的指标没有并入投影 |
+| 无法点开一条运行看它的对话过程 | 就地查看运行中子代理的对话记录 | 只知道有没有记录（`hasTranscript` 布尔）；没有读取接口。已结束运行的产物文件可以经既有 `agent://` 链接域读取，但界面上没有入口 |
+| 没有全局的"有子代理在跑"提示 | 状态行上的运行徽章 | agentsRevision 已经送到界面管线，但没有任何地方消费它 |
+| 任务卡片与运行总览互不相通 | 总览里可以切入对应的子代理 | 层 1 的卡片行没有跳转；两边的运行标识预计同一体系（executor 经 AgentRegistry.global().get(result.id)），待批次内验证 |
+| 嵌套与输出细节未显示 | 嵌套子代理进度、最近输出尾巴 | 层 1 未渲染 |
+
+### 批次 A：运行行显示实时用量 + 运行中徽章（小，先行）
+
+| # | 改动 | 测试 | 风险 |
+|---|---|---|---|
+| A1 | 服务端把运行中的实时用量并入快照行：投影时读取会话观察者的进度数据（与 SDK progressMetrics 同口径），`OmpAgentRun` 增 `live?: {tokens,cost,durationMs,currentTool,contextTokens,contextWindow}`；界面侧 `OmpAgentRunRecord` 与校验 schema 同步 | 聚合测试：运行中的行带实时指标、已结束的行不带；界面 schema 解析 | 低：只增可选字段 |
+| A2 | 工作状态面板的子代理行随运行刷新 token 用量、时长与当前活动（沿用现有 WorkStatusValue 色调体系） | WorkStatusSubagentsSection 测试扩展 | 低 |
+| A3 | 有子代理在跑时，头部（或会话状态行）出现运行中徽章：订阅 agentsRevision 加繁忙行数 | store 派生选择器测试 | 低；位置需对照文案与主题约定 |
+
+### 批次 B：点开一条运行，查看它的对话记录（中）
+
+| # | 改动 | 测试 | 风险 |
+|---|---|---|---|
+| B0 | 先写规格：docs/omp-parity/ 新章，定义"读取一条运行的对话记录"的地址、分页与权限语义 | — | 先规格后实现（项目惯例） |
+| B1 | 新增 `GET /omp/agent-runs/{sessionID}/{agentId}/transcript`：有记录文件时读取并按现有 entries 口径投影；登记进启动矩阵（是否持久快照依 B0 裁决） | 路由测试：存在/404/越权目录拒绝；投影与 entries 端点一致性抽查 | 中：新端点 + 矩阵覆盖 |
+| B2 | 界面上点开运行行（工作状态面板或任务卡片行），在侧板新标签页（`dedupeKey: run:{key}`，只读）里看这条运行的对话过程 | 组件测试 + 手动冒烟 | 中：复用只读会话渲染还是轻量列表，B0 定 |
+| B3 | 已结束的运行提供产物入口：总览行和层 1 的终态行可经 `agent://{outputPath}` 打开产物文件（链接域已存在） | 既有链接域测试补入口断言 | 低 |
+
+### 批次 C：任务卡片与运行互通 + 嵌套细节（增强，可后置）
+
+| # | 改动 | 测试 | 风险 |
+|---|---|---|---|
+| C1 | 任务卡片里的子代理行可跳到对应的运行：行内"查看运行"打开侧板对应标签；先验证 progress.id 与 registry agentId 是同一标识体系 | 标识关联单测（executor fixture） | 中：跨标识体系需实证 |
+| C2 | 运行中的子代理如果自己又派了子代理，在父行内缩进显示一层（`AgentProgress.inflightTaskDetails`） | readTaskAgentRows 嵌套解析测试 | 低 |
+| C3 | 运行中的行尾部滚动显示最近输出摘要（`recentOutput`，仅运行中的行做动画） | — | 低；性能契约：只给活动行做动画 |
+| C4 | 工具部分详情转发目前的窄门控（仅 task 工具）——等其他工具出现真实消费需求再泛化 | — | 按需 |
+
+### 每批次统一门禁
+
+同层 1：bun test omp-host / ui parts 全绿 → 双包 type-check 新增 0 → oxlint 新增 0 → `check:events`（B 批次另跑 bootstrap matrix）→ 涉及 UI 面浏览器冒烟 → 独立提交。
+
+### 待用户裁决
+
+1. 批次顺序确认（默认 A→B→C，A 可与层 1 冒烟并行）。
+2. B2 点开查看的形态：侧板新标签页（推荐，与打开子会话一致）vs 独立弹层。
+3. A3 徽章落点：Header 全局 vs 会话内状态行。
