@@ -12,9 +12,11 @@ or extending these scripts. The methodology rules they enforce come from
 | `bun run profile:idle` | What the app does while nobody interacts with it. |
 | `bun run profile:browser` | A manually driven capture, for interactions that cannot be scripted. |
 | `bun run profile:switch` | What switching between two sessions in the sidebar costs: wall time to a stable message list, long-task distribution, main-thread blockage, and CPU self time. |
+| `bun run bench:terminal` | How fast a terminal scrolls (`cat` 500 MiB) and repaints (DOOM-fire fps). Runs inside the terminal under test, not over CDP. |
 
-All of them measure a real browser over CDP. Pass `--help` to any of them for
-the full option list.
+The `profile:*` commands measure a real browser over CDP; `bench:terminal`
+measures the terminal it runs inside. Pass `--help` to any of them for the
+full option list.
 
 ## Before Measuring Anything
 
@@ -120,6 +122,44 @@ bun run profile:switch -- --url http://127.0.0.1:4599 --to <session id or title 
 
 `--from` defaults to the first other visible session row. Revisit performance
 (warm markdown block cache) is covered by the even-numbered ping-pong rounds.
+
+## terminal-bench
+
+`bun run bench:terminal -- [--label NAME]` (or `node scripts/terminal-bench.mjs`)
+scores whichever terminal it runs inside, on the two-test standard: `cat`
+throughput and DOOM-fire frame rate. Use it to compare terminals, or terminal
+changes, on one machine. It runs on Windows (cmd, PowerShell, Windows
+Terminal, Git Bash), macOS and Linux, and must run in an interactive shell
+inside the terminal under test.
+
+The cat test streams a cached 500 MiB fixture of deterministic 80-byte lines
+and times `cat`. Pty flow control blocks the writer once the terminal falls
+behind, so the wall time is the scroll path end to end: parse, grid damage,
+scrollback store, paint, plus at most a few hundred KiB of pipe slack. Screen
+and scrollback are cleared before each rep; the score is the best of three
+reps in MiB/s and Mlines/s.
+
+The fire test builds const-void/DOOM-fire-zig at `-Doptimize=ReleaseFast`;
+a Debug build would benchmark the compiler's codegen, not the terminal. When
+the local zig does not match the ref's `.zigversion` pin, the pinned zig is
+fetched into the cache and used, and the ref re-picked to match, so every
+machine builds the same tested combination. The operator maximizes the
+window, watches the cumulative `[ N.NN fps ]` counter settle, presses
+Ctrl+C, and types the value back. The script grades it (very poor <=5,
+poor <=24, ok, great >=100, upstream definitions) and restores the terminal
+state DOOM-fire leaves behind on SIGINT (alt screen, hidden cursor, console
+modes).
+
+Each run appends one JSON record to `artifacts/term-bench/results.jsonl`
+(gitignored): environment fingerprint, per-rep times, best/median throughput,
+fire fps with ref, rev and zig version, and both window sizes. Compare only
+records with the same machine, OS, window size and font; scrollback settings
+are not recorded, so keep those identical by hand.
+
+Validity notes: the cat test refuses non-tty stdout because a pipe measurement
+is meaningless (`--force` exists for mechanics checks only), fire requires a
+120x22 window, the clock is checked before timing anything, and the fps is
+the operator's transcription of the program's own counter, not a scrape.
 
 
 ## Reading The Results

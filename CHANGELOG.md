@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Terminal: a command that floods output no longer freezes the whole app.** Streaming hundreds of megabytes (a big `cat`, verbose build logs) used to pile up in the server until every other feature timed out and the terminal tab died — the app stayed responsive throughout instead, memory stays bounded, and the terminal keeps showing the latest output while it catches up, resynchronizing automatically once the flood ends. Scroll throughput also improved (~50% on large streams).
+
+- **Terminal: the app server now runs under Node, ending a class of Windows freezes.** The server previously launched under Bun whenever Bun was installed, which selected a terminal backend (bun-pty) that can pin a CPU core for minutes after a command producing massive output is force-killed inside a terminal, freezing the whole app until the backlog drains. The server now always launches under Node — Bun remains reserved for the agent engine — where the same scenario measured clean.
+
 ## [1.25.0] - 2026-09-02
 
 - **Chat: the engine's injected notes and questions now reach the conversation.** Agent-side ask prompts failed to open their dialog whenever a question marked a recommended option, leaving the turn stuck on "using ask" until you interrupted it — the answer dialog now opens reliably. Harness-injected inputs the terminal shows (todo reminders, recovery nudges, queued prompts) also appear in the chat as collapsed notes you can expand, instead of vanishing.

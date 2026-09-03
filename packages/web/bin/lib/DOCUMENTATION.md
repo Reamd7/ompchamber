@@ -16,6 +16,7 @@ Command modules implement user-facing commands and preserve output contracts acr
 - `commands-serve.js`
   - Implements `openchamber serve`.
   - Owns OpenCode CLI checks, port resolution, log rotation, PID/instance registry writes, foreground/background server launch, startup summaries, and foreground shutdown behavior.
+  - Server runtime: the web server always launches under Node; Bun is reserved for the omp host engine. Under Bun the Windows terminal PTY backend is bun-pty, which stalls one core for a backlog-proportional time when a heavy writer inside a terminal is hard-killed; node-pty under Node has no such stall (see `docs/BUN_PTY_STALL.md`).
 
 - `commands-lifecycle.js`
   - Implements `openchamber stop` and `openchamber restart`.
