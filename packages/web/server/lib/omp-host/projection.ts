@@ -1512,7 +1512,10 @@ export class StreamProjector {
    * parked background blocks, which the engine cannot reliably replicate, so
    * it stays conservative).
    */
-  toolPartial(callID: string, { text, asyncState }: { text?: string; asyncState?: string } = {}) {
+  toolPartial(
+    callID: string,
+    { text, asyncState, details }: { text?: string; asyncState?: string; details?: unknown } = {},
+  ) {
     if (!this.current) return;
     const id = this.toolPartIds.get(callID);
     if (!id) return;
@@ -1524,8 +1527,15 @@ export class StreamProjector {
     }
     const output = this.toolPartialText.get(callID) ?? '';
     const priorMeta = this.toolPartialMeta.get(callID);
-    const metadata: WireToolMetadata | undefined = asyncState ? { ...(priorMeta ?? {}), asyncState } : priorMeta;
-    if (metadata !== undefined) this.toolPartialMeta.set(callID, metadata);
+    // Structured live snapshots (the task tool's per-subagent AgentProgress[])
+    // replace prior details wholesale — every update carries a full snapshot.
+    let metadata: WireToolMetadata | undefined = priorMeta;
+    if (asyncState || details !== undefined) {
+      metadata = { ...(priorMeta ?? {}) };
+      if (asyncState) metadata.asyncState = asyncState;
+      if (details !== undefined) metadata.details = details;
+      this.toolPartialMeta.set(callID, metadata);
+    }
     this.#emitPartUpdated({
       id,
       sessionID: this.sessionID,

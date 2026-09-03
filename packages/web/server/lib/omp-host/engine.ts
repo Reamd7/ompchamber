@@ -1606,10 +1606,15 @@ export class OmpHostEngine {
       }
       case 'tool_execution_update': {
         // Partial results (05 §5.6): running-state append; never terminal —
-        // tool_execution_end owns completion.
+        // tool_execution_end owns completion. The task tool's partial details
+        // carry the per-subagent AgentProgress snapshot the transcript renders
+        // live; other tools stay text/asyncState-only until a consumer needs
+        // their partial details on the wire.
+        const partial = typeof event.partialResult === 'string' ? undefined : event.partialResult;
         hostSession.projector?.toolPartial(event.toolCallId, {
           text: typeof event.partialResult === 'string' ? event.partialResult : (event.partialResult?.text ?? event.partialResult?.output),
-          asyncState: event.partialResult?.details?.async?.state
+          asyncState: event.partialResult?.details?.async?.state,
+          ...(event.toolName === 'task' && partial?.details !== undefined ? { details: partial.details } : {}),
         });
         return;
       }

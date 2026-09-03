@@ -3,8 +3,10 @@ import type { Message, Part } from '@/lib/opencode/wire'
 
 import {
     buildTaskSummaryEntriesFromSession,
+    formatAgentDuration,
     parseTaskMetadataBlock,
     prepareTaskToolOutput,
+    readTaskAgentRows,
     readTaskSessionIdFromRecord,
     readTaskSessionIdFromOutput,
 } from './taskToolModel';
@@ -55,5 +57,61 @@ describe('taskToolModel', () => {
     test('leaves normal task output untouched', () => {
         expect(prepareTaskToolOutput('done\n<task_metadata>{"sessionID":"child-1"}</task_metadata>')).toBe('done');
         expect(prepareTaskToolOutput(undefined)).toBe('');
+    });
+
+    test('parses live AgentProgress snapshots into sorted agent rows', () => {
+        const metadata = {
+            details: {
+                progress: [
+                    { index: 1, id: 'b', agent: 'task', status: 'running', task: 'resolve conflicts', currentTool: 'bash', tokens: 1500, durationMs: 3400, retryState: { attempt: 2, maxAttempts: 5 } },
+                    { index: 0, id: 'a', agent: 'scout', status: 'completed', description: 'scan docs', tokens: 120, durationMs: 800 },
+                ],
+                results: [],
+            },
+        };
+        expect(readTaskAgentRows(metadata)).toEqual([
+            { key: 'a', agent: 'scout', status: 'completed', label: 'scan docs', detail: undefined, tokens: 120, durationMs: 800, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
+            { key: 'b', agent: 'task', status: 'running', label: 'resolve conflicts', detail: 'bash', tokens: 1500, durationMs: 3400, retryAttempt: 2, retryMax: 5, retryExhausted: undefined },
+        ]);
+    });
+
+    test('settled results replace stale progress and derive terminal status', () => {
+        const metadata = {
+            details: {
+                progress: [{ index: 0, id: 'a', agent: 'scout', status: 'running' }],
+                results: [
+                    { index: 1, id: 'b', agent: 'task', exitCode: 1, error: 'boom', tokens: 10, durationMs: 5 },
+                    { index: 0, id: 'a', agent: 'scout', exitCode: 0, aborted: true, tokens: 3, durationMs: 1 },
+                ],
+            },
+        };
+        expect(readTaskAgentRows(metadata)).toEqual([
+            { key: 'a', agent: 'scout', status: 'aborted', label: undefined, detail: undefined, tokens: 3, durationMs: 1, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
+            { key: 'b', agent: 'task', status: 'failed', label: undefined, detail: 'boom', tokens: 10, durationMs: 5, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
+        ]);
+    });
+
+    test('flags retry exhaustion and ignores malformed rows', () => {
+        const metadata = {
+            details: {
+                progress: [
+                    { index: 0, id: 'a', agent: 'scout', status: 'running', retryFailure: { attempt: 3 } },
+                    { index: 1, agent: 42 },
+                    'junk',
+                    null,
+                ],
+            },
+        };
+        expect(readTaskAgentRows(metadata)).toEqual([
+            { key: 'a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: 3, retryExhausted: true },
+        ]);
+        expect(readTaskAgentRows(undefined)).toEqual([]);
+        expect(readTaskAgentRows({ details: { progress: 'nope' } })).toEqual([]);
+    });
+
+    test('formats durations the way the TUI renderer prints them', () => {
+        expect(formatAgentDuration(400)).toBe('400ms');
+        expect(formatAgentDuration(5400)).toBe('5.4s');
+        expect(formatAgentDuration(125_000)).toBe('2m05s');
     });
 });

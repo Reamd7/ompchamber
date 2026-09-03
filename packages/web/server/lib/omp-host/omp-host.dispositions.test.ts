@@ -547,6 +547,53 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     expect(final?.state?.metadata?.details).toEqual(askDetails);
   });
 
+  test('task tool_execution_update carries partial details; other tools stay text/asyncState only', async () => {
+    const h = await harness();
+    h.emit({ type: 'message_start', message: { role: 'assistant', content: [], timestamp: 20 } });
+    h.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'task', args: { prompt: 'resolve' } });
+    h.emit({
+      type: 'tool_execution_update',
+      toolCallId: 't1',
+      toolName: 'task',
+      args: {},
+      partialResult: {
+        text: 'Running 2 agents...',
+        details: { progress: [{ index: 0, id: 'a1', agent: 'scout', status: 'running', tokens: 120 }], results: [] },
+      },
+    });
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const taskPart = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool').at(-1);
+    expect(taskPart?.state?.status).toBe('running');
+    // SAFETY: partial details are forwarded verbatim into state.metadata.details.
+    const details = (taskPart?.state?.metadata as { details?: { progress?: unknown[] } } | undefined)?.details;
+    expect(Array.isArray(details?.progress)).toBe(true);
+    expect(details?.progress).toHaveLength(1);
+
+    // A later snapshot replaces the prior details wholesale.
+    h.emit({
+      type: 'tool_execution_update',
+      toolCallId: 't1',
+      toolName: 'task',
+      args: {},
+      partialResult: { text: '', details: { progress: [], results: [{ index: 0, agent: 'scout', exitCode: 0, tokens: 900, durationMs: 1200 }] } },
+    });
+    // SAFETY: latest-snapshot-wins read of the same wire part.
+    const latest = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool').at(-1);
+    // SAFETY: latest-snapshot-wins read of the same fixture metadata shape.
+    const latestDetails = (latest?.state?.metadata as { details?: { progress?: unknown[]; results?: unknown[] } } | undefined)?.details;
+    expect(latestDetails?.progress).toHaveLength(0);
+    expect(latestDetails?.results).toHaveLength(1);
+
+    // Non-task tools keep the narrow partial shape: no details on the wire.
+    h.emit({ type: 'tool_execution_start', toolCallId: 'r1', toolName: 'read', args: {} });
+    h.emit({ type: 'tool_execution_update', toolCallId: 'r1', toolName: 'read', args: {}, partialResult: { text: 'half', details: { filePath: '/x' } } });
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const readPart = h.wireOf('message.part.updated').map((e) => wireProps<{ part: FixturePart }>(e)?.part).filter((p): p is FixturePart => p?.type === 'tool').at(-1);
+    expect(readPart?.state?.output).toBe('half');
+    expect(readPart?.state?.metadata?.asyncState).toBeUndefined();
+    expect(readPart?.state?.metadata?.details).toBeUndefined();
+  });
+
   test('turn_start/turn_end are explicit intentional ignores; unknown members fail loudly', async () => {
     const h = await harness();
     h.emit({ type: 'turn_start' });

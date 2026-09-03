@@ -44,13 +44,18 @@ import { getToolIcon } from './toolPresentation';
 import { useDurationTickerNow } from '@/hooks/useDurationTicker';
 import {
     buildTaskSummaryEntriesFromSession,
+    formatAgentDuration,
     normalizeTaskSummaryEntries,
     parseTaskMetadataBlock,
     prepareTaskToolOutput,
+    readTaskAgentRows,
     readTaskSessionIdFromOutput,
     readTaskSessionIdFromRecord,
+    type TaskAgentRow,
+    type TaskAgentRowStatus,
     type TaskToolSummaryEntry,
 } from './taskToolModel';
+import { formatCompactTokenCount } from '../turnUsage';
 import { areRenderRelevantPartsEqual } from '../renderCompare';
 import { useI18n } from '@/lib/i18n';
 import {
@@ -995,9 +1000,139 @@ const TaskSummaryEntriesList = React.memo(({
 });
 
 TaskSummaryEntriesList.displayName = 'TaskSummaryEntriesList';
+const TASK_AGENT_ROW_STATUS_META = {
+    pending: { dotClass: 'bg-muted-foreground/40', labelKey: 'chat.toolPart.taskAgent.status.pending' },
+    running: { dotClass: 'bg-[var(--status-info)] animate-pulse', labelKey: 'chat.toolPart.taskAgent.status.running' },
+    completed: { dotClass: 'bg-[var(--status-success)]', labelKey: 'chat.toolPart.taskAgent.status.completed' },
+    failed: { dotClass: 'bg-[var(--status-error)]', labelKey: 'chat.toolPart.taskAgent.status.failed' },
+    aborted: { dotClass: 'bg-muted-foreground/60', labelKey: 'chat.toolPart.taskAgent.status.aborted' },
+} as const satisfies Record<TaskAgentRowStatus, { dotClass: string; labelKey: string }>;
+
+const getTaskAgentRowSignature = (row: TaskAgentRow): string => {
+    return [
+        row.key,
+        row.agent,
+        row.status,
+        row.label ?? '',
+        row.detail ?? '',
+        row.tokens,
+        row.durationMs,
+        row.retryAttempt,
+        row.retryMax,
+        row.retryExhausted ? 1 : 0,
+    ].join('\u0001');
+};
+
+const areTaskAgentRowsRenderEqual = (prevRows: TaskAgentRow[], nextRows: TaskAgentRow[]): boolean => {
+    if (prevRows === nextRows) return true;
+    if (prevRows.length !== nextRows.length) return false;
+    for (let index = 0; index < prevRows.length; index += 1) {
+        if (getTaskAgentRowSignature(prevRows[index]) !== getTaskAgentRowSignature(nextRows[index])) {
+            return false;
+        }
+    }
+    return true;
+};
+
+const TaskAgentRowItem = React.memo(({
+    row,
+    animateTailText,
+}: {
+    row: TaskAgentRow;
+    animateTailText: boolean;
+}) => {
+    const { t } = useI18n();
+    const statusMeta = TASK_AGENT_ROW_STATUS_META[row.status];
+    const metaBits: string[] = [];
+    if (row.tokens !== undefined) metaBits.push(formatCompactTokenCount(row.tokens));
+    if (row.durationMs !== undefined) metaBits.push(formatAgentDuration(row.durationMs));
+    const retryLabel = row.retryExhausted
+        ? t('chat.toolPart.taskAgent.retriesExhausted', { attempt: row.retryAttempt ?? 0 })
+        : row.retryAttempt !== undefined
+            ? t('chat.toolPart.taskAgent.retrying', { attempt: row.retryAttempt, maxAttempts: row.retryMax ?? 0 })
+            : undefined;
+
+    return (
+        <ToolRevealOnMount animate={animateTailText} wipe>
+            <div className="flex gap-2 items-center min-w-0 w-full">
+                <span
+                    className={cn('flex-shrink-0 h-1.5 w-1.5 rounded-full', statusMeta.dotClass)}
+                    title={t(statusMeta.labelKey)}
+                />
+                <span className="typography-meta flex-shrink-0" style={{ color: 'var(--tools-title)' }}>
+                    {row.agent}
+                </span>
+                {row.label ? (
+                    <Text
+                        variant={animateTailText && row.status === 'running' ? 'generate-effect' : 'static'}
+                        className="typography-meta flex-1 min-w-0 truncate text-muted-foreground/70"
+                        style={{ color: 'var(--tools-description)' }}
+                        title={row.label}
+                    >
+                        {row.label}
+                    </Text>
+                ) : (
+                    <span className="flex-1 min-w-0" />
+                )}
+                {row.status === 'running' && row.detail ? (
+                    <span className="typography-meta flex-shrink-0 text-muted-foreground/70">{row.detail}</span>
+                ) : null}
+                {metaBits.length > 0 ? (
+                    <span className="typography-meta flex-shrink-0 tabular-nums text-muted-foreground/50">
+                        {metaBits.join(' · ')}
+                    </span>
+                ) : null}
+                {retryLabel ? (
+                    <span className="typography-meta flex-shrink-0 text-[var(--status-warning)]">{retryLabel}</span>
+                ) : null}
+            </div>
+        </ToolRevealOnMount>
+    );
+}, (prev, next) => {
+    return prev.animateTailText === next.animateTailText
+        && getTaskAgentRowSignature(prev.row) === getTaskAgentRowSignature(next.row);
+});
+
+TaskAgentRowItem.displayName = 'TaskAgentRowItem';
+
+const TASK_AGENT_ROWS_VISIBLE_LIMIT = 8;
+
+const TaskAgentRowsList = React.memo(({
+    rows,
+    isExpanded,
+    animateTailText,
+}: {
+    rows: TaskAgentRow[];
+    isExpanded: boolean;
+    animateTailText: boolean;
+}) => {
+    const { t } = useI18n();
+    const visibleRows = isExpanded ? rows : rows.slice(0, TASK_AGENT_ROWS_VISIBLE_LIMIT);
+    const hiddenCount = Math.max(0, rows.length - visibleRows.length);
+
+    return (
+        <div className="w-full min-w-0 space-y-1">
+            {visibleRows.map((row) => (
+                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} />
+            ))}
+            {hiddenCount > 0 ? (
+                <div className="typography-micro text-muted-foreground/70">
+                    {t('chat.toolPart.taskAgent.moreAgents', { count: hiddenCount })}
+                </div>
+            ) : null}
+        </div>
+    );
+}, (prev, next) => {
+    return prev.isExpanded === next.isExpanded
+        && prev.animateTailText === next.animateTailText
+        && areTaskAgentRowsRenderEqual(prev.rows, next.rows);
+});
+
+TaskAgentRowsList.displayName = 'TaskAgentRowsList';
 
 const TaskToolSummary: React.FC<{
     entries: TaskToolSummaryEntry[];
+    agentRows: TaskAgentRow[];
     isExpanded: boolean;
     isMobile: boolean;
     output?: string;
@@ -1006,7 +1141,7 @@ const TaskToolSummary: React.FC<{
     input?: Record<string, unknown>;
     animateTailText?: boolean;
     isActive?: boolean;
-}> = ({ entries, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
+}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
     const { t } = useI18n();
     const currentDirectory = useEffectiveDirectory();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
@@ -1042,7 +1177,7 @@ const TaskToolSummary: React.FC<{
         ? input.subagent_type
         : 'subagent';
 
-    if (entries.length === 0 && !hasOutput && !sessionId) {
+    if (entries.length === 0 && agentRows.length === 0 && !hasOutput && !sessionId) {
         return (
             <div className="relative pr-2 pb-2 pt-2 space-y-2 pl-[1.4375rem]">
                 <div className="typography-meta text-muted-foreground/70">
@@ -1060,6 +1195,14 @@ const TaskToolSummary: React.FC<{
                 'before:top-[-0.25rem] before:bottom-0'
             )}
         >
+            {agentRows.length > 0 ? (
+                <TaskAgentRowsList
+                    rows={agentRows}
+                    isExpanded={isExpanded}
+                    animateTailText={animateTailText}
+                />
+            ) : null}
+
             {entries.length > 0 ? (
                 <TaskSummaryEntriesList
                     entries={entries}
@@ -1983,6 +2126,9 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
         }
         return metadataTaskSummaryEntries;
     }, [childSessionTaskSummaryEntries, metadataTaskSummaryEntries]);
+    const taskAgentRows = React.useMemo<TaskAgentRow[]>(() => {
+        return isTaskTool ? readTaskAgentRows(metadata) : [];
+    }, [isTaskTool, metadata]);
     const diffStats = React.useMemo(() => {
         return (normalizedPartTool === 'edit' || normalizedPartTool === 'multiedit' || normalizedPartTool === 'apply_patch')
             ? parseDiffStats(metadata)
@@ -1996,7 +2142,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
     const descriptionPath = getToolDescriptionPath(normalizedPart, state, currentDirectory);
     const description = getToolDescription(normalizedPart, state, currentDirectory);
     const displayName = getToolMetadata(normalizedPartTool || part.tool).displayName;
-    
+
     // Tool title/description — shown inline as context
     const justificationText = React.useMemo(() => {
         if (normalizedPartTool === 'bash') {
@@ -2149,7 +2295,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
 
     const iconStyle = !isTaskTool && isError ? TOOL_ERROR_ICON_STYLE : TOOL_NORMAL_ICON_STYLE;
     const titleStyle = !isTaskTool && isError ? TOOL_ERROR_TITLE_STYLE : TOOL_NORMAL_TITLE_STYLE;
-    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (taskSummaryEntries.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
+    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (taskSummaryEntries.length > 0 || taskAgentRows.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
     const shouldRenderExpandedContent = useDeferredExpandedContent(!isTaskTool && isExpanded);
 
     if (!shouldTreatAsFinalized && !isActive && !isTaskTool) {
@@ -2168,7 +2314,6 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                 onKeyDown={isMultiFileApplyPatch ? (event) => {
                     if (event.target !== event.currentTarget) return;
                     if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
                     onToggle(part.id);
                 } : handleMainKeyDown}
                 role="button"
@@ -2329,6 +2474,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
             {shouldRenderTaskSummary ? (
                 <TaskToolSummary
                     entries={taskSummaryEntries}
+                    agentRows={taskAgentRows}
                     isExpanded={isExpanded}
                     isMobile={isMobile}
                     output={taskOutputString}

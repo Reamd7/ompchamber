@@ -40,7 +40,7 @@
   },
   "tool_execution_update": {
     "track": "wire-new",
-    "note": "partial results: message.part.updated running-state append (05 §5.6)"
+    "note": "partial results: message.part.updated running-state append (05 §5.6); task tool partial details ride metadata.details for live subagent progress"
   },
   "tool_execution_end": {
     "track": "wire-existing",
