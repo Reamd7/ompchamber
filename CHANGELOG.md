@@ -3,8 +3,14 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+
+## [1.26.0] - 2026-09-03
+
 - **Chat: session links now open the right conversation right away.** Opening a `?session=…` link on a fresh app load could land on a blank transcript because the app guessed the currently open folder before it knew which folder the session belonged to, recovering only later on its own. The link now waits for the folder lookup and opens the conversation immediately.
 - **Chat: Stop now works on sessions that stopped responding.** A session stuck mid-run — for example after tool errors filled the transcript — ignored the stop button until you restarted the app, and only sending a new message could nudge it back to life. Stop now settles the session as idle immediately (or within seconds when a turn's teardown genuinely hangs), and the next message rebuilds the session from its saved history.
+- Chat: the session timeline surface now carries structured reads end to end — telemetry and custom seed events reach the UI instead of being dropped, and the working status line names the running tool's intent while a turn is in flight.
+- Chat: the Tasks panel renders blocked and abandoned todo statuses distinctly, and skill groups parse from both singular and plural roots so grouped skills no longer vanish.
+- Server: wire-protocol field-loss batch — assistant finish reason, token totals, image blocks projected as file parts, cleared thinking/model fields, hand-authored skill frontmatter, provider header stringification, and `goal.updated`/`retry.ended` event ids now round-trip correctly; the omp host is fully typed TypeScript under `noImplicitAny`.
 
 ## [1.25.0] - 2026-09-02
 
