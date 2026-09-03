@@ -1,9 +1,13 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 已完成并提交**（`e0a06b2f`，2026-09-03）；层 2 已细化为 A/B/C 三批次，待用户裁决后启动（见文末"待用户裁决"）。
+> 状态：**层 1 已完成并提交**（`b8674cca`，已随 rebase 落在新 main 之上）；层 2 已细化为 A/B/C 三批次，**四项裁决已确认**（见文末"已裁决"），批次 A 可随时启动。
 >
-> 层 1 落地记录：① wire 透传——`omp-host/engine.ts` tool_execution_update 对 task 工具转发 `partialResult.details`，`projection.ts` toolPartial 新增 details 合并（最新快照整体替换，保留 asyncState）；`event-dispositions.json` 注记已更新。② UI 消费——`taskToolModel.ts` 新增 `readTaskAgentRows`（progress=live 行 / results=settled 行，settled 优先，index 排序，畸形忽略）与 `formatAgentDuration`；`ToolPart.tsx` 新增 `TaskAgentRowsList`/`TaskAgentRowItem`（状态色点+agent 名+label+当前工具+tokens+时长+重试文案，memo+签名比较接入流式内容通知），空态条件与 shouldRenderTaskSummary 纳入 agentRows。③ i18n——`chat.toolPart.taskAgent.*` 8 键 × 11 词典（en/de/es/fr/ja/ko/pl/pt-BR/uk/zh-CN/zh-TW）全量真实翻译。
-> 门禁：bun test omp-host 369/0（含新增 task details 透传测试）、ui parts 91/0（含 4 个新模型测试）、双包 type-check 新增 0（剩余 6 个为 @lezer/@codemirror 依赖重复既有噪音）、oxlint 新增类 0、check:events OK；`bun run dead-code` 因 bunx knip 缓存损坏未能运行（环境问题）。浏览器视觉冒烟未做——需真实 omp 会话跑并行 task 工具。
+> **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
+>
+> **合跑污染定性（修正早前判断）**：裸 `bun test <目录>` 合跑时 `WorkStatusSubagentsSection`（4 例）与 `ReasoningPart`（2 例）互相污染失败，机制是 `mock.module` 进程级注册会传播到已加载消费方且还原不可靠（`mock.restore()` 无效、"beforeEach 注册 + afterEach 还原"实验亦失败，实验已全部回退）。**仓库官方门禁 `bun run test`（逐文件隔离进程）不受影响、全绿**；裸合跑不得用作 gate 结论。详见文末缺陷登记。
+>
+> 层 1 落地记录：① wire 透传——`omp-host/engine.ts` tool_execution_update 对 task 工具转发 `partialResult.details`，`projection.ts` toolPartial 新增 details 合并（最新快照整体替换，保留 asyncState）；`event-dispositions.json` 注记已更新。② UI 消费——`taskToolModel.ts` 新增 `readTaskAgentRows`（progress=live 行 / results=settled 行，settled 优先，index 排序，畸形忽略）与 `formatAgentDuration`；`ToolPart.tsx` 新增 `TaskAgentRowsList`/`TaskAgentRowItem`（状态色点+agent 名+label+当前工具+tokens+时长+重试文案，memo+签名比较接入流式内容通知），空态条件与 shouldRenderTaskSummary 纳入 agentRows。③ i18n——`chat.toolPart.taskAgent.*` 8 键 × 12 词典全量真实翻译（`tr.ts` 为 rebase 后补齐）。
+> 门禁（提交时）：bun test omp-host 369/0（含新增 task details 透传测试）、ui parts 全绿（含 4 个新模型测试）、双包 type-check 新增 0（剩余为 @lezer/@codemirror 依赖重复既有噪音）、oxlint 新增类 0、check:events OK；`bun run dead-code` 因 bunx knip 缓存损坏未能运行（环境问题）。浏览器视觉冒烟未做——需真实 omp 会话跑并行 task 工具。
 > 参照系：`node_modules/@oh-my-pi/pi-coding-agent/src`（18.0.4）TUI 渲染 + 本仓库 wire 投影/消费端现状。
 
 ## 背景与问题
@@ -64,13 +68,11 @@ agent-runs 链路**已存在**，层 2 要做的是补全信息、打通查看�
 | 任务卡片与运行总览互不相通 | 总览里可以切入对应的子代理 | 层 1 的卡片行没有跳转；两边的运行标识预计同一体系（executor 经 AgentRegistry.global().get(result.id)），待批次内验证 |
 | 嵌套与输出细节未显示 | 嵌套子代理进度、最近输出尾巴 | 层 1 未渲染 |
 
-### 批次 A：运行行显示实时用量 + 运行中徽章（小，先行）
-
 | # | 改动 | 测试 | 风险 |
 |---|---|---|---|
 | A1 | 服务端把运行中的实时用量并入快照行：投影时读取会话观察者的进度数据（与 SDK progressMetrics 同口径），`OmpAgentRun` 增 `live?: {tokens,cost,durationMs,currentTool,contextTokens,contextWindow}`；界面侧 `OmpAgentRunRecord` 与校验 schema 同步 | 聚合测试：运行中的行带实时指标、已结束的行不带；界面 schema 解析 | 低：只增可选字段 |
-| A2 | 工作状态面板的子代理行随运行刷新 token 用量、时长与当前活动（沿用现有 WorkStatusValue 色调体系） | WorkStatusSubagentsSection 测试扩展 | 低 |
-| A3 | 有子代理在跑时，头部（或会话状态行）出现运行中徽章：订阅 agentsRevision 加繁忙行数 | store 派生选择器测试 | 低；位置需对照文案与主题约定 |
+| A2 | 工作状态面板的 agentRuns 行对齐子会话行的信息密度：随运行刷新 token 用量、时长、当前活动；花费复用 `formatCost`（omp 运行没有会话消息，数值来自 A1 的 live.cost 或结束后的 `history.metrics`），注意与子会话分支 `useSubagentCostRollup` 的口径差异并在行展示上保持一致；点击行为依赖 B2，先只做展示 | WorkStatusSubagentsSection 测试扩展（agentRuns 分支行带指标） | 低；agentRuns 分支当前不可点击、无花费，是信息缺口 |
+| A3 | 有子代理在跑时，Header 出现全局运行中徽章：订阅 agentsRevision 加目录级繁忙行数（已裁决） | store 派生选择器测试 | 低；位置需对照文案与主题约定 |
 
 ### 批次 B：点开一条运行，查看它的对话记录（中）
 
@@ -90,12 +92,16 @@ agent-runs 链路**已存在**，层 2 要做的是补全信息、打通查看�
 | C3 | 运行中的行尾部滚动显示最近输出摘要（`recentOutput`，仅运行中的行做动画） | — | 低；性能契约：只给活动行做动画 |
 | C4 | 工具部分详情转发目前的窄门控（仅 task 工具）——等其他工具出现真实消费需求再泛化 | — | 按需 |
 
-### 每批次统一门禁
+### 已裁决（2026-09-03，用户确认）
 
-同层 1：bun test omp-host / ui parts 全绿 → 双包 type-check 新增 0 → oxlint 新增 0 → `check:events`（B 批次另跑 bootstrap matrix）→ 涉及 UI 面浏览器冒烟 → 独立提交。
+1. 批次顺序：**A→B→C**。
+2. B2 点开形态：**侧板新标签页**（`dedupeKey: run:{key}`，只读，与打开子会话一致）。
+3. A3 徽章落点：**Header 全局**（目录级繁忙数，面板折叠时也可感知）。
 
-### 待用户裁决
+### main 继承缺陷登记（rebase 复查发现，均与层 1/层 2 改动无关）
 
-1. 批次顺序确认（默认 A→B→C，A 可与层 1 冒烟并行）。
-2. B2 点开查看的形态：侧板新标签页（推荐，与打开子会话一致）vs 独立弹层。
-3. A3 徽章落点：Header 全局 vs 会话内状态行。
+| 缺陷 | 现象 | 处置 |
+|---|---|---|
+| 裸 `bun test <目录>` 合跑时测试互相污染 | `WorkStatusSubagentsSection` 4 例 + `ReasoningPart` 2 例失败；各文件单独跑全绿。机制：`mock.module` 进程级注册会传播到已加载消费方，且还原不可靠；仓库官方门禁是 `bun run test`（`run-isolated-tests.mjs` 逐文件隔离进程），不受影响 | **接受**：官方门禁隔离跑全绿即可；禁止用裸合跑当下 gate 结论 |
+| `terminalApi.test.ts` 2 例失败 | terminal transport 的 replay/双订阅断言（terminal-enhancer 合并 `f19a337b` 引入） | **待立项**：main 继承，与本项目无关，登记给 terminal 负责人 |
+| `bunx knip` 缓存损坏 | `bun run dead-code` 无法运行（`formatly` 模块缺失） | 环境问题，重装 bunx 缓存后补跑 |
