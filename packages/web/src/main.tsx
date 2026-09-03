@@ -2,7 +2,7 @@ import { createConfiguredWebAPIs, getDesktopRelayRestoreReady } from './runtimeC
 import { Workbox } from 'workbox-window';
 
 import type { RuntimeAPIs } from '@ompchamber/ui/lib/api/types';
-import { resolveHostedSurface, type HostedSurface } from '@ompchamber/ui/lib/runtimeSurface';
+import { resolveHostedSurface, watchHostedSurfaceViewport, type HostedSurface } from '@ompchamber/ui/lib/runtimeSurface';
 import {
   isEmbeddedSessionChat,
   requestEmbeddedSessionRuntimeBootstrap,
@@ -91,6 +91,10 @@ const start = async (): Promise<void> => {
     ? await requestEmbeddedSessionRuntimeBootstrap()
     : null;
   window.__OMPCHAMBER_RUNTIME_APIS__ = createConfiguredWebAPIs(embeddedBootstrap);
+
+  // Reload into the other app shell when the viewport crosses the phone
+  // threshold after boot (no-op in fixed shells and with ?surface= overrides).
+  watchHostedSurfaceViewport();
 
   if (hostedSurface === 'mobile') {
     const { renderMobileApp } = await import('@ompchamber/ui/apps/renderMobileApp');

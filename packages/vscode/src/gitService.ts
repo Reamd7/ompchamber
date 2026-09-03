@@ -671,6 +671,23 @@ export interface GitBranchResult {
   branches: Record<string, GitBranchDetails>;
 }
 
+export async function getGitUnpushedBranchCounts(directory: string, requestedBranches: string[]): Promise<{ counts: Record<string, number> }> {
+  const requested = [...new Set(requestedBranches)].filter(Boolean).slice(0, 5);
+  if (requested.length === 0) return { counts: {} };
+  const local = new Set((await getGitBranchesRaw(directory)).all.filter((branch) => !branch.startsWith('remotes/')));
+  const counts: Record<string, number> = {};
+  await Promise.all(requested.map(async (branch) => {
+    if (!local.has(branch)) return;
+    const upstreamResult = await execGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', `${branch}@{upstream}`], directory);
+    const upstream = upstreamResult.exitCode === 0 ? upstreamResult.stdout.trim() : '';
+    if (!upstream) return;
+    const countResult = await execGit(['rev-list', '--count', `${upstream}..${branch}`], directory);
+    const count = countResult.exitCode === 0 ? Number.parseInt(countResult.stdout.trim(), 10) : 0;
+    if (Number.isFinite(count) && count > 0) counts[branch] = count;
+  }));
+  return { counts };
+}
+
 /**
  * Get all branches for a directory
  */
@@ -768,7 +785,7 @@ async function getGitBranchesRaw(directory: string): Promise<GitBranchResult> {
  */
 export async function checkoutBranch(directory: string, branch: string): Promise<{ success: boolean; branch: string }> {
   const repo = await getRepository(directory);
-  
+
   if (repo) {
     try {
       await repo.checkout(branch);

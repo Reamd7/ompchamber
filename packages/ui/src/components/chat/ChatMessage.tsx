@@ -16,7 +16,6 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 
-import type { AnimationHandlers, ContentChangeReason } from '@/hooks/useChatAutoFollow';
 import MessageBody from './message/MessageBody';
 import type { AgentMentionInfo } from './message/types';
 import type { StreamPhase, ToolPopupContent } from './message/types';
@@ -24,7 +23,7 @@ import { deriveMessageRole } from './message/messageRole';
 import { filterVisibleParts, normalizeParts } from './message/partUtils';
 import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { isHiddenUserMessage } from './message/hiddenUserMessage';
-import { flattenAssistantTextParts } from '@/lib/messages/messageText';
+import { flattenAssistantTextParts, flattenUserTextParts } from '@/lib/messages/messageText';
 import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/lib/messages/providerAuthError';
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
@@ -117,37 +116,46 @@ const getMessageInfoProp = (info: unknown, key: string): unknown => {
 };
 
 interface ChatMessageProps {
-  message: {
-    info: Message;
-    parts: Part[];
-  };
-  previousMessage?: {
-    info: Message;
-    parts: Part[];
-  };
-  nextMessage?: {
-    info: Message;
-    parts: Part[];
-  };
-  onContentChange?: (reason?: ContentChangeReason) => void;
-  animationHandlers?: AnimationHandlers;
-  scrollToBottom?: () => void;
-  turnGroupingContext?: TurnGroupingContext;
-  assistantHeaderMessageId?: string;
-  isInActiveTurn?: boolean;
-  activeStreamingPhase?: StreamPhase | null;
-  animateUserOnMount?: boolean;
-  onUserAnimationConsumed?: (messageId: string) => void;
-  reviewTransferDirection?: ReviewTransferDirection | null;
+    message: {
+        info: Message;
+        parts: Part[];
+    };
+    previousMessage?: {
+        info: Message;
+        parts: Part[];
+    };
+    nextMessage?: {
+        info: Message;
+        parts: Part[];
+    };
+    scrollToBottom?: () => void;
+    turnGroupingContext?: TurnGroupingContext;
+    assistantHeaderMessageId?: string;
+    isInActiveTurn?: boolean;
+    activeStreamingPhase?: StreamPhase | null;
+    animateUserOnMount?: boolean;
+    onUserAnimationConsumed?: (messageId: string) => void;
+    reviewTransferDirection?: ReviewTransferDirection | null;
 }
 
-const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nextMessage, onContentChange, animationHandlers, turnGroupingContext, assistantHeaderMessageId, isInActiveTurn = false, activeStreamingPhase = null, animateUserOnMount = false, onUserAnimationConsumed, reviewTransferDirection = null }) => {
-  const { t } = useI18n();
-  const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
-  const alwaysShowMessageActions = isMobile || isTablet;
-  const canPinIntoContext = !isVSCodeRuntime();
-  const { currentTheme } = useThemeSystem();
-  const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
+const ChatMessage: React.FC<ChatMessageProps> = ({
+    message,
+    previousMessage,
+    nextMessage,
+    turnGroupingContext,
+    assistantHeaderMessageId,
+    isInActiveTurn = false,
+    activeStreamingPhase = null,
+    animateUserOnMount = false,
+    onUserAnimationConsumed,
+    reviewTransferDirection = null,
+}) => {
+    const { t } = useI18n();
+    const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
+    const alwaysShowMessageActions = isMobile || isTablet;
+    const canPinIntoContext = !isVSCodeRuntime();
+    const { currentTheme } = useThemeSystem();
+    const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
 
   const getAgentModelForSession = useSelectionStore((s) => s.getAgentModelForSession);
   const getSessionModelSelection = useSelectionStore((s) => s.getSessionModelSelection);
@@ -499,13 +507,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
     return visibleParts;
   }, [chatRenderMode, isMessageCompleted, isUser, visibleParts]);
 
-  const assistantTextParts = React.useMemo(() => {
-    if (isUser) {
-      return [];
-    }
-    return visibleParts.filter((part) => part.type === 'text');
-  }, [isUser, visibleParts]);
-
   const toolParts = React.useMemo(() => {
     if (isUser) {
       return [];
@@ -588,18 +589,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
 
   const shouldHideUserMessage = isUser && displayParts.length === 0;
 
-  // Message is considered to have an "open step" if info.finish is not yet present
-  const hasOpenStep = typeof messageFinish !== 'string';
-
-  const shouldCoordinateRendering = React.useMemo(() => {
-    if (isUser) {
-      return false;
-    }
-    if (assistantTextParts.length === 0 || toolParts.length === 0) {
-      return hasOpenStep;
-    }
-    return true;
-  }, [assistantTextParts.length, toolParts.length, hasOpenStep, isUser]);
 
   const themeVariant = currentTheme?.metadata.variant;
   const isDarkTheme = React.useMemo(() => {
@@ -757,54 +746,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
 
   const messageTextContent = React.useMemo(() => {
     if (isUser) {
-      const shellOutputs = displayParts
-        .filter(
-          (
-            part
-          ): part is Part & {
-            type: 'text';
-            shellAction?: { output?: unknown };
-          } => part.type === 'text'
-        )
-        .map((part) => {
-          const output = part.shellAction?.output;
-          return typeof output === 'string' ? output.trim() : '';
-        })
-        .filter((output) => output.length > 0);
-
-      if (shellOutputs.length > 0) {
-        return shellOutputs.join('\n\n');
-      }
-
-      const shellCommands = displayParts
-        .filter(
-          (
-            part
-          ): part is Part & {
-            type: 'text';
-            shellAction?: { command?: unknown };
-          } => part.type === 'text'
-        )
-        .map((part) => {
-          const command = part.shellAction?.command;
-          return typeof command === 'string' ? command.trim() : '';
-        })
-        .filter((command) => command.length > 0);
-
-      if (shellCommands.length > 0) {
-        return shellCommands.join('\n');
-      }
-
-      const textParts = displayParts
-        .filter((part): part is Part & { type: 'text'; text?: string; content?: string } => part.type === 'text')
-        .map((part) => {
-          const text = part.text || part.content || '';
-          return text.trim();
-        })
-        .filter((text) => text.length > 0);
-
-      const combined = textParts.join('\n');
-      return combined.replace(/\n\s*\n+/g, '\n');
+      return flattenUserTextParts(displayParts);
     }
 
     if (assistantErrorText && assistantErrorText.trim().length > 0) {
@@ -884,6 +826,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
         return next;
       });
 
+
       setCollapsedTools((prev) => {
         if (!prev.has(toolId)) {
           return prev;
@@ -896,175 +839,40 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
     },
     [defaultOpenToolIds, effectiveExpandedTools, message.info.id]
   );
+    const hasEverStreamedRef = React.useRef(false);
 
-  const resolvedAnimationHandlers = animationHandlers ?? null;
-  const hasAnnouncedAuxiliaryScrollRef = React.useRef(false);
+    React.useEffect(() => {
+        hasEverStreamedRef.current = false;
+    }, [message.info.id]);
 
-  const animationCompletedRef = React.useRef(false);
-  const hasRequestedReservationRef = React.useRef(false);
-  const animationStartNotifiedRef = React.useRef(false);
-  const hasTriggeredReservationOnceRef = React.useRef(false);
-  const hasEverStreamedRef = React.useRef(false);
+    const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
 
-  React.useEffect(() => {
-    animationCompletedRef.current = false;
-    hasRequestedReservationRef.current = false;
-    animationStartNotifiedRef.current = false;
-    hasTriggeredReservationOnceRef.current = false;
-    hasAnnouncedAuxiliaryScrollRef.current = false;
-    hasEverStreamedRef.current = false;
-  }, [message.info.id]);
+    const handleShowPopup = React.useCallback((content: ToolPopupContent) => {
 
-  const handleAuxiliaryContentComplete = React.useCallback(() => {
-    if (isUser) {
-      return;
-    }
-    if (hasAnnouncedAuxiliaryScrollRef.current) {
-      return;
-    }
-    hasAnnouncedAuxiliaryScrollRef.current = true;
-    onContentChange?.('structural');
-  }, [isUser, onContentChange]);
-
-  const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
-
-  const handleShowPopup = React.useCallback(
-    (content: ToolPopupContent) => {
-      if (content.image || content.mermaid) {
-        setPopupContent(content);
-        setImagePreviewOpen(true);
-      }
-    },
-    [setImagePreviewOpen]
-  );
-
-  const handlePopupChange = React.useCallback(
-    (open: boolean) => {
-      setPopupContent((prev) => ({ ...prev, open }));
-      setImagePreviewOpen(open);
-    },
-    [setImagePreviewOpen]
-  );
-
-  const isAnimationSettled = Boolean(getMessageInfoProp(message.info, 'animationSettled'));
-  const isStreamingPhase = streamPhase === 'streaming' || streamPhase === 'cooldown';
-
-  if (isStreamingPhase) {
-    hasEverStreamedRef.current = true;
-  }
-
-  const hasReasoningParts = React.useMemo(() => {
-    if (isUser) {
-      return false;
-    }
-    return visibleParts.some((part) => part.type === 'reasoning');
-  }, [isUser, visibleParts]);
-
-  const allowAnimation = shouldAnimateMessage && !isAnimationSettled && !isStreamingPhase && !hasEverStreamedRef.current;
-  const shouldReserveAnimationSpace = !isUser && shouldAnimateMessage && assistantTextParts.length > 0 && !shouldCoordinateRendering;
-
-  React.useEffect(() => {
-    if (!resolvedAnimationHandlers?.onStreamingCandidate) {
-      return;
-    }
-
-    if (!shouldReserveAnimationSpace) {
-      if (hasRequestedReservationRef.current) {
-        if (hasReasoningParts && resolvedAnimationHandlers?.onReasoningBlock) {
-          resolvedAnimationHandlers.onReasoningBlock();
-        } else if (resolvedAnimationHandlers?.onReservationCancelled) {
-          resolvedAnimationHandlers.onReservationCancelled();
+        if (content.image || content.mermaid) {
+            setPopupContent(content);
+            setImagePreviewOpen(true);
         }
-        hasRequestedReservationRef.current = false;
-      }
-      return;
+    }, [setImagePreviewOpen]);
+
+    const handlePopupChange = React.useCallback((open: boolean) => {
+        setPopupContent((prev) => ({ ...prev, open }));
+        setImagePreviewOpen(open);
+    }, [setImagePreviewOpen]);
+
+    const isAnimationSettled = Boolean(getMessageInfoProp(message.info, 'animationSettled'));
+    const isStreamingPhase = streamPhase === 'streaming' || streamPhase === 'cooldown';
+
+    if (isStreamingPhase) {
+        hasEverStreamedRef.current = true;
     }
 
-    if (hasTriggeredReservationOnceRef.current) {
-      return;
+    const allowAnimation = shouldAnimateMessage && !isAnimationSettled && !isStreamingPhase && !hasEverStreamedRef.current;
+
+    if (shouldHideUserMessage) {
+        return null;
     }
 
-    hasTriggeredReservationOnceRef.current = true;
-    resolvedAnimationHandlers.onStreamingCandidate();
-    hasRequestedReservationRef.current = true;
-  }, [resolvedAnimationHandlers, shouldReserveAnimationSpace, hasReasoningParts]);
-
-  React.useEffect(() => {
-    if (!resolvedAnimationHandlers?.onAnimationStart) {
-      return;
-    }
-    if (!allowAnimation) {
-      return;
-    }
-    if (animationStartNotifiedRef.current) {
-      return;
-    }
-    resolvedAnimationHandlers.onAnimationStart();
-    animationStartNotifiedRef.current = true;
-  }, [resolvedAnimationHandlers, allowAnimation]);
-
-  React.useEffect(() => {
-    if (isUser) {
-      return;
-    }
-
-    const handler = resolvedAnimationHandlers?.onAnimatedHeightChange;
-    if (!handler) {
-      return;
-    }
-
-    const shouldTrackHeight = allowAnimation || shouldReserveAnimationSpace;
-    if (!shouldTrackHeight) {
-      return;
-    }
-
-    const element = messageContainerRef.current;
-    if (!element) {
-      return;
-    }
-
-    if (typeof window === 'undefined' || typeof ResizeObserver === 'undefined') {
-      handler(element.getBoundingClientRect().height);
-      return;
-    }
-
-    let rafId: number | null = null;
-    const notifyHeight = (height: number) => {
-      if (typeof window === 'undefined') {
-        handler(height);
-        return;
-      }
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-      }
-      rafId = window.requestAnimationFrame(() => {
-        handler(height);
-      });
-    };
-
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) {
-        return;
-      }
-      notifyHeight(entry.contentRect.height);
-    });
-
-    observer.observe(element);
-    notifyHeight(element.getBoundingClientRect().height);
-
-    return () => {
-      if (rafId !== null) {
-        window.cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      observer.disconnect();
-    };
-  }, [allowAnimation, isUser, resolvedAnimationHandlers, shouldReserveAnimationSpace]);
-
-  if (shouldHideUserMessage) {
-    return null;
-  }
 
   // T3 custom types are display:false entries the projection should have
   // dropped; if one slips through, render nothing rather than re-showing it.
@@ -1097,9 +905,9 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
                       }}
                       className="px-5 py-3 shadow-none border border-primary/5"
                     >
-                      <MessageBody messageId={message.info.id} parts={displayParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCreatedAt={messageCreatedAt ?? undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={expandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} onContentChange={onContentChange} shouldShowHeader={false} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} showReasoningTraces={showReasoningTraces} onAuxiliaryContentComplete={handleAuxiliaryContentComplete} agentMention={agentMention} onRevert={handleRevert} onFork={isUser ? handleFork : undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} errorMessage={assistantErrorText} userActionsMode={useExternalUserActionsRow ? 'external-content' : 'inline'} stickyUserHeaderEnabled={stickyUserHeader} />
+                      <MessageBody messageId={message.info.id} parts={displayParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCreatedAt={messageCreatedAt ?? undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={expandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} shouldShowHeader={false} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} showReasoningTraces={showReasoningTraces} agentMention={agentMention} onRevert={handleRevert} onFork={isUser ? handleFork : undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} errorMessage={assistantErrorText} userActionsMode={useExternalUserActionsRow ? 'external-content' : 'inline'} stickyUserHeaderEnabled={stickyUserHeader} />
                     </div>
-                    {useExternalUserActionsRow ? <MessageBody messageId={message.info.id} parts={displayParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCreatedAt={messageCreatedAt ?? undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={expandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} onContentChange={onContentChange} shouldShowHeader={false} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} showReasoningTraces={showReasoningTraces} onAuxiliaryContentComplete={handleAuxiliaryContentComplete} agentMention={agentMention} onRevert={handleRevert} onFork={isUser ? handleFork : undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} errorMessage={assistantErrorText} userActionsMode="external-actions" stickyUserHeaderEnabled={stickyUserHeader} /> : null}
+                    {useExternalUserActionsRow ? <MessageBody messageId={message.info.id} parts={displayParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCreatedAt={messageCreatedAt ?? undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={expandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} shouldShowHeader={false} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} showReasoningTraces={showReasoningTraces} agentMention={agentMention} onRevert={handleRevert} onFork={isUser ? handleFork : undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} errorMessage={assistantErrorText} userActionsMode="external-actions" stickyUserHeaderEnabled={stickyUserHeader} /> : null}
                   </div>
                 </div>
               </FadeInOnReveal>
@@ -1119,7 +927,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, previousMessage, nex
                 </div>
               ) : null}
               <div className={supersededByRetry ? 'opacity-55 transition-opacity' : undefined}>
-                {ompCustomMessage ? <OmpCustomMessage data={ompCustomMessage} /> : <MessageBody sessionId={message.info.sessionID} messageId={message.info.id} parts={visibleParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCompletedAt={messageCompletedAt ?? undefined} messageCreatedAt={messageCreatedAt ?? undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={effectiveExpandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} onContentChange={onContentChange} shouldShowHeader={shouldShowHeader} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} onAuxiliaryContentComplete={handleAuxiliaryContentComplete} showReasoningTraces={showReasoningTraces} agentMention={agentMention} turnGroupingContext={turnGroupingContext} errorMessage={assistantErrorText} reviewTransferDirection={reviewTransferDirection} footerProviderID={headerProviderID} footerModelName={headerModelName} footerFallbackActive={fallbackMarkerActive} footerAgentName={headerAgentName} footerVariant={headerVariant} isDarkTheme={isDarkTheme} />}
+                {ompCustomMessage ? <OmpCustomMessage data={ompCustomMessage} /> : <MessageBody sessionId={message.info.sessionID} messageId={message.info.id} parts={visibleParts} isUser={isUser} isMessageCompleted={isMessageCompleted} messageFinish={messageFinish} messageCompletedAt={messageCompletedAt ?? undefined} messageCreatedAt={messageCreatedAt ?? undefined} contextPinned={isPinnedIntoContext} contextPinPending={pinPending} onToggleContextPin={canPinIntoContext && messageCreatedAt ? handleToggleContextPin : undefined} isMobile={isMobile} alwaysShowActions={alwaysShowMessageActions} hasTouchInput={hasTouchInput} copiedCode={copiedCode} onCopyCode={handleCopyCode} expandedTools={effectiveExpandedTools} onToggleTool={handleToggleTool} onShowPopup={handleShowPopup} streamPhase={streamPhase} allowAnimation={allowAnimation} shouldShowHeader={shouldShowHeader} hasTextContent={hasTextContent} onCopyMessage={handleCopyMessage} copiedMessage={copiedMessage} showReasoningTraces={showReasoningTraces} agentMention={agentMention} turnGroupingContext={turnGroupingContext} errorMessage={assistantErrorText} reviewTransferDirection={reviewTransferDirection} footerProviderID={headerProviderID} footerModelName={headerModelName} footerFallbackActive={fallbackMarkerActive} footerAgentName={headerAgentName} footerVariant={headerVariant} isDarkTheme={isDarkTheme} />}
                 <StrippedToolCallsLine count={strippedToolCalls ?? 0} />
               </div>
 

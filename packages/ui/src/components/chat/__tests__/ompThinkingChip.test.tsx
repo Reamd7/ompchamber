@@ -29,6 +29,7 @@ interface FakeConfigState {
     currentProviderId: string;
     currentModelId: string;
     currentVariant: string | undefined;
+    currentVariantSelection: { override: string | null | undefined; inherited: string | undefined };
     currentAgentName: string | undefined;
     agents: never[];
     modelsMetadata: Map<string, unknown>;
@@ -42,7 +43,9 @@ interface FakeConfigState {
     setProvider: (providerId: string) => void;
     setModel: (modelId: string) => void;
     setCurrentVariant: (variant: string | undefined) => void;
+    setCurrentVariantOverride: (variant: string | undefined) => void;
     setAgent: (agentName: string) => void;
+    setSelectedProvider: (providerId: string | null) => void;
     addRecentModel: (providerId: string, modelId: string) => void;
     addRecentAgent: (agentName: string) => void;
     addRecentEffort: (providerId: string, modelId: string, variant: string | undefined) => void;
@@ -58,17 +61,17 @@ const configState: FakeConfigState = {
     currentAgentName: undefined,
     agents: [],
     modelsMetadata: new Map(),
-    settingsDefaultVariant: undefined,
-    settingsDefaultAgent: undefined,
+    currentVariantSelection: { override: undefined, inherited: undefined },
     getVisibleAgents: () => [],
     getCurrentProvider: () => ({ id: 'axonhub', name: 'axonhub', models: [{ id: 'glm-5.3' }] }),
     getCurrentAgent: () => undefined,
     getCurrentModelVariants: () => [],
     getModelMetadata: () => undefined,
     setProvider: () => undefined,
-    setModel: () => undefined,
     setCurrentVariant: () => undefined,
+    setCurrentVariantOverride: () => undefined,
     setAgent: () => undefined,
+    setSelectedProvider: () => undefined,
     addRecentModel: () => undefined,
     addRecentAgent: () => undefined,
     addRecentEffort: () => undefined,

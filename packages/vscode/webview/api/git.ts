@@ -130,6 +130,10 @@ export const createVSCodeGitAPI = (): GitAPI => ({
     return sendBridgeMessage<GitBranch>('api:git/branches', { directory, method: 'GET' });
   },
 
+  getGitUnpushedBranchCounts: async (directory: string, branches: string[]) => {
+    return sendBridgeMessage('api:git/branch-push-status', { directory, branches });
+  },
+
   deleteGitBranch: async (directory: string, payload: GitDeleteBranchPayload): Promise<{ success: boolean }> => {
     return sendBridgeMessage<{ success: boolean }>('api:git/branches', {
       directory,

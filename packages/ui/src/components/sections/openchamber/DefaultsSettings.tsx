@@ -52,6 +52,7 @@ export const DefaultsSettings: React.FC = () => {
   const setModel = useConfigStore((state) => state.setModel);
   const setAgent = useConfigStore((state) => state.setAgent);
   const setCurrentVariant = useConfigStore((state) => state.setCurrentVariant);
+  const setCurrentVariantOverride = useConfigStore((state) => state.setCurrentVariantOverride);
   const setSettingsDefaultModel = useConfigStore((state) => state.setSettingsDefaultModel);
   const setSettingsDefaultVariant = useConfigStore((state) => state.setSettingsDefaultVariant);
   const setSettingsDefaultAgent = useConfigStore((state) => state.setSettingsDefaultAgent);
@@ -220,7 +221,7 @@ export const DefaultsSettings: React.FC = () => {
       setDefaultVariant(newValue);
       setSettingsDefaultVariant(newValue);
       if (!chatHasOwnModel) {
-        setCurrentVariant(newValue);
+        setCurrentVariantOverride(newValue ?? null, newValue);
       }
 
       try {
@@ -229,7 +230,7 @@ export const DefaultsSettings: React.FC = () => {
         console.warn('Failed to save default variant:', error);
       }
     },
-    [chatHasOwnModel, setCurrentVariant, setSettingsDefaultVariant]
+    [chatHasOwnModel, setCurrentVariantOverride, setSettingsDefaultVariant]
   );
 
   const handleAgentChange = React.useCallback(

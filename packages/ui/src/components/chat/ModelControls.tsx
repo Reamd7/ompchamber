@@ -26,7 +26,8 @@ import { useDeviceInfo } from '@/lib/device';
 import { mergeModelMetadataWithLiveModel } from '@/lib/modelMetadata';
 import { getModelDisplayName as getSharedModelDisplayName } from '@/lib/modelDisplay';
 import { getEditModeColors } from '@/lib/permissions/editModeColors';
-import { cn, fuzzyMatch } from '@/lib/utils';
+import { cn } from '@/lib/utils';
+import { matchesRankQuery, rankByQuery } from '@/lib/search/fuzzySearch';
 import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -339,7 +340,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const providers = useConfigStore((state) => state.providers);
     const currentProviderId = useConfigStore((state) => state.currentProviderId);
     const currentModelId = useConfigStore((state) => state.currentModelId);
-    const currentVariant = useConfigStore((state) => state.currentVariant);
+    const effectiveCurrentVariant = useConfigStore((state) => state.currentVariant);
+    const currentVariantSelection = useConfigStore((state) => state.currentVariantSelection);
+    const currentVariant = currentVariantSelection.override ?? undefined;
     const currentAgentName = useConfigStore((state) => state.currentAgentName);
     const settingsDefaultVariant = useConfigStore((state) => state.settingsDefaultVariant);
     const settingsDefaultAgent = useConfigStore((state) => state.settingsDefaultAgent);
@@ -347,6 +350,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const setSelectedProvider = useConfigStore((state) => state.setSelectedProvider);
     const setModel = useConfigStore((state) => state.setModel);
     const setCurrentVariant = useConfigStore((state) => state.setCurrentVariant);
+    const setCurrentVariantOverride = useConfigStore((state) => state.setCurrentVariantOverride);
     const getCurrentModelVariants = useConfigStore((state) => state.getCurrentModelVariants);
     const setAgent = useConfigStore((state) => state.setAgent);
     const getCurrentProvider = useConfigStore((state) => state.getCurrentProvider);
@@ -544,13 +548,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const sortedAndFilteredAgents = React.useMemo(() => {
         const sorted = [...selectableDesktopAgents].sort((a, b) => a.name.localeCompare(b.name));
-        if (!agentSearchQuery.trim()) {
-            return sorted;
-        }
-        return sorted.filter((agent) =>
-            fuzzyMatch(agent.name, agentSearchQuery) ||
-            (agent.description && fuzzyMatch(agent.description, agentSearchQuery))
-        );
+        return rankByQuery(sorted, agentSearchQuery, (agent) => [agent.name, agent.description]);
     }, [selectableDesktopAgents, agentSearchQuery]);
 
     const defaultAgentName = React.useMemo(() => {
@@ -596,38 +594,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return result;
     }, [providers, hiddenModels]);
 
-    const normalizeModelSearchValue = React.useCallback((value: string) => {
-        const lower = value.toLowerCase().trim();
-        const compact = lower.replace(/[^a-z0-9]/g, '');
-        const tokens = lower.split(/[^a-z0-9]+/).filter(Boolean);
-        return { lower, compact, tokens };
-    }, []);
-
-    const matchesModelSearch = React.useCallback((candidate: string, query: string) => {
-        const normalizedQuery = normalizeModelSearchValue(query);
-        if (!normalizedQuery.lower) {
-            return true;
-        }
-
-        const normalizedCandidate = normalizeModelSearchValue(candidate);
-        if (normalizedCandidate.lower.includes(normalizedQuery.lower)) {
-            return true;
-        }
-
-        if (normalizedQuery.compact.length >= 2 && normalizedCandidate.compact.includes(normalizedQuery.compact)) {
-            return true;
-        }
-
-        if (normalizedQuery.tokens.length === 0) {
-            return false;
-        }
-
-        return normalizedQuery.tokens.every((queryToken) =>
-            normalizedCandidate.tokens.some((candidateToken) =>
-                candidateToken.startsWith(queryToken) || candidateToken.includes(queryToken)
-            )
-        );
-    }, [normalizeModelSearchValue]);
+    const matchesModelSearch = React.useCallback(
+        (candidate: string, query: string) => matchesRankQuery([candidate], query),
+        [],
+    );
 
     const currentModelForMetadata = currentModelId
         ? models.find((model: ProviderModel) => model.id === currentModelId)
@@ -827,6 +797,30 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return variants ? Object.keys(variants) : [];
     }, [providers]);
 
+    const resolveInheritedVariantForModel = React.useCallback((providerId: string, modelId: string, agentName?: string | null) => {
+        const variantOptions = getModelVariantOptions(providerId, modelId);
+        if (variantOptions.length === 0) return undefined;
+
+        let currentInherited: string | undefined;
+        if (currentProviderId === providerId && currentModelId === modelId) {
+            currentInherited = currentVariantSelection.inherited
+                ?? (currentVariantSelection.override === null || currentVariantSelection.override === undefined
+                    ? effectiveCurrentVariant
+                    : undefined);
+        }
+
+        const effectiveAgentName = agentName ?? uiAgentName ?? currentAgentName;
+        const agent = effectiveAgentName ? agents.find((candidate) => candidate.name === effectiveAgentName) : undefined;
+        const agentVariant = (
+            agent?.model?.providerID === providerId
+            && agent.model.modelID === modelId
+        ) ? agent.variant : undefined;
+        const candidates = currentSessionId
+            ? [agentVariant, settingsDefaultVariant, currentInherited]
+            : [currentInherited, agentVariant, settingsDefaultVariant];
+        return candidates.find((candidate) => candidate !== undefined && variantOptions.includes(candidate));
+    }, [agents, currentAgentName, currentModelId, currentProviderId, currentSessionId, currentVariantSelection, effectiveCurrentVariant, getModelVariantOptions, settingsDefaultVariant, uiAgentName]);
+
     const resolveModelVariantSelection = React.useCallback((providerId: string, modelId: string) => {
         const variantOptions = getModelVariantOptions(providerId, modelId);
         if (variantOptions.length === 0) {
@@ -845,10 +839,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return currentVariant;
         }
 
-        if (!currentSessionId && settingsDefaultVariant && variantOptions.includes(settingsDefaultVariant)) {
-            return settingsDefaultVariant;
-        }
-
         return undefined;
     }, [
         currentAgentName,
@@ -858,7 +848,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         currentVariant,
         getAgentModelVariantForSession,
         getModelVariantOptions,
-        settingsDefaultVariant,
         uiAgentName,
     ]);
 
@@ -882,7 +871,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
 
         manualVariantSelectionRef.current = true;
-        setCurrentVariant(variant);
+        setCurrentVariantOverride(
+            variant ?? null,
+            resolveInheritedVariantForModel(providerId, modelId, agentNameOverride),
+        );
         addRecentEffort(providerId, modelId, variant);
 
         const effectiveAgentName = agentNameOverride ?? resolveLiveAgentName();
@@ -893,9 +885,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         addRecentEffort,
         currentSessionId,
         getModelVariantOptions,
+        resolveInheritedVariantForModel,
         resolveLiveAgentName,
         saveAgentModelVariantForSession,
         setCurrentVariant,
+        setCurrentVariantOverride,
     ]);
 
     const applyModelSelectionWithVariant = React.useCallback((providerId: string, modelId: string, variant: string | undefined, agentNameOverride?: string | null) => {
@@ -1398,6 +1392,8 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             return;
                         }
 
+                        // An explicit persona/agent pick prefers that agent's own
+                        // configured model, persisted for the session.
                         const selectedAgent = shouldPreferAgentModel
                             ? agents.find((agent) => agent.name === currentAgentName)
                             : undefined;
@@ -1424,7 +1420,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 return;
                             }
                         }
-
                         const persistedChoice = getAgentModelForSession(currentSessionId, currentAgentName);
 
                         if (persistedChoice) {
@@ -1450,12 +1445,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             abortController.abort();
         };
     }, [
-        agents,
         currentAgentName,
         currentSessionId,
         getAgentModelForSession,
-        saveAgentModelForSession,
-        saveSessionModelSelection,
         tryApplyModelSelection,
         contextHydrated,
     ]);
@@ -1481,18 +1473,21 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
 
         if (currentVariant && !variantDomain.includes(currentVariant)) {
-            setCurrentVariant(undefined);
+            setCurrentVariantOverride(
+                null,
+                resolveInheritedVariantForModel(currentProviderId, currentModelId),
+            );
             return;
         }
 
         // Draft state (no session yet): seed from settings default, but don't override
         // user selection while drafting.
         if (!currentSessionId) {
-            if (!currentVariant && !manualVariantSelectionRef.current) {
+            if (currentVariantSelection.override === undefined && !manualVariantSelectionRef.current) {
                 const desired = settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
                     ? settingsDefaultVariant
                     : undefined;
-                setCurrentVariant(desired);
+                setCurrentVariantOverride(desired ?? null, desired);
             }
             return;
         }
@@ -1504,13 +1499,14 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             currentModelId,
         );
 
-        const resolvedSaved = savedVariant && variantDomain.includes(savedVariant)
-            ? savedVariant
-            : settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
-                ? settingsDefaultVariant
-                : undefined;
-
-        setCurrentVariant(resolvedSaved);
+        const inheritedVariant = resolveInheritedVariantForModel(currentProviderId, currentModelId);
+        if (savedVariant && variantDomain.includes(savedVariant)) {
+            setCurrentVariantOverride(savedVariant, inheritedVariant);
+        } else if (currentVariantSelection.override === null) {
+            setCurrentVariantOverride(null, inheritedVariant);
+        } else {
+            setCurrentVariant(inheritedVariant);
+        }
         manualVariantSelectionRef.current = false;
     }, [
         effectiveVariants,
@@ -1520,8 +1516,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         currentProviderId,
         currentModelId,
         currentVariant,
+        currentVariantSelection.override,
+        effectiveCurrentVariant,
         getAgentModelVariantForSession,
+        resolveInheritedVariantForModel,
         setCurrentVariant,
+        setCurrentVariantOverride,
         settingsDefaultVariant,
     ]);
 
@@ -1537,7 +1537,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     const handleAgentChange = React.useCallback((agentName: string, options?: { closeModelSelector?: boolean }) => {
         try {
-            explicitAgentSwitchRef.current = agentName;
             setAgent(agentName);
             addRecentAgent(agentName);
             if (options?.closeModelSelector ?? true) {
@@ -2708,7 +2707,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 : 'Default';
 
             return (
-                <span className={cn('typography-micro whitespace-nowrap', wasAdjusted ? 'text-foreground' : 'text-muted-foreground')}>
+                <span className={cn(
+                    'typography-micro whitespace-nowrap',
+                    isHighlighted
+                        ? (wasAdjusted ? 'text-interactive-selection-foreground' : 'text-interactive-selection-foreground/70')
+                        : (wasAdjusted ? 'text-foreground' : 'text-muted-foreground'),
+                )}>
                     Thinking: {displayLabel}
                 </span>
             );

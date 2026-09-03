@@ -15,6 +15,17 @@ import { applyProviderEnvAliases } from './provider-env-aliases';
 const t = vscode.l10n.t;
 
 const READY_CHECK_TIMEOUT_MS = 30000;
+
+// Reuse a single output channel across restarts instead of creating (and
+// leaking) a new one on every waitForReady call.
+let managerOutputChannel: vscode.OutputChannel | null = null;
+
+function getManagerOutputChannel(): vscode.OutputChannel {
+  if (!managerOutputChannel) {
+    managerOutputChannel = vscode.window.createOutputChannel('OMPChamberManager');
+  }
+  return managerOutputChannel;
+}
 const WINDOWS_EXECUTABLE_EXTENSIONS = (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM')
   .split(';')
   .map((ext) => ext.trim().toLowerCase())
@@ -158,6 +169,19 @@ function stripWrappingQuotes(value: string): string {
     return trimmed.slice(1, -1).trim();
   }
   return trimmed;
+}
+
+function killProcessTree(pid: number | undefined): void {
+  if (!Number.isInteger(pid)) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        stdio: 'ignore', timeout: 5000, windowsHide: true,
+      });
+    } catch {
+      // ignore
+    }
+  }
 }
 
 function appendToPath(dir: string) {
@@ -613,7 +637,6 @@ async function waitForReady(
   timeoutMs = 15000,
   authHeaders: Record<string, string> = {}
 ): Promise<ReadyResult> {
-  const outputChannel = vscode.window.createOutputChannel('OMPChamberManager');
   const start = Date.now();
   const candidates = getCandidateBaseUrls(serverUrl);
   let attempts = 0;
@@ -641,7 +664,7 @@ async function waitForReady(
         }
 
         clearTimeout(timeout);
-        outputChannel?.appendLine(
+        getManagerOutputChannel().appendLine(
           `Health check to ${url.toString()} returned ${res.status} with body: ${JSON.stringify(body)}`
         );
 
@@ -671,7 +694,7 @@ async function spawnManagedOpenCodeServer(
   workingDirectory: string,
   port: number,
   timeoutMs: number
-): Promise<{ url: string; close: () => void }> {
+): Promise<{ url: string; close: () => Promise<void> }> {
   // The managed engine is the OMPChamber omp host (Bun + @oh-my-pi/
   // pi-coding-agent) with the same serve CLI shape and readiness line. The
   // host entry ships with the workspace checkout; a packaged extension
@@ -749,17 +772,28 @@ async function spawnManagedOpenCodeServer(
   });
 
   // Record this child so a future run can reap it if we crash before teardown.
-  registerManagedProcess({ pid: child.pid, ownerPid: process.pid, port, binary: runtime, runtime: 'vscode' });
+  const registration = registerManagedProcess({
+    pid: child.pid,
+    ownerPid: process.pid,
+    port,
+    binary: runtime,
+    runtime: 'vscode',
+  }).catch(() => {});
 
   return {
     url,
-    close: () => {
+    close: async () => {
+      killProcessTree(child.pid);
       try {
         child.kill('SIGTERM');
       } catch {
         // ignore
       }
-      unregisterManagedProcess(child.pid);
+      // Both writes touch the same registry file. Unordered, the removal can
+      // land before the registration and leave a stale entry pointing at a dead
+      // pid; awaiting keeps the extension host alive until the file is gone.
+      await registration;
+      await unregisterManagedProcess(child.pid).catch(() => {});
     },
   };
 }
@@ -789,7 +823,7 @@ async function allocateManagedOpenCodePort(): Promise<number> {
 }
 
 export function createOpenCodeManager(context: vscode.ExtensionContext): OpenCodeManager {
-  let server: { url: string; close: () => void } | null = null;
+  let server: { url: string; close: () => Promise<void> } | null = null;
   let reapedOrphansOnce = false;
   let managedApiUrlOverride: string | null = null;
   let managedPassword: string | null = null;
@@ -1004,7 +1038,7 @@ export function createOpenCodeManager(context: vscode.ExtensionContext): OpenCod
           setStatus('connected');
         } else {
           try {
-            server.close();
+            await server.close();
           } catch {
             // ignore
           }
@@ -1044,7 +1078,7 @@ export function createOpenCodeManager(context: vscode.ExtensionContext): OpenCod
 
     if (server) {
       try {
-        server.close();
+        await server.close();
       } catch {
         // Ignore close errors
       }

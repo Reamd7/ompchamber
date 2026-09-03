@@ -15,6 +15,7 @@ import { createWebNotificationsAPI } from './notifications';
 import { createWebToolsAPI } from './tools';
 import { createWebPushAPI } from './push';
 import { createWebGitHubAPI } from './github';
+import { createWebLinearAPI } from './linear';
 import { createWebClientAuthAPI } from './clientAuth';
 import { createOmpAgentDefinitionsAPI, createOmpArtifactsAPI, createOmpCapabilitiesAPI, createOmpEventsAPI, createOmpModesAPI, createOmpModelsAPI, createOmpPersonasAPI, createOmpPluginsAPI, createOmpProvidersAPI, createOmpSessionAPI, createOmpSettingsAPI, createOmpUriAPI } from '@ompchamber/ui/lib/api/omp';
 
@@ -46,6 +47,7 @@ export const createWebAPIs = (options: WebAPIsOptions = {}): RuntimeAPIs => {
   permissions: createWebPermissionsAPI(),
   notifications: createWebNotificationsAPI(),
   github: createWebGitHubAPI({ urls: activeUrls }),
+  linear: createWebLinearAPI(),
   push: createWebPushAPI(),
   ompEvents: createOmpEventsAPI(),
   ompCapabilities: createOmpCapabilitiesAPI(),
