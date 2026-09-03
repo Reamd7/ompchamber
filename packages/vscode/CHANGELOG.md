@@ -1,3 +1,8 @@
+## [1.27.0] - 2026-09-03
+
+- Chat: resizing the panel while reading an idle conversation no longer snaps the view back to the bottom — if the re-wrapped text leaves the viewport past the end, the view unpins and the scroll-to-bottom pill offers the way back; a streaming session still returns to its live edge once the resize settles.
+- This release also carries the upstream merge through openchamber v1.22.0; the sections below cover the extension-relevant changes from it.
+
 ## [1.22.0] - 2026-08-30
 
 - Switching sessions is now visually stable, without conversation jumps or partial rendering.

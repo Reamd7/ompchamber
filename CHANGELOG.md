@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-09-03
+
+- **Upstream merge: this release absorbs upstream openchamber/openchamber through their v1.22.0 release plus their unreleased work.** Headline pieces for users: the Linear integration, the Turkish interface, multi-repository projects in the Git tab, moving idle sessions into existing worktrees, subagent cost totals, large text pastes offered as attachments, and the community-fix batches — the upstream sections below carry the full detail.
+- **Git: switching branches with uncommitted changes now asks first.** Picking a different branch with a dirty working tree opens a dialog offering to commit and switch — with an optional push after commit — or to revert and switch; a failed push leaves the commit on the source branch and cancels the switch, so you are never moved off a branch whose push did not happen (thanks to @yulia-ivashko).
+- Git: the branch selector keeps a list of recently used branches and marks those with unpushed commits, and the mobile Changes surface gets a branch picker with the same dirty-switch protection and push option (thanks to @yulia-ivashko).
+- Chat: the new-session branch picker warns when the selected directory has uncommitted changes — a warning icon whose tooltip opens on its own for a few seconds and names the options (thanks to @yulia-ivashko).
+- Chat: resizing the window or a panel while reading an idle conversation no longer snaps the view back to the bottom — if the re-wrapped text leaves the viewport past the end, the view unpins and the scroll-to-bottom pill offers the way back; a streaming session still returns to its live edge once the resize settles.
+- Server: a server published behind a reverse proxy that terminates TLS now accepts the browser's https origin — the proxy reported the upstream request as http, so the browser's requests were rejected as a foreign origin.
+- Sidebar: a project row's label no longer shifts when its action buttons appear on hover.
+
 ## [1.26.0] - 2026-09-03
 
 - **Chat: session links now open the right conversation right away.** Opening a `?session=…` link on a fresh app load could land on a blank transcript because the app guessed the currently open folder before it knew which folder the session belonged to, recovering only later on its own. The link now waits for the folder lookup and opens the conversation immediately.
