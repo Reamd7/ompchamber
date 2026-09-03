@@ -23,13 +23,20 @@ export type TerminalBuffer = {
   chunks: TerminalChunk[];
   byteLength: number;
   lastSequence: number;
+  /** Bumped only when a server snapshot replaces the buffer
+   * (`replaceBuffer`). Streaming appends leave it unchanged so terminal
+   * views can subscribe to snapshot replacements without re-rendering on
+   * every output frame. */
+  revision: number;
 };
 
 export const EMPTY_TERMINAL_BUFFER: TerminalBuffer = Object.freeze({
   chunks: Object.freeze([]) as unknown as TerminalChunk[],
   byteLength: 0,
   lastSequence: -1,
-});
+  revision: 0,
+}) as TerminalBuffer;
+
 
 export type TerminalTabLifecycle = 'idle' | 'running' | 'exited';
 
@@ -606,6 +613,7 @@ export const useTerminalStore = create<TerminalStore>()(
               chunks: retained.text ? [{ id: chunkId, data: retained.text, byteLength: retained.byteLength, sequence }] : [],
               byteLength: retained.byteLength,
               lastSequence: sequence,
+              revision: buffer.revision + 1,
             });
             return { buffers, nextChunkId: retained.text ? chunkId + 1 : chunkId };
           });
@@ -655,6 +663,7 @@ export const useTerminalStore = create<TerminalStore>()(
               chunks,
               byteLength: bufferLength,
               lastSequence: sequence ?? buffer.lastSequence,
+              revision: buffer.revision,
             });
 
             return { buffers, nextChunkId: chunkId + 1 };

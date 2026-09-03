@@ -115,10 +115,23 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const terminalLifecycle = activeTab?.lifecycle ?? 'idle';
     const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
     const [implicitOwner, setImplicitOwner] = React.useState<string | null>(null);
-    // Scrollback is a leaf subscription: streaming output must not rerender the tab strip.
-    const bufferChunks = useTerminalStore((s) => (
-        effectiveDirectory && activeTabId ? s.getBuffer(effectiveDirectory, activeTabId).chunks : EMPTY_TERMINAL_BUFFER.chunks
+    // Streaming output must not re-render this component: every chunks append
+    // used to trigger React reconciliation plus Blink layout/paint
+    // invalidation, and Blink's C++ rendering structures (PartitionAlloc)
+    // never return pages to the OS — 128K invalidations under a flood
+    // accumulated into multi-GB renderer RSS while the JS heap stayed flat.
+    // Subscribe only to the buffer revision, which increments when a server
+    // snapshot replaces the buffer; live output flows to the viewport via
+    // writeDirect (see flushPendingOutput).
+    const bufferRevision = useTerminalStore((s) => (
+        effectiveDirectory && activeTabId ? s.getBuffer(effectiveDirectory, activeTabId).revision : EMPTY_TERMINAL_BUFFER.revision
     ));
+    const replayChunks = React.useMemo(() => (
+        effectiveDirectory && activeTabId
+            ? useTerminalStore.getState().getBuffer(effectiveDirectory, activeTabId).chunks
+            : EMPTY_TERMINAL_BUFFER.chunks
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- recomputed only on snapshot revision or tab identity; appends intentionally do not recompute
+    ), [bufferRevision, effectiveDirectory, activeTabId]);
     const isConnecting = activeTab?.isConnecting ?? false;
     const previewUrl = activeTab?.previewUrl ?? null;
 
@@ -290,12 +303,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     appendToBufferRef.current = appendToBuffer;
     const scanTerminalPreviewOutputRef = React.useRef(scanTerminalPreviewOutput);
     scanTerminalPreviewOutputRef.current = scanTerminalPreviewOutput;
-
     const flushPendingOutput = React.useCallback(() => {
         const pending = pendingOutputRef.current;
         pendingOutputRef.current = null;
         if (!pending || pending.parts.length === 0) return;
         const data = pending.parts.join('');
+        // Fast path: hand the coalesced output straight to the mounted
+        // viewport's write queue. No store-driven re-render, no Blink
+        // invalidation — the same direct-write shape the isolated ghostty
+        // harness proved clean at 1500 MiB.
+        if (directoryRef.current === pending.directory && activeTabIdRef.current === pending.tabId) {
+            terminalControllerRef.current?.writeDirect(data, pending.sequence);
+        }
         appendToBufferRef.current(
             pending.directory,
             pending.tabId,
@@ -1380,7 +1399,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 terminalControllerRef.current = controller;
                             }}
                             sessionKey={terminalViewportKey}
-                            chunks={bufferChunks}
+                            chunks={replayChunks}
                             onInput={handleViewportInput}
                             onResize={handleViewportResize}
                             theme={xtermTheme}

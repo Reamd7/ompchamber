@@ -96,6 +96,11 @@ export type TerminalController = {
   zoomReset: () => void;
   getZoom: () => number;
   getSelection: () => { text: string; startLine: number; endLine: number } | null;
+  /** Direct write into the Ghostty terminal, bypassing the React chunk
+   * pipeline. Used by the streaming fast path where per-chunk React
+   * reconciliation and Blink layout invalidation accumulate into multi-GB
+   * renderer RSS (PartitionAlloc never returns pages to the OS). */
+  writeDirect: (data: string, sequence?: number) => void;
 };
 
 type Props = {
@@ -471,19 +476,24 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         if (id < previous) break;
       }
       if (previousIndex < 0) {
+        // A snapshot replaced the buffer (ids no longer line up). Reset and
+        // replay the new history in the same pass — returning early would
+        // leave the screen blank until the next append.
         recreateRenderer();
-        return;
       }
     }
-    const isReplay = previousIndex < 0;
+    // After recreateRenderer, lastChunkRef is null, so re-read it: a null
+    // value means full replay (uses replayData where provided).
+    const isReplay = lastChunkRef.current === null;
     const pending = previousIndex >= 0 ? chunks.slice(previousIndex + 1) : chunks;
-    writeQueueRef.current += pending.map((chunk) => isReplay ? (chunk.replayData ?? chunk.data) : chunk.data).join('');
-    const pendingSequence = pending.at(-1)?.sequence;
-    if (pendingSequence !== undefined) queuedSequenceRef.current = pendingSequence;
+    if (pending.length > 0) {
+      writeQueueRef.current += pending.map((chunk) => isReplay ? (chunk.replayData ?? chunk.data) : chunk.data).join('');
+      const pendingSequence = pending.at(-1)?.sequence;
+      if (pendingSequence !== undefined) queuedSequenceRef.current = pendingSequence;
+    }
     lastChunkRef.current = chunks.at(-1)?.id ?? null;
     flush();
   }, [chunks, flush, ready, recreateRenderer]);
-
   React.useEffect(() => {
     if (!autoFocus || !isVisible) return;
     const frame = requestAnimationFrame(() => terminalRef.current?.focus());
@@ -888,7 +898,13 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       if (!range || !text.trim()) return null;
       return { text, startLine: range.start.y + 1, endLine: range.end.y + 1 };
     },
-  }), [fit, applyViewScale, setViewZoom]);
+    writeDirect: (data: string, sequence?: number) => {
+      if (!data) return;
+      if (sequence !== undefined) queuedSequenceRef.current = sequence;
+      writeQueueRef.current += data;
+      flush();
+    },
+  }), [fit, applyViewScale, setViewZoom, flush]);
 
   React.useEffect(() => { onZoomChange?.(viewZoom); }, [onZoomChange, viewZoom]);
 
