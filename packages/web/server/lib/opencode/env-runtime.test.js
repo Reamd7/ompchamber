@@ -251,6 +251,32 @@ describe('OpenCode env runtime', () => {
     expect(runtime.resolveOpencodeCliPath()).toBeNull();
   });
 
+  it('bounds every login-shell probe and falls through when one overruns', () => {
+    setPlatform('darwin');
+    process.env.PATH = createTempDir('ompchamber-empty-path-');
+    // A real executable so the probe candidate passes the isExecutable gate
+    // on every platform; the spawnSync stub simulates a 5s timeout overrun.
+    process.env.SHELL = process.execPath;
+    delete process.env.OPENCODE_BINARY;
+    const shellCalls = [];
+    const { runtime, state } = createRuntime({}, {
+      homedir: () => createTempDir('ompchamber-empty-home-'),
+      spawnSync: (command, args, options) => {
+        shellCalls.push({ command, args, options });
+        // What spawnSync reports when `timeout` fires: no status, an error.
+        return { status: null, signal: 'SIGTERM', error: new Error('spawnSync ETIMEDOUT'), stdout: '', stderr: '' };
+      },
+    });
+    state.cachedLoginShellEnvSnapshot = undefined;
+
+    expect(runtime.getLoginShellEnvSnapshot()).toBeNull();
+    expect(shellCalls.length).toBeGreaterThan(0);
+    for (const call of shellCalls) {
+      expect(call.args).toContain('-lic');
+      expect(call.options.timeout).toBe(5_000);
+    }
+  });
+
   it('resolves the runtime found on PATH ahead of the home fallback', () => {
     setPlatform('win32');
     const pathDir = createTempDir('ompchamber-cli-');

@@ -1,4 +1,5 @@
 import { Marked, marked, type Tokens } from 'marked';
+import markedLinkifyIt from 'marked-linkify-it';
 import remend from 'remend';
 import katex from 'katex';
 import DOMPurify from 'dompurify';
@@ -179,9 +180,11 @@ type MarkdownBlock = {
   raw: string;
   src: string;
   mode: 'full' | 'live';
-  // When false, skip syntax highlighting for this block. Set for the actively
-  // streaming open code fence so we don't re-tokenize a growing block ~40x/sec
-  // (O(n^2)); it highlights once the fence closes and becomes a stable block.
+  // When false, skip syntax highlighting for this block. Block-level commit
+  // feeds the open fence whole lines at the throttle cadence (<=10/sec), so a
+  // partial fence highlights too and streamed code arrives colored; only a
+  // very large open fence falls back to plain text until it closes, keeping
+  // the repeated worker re-tokenization bounded.
   highlight: boolean;
 };
 
@@ -201,6 +204,11 @@ const hasOpenFence = (raw: string): boolean => {
   const last = raw.trimEnd().split('\n').at(-1)?.trim() ?? '';
   return !new RegExp(`^[\\t ]{0,3}${char}{${size},}[\\t ]*$`).test(last);
 };
+
+// Above this, re-highlighting the still-open fence on every committed line
+// costs more than the colored preview is worth; the block highlights in one
+// pass when the fence closes.
+const OPEN_FENCE_HIGHLIGHT_LINE_LIMIT = 300;
 
 const heal = (text: string): string => {
   try {
@@ -251,11 +259,13 @@ const streamBlocks = (text: string, live: boolean): MarkdownBlock[] => {
     const raw = token.raw ?? '';
     const isLast = i === tail;
     const openFence = token.type === 'code' && hasOpenFence(raw);
+    const openFenceHighlight = openFence
+      && raw.split('\n').length <= OPEN_FENCE_HIGHLIGHT_LINE_LIMIT;
     blocks.push({
       raw,
       src: openFence ? raw : heal(raw),
       mode: isLast ? 'live' : 'full',
-      highlight: !openFence,
+      highlight: !openFence || openFenceHighlight,
     });
   }
 
@@ -305,15 +315,25 @@ const inlineMathExtension = {
   },
 };
 
+// `\[` is display math in LaTeX, but it is also CommonMark's escape for a
+// literal `[`, and prose escapes brackets far more often than it opens display
+// math. Reading every `\[` as math turned text like
+// `[title \[Bug\] more](url)` into a KaTeX block that split the paragraph and
+// tore the link apart. Display math therefore has to own its line: it must
+// start one and its `\]` must end one. Anything mid-sentence stays an escape.
+const BLOCK_MATH_RE = /^[ \t]*\\\[([\s\S]+?)\\\][ \t]*(?:\n|$)/;
+const BLOCK_MATH_LINE_START_RE = /(?:^|\n)[ \t]*\\\[/;
+
 const blockMathExtension = {
   name: 'blockMath',
   level: 'block' as const,
   start(src: string) {
-    const index = src.indexOf('\\[');
-    return index < 0 ? undefined : index;
+    const match = BLOCK_MATH_LINE_START_RE.exec(src);
+    // Point marked at the `\[` itself, never at the newline before it.
+    return match ? match.index + match[0].length - 2 : undefined;
   },
   tokenizer(src: string): MathToken | undefined {
-    const match = /^\\\[([\s\S]+?)\\\]/.exec(src);
+    const match = BLOCK_MATH_RE.exec(src);
     if (!match) return undefined;
     return { type: 'blockMath', raw: match[0], text: match[1] ?? '' };
   },
@@ -323,10 +343,15 @@ const blockMathExtension = {
   },
 };
 
-const createParser = (imageMode: MarkdownImageMode) => new Marked().use({
-  gfm: true,
-  breaks: false,
-  extensions: [inlineMathExtension, blockMathExtension],
+// marked's GFM autolink swallows CJK punctuation after a bare URL, so switch
+// to marked-linkify-it, which treats Unicode punctuation as a URL boundary.
+// Plain CJK characters right after a URL are still consumed, matching GitHub.
+const createParser = (imageMode: MarkdownImageMode) => new Marked().use(
+  markedLinkifyIt({ fuzzyLink: false }),
+  {
+    gfm: true,
+    breaks: false,
+    extensions: [inlineMathExtension, blockMathExtension],
   renderer: {
     // Assistant output is untrusted. Markdown constructs still render as HTML,
     // but raw HTML must remain visible text so it cannot introduce active DOM
@@ -571,6 +596,17 @@ export const __markdownBlockCacheSizesForTests = (): { full: number; live: numbe
   full: fullBlockCache.size,
   live: liveBlockCache.size,
 });
+
+/**
+ * Read a settled render synchronously when every block is already in the full
+ * cache. Cache reads retain the existing LRU `get` semantics and do not insert
+ * or expand either cache. Non-streaming, scheme-less probe matching upstream
+ * call sites; scheme- or streaming-aware callers use `readCachedMarkdownBlocks`.
+ */
+export const getCachedMarkdownBlocks = (
+  text: string,
+  imageMode: MarkdownImageMode = 'inline',
+): RenderedBlock[] | null => readCachedMarkdownBlocks(text, false, imageMode);
 
 const parseBlock = async (
   block: MarkdownBlock,

@@ -12,12 +12,19 @@
 // read-modify-write race. Per-process files mean each instance only ever writes
 // or deletes its OWN file.
 //
+// register/unregister are ASYNC with genuinely awaited file writes, matching
+// the web module's contract: callers capture the registration promise and await
+// it before unregistering, so a removal can never land before the registration
+// that recorded the pid (which would leave a stale entry pointing at a dead
+// pid).
+//
 // See packages/web/server/lib/opencode/managed-process-registry.js for the full
 // rationale and safety model. In short: we only ever kill pids THIS product
 // recorded, re-verified as a live `opencode serve`, and only when their spawner
 // is provably gone (reparented to pid 1, or recorded owner pid dead).
 
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,14 +46,14 @@ const resolveRegistryDir = (): string => {
 
 const entryFilePath = (pid: number): string => path.join(resolveRegistryDir(), `${pid}.json`);
 
-const writeEntryFile = (entry: ManagedProcessEntry): void => {
+const writeEntryFile = async (entry: ManagedProcessEntry): Promise<void> => {
   const dir = resolveRegistryDir();
   try {
-    fs.mkdirSync(dir, { recursive: true });
+    await fsp.mkdir(dir, { recursive: true });
     const filePath = path.join(dir, `${entry.pid}.json`);
     const tmp = `${filePath}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(entry, null, 2));
-    fs.renameSync(tmp, filePath);
+    await fsp.writeFile(tmp, JSON.stringify(entry, null, 2));
+    await fsp.rename(tmp, filePath);
   } catch {
     // Best-effort: a failed registry write must never break spawn/shutdown.
   }
@@ -77,16 +84,16 @@ const readAllEntries = (): Array<{ entry: ManagedProcessEntry; filePath: string 
   return out;
 };
 
-export const registerManagedProcess = (input: {
+export const registerManagedProcess = async (input: {
   pid: number | undefined;
   ownerPid?: number;
   port?: number | null;
   binary?: string | null;
   runtime?: string;
-}): void => {
+}): Promise<void> => {
   const pid = input.pid;
   if (!Number.isInteger(pid)) return;
-  writeEntryFile({
+  await writeEntryFile({
     pid: pid as number,
     ownerPid: Number.isInteger(input.ownerPid) ? (input.ownerPid as number) : process.pid,
     port: Number.isInteger(input.port as number) ? (input.port as number) : null,
@@ -96,10 +103,10 @@ export const registerManagedProcess = (input: {
   });
 };
 
-export const unregisterManagedProcess = (pid: number | undefined): void => {
-  if (!Number.isInteger(pid)) return;
+export const unregisterManagedProcess = async (pid: number | undefined): Promise<void> => {
+  if (pid === undefined || !Number.isInteger(pid)) return;
   try {
-    fs.rmSync(entryFilePath(pid as number), { force: true });
+    await fsp.rm(entryFilePath(pid), { force: true });
   } catch {
     // ignore
   }

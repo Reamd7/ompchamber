@@ -91,7 +91,6 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
 </html>`;
 
 
-
   const pruneExpiredPendingMcpAuthContexts = () => {
     const now = Date.now();
     for (const [state, entry] of pendingMcpAuthContextByState.entries()) {
@@ -121,6 +120,7 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
       res.status(500).json({ error: 'Failed to resolve OpenCode binary' });
     }
   });
+
 
 
   app.get('/api/opencode/health', async (_req, res) => {

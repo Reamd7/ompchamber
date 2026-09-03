@@ -11,6 +11,7 @@ import './lib/debug'
 import { syncDesktopSettings, initializeAppearancePreferences } from './lib/persistence'
 import { startAppearanceAutoSave } from './lib/appearanceAutoSave'
 import { applyPersistedDirectoryPreferences } from './lib/directoryPersistence'
+import { preloadMarkdownRenderer } from './components/chat/markdownRendererLoader'
 import { startTypographyWatcher } from './lib/typographyWatcher'
 import { startModelPrefsAutoSave } from './lib/modelPrefsAutoSave'
 import { initializeLocale, I18nProvider } from './lib/i18n'
@@ -53,6 +54,11 @@ const rootElement = document.getElementById('root');
 if (!rootElement) {
   throw new Error('Root element not found');
 }
+
+// The first session opened after load renders its messages through the lazy
+// markdown chunk; fetching it now, while the app boots, means that open shows
+// text instead of empty message boxes until the chunk arrives.
+preloadMarkdownRenderer();
 
 createRoot(rootElement).render(
   <StrictMode>

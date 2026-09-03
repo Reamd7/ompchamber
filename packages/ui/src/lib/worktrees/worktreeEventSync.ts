@@ -5,7 +5,7 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { recordWorktreesSeen } from '@/components/session/sidebar/worktreeFirstSeen';
+import { recordWorktreesSeen } from '@/components/session/sidebar/projects/worktreeFirstSeen';
 import {
   invalidateWorktreeList,
   listProjectWorktrees,

@@ -18,7 +18,14 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 import { rangeToMarkdown, trimSelectionValue, wrapMarkdownSelectionForChat } from './selectionMarkdown';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
+import { registerActiveSelectionToolbar } from '@/lib/addSelectionToChat';
 import { collectSelectionOverlayRects } from '@/lib/selectionOverlayRects';
+import {
+  DESKTOP_MENU_FALLBACK_HEIGHT_PX,
+  DESKTOP_MENU_FALLBACK_WIDTH_PX,
+  getDesktopClampedX,
+  getDesktopClampedY,
+} from './selectionMenuPosition';
 
 interface TextSelectionMenuProps {
   containerRef: React.RefObject<HTMLElement | null>;
@@ -42,8 +49,6 @@ const normalizeDistilledInsight = (insight: string): string => (
   insight.trim().replace(/^[-*+]\s+/, '').slice(0, PROJECT_NOTE_BODY_MAX_LENGTH)
 );
 
-const DESKTOP_MENU_SIDE_MARGIN_PX = 8;
-const DESKTOP_MENU_FALLBACK_WIDTH_PX = 280;
 export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerRef }) => {
   const { t } = useI18n();
   const [position, setPosition] = React.useState<MenuPosition>({ x: 0, y: 0, show: false });
@@ -102,11 +107,12 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
   const [isAddingToNotes, setIsAddingToNotes] = React.useState(false);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const menuWidthRef = React.useRef(DESKTOP_MENU_FALLBACK_WIDTH_PX);
+  const menuHeightRef = React.useRef(DESKTOP_MENU_FALLBACK_HEIGHT_PX);
   const pendingSelectionRef = React.useRef<SelectionPayload | null>(null);
   const openRafRef = React.useRef<number | null>(null);
   const mouseUpTimeoutRef = React.useRef<number | null>(null);
   const isMenuVisibleRef = React.useRef(false);
-  const createSession = useSessionUIStore((state) => state.createSession);
+  const activeAddToChatCleanupRef = React.useRef<(() => void) | null>(null);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const newSessionDraftOpen = useSessionUIStore((state) => state.newSessionDraft?.open);
   const addContextDraft = useInlineCommentDraftStore((state) => state.addDraft);
@@ -156,6 +162,8 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
 
   React.useEffect(() => {
     return () => {
+      activeAddToChatCleanupRef.current?.();
+      activeAddToChatCleanupRef.current = null;
       if (openRafRef.current !== null) {
         window.cancelAnimationFrame(openRafRef.current);
         openRafRef.current = null;
@@ -169,6 +177,8 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
 
   const hideMenu = React.useCallback(() => {
     pendingSelectionRef.current = null;
+    activeAddToChatCleanupRef.current?.();
+    activeAddToChatCleanupRef.current = null;
     setCommentRects(null);
 
     if (!isMenuVisibleRef.current) {
@@ -191,23 +201,29 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     isMenuVisibleRef.current = false;
   }, []);
 
-  const getDesktopClampedX = React.useCallback((anchorX: number) => {
-    if (typeof window === 'undefined') {
-      return anchorX;
-    }
+  const getClampedX = React.useCallback((anchorX: number) => (
+    typeof window === 'undefined'
+      ? anchorX
+      : getDesktopClampedX(anchorX, window.innerWidth, menuWidthRef.current)
+  ), []);
 
-    const viewportWidth = window.innerWidth;
-    const menuWidth = menuWidthRef.current;
-    const halfWidth = menuWidth / 2;
-    const minX = DESKTOP_MENU_SIDE_MARGIN_PX + halfWidth;
-    const maxX = viewportWidth - DESKTOP_MENU_SIDE_MARGIN_PX - halfWidth;
+  const getClampedY = React.useCallback((anchorY: number) => (
+    typeof window === 'undefined'
+      ? anchorY
+      : getDesktopClampedY(anchorY, window.innerHeight, menuHeightRef.current)
+  ), []);
 
-    if (minX > maxX) {
-      return viewportWidth / 2;
-    }
+  const addMarkdownToChat = React.useCallback((markdownText: string) => {
+    const markdownBlock = wrapMarkdownSelectionForChat(markdownText);
+    setPendingInputText(markdownBlock, 'append');
 
-    return Math.min(Math.max(anchorX, minX), maxX);
-  }, []);
+    hideMenu();
+
+    window.getSelection()?.removeAllRanges();
+    queueMicrotask(() => {
+      focusChatInput();
+    });
+  }, [hideMenu, setPendingInputText]);
 
   const showMenu = React.useCallback(() => {
     if (!pendingSelectionRef.current) return;
@@ -215,11 +231,19 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     const { plainText, markdownText, rect, messageId } = pendingSelectionRef.current;
     const shouldAnimateIn = !position.show;
 
+    activeAddToChatCleanupRef.current?.();
+    activeAddToChatCleanupRef.current = registerActiveSelectionToolbar({
+      addToChat: () => addMarkdownToChat(markdownText),
+      dismiss: hideMenu,
+    });
+
     // Position menu above the selection
     const menuX = isMobile
       ? rect.left + rect.width / 2
-      : getDesktopClampedX(rect.left + rect.width / 2);
-    const menuY = rect.top - 10;
+      : getClampedX(rect.left + rect.width / 2);
+    const menuY = isMobile
+      ? rect.top - 10
+      : getClampedY(rect.top - 10);
 
     setSelectedText(plainText);
     setSelectedTextMarkdown(markdownText);
@@ -241,7 +265,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
         openRafRef.current = null;
       });
     }
-  }, [getDesktopClampedX, isMobile, position.show]);
+  }, [addMarkdownToChat, getClampedX, getClampedY, hideMenu, isMobile, position.show]);
 
   React.useLayoutEffect(() => {
     if (!position.show || isMobile || !menuRef.current) {
@@ -249,16 +273,28 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     }
 
     const measuredWidth = menuRef.current.offsetWidth;
-    if (!Number.isFinite(measuredWidth) || measuredWidth <= 0 || measuredWidth === menuWidthRef.current) {
+    const measuredHeight = menuRef.current.offsetHeight;
+    const widthChanged = Number.isFinite(measuredWidth) && measuredWidth > 0 && measuredWidth !== menuWidthRef.current;
+    const heightChanged = Number.isFinite(measuredHeight) && measuredHeight > 0 && measuredHeight !== menuHeightRef.current;
+    if (!widthChanged && !heightChanged) {
       return;
     }
 
-    menuWidthRef.current = measuredWidth;
+    if (widthChanged) {
+      menuWidthRef.current = measuredWidth;
+    }
+    if (heightChanged) {
+      menuHeightRef.current = measuredHeight;
+    }
     setPosition((prev) => ({
       ...prev,
-      x: getDesktopClampedX(prev.x),
+      x: getClampedX(prev.x),
+      y: getClampedY(prev.y),
     }));
-  }, [getDesktopClampedX, isMobile, position.show]);
+    // Entering comment mode and typing into the comment box both grow the
+    // popup, so remeasuring on those keeps the cached height (and the Y clamp
+    // built from it) honest.
+  }, [commentMode, commentText, getClampedX, getClampedY, isMobile, position.show]);
 
   // The desktop popup hangs above its anchor, so a tall comment box near the
   // top of the chat can climb over the app header. On the desktop shell the
@@ -287,7 +323,8 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     const handleViewportResize = () => {
       setPosition((prev) => ({
         ...prev,
-        x: getDesktopClampedX(prev.x),
+        x: getClampedX(prev.x),
+        y: getClampedY(prev.y),
       }));
     };
 
@@ -295,7 +332,7 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
     return () => {
       window.removeEventListener('resize', handleViewportResize);
     };
-  }, [getDesktopClampedX, isMobile, position.show]);
+  }, [getClampedX, getClampedY, isMobile, position.show]);
 
   const handleSelectionChange = React.useCallback(() => {
     // While the comment input is open, clicking or typing in it collapses the
@@ -428,18 +465,8 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
 
   const handleAddToChat = React.useCallback(() => {
     if (!selectedTextMarkdown) return;
-
-    const markdownBlock = wrapMarkdownSelectionForChat(selectedTextMarkdown);
-    setPendingInputText(markdownBlock, 'append');
-    
-    hideMenu();
-    
-    // Clear selection
-    window.getSelection()?.removeAllRanges();
-    queueMicrotask(() => {
-      focusChatInput();
-    });
-  }, [selectedTextMarkdown, setPendingInputText, hideMenu]);
+    addMarkdownToChat(selectedTextMarkdown);
+  }, [addMarkdownToChat, selectedTextMarkdown]);
 
   const handleOpenComment = React.useCallback(() => {
     if (!selectedTextMarkdown) return;
@@ -472,18 +499,6 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
       focusChatInput();
     });
   }, [addContextDraft, commentText, currentSessionId, effectiveDirectory, hideMenu, newSessionDraftOpen, selectedMessageId, selectedTextMarkdown]);
-
-  const handleCreateNewSession = React.useCallback(async () => {
-    if (!selectedText) return;
-
-    const session = await createSession(undefined, null, null);
-    if (session) {
-      setPendingInputText(selectedText, 'replace');
-    }
-
-    hideMenu();
-    window.getSelection()?.removeAllRanges();
-  }, [selectedText, createSession, setPendingInputText, hideMenu]);
 
   const currentSession = React.useMemo(() => {
     if (!currentSessionId) {
@@ -686,22 +701,6 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
             <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.addToInput')}</span>
           </button>
 
-          <button
-            onClick={handleCreateNewSession}
-            className={cn(
-              'flex min-w-0 items-center gap-2 rounded-xl px-3 py-2.5 text-left',
-              'text-sm font-medium leading-tight',
-              'bg-[var(--interactive-selection)] text-[var(--interactive-selection-foreground)]',
-              'active:opacity-80',
-              'transition-opacity duration-150'
-            )}
-            title={t('chat.textSelection.title.newSessionWithSelection')}
-            type="button"
-          >
-            <Icon name="chat-new" className="h-5 w-5 flex-shrink-0" />
-            <span className="min-w-0 whitespace-normal">{t('chat.textSelection.actions.newSession')}</span>
-          </button>
-
           {!isVSCodeRuntime() ? (
             <button
               onClick={handleAddToNotes}
@@ -763,39 +762,6 @@ export const TextSelectionMenu: React.FC<TextSelectionMenuProps> = ({ containerR
             {t('chat.textSelection.actions.comment')}
           </button>
 
-          <div className="mx-0.5 h-5 w-px shrink-0 bg-[var(--interactive-border)]" />
-
-          <button
-            onClick={handleAddToChat}
-            className={cn(
-              'px-3.5 py-1.5 rounded-full',
-              'text-sm font-medium',
-              'text-[var(--surface-foreground)]',
-              'hover:bg-[var(--interactive-hover)]',
-              'transition-colors duration-150'
-            )}
-            title={t('chat.textSelection.title.addToCurrentChat')}
-            type="button"
-          >
-            {t('chat.textSelection.actions.addToInput')}
-          </button>
-
-          <div className="mx-0.5 h-5 w-px shrink-0 bg-[var(--interactive-border)]" />
-
-          <button
-            onClick={handleCreateNewSession}
-            className={cn(
-              'px-3.5 py-1.5 rounded-full',
-              'text-sm font-medium',
-              'text-[var(--surface-foreground)]',
-              'hover:bg-[var(--interactive-hover)]',
-              'transition-colors duration-150'
-            )}
-            title={t('chat.textSelection.title.newSessionWithSelection')}
-            type="button"
-          >
-            {t('chat.textSelection.actions.newSession')}
-          </button>
 
           {!isVSCodeRuntime() ? (
             <>

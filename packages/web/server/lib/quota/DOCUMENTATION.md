@@ -19,7 +19,6 @@ These provider IDs are currently dispatchable via `fetchQuotaForProvider(provide
 | --- | --- | --- | --- |
 | `claude` | Claude | `providers/claude/` | Claude Code Keychain entry, Claude Code credentials file, OpenCode `auth.json` (`anthropic`, `claude`), `CLAUDE_CODE_OAUTH_TOKEN` |
 | `codex` | Codex | `providers/codex.js` | `openai`, `codex`, `chatgpt` |
-| `command-code` | Command Code | `providers/command-code.js` | `command-code` OAuth/API credential in OpenCode `auth.json`, or `COMMAND_CODE_API_KEY` |
 | `cursor` | Cursor | `providers/cursor.js` | Environment/token files, OpenChamber-managed credentials, or explicit one-time Cursor import |
 | `crof` | CrofAI | `providers/crof.js` | `crof` (API key under `key` or `token`) |
 | `deepseek` | DeepSeek | `providers/deepseek.js` | `deepseek` (API key under `key` or `token`) |
@@ -52,8 +51,6 @@ Provider modules must export `providerId`, `providerName`, `aliases`, `isConfigu
 `fetchQuota()` should return a quota result with `usage.windows` keyed by window name (for example `5h`, `7d`, `daily`) and optional provider-specific `usage.models` data.
 
 Ollama Cloud and Cursor credentials are explicitly managed through Settings. OpenCode Go usage uses `GET https://opencode.ai/zen/go/v1/usage` with the `opencode-go` API key from OpenCode `auth.json` as a bearer token. The server validates managed credentials before atomic `0600` writes and never returns secrets through its API. OpenChamber never scans browser cookie stores or automatically reads Cursor storage; Cursor import is an explicit one-time user action and never modifies Cursor's database.
-
-Command Code usage resolves account scope through `GET /alpha/whoami`, then reads server-backed credit balances and five-hour/weekly limits from `GET /alpha/billing/credits?orgId=...`. Personal accounts return `org: null` and use `/alpha/billing/credits` without an `orgId`; organization accounts include their organization id. Web/Electron and VS Code read the standard `command-code` OpenCode auth entry (including OAuth `access`) or `COMMAND_CODE_API_KEY`; credentials remain in the owning runtime and are never returned to shared UI.
 
 On the first OpenCode Go usage refresh after upgrading, OpenChamber deletes the obsolete `quota/opencode-go.json` credential file without reading its cookie value.
 
@@ -96,6 +93,25 @@ In 2025/2026 MiniMax rebranded "Coding Plan" to "Token Plan" alongside the M3 mo
 - Each `limits[].detail` rate-limit block returns `remaining` (available) with no `used` field.
 
 The provider computes `usedPercent` from whichever of `used`/`remaining` is present (`used` takes precedence when both exist) rather than assuming one field name. Both `packages/web/server/lib/quota/providers/kimi.js` and `packages/vscode/src/quotaProviders.ts` (`fetchKimiQuota`) must stay in sync — the VS Code extension duplicates this parsing logic rather than importing it.
+
+## GitHub Copilot quota semantics
+
+GitHub Copilot usage exposes only the `premium_interactions` snapshot as the
+`premium_interactions` window. Shared UI labels that window **AI Credits** and treats it as
+the provider's primary usage marker. Legacy chat-request quota and unlimited
+completion quota are intentionally omitted. Keep
+`packages/web/server/lib/quota/providers/copilot.js` and
+`packages/vscode/src/quotaProviders.ts` in sync.
+
+The `/copilot_internal/user` endpoint is undocumented; its quota semantics mirror
+what `microsoft/vscode-copilot-chat` consumes (`CopilotUserQuotaInfo`). Each
+snapshot carries `entitlement`, `remaining`, `unlimited`, and
+`percent_remaining`. Providers must honor these rules:
+
+- `unlimited: true` renders a percent-less window with an "Unlimited" value label.
+- Percent math requires a positive `entitlement`; entitlements of `0`, `-1`, or null are unusable.
+- When entitlement/remaining are unusable, fall back to `100 - percent_remaining`.
+- Snapshots other than `premium_interactions` (legacy annual plans) yield zero windows.
 
 ## Notes for contributors
 - Keep provider IDs stable; clients use them directly.

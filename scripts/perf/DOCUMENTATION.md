@@ -10,7 +10,9 @@ or extending these scripts. The methodology rules they enforce come from
 | Command | Answers |
 |---|---|
 | `bun run profile:idle` | What the app does while nobody interacts with it. |
-| `bun run profile:browser` | A manually driven capture, for interactions that cannot be scripted. |
+| `bun run profile:session` | What receiving and rendering a live assistant response costs. |
+| `bun run profile:animation` | What a CSS animation costs, isolated from the app. |
+| `bun run profile:switch` | How long switching sessions from the sidebar takes, cold and warm. || `bun run profile:browser` | A manually driven capture, for interactions that cannot be scripted. |
 | `bun run profile:switch` | What switching between two sessions in the sidebar costs: wall time to a stable message list, long-task distribution, main-thread blockage, and CPU self time. |
 
 All of them measure a real browser over CDP. Pass `--help` to any of them for
@@ -107,21 +109,27 @@ that is not listed.
 
 ## profile:switch
 
-Opens the app, clicks one sidebar session, then ping-pongs between two sessions
-the configured number of times. The click is the only stimulus; each switch is
-recorded from click to a stable message list. Reports wall time, the long-task
-distribution inside each switch window, total main-thread blockage, and a CPU
-sampling profile with self time per function. The run fails loudly when no
-switch stabilized instead of reporting a clean zero.
+Clicks sidebar session rows with real mouse input and measures, per click, the
+two moments a user feels: `ack`, when the clicked row is highlighted as active
+(the first visible reaction), and `content`, when the timeline shows messages
+that were not on screen before. It also reports the longest main-thread task
+inside each switch and every request the switch triggered, so fan-out
+regressions show up next to the latency they cause.
+
+Every session in the plan is visited twice. The first visit is usually cold
+(a network round trip for messages); the second is warm, served from the
+in-memory session store. They have different budgets and are reported
+separately.
 
 ```bash
-bun run profile:switch -- --url http://127.0.0.1:4599 --to <session id or title substring> [--from <id|title>] [--repeat 4]
+bun run profile:switch -- --url http://127.0.0.1:4599 --output artifacts/switch-before
+bun run profile:switch -- --url http://127.0.0.1:4599 --baseline artifacts/switch-before --budget-ack 32 --budget-content 100
 ```
 
-`--from` defaults to the first other visible session row. Revisit performance
-(warm markdown block cache) is covered by the even-numbered ping-pong rounds.
-
-
+`--sessions a,b,c` picks the rows to click; the default is the first rows in
+the sidebar, so pass explicit ids to compare runs across days. The row must be
+present in the sidebar; the command fails rather than measuring a click on
+nothing.
 ## Reading The Results
 
 Every run writes a JSON summary next to any raw capture, so results can be

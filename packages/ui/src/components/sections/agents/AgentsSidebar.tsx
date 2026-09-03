@@ -285,6 +285,7 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
       ...(ompAgent.readSummarize !== undefined ? { readSummarize: ompAgent.readSummarize } : {}),
     });
     setSelectedAgent(newName);
+    onItemSelect?.();
 
   };
 

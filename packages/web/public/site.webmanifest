@@ -1,8 +1,7 @@
 {
   "name": "OMPChamber - AI Coding Companion",
   "short_name": "OMPChamber",
-  "description": "Companion app for OMPChamber",
-  "start_url": "/",
+  "description": "Companion app for OMPChamber",  "start_url": "/",
   "display": "standalone",
   "background_color": "#151313",
   "theme_color": "#edb449",

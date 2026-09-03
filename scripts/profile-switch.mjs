@@ -1,184 +1,213 @@
 #!/usr/bin/env node
 /**
- * Automated chat-switch capture for OMPChamber.
+ * Fully automated session-switch latency capture for OpenChamber.
  *
- * Answers: what does switching to a session cost on the main thread, measured
- * on a production build without DevTools attached? The user-visible scenario
- * is a sidebar click, so that is the only stimulus — no synthetic rendering,
- * no direct store calls.
+ * Clicks sidebar session rows with real input events and measures, per click,
+ * how long the page takes to acknowledge the click and to show the target
+ * session's messages. Everything between those two moments is the
+ * "the app strains a little" feeling users report when switching sessions.
  *
- * Reports, per switch and aggregated: wall time from click to a stable message
- * list, long-task distribution inside that window, main-thread blockage, and a
- * CPU sampling profile with self time per function. Warns loudly when the
- * renderer was throttled or the scenario never opened a session, instead of
- * reporting a clean zero.
+ * Reported per switch, in milliseconds after the click:
+ * - `ack`: the clicked row is highlighted as active (first visible reaction);
+ * - `content`: the timeline shows messages that were not on screen before;
+ * - `longestTask`: the longest main-thread task inside the switch window;
+ * - the requests the switch triggered, so fan-out regressions are visible.
  *
- * Usage:
- *   bun run build:ui && bun run build:web
- *   cd <project dir> && node <repo>/packages/web/bin/cli.js serve --port 4599 --foreground
- *   bun run profile:switch -- --url http://127.0.0.1:4599 --to <session id or title substring>
- *
- * Without --from the first other visible session row is used as the starting
- * point. --repeat runs ping-pong switches and reports median/p95.
+ * Every session in the plan is visited twice. The first visit is usually a
+ * cold load (network round trip); the second is a warm switch served from the
+ * in-memory session store. Both are reported separately because they have
+ * different budgets.
  */
 
-import { mkdir, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import process from "node:process"
 
 import { CdpClient, createPageTarget, evaluateValue, launchChrome, reservePort, resolveChrome, wait } from "./perf/cdp.mjs"
 import { summarizeCpuProfile } from "./perf/cpu-profile.mjs"
+import { expandProjects, expandSessionLists } from "./perf/scenario.mjs"
+import { percentile, round } from "./perf/metrics.mjs"
 
 const HELP = `Usage: bun run profile:switch -- [options]
 
-Options:
-  --url <url>            App URL served from a production build (required)
-  --from <id|title>      Session to switch away from (default: first visible row)
-  --to <id|title>        Session to switch into (required)
-  --settle <seconds>     Settle time after load before the first switch (default 12)
-  --stable <seconds>     Message list must be unchanged for this long (default 1.5)
-  --timeout <seconds>    Per-switch stabilization timeout (default 90)
-  --repeat <count>       Ping-pong switches to record (default 3)
-  --output <dir>         Artifact directory (default artifacts/switch-profile-<ts>)
-  --sampling-interval <us> CPU sampling interval (default 1000)
-  --headless <bool>      Headless Chrome (default true)
-  --chrome <path>        Chrome executable
-  --profile-dir <path>   Chrome user-data dir
-  --json                 Print the summary as JSON
+Measures how long switching sessions from the sidebar takes.
 
-Exit code is non-zero when no session switch could be recorded.`
+Options:
+  --url <url>              OpenChamber URL (default: http://localhost:3000)
+  --sessions <ids>         Comma-separated session ids to click, in order.
+                           Every id is visited twice (cold, then warm).
+                           Default: the first 6 rows in the sidebar.
+  --count <n>              Number of sidebar rows to use when --sessions is
+                           not given (default: 6)
+  --settle <seconds>       Wait after load before clicking (default: 12)
+  --hover <ms>             Rest the pointer on the row before pressing
+                           (default: 400). Sidebar tooltips open on hover, so
+                           a click straight after the move would measure the
+                           tooltip opening instead of the switch.
+  --gap <ms>               Wait after each click before the next (default: 2500)
+  --output <directory>     Artifact directory (default: artifacts/switch-profile-<time>)
+  --baseline <directory>   Compare against a previous run's switch-summary.json
+  --budget-ack <ms>        Fail when the median warm ack exceeds this
+  --budget-content <ms>    Fail when the median warm content time exceeds this
+  --label <text>           Human label stored in the summary
+  --chrome <path>          Chrome/Chromium executable
+  --headless               Run without a visible browser
+  --help                   Show this help
+
+Needs a running OpenChamber server; see scripts/perf/DOCUMENTATION.md.
+`
 
 const parseArgs = (argv) => {
   const options = {
+    url: "http://localhost:3000",
+    sessions: [],
+    count: 6,
     settle: 12,
-    stable: 1.5,
-    timeout: 90,
-    repeat: 3,
-    samplingInterval: 1000,
-    headless: true,
-    profileDir: join(process.env.TEMP ?? process.cwd(), "oc-perf-chrome-profile"),
+    hover: 400,
+    gap: 2500,
     output: null,
-    url: null,
-    from: null,
-    to: null,
-    json: false,
-    help: false,
+    baseline: null,
+    budgetAck: null,
+    budgetContent: null,
+    label: null,
+    chrome: null,
+    headless: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index]
-    const value = argv[index + 1]
-    const num = (fallback) => {
-      const parsed = Number(value)
-      index += 1
-      return Number.isFinite(parsed) ? parsed : fallback
-    }
-    if (flag === "--help" || flag === "-h") options.help = true
-    else if (flag === "--url") { options.url = value; index += 1 }
-    else if (flag === "--from") { options.from = value; index += 1 }
-    else if (flag === "--to") { options.to = value; index += 1 }
-    else if (flag === "--settle") options.settle = num(options.settle)
-    else if (flag === "--stable") options.stable = num(options.stable)
-    else if (flag === "--timeout") options.timeout = num(options.timeout)
-    else if (flag === "--repeat") options.repeat = Math.max(1, num(options.repeat))
-    else if (flag === "--sampling-interval") options.samplingInterval = num(options.samplingInterval)
-    else if (flag === "--output") { options.output = value; index += 1 }
-    else if (flag === "--profile-dir") { options.profileDir = value; index += 1 }
-    else if (flag === "--headless") { options.headless = value !== "false"; index += 1 }
-    else if (flag === "--chrome") { options.chrome = value; index += 1 }
-    else if (flag === "--json") options.json = true
-    else throw new Error(`Unknown option: ${flag}`)
-  }
-  if (!options.help) {
-    if (!options.url) throw new Error("--url is required")
-    if (!options.to) throw new Error("--to is required")
+    const value = argv[index]
+    if (value === "--help" || value === "-h") { console.log(HELP); process.exit(0) }
+    else if (value === "--url") options.url = argv[++index]
+    else if (value === "--sessions") options.sessions = String(argv[++index]).split(",").map((id) => id.trim()).filter(Boolean)
+    else if (value === "--count") options.count = Number(argv[++index])
+    else if (value === "--settle") options.settle = Number(argv[++index])
+    else if (value === "--hover") options.hover = Number(argv[++index])
+    else if (value === "--gap") options.gap = Number(argv[++index])
+    else if (value === "--output") options.output = argv[++index]
+    else if (value === "--baseline") options.baseline = argv[++index]
+    else if (value === "--budget-ack") options.budgetAck = Number(argv[++index])
+    else if (value === "--budget-content") options.budgetContent = Number(argv[++index])
+    else if (value === "--label") options.label = argv[++index]
+    else if (value === "--chrome") options.chrome = argv[++index]
+    else if (value === "--headless") options.headless = true
+    else throw new Error(`Unknown option: ${value}`)
   }
   return options
 }
 
-// Page-side helpers, injected as one expression each. The observer must be
-// installed before the click so long tasks are never missed.
-const INSTALL_OBSERVER = `(() => {
-  if (globalThis.__switchObserver) return 'installed'
-  const entries = []
-  const observer = new PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) {
-      entries.push({ type: entry.entryType, start: entry.startTime, duration: entry.duration })
+// Installed in the page before each click. Observes the DOM until the clicked
+// row is highlighted and until messages that were not on screen before appear,
+// and records animation-frame timestamps so main-thread stalls are visible even
+// when the trace is missing.
+const buildProbeSource = (sessionId) => `(() => {
+  const before = new Set([...document.querySelectorAll('[data-message-id]')].map((el) => el.getAttribute('data-message-id')))
+  const state = { t0: null, ack: null, content: null, messageCount: null, frames: [] }
+  const row = () => document.querySelector('[data-session-row="${sessionId}"]')
+  const observer = new MutationObserver(() => {
+    if (state.t0 === null) return
+    const now = performance.now()
+    if (state.ack === null && row()?.getAttribute("aria-current") === "page") state.ack = now - state.t0
+    if (state.content === null) {
+      const ids = [...document.querySelectorAll('[data-message-id]')].map((el) => el.getAttribute('data-message-id'))
+      if (ids.length > 0 && ids.some((id) => !before.has(id))) { state.content = now - state.t0; state.messageCount = ids.length }
     }
   })
-  observer.observe({ entryTypes: ['longtask', 'resource'] })
-  globalThis.__switchObserver = { entries }
-  return 'installed'
-})()`
-
-
-const FIND_ROW = (key) => `(() => {
-  const wanted = ${JSON.stringify(key)}
-  const rows = Array.from(document.querySelectorAll('[data-session-row]'))
-  if (rows.length === 0) return { error: 'no session rows in sidebar' }
-  for (const row of rows) {
-    const id = row.getAttribute('data-session-row') ?? ''
-    if (id && (id === wanted || id.startsWith(wanted))) {
-      return { id, title: (row.textContent ?? '').trim().slice(0, 80) }
-    }
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "aria-current"] })
+  const tick = () => {
+    if (state.t0 !== null) state.frames.push(performance.now() - state.t0)
+    if (state.frames.length < 300) requestAnimationFrame(tick)
   }
-  const byTitle = rows.find((row) => ((row.textContent ?? '').includes(wanted)))
-  if (byTitle) {
-    return { id: byTitle.getAttribute('data-session-row'), title: (byTitle.textContent ?? '').trim().slice(0, 80) }
+  requestAnimationFrame(tick)
+  window.__openchamberSwitchProbe = {
+    start() { state.t0 = performance.now(); performance.mark("switch:start") },
+    finish() {
+      observer.disconnect()
+      const gaps = []
+      for (let index = 1; index < state.frames.length; index += 1) gaps.push(state.frames[index] - state.frames[index - 1])
+      return {
+        ack: state.ack, content: state.content, messageCount: state.messageCount,
+        firstFrame: state.frames[0] ?? null,
+        longestFrameGap: gaps.reduce((max, gap) => Math.max(max, gap), 0),
+        framesRecorded: state.frames.length,
+      }
+    },
   }
-  return { error: 'no matching row', rowCount: rows.length }
-})()`
-
-const CLICK_ROW = (id) => `(() => {
-  const row = document.querySelector('[data-session-row="' + ${JSON.stringify(id)} + '"]')
-  if (!row) return false
-  row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
   return true
 })()`
 
-const STATE = (targetId) => `(() => {
-  const messages = document.querySelectorAll('[data-message-id]').length
-  return {
-    url: location.href,
-    onTarget: location.href.includes(${JSON.stringify(targetId)}),
-    messages,
-    now: performance.now(),
-    observerCount: (globalThis.__switchObserver?.entries ?? []).length,
-  }
-})()`
-
-const COLLECT_LONG_TASKS = (fromMs, toMs) => `(() => {
-  const entries = (globalThis.__switchObserver?.entries ?? [])
-    .filter((entry) => entry.type === 'longtask' && entry.start >= ${fromMs} - 5 && entry.start <= ${toMs})
-    .map((entry) => ({ start: entry.start, duration: Math.round(entry.duration) }))
-    .sort((a, b) => b.duration - a.duration)
-  globalThis.__switchObserver.entries.length = 0
-  return entries
-})()`
-
-const percentiles = (values, fraction) => {
-  if (values.length === 0) return 0
-  const sorted = [...values].sort((left, right) => left - right)
-  const index = Math.min(sorted.length - 1, Math.ceil(fraction * sorted.length) - 1)
-  return sorted[Math.max(0, index)]
+const pressAt = async (client, x, y) => {
+  await client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 })
+  await client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 })
 }
 
-const round = (value, digits = 1) => Number(Number(value).toFixed(digits))
+// Render counters worth reading per switch. They are the app's own stream
+// perf counters, so the numbers mean "React renders of that component".
+const RENDER_COUNTERS = [
+  "ui.session_sidebar.render",
+  "ui.sidebar_projects_list.render",
+  "ui.sidebar_session_node.render",
+  "ui.message_list.render",
+  "ui.chat_message.render",
+  "ui.markdown_renderer.settled_paint.reused",
+  "ui.markdown_renderer.dom_cache.hit",
+]
+
+const readRenderCounters = async (client) => {
+  const entries = await evaluateValue(client, `(window.__openchamberStreamPerformance?.getSnapshot().entries ?? []).map((entry) => [entry.metric, entry.count])`)
+  const counters = {}
+  for (const [metric, count] of entries ?? []) if (RENDER_COUNTERS.includes(metric)) counters[metric.replace(/^ui\./, "")] = count
+  return counters
+}
+
+const median = (values) => percentile(values, 0.5)
+
+const summarizeSwitches = (switches) => {
+  const valid = switches.filter((entry) => entry.ack !== null && entry.content !== null)
+  const byVisit = (visit) => valid.filter((entry) => entry.visit === visit)
+  const stats = (entries, key) => ({
+    median: round(median(entries.map((entry) => entry[key]))),
+    p95: round(percentile(entries.map((entry) => entry[key]), 0.95)),
+    max: round(entries.reduce((max, entry) => Math.max(max, entry[key]), 0)),
+  })
+  const summary = {}
+  for (const visit of ["cold", "warm"]) {
+    const entries = byVisit(visit)
+    summary[visit] = entries.length === 0 ? null : {
+      switches: entries.length,
+      ack: stats(entries, "ack"),
+      content: stats(entries, "content"),
+      longestTask: stats(entries, "longestTask"),
+      requests: stats(entries, "requestCount"),
+    }
+  }
+  return summary
+}
+
+const printComparison = (current, baseline) => {
+  const rows = []
+  for (const visit of ["cold", "warm"]) {
+    for (const metric of ["ack", "content", "longestTask", "requests"]) {
+      const now = current[visit]?.[metric]?.median
+      const then = baseline[visit]?.[metric]?.median
+      if (now === undefined || then === undefined) continue
+      rows.push({ metric: `${visit} ${metric} (median)`, baseline: then, current: now, delta: round(now - then) })
+    }
+  }
+  console.table(rows)
+}
 
 const main = async () => {
   const options = parseArgs(process.argv.slice(2))
-  if (options.help) {
-    console.log(HELP)
-    return
-  }
-
-  const chrome = resolveChrome(options.chrome)
-  const timestamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-")
-  const output = resolve(options.output ?? join("artifacts", `switch-profile-${timestamp}`))
+  const output = resolve(options.output ?? join("artifacts", `switch-profile-${new Date().toISOString().replace(/[:.]/g, "-")}`))
   await mkdir(output, { recursive: true })
-  await mkdir(resolve(options.profileDir), { recursive: true })
+  const profileDir = join(homedir(), ".cache", "openchamber-perf-switch-profile")
+  const chrome = resolveChrome(options.chrome)
+  const baseline = options.baseline
+    ? JSON.parse(await readFile(join(resolve(options.baseline), "switch-summary.json"), "utf8"))
+    : null
 
   const port = await reservePort()
-  const chromeProcess = launchChrome({ chrome, profileDir: options.profileDir, port, headless: options.headless })
+  const chromeProcess = launchChrome({ chrome, profileDir, port, headless: options.headless })
   let client
   try {
     const target = await createPageTarget(port)
@@ -187,169 +216,149 @@ const main = async () => {
     await Promise.all([
       client.send("Page.enable"),
       client.send("Runtime.enable"),
-      client.send("Performance.enable"),
       client.send("Profiler.enable"),
       client.send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }),
     ])
     await client.send("Network.setBypassServiceWorker", { bypass: true })
-    await client.send("Emulation.setDeviceMetricsOverride", {
-      width: 1600,
-      height: 1000,
-      deviceScaleFactor: 1,
-      mobile: false,
+    await client.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false })
+    // The app's render counters are off by default; the flag is read at load.
+    await client.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `try { localStorage.setItem("openchamber_stream_perf", "1") } catch {}`,
     })
 
-    const loaded = client.once("Page.loadEventFired", 60_000)
+    let loaded = client.once("Page.loadEventFired", 60_000)
     await client.send("Page.navigate", { url: options.url })
     await loaded
-    console.log(`Loaded ${options.url}; settling ${options.settle}s for session bootstrap.`)
+    await expandProjects(client)
+    loaded = client.once("Page.loadEventFired", 60_000)
+    await client.send("Page.reload")
+    await loaded
+    console.log(`Loaded ${options.url}; settling for ${options.settle}s.`)
     await wait(options.settle * 1000)
+    const expanded = await expandSessionLists(client)
+    if (expanded > 0) await wait(3000)
 
-    await evaluateValue(client, INSTALL_OBSERVER)
+    const rows = await evaluateValue(client, `[...document.querySelectorAll('[data-session-row]')].map((el) => el.getAttribute('data-session-row'))`)
+    if (!rows || rows.length === 0) throw new Error("The sidebar rendered no session rows; the scenario never ran.")
+    const plan = options.sessions.length > 0 ? options.sessions : rows.slice(0, options.count)
+    const missing = plan.filter((id) => !rows.includes(id))
+    if (missing.length > 0) throw new Error(`Sessions not present in the sidebar: ${missing.join(", ")}`)
+    if (plan.length < 2) throw new Error("Need at least two sessions to switch between.")
+    console.log(`Switching between ${plan.length} sessions, two visits each.`)
 
-    const fromRow = await evaluateValue(client, FIND_ROW(options.from ?? ""))
-    if (fromRow.error && options.from) throw new Error(`--from session not found: ${JSON.stringify(fromRow)}`)
-    const toRow = await evaluateValue(client, FIND_ROW(options.to))
-    if (toRow.error) throw new Error(`--to session not found: ${JSON.stringify(toRow)}`)
-    if (fromRow.id === toRow.id) throw new Error("--from and --to resolved to the same session")
+    const requests = new Map()
+    client.on("Network.requestWillBeSent", (params) => {
+      requests.set(params.requestId, { url: params.request.url, wallTime: params.wallTime * 1000 })
+    })
 
-    // Open the starting session and let it stabilize before recording.
-    if (fromRow.id) {
-      await evaluateValue(client, CLICK_ROW(fromRow.id))
-      await wait(3000)
-    }
-
-    console.log(`Switching: ${JSON.stringify(fromRow.title ?? "(none)")} -> ${JSON.stringify(toRow.title)}`)
-
-    await client.send("Profiler.setSamplingInterval", { interval: options.samplingInterval })
+    const traceEvents = []
+    client.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...(value ?? [])))
+    await client.send("Profiler.setSamplingInterval", { interval: 250 })
     await client.send("Profiler.start")
+    await client.send("Tracing.start", {
+      transferMode: "ReportEvents",
+      categories: ["devtools.timeline", "disabled-by-default-devtools.timeline", "blink.user_timing"].join(","),
+    })
 
     const switches = []
-    let current = { id: toRow.id, key: options.to }
-    let previous = { id: fromRow.id, key: options.from ?? "" }
-    for (let step = 0; step < options.repeat; step += 1) {
-      // Always measure switching INTO the --to session when odd, back into the
-      // from session when even, so ping-pong rounds stay comparable.
-      const target = step % 2 === 0 ? toRow : fromRow
-      if (!target.id) break
-      await wait(1500)
-      const clickAt = await evaluateValue(client, `performance.now()`)
-      const clicked = await evaluateValue(client, CLICK_ROW(target.id))
-      if (!clicked) throw new Error(`session row vanished: ${target.id}`)
-
-      const deadline = Date.now() + options.timeout * 1000
-      let stableSince = null
-      let lastCount = -1
-      let finalState = null
-      while (Date.now() < deadline) {
-        await wait(250)
-        const state = await evaluateValue(client, STATE(target.id))
-        finalState = state
-        if (state.onTarget && state.messages > 0 && state.messages === lastCount) {
-          if (stableSince === null) stableSince = Date.now()
-          if (Date.now() - stableSince >= options.stable * 1000) break
-        } else {
-          stableSince = null
-          lastCount = state.messages
-        }
-      }
-      const doneAt = await evaluateValue(client, `performance.now()`)
-      const opened = Boolean(finalState?.onTarget && (finalState?.messages ?? 0) > 0)
-      const longTasks = opened
-        ? await evaluateValue(client, COLLECT_LONG_TASKS(clickAt, doneAt))
-        : []
-      const blockMs = longTasks.reduce((total, task) => total + task.duration, 0)
-      switches.push({
-        into: target.id,
-        title: target.title,
-        opened,
-        wallMs: round(doneAt - clickAt),
-        messages: finalState?.messages ?? 0,
-        longTasks,
-        blockMs: round(blockMs),
-        worstTaskMs: longTasks.length > 0 ? longTasks[0].duration : 0,
-      })
-      const entry = switches[switches.length - 1]
-      console.log(
-        `  switch ${step + 1}/${options.repeat} -> ${(target.title ?? target.id).slice(0, 40).padStart(40)}`
-          + ` wall ${String(entry.wallMs).padStart(7)}ms`
-          + ` block ${String(entry.blockMs).padStart(7)}ms`
-          + ` worst ${String(entry.worstTaskMs).padStart(7)}ms`
-          + ` msgs ${entry.messages}`,
-      )
-      previous = current
-      current = { id: target.id }
+    const visits = [...plan.map((id) => ({ id, visit: "cold" })), ...plan.map((id) => ({ id, visit: "warm" }))]
+    for (const [index, { id, visit }] of visits.entries()) {
+      const box = await evaluateValue(client, `(() => {
+        const el = document.querySelector('[data-session-row="${id}"]')
+        if (!el) return null
+        el.scrollIntoView({ block: "center" })
+        const rect = el.getBoundingClientRect()
+        return { x: rect.x + 60, y: rect.y + rect.height / 2 }
+      })()`)
+      if (!box) throw new Error(`Row for ${id} disappeared from the sidebar.`)
+      await wait(800)
+      await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x, y: box.y })
+      await wait(options.hover)
+      await evaluateValue(client, buildProbeSource(id))
+      await evaluateValue(client, `window.__openchamberStreamPerformance?.reset()`)
+      const clickedAt = Date.now()
+      await evaluateValue(client, `window.__openchamberSwitchProbe.start()`)
+      await pressAt(client, box.x, box.y)
+      await wait(options.gap)
+      const probe = await evaluateValue(client, `window.__openchamberSwitchProbe.finish()`)
+      await evaluateValue(client, `performance.mark("switch:end")`)
+      const renders = await readRenderCounters(client)
+      const triggered = [...requests.values()]
+        .filter((request) => request.wallTime >= clickedAt - 5 && request.wallTime <= clickedAt + 1500)
+        .map((request) => ({ at: round(request.wallTime - clickedAt, 0), url: request.url.replace(options.url, "").split("?")[0] }))
+      const entry = { index, id, visit, ...probe, requestCount: triggered.length, requests: triggered, renders, longestTask: null }
+      switches.push(entry)
+      const renderSummary = Object.entries(renders).map(([metric, count]) => `${metric.replace(/\.render$/, "")}=${count}`).join(" ")
+      console.log(`#${String(index).padStart(2)} ${visit.padEnd(4)} ${id.slice(0, 16)} ack=${fmt(probe.ack)} content=${fmt(probe.content)} (${probe.messageCount ?? "-"} msgs) longestFrameGap=${fmt(probe.longestFrameGap)} requests=${triggered.length} ${renderSummary}`)
     }
 
+    const tracingComplete = client.once("Tracing.tracingComplete", 120_000)
+    await client.send("Tracing.end")
+    await tracingComplete
+    await wait(500)
     const { profile } = await client.send("Profiler.stop")
 
-    // Renderer-throttling guard, mirroring profile-idle.
+    // Attribute the longest task to each switch from the user-timing marks.
+    const marks = traceEvents.filter((event) => event.cat?.includes("blink.user_timing") && (event.name === "switch:start" || event.name === "switch:end"))
+      .sort((left, right) => left.ts - right.ts)
+    const tasks = traceEvents.filter((event) => event.name === "RunTask" && event.ph === "X" && Number(event.dur) > 0)
+    if (tasks.length === 0) console.warn("Warning: the trace contains no RunTask events; longest-task metrics are unavailable, not zero.")
+    let switchIndex = 0
+    for (let markIndex = 0; markIndex + 1 < marks.length && switchIndex < switches.length; markIndex += 2) {
+      const start = marks[markIndex].ts
+      const end = marks[markIndex + 1].ts
+      const longest = tasks.filter((event) => event.ts >= start && event.ts <= end).reduce((max, event) => Math.max(max, event.dur / 1000), 0)
+      switches[switchIndex].longestTask = tasks.length === 0 ? null : round(longest)
+      switchIndex += 1
+    }
+
     const frameLiveness = await evaluateValue(client, `new Promise((resolve) => {
       let frames = 0
       const startedAt = performance.now()
-      const tick = () => {
-        frames += 1
-        if (performance.now() - startedAt < 1000) requestAnimationFrame(tick)
-        else resolve({ framesPerSecond: frames, visibilityState: document.visibilityState })
-      }
+      const tick = () => { frames += 1; if (performance.now() - startedAt < 1000) requestAnimationFrame(tick); else resolve(frames) }
       requestAnimationFrame(tick)
-      setTimeout(() => resolve({ framesPerSecond: frames, visibilityState: document.visibilityState }), 2000)
+      setTimeout(() => resolve(frames), 2000)
     })`)
+    if (Number(frameLiveness) < 20) console.warn(`Warning: the renderer produced ${frameLiveness} frames/s; it may have been throttled.`)
 
-    const recorded = switches.filter((entry) => entry.opened)
-    if (recorded.length === 0) {
-      throw new Error("no switch stabilized inside the timeout; refusing to report a clean result")
-    }
     const summary = {
+      recordedAt: new Date().toISOString(),
+      label: options.label,
       url: options.url,
-      to: { id: toRow.id, title: toRow.title },
-      from: { id: fromRow.id, title: fromRow.title },
+      sessions: plan,
+      ...summarizeSwitches(switches),
       switches,
-      wallMs: {
-        median: round(percentiles(recorded.map((entry) => entry.wallMs), 0.5)),
-        p95: round(percentiles(recorded.map((entry) => entry.wallMs), 0.95)),
-        max: round(Math.max(...recorded.map((entry) => entry.wallMs))),
-      },
-      blockMs: {
-        median: round(percentiles(recorded.map((entry) => entry.blockMs), 0.5)),
-        p95: round(percentiles(recorded.map((entry) => entry.blockMs), 0.95)),
-        max: round(Math.max(...recorded.map((entry) => entry.blockMs))),
-      },
-      worstTaskMs: {
-        median: round(percentiles(recorded.map((entry) => entry.worstTaskMs), 0.5)),
-        max: round(Math.max(...recorded.map((entry) => entry.worstTaskMs))),
-      },
-      longTasksOver100Ms: recorded.reduce((total, entry) => total + entry.longTasks.filter((task) => task.duration >= 100).length, 0),
-      frameLiveness,
-      cpu: summarizeCpuProfile(profile),
+      cpuProfile: summarizeCpuProfile(profile),
     }
-
     await writeFile(join(output, "switch-summary.json"), JSON.stringify(summary, null, 2))
+    await writeFile(join(output, "trace.json"), JSON.stringify({ traceEvents }))
     await writeFile(join(output, "cpu-profile.cpuprofile"), JSON.stringify(profile))
 
-    if (Number(frameLiveness?.framesPerSecond ?? 0) < 10) {
-      console.warn(`WARNING: renderer produced ${frameLiveness?.framesPerSecond ?? 0} fps; this run understates real work.`)
+    console.log("")
+    for (const visit of ["cold", "warm"]) {
+      const stats = summary[visit]
+      if (!stats) continue
+      console.log(`${visit}: ack median ${stats.ack.median}ms (p95 ${stats.ack.p95}) · content median ${stats.content.median}ms (p95 ${stats.content.p95}) · longest task median ${stats.longestTask.median}ms · requests median ${stats.requests.median}`)
     }
+    if (baseline) printComparison(summary, baseline)
+    console.log(`Artifacts written to ${output}`)
 
-    if (options.json) console.log(JSON.stringify(summary, null, 2))
-    else {
-      console.log(`\nSwitch wall ms : median ${summary.wallMs.median} p95 ${summary.wallMs.p95} max ${summary.wallMs.max}`)
-      console.log(`Main-thread blocked ms : median ${summary.blockMs.median} p95 ${summary.blockMs.p95} max ${summary.blockMs.max}`)
-      console.log(`Worst long task ms : median ${summary.worstTaskMs.median} max ${summary.worstTaskMs.max}`)
-      console.log(`Long tasks >=100ms across switches: ${summary.longTasksOver100Ms}`)
-      console.log(`\nTop CPU self time during switches:`)
-      for (const row of summary.cpu.topSelfTime.slice(0, 15)) {
-        console.log(`  ${String(row.selfMs).padStart(9)} ms  ${String(row.percentOfBusy).padStart(6)}%  ${row.function}`)
-      }
+    const failures = []
+    if (options.budgetAck !== null && summary.warm && summary.warm.ack.median > options.budgetAck) failures.push(`warm ack median ${summary.warm.ack.median}ms exceeds ${options.budgetAck}ms`)
+    if (options.budgetContent !== null && summary.warm && summary.warm.content.median > options.budgetContent) failures.push(`warm content median ${summary.warm.content.median}ms exceeds ${options.budgetContent}ms`)
+    if (failures.length > 0) {
+      console.error(`Budget exceeded: ${failures.join("; ")}`)
+      process.exitCode = 1
     }
-    console.log(`\nSaved to ${output}`)
   } finally {
     client?.close()
-    if (!chromeProcess.killed) chromeProcess.kill("SIGTERM")
+    chromeProcess.kill()
   }
 }
 
+const fmt = (value) => (value === null || value === undefined ? "-" : `${Math.round(value)}ms`)
+
 main().catch((error) => {
-  console.error(`Switch profiling failed: ${error.message}`)
+  console.error(error instanceof Error ? error.message : error)
   process.exit(1)
 })

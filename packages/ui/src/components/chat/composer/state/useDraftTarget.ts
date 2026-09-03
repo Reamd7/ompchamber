@@ -25,6 +25,7 @@ import { buildSessionTargetOptions } from '@/sync/session-worktree-contract';
 import { normalizePath } from '../attachments/filePaths';
 import { CHAT_DRAFT_PROJECT_ID } from '@/lib/chatDirectories';
 import { useI18n } from '@/lib/i18n';
+import { getGitStatus } from '@/lib/gitApi';
 
 /** How long a cached branch list is served before it is refreshed. */
 const BRANCHES_SWR_TTL_MS = 30_000;
@@ -98,6 +99,7 @@ export function useDraftTarget(enabled: boolean) {
     const hasDraftBranchList = Boolean(selectedDraftProjectBranches?.all);
     const fetchBranches = useGitStore((state) => state.fetchBranches);
     const [isDiscoveringDraftBranches, setIsDiscoveringDraftBranches] = React.useState(false);
+    const [dirtyDraftDirectory, setDirtyDraftDirectory] = React.useState<string | null>(null);
 
     React.useEffect(() => {
         if (!enabled || !selectedDraftProjectPath || !runtimeGit || selectedDraftProjectIsGitRepo !== null) {
@@ -188,6 +190,35 @@ export function useDraftTarget(enabled: boolean) {
             ?? selectedDraftProjectPath,
         [newSessionDraft?.bootstrapPendingDirectory, newSessionDraft?.directoryOverride, selectedDraftProjectPath],
     );
+
+    React.useEffect(() => {
+        if (
+            !enabled
+            || !selectedDraftDirectory
+            || selectedDraftProject?.kind === 'chat'
+            || newSessionDraft?.pendingWorktreeRequestId
+            || newSessionDraft?.bootstrapPendingDirectory
+        ) {
+            setDirtyDraftDirectory(null);
+            return;
+        }
+
+        let cancelled = false;
+        setDirtyDraftDirectory(null);
+        getGitStatus(selectedDraftDirectory, { mode: 'light' })
+            .then((status) => {
+                if (!cancelled && (status.files?.length ?? 0) > 0) {
+                    setDirtyDraftDirectory(selectedDraftDirectory);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setDirtyDraftDirectory(null);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [enabled, newSessionDraft?.bootstrapPendingDirectory, newSessionDraft?.pendingWorktreeRequestId, selectedDraftDirectory, selectedDraftProject?.kind]);
 
     const shouldKeepMissingSelectedDraftDirectory = React.useMemo(() => {
         const pendingDirectory = normalizePath(newSessionDraft?.bootstrapPendingDirectory ?? null);
@@ -306,6 +337,7 @@ export function useDraftTarget(enabled: boolean) {
         selectedDraftDirectory,
         selectedDraftBranchLabel,
         selectedDraftBranchIsKnown,
+        selectedDraftDirectoryHasUncommittedChanges: dirtyDraftDirectory === selectedDraftDirectory,
         projectRootBranchOption,
         worktreeBranchOptions,
         draftBranchItems,

@@ -3,17 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const spawnSyncMock = vi.fn();
-
-vi.mock('node:child_process', () => ({
-  spawnSync: spawnSyncMock,
-}));
-
-const { commandIdentifiesOurServer, windowsImageLooksLikeEngine, reapOrphanedProcesses } =
+const { commandIdentifiesOurServer, windowsImageLooksLikeEngine, createManagedProcessRegistry } =
   await import('./managed-process-registry.js');
 
 afterEach(() => {
-  spawnSyncMock.mockReset();
   vi.restoreAllMocks();
 });
 
@@ -96,18 +89,22 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
         error.code = 'ESRCH';
         throw error;
       });
-      spawnSyncMock.mockImplementation((command, args) => {
-        if (command === 'tasklist') {
-          return { stdout: '"omp-host.exe","4242","Console","1","84,532 K"\r\n' };
-        }
-        return { stdout: '' };
+      const execFileCalls = [];
+      const registry = createManagedProcessRegistry({
+        execFileAsync: async (command, args) => {
+          execFileCalls.push([command, args]);
+          if (command === 'tasklist') {
+            return { stdout: '"omp-host.exe","4242","Console","1","84,532 K"\r\n' };
+          }
+          return { stdout: '' };
+        },
       });
 
       const logs = [];
-      const result = await reapOrphanedProcesses({ log: (message) => logs.push(message) });
+      const result = await registry.reapOrphanedProcesses({ log: (message) => logs.push(message) });
 
       expect(result).toEqual({ inspected: 1, reaped: 1 });
-      const taskkill = spawnSyncMock.mock.calls.find(([command]) => command === 'taskkill');
+      const taskkill = execFileCalls.find(([command]) => command === 'taskkill');
       expect(taskkill?.[1]).toEqual(['/PID', '4242', '/T', '/F']);
       expect(logs.join('\n')).toContain('reaped orphaned engine pid 4242');
       expect(existsSync(entryFile)).toBe(false);
@@ -123,7 +120,13 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
     const entryFile = path.join(dir, '4243.json');
     writeFileSync(
       entryFile,
-      JSON.stringify({ pid: 4243, ownerPid: 777, port: 58941, binary: null, runtime: 'desktop' }),
+      JSON.stringify({
+        pid: 4243,
+        ownerPid: 777,
+        port: 58941,
+        binary: null,
+        runtime: 'desktop',
+      }),
     );
 
     try {
@@ -133,17 +136,21 @@ describe('reapOrphanedProcesses (win32 branch)', () => {
         error.code = 'ESRCH';
         throw error;
       });
-      spawnSyncMock.mockImplementation((command) => {
-        if (command === 'tasklist') {
-          return { stdout: '"someother.exe","4243","Console","1","10,000 K"\r\n' };
-        }
-        return { stdout: '' };
+      const execFileCalls = [];
+      const registry = createManagedProcessRegistry({
+        execFileAsync: async (command) => {
+          execFileCalls.push(command);
+          if (command === 'tasklist') {
+            return { stdout: '"someother.exe","4243","Console","1","10,000 K"\r\n' };
+          }
+          return { stdout: '' };
+        },
       });
 
-      const result = await reapOrphanedProcesses();
+      const result = await registry.reapOrphanedProcesses();
 
       expect(result).toEqual({ inspected: 1, reaped: 0 });
-      expect(spawnSyncMock.mock.calls.some(([command]) => command === 'taskkill')).toBe(false);
+      expect(execFileCalls.some((command) => command === 'taskkill')).toBe(false);
       // The entry stays: the process is alive but not provably ours.
       expect(existsSync(entryFile)).toBe(true);
     } finally {
