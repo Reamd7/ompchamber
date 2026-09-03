@@ -9,6 +9,9 @@ export interface TerminalChunk {
   data: string;
   replayData?: string;
   byteLength: number;
+  /** Server sequence of the frame this chunk came from; the renderer's
+   * consumption of this id is what the client acknowledges back. */
+  sequence?: number;
 }
 
 /**
@@ -600,7 +603,7 @@ export const useTerminalStore = create<TerminalStore>()(
             const chunkId = state.nextChunkId;
             const buffers = new Map(state.buffers);
             buffers.set(entryKey, {
-              chunks: retained.text ? [{ id: chunkId, data: retained.text, byteLength: retained.byteLength }] : [],
+              chunks: retained.text ? [{ id: chunkId, data: retained.text, byteLength: retained.byteLength, sequence }] : [],
               byteLength: retained.byteLength,
               lastSequence: sequence,
             });
@@ -632,6 +635,7 @@ export const useTerminalStore = create<TerminalStore>()(
               id: chunkId,
               data: retainedChunk.text,
               ...(retainedReplayData !== undefined ? { replayData: retainedReplayData } : {}),
+              ...(sequence !== undefined ? { sequence } : {}),
               byteLength: retainedChunk.byteLength,
             };
 

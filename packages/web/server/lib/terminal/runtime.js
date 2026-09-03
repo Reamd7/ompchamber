@@ -16,16 +16,51 @@ import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.
 
 const MAX_SESSIONS = 20;
 const MAX_HISTORY_BYTES = 512 * 1024;
+// History deque slack: one extra chunk may be retained before trimming, so
+// materialized snapshots stay within MAX_HISTORY_BYTES + this slack.
+const MAX_HISTORY_CHUNK_BYTES = 128 * 1024;
+// Send-side flow control. Bun's server WebSocket exposes no send-buffer
+// signal and buffers unbounded data per socket, so consumers acknowledge the
+// sequences they applied and each attachment tracks sent-but-unacknowledged
+// bytes. Past SEND_LAG_ENTER_BYTES the attachment is suppressed: output
+// frames are skipped for it (sequence numbers still advance, so its next
+// live frame gap-triggers the client's resync), and it receives a snapshot
+// once its lag drains below SEND_LAG_EXIT_BYTES. Connections that never
+// acknowledge are suppressed after SEND_LAG_FALLBACK_BYTES as a fail-safe.
+const SEND_LAG_ENTER_BYTES = 4 * 1024 * 1024;
+const SEND_LAG_EXIT_BYTES = 1 * 1024 * 1024;
+const SEND_LAG_FALLBACK_BYTES = 8 * 1024 * 1024;
 const MAX_INPUT_CHARS = 65_536;
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const TERMINATION_GRACE_MS = 1000;
 const validateSize = (value, max) => Number.isInteger(value) && value >= 1 && value <= max;
-const trimHistory = (history) => {
-  const bytes = Buffer.from(history);
-  if (bytes.byteLength <= MAX_HISTORY_BYTES) return history;
+const trimHistoryBytes = (bytes) => {
+  if (bytes.byteLength <= MAX_HISTORY_BYTES) return bytes.toString('utf8');
   let start = bytes.byteLength - MAX_HISTORY_BYTES;
   while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
   return bytes.subarray(start).toString('utf8');
+};
+// History is a chunk deque: appending is O(chunk) and the byte-exact 512 KiB
+// tail contract is applied when the text is materialized (snapshot path
+// only). A single accumulating string instead copies ~512 KiB per PTY chunk,
+// which is gigabytes of memcpy under a flood.
+const historyChunksReset = (session) => { session.historyChunks = []; session.historyBytes = 0; };
+const appendHistory = (session, visible) => {
+  const chunks = session.historyChunks;
+  chunks.push(visible);
+  session.historyBytes += Buffer.byteLength(visible);
+  while (session.historyBytes > MAX_HISTORY_BYTES + MAX_HISTORY_CHUNK_BYTES && chunks.length > 1) {
+    session.historyBytes -= Buffer.byteLength(chunks[0]);
+    chunks.shift();
+  }
+};
+const historyText = (session) => {
+  const bytes = Buffer.from(session.historyChunks.join(''));
+  // A dropped head chunk can split a UTF-8 sequence; skip leading
+  // continuation bytes exactly as the tail trim does.
+  let start = 0;
+  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
+  return trimHistoryBytes(bytes.subarray(start));
 };
 
 export function createTerminalRuntime({
@@ -181,30 +216,94 @@ export function createTerminalRuntime({
   };
 
   const snapshot = (session) => ({
-    t: 'snapshot', v: 3, s: session.id, q: session.sequence, history: session.history,
+    t: 'snapshot', v: 3, s: session.id, q: session.sequence, history: historyText(session),
     status: session.status, exitCode: session.exitCode, signal: session.signal,
     runtime, ptyBackend: session.backend,
   });
 
+  const lagOf = (attachment) => {
+    let lag = 0;
+    for (const entry of attachment.pendingAcks) lag += entry.bytes;
+    return lag;
+  };
+
+  // Send a snapshot to one attachment and account for its bytes like any
+  // other frame, so a client that attaches and never reads is bounded too.
+  const sendSnapshotTo = (connection, session) => {
+    const attachment = connection.attachments.get(session.id);
+    if (!attachment || attachment.initializing) return;
+    const snap = snapshot(session);
+    if (!send(connection.socket, snap)) return;
+    const bytes = Buffer.byteLength(snap.history) + 256;
+    attachment.sentBytes += bytes;
+    attachment.pendingAcks.push({ q: session.sequence, bytes });
+  };
+
   const publish = (session, event) => {
     session.sequence += 1;
     const message = { ...event, v: 3, s: session.id, q: session.sequence };
+    const isOutput = event.t === 'output';
     for (const connection of connections) {
       const attachment = connection.attachments.get(session.id);
       if (!attachment) continue;
-      if (attachment.initializing) attachment.pending.push(message);
-      else send(connection.socket, message);
+      if (attachment.initializing) { attachment.pending.push(message); continue; }
+      if (isOutput) {
+        const suppress = attachment.suppressed
+          || lagOf(attachment) > SEND_LAG_ENTER_BYTES
+          || (!attachment.ackedOnce && attachment.sentBytes > SEND_LAG_FALLBACK_BYTES);
+        if (suppress) {
+          // Sequence numbers keep advancing, so the next live frame this
+          // attachment receives gap-triggers its own resync.
+          attachment.suppressed = true;
+          continue;
+        }
+        if (!send(connection.socket, message)) continue;
+        const bytes = event.d.length;
+        attachment.sentBytes += bytes;
+        attachment.pendingAcks.push({ q: session.sequence, bytes });
+      } else {
+        send(connection.socket, message);
+      }
     }
   };
+
+  // An attachment recovers (lag drained) by acknowledgment: prune the
+  // acknowledged prefix, and if it was suppressed, resynchronize it with a
+  // snapshot before live output resumes.
+  const applyAck = (connection, sessionId, q) => {
+    const attachment = connection.attachments.get(sessionId);
+    if (!attachment || !Number.isFinite(q)) return;
+    attachment.ackedOnce = true;
+    let index = 0;
+    while (index < attachment.pendingAcks.length && attachment.pendingAcks[index].q <= q) index += 1;
+    if (index > 0) attachment.pendingAcks.splice(0, index);
+    if (attachment.suppressed && lagOf(attachment) <= SEND_LAG_EXIT_BYTES) {
+      attachment.suppressed = false;
+      const session = sessions.get(sessionId);
+      if (session) sendSnapshotTo(connection, session);
+    }
+  };
+
+  // The drain is sliced by bytes and wall time and yields between slices so a
+  // flood cannot monopolize the event loop: HTTP and other sockets keep
+  // being served while megabytes stream through. Small outputs (interactive
+  // typing) always finish synchronously in the first slice.
+  const DRAIN_SLICE_BYTES = 256 * 1024;
+  const DRAIN_SLICE_MS = 4;
 
   const drainEvents = (session) => {
     if (session.draining) return;
     session.draining = true;
-    try {
-      while (session.eventQueue.length > 0) {
+    const token = session.drainToken;
+    const step = () => {
+      let sliced = 0;
+      const deadline = Date.now() + DRAIN_SLICE_MS;
+      while (session.eventQueue.length > 0 && sliced < DRAIN_SLICE_BYTES && Date.now() < deadline) {
         const event = session.eventQueue.shift();
+        if (event.type === 'output') session.queueBytes -= event.data.length;
         if (event.process !== session.process) continue;
         if (event.type === 'output') {
+          sliced += event.data.length;
           const theme = consumeTerminalThemeQueries(session.pendingThemeControlSequence, event.data, {
             themeMode: session.themeMode,
             background: session.terminalBackground,
@@ -216,8 +315,10 @@ export function createTerminalRuntime({
           for (const response of theme.responses) session.process?.write(response);
           const sanitized = sanitizeTerminalHistoryChunk(session.pendingHistoryControlSequence, event.data);
           session.pendingHistoryControlSequence = sanitized.pending;
-          session.history = trimHistory(session.history + sanitized.visible);
-          session.lastActivity = Date.now();
+          appendHistory(session, sanitized.visible);
+          const now = Date.now();
+          session.lastActivity = now;
+          session.lastOutputAt = now;
           publish(session, { t: 'output', d: event.data, ...(sanitized.visible !== event.data ? { r: sanitized.visible } : {}) });
           // OSC 133 shell integration: detect command boundary markers
           if (!session.osc133) session.osc133 = new Osc133Scanner();
@@ -234,11 +335,18 @@ export function createTerminalRuntime({
           publish(session, { t: 'exit', exitCode: session.exitCode, signal: session.signal });
         }
       }
-    } finally { session.draining = false; }
+      if (session.eventQueue.length > 0) { setImmediate(step); return; }
+      session.draining = false;
+    };
+    step();
   };
 
   const wire = (session, ptyProcess) => {
-    ptyProcess.onData((data) => { session.eventQueue.push({ type: 'output', process: ptyProcess, data }); drainEvents(session); });
+    ptyProcess.onData((data) => {
+      session.eventQueue.push({ type: 'output', process: ptyProcess, data });
+      session.queueBytes += data.length;
+      drainEvents(session);
+    });
     ptyProcess.onExit(({ exitCode, signal }) => { session.eventQueue.push({ type: 'exit', process: ptyProcess, exitCode, signal }); drainEvents(session); });
   };
 
@@ -262,11 +370,13 @@ export function createTerminalRuntime({
   const startSession = async (session, { cwd, cols, rows, themeMode = 'dark', terminalBackground, terminalForeground, shell, loginShell }, clear = true) => {
     await validateCwd(cwd);
     const spawned = await spawnPty({ cwd, cols, rows, themeMode, shell, loginShell });
-    if (clear) { session.history = ''; session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; }
+    if (clear) { historyChunksReset(session); session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; }
     session.cwd = cwd; session.cols = cols; session.rows = rows; session.process = spawned.process;
     session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.status = 'running'; session.exitCode = null; session.signal = null;
     session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
-    session.lastActivity = Date.now(); session.eventQueue.length = 0;
+    session.lastActivity = Date.now();
+    // Invalidate any scheduled drain slice and drop its pending events.
+    session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
     wire(session, spawned.process);
   };
 
@@ -295,7 +405,7 @@ export function createTerminalRuntime({
     }
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
-      const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false, viewportDriver: null };
+      const session = existing ?? { id, sequence: 0, historyChunks: [], historyBytes: 0, pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], queueBytes: 0, draining: false, drainToken: 0, viewportDriver: null };
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
@@ -390,14 +500,19 @@ export function createTerminalRuntime({
       const session = sessions.get(id);
       if (!session) { send(socket, { t: 'error', v: 3, s: id, code: 'SESSION_NOT_FOUND', message: 'Terminal session not found', fatal: true }); return; }
       if (message.t === 'attach') {
-        const attachment = { initializing: true, pending: [], cols: 0, rows: 0 };
+        const attachment = { initializing: true, pending: [], cols: 0, rows: 0, pendingAcks: [], ackedOnce: false, suppressed: false, sentBytes: 0 };
         if (typeof message.cols === 'number' && message.cols > 0) attachment.cols = Math.min(message.cols, 1000);
         if (typeof message.rows === 'number' && message.rows > 0) attachment.rows = Math.min(message.rows, 500);
         connection.attachments.set(id, attachment);
         const initial = snapshot(session);
-        send(socket, initial);
+        const sentInitial = send(socket, initial);
         for (const event of attachment.pending) if (event.q > initial.q) send(socket, event);
         attachment.pending.length = 0; attachment.initializing = false;
+        if (sentInitial) {
+          const bytes = Buffer.byteLength(initial.history) + 256;
+          attachment.sentBytes += bytes;
+          attachment.pendingAcks.push({ q: initial.q, bytes });
+        }
         // In DRIVEN mode, send the current driver info; don't recompute (PTY is driver-sized)
         if (session.viewportDriver) {
           send(socket, { t: 'driverChanged', v: 3, s: session.id, driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
@@ -444,10 +559,15 @@ export function createTerminalRuntime({
         return;
       }
       if (message.t === 'resync') {
-        send(socket, snapshot(session));
+        sendSnapshotTo(connection, session);
         if (session.viewportDriver) {
           send(socket, { t: 'driverChanged', v: 3, s: session.id, driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
         }
+        return;
+      }
+      if (message.t === 'ack') {
+        // Client-applied sequence for one session: {t:'ack', v:3, s, q}.
+        if (Number.isFinite(message.q)) applyAck(connection, id, message.q);
         return;
       }
       if (message.t === 'write') {
@@ -561,7 +681,8 @@ export function createTerminalRuntime({
       const oldProcess = session.process;
       const spawned = await spawnPty({ cwd, cols, rows, themeMode, shell, loginShell });
       session.process = spawned.process; session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.cwd = cwd; session.cols = cols; session.rows = rows;
-      session.history = ''; session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; session.status = 'running'; session.exitCode = null; session.signal = null; session.eventQueue.length = 0;
+      historyChunksReset(session); session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; session.status = 'running'; session.exitCode = null; session.signal = null;
+      session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
       session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
        wire(session, spawned.process); void terminateProcess(oldProcess); publish(session, { t: 'restarted', history: '' });
     });

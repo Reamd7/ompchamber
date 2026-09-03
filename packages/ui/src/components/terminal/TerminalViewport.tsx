@@ -112,10 +112,17 @@ type Props = {
   onZoomChange?: (zoom: number) => void;
   autoFocus?: boolean;
   isVisible?: boolean;
+  /**
+   * Renderer-consumption signal: called with the server sequence of the last
+   * chunk the Ghostty renderer has fully consumed. Backpressure for the
+   * terminal stream acks on this, not on ws receipt — otherwise a renderer
+   * that falls behind lets the browser buffer the flood unboundedly.
+   */
+  onConsumed?: (sequence: number) => void;
 };
 const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   sessionKey, chunks, onInput, onResize, theme, fontFamily, fontSize, className,
-  enableTouchScroll = false, onZoomChange, autoFocus = true, isVisible = true,
+  enableTouchScroll = false, onZoomChange, autoFocus = true, isVisible = true, onConsumed,
 }, ref) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
   // Forced-ownership mode flag: when a device has claimed the grid, non-owners
@@ -133,6 +140,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   const safeResetRef = React.useRef(getGhosttySafeResetSequence(theme.background));
   const writingRef = React.useRef(false);
   // Incremented whenever the replay stream restarts, so a write completing from
+  const queuedSequenceRef = React.useRef<number | null>(null);
+  const onConsumedRef = React.useRef(onConsumed);
+  onConsumedRef.current = onConsumed;
   // before the restart cannot clear the in-flight flag of a newer write.
   const writeEpochRef = React.useRef(0);
   const visibleRef = React.useRef(isVisible);
@@ -279,6 +289,14 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       terminal.write(rewritten.data, () => {
         if (terminalRef.current !== terminal || writeEpochRef.current !== epoch) return;
         writingRef.current = false;
+        // Report renderer consumption when the queue is fully drained: this
+        // is the signal the transport acks on, so a slow renderer applies
+        // backpressure instead of buffering the flood in the browser.
+        const sequence = queuedSequenceRef.current;
+        if (sequence != null && !writeQueueRef.current) {
+          queuedSequenceRef.current = null;
+          onConsumedRef.current?.(sequence);
+        }
         if (writeQueueRef.current) flush();
       });
     } catch (error) {
@@ -460,6 +478,8 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     const isReplay = previousIndex < 0;
     const pending = previousIndex >= 0 ? chunks.slice(previousIndex + 1) : chunks;
     writeQueueRef.current += pending.map((chunk) => isReplay ? (chunk.replayData ?? chunk.data) : chunk.data).join('');
+    const pendingSequence = pending.at(-1)?.sequence;
+    if (pendingSequence !== undefined) queuedSequenceRef.current = pendingSequence;
     lastChunkRef.current = chunks.at(-1)?.id ?? null;
     flush();
   }, [chunks, flush, ready, recreateRenderer]);

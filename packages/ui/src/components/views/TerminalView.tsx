@@ -21,7 +21,7 @@ import { extractTerminalPreviewUrl, isTerminalPreviewUrlAvailable } from '@/lib/
 import { useI18n } from '@/lib/i18n';
 import { PROJECT_ACTION_ICON_MAP, type ProjectActionIconKey } from '@/lib/projectActions';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
-import { sendTerminalViewport, claimTerminalViewport, releaseTerminalViewport, getTerminalConnectionId } from '@/lib/terminalApi';
+import { sendTerminalViewport, claimTerminalViewport, releaseTerminalViewport, getTerminalConnectionId, ackTerminalConsumed } from '@/lib/terminalApi';
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 
 type TerminalViewProps = {
@@ -1331,6 +1331,10 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                             enableTouchScroll={useTouchTerminalInput}
                             autoFocus={isTerminalVisible}
                             isVisible={isTerminalVisible}
+                            onConsumed={(sequence) => {
+                                const terminalId = activeTerminalIdRef.current;
+                                if (terminalId) ackTerminalConsumed(terminalId, sequence);
+                            }}
                         />
                     ) : null}
                 </div>
