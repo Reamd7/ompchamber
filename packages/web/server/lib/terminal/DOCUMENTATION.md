@@ -34,6 +34,15 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 - Send-side flow control bounds server memory per attachment: Bun's server WebSocket exposes no send-buffer signal and buffers unbounded data per socket, so each attachment tracks sent-but-unacknowledged bytes (output frames and snapshots). Past 4 MiB the attachment is suppressed — output frames are skipped for it while sequence numbers keep advancing, so its next live frame gap-triggers the client's existing resync — and once its lag drains below 1 MiB by acknowledgment it receives a snapshot and live output resumes. Connections that never acknowledge are suppressed after 8 MiB as a fail-safe. Non-output events (exit, resized, restarted, command-finished) are never suppressed. A flood therefore completes at PTY speed, other attachments and HTTP keep their service, and server memory stays bounded regardless of output volume.
 - Restarts are serialized per terminal. Each restart spawns and wires the replacement before terminating the old process, retaining the terminal ID.
 - Close uses SIGTERM with bounded SIGKILL escalation. Force-kill, idle cleanup, and runtime shutdown terminate process groups immediately where supported. Removal explicitly sends a fatal scoped closure and evicts client projections even when a PTY backend fails to emit `onExit`; attached terminals are not considered idle.
+- Windows PTY spawn prefers the `conpty.dll` bundled with node-pty's
+  prebuilds (a current Terminal-era build) over the OS-built-in
+  pseudoconsole: measured 3x read throughput on output floods (42 vs 14
+  MiB/s standalone; 43.6 vs 7.4 MiB/s end-to-end). The DLL's presence is
+  resolved once at runtime start; a packaging gap silently falls back to
+  the built-in path. The bundled DLL probes primary device attributes
+  (`ESC [ c`) during its own startup handshake, so the theme-responder only
+  answers DA queries on the classic backend (`session.respondPrimaryDA`) —
+  answering the DLL's probe wrote the response into the shell's input line.
 
 ## Security And Relay
 

@@ -13,6 +13,7 @@ import { Osc133Scanner, buildZshOsc133Wrapper, buildBashOsc133Rc } from './shell
 import * as osModule from 'node:os';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
+import { createRequire } from 'node:module';
 
 const MAX_SESSIONS = 20;
 const MAX_HISTORY_BYTES = 512 * 1024;
@@ -91,6 +92,21 @@ export function createTerminalRuntime({
     return ptyProviderPromise;
   };
 
+  // Windows: the bundled conpty.dll lives next to node-pty's native module
+  // (prebuilds/win32-*/conpty/conpty.dll). Resolve its presence once; when a
+  // packaging gap omits it, spawnPty silently falls back to the OS-built-in
+  // pseudoconsole instead of failing every terminal.
+  let ptyDllUsable = false;
+  if (process.platform === 'win32') {
+    try {
+      const pkgRoot = path.dirname(createRequire(import.meta.url).resolve('node-pty/package.json'));
+      const arch = process.arch === 'arm64' ? 'win32-arm64' : 'win32-x64';
+      ptyDllUsable = fs.existsSync(path.join(pkgRoot, 'prebuilds', arch, 'conpty', 'conpty.dll'));
+    } catch {
+      ptyDllUsable = false;
+    }
+  }
+
   const spawnPty = async ({ cwd, cols, rows, themeMode, shell, loginShell }) => {
     const provider = await getPtyProvider();
     const resolvedShell = await shellResolver.resolve(shell);
@@ -109,10 +125,20 @@ export function createTerminalRuntime({
         stripAppImageArgv0Leak(env);
         const shellIntegration = injectShellIntegration({ shellId: resolvedShell.id, executable, args, env, loginShell });
         const launch = resolveLinuxPtyLaunch(executable, shellIntegration ? shellIntegration.args : args);
-        const options = { name: 'xterm-256color', cwd, cols, rows, env, ...(process.platform === 'win32' ? { useConpty: true } : {}) };
+        // Windows: prefer the conpty.dll bundled with node-pty (a current
+        // Terminal-era build) over the OS-built-in pseudoconsole — measured
+        // 3x read throughput on output floods (42 vs 14 MiB/s). If the DLL
+        // is missing (e.g. a packaging gap), fall back to the built-in path.
+        const options = {
+          name: 'xterm-256color', cwd, cols, rows, env,
+          ...(process.platform === 'win32' ? { useConptyDll: ptyDllUsable } : {}),
+        };
         const process_ = provider.spawn(launch.executable, launch.args, options);
         if (shellIntegration) shellIntegration.scheduleCleanup();
-        return { process: process_, backend: provider.backend, shell: resolvedShell.id, loginShell };
+        return {
+          process: process_, backend: provider.backend, shell: resolvedShell.id, loginShell,
+          conptyDll: process.platform === 'win32' && ptyDllUsable,
+        };
       } catch (error) { lastError = error; }
     }
     throw lastError ?? new Error('No executable shell found');
@@ -309,7 +335,7 @@ export function createTerminalRuntime({
             background: session.terminalBackground,
             foreground: session.terminalForeground,
             modeEnabled: session.themeModeEnabled,
-          }, { respondToPrimaryDeviceAttributes: true });
+          }, { respondToPrimaryDeviceAttributes: session.respondPrimaryDA !== false });
           session.pendingThemeControlSequence = theme.pending;
           session.themeModeEnabled = theme.modeEnabled;
           for (const response of theme.responses) session.process?.write(response);
@@ -377,6 +403,11 @@ export function createTerminalRuntime({
     session.lastActivity = Date.now();
     // Invalidate any scheduled drain slice and drop its pending events.
     session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
+    // The bundled conpty.dll probes primary device attributes during its own
+    // startup handshake; answering that probe writes the response into the
+    // shell's input line. Only answer DA probes on the classic backend, where
+    // they can only come from the shell itself (Fish's startup query).
+    session.respondPrimaryDA = !spawned.conptyDll;
     wire(session, spawned.process);
   };
 
@@ -683,6 +714,7 @@ export function createTerminalRuntime({
       session.process = spawned.process; session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.cwd = cwd; session.cols = cols; session.rows = rows;
       historyChunksReset(session); session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; session.status = 'running'; session.exitCode = null; session.signal = null;
       session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
+      session.respondPrimaryDA = !spawned.conptyDll;
       session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
        wire(session, spawned.process); void terminateProcess(oldProcess); publish(session, { t: 'restarted', history: '' });
     });
