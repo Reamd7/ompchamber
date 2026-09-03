@@ -3,6 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
+- **Chat: session links now open the right conversation right away.** Opening a `?session=…` link on a fresh app load could land on a blank transcript because the app guessed the currently open folder before it knew which folder the session belonged to, recovering only later on its own. The link now waits for the folder lookup and opens the conversation immediately.
 - **Chat: Stop now works on sessions that stopped responding.** A session stuck mid-run — for example after tool errors filled the transcript — ignored the stop button until you restarted the app, and only sending a new message could nudge it back to life. Stop now settles the session as idle immediately (or within seconds when a turn's teardown genuinely hangs), and the next message rebuilds the session from its saved history.
 
 ## [1.25.0] - 2026-09-02

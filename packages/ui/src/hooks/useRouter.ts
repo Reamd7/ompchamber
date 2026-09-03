@@ -1,5 +1,6 @@
 import React from 'react';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { parseRoute, updateBrowserURL, hasRouteParams } from '@/lib/router';
 import type { RouteState, AppRouteState } from '@/lib/router';
@@ -16,6 +17,32 @@ function isVSCodeContext(): boolean {
   }
   const win = window as { __VSCODE_CONFIG__?: unknown };
   return win.__VSCODE_CONFIG__ !== undefined;
+}
+
+/**
+ * Resolve the owning directory for a URL-named session before selection.
+ *
+ * Local indexes answer first. When nothing local knows the session yet (cold
+ * `?session=` link before the global store's first load), awaiting the global
+ * sessions authority names the owning directory so selection never routes
+ * through a guessed active directory that `adoptAuthoritativeSessionDirectory`
+ * would have to correct later. The load is single-flight with the mount-time
+ * global load, so this awaits the same promise rather than issuing a second
+ * request.
+ *
+ * Returns null when even the global lookup cannot name the session; callers
+ * then select without a hint and keep the guess-and-adopt behavior.
+ */
+export async function resolveDeepLinkSessionDirectory(
+  sessionId: string,
+  loadGlobalSessions: () => Promise<void> = async () => {
+    await refreshGlobalSessions();
+  },
+): Promise<string | null> {
+  const local = useSessionUIStore.getState().getDirectoryForSession(sessionId);
+  if (local) return local;
+  await loadGlobalSessions();
+  return useSessionUIStore.getState().getDirectoryForSession(sessionId);
 }
 
 /**
@@ -37,6 +64,7 @@ function isVSCodeContext(): boolean {
  *   `isEmbeddedSessionChat()` starts returning false, breaking subsequent
  *   "Open subtask" clicks.
  */
+
 export function useRouter(): void {
   const isVSCode = React.useMemo(() => isVSCodeContext(), []);
   // Captured once at mount: the iframe's embedded-ness never changes during
@@ -46,6 +74,8 @@ export function useRouter(): void {
   // Track initialization to avoid duplicate applies
   const initializedRef = React.useRef(false);
   const isApplyingRouteRef = React.useRef(false);
+  // Latest route intent that arrived while another apply was still running.
+  const pendingRouteRef = React.useRef<RouteState | null>(null);
 
   // Get store actions (stable references)
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
@@ -60,6 +90,10 @@ export function useRouter(): void {
   const applyRoute = React.useCallback(
     async (route: RouteState) => {
       if (isApplyingRouteRef.current) {
+        // Applying a cold deep link can await the global sessions load. Queue
+        // the latest intent instead of dropping it, or the URL and the stores
+        // would disagree until the next navigation.
+        pendingRouteRef.current = route;
         return;
       }
 
@@ -70,7 +104,7 @@ export function useRouter(): void {
         if (route.sessionId) {
           const currentSessionId = useSessionUIStore.getState().currentSessionId;
           if (route.sessionId !== currentSessionId) {
-            const directoryHint = useSessionUIStore.getState().getDirectoryForSession(route.sessionId);
+            const directoryHint = await resolveDeepLinkSessionDirectory(route.sessionId);
             setCurrentSession(route.sessionId, directoryHint);
           }
         }
@@ -99,6 +133,11 @@ export function useRouter(): void {
         }
       } finally {
         isApplyingRouteRef.current = false;
+        const pending = pendingRouteRef.current;
+        pendingRouteRef.current = null;
+        if (pending) {
+          void applyRoute(pending);
+        }
       }
     },
     [setCurrentSession, setActiveSurface, setSettingsDialogOpen, setSettingsPage, navigateToDiff]
