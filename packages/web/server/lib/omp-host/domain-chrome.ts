@@ -196,7 +196,7 @@ export const createDomainChrome = ({ publishFor, now = () => Date.now() }: Domai
       slice.widgets.set(key, {
         key,
         lines,
-        ...(PLACEMENTS.has(placement) ? { placement } : {}),
+        ...(placement !== undefined && PLACEMENTS.has(placement) ? { placement } : {}),
         sessionId,
         updatedAt: now(),
       });
@@ -205,7 +205,7 @@ export const createDomainChrome = ({ publishFor, now = () => Date.now() }: Domai
     publish(directory, {
       kind: 'widget' as const,
       key,
-      ...(cleared ? {} : { lines, ...(PLACEMENTS.has(placement) ? { placement } : {}) }),
+      ...(cleared ? {} : { lines, ...(placement !== undefined && PLACEMENTS.has(placement) ? { placement } : {}) }),
     });
   };
 
@@ -270,7 +270,7 @@ export const registerChromeDomainRoutes = (
     if (features?.['extensionChrome.v1'] !== true) return featureUnavailable('extensionChrome.v1');
     const url = new URL(request.url);
     const directory = url.searchParams.get('directory');
-    if (!directory) return json({ error: 'directory is required' }, { status: 400 });
+    if (!directory || !chrome) return json({ error: 'directory is required' }, { status: 400 });
     return json(chrome.snapshot(directory));
   });
 };

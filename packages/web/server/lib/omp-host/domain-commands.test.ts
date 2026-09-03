@@ -41,8 +41,8 @@ describe('projectOmpCommand', () => {
     expect(projectOmpCommand({ description: 'x', source: 'file' })).toBeNull();
     expect(projectOmpCommand(null)).toBeNull();
     const projected = projectOmpCommand({ name: 'a', aliases: ['', 'b'], source: 'skill' });
-    expect(projected.aliases).toEqual(['b']);
-    expect(projected.description).toBeUndefined();
+    expect(projected?.aliases).toEqual(['b']);
+    expect(projected?.description).toBeUndefined();
   });
 });
 
@@ -72,7 +72,7 @@ describe('listOmpCommands aggregation', () => {
       loadSkills: async () => [{ name: 'web', description: 'web skill', filePath: '/skills/web/SKILL.md', baseDir: '/skills/web', source: 'user' }],
       loadAvailable: async (session) => {
         seenCwds.push(session.sessionManager.getCwd());
-        expect(session.skillsSettings.enableSkillCommands).toBe(true);
+        expect(session.skillsSettings?.enableSkillCommands).toBe(true);
         return [
           { name: 'review', description: 'project review command', source: 'file' },
           { name: 'skill:web', description: 'Run web skill', source: 'skill' },

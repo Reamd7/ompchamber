@@ -206,7 +206,7 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
       ];
       const payload = buildModelsPayload(boot, { models });
       expect(payload.models).toHaveLength(2);
-      expect(payload.models[0]).toEqual({
+      expect(payload.models?.[0]).toEqual({
         provider: 'prov',
         id: 'm1',
         name: 'Model One',
@@ -217,8 +217,8 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
       });
       // Non-reasoning models expose an empty effort surface, mirroring
       // the SDK's getSupportedEfforts.
-      expect(payload.models[1].thinking).toEqual({ supported: [], defaultLevel: null });
-      expect(payload.models[1].reasoning).toBe(false);
+      expect(payload.models?.[1]?.thinking).toEqual({ supported: [], defaultLevel: null });
+      expect(payload.models?.[1]?.reasoning).toBe(false);
     } finally {
       await disarm(env);
     }
@@ -255,7 +255,7 @@ describe('credential sanitization (R9: GET + PUT echo)', () => {
         changes: { 'hindsight.apiToken': 'super-secret-token-xyz' },
       });
       expect(result.status).toBe(200);
-      expect(result.body.applied['hindsight.apiToken']).toEqual({ configured: true });
+      expect(result.body.applied?.['hindsight.apiToken']).toEqual({ configured: true });
       expect(JSON.stringify(result.body)).not.toContain('super-secret-token-xyz');
     } finally {
       await disarm(env);
@@ -284,7 +284,7 @@ describe('credential sanitization (R9: GET + PUT echo)', () => {
         changes: { 'hindsight.apiToken': null },
       });
       expect(cleared.status).toBe(200);
-      expect(cleared.body.applied['hindsight.apiToken']).toEqual({ configured: false });
+      expect(cleared.body.applied?.['hindsight.apiToken']).toEqual({ configured: false });
       expect(JSON.stringify(cleared.body)).not.toContain('super-secret-token-xyz');
       expect(buildSettingsPayload(boot).keys['hindsight.apiToken'].configured).toBe(false);
     } finally {
@@ -327,7 +327,7 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
         changes: { 'modelRoles.default': 'prov/proj-model' },
       });
       expect(result.status).toBe(200);
-      expect(result.body.applied['modelRoles.default']).toBe('prov/proj-model');
+      expect(result.body.applied?.['modelRoles.default']).toBe('prov/proj-model');
 
       const projectYaml = readProjectConfig(dirB);
       expect(projectYaml).toContain('modelRoles:');
@@ -405,7 +405,7 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
         changes: { 'modelRoles.smol': 'prov/new-smol' },
       });
       expect(result.status).toBe(200);
-      expect(result.body.applied['modelRoles.smol']).toBe('prov/new-smol');
+      expect(result.body.applied?.['modelRoles.smol']).toBe('prov/new-smol');
 
       // The editor's immediate re-read reflects the write.
       const fresh = await store.settingsFor(dirB);
@@ -521,8 +521,8 @@ describe('legacy defaultModel migration (01 §5.8, R12)', () => {
       expect(imported.imported).toBe(true);
       expect(imported.role).toBe('default');
       expect(imported.scope).toBe('global');
-      expect(imported.audit.originalValue).toBe('anthropic/claude-legacy');
-      expect(imported.audit.importedRole).toBe('default');
+      expect(imported.audit?.originalValue).toBe('anthropic/claude-legacy');
+      expect(imported.audit?.importedRole).toBe('default');
       expect(boot.getModelRole('default')).toBe('anthropic/claude-legacy');
 
       const again = await importLegacyDefaultModel(boot, 'prov/other');
@@ -587,21 +587,21 @@ describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
       expect(published.length).toBe(3);
 
       const last = published.at(-1);
-      expect(last.type).toBe('omp.settings.updated');
-      expect(last.payload).toEqual({
+      expect(last?.type).toBe('omp.settings.updated');
+      expect(last?.payload).toEqual({
         revision: 3,
         keys: ['hindsight.apiToken'],
         origin: 'web',
       });
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-      expect((last.eventScope as { directory?: string }).directory).toBe(store.bootDirectory);
+      expect((last?.eventScope as { directory?: string }).directory).toBe(store.bootDirectory);
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-      expect((last.eventScope as { durable?: boolean }).durable).toBe(true);
+      expect((last?.eventScope as { durable?: boolean }).durable).toBe(true);
       // Event payloads never carry credential values.
       expect(JSON.stringify(published)).not.toContain('tok');
       for (let i = 1; i < published.length; i += 1) {
         // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-        expect(((published[i] as { payload: { revision?: number } }).payload.revision)).toBeGreaterThan(((published[i - 1] as { payload: { revision?: number } }).payload.revision));
+        expect(((published[i] as { payload: { revision?: number } }).payload.revision)).toBeGreaterThan(((published[i - 1] as { payload: { revision?: number } }).payload.revision ?? 0));
       }
     } finally {
       await disarm(env);
@@ -664,12 +664,12 @@ describe('buildSettingsPayload (06 §5.2)', () => {
       const imageProtocolKey = Object.values(payload.keys).find(
         (entry) => entry.ui?.condition === 'hasImageProtocol',
       );
-      expect(imageProtocolKey.excluded).toBe('terminal-capability');
+      expect(imageProtocolKey?.excluded).toBe('terminal-capability');
 
       // modelRoles record view with per-role source.
-      expect(payload.keys.modelRoles.type).toBe('record');
-      expect(payload.keys.modelRoles.modelRoleStorage).toBe('global');
-      expect(payload.keys.modelRoles.roles.default).toEqual({
+      expect(payload.keys.modelRoles?.type).toBe('record');
+      expect(payload.keys.modelRoles?.modelRoleStorage).toBe('global');
+      expect(payload.keys.modelRoles?.roles?.default).toEqual({
         value: null,
         source: 'default',
         editable: true,
@@ -693,8 +693,8 @@ describe('buildSettingsPayload (06 §5.2)', () => {
       const advisorKey = Object.values(payload.keys).find(
         (entry) => entry.ui?.condition === 'advisorEnabled',
       );
-      expect(advisorKey.hidden).toBe(true);
-      expect(advisorKey.editable).toBe(false);
+      expect(advisorKey?.hidden).toBe(true);
+      expect(advisorKey?.editable).toBe(false);
       // Unknown/unevaluated conditions fall back to visible (conservative).
     expect(payload.keys['compaction.methodOrder'].hidden).toBeUndefined();
     } finally {
@@ -721,7 +721,7 @@ describe('route mounting', () => {
       'PUT /omp/settings',
     ]);
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    const byRoute = (method: string, pattern: string) => routes.find((r: { method: string; pattern: string; handler: (request: Request, ctx?: ModelsCtxLite) => Promise<Response> }) => r.method === method && r.pattern === pattern).handler as (request: Request, ctx?: ModelsCtxLite) => Promise<Response>;
+    const byRoute = (method: string, pattern: string) => (routes.find((r: { method: string; pattern: string; handler: (request: Request, ctx?: ModelsCtxLite) => Promise<Response> }) => r.method === method && r.pattern === pattern)?.handler ?? ((_request: Request) => Promise.reject(new Error('route missing')))) as (request: Request, ctx?: ModelsCtxLite) => Promise<Response>;
     try {
       const modelsResponse = await byRoute('GET', '/omp/models')(
         new Request(`http://host/omp/models?directory=${encodeURIComponent(dirB)}`),

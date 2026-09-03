@@ -358,7 +358,9 @@ export class UriTokenService {
       return { ok: false, response: json({ error: 'too-large', size: bytes.byteLength }, { status: 413 }) };
     }
     entry.reads += 1;
-    if (entry.reads >= entry.maxReads) this.#entries.delete(id);
+    // SAFETY: `found` resolved through this exact id, so it is a live key.
+    const liveKey = id as string;
+    if (entry.reads >= entry.maxReads) this.#entries.delete(liveKey);
     return {
       ok: true,
       bytes,
@@ -421,7 +423,11 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
   if (u.length > MAX_URL_LENGTH) {
     return json({ error: 'url-too-long', limit: MAX_URL_LENGTH }, { status: 400 });
   }
-  const scheme = u.match(/^[a-z][a-z0-9+.-]*/i)[0].toLowerCase();
+  // The regex is a prefix match on an already length-checked string, so
+  // the match always exists here; guard for the type checker anyway.
+  const schemeMatch = u.match(/^[a-z][a-z0-9+.-]*/i);
+  if (!schemeMatch) return json({ error: 'invalid-url' }, { status: 400 });
+  const scheme = schemeMatch[0].toLowerCase();
   if (!resolveRouter.canHandle(u)) {
     // Registered handlers only — the MCP resource fallback is deliberately
     // not exposed (§5.2.1: 未知 scheme → 404 unknown-scheme).
@@ -465,7 +471,7 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
   // real mime + real size + token — so the viewer streams bytes via the
   // token content endpoint instead of rendering the placeholder (§5.2.4).
   const binaryMime = typeof sourcePath === 'string' ? BINARY_MIME_BY_EXT.get(extensionOf(sourcePath)) : undefined;
-  if (binaryMime) {
+  if (binaryMime && typeof sourcePath === 'string') {
     const stat = await fs.stat(sourcePath).catch((): null => null);
     const binaryToken = tokens.issue({
       resourceUrl: resource.url,
@@ -626,7 +632,9 @@ export const buildSessionSubtree = (sessionID: string, engineRegistryData: Sessi
   }
   const pending = [target.id];
   while (pending.length > 0) {
-    for (const child of childrenOf.get(pending.pop()) ?? []) {
+    const next = pending.pop();
+    if (next === undefined) break;
+    for (const child of childrenOf.get(next) ?? []) {
       if (!lineage.has(child)) {
         lineage.add(child);
         pending.push(child);
@@ -861,7 +869,7 @@ export interface TreeUpdatedPayload {
  * commits. Not wired here.
  */
 export const treeUpdatedPayload = ({ leafId, kind, entryId }: { leafId?: string | null; kind?: string; entryId?: string } = {}): TreeUpdatedPayload => {
-  if (!['navigate', 'label', 'summary'].includes(kind)) {
+  if (kind !== 'navigate' && kind !== 'label' && kind !== 'summary') {
     throw new TypeError('treeUpdatedPayload: kind must be navigate|label|summary');
   }
   return {
@@ -953,9 +961,9 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
     directory,
     agentId: ref.id,
     displayName: ref.displayName ?? ref.id,
-    kind: ref.kind,
+    kind: ref.kind ?? 'sub',
     ...(ref.parentId ? { parentId: ref.parentId } : {}),
-    status: status ?? ref.status,
+    status: status ?? ref.status ?? 'historical',
     createdAt: ref.createdAt ?? 0,
     lastActivity: ref.lastActivity ?? 0,
     ...(ref.activity ? { activity: ref.activity } : {}),
@@ -1259,9 +1267,9 @@ export interface AgentRunActionBody {
 export interface AgentRunActionInput {
   aggregator: { row(sessionID: string, agentId: string): OmpAgentRun | null };
   descriptors: ParkedAgentDescriptors;
-  actions?: AgentRunActions;
-  sessionID?: string;
-  agentId?: string;
+  actions: AgentRunActions;
+  sessionID: string;
+  agentId: string;
   directory?: string | null;
   body?: AgentRunActionBody;
 }
@@ -1288,10 +1296,11 @@ export const handleAgentRunAction = async ({
   if (directory && normalizeDirectoryKey(directory) !== row.directory) {
     return json({ error: 'agent-run-not-found' }, { status: 404 });
   }
-  const hook = (name: 'revive' | 'kill' | 'chat') =>
-    typeof actions?.[name] === 'function'
-      ? null
-      : json({ error: 'hook-unavailable', hook: name }, { status: 500 });
+  const hook = <K extends 'revive' | 'kill' | 'chat'>(name: K) => {
+    const fn = actions[name];
+    // SAFETY: the typeof guard proved the member is the callable arm.
+    return typeof fn === 'function' ? { fn: fn as Required<AgentRunActions>[K] } : null;
+  };
   if (body.kind === 'revive') {
     if (row.status === 'historical') {
       // R2-M5: disk rows are transcript-view only, forever historical until
@@ -1305,18 +1314,18 @@ export const handleAgentRunAction = async ({
     if (!descriptor) {
       return json({ error: 'reviver-unavailable', revivable: false }, { status: 409 });
     }
-    const missing = hook('revive');
-    if (missing) return missing;
-    await actions.revive(descriptor, row);
+    const reviveHook = hook('revive');
+    if (!reviveHook) return json({ error: 'hook-unavailable', hook: 'revive' }, { status: 500 });
+    await reviveHook.fn(descriptor, row);
     return json({ ok: true, status: 'running' });
   }
   if (body.kind === 'kill') {
     if (row.status === 'historical') {
       return json({ error: 'historical', revivable: false }, { status: 409 });
     }
-    const missingKill = hook('kill');
-    if (missingKill) return missingKill;
-    await actions.kill(row);
+    const killHook = hook('kill');
+    if (!killHook) return json({ error: 'hook-unavailable', hook: 'kill' }, { status: 500 });
+    await killHook.fn(row);
     return json({ ok: true, status: 'aborted' });
   }
   if (body.kind === 'chat') {
@@ -1337,13 +1346,13 @@ export const handleAgentRunAction = async ({
       if (!descriptor) {
         return json({ error: 'reviver-unavailable', revivable: false }, { status: 409 });
       }
-      const missingRevive = hook('revive');
-      if (missingRevive) return missingRevive;
-      await actions.revive(descriptor, row);
+      const reviveHook = hook('revive');
+      if (!reviveHook) return json({ error: 'hook-unavailable', hook: 'revive' }, { status: 500 });
+      await reviveHook.fn(descriptor, row);
     }
-    const missingChat = hook('chat');
-    if (missingChat) return missingChat;
-    await actions.chat(row, { text: body.text, mode });
+    const chatHook = hook('chat');
+    if (!chatHook) return json({ error: 'hook-unavailable', hook: 'chat' }, { status: 500 });
+    await chatHook.fn(row, { text: body.text, mode });
     return json({ ok: true, status: 'running' });
   }
   return json({ error: 'invalid-kind' }, { status: 400 });
@@ -1435,6 +1444,9 @@ export const handleArtifactsList = async ({ directory, sessionID, filesFor }: { 
   if (typeof sessionID !== 'string' || sessionID.length === 0) {
     return json({ error: 'session-required' }, { status: 400 });
   }
+  if (typeof filesFor !== 'function') {
+    return json({ error: 'hook-unavailable', hook: 'localFiles' }, { status: 500 });
+  }
   const result = await filesFor(sessionID, directory);
   if (!result) return json({ error: 'session-not-found' }, { status: 404 });
   const files = normalizedArtifactsRows(result.files)
@@ -1469,7 +1481,8 @@ export interface UriRequestBody {
 
 const readJsonBody = async (request: Request): Promise<UriRequestBody> => {
   try {
-    return await request.json();
+    // SAFETY: handlers below runtime-validate the fields they read.
+    return (await request.json()) as UriRequestBody;
   } catch {
     return {};
   }
@@ -1621,19 +1634,26 @@ export const createUriDomain = ({
       // Only reachable with uri.v1 flipped on but no engine hook wired.
       return json({ error: 'hook-unavailable', hook: 'localOptionsFor' }, { status: 500 });
     }
-    return handleUriResolve({ body, localOptionsFor, tokens, ...(router ? { router } : {}) });
+    return handleUriResolve({ body: body ?? undefined, localOptionsFor, tokens, ...(router ? { router } : {}) });
   };
-  const artifactsList = ({ directory, sessionID }: { directory: string; sessionID: string }) => {
+  const artifactsList = ({ directory, sessionID }: { directory?: string | null; sessionID?: string | null }) => {
     if (typeof localFiles !== 'function') {
       // Only reachable with artifacts flipped on but no engine hook wired.
       return json({ error: 'hook-unavailable', hook: 'localFiles' }, { status: 500 });
     }
     return handleArtifactsList({ directory, sessionID, filesFor: localFiles });
   };
-  const uriOpen = async ({ body, directory }: { body?: { token?: string }; directory?: string }) => tokens.open(body?.token, { directory });
-  const uriInfo = ({ query, directory }: { query?: { get?: (k: string) => string | null; token?: string }; directory?: string }) => tokens.describe(query?.get?.('token') ?? query?.token, { directory });
-  const uriContent = async ({ id, directory }: { id: string; directory?: string }) => {
-    const result = await tokens.openRaw(id, { directory });
+  const uriOpen = async ({ body, directory }: { body?: UriRequestBody | null; directory?: string | null }) => {
+    const token = typeof body?.token === 'string' ? body.token : undefined;
+    return tokens.open(token, { directory: directory ?? undefined });
+  };
+  const uriInfo = ({ query, directory }: { query?: URLSearchParams | null; directory?: string | null }) => {
+    const token = query?.get('token') ?? undefined;
+    return tokens.describe(token, { directory: directory ?? undefined });
+  };
+  const uriContent = async ({ id, directory }: { id?: string | null; directory?: string | null }) => {
+    if (typeof id !== 'string' || !id) return json({ error: 'token-required' }, { status: 400 });
+    const result = await tokens.openRaw(id, { directory: directory ?? undefined });
     if (result.ok === false) return result.response;
     return new Response(result.bytes, {
       status: 200,
@@ -1646,16 +1666,17 @@ export const createUriDomain = ({
       },
     });
   };
-  const sessionTree = async ({ directory }: { directory?: string }) =>
-    buildSessionTree((await sessionTreeData?.(directory)) ?? []);
-  const entryTree = async ({ sessionID, directory }: { sessionID?: string; directory?: string }) => {
-    const found = await entryTreeFor?.(sessionID, directory);
+  const sessionTree = async ({ directory }: { directory?: string | null }) =>
+    buildSessionTree((await sessionTreeData?.(directory ?? null)) ?? []);
+  const entryTree = async ({ sessionID, directory }: { sessionID?: string; directory?: string | null }) => {
+    if (typeof sessionID !== 'string' || !sessionID) return json({ error: 'sessionID required' }, { status: 400 });
+    const found = await entryTreeFor?.(sessionID, directory ?? null);
     if (!found?.manager) return json({ error: 'session-not-found' }, { status: 404 });
-    return json(buildEntryTreeSnapshot({ sessionID, directory, manager: found.manager }));
+    return json(buildEntryTreeSnapshot({ sessionID, directory: directory ?? null, manager: found.manager }));
   };
-  const agentRuns = ({ directory }: { directory?: string }) => json(runs.snapshot(directory));
-  const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string; body?: unknown }) =>
-    handleAgentRunAction({ aggregator: runs, descriptors, actions, sessionID, agentId, directory, body });
+  const agentRuns = ({ directory }: { directory?: string | null }) => json(runs.snapshot(directory ?? null));
+  const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) =>
+    handleAgentRunAction({ aggregator: runs, descriptors, actions, sessionID: sessionID ?? '', agentId: agentId ?? '', directory, body: body ?? {} });
   const jobs = ({ recentLimit }: { recentLimit?: number }) =>
     handleJobsRequest({
       liveSessionIds: liveSessionIds(),
@@ -1683,8 +1704,8 @@ export const createUriDomain = ({
       if (blocked) return blocked;
       const url = new URL(request.url);
       return uriContent({
-        id: ctx.params.tokenID,
-        directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }),
+        id: ctx?.params.tokenID,
+        directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }) ?? undefined,
       });
     });
     route('GET', '/omp/uri/info', async (request: Request, ctx?: UriRouteContext) => {
@@ -1698,7 +1719,9 @@ export const createUriDomain = ({
       if (blocked) return blocked;
       const url = new URL(request.url);
       const directory = directoryOf({ query: url.searchParams, headers: ctx?.headers });
-      const subtree = buildSessionSubtree(ctx.params.sessionID, (await sessionTreeData?.(directory)) ?? []);
+      const sessionID = ctx?.params.sessionID;
+      if (!sessionID) return json({ error: 'sessionID required' }, { status: 400 });
+      const subtree = buildSessionSubtree(sessionID, (await sessionTreeData?.(directory ?? null)) ?? []);
       if (!subtree) return json({ error: 'session-not-found' }, { status: 404 });
       // §5.4 task shape {leafId, nodes:[{id,parentId,title,time}]}. The
       // per-session ENTRY tree (spec §5.4.1) is tree.entryTree / buildEntryTreeSnapshot.
@@ -1725,8 +1748,8 @@ export const createUriDomain = ({
       const body = await readJsonBody(request);
       const url = new URL(request.url);
       return agentRunAction({
-        sessionID: ctx.params.sessionID,
-        agentId: ctx.params.agentId,
+        sessionID: ctx?.params.sessionID,
+        agentId: ctx?.params.agentId,
         directory: directoryOf({ body, query: url.searchParams }),
         body,
       });

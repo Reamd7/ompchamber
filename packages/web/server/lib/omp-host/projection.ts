@@ -1100,7 +1100,8 @@ export const projectAssistantMessage = (
         time: { start: message.timestamp },
       });
     } else if (block.type === 'toolCall') {
-      const result = toolResults.get(block.id);
+      const callBlockId = typeof block.id === 'string' ? block.id : undefined;
+      const result = callBlockId !== undefined ? toolResults.get(callBlockId) : undefined;
       const input = safeJson(block.arguments);
       // The model states its reason for each call in `intent`; it is the
       // human-readable heading for the tool row (the raw name/command stays
@@ -1214,7 +1215,7 @@ export const projectAssistantMessage = (
  */
 export const projectConversation = (
   messages: readonly MessageInput[] | null | undefined,
-  options?: ConversationProjectionOptions,
+  options: ConversationProjectionOptions,
 ): ProjectedMessage[] => {
   const out: ProjectedMessage[] = [];
   let lastUserWireId = '';
@@ -1349,8 +1350,16 @@ export class StreamProjector {
     this.parentID = parentID ?? '';
   }
 
+  // SAFETY: part ids are only minted between startAssistant and the
+  // settle path, so `current` is set at every call site.
+  #currentId(): string {
+    // SAFETY: parts are only minted between startAssistant and settle, so
+    // `current` is set at every call site.
+    return (this.current as { id: string }).id;
+  }
+
   #newPartId() {
-    return partId(this.current.id, this.seq++);
+    return partId(this.#currentId(), this.seq++);
   }
 
   #emitPartUpdated(part: WireMessagePart) {
@@ -1406,7 +1415,7 @@ export class StreamProjector {
     this.#emitPartUpdated({
       id: this.textPartId,
       sessionID: this.sessionID,
-      messageID: this.current.id,
+      messageID: this.#currentId(),
       type: 'text',
       text: '',
       time: { start: Date.now() }
@@ -1437,7 +1446,7 @@ export class StreamProjector {
     this.#emitPartUpdated({
       id: this.reasoningPartId,
       sessionID: this.sessionID,
-      messageID: this.current.id,
+      messageID: this.#currentId(),
       type: 'reasoning',
       text: '',
       time: { start: Date.now() }
@@ -1515,8 +1524,8 @@ export class StreamProjector {
     }
     const output = this.toolPartialText.get(callID) ?? '';
     const priorMeta = this.toolPartialMeta.get(callID);
-    const metadata = asyncState ? { ...(priorMeta ?? {}), asyncState } : priorMeta;
-    if (asyncState) this.toolPartialMeta.set(callID, metadata);
+    const metadata: WireToolMetadata | undefined = asyncState ? { ...(priorMeta ?? {}), asyncState } : priorMeta;
+    if (metadata !== undefined) this.toolPartialMeta.set(callID, metadata);
     this.#emitPartUpdated({
       id,
       sessionID: this.sessionID,

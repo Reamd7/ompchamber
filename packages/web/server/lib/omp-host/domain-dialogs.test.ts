@@ -98,7 +98,7 @@ describe('UiLeaseTable', () => {
     expect(renewed.leaseId).toBe(first.leaseId);
     expect(renewed.attached).toBe(false);
     expect(first.attached).toBe(true);
-    expect(renewed.expiresAt).toBeGreaterThan(first.expiresAt);
+    expect(renewed.expiresAt).toBeGreaterThan(first.expiresAt ?? 0);
     expect(table.has(DIR, SESSION)).toBe(true);
   });
 
@@ -583,7 +583,7 @@ describe('PendingDialogRegistry', () => {
     const scoped = registry.snapshot({ directory: DIR, sessionId: SESSION }).dialogs;
     expect(scoped.map((dialog) => dialog.id)).toEqual([first.id, second.id]);
     expect(scoped[2]).toBeUndefined();
-    expect(all.find((dialog) => dialog.id === other.id).kind).toBe('input');
+    expect(all.find((dialog) => dialog.id === other.id)?.kind).toBe('input');
   });
 });
 
@@ -692,8 +692,8 @@ describe('createDialogBridge', () => {
     );
     const dialog = registry.snapshot({ directory: DIR }).dialogs[0];
     expect(dialog.kind).toBe('ask');
-    expect(dialog.ask.timeoutMs).toBe(7_000);
-    expect(dialog.ask.questions[0]).toEqual({
+    expect(dialog.ask?.timeoutMs).toBe(7_000);
+    expect(dialog.ask?.questions[0]).toEqual({
       id: 'q1',
       question: 'Pick',
       header: 'Choices',

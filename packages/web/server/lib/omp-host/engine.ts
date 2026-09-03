@@ -65,7 +65,7 @@ import {
 import { resolveLocalUrlToPath } from '@oh-my-pi/pi-coding-agent/internal-urls/local-protocol';
 import type { AgentSession, AgentSessionEvent, AuthStorage, CreateAgentSessionResult, SessionInfo, SessionEntry } from '@oh-my-pi/pi-coding-agent';
 import type { CustomMessage, HookMessage } from '@oh-my-pi/pi-coding-agent';
-import type { SettingsStore } from './domain-models.ts';
+import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
@@ -294,7 +294,7 @@ export class OmpHostEngine {
         const manager = hostSession?.agentSession?.sessionManager;
         if (!manager?.appendModeChange) return undefined;
         const entryId = manager.appendModeChange(mode, data);
-        this.#syncPlanProposalHandler(hostSession, mode);
+        if (hostSession) this.#syncPlanProposalHandler(hostSession, mode);
         return entryId;
       },
       sessionContextFor: (sessionId, directoryKey) => {
@@ -347,7 +347,7 @@ export class OmpHostEngine {
         const store = this.settingsStore;
         if (!store?.settingsFor) return null;
         try {
-          const settings = await store.settingsFor(directoryKey);
+          const settings = await store.settingsFor(directoryKey ?? undefined);
           return {
             disabledAgents: settings.get('task.disabledAgents'),
             modelOverrides: settings.get('task.agentModelOverrides'),
@@ -379,7 +379,7 @@ export class OmpHostEngine {
         const artifactsDir = await this.#artifactsDirFor(sessionId, directoryKey);
         return artifactsDir ? createLocalProtocolOptions(sessionId, directoryKey, artifactsDir) : null;
       },
-      sessionTreeData: async (directory) => this.listSessions({ directory }),
+      sessionTreeData: async (directory) => this.listSessions({ directory: directory ?? undefined }),
       entryTreeFor: async (sessionID, directory) => {
         const file = await this.#findSessionFile(sessionID, normalizeDirectoryKey(directory));
         if (!file) return null;
@@ -451,7 +451,7 @@ export class OmpHostEngine {
         })
       : undefined;
     if (hasUI && !hostSession.extensionUiInitialized) {
-      if (!hostSession.extensionUiPromise) {
+      if (!hostSession.extensionUiPromise && hostSession.agentSession) {
         hostSession.extensionUiPromise = initializeExtensions(hostSession.agentSession, {
           uiContext: asExtensionUiContext(uiContext),
           mode: 'json',
@@ -473,8 +473,9 @@ export class OmpHostEngine {
       await hostSession.extensionUiPromise;
     }
     // SAFETY: DialogBridge is the deliberate web degradation of ExtensionUIContext
-    // (asExtensionUiContext seam); setToolUIContext consumes the same subset.
-    hostSession.sdkResult.setToolUIContext(asExtensionUiContext(uiContext), hasUI);
+    // (asExtensionUiContext seam); the SDK consumes the same subset and treats
+    // an undefined context as "no UI" when the lease is absent.
+    this.#applyToolUiContext(hostSession.sdkResult, asExtensionUiContext(uiContext), hasUI);
   }
 
   /**
@@ -484,6 +485,12 @@ export class OmpHostEngine {
    * lazy materialization pulls the session in instead of dropping the
    * extension UI initialization on the floor.
    */
+  #applyToolUiContext(sdkResult: Pick<CreateAgentSessionResult, 'setToolUIContext'> | undefined, uiContext: ReturnType<typeof asExtensionUiContext>, hasUI: boolean): void {
+    // SAFETY: web degradation seam — undefined means "no UI bridge" and
+    // pairs with hasUI=false; the SDK member accepts it at runtime.
+    (sdkResult?.setToolUIContext as ((uiContext: ExtensionUIContext | undefined, hasUI: boolean) => void) | undefined)?.(uiContext, hasUI);
+  }
+
   async #attachDialogUi(directory: string, sessionId: string) {
     const hostSession = this.sessions.get(sessionId) ?? (await this.#materialize(sessionId, directory));
     if (!hostSession) return;
@@ -494,7 +501,7 @@ export class OmpHostEngine {
     const hostSession = this.sessions.get(sessionId);
     if (!hostSession) return;
     try {
-      hostSession.sdkResult?.setToolUIContext?.(undefined, false);
+      this.#applyToolUiContext(hostSession.sdkResult, undefined, false);
     } catch {
       // Session may already be disposed.
     }
@@ -505,7 +512,8 @@ export class OmpHostEngine {
    * the review bridge; any other mode clears the handler.
    */
   #syncPlanProposalHandler(hostSession: HostSession, mode: string) {
-    if (!hostSession?.agentSession?.setPlanProposalHandler) return;
+    const session = hostSession?.agentSession;
+    if (!session?.setPlanProposalHandler) return;
     if (mode === 'plan') {
       const bridge = this.modesDomain.bridgeFor(hostSession.sessionId, hostSession.directory);
       // SAFETY: AgentSession satisfies PlanProposalSession (preparePlanForReview)
@@ -516,16 +524,17 @@ export class OmpHostEngine {
         preparePlanForReview: async (title: string): Promise<PreparePlanReviewResult> => {
           // SAFETY: AgentToolResult<PlanApprovalDetails> IS the
           // PreparePlanReviewResult shape by design (02 §5.5): { content, details }.
-          return (await hostSession.agentSession.preparePlanForReview(title)) as PreparePlanReviewResult;
+          return (await session.preparePlanForReview(title)) as PreparePlanReviewResult;
         }
       };
       // SAFETY: PlanReviewToolResult is the AgentToolResult shape by design
       // (02 §5.5); the SDK handler and the mode hook return the same wire form.
-      const hook = bridge.hookFor(planSession) as (title: string) => ReturnType<Parameters<typeof hostSession.agentSession.setPlanProposalHandler>[0]>;
-      hostSession.agentSession.setPlanProposalHandler(hook);
+      const hook = bridge.hookFor(planSession);
+      // SAFETY: hook's PlanReviewToolResult is the handler's AgentToolResult arm.
+      session.setPlanProposalHandler(hook as Parameters<NonNullable<typeof session.setPlanProposalHandler>>[0]);
       hostSession.planHandlerAttached = true;
     } else if (hostSession.planHandlerAttached) {
-      hostSession.agentSession.setPlanProposalHandler(null);
+      session.setPlanProposalHandler(null);
       hostSession.planHandlerAttached = false;
     }
   }
@@ -643,10 +652,10 @@ export class OmpHostEngine {
     }
   }
 
-  #disposeSession(session: HostSession | undefined | Record<string, never>) {
-    if (!session.agentSession) return;
+  #disposeSession(session: HostSession | undefined) {
+    if (!session || !session.agentSession) return;
     session.unsubscribe?.();
-    session.unsubscribe = null;
+    session.unsubscribe = undefined;
     // Domain release: modes tracker + pending dialogs for this session (R11).
     this.modesDomain?.release?.(session.sessionId, session.directory);
     this.dialogs?.registry?.abortForSession?.(
@@ -779,7 +788,8 @@ export class OmpHostEngine {
   async listSessions({ directory }: { directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    const infos = await SessionManager.list(directory, this.#sessionDirFor(directory), undefined);
+    const cwd = directory ?? '';
+    const infos = await SessionManager.list(cwd, this.#sessionDirFor(cwd), undefined);
     const metas = this.registry.entries(directoryKey);
     const out = [];
     const seen = new Set();
@@ -795,7 +805,7 @@ export class OmpHostEngine {
         this.#wireSession(
           {
             id,
-            cwd: directory,
+            cwd: directory ?? '',
             title: meta.title,
             created: new Date(meta.timeCreated ?? Date.now()),
             modified: new Date(meta.timeUpdated ?? Date.now())
@@ -814,7 +824,7 @@ export class OmpHostEngine {
     const byDirectory = new Map();
     for (const info of infos) {
       const directoryKey = normalizeDirectoryKey(info.cwd);
-      const meta = this.registry.get(directoryKey, info.id);
+      const meta = (this.registry.get(directoryKey, info.id) ?? undefined);
       if (archived === false && meta?.timeArchived) continue;
       const list = byDirectory.get(directoryKey) ?? [];
       list.push(this.#wireSession(info, directoryKey, meta));
@@ -850,7 +860,7 @@ export class OmpHostEngine {
         modified: new Date(now)
       },
       cwd,
-      this.registry.get(cwd, sessionId)
+      (this.registry.get(cwd, sessionId) ?? undefined)
     );
     this.bus.emit('session.created', { sessionID: sessionId, info: session }, cwd);
     return session;
@@ -866,7 +876,7 @@ export class OmpHostEngine {
     const manager = await SessionManager.open(file.path);
     try {
       const info = this.#infoFromManager(manager, file.path, directoryKey);
-      return this.#wireSession(info, directoryKey, this.registry.get(directoryKey, sessionID));
+      return this.#wireSession(info, directoryKey, (this.registry.get(directoryKey, sessionID) ?? undefined));
     } finally {
       await manager.close();
     }
@@ -874,10 +884,10 @@ export class OmpHostEngine {
 
   #infoFromManager(manager: SessionManagerLike, filePath: string, directoryKey: string) {
     const header = manager.getHeader();
-    const entries = manager.getEntries();
+    const entries = manager.getEntries() ?? [];
     const last = entries[entries.length - 1];
-    const created = header ? Date.parse(header.timestamp) : Date.now();
-    const modified = last ? Date.parse(last.timestamp) : created;
+    const created = header?.timestamp ? Date.parse(header.timestamp) : Date.now();
+    const modified = last?.timestamp ? Date.parse(last.timestamp) : created;
     return {
       id: manager.getSessionId(),
       cwd: manager.getCwd() || directoryKey,
@@ -913,7 +923,7 @@ export class OmpHostEngine {
       // listing (keyed by the transcript's own cwd) can ever observe, so the
       // caller sees success while nothing takes effect. Refuse; registry-only
       // bookkeeping (transcript pruned externally) stays updatable.
-      const hadRegistryEntry = this.registry.get(directoryKey, sessionID) != null;
+      const hadRegistryEntry = (this.registry.get(directoryKey, sessionID) ?? undefined) != null;
       if (!hadRegistryEntry && !(await this.#findSessionFile(sessionID, directoryKey))) {
         return null;
       }
@@ -954,7 +964,7 @@ export class OmpHostEngine {
     const file = await this.#findSessionFile(sessionID, directoryKey);
     const live = this.sessions.get(sessionID);
     const info = live ? this.#wireSessionFromLive(live) : await this.getSession({ sessionID, directory: directoryKey });
-    this.#disposeSession(live ?? {});
+    this.#disposeSession(live);
     this.sessions.delete(sessionID);
     if (file) {
       try {
@@ -980,7 +990,7 @@ export class OmpHostEngine {
         modified: new Date(meta?.timeUpdated ?? now)
       },
       live.directory,
-      meta,
+      meta ?? undefined,
       live
     );
   }
@@ -1000,13 +1010,14 @@ export class OmpHostEngine {
     if (!projected) return null;
     return paginateProjectedMessages(projected, { limit, before });
   }
-  async #projectedMessages(sessionID: string, directory: string | null) {
+  async #projectedMessages(sessionID: string, directory: string | null | undefined) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
-    const meta = this.registry.get(directoryKey, sessionID);
+    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
     const live = this.sessions.get(sessionID);
-    const liveCount = live?.agentSession?.messages?.length ?? -1;
+    const liveSession = live?.agentSession ?? null;
+    const liveCount = liveSession?.messages?.length ?? -1;
 
     // File transcript (transcript: true) is the display truth: it keeps the
     // full history including pre-compaction user turns and divider entries.
@@ -1029,7 +1040,7 @@ export class OmpHostEngine {
         const mergeDividers = (projected: ProjectedMessage[]) => this.#mergeTurnEventDividers(projected, entries, sessionID);
         if (liveCount >= 0 && liveCount >= fileMessages.length) {
           return mergeDividers(
-            projectConversation(live.agentSession.messages, {
+            projectConversation(liveSession?.messages ?? [], {
               sessionID,
               directory: directoryKey,
               agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
@@ -1054,7 +1065,7 @@ export class OmpHostEngine {
       }
     }
     if (liveCount >= 0) {
-      return projectConversation(live.agentSession.messages, {
+      return projectConversation(liveSession?.messages ?? [], {
         sessionID,
         directory: directoryKey,
         agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)),
@@ -1163,7 +1174,7 @@ export class OmpHostEngine {
 
   #resolveModel(selector: { providerID?: string; modelID?: string } | undefined) {
     if (!selector) return undefined;
-    const available = this.modelRegistry.getAvailable();
+    const available = this.#sdkModels();
     const wanted = `${selector.providerID}/${selector.modelID}`;
     return available.find((model) => `${model.provider}/${model.id}` === wanted) ?? available.find((model) => model.id === selector.modelID);
   }
@@ -1177,10 +1188,14 @@ export class OmpHostEngine {
     const flightKey = `${directoryKey}\u0000${sessionId}`;
     const inFlight = this.#materializeInFlight.get(flightKey);
     if (inFlight) return inFlight;
+    // SAFETY: #materializeNow resolves non-null once boot succeeded; the
+    // map type admits null only for symmetry with #materialize callers.
     const run = this.#materializeNow(sessionId, directoryKey).finally(() => {
       this.#materializeInFlight.delete(flightKey);
     });
-    this.#materializeInFlight.set(flightKey, run);
+    // SAFETY: #materializeNow resolves a live HostSession once boot has
+    // succeeded; the map type only admits null for external symmetry.
+    this.#materializeInFlight.set(flightKey, run as Promise<HostSession>);
     return run;
   }
 
@@ -1209,8 +1224,8 @@ export class OmpHostEngine {
     const { session, setToolUIContext } = await createAgentSession({
       cwd: directoryKey,
       sessionManager: manager,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      authStorage: this.authStorage ?? undefined,
+      modelRegistry: this.modelRegistry ?? undefined,
       // Per-directory keyed Settings injection (spec 06 §5.1, master R6):
       // the session consumes this directory's global+project layering.
       // Absent store (degraded boot) falls back to the SDK singleton.
@@ -1248,7 +1263,8 @@ export class OmpHostEngine {
       // Transcript roles without dedicated SDK events (custom/dividers) are
       // tail-synced at agent_end / compaction_end; this set remembers what
       // was already emitted so syncs are idempotent (spec 05 §5.5).
-      syncedEntryKeys: existing?.syncedEntryKeys ?? new Set(),
+      // Re-read the map row: `existing` was narrowed by the early return above.
+      syncedEntryKeys: this.sessions.get(sessionId)?.syncedEntryKeys ?? new Set(),
       // Wire id of the most recently settled assistant message — feeds
       // omp.retry.started.supersededMessageID (spec 05 §5.3.2).
       lastAssistantWireId: null,
@@ -1323,9 +1339,10 @@ export class OmpHostEngine {
   }
 
   /** Live per-session plugin application snapshots (plugins.v1 projection). */
-  appliedPluginsSnapshots() {
+  appliedPluginsSnapshots(): Array<{ sessionId: string; directory: string } & AppliedPluginsSnapshot> {
     return [...this.sessions.values()]
-      .filter((hostSession) => hostSession.agentSession && hostSession.appliedPlugins)
+      .filter((hostSession): hostSession is HostSession & { appliedPlugins: AppliedPluginsSnapshot } =>
+        Boolean(hostSession.agentSession && hostSession.appliedPlugins))
       .map((hostSession) => ({
         sessionId: hostSession.sessionId,
         directory: hostSession.directory,
@@ -1902,7 +1919,7 @@ export class OmpHostEngine {
         const unknownEvent = event as { type?: string } | null | undefined;
         console.error(`[omp-host] unhandled AgentSessionEvent type: ${unknownEvent?.type}`);
         this.unknownEventCounts = this.unknownEventCounts ?? new Map();
-        this.unknownEventCounts.set(unknownEvent?.type, (this.unknownEventCounts.get(unknownEvent?.type) ?? 0) + 1);
+        this.unknownEventCounts.set(unknownEvent?.type ?? 'unknown', (this.unknownEventCounts.get(unknownEvent?.type ?? 'unknown') ?? 0) + 1);
         return;
       }
     }
@@ -2040,7 +2057,7 @@ export class OmpHostEngine {
     return out;
   }
 
-  async #transcriptContext(sessionID: string, directory: string | null) {
+  async #transcriptContext(sessionID: string, directory: string | null | undefined) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
@@ -2077,6 +2094,7 @@ export class OmpHostEngine {
     const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return null;
     const session = hostSession.agentSession;
+    if (!session) return null;
     if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
     hostSession.lastTouched = Date.now();
 
@@ -2093,7 +2111,7 @@ export class OmpHostEngine {
       }
     }
 
-    const meta = this.registry.get(directoryKey, sessionID);
+    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
     // Persona switch (02 §5.1 D-B3, R2-M3): explicit session-level switch —
     // the wire `agent` parameter and registry meta normalize through
     // personaKeyFor, so the deleted build/plan values and unset all mean
@@ -2176,7 +2194,7 @@ export class OmpHostEngine {
       session.maybeStartTitleGeneration(text);
     }
 
-    const textOnly = content.length === 1 && content[0].type === 'text' ? content[0].text : (text ?? '');
+    const textOnly = content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : (text ?? '');
     // SAFETY: filtered blocks are image parts; base64+mime is the wire form.
     const imageContents = content.filter((block) => block.type === 'image') as Array<{ type: 'image'; data: string; mimeType: string }>;
     // Dispatch mirrors the TUI input loop: every submission carries a
@@ -2244,6 +2262,7 @@ export class OmpHostEngine {
     const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return { ok: false, error: 'session not found' };
     const session = hostSession.agentSession;
+    if (!session) return { ok: false, error: 'session not found' };
     hostSession.lastTouched = Date.now();
     const target = this.#resolveModel(model);
     if (!target) return { ok: false, error: 'unknown model' };
@@ -2285,7 +2304,7 @@ export class OmpHostEngine {
     // await forever — this route then never answered, the stop request hung,
     // and the session stayed busy until a server restart. Bound the wait; a
     // healthy teardown settles well under a second.
-    let timeoutTimer = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
     const settled = await Promise.race([
       live.agentSession.abort({ reason: 'User aborted' }).then(
         () => true,
@@ -2337,7 +2356,7 @@ export class OmpHostEngine {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
-    if (!hostSession) return false;
+    if (!hostSession?.agentSession) return false;
     await hostSession.agentSession.compact();
     return true;
   }
@@ -2379,7 +2398,7 @@ export class OmpHostEngine {
       }
     }
     const now = Date.now();
-    const meta = this.registry.get(directoryKey, sessionID);
+    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
     this.registry.update(directoryKey, forkId, {
       // Fork lineage for the session-tree projection (§5.4). NOT wire
       // `parentID` — that field is subagent parentage, and the shared UI
@@ -2401,7 +2420,7 @@ export class OmpHostEngine {
         modified: new Date(now)
       },
       directoryKey,
-      this.registry.get(directoryKey, forkId)
+      (this.registry.get(directoryKey, forkId) ?? undefined)
     );
     this.bus.emit('session.created', { sessionID: forkId, info: session }, directoryKey);
     return session;
@@ -2415,7 +2434,7 @@ export class OmpHostEngine {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
-    if (!hostSession) return null;
+    if (!hostSession?.agentSession) return null;
     const manager = hostSession.agentSession.sessionManager;
     // The UI sends the wire message id it read from GET messages; branch()
     // wants the engine entry id. Resolve through the same projection the UI
@@ -2424,7 +2443,7 @@ export class OmpHostEngine {
       wireIdFor: this.#wireIdResolver(directoryKey, sessionID)
     });
     manager.branch(entryId ?? messageID);
-    const previousLeaf = manager.getLeafId();
+    const previousLeaf = manager.getLeafId() ?? messageID;
     this.registry.update(directoryKey, sessionID, {
       revert: { messageID, previousLeaf },
       timeUpdated: Date.now()
@@ -2470,8 +2489,9 @@ export class OmpHostEngine {
     const directoryKey = normalizeDirectoryKey(directory);
     const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return null;
-    const meta = this.registry.get(directoryKey, sessionID);
+    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
     const previousLeaf = meta?.revert?.previousLeaf;
+    if (!hostSession.agentSession) return null;
     const manager = hostSession.agentSession.sessionManager;
     if (previousLeaf) {
       manager.branch(previousLeaf);
@@ -2524,7 +2544,14 @@ export class OmpHostEngine {
     }
   }
 
-  availableModels() {
+  /** SDK model rows (registry-backed); the typed read view for projections. */
+  availableModels(): RegistryModel[] {
+    // SAFETY: SDK Model is a structural superset of RegistryModel
+    // (nullable size fields are admitted on the read view).
+    return this.#sdkModels() as RegistryModel[];
+  }
+
+  #sdkModels() {
     return this.modelRegistry?.getAvailable() ?? [];
   }
 

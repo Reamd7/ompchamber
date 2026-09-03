@@ -664,6 +664,8 @@ const readExistingFrontmatter = async (
   filePath: string | undefined,
   readFile: ((filePath: string) => Promise<string>) | undefined,
 ): Promise<AgentFrontmatterRecord | null> => {
+  // A missing reader or path degrades to the whitelist-only write.
+  if (!filePath || !readFile) return null;
   try {
     const content = await readFile(filePath);
     const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
@@ -767,7 +769,7 @@ export function createAgentDefinitionHandlers({
   const mergeDefinition = (existing: Partial<AgentDefinitionSerialization> & { name: string }, patch: AgentDefinitionPatch): AgentDefinitionSerialization => {
     const merged: AgentDefinitionSerialization = {
       name: existing.name,
-      description: patch.description ?? existing.description,
+      description: patch.description ?? existing.description ?? '',
       systemPrompt: patch.systemPrompt !== undefined ? patch.systemPrompt : existing.systemPrompt,
     };
     // SAFETY: the merge walks the seven declared override keys shared by
@@ -849,7 +851,7 @@ export function createAgentDefinitionHandlers({
       const rawFrontmatter = await readExistingFrontmatter(existing.filePath, readFile);
       await writeFile(nextPath, serializeAgentMarkdown({
         ...mergeDefinition(existing, patch),
-        name: targetName,
+        name: targetName ?? existing.name,
         ...(rawFrontmatter ? { rawFrontmatter } : {}),
       }));
       if (existing.filePath && path.resolve(nextPath) !== path.resolve(existing.filePath)) {
@@ -870,6 +872,7 @@ export function createAgentDefinitionHandlers({
       const existing = await findAgent(directory, name);
       if (!existing) throw new ModeDomainError(404, { error: 'not-found' });
       assertWritable(existing, directory);
+      if (!existing.filePath) throw new ModeDomainError(400, { error: 'not-file-backed', name });
       await deleteFile(existing.filePath);
       await definitionsChanged(directory);
       return new Response(null, { status: 204 });
@@ -902,6 +905,7 @@ export function createAgentDefinitionHandlers({
         });
       }
       try {
+        if (!existing.filePath) throw new ModeDomainError(400, { error: 'not-file-backed', name: existing.name });
         await revealFile(path.resolve(existing.filePath));
       } catch (error) {
         console.warn('[omp-host] failed to reveal agent definition:', error?.message ?? error);
@@ -926,12 +930,12 @@ export interface SidecarAgentRecord {
  * default — a missing adapter degrades per the retry contract below.
  */
 export interface SidecarMigrationOptions {
-  loadRecords?: () => SidecarAgentRecord[];
-  agentExists?: (name: string) => Promise<boolean>;
-  writeAgent?: (record: SidecarAgentRecord) => Promise<void>;
-  personaExists?: (name: string) => boolean;
-  mirrorPersona?: (record: SidecarAgentRecord) => void;
-  markDone?: () => void;
+  loadRecords: () => SidecarAgentRecord[];
+  agentExists: (name: string) => Promise<boolean>;
+  writeAgent: (record: SidecarAgentRecord) => Promise<void>;
+  personaExists: (name: string) => boolean;
+  mirrorPersona: (record: SidecarAgentRecord) => void;
+  markDone: () => void;
   /** Diagnostic logger; `cause` is the caught error from the failed adapter call. */
   log?: (message: string, cause?: unknown) => void;
 }
@@ -962,7 +966,7 @@ export async function migrateSidecarAgents({
   mirrorPersona,
   markDone,
   log = () => {},
-}: SidecarMigrationOptions = {}): Promise<SidecarMigrationResult> {
+}: SidecarMigrationOptions): Promise<SidecarMigrationResult> {
   let records: SidecarAgentRecord[] = [];
   try {
     records = loadRecords();
@@ -1809,7 +1813,7 @@ export function planReviewBridge({ publish, prepare, onReview, now = Date.now }:
      */
     decide: (input?: PlanReviewDecisionInput): PlanReviewDecisionResult => {
       const choice = input?.choice;
-      if (!PLAN_REVIEW_CHOICES.includes(choice)) {
+      if (typeof choice !== 'string' || !PLAN_REVIEW_CHOICES.includes(choice)) {
         throw new ModeDomainError(400, { error: 'invalid-choice', choice, choices: [...PLAN_REVIEW_CHOICES] });
       }
       state.decision = { ...input };
@@ -2037,19 +2041,19 @@ export function registerModesDomainRoutes(
   route('GET', '/omp/sessions/{id}/mode', gated('modes.v1', async (request, ctx) => {
     const directory = directoryParam(ctx);
     if (!directory) return badRequest('directory is required');
-    return json(domain.trackerFor(ctx.params.id, directory).snapshot());
+    return json(domain.trackerFor(ctx?.params?.id ?? '', directory).snapshot());
   }));
 
   route('POST', '/omp/sessions/{id}/mode', gated('modes.v1', async (request, ctx) => {
     const directory = directoryParam(ctx);
     if (!directory) return badRequest('directory is required');
     const body = await readJsonBody<ModeActionBody>(request);
-    const tracker = domain.trackerFor(ctx.params.id, directory);
+    const tracker = domain.trackerFor(ctx?.params?.id ?? '', directory);
     const action = typeof body?.action === 'string' && body.action
       ? body.action
       : body?.mode === 'none' ? 'exit' : 'enter';
     try {
-      if (action === 'enter') tracker.enterMode(body?.mode, body ?? {});
+      if (action === 'enter') tracker.enterMode(typeof body?.mode === 'string' ? body.mode : '', body ?? {});
       else if (action === 'exit') tracker.exitMode();
       else if (action === 'pause') tracker.pauseMode(body?.mode);
       else if (action === 'resume') tracker.resumeMode(body?.mode);
@@ -2064,8 +2068,8 @@ export function registerModesDomainRoutes(
   route('GET', '/omp/sessions/{id}/plan', gated('modes.v1', async (request, ctx) => {
     const directory = directoryParam(ctx);
     if (!directory) return badRequest('directory is required');
-    const tracker = domain.trackerFor(ctx.params.id, directory);
-    const bridge = domain.bridgeFor(ctx.params.id, directory);
+    const tracker = domain.trackerFor(ctx?.params?.id ?? '', directory);
+    const bridge = domain.bridgeFor(ctx?.params?.id ?? '', directory);
     const snapshot = tracker.snapshot();
     const bridgeSnapshot = bridge.snapshot();
     const review = snapshot.plan?.review ?? bridgeSnapshot.review ?? null;
@@ -2085,8 +2089,8 @@ export function registerModesDomainRoutes(
     const directory = directoryParam(ctx);
     if (!directory) return badRequest('directory is required');
     const body = await readJsonBody<PlanReviewDecisionInput>(request);
-    const tracker = domain.trackerFor(ctx.params.id, directory);
-    const bridge = domain.bridgeFor(ctx.params.id, directory);
+    const tracker = domain.trackerFor(ctx?.params?.id ?? '', directory);
+    const bridge = domain.bridgeFor(ctx?.params?.id ?? '', directory);
     try {
       const result = bridge.decide(body ?? {});
       return json({ dispatched: result.dispatched, mode: tracker.snapshot().mode });
@@ -2096,40 +2100,41 @@ export function registerModesDomainRoutes(
   }));
 
   // ---- agent-definitions (agentDefinitions.v1) ----
-  if (domain.agentDefinitions) {
-    route('GET', '/omp/agent-definitions', gated('agentDefinitions.v1', domain.agentDefinitions.list));
-    route('GET', '/omp/agent-definitions/{name}', gated('agentDefinitions.v1', domain.agentDefinitions.get));
+  const agentHandlers = domain.agentDefinitions;
+  if (agentHandlers) {
+    route('GET', '/omp/agent-definitions', gated('agentDefinitions.v1', (request, ctx) => (agentHandlers.list(request, ctx))));
+    route('GET', '/omp/agent-definitions/{name}', gated('agentDefinitions.v1', (request, ctx) => (agentHandlers.get(request, ctx))));
     route('POST', '/omp/agent-definitions', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
-        return await domain.agentDefinitions.create(request, ctx);
+        return await agentHandlers.create(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('PUT', '/omp/agent-definitions/{name}', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
-        return await domain.agentDefinitions.update(request, ctx);
+        return await agentHandlers.update(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('DELETE', '/omp/agent-definitions/{name}', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
-        return await domain.agentDefinitions.remove(request, ctx);
+        return await agentHandlers.remove(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('POST', '/omp/agent-definitions/refresh', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
-        return await domain.agentDefinitions.refresh(request, ctx);
+        return await agentHandlers.refresh(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('POST', '/omp/agent-definitions/{name}/reveal', gated('agentDefinitions.v1', async (request, ctx) => {
       try {
-        return await domain.agentDefinitions.reveal(request, ctx);
+        return await agentHandlers.reveal(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
@@ -2137,26 +2142,27 @@ export function registerModesDomainRoutes(
   }
 
   // ---- personas (personas.v1) ----
-  if (domain.personas) {
-    route('GET', '/omp/personas', gated('personas.v1', domain.personas.list));
-    route('GET', '/omp/personas/{name}', gated('personas.v1', domain.personas.get));
+  const personaHandlers = domain.personas;
+  if (personaHandlers) {
+    route('GET', '/omp/personas', gated('personas.v1', personaHandlers.list));
+    route('GET', '/omp/personas/{name}', gated('personas.v1', personaHandlers.get));
     route('POST', '/omp/personas', gated('personas.v1', async (request, ctx) => {
       try {
-        return await domain.personas.create(request, ctx);
+        return await personaHandlers.create(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('PUT', '/omp/personas/{name}', gated('personas.v1', async (request, ctx) => {
       try {
-        return await domain.personas.update(request, ctx);
+        return await personaHandlers.update(request, ctx);
       } catch (error) {
         return toResponse(error);
       }
     }));
     route('DELETE', '/omp/personas/{name}', gated('personas.v1', async (request, ctx) => {
       try {
-        return await domain.personas.remove(request, ctx);
+        return await personaHandlers.remove(request, ctx);
       } catch (error) {
         return toResponse(error);
       }

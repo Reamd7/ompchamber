@@ -142,19 +142,19 @@ describe('divider projection (spec 05 §5.5)', () => {
     );
     const byRole = out.map((m) => m.info);
     const bash = byRole.find((info) => info.metadata?.ompRole === 'bash');
-    expect(bash.role).toBe('user');
-    expect(bash.parentID).toBeUndefined();
+    expect(bash?.role).toBe('user');
+    expect(bash?.parentID).toBeUndefined();
     const py = byRole.find((info) => info.metadata?.ompRole === 'python');
-    expect(py.role).toBe('user');
-    expect(py.metadata.exitCode).toBe(0);
+    expect(py?.role).toBe('user');
+    expect(py?.metadata?.exitCode).toBe(0);
     const mention = out.find((m) => m.info.metadata?.ompRole === 'file-mention');
-    expect(mention.parts[0].text).toContain('└ Read x.ts (5 lines)');
+    expect(mention?.parts[0]?.text).toContain('└ Read x.ts (5 lines)');
     // Deterministic ids: same input twice → same ids.
     const again = projectConversation(
       [{ role: 'bashExecution', command: 'ls', output: 'a b', exitCode: 0, cancelled: false, timestamp: now + 2 }],
       { sessionID: 's1', agent: 'build' },
     );
-    expect(again[0].info.id).toBe(bash.id);
+    expect(again[0]?.info.id).toBe(bash?.id);
   });
 });
 
@@ -292,7 +292,8 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    const put = routes.find((r) => r.method === 'PUT' && r.pattern === '/omp/settings').handler as (request: Request) => Promise<Response>;
+    const put = (routes.find((r) => r.method === 'PUT' && r.pattern === '/omp/settings')?.handler ?? ((_request: Request) => Promise.reject(new Error('route missing')))) as (request: Request) => Promise<Response>;
+    expect(put).toBeDefined();
     const response = await put(new Request('http://host/omp/settings', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -324,7 +325,9 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
       deleteSession: async (args: { sessionID: string; directory?: string }): Promise<null> => { calls.push(args); return null; },
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
-    const deleteRoute = routes.find((r) => r.method === 'DELETE' && r.pattern === '/session/{sessionID}');
+    const deleteRoute = routes.find((r) => r.method === 'DELETE' && r.pattern === '/session/{sessionID}') ?? { method: 'DELETE', pattern: '',
+      // SAFETY: unreachable stub — the expect(...).toBeDefined() above guards the real row.
+      handler: ((_request: Request) => Promise.reject(new Error('route missing'))) as RouteHandler };
     const url = new URL('http://host/session/ses_1?directory=/repo');
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const response = await (deleteRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request(url.toString()), {
@@ -363,7 +366,9 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
     registerEndpoints(route, stubEngine, { version: 'test' });
     const abortRoute = routes.find(
       (r) => r.method === 'POST' && r.pattern === '/session/{sessionID}/abort',
-    );
+    ) ?? { method: 'POST', pattern: '',
+      // SAFETY: unreachable stub — the expect(...).toBeDefined() above guards the real row.
+      handler: ((_request: Request) => Promise.reject(new Error('route missing'))) as RouteHandler };
     expect(abortRoute).toBeDefined();
     const url = new URL('http://host/session/ses_1/abort?directory=/repo');
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
@@ -399,7 +404,9 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
       updateSession: async (args: { sessionID: string; directory?: string; title?: string }): Promise<null> => { calls.push(args); return null; },
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
-    const patchRoute = routes.find((r) => r.method === 'PATCH' && r.pattern === '/session/{sessionID}');
+    const patchRoute = routes.find((r) => r.method === 'PATCH' && r.pattern === '/session/{sessionID}') ?? { method: 'PATCH', pattern: '',
+      // SAFETY: unreachable stub — the expect(...).toBeDefined() above guards the real row.
+      handler: ((_request: Request) => Promise.reject(new Error('route missing'))) as RouteHandler };
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     const response = await (patchRoute.handler as (request: Request, ctx: RouteContextLite) => Promise<Response>)(new Request('http://host/session/ses_1', {
       method: 'PATCH',
@@ -438,7 +445,9 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
       ]),
     });
     registerEndpoints(route, stubEngine, { version: 'test' });
-    const listRoute = routes.find((r) => r.method === 'GET' && r.pattern === '/experimental/session');
+    const listRoute = routes.find((r) => r.method === 'GET' && r.pattern === '/experimental/session') ?? { method: 'GET', pattern: '',
+      // SAFETY: unreachable stub — the expect(...).toBeDefined() above guards the real row.
+      handler: ((_request: Request) => Promise.reject(new Error('route missing'))) as RouteHandler };
 
     const scopedUrl = new URL('http://host/experimental/session?directory=/repo');
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.

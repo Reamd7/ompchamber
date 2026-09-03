@@ -54,7 +54,7 @@ describe('worker-dispatch selector recognition', () => {
     for (const selector of SDK_SELECTORS) {
       const entry = resolveWorkerDispatch(selector);
       expect(entry).not.toBeNull();
-      expect(['env-server', 'ipc-worker', 'self-runner', 'unsupported']).toContain(entry.kind);
+      expect(['env-server', 'ipc-worker', 'self-runner', 'unsupported']).toContain(entry?.kind ?? 'missing');
     }
   });
 

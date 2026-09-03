@@ -279,12 +279,13 @@ const parseRoleModelValue = (value: string) => {
 
 /** Minimal registry-model surface the models payload projects from. */
 export interface RegistryModel {
-  provider?: string;
-  id?: string;
+  provider: string;
+  id: string;
   name?: string;
   reasoning?: boolean;
-  contextWindow?: number;
-  maxTokens?: number;
+  /** SDK Model carries `| null` for unknown sizes; projections filter via Number.isFinite. */
+  contextWindow?: number | null;
+  maxTokens?: number | null;
   thinking?: { efforts?: readonly string[]; defaultLevel?: string | null };
 }
 
@@ -354,8 +355,8 @@ export const projectModelThinking = (model: RegistryModel | null | undefined): M
   id: model?.id,
   ...(model?.name ? { name: model.name } : {}),
   reasoning: Boolean(model?.reasoning),
-  ...(Number.isFinite(model?.contextWindow) ? { contextWindow: model.contextWindow } : {}),
-  ...(Number.isFinite(model?.maxTokens) ? { maxTokens: model.maxTokens } : {}),
+  ...(model?.contextWindow !== undefined && model.contextWindow !== null && Number.isFinite(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+  ...(model?.maxTokens !== undefined && model.maxTokens !== null && Number.isFinite(model.maxTokens) ? { maxTokens: model.maxTokens } : {}),
   thinking: {
     // Mirrors the TUI's getSupportedEfforts: a non-reasoning model has no
     // effort surface (empty list), reasoning models read baked efforts.
@@ -640,7 +641,7 @@ export const buildSettingsPayload = (
     }
     entries[keyPath] = {
       type: getType(keyPath),
-      ...(getEnumValues(keyPath) ? { values: [...getEnumValues(keyPath)] } : {}),
+      ...(() => { const values = getEnumValues(keyPath); return values ? { values: [...values] } : {}; })(),
       default: credential ? null : jsonValue(getDefault(keyPath)),
       value: credential ? null : jsonValue(settings.get(keyPath)),
       configured: settings.isConfigured(keyPath),
@@ -786,14 +787,17 @@ type SettingsPlanItem =
  */
 export const applySettingsChanges = async (
   store: SettingsStoreSurface,
-  input: SettingsChangesInput,
+  input: SettingsChangesInput | Record<string, never>,
   { publish }: ApplySettingsHooks = {},
 ): Promise<SettingsChangeResult> => {
-  const scope = input?.scope ?? 'global';
+  // SAFETY: route JSON is untyped; this read view is validated field by
+  // field below (scope literal, changes object) before anything is used.
+  const body = (input !== null && typeof input === 'object' ? input : {}) as SettingsChangesInput;
+  const scope = body?.scope ?? 'global';
   if (scope !== 'global' && scope !== 'project') {
     return { status: 400, body: { error: 'invalid-scope' } };
   }
-  const changes = input?.changes;
+  const changes = body?.changes;
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) {
     return { status: 400, body: { error: 'invalid-body' } };
   }
@@ -854,8 +858,8 @@ export const applySettingsChanges = async (
     return { status: 400, body: { error: 'validation', rejected } };
   }
 
-  const directoryKey = input?.directory
-    ? normalizeDirectoryKey(input.directory)
+  const directoryKey = body?.directory
+    ? normalizeDirectoryKey(body.directory)
     : store.bootDirectory;
   const target = scope === 'project' ? await store.settingsFor(directoryKey) : store.boot;
 
@@ -945,7 +949,7 @@ export type OmpRouteFn = (
 ) => void;
 
 export interface RegisterModelSettingsOptions {
-  store?: SettingsStoreSurface;
+  store: SettingsStoreSurface;
   publish?: PublishFn;
   legacySettingsPath?: string;
   listModels?: (() => Promise<RegistryModel[]>) | null;
@@ -960,10 +964,10 @@ export interface RegisterModelSettingsOptions {
  */
 export const registerModelSettingsRoutes = (
   route: OmpRouteFn,
-  { store, publish, legacySettingsPath, listModels = null }: RegisterModelSettingsOptions = {},
+  { store, publish, legacySettingsPath, listModels = null }: RegisterModelSettingsOptions,
 ) => {
   route('GET', '/omp/models', async (request) => {
-    const settings = await store.settingsFor(directoryFromRequest(request));
+    const settings = await store.settingsFor(directoryFromRequest(request) ?? undefined);
     const legacyDefaults = detectLegacyDefaultModel(
       legacySettingsPath ? { settingsPath: legacySettingsPath } : {},
     );
@@ -983,7 +987,7 @@ export const registerModelSettingsRoutes = (
   route('GET', '/omp/settings', async (request) => {
     const url = new URL(request.url);
     const keysParam = url.searchParams.get('keys');
-    const settings = await store.settingsFor(directoryFromRequest(request));
+    const settings = await store.settingsFor(directoryFromRequest(request) ?? undefined);
     return Response.json(buildSettingsPayload(settings, {
       revision: store.getRevision(),
       keys: keysParam ? keysParam.split(',').map((k) => k.trim()).filter(Boolean) : null,
@@ -991,7 +995,8 @@ export const registerModelSettingsRoutes = (
   });
 
   route('PUT', '/omp/settings', async (request) => {
-    const body = await request.json().catch(() => ({}));
+    // SAFETY: applySettingsChanges validates scope/changes field by field.
+    const body = (await request.json().catch(() => ({}))) as SettingsChangesInput;
     const { status, body: payload } = await applySettingsChanges(store, body, { publish });
     return Response.json(payload, { status });
   });
