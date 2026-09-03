@@ -2102,6 +2102,7 @@ export const dict = {
   'session.newWorktree.toast.sessionFromPr': 'Session created from PR',
   'session.newWorktree.toast.worktreeCreated': 'Worktree created',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - bootstrapping in background',
+  'session.newWorktree.toast.fetchSourceFailed': 'Couldn\'t fetch from remote — created from local state',
   'session.githubIntegration.title': 'Select from GitHub',
   'session.githubIntegration.tabs.issues': 'Issues',
   'session.githubIntegration.tabs.pullRequests': 'Pull Requests',

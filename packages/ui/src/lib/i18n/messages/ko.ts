@@ -2104,6 +2104,7 @@ export const dict: Record<I18nKey, string> = {
   'session.newWorktree.toast.sessionFromPr': 'PR에서 세션을 생성했습니다',
   'session.newWorktree.toast.worktreeCreated': '워크트리를 생성했습니다',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - 백그라운드에서 초기 설정 중',
+  'session.newWorktree.toast.fetchSourceFailed': '원격에서 가져오지 못했습니다. 로컬 상태로 생성했습니다',
   'session.githubIntegration.title': 'GitHub에서 선택',
   'session.githubIntegration.tabs.issues': '이슈',
   'session.githubIntegration.tabs.pullRequests': 'PR',

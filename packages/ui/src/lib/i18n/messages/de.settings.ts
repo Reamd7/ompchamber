@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Worktrees',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Remote vor dem Erstellen von Worktrees abrufen',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Änderungen vom Remote abrufen, bevor Worktrees erstellt werden',
+  'settings.behavior.page.worktreeFetchSource.info': 'Neue Worktrees verzweigen vom abgerufenen Remote-Stand des aktuellen Branches statt vom lokalen Checkout und sind dadurch nicht veraltet. Beim Erstellen wird der lokale Stand verwendet, wenn das Remote nicht erreichbar ist.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Bildlaufleisten immer anzeigen',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Bildlaufleisten bleiben sichtbar, damit du sie ohne vorheriges Scrollen ziehen kannst. Gilt nur auf diesem Gerät.',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go Nutzungsverfolgung',
@@ -2478,8 +2482,7 @@ export const settingsDict = {
   'settings.ompchamber.defaults.walkthroughModel.title': 'Walkthrough-Modell ändern',
   'settings.ompchamber.defaults.walkthroughModel.description': 'Die KI-Prüfung deiner Änderungen benötigt strukturierten Output und Platz für einen ganzen Diff, den ein günstiges kleines Modell oft nicht liefern kann. Modelle, die der Katalog als nicht in der Lage zu strukturiertem Output meldet, werden in diesem Auswahlfeld ausgeblendet. Lasse es leer, dann wird das kleine Modell verwendet.',
   'settings.ompchamber.defaults.walkthroughModel.overrideModel': 'Walkthrough-Modell',
-  'settings.ompchamber.defaults.walkthroughModel.usesSmallModel': 'Kleines Modell',
-  'settings.voice.page.provider.openai': 'OpenAI',
+  'settings.ompchamber.defaults.walkthroughModel.usesSmallModel': 'Kleines Modell',  'settings.voice.page.provider.openai': 'OpenAI',
   'settings.ompchamber.visual.section.colorModeAndTheme': 'Farbmodus & Theme',
   'settings.ompchamber.visual.section.densityAndType': 'Dichte & Typografie',
   'settings.ompchamber.visual.section.appInstall': 'App-Installation',

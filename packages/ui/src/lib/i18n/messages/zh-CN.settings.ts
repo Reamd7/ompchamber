@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': '工作树',
+  'settings.behavior.page.worktreeFetchSource.enable': '创建工作树前先从远程获取',
+  'settings.behavior.page.worktreeFetchSource.enableAria': '创建工作树前先从远程仓库获取变更',
+  'settings.behavior.page.worktreeFetchSource.info': '新工作树基于当前分支从远程获取的状态创建，而不是本地检出，因此不会滞后。远程不可用时将回退为本地状态。',
   'settings.openchamber.visual.field.alwaysShowScrollbars': '始终显示滚动条',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': '保持滚动条可见，无需先滚动即可拖动。仅在此设备上生效。',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go 用量跟踪',
@@ -635,8 +639,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': '位于 {path} 的旧版规则仍会被引擎读取，但只要上方文件存在，它将优先生效。',
   'settings.behavior.page.legacyNotice.active': '位于 {path} 的旧版文件规则仍然生效。在上方保存内容后，将在用户范围内覆盖这些规则。',
   'settings.behavior.page.section.systemPrompt': '全局 AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': '你是一个有帮助的 AI 助手...\\n\\n使用此空间定义 AI 在所有会话和提供商中的绝对行为规则。',
-  'settings.behavior.page.section.responseStyle': '回复风格',
+  'settings.behavior.page.field.systemPromptPlaceholder': '你是一个有帮助的 AI 助手...\\n\\n使用此空间定义 AI 在所有会话和提供商中的绝对行为规则。',  'settings.behavior.page.section.responseStyle': '回复风格',
   'settings.behavior.page.responseStyle.tooltip': '启用后，这些说明会指导助手在每个新对话中的回复方式。它们会随你的第一条消息一起发送，不会更改全局 AGENTS.md 规则。',
   'settings.behavior.page.responseStyle.enableAria': '启用回复风格说明',
   'settings.behavior.page.responseStyle.enable': '向新对话添加回复风格说明',

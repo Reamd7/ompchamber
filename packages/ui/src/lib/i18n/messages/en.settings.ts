@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Worktrees',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Fetch remote before creating worktrees',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Fetch changes from remote before creating worktrees',
+  'settings.behavior.page.worktreeFetchSource.info': 'New worktrees branch from the fetched remote state of the current branch instead of the local checkout, so they are not stale. Creation falls back to the local state when the remote is unreachable.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Always show scrollbars',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Keep scrollbars visible so you can drag them without scrolling first. Applies on this device only.',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go usage tracking',
@@ -666,8 +670,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': 'Legacy rules at {path} are still read by the engine, but the file above takes precedence while it exists.',
   'settings.behavior.page.legacyNotice.active': 'Rules from the legacy file at {path} still apply. Saving content above overrides them at user scope.',
   'settings.behavior.page.section.systemPrompt': 'Global AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': 'You are a helpful AI assistant...\\n\\nUse this space to define absolute rules for how the AI should behave across all sessions and providers.',
-  'settings.behavior.page.section.responseStyle': 'Response style',
+  'settings.behavior.page.field.systemPromptPlaceholder': 'You are a helpful AI assistant...\\n\\nUse this space to define absolute rules for how the AI should behave across all sessions and providers.',  'settings.behavior.page.section.responseStyle': 'Response style',
   'settings.behavior.page.responseStyle.tooltip': 'When enabled, these instructions guide how the assistant responds in each new conversation. They are sent with your first message and do not change your global AGENTS.md rules.',
   'settings.behavior.page.responseStyle.enableAria': 'Enable response style instructions',
   'settings.behavior.page.responseStyle.enable': 'Add response style instructions to new conversations',

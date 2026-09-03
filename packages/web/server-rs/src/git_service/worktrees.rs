@@ -1228,13 +1228,33 @@ async fn attach_git_worktree_to_candidate(
         && let Some(parsed) =
             resolve_remote_branch_ref(service, &context.primary_worktree, &start_ref).await
     {
-        fetch_remote_branch_ref(
+        // Branching straight off a remote-tracking ref must not set up
+        // tracking: the local branch is the worktree's own.
+        worktree_add_args.insert(3, "--no-track".into());
+        if let Err(fetch_error) = fetch_remote_branch_ref(
             service,
             &context.primary_worktree,
             &parsed.remote,
             &parsed.branch,
         )
-        .await?;
+        .await
+        {
+            // 远端不可达时,若本地已有该 remote-tracking ref 则照旧使用;
+            // 否则保留原始 fetch 错误。
+            let ref_exists = service
+                .run(
+                    &context.primary_worktree,
+                    &["show-ref", "--verify", "--quiet", &parsed.full_ref],
+                )
+                .await;
+            if !ref_exists.success {
+                return Err(fetch_error);
+            }
+            eprintln!(
+                "Worktree create: failed to refresh {}/{}, proceeding with the existing remote-tracking ref",
+                parsed.remote, parsed.branch
+            );
+        }
     }
 
     {
@@ -1249,21 +1269,24 @@ async fn attach_git_worktree_to_candidate(
     }
 
     if set_upstream {
-        if upstream_remote.is_empty() {
-            upstream_remote = input
-                .get("upstreamRemote")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string();
+        // 显式 upstreamRemote/upstreamBranch 优先于推断值。
+        let explicit_remote = input
+            .get("upstreamRemote")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if !explicit_remote.is_empty() {
+            upstream_remote = explicit_remote;
         }
-        if upstream_branch.is_empty() {
-            upstream_branch = input
-                .get("upstreamBranch")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or("")
-                .to_string();
+        let explicit_branch = input
+            .get("upstreamBranch")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        if !explicit_branch.is_empty() {
+            upstream_branch = explicit_branch;
         }
     } else {
         upstream_remote.clear();

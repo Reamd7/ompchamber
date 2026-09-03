@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Worktree',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Отримувати зміни з віддаленого перед створенням worktree',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Отримати зміни з віддаленого репозиторію перед створенням worktree',
+  'settings.behavior.page.worktreeFetchSource.info': 'Нові worktree створюються з отриманого віддаленого стану поточної гілки, а не з локального checkout, тому не є застарілими. Якщо віддалений репозиторій недоступний, використовується локальний стан.',
   'settings.projects.page.field.projectAgent': 'Project Agent',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Завжди показувати смуги прокручування',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Залишати смуги прокручування видимими, щоб можна було перетягнути повзунок без попереднього прокручування. Лише на цьому пристрої.',
@@ -931,8 +935,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Не вдалося встановити навички',
   'settings.skills.catalog.page.mode.manual': 'Вручну',
   'settings.skills.catalog.page.mode.external': 'зовнішній',
-  'settings.skills.catalog.page.title': 'Каталог навичок',
-  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',
+  'settings.skills.catalog.page.title': 'Каталог навичок',  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',
   'settings.skills.catalog.page.section.sources': 'Джерела',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Пошук скілів у всіх джерелах…',
   'settings.skills.catalog.page.search.clear': 'Очистити пошук',

@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Worktrees',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Récupérer le dépôt distant avant de créer des worktrees',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Récupérer les changements du dépôt distant avant de créer des worktrees',
+  'settings.behavior.page.worktreeFetchSource.info': 'Les nouveaux worktrees sont créés depuis l’état distant récupéré de la branche courante plutôt que depuis le checkout local, afin d’éviter qu’ils ne soient obsolètes. La création utilise l’état local si le dépôt distant est inaccessible.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Toujours afficher les barres de défilement',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Gardez les barres visibles pour pouvoir les faire glisser sans commencer par faire défiler le contenu. Uniquement sur cet appareil.',
   'settings.providers.page.openCodeGo.title': 'Suivi de l’utilisation d’OpenCode Go',
@@ -553,8 +557,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': 'Les règles héritées de {path} sont toujours lues par le moteur, mais le fichier ci-dessus prime tant qu\\\'il existe.',
   'settings.behavior.page.legacyNotice.active': 'Les règles du fichier hérité {path} s\\\'appliquent toujours. Enregistrer du contenu ci-dessus les remplace au niveau utilisateur.',
   'settings.behavior.page.section.systemPrompt': 'Mondial AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': 'Vous êtes un assistant IA utile...\\n\\nUtilisez cet espace pour définir des règles absolues sur la façon dont l\\\'IA doit se comporter dans toutes les sessions et tous les fournisseurs.',
-  'settings.behavior.page.section.responseStyle': 'Style de réponse',
+  'settings.behavior.page.field.systemPromptPlaceholder': 'Vous êtes un assistant IA utile...\\n\\nUtilisez cet espace pour définir des règles absolues sur la façon dont l\\\'IA doit se comporter dans toutes les sessions et tous les fournisseurs.',  'settings.behavior.page.section.responseStyle': 'Style de réponse',
   'settings.behavior.page.responseStyle.tooltip': 'Lorsqu\\\'elles sont activées, ces instructions guident la manière dont l\\\'assistant répond à chaque nouvelle conversation. Ils sont envoyés avec votre premier message et ne modifient pas vos règles globales AGENTS.md.',
   'settings.behavior.page.responseStyle.enableAria': 'Activer les instructions de style de réponse',
   'settings.behavior.page.responseStyle.enable': 'Ajouter des instructions de style de réponse aux nouvelles conversations',

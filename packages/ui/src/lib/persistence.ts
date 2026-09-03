@@ -1248,6 +1248,9 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   if (typeof candidate.autoCreateWorktree === 'boolean') {
     result.autoCreateWorktree = candidate.autoCreateWorktree;
   }
+  if (typeof candidate.worktreeFetchSource === 'boolean') {
+    result.worktreeFetchSource = candidate.worktreeFetchSource;
+  }
   if (typeof candidate.gitmojiEnabled === 'boolean') {
     result.gitmojiEnabled = candidate.gitmojiEnabled;
   }

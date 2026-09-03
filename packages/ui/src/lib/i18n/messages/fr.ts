@@ -1859,6 +1859,7 @@ export const dict = {
   'session.newWorktree.toast.sessionFromPr': 'Session créée à partir de PR',
   'session.newWorktree.toast.worktreeCreated': 'Worktree créé',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - démarrage en arrière-plan',
+  'session.newWorktree.toast.fetchSourceFailed': 'Impossible de récupérer depuis le dépôt distant — création à partir de l\'état local',
   'session.githubIntegration.title': 'Sélectionnez parmi GitHub',
   'session.githubIntegration.tabs.issues': 'Problèmes',
   'session.githubIntegration.tabs.pullRequests': 'PR',

@@ -2001,7 +2001,18 @@ async function attachGitWorktreeToCandidate(
   if (mode === 'new') {
     const parsedRemoteStartRef = await resolveRemoteBranchRef(context.primaryWorktree, startRef);
     if (parsedRemoteStartRef) {
-      await fetchRemoteBranchRef(context.primaryWorktree, parsedRemoteStartRef.remote, parsedRemoteStartRef.branch);
+      try {
+        await fetchRemoteBranchRef(context.primaryWorktree, parsedRemoteStartRef.remote, parsedRemoteStartRef.branch);
+      } catch (error) {
+        const refExists = await runGitCommand(
+          context.primaryWorktree,
+          ['show-ref', '--verify', '--quiet', parsedRemoteStartRef.fullRef],
+        );
+        if (!refExists.success) {
+          throw error;
+        }
+        console.warn(`[GitService] failed to refresh ${parsedRemoteStartRef.remote}/${parsedRemoteStartRef.branch}, proceeding with the existing remote-tracking ref`);
+      }
     }
   }
 

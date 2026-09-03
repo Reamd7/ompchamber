@@ -71,6 +71,9 @@ workspaces/
 .worktrees/
 .dev-ports.json
 
+# OpenChamber app runtime state (sessions db, screenshots)
+.openchamber/
+
 # Marks a disposable clone dedicated to unattended maintenance tasks.
 .maintenance-clone
 test-results/

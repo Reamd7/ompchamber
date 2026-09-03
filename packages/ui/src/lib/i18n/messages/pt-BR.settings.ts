@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Worktrees',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Buscar do remoto antes de criar worktrees',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Buscar alterações do remoto antes de criar worktrees',
+  'settings.behavior.page.worktreeFetchSource.info': 'Novos worktrees são criados a partir do estado remoto buscado do branch atual, e não do checkout local, para que não fiquem desatualizados. A criação usa o estado local quando o remoto está inacessível.',
   'settings.projects.page.field.projectAgent': 'Project Agent',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Sempre mostrar barras de rolagem',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Mantenha as barras visíveis para poder arrastá-las sem precisar rolar primeiro. Aplica-se apenas a este dispositivo.',
@@ -931,8 +935,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Não foi possível instalar as habilidades',
   'settings.skills.catalog.page.mode.manual': 'Manual',
   'settings.skills.catalog.page.mode.external': 'Externo',
-  'settings.skills.catalog.page.title': 'Catálogo de habilidades',
-  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',
+  'settings.skills.catalog.page.title': 'Catálogo de habilidades',  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',
   'settings.skills.catalog.page.section.sources': 'Fontes',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Pesquisar skills em todas as fontes…',
   'settings.skills.catalog.page.search.clear': 'Limpar pesquisa',

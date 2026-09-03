@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'Drzewa pracy',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Pobierz zmiany ze zdalnego przed utworzeniem drzew pracy',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Pobierz zmiany ze zdalnego repozytorium przed utworzeniem drzew pracy',
+  'settings.behavior.page.worktreeFetchSource.info': 'Nowe drzewa pracy powstają z pobranego zdalnego stanu bieżącej gałęzi, a nie z lokalnej kopii roboczej, dzięki czemu nie są nieaktualne. Jeśli zdalne repozytorium jest niedostępne, używany jest stan lokalny.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Zawsze pokazuj paski przewijania',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Paski przewijania pozostają widoczne, aby można było je przeciągać bez wcześniejszego przewijania. Dotyczy tylko tego urządzenia.',
   'settings.providers.page.openCodeGo.title': 'Śledzenie użycia OpenCode Go',

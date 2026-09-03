@@ -1889,6 +1889,7 @@ export const dict = {
   'session.newWorktree.toast.sessionFromPr': 'Sitzung aus Pull Request erstellt',
   'session.newWorktree.toast.worktreeCreated': 'Worktree erstellt',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - im Hintergrund initialisiert',
+  'session.newWorktree.toast.fetchSourceFailed': 'Remote konnte nicht abgerufen werden – aus dem lokalen Stand erstellt',
   'session.githubIntegration.title': 'Aus GitHub auswählen',
   'session.githubIntegration.tabs.issues': 'Probleme',
   'session.githubIntegration.tabs.pullRequests': 'Pull Requests',

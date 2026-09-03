@@ -2072,6 +2072,7 @@ export const dict: Record<I18nKey, string> = {
   'session.newWorktree.toast.sessionFromPr': '已從 PR 建立會話',
   'session.newWorktree.toast.worktreeCreated': 'Worktree 已建立',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - 正在背景初始化',
+  'session.newWorktree.toast.fetchSourceFailed': '無法從遠端擷取 — 已基於本機狀態建立',
   'session.githubIntegration.title': '從 GitHub 選擇',
   'session.githubIntegration.tabs.issues': 'Issues',
   'session.githubIntegration.tabs.pullRequests': 'Pull Requests',

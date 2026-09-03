@@ -1,4 +1,8 @@
 export const dict = {
+  'settings.behavior.page.section.worktrees': 'Worktree\'ler',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Worktree oluşturmadan önce uzak depodan fetch et',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Worktree oluşturmadan önce uzak depodan değişiklikleri fetch et',
+  'settings.behavior.page.worktreeFetchSource.info': 'Yeni worktree\'ler yerel checkout yerine geçerli dalın uzak depodan fetch edilen durumuna dayanır, böylece güncel kalır. Uzak depoya erişilemezse yerel durum kullanılır.',
   'settings.projects.page.field.projectAgent': 'Proje Ajanı',
   'settings.ompchamber.sessionRetention.field.onlyArchived': 'Yalnızca arşivlenmiş oturumlar',
   'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Sil seçeneğini kullanır ve saklama süresini arşivleme tarihinden itibaren sayar. Arşivlenmemiş oturumlar korunur.',
@@ -4758,6 +4762,7 @@ export const dict = {
   'session.newWorktree.toast.sessionFromPr': 'PR\'dan session oluşturuldu',
   'session.newWorktree.toast.worktreeCreated': 'Worktree oluşturuldu',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - arka planda hazırlanıyor',
+  'session.newWorktree.toast.fetchSourceFailed': 'Uzak depodan fetch edilemedi — yerel durumdan oluşturuldu',
   'session.githubIntegration.title': 'GitHub\'dan seç',
   'session.githubIntegration.tabs.issues': 'Issue\'lar',
   'session.githubIntegration.tabs.pullRequests': 'Pull Request\'ler',

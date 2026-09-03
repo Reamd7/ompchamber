@@ -2098,6 +2098,7 @@ export const dict: Record<I18nKey, string> = {
   'session.newWorktree.toast.sessionFromPr': 'PRからセッションを作成しました',
   'session.newWorktree.toast.worktreeCreated': 'ワークツリーを作成しました',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} - バックグラウンドでブートストラップ中',
+  'session.newWorktree.toast.fetchSourceFailed': 'リモートから取得できませんでした — ローカルの状態で作成しました',
   'session.githubIntegration.title': 'GitHubから選択',
   'session.githubIntegration.tabs.issues': 'Issue',
   'session.githubIntegration.tabs.pullRequests': 'プルリクエスト',

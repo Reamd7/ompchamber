@@ -3112,6 +3112,7 @@ export const dict: Record<I18nKey, string> = {
   'session.newWorktree.toast.sessionFromPr': 'Sesja utworzona z PR',
   'session.newWorktree.toast.worktreeCreated': 'Drzewo pracy utworzone',
   'session.newWorktree.toast.worktreeCreatedDescription': '{target} — inicjalizacja w tle',
+  'session.newWorktree.toast.fetchSourceFailed': 'Nie udało się pobrać ze zdalnego — utworzono na podstawie stanu lokalnego',
   'session.newWorktree.usingPrBranch': 'Używana gałąź PR: {branch}',
   'session.newWorktree.worktreeDirectory': 'Katalog drzewa pracy',
   'session.newWorktree.worktreeDirectoryPlaceholder': 'my-worktree-directory',

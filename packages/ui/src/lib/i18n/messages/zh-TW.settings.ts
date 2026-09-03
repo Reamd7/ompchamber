@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': '工作樹',
+  'settings.behavior.page.worktreeFetchSource.enable': '建立工作樹前先從遠端擷取',
+  'settings.behavior.page.worktreeFetchSource.enableAria': '建立工作樹前先從遠端儲存庫擷取變更',
+  'settings.behavior.page.worktreeFetchSource.info': '新工作樹基於目前分支從遠端擷取的狀態建立，而非本機檢出，因此不會落後。遠端無法使用時將改用本機狀態。',
   'settings.openchamber.visual.field.alwaysShowScrollbars': '一律顯示捲軸',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': '保持捲軸可見，不必先捲動就能拖曳。僅在此裝置上生效。',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go 用量追蹤',
@@ -632,8 +636,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': '位於 {path} 的舊版規則仍會被引擎讀取，但只要上方檔案存在，它將優先生效。',
   'settings.behavior.page.legacyNotice.active': '位於 {path} 的舊版檔案規則仍然生效。在上方儲存內容後，將在使用者範圍內覆寫這些規則。',
   'settings.behavior.page.section.systemPrompt': '全域 AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': '你是一個有幫助的 AI 助助理...\\n\\n在此設定 AI 在所有工作階段與服務提供者中都必須遵守的絕對行為規則。',
-  'settings.behavior.page.section.responseStyle': '回覆風格',
+  'settings.behavior.page.field.systemPromptPlaceholder': '你是一個有幫助的 AI 助助理...\\n\\n在此設定 AI 在所有工作階段與服務提供者中都必須遵守的絕對行為規則。',  'settings.behavior.page.section.responseStyle': '回覆風格',
   'settings.behavior.page.responseStyle.tooltip': '啟用後，這些說明會指導助理在每個新對話中的回覆方式。它們會隨你的第一則訊息一起送出，不會變更全域 AGENTS.md 規則。',
   'settings.behavior.page.responseStyle.enableAria': '啟用回覆風格說明',
   'settings.behavior.page.responseStyle.enable': '向新對話新增回覆風格說明',

@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': 'ワークツリー',
+  'settings.behavior.page.worktreeFetchSource.enable': 'ワークツリー作成前にリモートから取得',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'ワークツリー作成前にリモートから変更を取得する',
+  'settings.behavior.page.worktreeFetchSource.info': '新しいワークツリーは、ローカルのチェックアウトではなく現在のブランチのリモート状態を取得して作成されるため、最新の状態になります。リモートにアクセスできない場合はローカルの状態で作成されます。',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'スクロールバーを常に表示',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'スクロールバーを常に表示し、先にスクロールしなくてもドラッグできるようにします。このデバイスにのみ適用されます。',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go 使用量追跡',
@@ -668,8 +672,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': '{path} のレガシールールはエンジンによって引き続き読み込まれますが、上のファイルが存在する間はそちらが優先されます。',
   'settings.behavior.page.legacyNotice.active': 'レガシーファイル {path} のルールは引き続き適用されます。上に内容を保存すると、ユーザースコープで上書きされます。',
   'settings.behavior.page.section.systemPrompt': 'グローバル AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': 'あなたは役立つ AI アシスタントです...\\n\\nこのスペースを使用して、すべての Session と Provider にわたって AI の動作方法に関する絶対的なルールを定義してください。',
-  'settings.behavior.page.section.responseStyle': '応答スタイル',
+  'settings.behavior.page.field.systemPromptPlaceholder': 'あなたは役立つ AI アシスタントです...\\n\\nこのスペースを使用して、すべての Session と Provider にわたって AI の動作方法に関する絶対的なルールを定義してください。',  'settings.behavior.page.section.responseStyle': '応答スタイル',
   'settings.behavior.page.responseStyle.tooltip': '有効にすると、これらの指示は新しい会話ごとにアシスタントの応答方法をガイドします。最初のメッセージとともに送信され、グローバル AGENTS.md ルールは変更しません。',
   'settings.behavior.page.responseStyle.enableAria': '応答スタイルの指示を有効化',
   'settings.behavior.page.responseStyle.enable': '新しい会話に応答スタイルの指示を追加',

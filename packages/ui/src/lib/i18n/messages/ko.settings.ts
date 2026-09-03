@@ -2,6 +2,10 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.behavior.page.section.worktrees': '워크트리',
+  'settings.behavior.page.worktreeFetchSource.enable': '워크트리를 만들기 전에 원격에서 가져오기',
+  'settings.behavior.page.worktreeFetchSource.enableAria': '워크트리를 만들기 전에 원격에서 변경 사항 가져오기',
+  'settings.behavior.page.worktreeFetchSource.info': '새 워크트리는 로컬 체크아웃 대신 현재 브랜치의 원격 상태를 가져와서 만들어지므로 최신 상태를 유지합니다. 원격에 접근할 수 없으면 로컬 상태로 만듭니다.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': '스크롤바 항상 표시',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': '먼저 스크롤하지 않고도 드래그할 수 있도록 스크롤바를 항상 표시합니다. 이 기기에만 적용됩니다.',
   'settings.providers.page.openCodeGo.title': 'OpenCode Go 사용량 추적',
@@ -635,8 +639,7 @@ export const settingsDict = {
   'settings.behavior.page.legacyNotice.shadowed': '{path}의 레거시 규칙은 엔진이 계속 읽지만, 위의 파일이 존재하는 동안 우선 적용됩니다.',
   'settings.behavior.page.legacyNotice.active': '레거시 파일 {path}의 규칙은 여전히 적용됩니다. 위에 내용을 저장하면 사용자 범위에서 이를 대체합니다.',
   'settings.behavior.page.section.systemPrompt': '전역 AGENTS.md',
-  'settings.behavior.page.field.systemPromptPlaceholder': '당신은 유용한 AI 어시스턴트입니다...\\n\\n모든 세션과 공급자에서 AI가 어떻게 행동해야 하는지에 대한 절대적인 규칙을 정의할 수 있습니다.',
-  'settings.behavior.page.section.responseStyle': '응답 스타일',
+  'settings.behavior.page.field.systemPromptPlaceholder': '당신은 유용한 AI 어시스턴트입니다...\\n\\n모든 세션과 공급자에서 AI가 어떻게 행동해야 하는지에 대한 절대적인 규칙을 정의할 수 있습니다.',  'settings.behavior.page.section.responseStyle': '응답 스타일',
   'settings.behavior.page.responseStyle.tooltip': '활성화하면 이 지침이 새 대화에서 어시스턴트의 응답 방식을 안내합니다. 첫 메시지와 함께 전송되며 전역 AGENTS.md 규칙은 변경하지 않습니다.',
   'settings.behavior.page.responseStyle.enableAria': '응답 스타일 지침 활성화',
   'settings.behavior.page.responseStyle.enable': '새 대화에 응답 스타일 지침 추가',
