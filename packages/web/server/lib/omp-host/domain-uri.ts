@@ -54,7 +54,7 @@ import { InternalUrlRouter } from '@oh-my-pi/pi-coding-agent/internal-urls/route
 import type { InternalResource } from '@oh-my-pi/pi-coding-agent/internal-urls/types';
 import type { LocalProtocolOptions } from '@oh-my-pi/pi-coding-agent/internal-urls/local-protocol';
 import { normalizeDirectoryKey } from './registry.ts';
-import { ompFeatures, featureUnavailable } from './omp-parity.ts';
+import { errorText, ompFeatures, featureUnavailable } from './omp-parity.ts';
 import type { OmpFeatures } from './omp-parity.ts';
 
 const json = <T,>(data: T, init?: ResponseInit): Response => Response.json(data, init);
@@ -451,7 +451,7 @@ export const handleUriResolve = async ({ body = {}, localOptionsFor, tokens, rou
       ...(body.pathOnly ? { pathOnly: true } : {}),
     });
   } catch (error) {
-    const message = String(error?.message ?? error);
+    const message = String(errorText(error));
     if (message.includes('No session')) {
       return json({ error: 'no-session', message }, { status: 409 });
     }
@@ -1647,8 +1647,8 @@ export const createUriDomain = ({
     const token = typeof body?.token === 'string' ? body.token : undefined;
     return tokens.open(token, { directory: directory ?? undefined });
   };
-  const uriInfo = ({ query, directory }: { query?: URLSearchParams | null; directory?: string | null }) => {
-    const token = query?.get('token') ?? undefined;
+  const uriInfo = ({ query, directory }: { query?: UriTokenQueryLike | null; directory?: string | null }) => {
+    const token = query?.get?.('token') ?? query?.token ?? undefined;
     return tokens.describe(token, { directory: directory ?? undefined });
   };
   const uriContent = async ({ id, directory }: { id?: string | null; directory?: string | null }) => {

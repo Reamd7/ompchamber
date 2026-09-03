@@ -941,7 +941,7 @@ export class PendingDialogRegistry {
     this.#tombstones.set(record.id, { outcome, directory: record.directory });
     if (this.#tombstones.size > TOMBSTONE_CAP) {
       const oldest = this.#tombstones.keys().next().value;
-      this.#tombstones.delete(oldest);
+      if (oldest !== undefined) this.#tombstones.delete(oldest);
     }
     if (outcome === 'responded' || outcome === 'cancelled' || (outcome === 'timeout' && result)) {
       record.resolve({ outcome, result });
@@ -1241,8 +1241,13 @@ export const alwaysAllowTransaction = async (
   approve: () => Promise<ApproveOutcome | undefined>,
 ) => {
   await settingsWrite();
-  const isConflict = (value: ApproveOutcome | null | undefined): boolean =>
-    value?.status === 409 || value?.alreadySettled === true;
+  // SAFETY: catches arrive as unknown; the probe reads only the two
+  // conflict marker fields and treats everything else as non-conflict.
+  const isConflict = (cause: unknown): boolean => {
+    // SAFETY: catches arrive untyped; the probe reads only the two conflict markers.
+    const probe = cause as ApproveOutcome | null | undefined;
+    return probe?.status === 409 || probe?.alreadySettled === true;
+  };
   let approved = true;
   try {
     const result = await approve();

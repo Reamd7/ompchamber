@@ -41,7 +41,9 @@ const makeClock = (start = 1_000_000): ManualClock => {
       timers.set(id, { due: now + Math.max(0, delay), fn });
       return id;
     },
-    cancel: (id: number) => timers.delete(id),
+    cancel: (id: import('./domain-dialogs.ts').DialogTimerHandle) =>
+      // SAFETY: manual-clock timer ids are the numbers it issued itself.
+      timers.delete(id as number),
     async advance(ms: number) {
       const target = now + ms;
       for (;;) {
@@ -71,17 +73,23 @@ const CLIENT_B = '22222222-2222-4222-8222-222222222222';
 interface ManualClock {
   now(): number;
   schedule(fn: () => void, delay: number): number;
-  cancel(id: number): boolean;
+  cancel(id: import('./domain-dialogs.ts').DialogTimerHandle): boolean;
   advance(ms: number): Promise<void>;
   pending(): number;
 }
 
-const rejectionOf = async (promise: Promise<unknown>) => {
+/** Rejection view: dialog rejections carry name/message/outcome fields. */
+interface DialogRejectionView extends Error {
+  outcome?: string;
+}
+
+const rejectionOf = async (promise: Promise<unknown>): Promise<DialogRejectionView | null> => {
   try {
     await promise;
     return null;
   } catch (error) {
-    return error;
+    // SAFETY: registry rejects with its DialogRejection Error subclass.
+    return error as DialogRejectionView;
   }
 };
 
@@ -378,12 +386,13 @@ describe('PendingDialogRegistry', () => {
     await clock.advance(PRESENT_TTL_MS);
     const approvalError = await rejectionOf(approval.promise);
     expect(approvalError).toBeInstanceOf(Error);
-    expect(approvalError.message).toBe('dialog expired before presentation');
-    expect(approvalError.outcome).toBe('timeout');
+    expect(approvalError?.message).toBe('dialog expired before presentation');
+    expect(approvalError?.outcome).toBe('timeout');
     const askError = await rejectionOf(ask.promise);
-    expect(askError.name).toBe('AbortError'); // ask abort path (ask.ts:982-984)
-    expect(askError.outcome).toBe('timeout');
-    expect(diagnostics.filter((note: { outcome?: string }) => note.outcome === 'timeout').length).toBe(2);
+    expect(askError?.name).toBe('AbortError'); // ask abort path (ask.ts:982-984)
+    expect(askError?.outcome).toBe('timeout');
+    // SAFETY: catch value re-typed as the domain error the route threw.
+    expect(diagnostics.filter((note) => (note as { outcome?: string }).outcome === 'timeout').length).toBe(2);
   });
 
   test('T_answer runs from the presented-ack, not from registration', async () => {
@@ -474,11 +483,11 @@ describe('PendingDialogRegistry', () => {
     registry.enterOrphanWindow({ directory: DIR, sessionId: SESSION });
     await clock.advance(ORPHAN_WINDOW_MS);
     const approvalError = await rejectionOf(approval2.promise);
-    expect(approvalError.message).toBe('dialog orphaned (no UI lease)');
-    expect(approvalError.outcome).toBe('timeout');
+    expect(approvalError?.message).toBe('dialog orphaned (no UI lease)');
+    expect(approvalError?.outcome).toBe('timeout');
     const askError = await rejectionOf(ask.promise);
-    expect(askError.name).toBe('AbortError');
-    expect(askError.outcome).toBe('timeout');
+    expect(askError?.name).toBe('AbortError');
+    expect(askError?.outcome).toBe('timeout');
   });
 
   test('abort: single dialog, per-session batch, and signal path settle aborted with diagnostics', async () => {
@@ -502,12 +511,13 @@ describe('PendingDialogRegistry', () => {
     const count = registry.abortForSession({ directory: DIR, sessionId: SESSION }, 'user stop');
     expect(count).toBe(1); // `two` only; otherSession untouched
     const error = await rejectionOf(two.promise);
-    expect(error.message).toBe('user stop');
-    expect(error.outcome).toBe('aborted');
+    expect(error?.message).toBe('user stop');
+    expect(error?.outcome).toBe('aborted');
     expect(registry.snapshot({ directory: DIR }).dialogs.length).toBe(1);
     // Signal path is a no-op on settled dialogs.
     expect(registry.abortIfPendingSignal(one.id, 'signal')).toBe(false);
-    expect(diagnostics.filter((note: { outcome?: string }) => note.outcome === 'aborted').length).toBe(2);
+    // SAFETY: catch value re-typed as the domain error the route threw.
+    expect(diagnostics.filter((note) => (note as { outcome?: string }).outcome === 'aborted').length).toBe(2);
     // otherSession stays pending by design (untouched by the batch abort);
     // its manual-clock T_present never fires, so nothing leaks.
   });
@@ -530,11 +540,12 @@ describe('PendingDialogRegistry', () => {
     expect(count).toBe(2);
     const aError = await rejectionOf(a.promise);
     const bError = await rejectionOf(b.promise);
-    expect(aError.message).toBe('omp-host shutdown');
-    expect(bError.name).toBe('AbortError'); // ask takes the abort path (R11)
+    expect(aError?.message).toBe('omp-host shutdown');
+    expect(bError?.name).toBe('AbortError'); // ask takes the abort path (R11)
     expect(registry.snapshot({ directory: DIR }).dialogs).toEqual([]);
     expect(registry.snapshot({ directory: DIR_B }).dialogs).toEqual([]);
-    expect(settled.filter((payload: { outcome?: string }) => payload.outcome === 'aborted').length).toBe(2);
+    // SAFETY: catch value re-typed as the domain error the route threw.
+    expect(settled.filter((payload) => (payload as { outcome?: string }).outcome === 'aborted').length).toBe(2);
     expect(registry.respond(a.id, { directory: DIR, result: { kind: 'cancel' } })).toMatchObject({
       ok: false,
       status: 409,
@@ -767,7 +778,7 @@ describe('createDialogBridge', () => {
     registry.enterOrphanWindow({ directory: DIR, sessionId: SESSION });
     await clock.advance(ORPHAN_WINDOW_MS);
     const error = await rejectionOf(pending);
-    expect(error.message).toBe('dialog orphaned (no UI lease)');
+    expect(error?.message).toBe('dialog orphaned (no UI lease)');
     expect(dialog.kind).toBe('approval');
   });
 
@@ -776,7 +787,7 @@ describe('createDialogBridge', () => {
     leases.release({ directory: DIR, sessionId: SESSION, clientId: CLIENT_A });
     const bridge = createDialogBridge({ leases, registry, directory: DIR, sessionId: SESSION });
     const error = await rejectionOf(bridge.select('Allow tool: bash', ['Approve', 'Deny']));
-    expect(error.message).toBe('no interactive UI available');
+    expect(error?.message).toBe('no interactive UI available');
     expect(registry.snapshot({ directory: DIR }).dialogs).toEqual([]);
   });
 
@@ -788,8 +799,8 @@ describe('createDialogBridge', () => {
     const dialog = registry.snapshot({ directory: DIR }).dialogs[0];
     controller.abort();
     const error = await rejectionOf(pending);
-    expect(error.outcome).toBe('aborted');
-    expect(error.message).toBe('dialog aborted by signal');
+    expect(error?.outcome).toBe('aborted');
+    expect(error?.message).toBe('dialog aborted by signal');
     expect(registry.snapshot({ directory: DIR }).dialogs).toEqual([]);
     // Settle race: a late respond is a 409, not a crash.
     expect(registry.respond(dialog.id, { directory: DIR, result: { kind: 'confirm', value: true } }).status).toBe(409);
@@ -905,7 +916,7 @@ describe('registerDialogEndpoints', () => {
     const clock = makeClock();
     const domain = createDomainDialogs({ clock, bus: new OmpEventBus() });
     const routes = new Map();
-    const route = (method: string, pattern: string, handler: (request: Request, ctx?: { params?: Record<string, string> }) => Promise<Response>) => routes.set(`${method} ${pattern}`, handler);
+    const route = (method: string, pattern: string, handler: (request: Request, ctx?: import('./domain-dialogs.ts').DialogsRouteContext) => Response | Promise<Response>) => routes.set(`${method} ${pattern}`, handler);
     domain.mount(route, { feature });
     /** Per-call invocation init: path params, JSON body, absolute URL. */
     interface RouteCallInit {
@@ -1066,7 +1077,7 @@ describe('createDomainDialogs', () => {
     const count = await domain.dispose('omp-host shutdown');
     expect(count).toBe(1);
     const error = await pending;
-    expect(error.message).toBe('omp-host shutdown');
+    expect(error?.message).toBe('omp-host shutdown');
     expect(domain.registry.snapshot({ directory: DIR }).dialogs).toEqual([]);
     expect(domain.hasUISnapshotFor(DIR, SESSION).hasUI).toBe(false);
     expect(diagnostics).toEqual([

@@ -53,7 +53,7 @@ import {
 } from './domain-modes.ts';
 import type { PreparePlanReviewResult } from './domain-modes.ts';
 import { createDomainChrome } from './domain-chrome.ts';
-import { ompFeatures } from './omp-parity.ts';
+import { errorText, errorCode, ompFeatures } from './omp-parity.ts';
 import { revealCommand } from './domain-plugins.ts';
 import {
   createUriDomain,
@@ -273,7 +273,7 @@ export class OmpHostEngine {
     this.dialogs = createDomainDialogs({
       onSessionUiAttached: ({ directory, sessionId }) => {
         void this.#attachDialogUi(directory, sessionId).catch((error) => {
-          console.warn('[omp-host] failed to attach dialog UI:', error?.message ?? error);
+          console.warn('[omp-host] failed to attach dialog UI:', errorText(error));
         });
       },
       onSessionUiDetached: ({ directory, sessionId }) => this.#detachDialogUi(directory, sessionId),
@@ -415,7 +415,7 @@ export class OmpHostEngine {
       // Sidecar → omp agent migration (02 §6.2) runs before the request
       // surface opens; failure keeps the sidecar and never blocks boot.
       await this.#migrateAgentsSidecar().catch((error) => {
-        console.warn('[omp-host] agent sidecar migration failed:', error?.message ?? error);
+        console.warn('[omp-host] agent sidecar migration failed:', errorText(error));
       });
       // Per-directory keyed Settings store (spec 06 §5.1, master R6). The
       // boot instance doubles as the global-write executor; sessions inject
@@ -429,7 +429,7 @@ export class OmpHostEngine {
         } catch (error) {
           // Degrade to no-injection (pre-R6 behavior) instead of bricking
           // every session; the settings endpoints surface the error.
-          console.warn('[omp-host] settings store unavailable:', error?.message ?? error);
+          console.warn('[omp-host] settings store unavailable:', errorText(error));
           this.settingsStore = null;
         }
       }
@@ -456,7 +456,7 @@ export class OmpHostEngine {
           uiContext: asExtensionUiContext(uiContext),
           mode: 'json',
           reportSendError: (action, error) => {
-            console.warn(`[omp-host] ${action} failed:`, error?.message ?? error);
+            console.warn(`[omp-host] ${action} failed:`, errorText(error));
           },
           reportRuntimeError: (error) => {
             console.warn('[omp-host] extension runtime error:', error?.error ?? error);
@@ -628,7 +628,7 @@ export class OmpHostEngine {
           this.savePersonas();
           done = true;
         } catch (error) {
-          console.warn('[omp-host] sidecar migration markDone failed:', error?.message ?? error);
+          console.warn('[omp-host] sidecar migration markDone failed:', errorText(error));
         }
       },
       log: (message, error) => console.warn('[omp-host] agent sidecar migration:', message, error ?? '')
@@ -718,7 +718,7 @@ export class OmpHostEngine {
           withFileTypes: true,
         });
       } catch (error) {
-        if (error?.code === 'ENOENT') return; // no local root yet — authoritative empty
+        if (errorCode(error) === 'ENOENT') return; // no local root yet — authoritative empty
         throw error;
       }
       for (const entry of entries) {
@@ -1333,7 +1333,7 @@ export class OmpHostEngine {
         pluginNames: plugins.map((plugin) => plugin.name)
       };
     } catch (error) {
-      console.warn('[omp-host] applied-plugins snapshot failed:', error?.message ?? error);
+      console.warn('[omp-host] applied-plugins snapshot failed:', errorText(error));
       return null;
     }
   }
@@ -1370,13 +1370,13 @@ export class OmpHostEngine {
       const { clearPluginRootsAndCaches } = await import('@oh-my-pi/pi-coding-agent/discovery/helpers');
       clearPluginRootsAndCaches(projectRegistryPath ? [projectRegistryPath] : undefined);
     } catch (error) {
-      console.warn('[omp-host] reload cache invalidation failed:', error?.message ?? error);
+      console.warn('[omp-host] reload cache invalidation failed:', errorText(error));
     }
     try {
       const { refreshAgentDiscovery } = await import('@oh-my-pi/pi-coding-agent/task');
       await refreshAgentDiscovery(directoryKey);
     } catch (error) {
-      console.warn('[omp-host] reload agent discovery refresh failed:', error?.message ?? error);
+      console.warn('[omp-host] reload agent discovery refresh failed:', errorText(error));
     }
     let sessionsRefreshed = 0;
     for (const hostSession of this.sessions.values()) {
@@ -1386,7 +1386,7 @@ export class OmpHostEngine {
         await hostSession.agentSession.refreshSkills?.();
         sessionsRefreshed += 1;
       } catch (error) {
-        console.warn('[omp-host] reload skills refresh failed:', hostSession.sessionId, error?.message ?? error);
+        console.warn('[omp-host] reload skills refresh failed:', hostSession.sessionId, errorText(error));
       }
     }
     return { sessionsRefreshed };
@@ -2103,7 +2103,7 @@ export class OmpHostEngine {
       const target = this.#resolveModel(model);
       if (target && modelSelector(target) !== modelSelector(session.model)) {
         await session.setModel(target).catch((error) => {
-          console.error('[omp-host] model switch failed:', error?.message ?? error);
+          console.error('[omp-host] model switch failed:', errorText(error));
         });
         this.registry.update(directoryKey, sessionID, {
           model: modelSelector(target)
@@ -2268,7 +2268,7 @@ export class OmpHostEngine {
     if (!target) return { ok: false, error: 'unknown model' };
     if (modelSelector(target) !== modelSelector(session.model)) {
       await session.setModel(target).catch((error) => {
-        console.error('[omp-host] model switch failed:', error?.message ?? error);
+        console.error('[omp-host] model switch failed:', errorText(error));
       });
       this.registry.update(directoryKey, sessionID, {
         model: modelSelector(target)
@@ -2284,7 +2284,7 @@ export class OmpHostEngine {
         // ('low'|'medium'|'high'); 'inherit' is the OMP clear sentinel.
         session.setThinkingLevel(thinkingLevel === 'inherit' ? undefined : (thinkingLevel as Parameters<NonNullable<AgentSession['setThinkingLevel']>>[0]));
       } catch (error) {
-        console.error('[omp-host] thinking level switch failed:', error?.message ?? error);
+        console.error('[omp-host] thinking level switch failed:', errorText(error));
       }
     }
     return {
@@ -2311,7 +2311,7 @@ export class OmpHostEngine {
         (error) => {
           // The cancellation signal was still delivered; a rejected teardown
           // step must not break the stop contract — but leave a trace.
-          console.warn('[omp-host] abort teardown rejected:', error?.message ?? error);
+          console.warn('[omp-host] abort teardown rejected:', errorText(error));
           return true;
         }
       ),

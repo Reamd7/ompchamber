@@ -120,7 +120,7 @@ describe('listOmpCommands aggregation', () => {
 describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
   const makeRoute = () => {
     const handlers = new Map();
-    const route = (method: string, pattern: string, handler: (request: Request, ctx?: { params?: Record<string, string> }) => Promise<Response>) => handlers.set(`${method} ${pattern}`, handler);
+    const route = (method: string, pattern: string, handler: (request: Request) => Response | Promise<Response>) => handlers.set(`${method} ${pattern}`, handler);
     return { handlers, route };
   };
   const request = (url: string) => new Request(url);
@@ -135,7 +135,8 @@ describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
         return [];
       },
     });
-    const response = await handlers.get('GET /omp/commands')(request('http://host/omp/commands'));
+    // SAFETY: catch value re-typed as the domain error the route threw.
+    const response = await (handlers.get('GET /omp/commands') as (request: Request) => Promise<Response>)(request('http://host/omp/commands'));
     expect(response.status).toBe(501);
     expect(await response.json()).toEqual({ error: 'commands.v1-unavailable' });
     expect(called).toBe(0);

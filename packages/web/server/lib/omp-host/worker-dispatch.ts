@@ -232,7 +232,9 @@ const runIpcSubprocessWorker = async (
       return;
     }
     try {
-      sender.call(process, message);
+      // SAFETY: process.send's bound form is (message, callback, handle);
+      // the optional args are omitted exactly as the direct call did.
+      (sender as (message: IpcWorkerMessage, callback?: () => void, handle?: NodeJS.ProcessEnv) => boolean).call(process, message);
     } catch (error) {
       if (options.rethrowConnectedSendErrors && process.connected) throw error;
       shutdown();

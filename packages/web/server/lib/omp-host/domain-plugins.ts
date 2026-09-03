@@ -34,7 +34,7 @@ import {
   getMarketplacesRegistryPath,
   getPluginsCacheDir,
 } from '@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace';
-import { featureUnavailable, ompFeatures } from './omp-parity.ts';
+import { errorText, errorCode, featureUnavailable, ompFeatures } from './omp-parity.ts';
 import type { InstalledPlugin, PluginFeature, PluginManifest, PluginSettingType, ProjectPluginOverrides, ScopedInstalledPlugin } from '@oh-my-pi/pi-coding-agent/extensibility/plugins';
 
 type PluginKind = 'npm' | 'marketplace';
@@ -621,7 +621,7 @@ export const registerPluginsDomainRoutes = (
     try {
       return json(await list(directory));
     } catch (error) {
-      console.warn('[omp-host] failed to list plugins:', error?.message ?? error);
+      console.warn('[omp-host] failed to list plugins:', errorText(error));
       return failed('Failed to list omp plugins');
     }
   });
@@ -657,7 +657,7 @@ export const registerPluginsDomainRoutes = (
       await invalidatePluginCaches(directory);
       return json(restartDeferred('OMP plugin installed. Restart the omp engine to apply it.'));
     } catch (error) {
-      console.warn('[omp-host] failed to install plugin:', error?.message ?? error);
+      console.warn('[omp-host] failed to install plugin:', errorText(error));
       return failed('Failed to install omp plugin');
     }
   });
@@ -758,8 +758,8 @@ export const registerPluginsDomainRoutes = (
       await invalidatePluginCaches(directory);
       return json(restartDeferred('OMP plugin state updated. Restart the omp engine to apply it.'));
     } catch (error) {
-      if (/not found|does not exist/i.test(error?.message ?? '')) return notFound('plugin not found');
-      console.warn('[omp-host] failed to update plugin:', error?.message ?? error);
+      if (/not found|does not exist/i.test(errorText(error))) return notFound('plugin not found');
+      console.warn('[omp-host] failed to update plugin:', errorText(error));
       return failed('Failed to update omp plugin');
     }
   });
@@ -782,8 +782,8 @@ export const registerPluginsDomainRoutes = (
       await invalidatePluginCaches(directory);
       return json(restartDeferred('OMP plugin removed. Restart the omp engine to apply it.'));
     } catch (error) {
-      if (/not found|does not exist/i.test(error?.message ?? '')) return notFound('plugin not found');
-      console.warn('[omp-host] failed to remove plugin:', error?.message ?? error);
+      if (/not found|does not exist/i.test(errorText(error))) return notFound('plugin not found');
+      console.warn('[omp-host] failed to remove plugin:', errorText(error));
       return failed('Failed to remove omp plugin');
     }
   });
@@ -801,7 +801,7 @@ export const registerPluginsDomainRoutes = (
       await revealInFileManager(targetPath);
       return json({ ok: true });
     } catch (error) {
-      console.warn('[omp-host] failed to reveal plugin:', error?.message ?? error);
+      console.warn('[omp-host] failed to reveal plugin:', errorText(error));
       return failed('Failed to reveal omp plugin');
     }
   });
@@ -817,7 +817,7 @@ export const registerPluginsDomainRoutes = (
       await revealInFileManager(target.path);
       return json({ ok: true });
     } catch (error) {
-      console.warn('[omp-host] failed to reveal extension:', error?.message ?? error);
+      console.warn('[omp-host] failed to reveal extension:', errorText(error));
       return failed('Failed to reveal omp extension');
     }
   });
@@ -844,7 +844,7 @@ export const registerPluginsDomainRoutes = (
         }));
       return json({ sessions });
     } catch (error) {
-      console.warn('[omp-host] failed to project applied plugins:', error?.message ?? error);
+      console.warn('[omp-host] failed to project applied plugins:', errorText(error));
       return failed('Failed to project applied plugins');
     }
   });
@@ -858,7 +858,7 @@ export const registerPluginsDomainRoutes = (
       const { sessionsRefreshed } = await reloadSessions(directory, url.searchParams.get('sessionId'));
       return json({ ok: true, sessionsRefreshed });
     } catch (error) {
-      console.warn('[omp-host] failed to reload plugins:', error?.message ?? error);
+      console.warn('[omp-host] failed to reload plugins:', errorText(error));
       return failed('Failed to reload omp plugins');
     }
   });

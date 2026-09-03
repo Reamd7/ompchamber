@@ -89,7 +89,7 @@ describe('worker-dispatch execution', () => {
   });
 
   test('ipc-worker selectors hand the starter a transport over process IPC', async () => {
-    const starter = mock((_transport: IpcWorkerTransport) => {});
+    const starter = mock((_transport?: IpcWorkerTransport) => {});
     const loadModule = mock(async () => ({ startSttWorker: starter }));
     let started: boolean | undefined;
     const ipcWorker = mock(async (start: (transport: IpcWorkerTransport) => void, options?: IpcWorkerRunOptions) => {
@@ -105,7 +105,7 @@ describe('worker-dispatch execution', () => {
   });
 
   test('js eval process receives a rejection interceptor and rethrowing sends', async () => {
-    const starter = mock((_transport: IpcWorkerTransport, _interceptor: RejectionInterceptor) => {});
+    const starter = mock((_transport?: IpcWorkerTransport, _interceptor?: RejectionInterceptor) => {});
     const loadModule = mock(async () => ({ startJsEvalProcess: starter }));
     let seenOptions: unknown;
     await runWorkerDispatch('__omp_worker_js_eval_process', {

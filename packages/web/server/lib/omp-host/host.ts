@@ -10,6 +10,7 @@
 // OpenCode server printed, so existing wait-for-ready logic keeps working.
 
 import path from 'node:path';
+import { errorText } from './omp-parity.ts';
 import { fileURLToPath } from 'node:url';
 import { isDispatchableInvocation, runWorkerDispatch } from './worker-dispatch.ts';
 import { OmpHostEngine } from './engine.ts';
@@ -100,7 +101,7 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
         } catch (error) {
           console.error('[omp-host] handler error:', pathname, error);
           return Response.json(
-            { name: 'UnknownError', data: { message: error?.message ?? String(error) } },
+            { name: 'UnknownError', data: { message: errorText(error) } },
             { status: 500 },
           );
         }

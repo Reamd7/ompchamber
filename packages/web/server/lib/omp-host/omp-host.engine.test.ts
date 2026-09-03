@@ -145,7 +145,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     // mock.module interception also covers direct file-URL imports of the
     // package's source files, so capability probing is the only pierce.
     // This harness itself never calls loadIsolated.
-    static loadIsolated = realSdk.Settings.loadIsolated.bind(realSdk.Settings);
+    static loadIsolated: typeof realSdk.Settings.loadIsolated = realSdk.Settings.loadIsolated.bind(realSdk.Settings);
   },
   VERSION: 'test',
   discoverAuthStorage: () => ({}),
