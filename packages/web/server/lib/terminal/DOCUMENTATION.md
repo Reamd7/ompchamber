@@ -14,6 +14,7 @@
 - `output`, `exit`, and `restarted` carry monotonically increasing per-terminal sequences. Output carries raw live bytes plus replay-safe bytes with terminal query exchanges removed.
 - Attach registers before capturing the snapshot, buffers concurrent events, drops events represented by the snapshot sequence, then enters live delivery.
 - `write` always includes the terminal ID; sockets never have mutable single-terminal binding state.
+- `ack` carries one terminal's last applied sequence per frame (`{t:'ack', s, q}`). Clients acknowledge applied sequences at least every 200ms while output streams and immediately after applying a snapshot; the server uses them solely for send-side flow control (below), never for ordering. Attach/snapshot exchanges carry no ordering contract beyond `q`.
 - `detach` removes only that attachment.
 - Creation carries the active UI appearance. The PTY sets `COLORFGBG` and answers OSC 10, OSC 11, Mode 2031, and primary-device-attribute queries immediately, including queries emitted before a WebSocket attachment exists. The DA1 fallback prevents Fish from waiting ten seconds for a renderer that cannot observe or answer its startup query. Subscribed TUIs receive a Mode 2031 notification when the appearance changes.
 
@@ -30,11 +31,20 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 - PTY children explicitly clear `NODE_CHANNEL_FD`; daemon IPC descriptors are host-private and invalid after PTY descriptor cleanup.
 - PTY children also strip AppImage `ARGV0` (and other host-private shell vars such as `ELECTRON_RUN_AS_NODE`, `BASH_ENV`, `ENV`, `BASH_XTRACEFD`). An exported `ARGV0` makes zsh rewrite argv[0] for every external command, which breaks Python venv detection and other argv[0]/$0 consumers while leaving `/proc/self/exe` correct. On Linux, PTY spawn is wrapped with `env -u ARGV0` because `bun-pty` merges the native OS environ and would otherwise reintroduce `ARGV0` after a JS-only delete.
 - `GET /api/terminal/shells` reports shell IDs available on the active server using the same augmented PATH provided to spawned PTYs, plus whether each executable has a supported login-mode argument. `auto` preserves environment/platform fallback order; an explicit unavailable shell fails creation instead of silently running a different shell. Login mode is opt-in and uses only built-in arguments for known shells. Preference changes affect new sessions and explicit restarts, not running PTYs.
-- PTY data and exit callbacks enter one FIFO queue. Stale callbacks from replaced processes are ignored.
-- Scrollback is retained on the server and capped at 512 KiB with UTF-8-safe trimming. Device-status, device-attribute, cursor-position reply, and color-query exchanges are removed from replay history with incomplete control sequences carried across PTY chunks; live output remains byte-for-byte unchanged.
-- Exited sessions remain attachable until explicit close or idle cleanup.
+- PTY data and exit callbacks enter one FIFO queue. Stale callbacks from replaced processes are ignored. The drain is sliced by bytes and wall time (256 KiB / 4 ms per slice) and yields between slices via `setImmediate`, so a flood cannot monopolize the event loop; restart bumps a drain token that invalidates in-flight slices.
+- Scrollback is retained on the server and capped at 512 KiB with UTF-8-safe trimming. Device-status, device-attribute, cursor-position reply, and color-query exchanges are removed from replay history with incomplete control sequences carried across PTY chunks; live output remains byte-for-byte unchanged. History is stored as a chunk deque (append is O(chunk); the byte-exact 512 KiB tail is applied when a snapshot materializes the text), never as one accumulating string — string concat per PTY chunk copies ~512 KiB per ~4 KiB chunk and was the dominant CPU cost under floods.
+- Send-side flow control bounds server memory per attachment: Bun's server WebSocket exposes no send-buffer signal and buffers unbounded data per socket, so each attachment tracks sent-but-unacknowledged bytes (output frames and snapshots). Past 4 MiB the attachment is suppressed — output frames are skipped for it while sequence numbers keep advancing, so its next live frame gap-triggers the client's existing resync — and once its lag drains below 1 MiB by acknowledgment it receives a snapshot and live output resumes. Connections that never acknowledge are suppressed after 8 MiB as a fail-safe. Non-output events (exit, resized, restarted, command-finished) are never suppressed. A flood therefore completes at PTY speed, other attachments and HTTP keep their service, and server memory stays bounded regardless of output volume.
 - Restarts are serialized per terminal. Each restart spawns and wires the replacement before terminating the old process, retaining the terminal ID.
 - Close uses SIGTERM with bounded SIGKILL escalation. Force-kill, idle cleanup, and runtime shutdown terminate process groups immediately where supported. Removal explicitly sends a fatal scoped closure and evicts client projections even when a PTY backend fails to emit `onExit`; attached terminals are not considered idle.
+- Windows PTY spawn prefers the `conpty.dll` bundled with node-pty's
+  prebuilds (a current Terminal-era build) over the OS-built-in
+  pseudoconsole: measured 3x read throughput on output floods (42 vs 14
+  MiB/s standalone; 43.6 vs 7.4 MiB/s end-to-end). The DLL's presence is
+  resolved once at runtime start; a packaging gap silently falls back to
+  the built-in path. The bundled DLL probes primary device attributes
+  (`ESC [ c`) during its own startup handshake, so the theme-responder only
+  answers DA queries on the classic backend (`session.respondPrimaryDA`) —
+  answering the DLL's probe wrote the response into the shell's input line.
 
 ## Security And Relay
 
@@ -48,3 +58,18 @@ Run:
 bun test packages/web/server/lib/terminal/runtime.test.js packages/web/server/lib/terminal/terminal-ws-protocol.test.js
 bun test packages/web/server/lib/ui-auth/ui-auth.test.js packages/web/server/lib/relay/cross-compat.test.js
 ```
+
+## Known upstream issue: bun-pty stalls after a hard-killed writer (Bun launch only)
+
+The server no longer launches under Bun (see `docs/BUN_PTY_STALL.md` for the
+full investigation), so its PTY backend is node-pty and this issue does not
+apply to shipped configurations. It is documented for anyone who runs
+`server/index.js` under Bun manually: on Windows, if a process writing
+heavily inside a terminal (hundreds of megabytes) is terminated with
+`TerminateProcess` — external task-kill, or a terminal close/restart during a
+flood — bun-pty's native read loop can pin one core for a backlog-proportional
+time (minutes for very large floods) while the JS event loop stays idle: HTTP
+stops answering, SIGINT is not delivered, and the stall drains by itself.
+Reproduced without any OpenChamber code via `artifacts/term-bench/pty-variants.mjs`.
+The flood backpressure and send-lag controls above bound what the server
+itself buffers under either backend.

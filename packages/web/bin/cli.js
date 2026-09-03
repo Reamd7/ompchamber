@@ -128,21 +128,13 @@ function isBunRuntime() {
   return typeof globalThis.Bun !== 'undefined';
 }
 
-function isBunInstalled() {
-  try {
-    const result = spawnSync(BUN_BIN, ['--version'], {
-      stdio: 'ignore',
-      env: process.env,
-      windowsHide: true,
-    });
-    return result.status === 0;
-  } catch {
-    return false;
-  }
-}
-
+// The web server always launches under Node; Bun is reserved for the omp host
+// engine, the only component that requires it. Under Bun the Windows terminal
+// PTY backend (bun-pty) stalls one core for a backlog-proportional time after
+// a heavy writer inside a terminal is hard-killed; node-pty under Node has no
+// such stall (see docs/BUN_PTY_STALL.md).
 function getPreferredServerRuntime() {
-  return isBunInstalled() ? 'bun' : 'node';
+  return 'node';
 }
 
 async function checkOpenCodeCLI(onNotice) {

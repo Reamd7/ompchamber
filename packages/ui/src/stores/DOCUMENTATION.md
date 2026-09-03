@@ -119,7 +119,12 @@ Invariants to preserve when editing:
 - Only `sessions` and `nextTabId` are persisted. `partialize` reuses its previous
   projection while both are referentially unchanged, and the storage adapter skips a write
   for an unchanged projection, so streaming output performs no persistence work.
-- Consumers that react to output must subscribe to `buffers`, not `sessions`.
+- `revision` on a buffer increments only when `replaceBuffer` swaps in a server
+  snapshot; `appendToBuffer` preserves it. Terminal views subscribe to the
+  revision (not to `chunks`) and replay from `getBuffer()` snapshots, while
+  streaming output reaches the mounted viewport via a direct write path —
+  re-rendering React per output frame accumulated unbounded Blink
+  (PartitionAlloc) memory under floods.
 
 ## Git / PR Stores
 

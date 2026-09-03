@@ -590,6 +590,124 @@ describe('terminal runtime', () => {
     }
   }, 15_000);
 
+  it('bounds flood output: ack-driven suppression, snapshot recovery, capped history, and live HTTP', async () => {
+    const app = express();
+    app.use(express.json());
+    const server = http.createServer(app);
+    const processes = [];
+    const loadPtyProvider = async () => ({
+      backend: 'fake-pty',
+      spawn: () => {
+        const data = new Set();
+        const exits = new Set();
+        const process = {
+          pid: 99777,
+          killed: false,
+          writes: [],
+          write(value) { this.writes.push(value); }, resize() {}, kill() { this.killed = true; },
+          onData(handler) { data.add(handler); return { dispose: () => data.delete(handler) }; },
+          onExit(handler) { exits.add(handler); return { dispose: () => exits.delete(handler) }; },
+          emitData(value) { for (const handler of data) handler(value); },
+          emitExit(exitCode) { for (const handler of exits) handler({ exitCode, signal: 0 }); },
+        };
+        processes.push(process);
+        return process;
+      },
+    });
+    const runtime = createRuntime(server, {
+      app, loadPtyProvider,
+      terminalTerminationGraceMs: 10,
+      fs: { promises: { stat: async () => ({ isDirectory: () => true }) } },
+      searchPathFor: () => '/bin/sh', isExecutable: () => true,
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const base = `http://127.0.0.1:${address.port}`;
+    const socketUrl = `ws://127.0.0.1:${address.port}/api/terminal/ws`;
+    const sockets = [];
+    const open = async () => {
+      const socket = new WebSocket(socketUrl);
+      sockets.push(socket);
+      const messages = [];
+      socket.on('message', (raw) => messages.push(readTerminalWsControlFrame(raw)));
+      await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+      const next = async (type, sessionId) => {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+          const index = messages.findIndex((message) => message?.t === type && (!sessionId || message.s === sessionId));
+          if (index >= 0) return messages.splice(index, 1)[0];
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        throw new Error(`Timed out waiting for ${type}`);
+      };
+      await next('hello');
+      return { socket, next, messages };
+    };
+
+    try {
+      await fetch(`${base}/api/terminal/create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'term-flood', cwd: '/repo', cols: 80, rows: 24 }),
+      });
+      const client = await open();
+      client.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-flood' }));
+      await client.next('snapshot', 'term-flood');
+
+      // Small output flows live without any acknowledgment.
+      processes[0].emitData('hello\r\n');
+      expect(await client.next('output', 'term-flood')).toMatchObject({ d: 'hello\r\n' });
+
+      // Flood ~12.6 MiB in 64 KiB chunks while never acknowledging. Suppression
+      // must engage (fallback path: no acks, >8 MiB sent), bounding what this
+      // consumer receives. HTTP must keep answering throughout the drain.
+      const CHUNKS = 200;
+      const chunk = `${'x'.repeat(64 * 1024 - 1)}\n`;
+      const latencies = [];
+      const probe = (async () => {
+        for (let i = 0; i < 40; i += 1) {
+          const started = Date.now();
+          const response = await fetch(`${base}/api/terminal/sessions`);
+          latencies.push(Date.now() - started);
+          expect(response.status).toBe(200);
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      })();
+      for (let i = 0; i < CHUNKS; i += 1) processes[0].emitData(chunk);
+      await probe;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const outputs = client.messages.filter((message) => message?.t === 'output' && message.s === 'term-flood');
+      let receivedBytes = 0;
+      for (const message of outputs) receivedBytes += message.d?.length ?? 0;
+      expect(outputs.length).toBeLessThan(CHUNKS);
+      expect(receivedBytes).toBeLessThan(9 * 1024 * 1024);
+      expect(Math.max(...latencies)).toBeLessThan(1000);
+
+      // Exit is never suppressed.
+      processes[0].emitExit(3);
+      expect(await client.next('exit', 'term-flood')).toMatchObject({ exitCode: 3 });
+
+      // Acknowledging drains the lag: the attachment recovers with a snapshot
+      // whose history is capped and reflects the tail, and live output resumes.
+      let lastQ = 0;
+      for (const message of client.messages) if (typeof message?.q === 'number' && message.s === 'term-flood') lastQ = Math.max(lastQ, message.q);
+      client.socket.send(createTerminalWsControlFrame({ t: 'ack', v: 3, s: 'term-flood', q: lastQ }));
+      const recovery = await client.next('snapshot', 'term-flood');
+      expect(Buffer.byteLength(recovery.history)).toBeLessThanOrEqual(512 * 1024 + 1024);
+      expect(recovery.history.endsWith('x\n')).toBe(true);
+
+      // A fresh attachment after the flood gets the same bounded tail.
+      const late = await open();
+      late.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-flood' }));
+      const lateSnapshot = await late.next('snapshot', 'term-flood');
+      expect(Buffer.byteLength(lateSnapshot.history)).toBeLessThanOrEqual(512 * 1024 + 1024);
+      late.socket.close();
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      await runtime.shutdown();
+      server.closeAllConnections?.();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }, 30_000);
+
   it('runs viewport-driver claim, follow, release, and disconnect-release over real websockets', async () => {
     const app = express();
     app.use(express.json());

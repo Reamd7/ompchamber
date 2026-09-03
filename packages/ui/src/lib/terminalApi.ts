@@ -18,7 +18,6 @@ type TerminalProjection = {
   ptyBackend?: string;
 };
 const TAG = 1;
-const MAX_PROJECTION_BYTES = 512 * 1024;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 /**
@@ -55,13 +54,6 @@ const responseError = async (response: Response, fallback: string): Promise<Erro
   return new Error(typeof body?.error === 'string' ? body.error : fallback);
 };
 
-const trimProjection = (value: string): string => {
-  const bytes = encoder.encode(value);
-  if (bytes.byteLength <= MAX_PROJECTION_BYTES) return value;
-  let start = bytes.byteLength - MAX_PROJECTION_BYTES;
-  while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
-  return decoder.decode(bytes.subarray(start));
-};
 
 type TerminalTransportDependencies = {
   refreshAuth: () => Promise<unknown>;
@@ -76,6 +68,8 @@ export class TerminalTransport {
   private projections = new Map<string, TerminalProjection>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastAckAt = 0;
+  private ackTimer: ReturnType<typeof setTimeout> | null = null;
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly viewports = new Map<string, { cols: number; rows: number }>();
   private connectionId: string | null = null;
@@ -121,6 +115,7 @@ export class TerminalTransport {
       if (current?.size === 0) {
         this.subscribers.delete(sessionId);
         this.projections.delete(sessionId);
+        this.consumedSequences.delete(sessionId);
         this.send({ t: 'detach', v: 3, s: sessionId });
       }
       if (this.subscribers.size === 0) {
@@ -152,10 +147,12 @@ export class TerminalTransport {
     this.disposed = true;
     this.generation += 1;
     this.opening = null;
-    this.subscribers.clear();
     this.projections.clear();
+    this.consumedSequences.clear();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.ackTimer) clearTimeout(this.ackTimer);
+    this.ackTimer = null;
     this.cancelIdleClose();
     this.wakeCleanup?.();
     this.wakeCleanup = null;
@@ -164,6 +161,15 @@ export class TerminalTransport {
 
   forget(sessionId: string): void {
     this.projections.delete(sessionId);
+    this.consumedSequences.delete(sessionId);
+  }
+
+  /** Renderer-consumption report from the terminal viewport: drives acks. */
+  reportConsumed(sessionId: string, sequence: number): void {
+    const previous = this.consumedSequences.get(sessionId);
+    if (previous !== undefined && sequence <= previous) return;
+    this.consumedSequences.set(sessionId, sequence);
+    this.sendAcks();
   }
 
   private async ensureConnected(): Promise<void> {
@@ -291,6 +297,7 @@ export class TerminalTransport {
         sub.lastSequence = projection.sequence;
         sub.handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
       }
+      this.sendAcks(true);
       return;
     }
     // driverChanged may arrive without q (sent directly during attach, not via publish)
@@ -321,7 +328,7 @@ export class TerminalTransport {
       return;
     }
     if (previous && message.q > previous.sequence) {
-      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
+      if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
       else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
       else if (message.t === 'resized') this.projections.set(message.s, { ...previous, sequence: message.q });
@@ -334,6 +341,7 @@ export class TerminalTransport {
       else if (message.t === 'resized') sub.handlers.onEvent({ type: 'resized', sequence: message.q, cols: typeof message.cols === 'number' ? message.cols : undefined, rows: typeof message.rows === 'number' ? message.rows : undefined, ownerId: typeof message.ownerId === 'string' ? message.ownerId : undefined });
       else if (message.t === 'command-finished') sub.handlers.onEvent({ type: 'command-finished', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined });
     }
+    this.sendAcks();
   }
 
   private readonly resyncAttempts = new Map<string, { count: number; timer: ReturnType<typeof setTimeout> | null }>();
@@ -384,6 +392,34 @@ export class TerminalTransport {
     try { this.socket.send(encode(message)); return true; } catch { return false; }
   }
 
+  /**
+   * Acknowledge consumed sequences so the server can bound its send buffer
+   * per attachment (the server WebSocket exposes no send-backpressure
+   * signal). The acknowledged sequence is the RENDERER's consumption point
+   * when the viewport reports one — acking ws receipt instead would let a
+   * slow renderer buffer an unbounded flood inside the browser. Falls back
+   * to the projection sequence for sessions without a mounted viewport
+   * (their store buffer is 512 KiB-capped, so receipt-acking is bounded).
+   * Throttled to one frame per 200ms while output streams; forced after a
+   * snapshot, since a snapshot supersedes everything before it.
+   */
+  private readonly consumedSequences = new Map<string, number>();
+  private sendAcks(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastAckAt < 200) {
+      if (this.ackTimer) return;
+      const wait = 200 - (now - this.lastAckAt);
+      this.ackTimer = setTimeout(() => { this.ackTimer = null; this.sendAcks(true); }, wait);
+      return;
+    }
+    this.lastAckAt = now;
+    for (const [sessionId, projection] of this.projections) {
+      const consumed = this.consumedSequences.get(sessionId);
+      const q = consumed !== undefined ? Math.min(consumed, projection.sequence) : projection.sequence;
+      this.send({ t: 'ack', v: 3, s: sessionId, q });
+    }
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnectTimer || this.disposed || this.subscribers.size === 0) return;
     this.failures += 1;
@@ -427,7 +463,7 @@ export class TerminalTransport {
   private startKeepalive(): void { this.stopKeepalive(); this.keepaliveTimer = setInterval(() => this.send({ t: 'ping', v: 3 }), 45_000); }
   private stopKeepalive(): void { if (this.keepaliveTimer) clearInterval(this.keepaliveTimer); this.keepaliveTimer = null; }
   private cancelReconnect(): void { if (this.reconnectTimer) clearTimeout(this.reconnectTimer); this.reconnectTimer = null; this.wakeCleanup?.(); this.wakeCleanup = null; }
-  private closeSocket(): void { this.stopKeepalive(); const socket = this.socket; this.socket = null; if (socket && (socket.readyState === SOCKET_CONNECTING || socket.readyState === SOCKET_OPEN)) socket.close(); }
+  private closeSocket(): void { this.stopKeepalive(); if (this.ackTimer) clearTimeout(this.ackTimer); this.ackTimer = null; const socket = this.socket; this.socket = null; if (socket && (socket.readyState === SOCKET_CONNECTING || socket.readyState === SOCKET_OPEN)) socket.close(); }
 }
 
 let transport = new TerminalTransport();
@@ -479,6 +515,7 @@ export function sendTerminalViewport(sessionId: string, cols: number, rows: numb
 export function claimTerminalViewport(sessionId: string, cols: number, rows: number): void { transport.claimViewport(sessionId, cols, rows); }
 export function releaseTerminalViewport(sessionId: string): void { transport.releaseViewport(sessionId); }
 export function getTerminalConnectionId(): string | null { return transport.ownConnectionId; }
+export function ackTerminalConsumed(sessionId: string, sequence: number): void { transport.reportConsumed(sessionId, sequence); }
 
 async function command(path: string, method: string, body?: unknown): Promise<Response> {
   const options: RequestInit = { method };

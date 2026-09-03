@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Terminal: a command that floods output no longer freezes the whole app.** Streaming hundreds of megabytes (a big `cat`, verbose build logs) used to pile up in the server until every other feature timed out and the terminal tab died — the app stayed responsive throughout instead, memory stays bounded, and the terminal keeps showing the latest output while it catches up, resynchronizing automatically once the flood ends. Scroll throughput also improved (~50% on large streams).
+
+- **Terminal: the app server now runs under Node, ending a class of Windows freezes.** The server previously launched under Bun whenever Bun was installed, which selected a terminal backend (bun-pty) that can pin a CPU core for minutes after a command producing massive output is force-killed inside a terminal, freezing the whole app until the backlog drains. The server now always launches under Node — Bun remains reserved for the agent engine — where the same scenario measured clean.
+- **Terminal: floods no longer balloon the browser's memory.** A command streaming hundreds of megabytes grew the browser renderer to 9–11 GB (18× the streamed volume) and could OOM-crash the tab. Streaming output now flows to the terminal through a direct write path with no per-frame React re-render, while the store only tracks snapshot revisions: the same 500 MiB flood now peaks at ~600 MB, output renders live throughout, and everything (input, IME, snapshots, replay on tab switch) behaves as before.
+- **Terminal: output floods stream ~6x faster on Windows.** The terminal read 500 MiB of output at roughly 7 MiB/s (Windows Terminal does 88 on the same machine); the PTY layer now uses the modern conpty.dll bundled with node-pty instead of the OS-built-in pseudoconsole, lifting measured flood throughput to ~44 MiB/s. Its startup handshake is also accounted for — the terminal no longer answers the DLL's device-attribute probe, which used to scribble an escape sequence into your first typed command.
+
 ## [1.27.0] - 2026-09-03
 
 - **Upstream merge: this release absorbs upstream openchamber/openchamber through their v1.22.0 release plus their unreleased work.** Headline pieces for users: the Linear integration, the Turkish interface, multi-repository projects in the Git tab, moving idle sessions into existing worktrees, subagent cost totals, large text pastes offered as attachments, and the community-fix batches — the upstream sections below carry the full detail.
