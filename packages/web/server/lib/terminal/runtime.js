@@ -127,17 +127,28 @@ export function createTerminalRuntime({
         const launch = resolveLinuxPtyLaunch(executable, shellIntegration ? shellIntegration.args : args);
         // Windows: prefer the conpty.dll bundled with node-pty (a current
         // Terminal-era build) over the OS-built-in pseudoconsole — measured
-        // 3x read throughput on output floods (42 vs 14 MiB/s). If the DLL
-        // is missing (e.g. a packaging gap), fall back to the built-in path.
-        const options = {
-          name: 'xterm-256color', cwd, cols, rows, env,
-          ...(process.platform === 'win32' ? { useConptyDll: ptyDllUsable } : {}),
-        };
-        const process_ = provider.spawn(launch.executable, launch.args, options);
+        // 3x read throughput on output floods (42 vs 14 MiB/s). Detection
+        // only checks file presence (Electron's patched fs can see files
+        // inside app.asar that LoadLibraryW cannot load), so a load failure
+        // falls back to the built-in path for this and all future spawns.
+        const wantDll = process.platform === 'win32' && ptyDllUsable;
+        const baseOptions = { name: 'xterm-256color', cwd, cols, rows, env };
+        let process_;
+        let usedDll = false;
+        if (wantDll) {
+          try {
+            process_ = provider.spawn(launch.executable, launch.args, { ...baseOptions, useConptyDll: true });
+            usedDll = true;
+          } catch (dllError) {
+            ptyDllUsable = false; // sticky: one failed load retires DLL mode
+            lastError = dllError;
+          }
+        }
+        if (!process_) process_ = provider.spawn(launch.executable, launch.args, baseOptions);
         if (shellIntegration) shellIntegration.scheduleCleanup();
         return {
           process: process_, backend: provider.backend, shell: resolvedShell.id, loginShell,
-          conptyDll: process.platform === 'win32' && ptyDllUsable,
+          conptyDll: usedDll,
         };
       } catch (error) { lastError = error; }
     }
