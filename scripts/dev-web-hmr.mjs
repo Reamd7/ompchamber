@@ -116,11 +116,11 @@ const devServer = run(
 
 // Development-only LAN exposure. Production launchers never set this marker;
 // the server keeps its authentication guard for all other startup paths.
-const api = run('api', 'bun', ['run', '--cwd', 'packages/web', 'dev:server:watch'], {
+const api = run('api', process.execPath, ['--run', 'dev:server:watch'], {
   OMPCHAMBER_PORT: backendPort,
   OMPCHAMBER_HOST: hmrHost,
   OMPCHAMBER_DEV_SERVER: 'true',
-});
+}, { cwd: webRoot });
 
 if (persistedDevPorts) {
   console.log(`[dev:web:hmr] worktree ports from .dev-ports.json (UI ${persistedDevPorts.uiPort} / API ${persistedDevPorts.apiPort})`);
