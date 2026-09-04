@@ -1,6 +1,5 @@
 import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
-
 export const settingsDict = {
   'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode를 다시 시작하지 못했습니다.',
   'settings.openchamber.opencodeCli.actions.restart': 'OpenCode 다시 시작',
@@ -2522,5 +2521,4 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.followUpBehavior.steer.label': 'Steer',
   'settings.ompchamber.visual.option.followUpBehavior.queue.label': 'Queue',
   ...thirdPartyIntegrationI18n.ko,
-  ...linearIntegrationI18n.ko,
-} as const;
+  ...linearIntegrationI18n.ko,} as const;

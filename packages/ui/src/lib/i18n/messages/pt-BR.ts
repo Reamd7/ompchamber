@@ -5,7 +5,6 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'settings.agents.page.runtimeProvided.note': 'Values here come from the runtime (built-in defaults or plugin-injected agents) and are only shown as hints.',
   'chat.chatInput.toast.forkNothingToFork': 'Ainda não há o que bifurcar: nenhuma resposta foi concluída nesta sessão',
   'chat.chatInput.toast.forkSendFailed': 'Bifurcada, mas a mensagem não foi enviada. Ela voltou para o editor.',
   'chat.chatInput.toast.forkFailed': 'Não foi possível bifurcar a sessão',

@@ -1,6 +1,5 @@
 import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
-
 export const settingsDict = {
   'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode konnte nicht neu gestartet werden.',
   'settings.openchamber.opencodeCli.actions.restart': 'OpenCode neu starten',
@@ -2512,5 +2511,4 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.themeMode.dark.description': 'Immer dunkles Erscheinungsbild verwenden',
   'chat.message.userText.collapseAria': 'Benutzernachricht einklappen',
   ...thirdPartyIntegrationI18n.de,
-  ...linearIntegrationI18n.de,
-};
+  ...linearIntegrationI18n.de,};

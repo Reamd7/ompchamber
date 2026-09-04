@@ -1054,8 +1054,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.integrations.thirdParty.opencodeCursorOauth.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeCursorOauth.description',
     keywords: ['cursor', 'oauth', 'subscription', 'openai compatible', '@ompchamber/opencode-cursor'],
-  },
-] as const;
+  },] as const;
 
 interface BuildSettingsSearchResultsOptions {
   query: string;

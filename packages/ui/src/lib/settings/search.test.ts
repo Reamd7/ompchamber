@@ -48,8 +48,7 @@ describe('settings search', () => {
       });
       expect(results.find((result) => result.id === 'appearance.scrollbars')?.page).toBe('appearance');
     }
-  });  test('finds Linear connect on the integrations page', () => {
-    const results = buildSettingsSearchResults({
+  });  test('finds Linear connect on the integrations page', () => {    const results = buildSettingsSearchResults({
       query: 'linear',
       runtimeCtx,
       t,

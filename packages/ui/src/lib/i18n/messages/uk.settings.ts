@@ -1,6 +1,5 @@
 import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
-
 export const settingsDict = {
   'settings.agents.page.runtimeProvided.note': 'Надається OpenCode або плагіном і не має власного файлу конфігурації. Сірі підказки показують поточні значення; усе, що ви введете, збережеться як перевизначення.',
   'settings.openchamber.opencodeCli.restart.restartFailed': 'Не вдалося перезапустити OpenCode.',
@@ -2514,5 +2513,4 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.followUpBehavior.steer.label': 'Steer',
   'settings.ompchamber.visual.option.followUpBehavior.queue.label': 'Queue',
   ...thirdPartyIntegrationI18n.uk,
-  ...linearIntegrationI18n.uk,
-} as const;
+  ...linearIntegrationI18n.uk,} as const;

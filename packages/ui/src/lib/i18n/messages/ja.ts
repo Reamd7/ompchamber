@@ -5,7 +5,6 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
-  'settings.agents.page.runtimeProvided.note': 'Values here come from the runtime (built-in defaults or plugin-injected agents) and are only shown as hints.',
   'aboutDialog.appVersionLabel': 'アプリのバージョン {version}',
   'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
   'commandPalette.item.restartOpenCode': 'OpenCode を再起動',

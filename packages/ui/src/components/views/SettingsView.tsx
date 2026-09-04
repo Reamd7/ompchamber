@@ -354,24 +354,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     setMobileStage(def.kind === 'split' ? 'page-sidebar' : 'page-content');
   }, [isMobile, setSettingsPage]);
 
-  const openThirdPartyProviderSetup = React.useCallback(async (providerId: string): Promise<boolean> => {
-    const configStore = useConfigStore.getState();
-    await configStore.loadProviders({ source: 'settings:third-party-provider-setup' });
-    const providerAvailable = useConfigStore.getState().providers.some(
-      (provider) => provider.id === providerId,
-    );
-    if (!providerAvailable) {
-      return false;
-    }
-
-    configStore.setSelectedProvider(providerId);
-    openPage('providers');
-    if (isMobile) {
-      setMobileStage('page-content');
-    }
-    return true;
-  }, [isMobile, openPage]);
-
   const activePageMeta = React.useMemo(() => {
     return getSettingsPageMeta(settingsSlug);
   }, [settingsSlug]);
@@ -727,12 +709,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       case 'git':
         return <GitPage />;
       case 'integrations':
-        return (
-          <IntegrationsPage
-            onOpenProviderSetup={openThirdPartyProviderSetup}
-            onOpenPluginManager={() => openPage('plugins')}
-          />
-        );
+        return <IntegrationsPage />;
       case 'general':
       case 'appearance':
       case 'chat':
@@ -748,7 +725,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       default:
         return null;
     }
-  }, [openChamberSectionBySlug, openPage, openThirdPartyProviderSetup, renderUnavailable, runtimeCtx, t]);
+  }, [openChamberSectionBySlug, renderUnavailable, runtimeCtx, t]);
 
   // Explicit navigation/search changes move staged layouts into the selected
   // page. Reopening Settings must stay on the root menu even when the store
