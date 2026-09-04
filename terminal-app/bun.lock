@@ -6,6 +6,7 @@
       "name": "terminal-app",
       "dependencies": {
         "@lydell/node-pty": "^1.1.0-beta.39",
+        "@xterm/headless": "^6.0.0",
         "ghostty-web": "file:../references/ghostty-web",
         "react": "^18.3.1",
         "react-dom": "^18.3.1",
@@ -344,7 +345,7 @@
 
     "@xmldom/xmldom": ["@xmldom/xmldom@0.8.15", "https://mirrors.tencent.com/npm/@xmldom/xmldom/-/xmldom-0.8.15.tgz", {}, "sha512-/5NV/vDALVFDXgLmfsy9TRCBlKwO2LNBFzpzvb9iIj+jR+eSc6DLYYvVOdivT/jm7MtU6TebYuRmzEOI7w40UA=="],
 
-    "@xterm/headless": ["@xterm/headless@5.5.0", "https://mirrors.tencent.com/npm/@xterm/headless/-/headless-5.5.0.tgz", {}, "sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g=="],
+    "@xterm/headless": ["@xterm/headless@6.0.0", "https://mirrors.tencent.com/npm/@xterm/headless/-/headless-6.0.0.tgz", {}, "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw=="],
 
     "@xterm/xterm": ["@xterm/xterm@5.5.0", "https://mirrors.tencent.com/npm/@xterm/xterm/-/xterm-5.5.0.tgz", {}, "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A=="],
 
@@ -877,6 +878,8 @@
     "conventional-changelog-writer/semver": ["semver@7.8.5", "https://mirrors.tencent.com/npm/semver/-/semver-7.8.5.tgz", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
 
     "decamelize-keys/map-obj": ["map-obj@1.0.1", "https://mirrors.tencent.com/npm/map-obj/-/map-obj-1.0.1.tgz", {}, "sha512-7N/q3lyZ+LVCp7PzuxrJr4KMbBE2hW7BT7YNia330OFxIf4d3r5zVpicP2650l7CPN6RM9zOJRl3NGpqSiw3Eg=="],
+
+    "ghostty-web/@xterm/headless": ["@xterm/headless@5.5.0", "https://mirrors.tencent.com/npm/@xterm/headless/-/headless-5.5.0.tgz", {}, "sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g=="],
 
     "ghostty-web/vite": ["vite@4.5.14", "https://mirrors.tencent.com/npm/vite/-/vite-4.5.14.tgz", { "dependencies": { "esbuild": "^0.18.10", "postcss": "^8.4.27", "rollup": "^3.27.1" }, "optionalDependencies": { "fsevents": "~2.3.2" }, "peerDependencies": { "@types/node": ">= 14", "less": "*", "lightningcss": "^1.21.0", "sass": "*", "stylus": "*", "sugarss": "*", "terser": "^5.4.0" }, "optionalPeers": ["@types/node", "less", "lightningcss", "sass", "stylus", "sugarss", "terser"], "bin": { "vite": "bin/vite.js" } }, "sha512-+v57oAaoYNnO3hIu5Z/tJRZjq5aHM2zDve9YZ8HngVHbhk66RStobhb1sqPMIPEleV6cNKYK4eGrAbE9Ulbl2g=="],
 

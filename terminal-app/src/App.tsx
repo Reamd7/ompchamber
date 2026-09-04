@@ -1,21 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
-import { TerminalPane, type RendererKind } from './TerminalPane';
+import { TerminalPane, type RendererKind, type FeedKind } from './TerminalPane';
 
 type ConnState = 'connecting' | 'open' | 'closed';
 
 export function App() {
   const [renderer, setRenderer] = useState<RendererKind>('auto');
+  const [feed, setFeed] = useState<FeedKind>('pty');
   const [conn, setConn] = useState<ConnState>('connecting');
   const [grid, setGrid] = useState<{ cols: number; rows: number } | null>(null);
-  // Session key: bump to tear down and recreate the terminal (shell restart
-  // and renderer switches both go through it — the Terminal API has no
-  // runtime renderer swap, and a full recreate is the honest path).
   const [session, setSession] = useState(0);
 
   const onConn = useCallback((s: ConnState) => setConn(s), []);
   const onGrid = useCallback((g: { cols: number; rows: number }) => setGrid(g), []);
 
-  // Keep the tab title honest about connection state.
   useEffect(() => {
     document.title = conn === 'open' ? 'terminal-app' : `terminal-app (${conn})`;
   }, [conn]);
@@ -28,6 +25,13 @@ export function App() {
         <h1>
           terminal<b>-app</b>
         </h1>
+        <div className="seg" role="group" aria-label="Feed">
+          {(['pty', 'grid'] as const).map((f) => (
+            <button key={f} className={f === feed ? 'on' : ''} onClick={() => setFeed(f)}>
+              {f === 'pty' ? 'wasm parse' : 'server parse'}
+            </button>
+          ))}
+        </div>
         <div className="seg" role="group" aria-label="Renderer">
           {(['auto', 'webgl', 'canvas'] as const).map((r) => (
             <button key={r} className={r === renderer ? 'on' : ''} onClick={() => setRenderer(r)}>
@@ -52,12 +56,7 @@ export function App() {
           {conn}
         </span>
       </div>
-      <TerminalPane
-        key={session}
-        renderer={renderer}
-        onConn={onConn}
-        onGrid={onGrid}
-      />
+      <TerminalPane key={session} renderer={renderer} feed={feed} onConn={onConn} onGrid={onGrid} />
     </div>
   );
 }
