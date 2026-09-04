@@ -1,6 +1,6 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 与层 2 批次 A/B/C 全部完成**（提交链 `b8674cca` → `ddeb98b2` → `e7073ecf` → `27f5f5f4` → `8111ba2b`）；批次 C 交付：任务卡片行“查看运行”跳转（已实证 `progress.id ≡ registry agentId`，同一 id 体系）、嵌套子代理父行内缩进一层（`inflightTaskDetails`，深度封顶一层）、运行中行尾随最近输出摘要（`recentOutput` 尾行，generate-effect 动画）。浏览器目验：静态面已证（卡片行/跳转/标签页/空态），运行态面受阻于子代理 spawn 挂起（见目验记录）。
+> 状态：**层 1 与层 2 批次 A/B/C 完成；registry 分脑已修**（提交链 `b8674cca` → … → `e5d56063` → 分脑修复）。分脑修复内容：① `agentsSnapshot` 并入 `AgentRegistry.global().list()`，子代理 ref 经 sessionFile（`<ts>_<sessionID>/` 段）映射回所属 live 会话/目录；② engine 构造时订阅 global registry `onChange` → `aggregator.refresh()`；③ `getAgentRunTranscript` 增 global 回退（sessionFile 归属校验防跨会话读取）。**实机验证**：运行中快照出现子代理行（`CountTsxFiles` status=running），工作状态面板出现 "Subagents 1/1 · scout is working"，行点击可打开运行标签页。历史磁盘行（diskScan）与异步派发实时进度（jobs 通道）仍为后续项。
 >
 > **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
 >

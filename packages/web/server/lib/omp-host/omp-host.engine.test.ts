@@ -71,9 +71,20 @@ mock.module('@oh-my-pi/pi-coding-agent/modes/runtime-init', () => ({
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
   AgentRegistry: class {
+    static #instance: InstanceType<typeof this> | undefined;
+    static global() {
+      this.#instance ??= new this();
+      return this.#instance;
+    }
     constructor() {
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       registries.push(this);
+    }
+    list() {
+      return [];
+    }
+    get() {
+      return undefined;
     }
     onChange() {
       return () => {};
@@ -165,6 +176,74 @@ afterAll(() => {
 // Engine methods destructure their full wire-arg record (every member is
 // required in the synthesized parameter type); calls that omit optional
 // fields pad them with `undefined` — the destructured values are identical.
+
+describe('agent-runs aggregator: process-global registry mapping (registry split-brain fix)', () => {
+  test('transcript read falls back to the global registry with ownership check', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    // Subagent transcript file on disk under the s2 artifacts layout.
+    const subDir = path.join(sessionDir, '2026-09-04T00-00-00-000Z_s2');
+    mkdirSync(subDir, { recursive: true });
+    const subFile = path.join(subDir, 'ScoutRun.jsonl');
+    writeFileSync(subFile, JSON.stringify({ type: 'message', message: { role: 'user', content: 'count files', timestamp: 1 } }) + '\n');
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const originalGet = globalRegistry.get.bind(globalRegistry);
+    globalRegistry.get = (id: string) => (id === 'ScoutRun' ? { id: 'ScoutRun', displayName: 'Scout', kind: 'sub', status: 'running', session: null, sessionFile: subFile, createdAt: 1, lastActivity: 9 } : originalGet(id));
+    try {
+      const transcript = await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'ScoutRun', directory: '/repo' });
+      expect(transcript?.agentId).toBe('ScoutRun');
+      expect(Array.isArray(transcript?.messages)).toBe(true);
+      // Ownership: a global ref whose sessionFile maps to ANOTHER session is refused.
+      const foreign = await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'NotMine', directory: '/repo' });
+      globalRegistry.get = (id: string) => (id === 'NotMine' ? { id: 'NotMine', displayName: 'X', kind: 'sub', status: 'running', session: null, sessionFile: path.join(sessionDir, '2026-09-04T00-00-00-000Z_s_other', 'NotMine.jsonl'), createdAt: 1, lastActivity: 9 } : originalGet(id));
+      expect(await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'NotMine', directory: '/repo' })).toBeNull();
+      void foreign;
+    } finally {
+      globalRegistry.get = originalGet;
+    }
+  });
+
+  test('global-registry subagent refs map to their owning live session via sessionFile', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    // Materialize a live session s_glob in /repo.
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    // A subagent ref registered by the task executor into the GLOBAL registry
+    // (never the per-session one): sessionFile carries <ts>_<sessionID>/.
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const refs = [{ id: 'ScoutRun', displayName: 'Scout', kind: 'sub', status: 'running', session: null, sessionFile: path.join(sessionDir, '2026-09-04T00-00-00-000Z_s2', 'ScoutRun.jsonl'), createdAt: 1, lastActivity: 9 }] as unknown as ReturnType<typeof globalRegistry.list>;
+    const originalList = globalRegistry.list.bind(globalRegistry);
+    globalRegistry.list = () => refs;
+    try {
+      const snapshot = engine.uriDomain?.aggregator.refresh();
+      const row = snapshot?.agentRuns.find((r) => r.agentId === 'ScoutRun');
+      expect(row).toBeTruthy();
+      expect(row?.sessionID).toBe('s2');
+      expect(row?.directory).toBe('/repo');
+      expect(row?.status).toBe('running');
+      expect(row?.hasTranscript).toBe(true);
+    } finally {
+      globalRegistry.list = originalList;
+    }
+  });
+
+  test('global refs without a live owning session stay out of the snapshot', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const refs = [{ id: 'GhostRun', displayName: 'Ghost', kind: 'sub', status: 'parked', session: null, sessionFile: path.join(sessionDir, '2026-09-04T00-00-00-000Z_s_unknown', 'GhostRun.jsonl'), createdAt: 1, lastActivity: 2 }] as unknown as ReturnType<typeof globalRegistry.list>;
+    const originalList = globalRegistry.list.bind(globalRegistry);
+    globalRegistry.list = () => refs;
+    try {
+      const snapshot = engine.uriDomain?.aggregator.refresh();
+      expect(snapshot?.agentRuns.some((r) => r.agentId === 'GhostRun')).toBe(false);
+    } finally {
+      globalRegistry.list = originalList;
+    }
+  });
+});
+
 describe('OmpHostEngine prompt dispatch', () => {
   test('submits with TUI steer semantics and does not reject while streaming', async () => {
     const engine = new OmpHostEngine({ agentDir });

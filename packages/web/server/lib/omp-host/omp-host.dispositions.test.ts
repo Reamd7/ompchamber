@@ -42,11 +42,21 @@ const makeFakeSession = (id: string) => ({
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
-  // onChange: the aggregator refresh wiring subscribes per-session; the
-  // no-op unsubscribe keeps mocked materialization on the real code path.
+  // static global() + onChange: the engine subscribes the process-global
+  // registry for subagent refs (task executor registers there) and the
+  // per-session registry at materialization; no-op stubs keep the mocked
+  // materialization on the real code path.
   AgentRegistry: class {
+    static #instance: InstanceType<typeof this> | undefined;
+    static global() {
+      this.#instance ??= new this();
+      return this.#instance;
+    }
     onChange() {
       return () => {};
+    }
+    list() {
+      return [];
     }
   },
   ModelRegistry: class {

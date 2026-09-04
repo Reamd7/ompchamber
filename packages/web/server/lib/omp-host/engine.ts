@@ -69,7 +69,7 @@ import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
-import type { UriDomain } from './domain-uri.ts';
+import type { AgentsSnapshotEntry, UriDomain } from './domain-uri.ts';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Cap on concurrently live top-level sessions; idle sessions beyond this
 // are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
@@ -198,6 +198,20 @@ interface SessionListInfo {
   modified: Date | string;
 }
 
+/**
+ * Subagent sessionFiles live at `<sessionsRoot>/<ts>_<sessionID>/<agent>.jsonl`
+ * (SDK artifacts layout). Returns the owning session id, or undefined for
+ * layouts that do not carry one (in-memory runs, unexpected shapes).
+ */
+const sessionIDFromSessionFile = (sessionFile: string | null | undefined): string | undefined => {
+  if (sessionFile === null || sessionFile === undefined || sessionFile.length === 0) return undefined;
+  const dirName = path.basename(path.dirname(sessionFile));
+  const separator = dirName.indexOf('_');
+  if (separator <= 0) return undefined;
+  const sessionID = dirName.slice(separator + 1);
+  return sessionID.length > 0 ? sessionID : undefined;
+};
+
 export class OmpHostEngine {
   /** In-flight #materialize dedup (`${directory}\0${sessionId}` → promise); prevents duplicate AgentSessions on lease/prompt races. */
   #materializeInFlight = new Map<string, Promise<HostSession>>();
@@ -236,6 +250,8 @@ export class OmpHostEngine {
   bootError: unknown;
   bootPromise: Promise<void> | null;
   sweeper: ReturnType<typeof setInterval>;
+  /** Engine-wide subscription to the SDK's process-global agent registry. */
+  unsubscribeGlobalRegistry: (() => void) | null = null;
   /** Lazily-created counters for AgentSessionEvent members with no manifest case. */
   unknownEventCounts: Map<string, number> | undefined;
   /** How long abort() waits for the agent teardown before force-disposing. */
@@ -390,17 +406,45 @@ export class OmpHostEngine {
       },
       localFiles: (sessionID, directory) =>
         this.#listLocalFiles(sessionID, normalizeDirectoryKey(directory)),
-      agentsSnapshot: () =>
-        [...this.sessions.values()]
+      agentsSnapshot: () => {
+        // Per-session registries carry each live session's own agent ref;
+        // subagent refs land in the SDK's process-global registry instead
+        // (task executor uses AgentRegistry.global() throughout), so both
+        // sources must feed the aggregator. Global refs map back to a live
+        // session via the sessionFile layout `<ts>_<sessionID>/<agent>.jsonl`.
+        const entries: AgentsSnapshotEntry[] = [...this.sessions.values()]
           .filter((hostSession) => hostSession.agentRegistry && hostSession.agentSession)
           .map((hostSession) => ({
             sessionID: hostSession.sessionId,
             directory: hostSession.directory,
             registry: hostSession.agentRegistry
-          })),
+          }));
+        const byKey = new Map(entries.map((entry) => [entry.sessionID, entry]));
+        for (const ref of AgentRegistry.global().list()) {
+          const sessionID = sessionIDFromSessionFile(ref.sessionFile);
+          if (!sessionID) continue;
+          const owner = this.sessions.get(sessionID);
+          if (!owner) continue; // cold/parked runs surface via diskScan
+          let entry: AgentsSnapshotEntry | undefined = byKey.get(sessionID);
+          if (!entry) {
+            entry = { sessionID, directory: owner.directory, refs: [] };
+            byKey.set(sessionID, entry);
+            entries.push(entry);
+          }
+          (entry.refs ??= []).push(ref);
+        }
+        return entries;
+      },
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
       liveSessionIds: () => [...this.sessions.keys()],
       agentRunTranscript: (sessionID, agentId, directory) => this.getAgentRunTranscript({ sessionID, agentId, directory }),
+    });
+    // The task executor registers every subagent into the SDK's process-global
+    // registry (AgentRegistry.global()), not the per-session registries above.
+    // One engine-wide subscription keeps the aggregator current for subagent
+    // spawn/status/activity changes across every live session.
+    this.unsubscribeGlobalRegistry = AgentRegistry.global().onChange(() => {
+      this.uriDomain?.aggregator.refresh();
     });
     this.bootError = null;
     this.bootPromise = null;
@@ -2085,9 +2129,17 @@ export class OmpHostEngine {
   async getAgentRunTranscript({ sessionID, agentId, directory }: { sessionID: string; agentId: string; directory?: string }) {
     await this.#boot();
     const hostSession = this.sessions.get(sessionID);
-    const runRef = hostSession?.agentRegistry.get(agentId);
+    if (!hostSession) return null;
+    // Subagent refs live in the SDK's process-global registry (registry
+    // split-brain, see agentsSnapshot); the per-session registry only holds
+    // the session's own ref. Global hits must prove ownership — the
+    // sessionFile layout maps the ref back to this session.
+    const runRef = hostSession.agentRegistry.get(agentId) ?? AgentRegistry.global().get(agentId);
     const sessionFile = runRef?.sessionFile;
-    if (!hostSession || !runRef || !sessionFile) return null;
+    if (!runRef || !sessionFile) return null;
+    if (hostSession.agentRegistry.get(agentId) === undefined && sessionIDFromSessionFile(sessionFile) !== sessionID) {
+      return null;
+    }
     const directoryKey = normalizeDirectoryKey(directory ?? hostSession.directory);
     const manager = await SessionManager.open(sessionFile);
     try {
