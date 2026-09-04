@@ -3315,6 +3315,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openPr': '打开拉取请求',
   'chat.workStatus.action.openSubagent': '打开 {name}',
   'chat.workStatus.action.openAgentRun': '打开运行 {name}',
+  'chat.toolPart.taskAgent.openRun': '打开运行',
   'chat.workStatus.section.usage': '用量',
   'chat.workStatus.goal.open': '管理目标',
   'chat.workStatus.goal.pause': '暂停',

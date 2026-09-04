@@ -3314,6 +3314,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openPr': '풀 리퀘스트 열기',
   'chat.workStatus.action.openSubagent': '{name} 열기',
   'chat.workStatus.action.openAgentRun': '실행 {name} 열기',
+  'chat.toolPart.taskAgent.openRun': '실행 열기',
   'chat.workStatus.section.usage': '사용량',
   'chat.workStatus.goal.open': '목표 관리',
   'chat.workStatus.goal.pause': '일시정지',

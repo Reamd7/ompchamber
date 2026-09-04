@@ -3319,6 +3319,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openPr': 'Otwórz pull request',
   'chat.workStatus.action.openSubagent': 'Otwórz {name}',
   'chat.workStatus.action.openAgentRun': 'Otwórz uruchomienie {name}',
+  'chat.toolPart.taskAgent.openRun': 'Otwórz uruchomienie',
   'chat.workStatus.section.usage': 'Zużycie',
   'chat.workStatus.goal.open': 'Zarządzaj celem',
   'chat.workStatus.goal.pause': 'Wstrzymaj',

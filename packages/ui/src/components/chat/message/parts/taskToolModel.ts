@@ -158,6 +158,12 @@ export type TaskAgentRow = {
     retryExhausted?: boolean;
     /** Durable task output artifact (`agent://` URL) on settled rows. */
     outputPath?: string;
+    /** Registry agent id (≡ progress.id): the drill-in jump target. */
+    runId?: string;
+    /** Last recent-output line while running; the freshest activity tail. */
+    tailText?: string;
+    /** Nested subagent rows (one level) while this run dispatches its own. */
+    nested?: TaskAgentRow[];
 };
 
 const TASK_AGENT_ROW_STATUSES: readonly TaskAgentRowStatus[] = ['pending', 'running', 'completed', 'failed', 'aborted'];
@@ -180,14 +186,39 @@ const progressStatusOf = (value: unknown): TaskAgentRowStatus | undefined => {
     return TASK_AGENT_ROW_STATUSES.find((status) => status === value);
 };
 
+/** Last non-empty recent-output line, trimmed — the row's activity tail. */
+const lastRecentOutput = (value: unknown): string | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const candidate = value[index];
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+};
+
+/**
+ * One nesting level only (ch 14 plan batch C): the live snapshot of a
+ * subagent that itself dispatched subagents. Deeper recursion is flattened
+ * away — the card stays readable.
+ */
+const nestedRowsOf = (value: unknown): TaskAgentRow[] | undefined => {
+  const details = asRecord(value);
+  const progress = Array.isArray(details?.progress) ? details.progress : [];
+  if (progress.length === 0) return undefined;
+  return taskAgentRowsFrom(progress, 'progress', 1).map((entry) => entry.row);
+};
+
 const settledStatusOf = (record: Record<string, unknown>): TaskAgentRowStatus => {
-    if (record.aborted === true) return 'aborted';
-    return (asNonNegativeNumber(record.exitCode) ?? 1) === 0 ? 'completed' : 'failed';
+  if (record.aborted === true) return 'aborted';
+  return (asNonNegativeNumber(record.exitCode) ?? 1) === 0 ? 'completed' : 'failed';
 };
 
 const taskAgentRowsFrom = (
     entries: unknown[],
     kind: 'progress' | 'result',
+    depth = 0,
 ): Array<{ row: TaskAgentRow; order: number }> => {
     const rows: Array<{ row: TaskAgentRow; order: number }> = [];
     entries.forEach((entry, position) => {
@@ -204,6 +235,9 @@ const taskAgentRowsFrom = (
                 ? asTrimmedText(record.currentTool) ?? asTrimmedText(record.lastIntent)
                 : asTrimmedText(record.error),
             outputPath: kind === 'result' ? asTrimmedText(record.outputPath) : undefined,
+            runId: asTrimmedText(record.id),
+            tailText: kind === 'progress' ? lastRecentOutput(record.recentOutput) : undefined,
+            nested: kind === 'progress' && depth === 0 ? nestedRowsOf(record.inflightTaskDetails) : undefined,
             tokens: asNonNegativeNumber(record.tokens),
             durationMs: asNonNegativeNumber(record.durationMs),
         };

@@ -70,8 +70,8 @@ describe('taskToolModel', () => {
             },
         };
         expect(readTaskAgentRows(metadata)).toEqual([
-            { key: 'a', agent: 'scout', status: 'completed', label: 'scan docs', detail: undefined, tokens: 120, durationMs: 800, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
-            { key: 'b', agent: 'task', status: 'running', label: 'resolve conflicts', detail: 'bash', tokens: 1500, durationMs: 3400, retryAttempt: 2, retryMax: 5, retryExhausted: undefined },
+            { key: 'a', agent: 'scout', status: 'completed', label: 'scan docs', detail: undefined, tokens: 120, durationMs: 800, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, runId: 'a' },
+            { key: 'b', agent: 'task', status: 'running', label: 'resolve conflicts', detail: 'bash', tokens: 1500, durationMs: 3400, retryAttempt: 2, retryMax: 5, retryExhausted: undefined, runId: 'b' },
         ]);
     });
 
@@ -86,8 +86,8 @@ describe('taskToolModel', () => {
             },
         };
         expect(readTaskAgentRows(metadata)).toEqual([
-            { key: 'a', agent: 'scout', status: 'aborted', label: undefined, detail: undefined, tokens: 3, durationMs: 1, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined },
-            { key: 'b', agent: 'task', status: 'failed', label: undefined, detail: 'boom', tokens: 10, durationMs: 5, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined },
+            { key: 'a', agent: 'scout', status: 'aborted', label: undefined, detail: undefined, tokens: 3, durationMs: 1, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined, runId: 'a' },
+            { key: 'b', agent: 'task', status: 'failed', label: undefined, detail: 'boom', tokens: 10, durationMs: 5, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined, runId: 'b' },
         ]);
     });
 
@@ -103,10 +103,36 @@ describe('taskToolModel', () => {
             },
         };
         expect(readTaskAgentRows(metadata)).toEqual([
-            { key: 'a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: 3, retryExhausted: true, outputPath: undefined },
+            { key: 'a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: 3, retryExhausted: true, runId: 'a' },
         ]);
         expect(readTaskAgentRows(undefined)).toEqual([]);
         expect(readTaskAgentRows({ details: { progress: 'nope' } })).toEqual([]);
+    });
+
+    test('live rows carry the activity tail and one nesting level', () => {
+        const rows = readTaskAgentRows({
+            details: {
+                progress: [{
+                    index: 0,
+                    id: 'parent',
+                    agent: 'task',
+                    status: 'running',
+                    recentOutput: ['', 'scanning src/lib', 'hit cache'],
+                    inflightTaskDetails: {
+                        progress: [
+                            { index: 0, id: 'nested-a', agent: 'scout', status: 'running', recentOutput: ['deep tail'] },
+                        ],
+                    },
+                }],
+            },
+        });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.runId).toBe('parent');
+        expect(rows[0]?.tailText).toBe('hit cache');
+        expect(rows[0]?.nested).toEqual([
+            { key: 'nested-a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, runId: 'nested-a', tailText: 'deep tail', nested: undefined },
+        ]);
+        expect(rows[0]?.nested?.[0]?.nested).toBeUndefined();
     });
 
     test('settled rows carry the durable output artifact path', () => {

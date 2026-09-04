@@ -3312,6 +3312,7 @@ export const dict = {
   'chat.workStatus.action.openPr': 'Pull Request öffnen',
   'chat.workStatus.action.openSubagent': '{name} öffnen',
   'chat.workStatus.action.openAgentRun': 'Ausführung {name} öffnen',
+  'chat.toolPart.taskAgent.openRun': 'Ausführung öffnen',
   'chat.workStatus.section.usage': 'Nutzung',
   'chat.workStatus.goal.open': 'Ziel verwalten',
   'chat.workStatus.goal.pause': 'Pausieren',

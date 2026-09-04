@@ -5960,6 +5960,7 @@ export const dict = {
   'chat.workStatus.action.openPr': 'Pull request\'i aç',
   'chat.workStatus.action.openSubagent': '{name} öğesini aç',
   'chat.workStatus.action.openAgentRun': '{name} çalışmasını aç',
+  'chat.toolPart.taskAgent.openRun': 'Çalışmayı aç',
   'chat.workStatus.section.usage': 'Kullanım',
   'chat.workStatus.goal.open': 'Hedefi yönet',
   'chat.workStatus.goal.pause': 'Duraklat',

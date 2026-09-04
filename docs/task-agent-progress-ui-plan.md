@@ -1,6 +1,6 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 已完成并提交**（`b8674cca`）；**批次 A 已完成**（运行行实时用量 + Header 徽章）；**批次 B 已完成**（运行对话记录读取面：规格 docs/omp-parity/14 + 端点 + 侧板标签页 + 产物入口——hub 行内联产物按钮因嵌套交互元素不可行，入口落在钻入视图头部与任务卡片终态行）；批次 C 待启动。
+> 状态：**层 1 与层 2 批次 A/B/C 全部完成**（提交链 `b8674cca` → `ddeb98b2` → `e7073ecf` → `27f5f5f4` → 批次 C）；批次 C 交付：任务卡片行“查看运行”跳转（已实证 `progress.id ≡ registry agentId`，同一 id 体系）、嵌套子代理父行内缩进一层（`inflightTaskDetails`，深度封顶一层）、运行中行尾随最近输出摘要（`recentOutput` 尾行，generate-effect 动画）。浏览器目验仍待真实会话。
 >
 > **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
 >
