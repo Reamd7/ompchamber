@@ -11,9 +11,9 @@ importers:
       '@lydell/node-pty':
         specifier: ^1.1.0-beta.39
         version: 1.1.0
-      '@terminal-app/terminal-server':
-        specifier: workspace:*
-        version: link:packages/terminal-server
+      '@ompchamber/terminal-server':
+        specifier: file:../packages/terminal-server
+        version: file:../packages/terminal-server
       ghostty-web:
         specifier: link:../references/ghostty-web
         version: link:../references/ghostty-web
@@ -45,18 +45,6 @@ importers:
       vite:
         specifier: ^5.4.11
         version: 5.4.21(@types/node@20.19.43)
-
-  packages/terminal-server:
-    dependencies:
-      '@lydell/node-pty':
-        specifier: ^1.1.0-beta.39
-        version: 1.1.0
-      '@xterm/headless':
-        specifier: ^5.5.0
-        version: 5.5.0
-      ws:
-        specifier: ^8.21.0
-        version: 8.21.3
 
 packages:
 
@@ -340,6 +328,9 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@ompchamber/terminal-server@file:../packages/terminal-server':
+    resolution: {directory: ../packages/terminal-server, type: directory}
 
   '@rolldown/pluginutils@1.0.0-beta.27':
     resolution: {integrity: sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==}
@@ -1174,6 +1165,15 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@ompchamber/terminal-server@file:../packages/terminal-server':
+    dependencies:
+      '@lydell/node-pty': 1.1.0
+      '@xterm/headless': 5.5.0
+      ws: 8.21.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@rolldown/pluginutils@1.0.0-beta.27': {}
 
