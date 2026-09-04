@@ -1,6 +1,6 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 与层 2 批次 A/B/C 完成；registry 分脑已修**（提交链 `b8674cca` → … → `e5d56063` → 分脑修复）。分脑修复内容：① `agentsSnapshot` 并入 `AgentRegistry.global().list()`，子代理 ref 经 sessionFile（`<ts>_<sessionID>/` 段）映射回所属 live 会话/目录；② engine 构造时订阅 global registry `onChange` → `aggregator.refresh()`；③ `getAgentRunTranscript` 增 global 回退（sessionFile 归属校验防跨会话读取）。**实机验证**：运行中快照出现子代理行（`CountTsxFiles` status=running），工作状态面板出现 "Subagents 1/1 · scout is working"，行点击可打开运行标签页。历史磁盘行（diskScan）与异步派发实时进度（jobs 通道）仍为后续项。
+> 状态：**层 1 与层 2 批次 A/B/C 完成；registry 分脑已修（`3a93d272`）；异步 job 卡片复活链已铺至浏览器**（传输层实测：引擎复活发射 1300+ HIT、WebSocket 到达 52 个 task 部件含 tokens=22409 实时快照）。**剩最后半步**：事件从 WS 到目录 store 的应用/记录重建段——卡片 DOM 仍显示 spawn 快照；下一轮在 event-pipeline 的 onEvents/applyDirectoryEvent 加一处插桩即可定位。已落基础设施：projector 复活机制（会话共享 finalToolParts 映射、toolName 随行、asyncState 终态推导）、agent_end 不再清空 projector、UI reducer 对 task+details 快照的闪变防护豁免（测试覆盖）。历史磁盘行（diskScan）仍未接。
 >
 > **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
 >

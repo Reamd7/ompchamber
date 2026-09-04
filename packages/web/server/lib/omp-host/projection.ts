@@ -418,6 +418,14 @@ export interface StreamProjectorOptions {
   directory?: string;
   agent?: string;
   emit: StreamProjectorEmit;
+  /**
+   * Cross-generation store of finalized tool parts (callID → coordinates).
+   * The engine creates one projector per assistant turn; async-job task
+   * updates outlive the owning turn and must revive parts recorded by a
+   * previous generation, so the map lives on the host session and every
+   * projector shares it.
+   */
+  sharedFinalToolParts?: Map<string, { id: string; messageID: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,6 +1326,8 @@ export class StreamProjector {
   declare textLength: number;
   declare reasoningPartId: string | null;
   declare reasoningLength: number;
+  /** Finalized tool parts by callID — async-job updates revive them (toolPartial). */
+  declare finalToolParts: Map<string, { id: string; messageID: string; toolName: string }>;
   declare toolPartIds: Map<string, string>;
   declare toolNames: Map<string, string>;
   declare toolInputs: Map<string, ToolCallArguments>;
@@ -1326,7 +1336,7 @@ export class StreamProjector {
   declare toolPartialMeta: Map<string, WireToolMetadata>;
   declare parentID: string;
 
-  constructor({ sessionID, directory, agent, emit }: StreamProjectorOptions) {
+  constructor({ sessionID, directory, agent, emit, sharedFinalToolParts }: StreamProjectorOptions) {
     this.sessionID = sessionID;
     this.directory = directory;
     this.agent = agent;
@@ -1339,10 +1349,10 @@ export class StreamProjector {
     this.reasoningLength = 0;
     this.toolPartIds = new Map();
     this.toolNames = new Map();
-    this.toolInputs = new Map();
     this.toolStartTimes = new Map();
     this.toolPartialText = new Map();
     this.toolPartialMeta = new Map();
+    this.finalToolParts = sharedFinalToolParts ?? new Map();
     this.parentID = '';
   }
 
@@ -1517,9 +1527,28 @@ export class StreamProjector {
     { text, asyncState, details }: { text?: string; asyncState?: string; details?: unknown } = {},
   ) {
     if (!this.current) return;
-    const id = this.toolPartIds.get(callID);
-    if (!id) return;
-    const toolName = this.toolNames.get(callID) ?? '';
+    let id = this.toolPartIds.get(callID);
+    let messageID = this.current.id;
+    let revived = false;
+    let recordedToolName = '';
+    if (!id) {
+      // Async-job task updates keep arriving after the owning turn settled
+      // (the tool call returned a spawn snapshot while the background job
+      // runs on). Revive the finalized part — recorded at toolFinished in the
+      // session-shared map — so the transcript card keeps refreshing instead
+      // of freezing at the spawn snapshot. Scoped to structured snapshots
+      // (task tool details); plain text updates for dead calls stay dropped.
+      // The job's asyncState settles the revived part when it lands.
+      const finalized = this.finalToolParts.get(callID);
+      if (!finalized || details === undefined) return;
+      id = finalized.id;
+      messageID = finalized.messageID;
+      revived = true;
+      recordedToolName = finalized.toolName;
+    }
+    const reviveStatus = (state: string | undefined): 'running' | 'completed' | 'error' =>
+      state === 'completed' ? 'completed' : state === 'failed' ? 'error' : 'running';
+    const toolName = revived ? recordedToolName : (this.toolNames.get(callID) ?? '');
     const startedAt = this.toolStartTimes.get(callID) ?? Date.now();
     if (typeof text === 'string' && text.length > 0) {
       const acc = this.toolPartialText.get(callID) ?? '';
@@ -1539,12 +1568,12 @@ export class StreamProjector {
     this.#emitPartUpdated({
       id,
       sessionID: this.sessionID,
-      messageID: this.current.id,
+      messageID,
       type: 'tool',
       callID,
       tool: toolName,
       state: {
-        status: 'running',
+        status: revived ? reviveStatus(asyncState) : 'running',
         input: this.toolInputs.get(callID) ?? {},
         ...(output ? { output } : {}),
         ...(metadata ? { metadata } : {}),
@@ -1562,6 +1591,13 @@ export class StreamProjector {
     if (!id) return;
     const toolName = this.toolNames.get(callID) ?? '';
     const startedAt = this.toolStartTimes.get(callID) ?? Date.now();
+    this.finalToolParts.set(callID, { id, messageID: this.current.id, toolName });
+    if (this.finalToolParts.size > 64) {
+      // Bounded: async-job windows span at most a few turns; drop the oldest
+      // entries so a long session cannot grow the map indefinitely.
+      const oldest = this.finalToolParts.keys().next().value;
+      if (typeof oldest === 'string') this.finalToolParts.delete(oldest);
+    }
     this.#emitPartUpdated({
       id,
       sessionID: this.sessionID,

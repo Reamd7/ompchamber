@@ -81,6 +81,20 @@ function shouldPreserveExistingPart(previous: Part, next: Part): boolean {
     return false
   }
 
+  // Async-job task runs: the tool call settles with a spawn snapshot while
+  // the background job keeps streaming live AgentProgress snapshots for the
+  // same part. Those updates arrive as status "running" after "completed" —
+  // the flicker guard would eat every one of them. A task part carrying a
+  // structured details snapshot is a live refresh, not a flicker; let it
+  // through and let the job's asyncState settle it when it lands.
+  const nextTool = (next as { tool?: string }).tool
+  if (nextTool === "task") {
+    const carriesSnapshot = (next as { state?: { metadata?: { details?: unknown } } }).state?.metadata?.details !== undefined
+    if (carriesSnapshot) {
+      return false
+    }
+  }
+
   const previousStatus = getToolStatus(previous)
   const nextStatus = getToolStatus(next)
   if (previousStatus && FINAL_TOOL_STATUSES.has(previousStatus) && (!nextStatus || !FINAL_TOOL_STATUSES.has(nextStatus))) {

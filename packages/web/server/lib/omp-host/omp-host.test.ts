@@ -466,6 +466,40 @@ describe('projection', () => {
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     expect((part as { state: { metadata?: unknown } }).state.metadata).toEqual({ details: { question: 'q' } });
   });
+
+  test('task details after the turn revive the finalized tool part (async jobs)', () => {
+    const emitted: EmittedEvent[] = [];
+    const projector = new StreamProjector({
+      sessionID: 's1',
+      directory: '/repo',
+      agent: 'build',
+      emit: (type, properties) => emitted.push({ type, properties }),
+    });
+    projector.startAssistant(assistantMessage([]));
+    projector.toolStarted('t1', 'task', { prompt: 'count' });
+    // Turn settles with the spawn snapshot (async job path).
+    projector.toolFinished('t1', { output: 'Spawned agent.', metadata: { details: { progress: [] } } });
+    projector.finishAssistant(
+      assistantMessage([{ type: 'toolCall', id: 't1', name: 'task', arguments: { prompt: 'count' } }]),
+      new Map([['t1', { output: 'Spawned agent.', details: { progress: [] } }]]),
+    );
+    // A NEW turn starts (toolPartIds reset) — the background job's update
+    // must still refresh the finalized part.
+    projector.startAssistant(assistantMessage([]));
+    const parts = () => emitted
+      .filter((e) => e.type === 'message.part.updated')
+      .map((e) => (e.properties as import('./projection.ts').WirePartUpdatedProperties).part)
+      .filter((p) => p.type === 'tool');
+    const before = parts().length;
+    projector.toolPartial('t1', { details: { progress: [{ id: 'a', status: 'running', tokens: 42 }] } });
+    const revived = parts().at(-1);
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    const tokens = (revived as { state: { metadata?: { details?: { progress?: Array<{ tokens?: number }> } } } }).state.metadata?.details?.progress?.[0]?.tokens;
+    expect(tokens).toBe(42);
+    // Plain text updates for dead calls stay dropped.
+    projector.toolPartial('t1', { text: 'noise' });
+    expect(parts().length).toBe(before + 1);
+  });
   test('streaming projector emits matching part ids for the final projection', () => {
     const emitted: EmittedEvent[] = [];
     const projector = new StreamProjector({

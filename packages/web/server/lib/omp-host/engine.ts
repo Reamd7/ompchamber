@@ -142,6 +142,8 @@ interface HostSession {
   lastAssistantWireId: string | null;
   awaitingAsyncSince: number | null;
   agentRegistry: AgentRegistry;
+  /** Cross-turn finalized tool parts — async-job task updates revive them. */
+  finalToolParts: Map<string, { id: string; messageID: string; toolName: string }>;
   extensionUiInitialized: boolean;
   extensionUiPromise: Promise<unknown> | null;
   planHandlerAttached: boolean;
@@ -1270,6 +1272,9 @@ export class OmpHostEngine {
     }
     const persona = personaState.status === 'active' ? personaState.persona : null;
     const agentRegistry = new AgentRegistry();
+    // Shared across every projector generation of this session: async-job
+    // task updates outlive the turn that spawned them.
+    const finalToolParts = new Map<string, { id: string; messageID: string; toolName: string }>();
     const { session, setToolUIContext } = await createAgentSession({
       cwd: directoryKey,
       sessionManager: manager,
@@ -1322,6 +1327,7 @@ export class OmpHostEngine {
       awaitingAsyncSince: null,
       // Retained for the agent-runs aggregator (spec 04 §5.5).
       agentRegistry,
+      finalToolParts,
       // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
       sdkResult: { setToolUIContext },
       extensionUiInitialized: false,
@@ -1615,7 +1621,8 @@ export class OmpHostEngine {
           sessionID: sessionId,
           directory,
           agent: wireAgentFor(hostSession.currentPersona),
-          emit: (type, properties, dir) => this.bus.emit(type, properties, dir)
+          emit: (type, properties, dir) => this.bus.emit(type, properties, dir),
+          sharedFinalToolParts: hostSession.finalToolParts
         });
         hostSession.projector.setParentID(hostSession.lastUserWireId ?? '');
         hostSession.projector.startAssistant(event.message);
@@ -1750,7 +1757,12 @@ export class OmpHostEngine {
           );
           if (finished?.id) hostSession.lastAssistantWireId = finished.id;
         }
-        hostSession.projector = null;
+        // The settled projector STAYS alive: async-job task updates keep
+        // arriving after the turn ends and revive the finalized parts via
+        // the session-shared finalToolParts map (see toolPartial). Stray
+        // message_update deltas cannot bleed in — they only flow during a
+        // live turn, and the next assistant message_start replaces the
+        // projector wholesale.
         hostSession.turnToolResults = null;
         this.registry.update(directory, sessionId, { timeUpdated: Date.now() });
         const info = this.#wireSessionFromLive(hostSession);
