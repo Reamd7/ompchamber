@@ -1,9 +1,11 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 与层 2 批次 A/B/C 全部完成**（提交链 `b8674cca` → `ddeb98b2` → `e7073ecf` → `27f5f5f4` → 批次 C）；批次 C 交付：任务卡片行“查看运行”跳转（已实证 `progress.id ≡ registry agentId`，同一 id 体系）、嵌套子代理父行内缩进一层（`inflightTaskDetails`，深度封顶一层）、运行中行尾随最近输出摘要（`recentOutput` 尾行，generate-effect 动画）。浏览器目验仍待真实会话。
+> 状态：**层 1 与层 2 批次 A/B/C 全部完成**（提交链 `b8674cca` → `ddeb98b2` → `e7073ecf` → `27f5f5f4` → `8111ba2b`）；批次 C 交付：任务卡片行“查看运行”跳转（已实证 `progress.id ≡ registry agentId`，同一 id 体系）、嵌套子代理父行内缩进一层（`inflightTaskDetails`，深度封顶一层）、运行中行尾随最近输出摘要（`recentOutput` 尾行，generate-effect 动画）。浏览器目验：静态面已证（卡片行/跳转/标签页/空态），运行态面受阻于子代理 spawn 挂起（见目验记录）。
 >
 > **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
 >
+>
+> **浏览器目验记录（2026-09-04，dev 服务器 + 真实会话）**：新建 bug-fix 会话并令模型经 task 工具派 scout 子代理。已证实：① 任务卡片行渲染完整（状态点/agent 名/任务描述/`0 · 0ms` 用量位/Open run 按钮）；② C1 跳转全链路——点 Open run 打开 agentRun 侧板标签页，轨道 surface 以 has-content 语义现身并激活；③ transcript 端点路由与错误语义正确（无 registry ref → 404 `agent-run-not-found`）；④ 空态文案正确渲染。**受阻项**：隔离子代理进程始终未启动（引擎日志停在 fallback 链配置后，无子进程产生；`piChild.resourceProfile: isolated` 为用户全局设置且不在本仓 SDK 源内）——运行态 live 指标、尾巴、嵌套、hub 行、徽章、transcript 正文、产物打开八项待子代理可运行后目验。该 spawn 挂起疑似上游/环境问题，另行登记。
 > **合跑污染定性（修正早前判断）**：裸 `bun test <目录>` 合跑时 `WorkStatusSubagentsSection`（4 例）与 `ReasoningPart`（2 例）互相污染失败，机制是 `mock.module` 进程级注册会传播到已加载消费方且还原不可靠（`mock.restore()` 无效、"beforeEach 注册 + afterEach 还原"实验亦失败，实验已全部回退）。**仓库官方门禁 `bun run test`（逐文件隔离进程）不受影响、全绿**；裸合跑不得用作 gate 结论。详见文末缺陷登记。
 >
 > 层 1 落地记录：① wire 透传——`omp-host/engine.ts` tool_execution_update 对 task 工具转发 `partialResult.details`，`projection.ts` toolPartial 新增 details 合并（最新快照整体替换，保留 asyncState）；`event-dispositions.json` 注记已更新。② UI 消费——`taskToolModel.ts` 新增 `readTaskAgentRows`（progress=live 行 / results=settled 行，settled 优先，index 排序，畸形忽略）与 `formatAgentDuration`；`ToolPart.tsx` 新增 `TaskAgentRowsList`/`TaskAgentRowItem`（状态色点+agent 名+label+当前工具+tokens+时长+重试文案，memo+签名比较接入流式内容通知），空态条件与 shouldRenderTaskSummary 纳入 agentRows。③ i18n——`chat.toolPart.taskAgent.*` 8 键 × 12 词典全量真实翻译（`tr.ts` 为 rebase 后补齐）。
