@@ -75,6 +75,9 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       registries.push(this);
     }
+    onChange() {
+      return () => {};
+    }
   },
   ModelRegistry: class {
     constructor() {}

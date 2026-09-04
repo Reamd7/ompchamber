@@ -42,7 +42,13 @@ const makeFakeSession = (id: string) => ({
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
-  AgentRegistry: class {},
+  // onChange: the aggregator refresh wiring subscribes per-session; the
+  // no-op unsubscribe keeps mocked materialization on the real code path.
+  AgentRegistry: class {
+    onChange() {
+      return () => {};
+    }
+  },
   ModelRegistry: class {
     constructor() {}
     async refresh() {}

@@ -149,6 +149,8 @@ interface HostSession {
   /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
   turnToolResults?: Map<string, { content?: unknown; isError?: boolean; timestamp?: number }> | null;
   unsubscribe?: () => void;
+  /** Agent-registry event subscription feeding the agent-runs aggregator. */
+  unsubscribeAgentRegistry?: () => void;
 }
 
 /** The SessionManager surface #infoFromManager reads (SDK SessionManager). */
@@ -656,7 +658,9 @@ export class OmpHostEngine {
   #disposeSession(session: HostSession | undefined) {
     if (!session || !session.agentSession) return;
     session.unsubscribe?.();
+    session.unsubscribeAgentRegistry?.();
     session.unsubscribe = undefined;
+    session.unsubscribeAgentRegistry = undefined;
     // Domain release: modes tracker + pending dialogs for this session (R11).
     this.modesDomain?.release?.(session.sessionId, session.directory);
     this.dialogs?.registry?.abortForSession?.(
@@ -1295,6 +1299,16 @@ export class OmpHostEngine {
         console.error('[omp-host] event projection error:', error);
       }
     });
+    // Registry events drive the agent-runs aggregator (spec 04 §5.5): without
+    // this wiring the snapshot stays at revision 0 forever — rows never appear
+    // and omp.agents.updated never publishes, so every UI consumer (work-status
+    // rows, header badge, transcript row resolution) sees an empty world even
+    // while subagents run. Coalescing lives inside the aggregator (notify
+    // schedules one flush per directory); refresh() is the rebuild step.
+    hostSession.unsubscribeAgentRegistry = agentRegistry.onChange(() => {
+      this.uriDomain?.aggregator.refresh();
+    });
+    this.uriDomain?.aggregator.refresh();
     // Modes tracker for this session (cold-recovery + mode_change appends).
     this.modesDomain?.trackerFor(sessionId, directoryKey);
     // The freshly materialized host session is not published in `sessions`
