@@ -13,6 +13,7 @@ import { Osc133Scanner, buildZshOsc133Wrapper, buildBashOsc133Rc } from './shell
 import * as osModule from 'node:os';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
+import { GridCore } from '@ompchamber/terminal-server';
 import { createRequire } from 'node:module';
 
 const MAX_SESSIONS = 20;
@@ -252,11 +253,41 @@ export function createTerminalRuntime({
     }
   };
 
-  const snapshot = (session) => ({
-    t: 'snapshot', v: 3, s: session.id, q: session.sequence, history: historyText(session),
+  const snapshot = (session, { grid = false } = {}) => ({
+    t: 'snapshot', v: 3, s: session.id, q: session.sequence, history: grid ? '' : historyText(session),
     status: session.status, exitCode: session.exitCode, signal: session.signal,
     runtime, ptyBackend: session.backend,
+    // Grid-fed attachments reconcile from the parsed screen state; the raw
+    // byte replay is dead weight for them, so their snapshot swaps history
+    // for the current full grid frame.
+    ...(grid ? { grid: session.grid ? session.grid.fullFrame() : null } : {}),
   });
+
+  // Server-side parsing feed: one GridCore per session turns the raw PTY
+  // stream into parsed grid diff frames, published to attachments that
+  // opted in via feed:'grid'. Attachments on the default byte feed are
+  // untouched — the two feeds coexist per attachment, not per session.
+  const hasGridAttachment = (sessionId) => {
+    for (const connection of connections) {
+      const attachment = connection.attachments.get(sessionId);
+      if (attachment?.feed === 'grid') return true;
+    }
+    return false;
+  };
+
+  const resetGrid = (session, cols, rows) => {
+    session.grid?.dispose();
+    session.grid = new GridCore({ cols, rows });
+    // Frames publish only while a grid-fed attachment is watching — publish
+    // itself advances the session sequence, and byte-feed clients must not
+    // see sequence numbers drift for events they cannot observe. A grid
+    // attachment arriving later materializes from fullFrame() instead.
+    session.grid.onFrame = (frame) => {
+      try {
+        if (session.status !== 'running' || !hasGridAttachment(session.id)) return;
+        publish(session, { t: 'grid', g: frame });
+    };
+  };
 
   const lagOf = (attachment) => {
     let lag = 0;
@@ -269,9 +300,10 @@ export function createTerminalRuntime({
   const sendSnapshotTo = (connection, session) => {
     const attachment = connection.attachments.get(session.id);
     if (!attachment || attachment.initializing) return;
-    const snap = snapshot(session);
+    const gridFeed = attachment.feed === 'grid';
+    const snap = snapshot(session, { grid: gridFeed });
     if (!send(connection.socket, snap)) return;
-    const bytes = Buffer.byteLength(snap.history) + 256;
+    const bytes = gridFeed ? (snap.grid ? Buffer.byteLength(JSON.stringify(snap.grid)) : 0) + 256 : Buffer.byteLength(snap.history) + 256;
     attachment.sentBytes += bytes;
     attachment.pendingAcks.push({ q: session.sequence, bytes });
   };
@@ -280,11 +312,21 @@ export function createTerminalRuntime({
     session.sequence += 1;
     const message = { ...event, v: 3, s: session.id, q: session.sequence };
     const isOutput = event.t === 'output';
+    const isGrid = event.t === 'grid';
+    const gridBytes = isGrid ? Buffer.byteLength(JSON.stringify(event.g)) : 0;
     for (const connection of connections) {
       const attachment = connection.attachments.get(session.id);
       if (!attachment) continue;
-      if (attachment.initializing) { attachment.pending.push(message); continue; }
-      if (isOutput) {
+      if (attachment.initializing) {
+        // Grid-fed attachments keep no byte replay, so buffered snapshots
+        // and their first grid frame are all they need from the queue.
+        if (isOutput && attachment.feed === 'grid') continue;
+        attachment.pending.push(message);
+        continue;
+      }
+      if (isOutput && attachment.feed === 'grid') continue;
+      if (isOutput || isGrid) {
+        if (isGrid && attachment.feed !== 'grid') continue;
         const suppress = attachment.suppressed
           || lagOf(attachment) > SEND_LAG_ENTER_BYTES
           || (!attachment.ackedOnce && attachment.sentBytes > SEND_LAG_FALLBACK_BYTES);
@@ -295,7 +337,7 @@ export function createTerminalRuntime({
           continue;
         }
         if (!send(connection.socket, message)) continue;
-        const bytes = event.d.length;
+        const bytes = isGrid ? gridBytes : event.d.length;
         attachment.sentBytes += bytes;
         attachment.pendingAcks.push({ q: session.sequence, bytes });
       } else {
@@ -359,6 +401,9 @@ export function createTerminalRuntime({
           // diagnostics; lifetime follows claims/touches/input.
           session.lastOutputAt = Date.now();
           publish(session, { t: 'output', d: event.data, ...(sanitized.visible !== event.data ? { r: sanitized.visible } : {}) });
+          if (session.grid) {
+            session.grid.write(event.data);
+          }
           // OSC 133 shell integration: detect command boundary markers
           if (!session.osc133) session.osc133 = new Osc133Scanner();
           for (const oscEvent of session.osc133.scan(event.data)) {
@@ -414,6 +459,7 @@ export function createTerminalRuntime({
     session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.status = 'running'; session.exitCode = null; session.signal = null;
     session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
     session.lastActivity = Date.now();
+    resetGrid(session, cols, rows);
     // Invalidate any scheduled drain slice and drop its pending events.
     session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
     // The bundled conpty.dll probes primary device attributes during its own
@@ -479,6 +525,8 @@ export function createTerminalRuntime({
       session.cols = cols; session.rows = rows;
       if (session.status === 'running' && session.process) {
         try { session.process.resize(cols, rows); } catch { /* process exited */ }
+      session.grid?.resize(cols, rows);
+        session.grid?.resize(cols, rows);
       }
       publish(session, { t: 'driverChanged', driverId: session.viewportDriver.connectionId, cols, rows });
       return;
@@ -544,16 +592,17 @@ export function createTerminalRuntime({
       const session = sessions.get(id);
       if (!session) { send(socket, { t: 'error', v: 3, s: id, code: 'SESSION_NOT_FOUND', message: 'Terminal session not found', fatal: true }); return; }
       if (message.t === 'attach') {
-        const attachment = { initializing: true, pending: [], cols: 0, rows: 0, pendingAcks: [], ackedOnce: false, suppressed: false, sentBytes: 0 };
+        const attachment = { initializing: true, pending: [], cols: 0, rows: 0, pendingAcks: [], ackedOnce: false, suppressed: false, sentBytes: 0, feed: message.feed === 'grid' ? 'grid' : 'bytes' };
         if (typeof message.cols === 'number' && message.cols > 0) attachment.cols = Math.min(message.cols, 1000);
         if (typeof message.rows === 'number' && message.rows > 0) attachment.rows = Math.min(message.rows, 500);
         connection.attachments.set(id, attachment);
-        const initial = snapshot(session);
+        const gridFeed = attachment.feed === 'grid';
+        const initial = snapshot(session, { grid: gridFeed });
         const sentInitial = send(socket, initial);
-        for (const event of attachment.pending) if (event.q > initial.q) send(socket, event);
+        for (const event of attachment.pending) if (event.q > initial.q && !(gridFeed && event.t === 'output')) send(socket, event);
         attachment.pending.length = 0; attachment.initializing = false;
         if (sentInitial) {
-          const bytes = Buffer.byteLength(initial.history) + 256;
+          const bytes = gridFeed ? (initial.grid ? Buffer.byteLength(JSON.stringify(initial.grid)) : 0) + 256 : Buffer.byteLength(initial.history) + 256;
           attachment.sentBytes += bytes;
           attachment.pendingAcks.push({ q: initial.q, bytes });
         }
@@ -721,6 +770,7 @@ export function createTerminalRuntime({
     // the negotiation model owns sizing policy, this route just applies.
     try {
       if (session.status === 'running') session.process?.resize(cols, rows);
+      session.grid?.resize(cols, rows);
       session.cols = cols; session.rows = rows;
       publish(session, { t: 'resized', cols, rows });
       res.json({ success: true, cols, rows });
@@ -754,6 +804,7 @@ export function createTerminalRuntime({
       session.process = spawned.process; session.backend = spawned.backend; session.shell = spawned.shell; session.loginShell = spawned.loginShell; session.cwd = cwd; session.cols = cols; session.rows = rows;
       historyChunksReset(session); session.pendingHistoryControlSequence = ''; session.pendingThemeControlSequence = ''; session.themeModeEnabled = false; session.status = 'running'; session.exitCode = null; session.signal = null;
       session.drainToken = (session.drainToken ?? 0) + 1; session.draining = false; session.eventQueue.length = 0; session.queueBytes = 0;
+      resetGrid(session, cols, rows);
       session.respondPrimaryDA = !spawned.conptyDll;
       session.themeMode = themeMode === 'light' ? 'light' : 'dark'; session.terminalBackground = terminalBackground; session.terminalForeground = terminalForeground;
        wire(session, spawned.process); void terminateProcess(oldProcess); publish(session, { t: 'restarted', history: '' });
@@ -787,6 +838,7 @@ export function createTerminalRuntime({
       }
     }
     sessions.delete(session.id);
+    session.grid?.dispose(); session.grid = null;
     closeAttachments(session.id, 'CLOSED', 'Terminal closed');
     await terminateProcess(session.process);
     res.json({ success: true, released: true, killed: true });
@@ -796,7 +848,7 @@ export function createTerminalRuntime({
     const killedSessionIds = [];
     for (const [id, session] of sessions) {
       if ((sessionId && id !== sessionId) || (!sessionId && cwd && session.cwd !== cwd)) continue;
-      sessions.delete(id); closeAttachments(id, 'KILLED', 'Terminal was killed'); void terminateProcess(session.process, true); killedSessionIds.push(id); killedCount += 1;
+      sessions.delete(id); session.grid?.dispose(); session.grid = null; closeAttachments(id, 'KILLED', 'Terminal was killed'); void terminateProcess(session.process, true); killedSessionIds.push(id); killedCount += 1;
     }
     res.json({ success: true, killedCount, killedSessionIds });
   });
@@ -806,7 +858,7 @@ export function createTerminalRuntime({
     for (const [id, session] of sessions) {
       const attached = [...connections].some((connection) => connection.attachments.has(id));
       if (!attached && now - session.lastActivity > IDLE_TIMEOUT_MS) {
-        sessions.delete(id); closeAttachments(id, 'IDLE_TIMEOUT', 'Terminal expired after being idle'); void terminateProcess(session.process, true);
+        sessions.delete(id); session.grid?.dispose(); session.grid = null; closeAttachments(id, 'IDLE_TIMEOUT', 'Terminal expired after being idle'); void terminateProcess(session.process, true);
       }
     }
   }, 5 * 60 * 1000);
@@ -814,7 +866,7 @@ export function createTerminalRuntime({
   const shutdown = async () => {
     server.off('upgrade', upgradeHandler); clearInterval(idleSweep);
     await Promise.allSettled([...pendingSessionRestarts.values()]);
-    for (const session of sessions.values()) void terminateProcess(session.process, true);
+    for (const session of sessions.values()) { void terminateProcess(session.process, true); session.grid?.dispose(); session.grid = null; }
     sessions.clear();
     await Promise.allSettled([...pendingTerminations]);
     if (!wsServer) return;

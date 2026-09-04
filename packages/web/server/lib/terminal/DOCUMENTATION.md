@@ -20,6 +20,28 @@
 
 HTTP remains the authenticated command plane for create, resize, appearance updates, restart, close, and force-kill. There is no SSE output or HTTP input compatibility path.
 
+### Server-side parsing feed (grid)
+
+An attachment may opt into `feed: 'grid'` on its `attach` frame. Each
+session runs one `GridCore` (`@ompchamber/terminal-server`) that parses the
+same raw PTY stream the byte feed ships:
+
+- Grid-fed attachments receive `{t:'grid', g: frame}` events — parsed row
+  diffs (`full`/`rows`/`cursor` frames, cells as
+  `[codepoint, fg24, bg24, flags, width]`) — instead of `output` frames.
+  All other events (exit, resized, restarted, command-finished) still flow.
+- Their snapshots swap the byte history for the current full grid frame
+  (`grid` field, `history: ''`), so reconnects reconcile from parsed state.
+- Grid frames ride the same sequence/ack/suppression machinery: bytes are
+  accounted like output, a lagging attachment is suppressed and recovers by
+  snapshot. Grid frames publish only while a grid attachment is watching, so
+  byte-feed clients see no sequence drift from a capability they cannot
+  observe.
+- Resizes propagate to the grid; restarts reset it with the new process;
+  session removal and runtime shutdown dispose it.
+- The module also exposes the transport-free core for hosts that manage
+  their own process lifetime; this runtime embeds exactly that layer.
+
 `GET /api/terminal/sessions` enumerates live sessions (optionally filtered by resolved `cwd`) so clients can adopt terminals their local tab projection does not know about — another device, a new browser tab, or cleared storage. `POST /api/terminal/touch` refreshes `lastActivity` for the listed session ids; open clients call it periodically so background tabs, which hold no WebSocket attachment, are not idle-reaped while a client still shows them.
 
 ## PTY Lifecycle

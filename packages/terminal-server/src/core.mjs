@@ -51,9 +51,11 @@ function flagsOf(cell) {
 }
 
 export class GridCore {
-  constructor({ cols = 80, rows = 24 } = {}) {
-    this.cols = Math.max(2, Math.min(500, cols | 0));
-    this.rows = Math.max(2, Math.min(300, rows | 0));
+  constructor({ cols = 80, rows = 24, maxCols = 1000, maxRows = 500 } = {}) {
+    this.maxCols = maxCols;
+    this.maxRows = maxRows;
+    this.cols = Math.max(2, Math.min(maxCols, cols | 0));
+    this.rows = Math.max(2, Math.min(maxRows, rows | 0));
     this.term = new Terminal({ cols: this.cols, rows: this.rows, scrollback: 0, allowProposedApi: true });
     this.lastHashes = null;
     /** Called with a frame after each parsed batch. */
@@ -67,8 +69,8 @@ export class GridCore {
   }
 
   resize(cols, rows) {
-    const c = Math.max(2, Math.min(500, cols | 0));
-    const r = Math.max(2, Math.min(300, rows | 0));
+    const c = Math.max(2, Math.min(this.maxCols, cols | 0));
+    const r = Math.max(2, Math.min(this.maxRows, rows | 0));
     if (c === this.cols && r === this.rows) return;
     this.cols = c;
     this.rows = r;
@@ -86,11 +88,25 @@ export class GridCore {
   _queueDrain() {
     if (this._drainQueued) return;
     this._drainQueued = true;
-    setImmediate(() => {
+    // setTimeout(0) over setImmediate: it coalesces bursts just the same,
+    // stays scheduler-portable across runtimes, and — measured under
+    // bun test — setImmediate never fires in some import graphs there,
+    // freezing the whole event loop.
+    setTimeout(() => {
       this._drainQueued = false;
       const frame = this.drain();
       if (frame && this.onFrame) this.onFrame(frame);
-    });
+    }, 0);
+  }
+
+  /**
+   * Force a complete frame (resets the diff baseline). Hosts use this to
+   * materialize snapshots for newly attaching clients; the next drain()
+   * diffs against this point.
+   */
+  fullFrame() {
+    this.lastHashes = null;
+    return this.drain();
   }
 
   /** Compute the next diff frame. Also the sync API for hosts that prefer pull. */
@@ -127,7 +143,15 @@ export class GridCore {
   }
 
   dispose() {
-    this.term.dispose();
+    // Deferred: xterm's async write-buffer continuation is a pending
+    // setTimeout; disposing mid-write leaves that timer firing against a
+    // dead instance and the process never settles. One tick later the
+    // pending slice has run and dispose is safe.
+    this.onFrame = null;
+    const term = this.term;
+    setTimeout(() => {
+      try { term.dispose(); } catch { /* already torn down */ }
+    }, 0);
   }
 }
 

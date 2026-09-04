@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node server.mjs & node ../packages/terminal-server/src/bin.mjs & vite --port 8090",
     "server": "node server.mjs",
-    "grid-server": "node ../packages/terminal-server/src/bin.mjs",
+    "grid-server": "node -e \"import('../packages/terminal-server/src/server.mjs').then(m => m.createGridServer({ port: 8082 }).then(() => console.log('[terminal-server] grid on :8082')))\"",
     "vite": "vite --port 8090",
     "electron": "electron .",
     "build": "vite build",
