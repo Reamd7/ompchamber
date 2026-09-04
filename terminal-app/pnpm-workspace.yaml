@@ -1,0 +1,9 @@
+packages:
+  - 'packages/*'
+allowBuilds:
+  electron: true
+  esbuild: true
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - '@lydell/node-pty'

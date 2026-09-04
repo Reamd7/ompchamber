@@ -1,0 +1,21 @@
+{
+  "name": "@terminal-app/terminal-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Server-side terminal parsing: VT bytes in, parsed grid diff frames out. Layered so hosts can embed just the core (OpenChamber's terminal runtime) or the full PTY+WS stack.",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./core": "./src/core.mjs",
+    "./pty-session": "./src/pty-session.mjs",
+    "./server": "./src/server.mjs"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@xterm/headless": "^5.5.0",
+    "@lydell/node-pty": "^1.1.0-beta.39",
+    "ws": "^8.21.0"
+  }
+}

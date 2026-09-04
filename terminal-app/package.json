@@ -5,19 +5,20 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "node server.mjs & vite --port 8090",
+    "dev": "node server.mjs & node packages/terminal-server/src/bin.mjs & vite --port 8090",
     "server": "node server.mjs",
+    "grid-server": "node packages/terminal-server/src/bin.mjs",
     "vite": "vite --port 8090",
     "electron": "electron .",
     "build": "vite build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lydell/node-pty": "^1.1.0-beta.39",
-    "@xterm/headless": "^6.0.0",
-    "ghostty-web": "file:../references/ghostty-web",
+    "@terminal-app/terminal-server": "workspace:*",
+    "ghostty-web": "link:../references/ghostty-web",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "@lydell/node-pty": "^1.1.0-beta.39",
     "ws": "^8.21.0"
   },
   "devDependencies": {
