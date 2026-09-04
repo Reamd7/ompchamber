@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>terminal-app</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #1e1e1e;
+        --bar: #252526;
+        --fg: #d4d4d4;
+        --accent: #0db8a5;
+        --border: #3c3c3c;
+      }
+      * { box-sizing: border-box; }
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font: 13px/1.4 -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      .app { display: flex; flex-direction: column; height: 100%; }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        background: var(--bar);
+        border-bottom: 1px solid var(--border);
+        flex: none;
+      }
+      .toolbar h1 { font-size: 13px; font-weight: 600; margin: 0 8px 0 0; }
+      .toolbar h1 b { color: var(--accent); }
+      .seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+      .seg button {
+        background: transparent; color: var(--fg); border: 0;
+        padding: 4px 12px; cursor: pointer; font: inherit;
+      }
+      .seg button + button { border-left: 1px solid var(--border); }
+      .seg button.on { background: var(--accent); color: #04211d; font-weight: 600; }
+      .spacer { flex: 1; }
+      .status { color: #8a8a8a; font-size: 12px; }
+      .status b { color: var(--fg); }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; background: #666; vertical-align: middle; }
+      .dot.ok { background: #3fd97b; }
+      .dot.err { background: #e05252; }
+      .term-host {
+        flex: 1;
+        min-height: 0;
+        padding: 4px 8px 8px;
+        overflow: hidden;
+        position: relative;
+      }
+      .term-host .terminal { height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
