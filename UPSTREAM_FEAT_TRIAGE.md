@@ -15,7 +15,7 @@
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 7/7 (3吸/4跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 4/4 (3吸/1半) |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
-| VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
+| VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 2/4 (2吸) |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
 | Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 1/7 (0吸/1跳) |
@@ -135,8 +135,8 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 |---|---|---|---|---|
 | - [ ] | `9f8af62d4` | feat(vscode): replace the Agent Manager with shared multi-run | `自身` |  |
 | - [ ] | `0d358adea` | feat(vscode): enable the prompt navigator in the extension | `引擎耦合?` |  |
-| - [ ] | `fa482bcf2` | feat(vscode): localize loading splash and dev-server status for Turkish (#3303) | `自身` |  |
-| - [ ] | `7c38f8aed` | feat(vscode): add Turkish localization for extension strings (#3300) | `自身` |  |
+| - [x] | `fa482bcf2` | feat(vscode): localize loading splash and dev-server status for Turkish (#3303) | `自身` | PORTED(干净落地) |
+| - [x] | `7c38f8aed` | feat(vscode): add Turkish localization for extension strings (#3300) | `自身` | PORTED(干净落地) |
 
 ## - [ ] Composer/Chat 交互改版 — 🟡 中价值 / 高互锁
 
