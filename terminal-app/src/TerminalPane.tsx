@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { init, Terminal, FitAddon } from 'ghostty-web';
+import { createTransport } from './transport';
 
 export type RendererKind = 'auto' | 'webgl' | 'canvas';
 type ConnState = 'connecting' | 'open' | 'closed';
@@ -12,10 +13,11 @@ interface Props {
 
 /**
  * One terminal session: ghostty-web Terminal + FitAddon in a sized
- * container, wired to the PTY server over a WebSocket. The component is
- * keyed by the App on shell restart; renderer changes also recreate the
- * session (the Terminal API has no runtime renderer swap — an honest
- * teardown beats a half-swapped canvas).
+ * container, wired to a PTY through an environment-selected transport
+ * (IPC in Electron, WebSocket in the browser). Keyed by the App on
+ * shell restart; renderer changes also recreate the session (the
+ * Terminal API has no runtime renderer swap — an honest teardown beats
+ * a half-swapped canvas).
  */
 export function TerminalPane({ renderer, onConn, onGrid }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -25,13 +27,10 @@ export function TerminalPane({ renderer, onConn, onGrid }: Props) {
     let disposed = false;
     let term: Terminal | null = null;
     let fit: FitAddon | null = null;
-    let ws: WebSocket | null = null;
     let ro: ResizeObserver | null = null;
-    let reconnectTimer: number | undefined;
-    // Pending resize sent on open (grid is known after fit).
-    let lastGrid: { cols: number; rows: number } | null = null;
+    const transport = createTransport();
 
-    const connect = async () => {
+    const start = async () => {
       onConn('connecting');
       try {
         await init();
@@ -59,19 +58,17 @@ export function TerminalPane({ renderer, onConn, onGrid }: Props) {
       term.loadAddon(fit);
       term.open(host);
       fit.fit();
-      lastGrid = { cols: term.cols, rows: term.rows };
-      onGrid(lastGrid);
+      onGrid({ cols: term.cols, rows: term.rows });
 
       term.onResize((size) => {
-        lastGrid = { cols: size.cols, rows: size.rows };
-        onGrid(lastGrid);
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
-        }
+        onGrid({ cols: size.cols, rows: size.rows });
+        transport.resize(size.cols, size.rows);
       });
-      term.onData((data) => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(data);
-      });
+      term.onData((data) => transport.write(data));
+      transport.onData((chunk) => term?.write(chunk));
+      transport.onConnState(onConn);
+
+      await transport.connect({ cols: term.cols, rows: term.rows });
 
       // Refit on container size changes (window resizes, devtools open...).
       ro = new ResizeObserver(() => {
@@ -82,41 +79,14 @@ export function TerminalPane({ renderer, onConn, onGrid }: Props) {
         }
       });
       ro.observe(host);
-
-      const openSocket = async () => {
-        let token = '';
-        try {
-          const res = await fetch('/api/token', { cache: 'no-store' });
-          token = (await res.json()).token;
-        } catch {
-          onConn('closed');
-          reconnectTimer = window.setTimeout(openSocket, 2000);
-          return;
-        }
-        if (disposed) return;
-        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(
-          `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}&cols=${term!.cols}&rows=${term!.rows}`
-        );
-        ws.onopen = () => onConn('open');
-        ws.onmessage = (ev) => term?.write(ev.data);
-        ws.onclose = () => {
-          if (disposed) return;
-          onConn('closed');
-          reconnectTimer = window.setTimeout(openSocket, 2000);
-        };
-        ws.onerror = () => ws?.close();
-      };
-      openSocket();
     };
 
-    connect();
+    start();
 
     return () => {
       disposed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
       ro?.disconnect();
-      ws?.close();
+      transport.close();
       term?.dispose();
     };
   }, [renderer, onConn, onGrid]);
