@@ -324,6 +324,6 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `73040d71e` | feat: add search to the new session project picker (#3408) | `自身` |  |
 | - [ ] | `1b1421a59` | feat(chats): relocate managed chat worktrees via OPENCHAMBER_CHATS_DIR (#3135) | `服务端` |  |
 | - [ ] | `d8060b9d2` | feat(changelog): one source file per release, generated outputs | `引擎耦合?` |  |
-| - [ ] | `be7ebd446` | feat: streamline release preparation and changelog checks | `自身` |  |
+| - [x] | `be7ebd446` | feat: streamline release preparation and changelog checks | `自身` | PORTED(干净落地) |
 | - [ ] | `9fa6cdc23` | feat(settings): retire the third-party plugin integrations | `自身` |  |
 | - [ ] | `04d64fa30` | feat(queue): deliver queued messages from the server | `服务端` |  |
