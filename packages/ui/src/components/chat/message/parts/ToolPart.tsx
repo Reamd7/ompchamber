@@ -55,6 +55,7 @@ import {
     type TaskAgentRowStatus,
     type TaskToolSummaryEntry,
 } from './taskToolModel';
+import { openOmpArtifact } from '@/lib/omp/openArtifact';
 import { formatCompactTokenCount } from '../turnUsage';
 import { areRenderRelevantPartsEqual } from '../renderCompare';
 import { useI18n } from '@/lib/i18n';
@@ -1020,6 +1021,7 @@ const getTaskAgentRowSignature = (row: TaskAgentRow): string => {
         row.retryAttempt,
         row.retryMax,
         row.retryExhausted ? 1 : 0,
+        row.outputPath ?? '',
     ].join('\u0001');
 };
 
@@ -1037,9 +1039,11 @@ const areTaskAgentRowsRenderEqual = (prevRows: TaskAgentRow[], nextRows: TaskAge
 const TaskAgentRowItem = React.memo(({
     row,
     animateTailText,
+    onOpenArtifact,
 }: {
     row: TaskAgentRow;
     animateTailText: boolean;
+    onOpenArtifact?: (outputPath: string) => void;
 }) => {
     const { t } = useI18n();
     const statusMeta = TASK_AGENT_ROW_STATUS_META[row.status];
@@ -1051,6 +1055,7 @@ const TaskAgentRowItem = React.memo(({
         : row.retryAttempt !== undefined
             ? t('chat.toolPart.taskAgent.retrying', { attempt: row.retryAttempt, maxAttempts: row.retryMax ?? 0 })
             : undefined;
+    const artifactPath = typeof row.outputPath === 'string' ? row.outputPath : null;
 
     return (
         <ToolRevealOnMount animate={animateTailText} wipe>
@@ -1085,11 +1090,27 @@ const TaskAgentRowItem = React.memo(({
                 {retryLabel ? (
                     <span className="typography-meta flex-shrink-0 text-[var(--status-warning)]">{retryLabel}</span>
                 ) : null}
+                {artifactPath && onOpenArtifact ? (
+                    <button
+                        type="button"
+                        className="flex-shrink-0 text-muted-foreground/60 transition-colors hover:text-primary"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenArtifact(artifactPath);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label={t('contextPanel.agentRun.openArtifact')}
+                        title={t('contextPanel.agentRun.openArtifact')}
+                    >
+                        <Icon name="attachment-2" className="h-3 w-3" />
+                    </button>
+                ) : null}
             </div>
         </ToolRevealOnMount>
     );
 }, (prev, next) => {
     return prev.animateTailText === next.animateTailText
+        && prev.onOpenArtifact === next.onOpenArtifact
         && getTaskAgentRowSignature(prev.row) === getTaskAgentRowSignature(next.row);
 });
 
@@ -1101,10 +1122,12 @@ const TaskAgentRowsList = React.memo(({
     rows,
     isExpanded,
     animateTailText,
+    onOpenArtifact,
 }: {
     rows: TaskAgentRow[];
     isExpanded: boolean;
     animateTailText: boolean;
+    onOpenArtifact?: (outputPath: string) => void;
 }) => {
     const { t } = useI18n();
     const visibleRows = isExpanded ? rows : rows.slice(0, TASK_AGENT_ROWS_VISIBLE_LIMIT);
@@ -1113,7 +1136,7 @@ const TaskAgentRowsList = React.memo(({
     return (
         <div className="w-full min-w-0 space-y-1">
             {visibleRows.map((row) => (
-                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} />
+                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} onOpenArtifact={onOpenArtifact} />
             ))}
             {hiddenCount > 0 ? (
                 <div className="typography-micro text-muted-foreground/70">
@@ -1125,6 +1148,7 @@ const TaskAgentRowsList = React.memo(({
 }, (prev, next) => {
     return prev.isExpanded === next.isExpanded
         && prev.animateTailText === next.animateTailText
+        && prev.onOpenArtifact === next.onOpenArtifact
         && areTaskAgentRowsRenderEqual(prev.rows, next.rows);
 });
 
@@ -1141,7 +1165,8 @@ const TaskToolSummary: React.FC<{
     input?: Record<string, unknown>;
     animateTailText?: boolean;
     isActive?: boolean;
-}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
+    onOpenArtifact?: (outputPath: string) => void;
+}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false, onOpenArtifact }) => {
     const { t } = useI18n();
     const currentDirectory = useEffectiveDirectory();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
@@ -1200,6 +1225,7 @@ const TaskToolSummary: React.FC<{
                     rows={agentRows}
                     isExpanded={isExpanded}
                     animateTailText={animateTailText}
+                    onOpenArtifact={onOpenArtifact}
                 />
             ) : null}
 
@@ -2475,6 +2501,9 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                 <TaskToolSummary
                     entries={taskSummaryEntries}
                     agentRows={taskAgentRows}
+                    onOpenArtifact={part.sessionID && currentDirectory ? (outputPath) => {
+                        void openOmpArtifact(outputPath, part.sessionID, currentDirectory);
+                    } : undefined}
                     isExpanded={isExpanded}
                     isMobile={isMobile}
                     output={taskOutputString}

@@ -156,6 +156,8 @@ export type TaskAgentRow = {
     retryAttempt?: number;
     retryMax?: number;
     retryExhausted?: boolean;
+    /** Durable task output artifact (`agent://` URL) on settled rows. */
+    outputPath?: string;
 };
 
 const TASK_AGENT_ROW_STATUSES: readonly TaskAgentRowStatus[] = ['pending', 'running', 'completed', 'failed', 'aborted'];
@@ -201,6 +203,7 @@ const taskAgentRowsFrom = (
             detail: kind === 'progress'
                 ? asTrimmedText(record.currentTool) ?? asTrimmedText(record.lastIntent)
                 : asTrimmedText(record.error),
+            outputPath: kind === 'result' ? asTrimmedText(record.outputPath) : undefined,
             tokens: asNonNegativeNumber(record.tokens),
             durationMs: asNonNegativeNumber(record.durationMs),
         };

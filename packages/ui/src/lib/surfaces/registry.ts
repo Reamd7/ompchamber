@@ -15,7 +15,8 @@ export type ContextSurfaceId =
   | 'context'
   | 'browser'
   | 'chat'
-  | 'timeline';
+  | 'timeline'
+  | 'agentRun';
 
 export type ContextSurfaceDescriptor = {
   id: ContextSurfaceId;
@@ -141,6 +142,15 @@ export const CONTEXT_SURFACES: readonly ContextSurfaceDescriptor[] = [
     icon: 'time',
     labelKey: 'contextPanel.mode.timeline',
     availability: 'always',
+  },
+  {
+    id: 'agentRun',
+    descriptionKey: 'contextRail.surface.agentRun.description',
+    defaultWidthFraction: 0.45,
+    mode: 'agentRun',
+    icon: 'ai-agent',
+    labelKey: 'contextPanel.mode.agentRun',
+    availability: 'has-content',
   },
   {
     id: 'browser',

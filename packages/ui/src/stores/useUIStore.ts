@@ -13,7 +13,7 @@ import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch';
-export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'localFile' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'linear' | 'notes' | 'terminal' | 'timeline';
+export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'localFile' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'linear' | 'notes' | 'terminal' | 'timeline' | 'agentRun';
 export type MermaidRenderingMode = 'svg' | 'ascii';
 export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
@@ -82,6 +82,9 @@ type ContextPanelTab = {
       restored plan tab opens against its own project instead of guessing the
       owner from whatever directory happens to be current. */
   projectPlanRef: ProjectRef | null;
+  /** The run this `agentRun` tab shows (ch 14 §4.3): parent session + agent
+      id. Persisted with the tab so a restored tab re-reads its transcript. */
+  agentRun: { sessionID: string; agentId: string } | null;
   dedupeKey: string;
   label: string | null;
   sessionTitleFallback: string | null;
@@ -96,6 +99,7 @@ type ContextPanelTabDescriptor = {
   targetPath?: string | null;
   projectPlanId?: string | null;
   projectPlanRef?: ProjectRef | null;
+  agentRun?: { sessionID: string; agentId: string } | null;
   dedupeKey?: string | null;
   label?: string | null;
   sessionTitleFallback?: string | null;
@@ -249,6 +253,19 @@ const normalizeContextPanelProjectPlanRef = (value: unknown): ProjectRef | null 
   return id && path ? { id, path } : null;
 };
 
+/** An agentRun tab is only meaningful with both halves of its identity;
+    anything less would make the tab unfetchable, so it degrades to null (the
+    tab renders its empty state). */
+const normalizeContextPanelTabAgentRun = (mode: ContextPanelMode, value: unknown): { sessionID: string; agentId: string } | null => {
+  if (mode !== 'agentRun' || !value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as { sessionID?: unknown; agentId?: unknown };
+  const sessionID = typeof candidate.sessionID === 'string' ? candidate.sessionID.trim() : '';
+  const agentId = typeof candidate.agentId === 'string' ? candidate.agentId.trim() : '';
+  return sessionID && agentId ? { sessionID, agentId } : null;
+};
+
 const buildDefaultContextPanelTabDedupeKey = (mode: ContextPanelMode, targetPath: string | null): string => {
   if (mode === 'file') {
     return targetPath || mode;
@@ -298,6 +315,7 @@ const createContextPanelTab = (descriptor: ContextPanelTabDescriptor): ContextPa
     projectPlanId: typeof descriptor.projectPlanId === 'string' && descriptor.projectPlanId.trim()
       ? descriptor.projectPlanId.trim()
       : null,
+    agentRun: descriptor.agentRun ?? null,
     projectPlanRef: normalizeContextPanelProjectPlanRef(descriptor.projectPlanRef),
     dedupeKey,
     label: normalizeContextTabLabel(descriptor.label),
@@ -359,6 +377,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       mode?: unknown;
       targetPath?: unknown;
       projectPlanId?: unknown;
+      agentRun?: unknown;
       projectPlanRef?: unknown;
       dedupeKey?: unknown;
       label?: unknown;
@@ -372,7 +391,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
     // Legacy 'preview' tabs are converted to 'browser' by the v14 migration;
     // anything still carrying an unknown mode here is discarded rather than
     // resurrected into a tab the panel cannot render.
-    if (candidate.mode !== 'diff' && candidate.mode !== 'walkthrough' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'browser' && candidate.mode !== 'git' && candidate.mode !== 'pr' && candidate.mode !== 'linear' && candidate.mode !== 'notes' && candidate.mode !== 'terminal' && candidate.mode !== 'timeline') {
+    if (candidate.mode !== 'diff' && candidate.mode !== 'walkthrough' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'browser' && candidate.mode !== 'git' && candidate.mode !== 'pr' && candidate.mode !== 'linear' && candidate.mode !== 'notes' && candidate.mode !== 'terminal' && candidate.mode !== 'timeline' && candidate.mode !== 'agentRun') {
       continue;
     }
 
@@ -412,6 +431,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       mode: candidate.mode,
       targetPath,
       projectPlanId,
+      agentRun: normalizeContextPanelTabAgentRun(candidate.mode, candidate.agentRun),
       projectPlanRef,
       dedupeKey,
       label: normalizeContextTabLabel(typeof candidate.label === 'string' ? candidate.label : null),
@@ -483,6 +503,7 @@ const upsertContextPanelTab = (
            mode: nextTab.mode,
            targetPath: nextTab.targetPath || tab.targetPath,
            projectPlanId: nextTab.projectPlanId ?? tab.projectPlanId,
+           agentRun: nextTab.agentRun ?? tab.agentRun,
            projectPlanRef: nextTab.projectPlanRef ?? tab.projectPlanRef,
            dedupeKey: nextTab.dedupeKey,
            label: nextTab.label,

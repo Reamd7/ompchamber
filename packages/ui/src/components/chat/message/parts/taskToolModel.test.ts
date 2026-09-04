@@ -86,8 +86,8 @@ describe('taskToolModel', () => {
             },
         };
         expect(readTaskAgentRows(metadata)).toEqual([
-            { key: 'a', agent: 'scout', status: 'aborted', label: undefined, detail: undefined, tokens: 3, durationMs: 1, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
-            { key: 'b', agent: 'task', status: 'failed', label: undefined, detail: 'boom', tokens: 10, durationMs: 5, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined },
+            { key: 'a', agent: 'scout', status: 'aborted', label: undefined, detail: undefined, tokens: 3, durationMs: 1, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined },
+            { key: 'b', agent: 'task', status: 'failed', label: undefined, detail: 'boom', tokens: 10, durationMs: 5, retryAttempt: undefined, retryMax: undefined, retryExhausted: undefined, outputPath: undefined },
         ]);
     });
 
@@ -103,10 +103,23 @@ describe('taskToolModel', () => {
             },
         };
         expect(readTaskAgentRows(metadata)).toEqual([
-            { key: 'a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: 3, retryExhausted: true },
+            { key: 'a', agent: 'scout', status: 'running', label: undefined, detail: undefined, tokens: undefined, durationMs: undefined, retryAttempt: 3, retryExhausted: true, outputPath: undefined },
         ]);
         expect(readTaskAgentRows(undefined)).toEqual([]);
         expect(readTaskAgentRows({ details: { progress: 'nope' } })).toEqual([]);
+    });
+
+    test('settled rows carry the durable output artifact path', () => {
+        const rows = readTaskAgentRows({
+            details: {
+                results: [
+                    { index: 0, id: 'a', agent: 'task', exitCode: 0, tokens: 5, durationMs: 10, outputPath: 'agent://task-a0.md' },
+                    { index: 1, id: 'b', agent: 'scout', exitCode: 0 },
+                ],
+            },
+        });
+        expect(rows[0]?.outputPath).toBe('agent://task-a0.md');
+        expect(rows[1]?.outputPath).toBeUndefined();
     });
 
     test('formats durations the way the TUI renderer prints them', () => {

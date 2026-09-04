@@ -152,6 +152,16 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
             <WorkStatusRow
               key={row.key}
               label={label}
+              onClick={directory && !isEmbeddedSessionChat() && !isMobile && !isVSCodeRuntime() && row.hasTranscript
+                ? () => openContextPanelTab(directory, {
+                    mode: 'agentRun',
+                    dedupeKey: `run:${row.key}`,
+                    label,
+                    readOnly: true,
+                    agentRun: { sessionID: row.sessionID, agentId: row.agentId },
+                  })
+                : undefined}
+              ariaLabel={t('chat.workStatus.action.openAgentRun', { name: label })}
               value={(
                 <>
                   {statusValue}

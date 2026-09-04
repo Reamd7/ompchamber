@@ -397,7 +397,8 @@ export class OmpHostEngine {
             registry: hostSession.agentRegistry
           })),
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
-      liveSessionIds: () => [...this.sessions.keys()]
+      liveSessionIds: () => [...this.sessions.keys()],
+      agentRunTranscript: (sessionID, agentId, directory) => this.getAgentRunTranscript({ sessionID, agentId, directory }),
     });
     this.bootError = null;
     this.bootPromise = null;
@@ -2060,6 +2061,38 @@ export class OmpHostEngine {
       }
     }
     return out;
+  }
+
+  /**
+   * Chapter-14 read: one subagent run's transcript from its registry ref.
+   * Live and parked refs keep sessionFile; historical disk rows have no ref
+   * here and answer null (the route maps that to 404 `no-transcript`).
+   */
+  async getAgentRunTranscript({ sessionID, agentId, directory }: { sessionID: string; agentId: string; directory?: string }) {
+    await this.#boot();
+    const hostSession = this.sessions.get(sessionID);
+    const runRef = hostSession?.agentRegistry.get(agentId);
+    const sessionFile = runRef?.sessionFile;
+    if (!hostSession || !runRef || !sessionFile) return null;
+    const directoryKey = normalizeDirectoryKey(directory ?? hostSession.directory);
+    const manager = await SessionManager.open(sessionFile);
+    try {
+      const context = manager.buildSessionContext({ transcript: true });
+      const messages = projectConversation(context.messages ?? [], {
+        sessionID: manager.getSessionId(),
+        directory: directoryKey
+      });
+      return {
+        sessionID,
+        agentId,
+        displayName: runRef.displayName ?? agentId,
+        status: runRef.status,
+        messages,
+        ...(runRef.history?.outputPath ? { outputPath: runRef.history.outputPath } : {}),
+      };
+    } finally {
+      await manager.close().catch(() => {});
+    }
   }
 
   async #transcriptContext(sessionID: string, directory: string | null | undefined) {

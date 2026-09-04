@@ -21,6 +21,7 @@ const GitView = lazyWithChunkRecovery(() => import('@/components/views/GitView')
 const LinearIssuesView = lazyWithChunkRecovery(() => import('@/components/views/LinearIssuesView').then((m) => ({ default: m.LinearIssuesView })));
 const PlanView = lazyWithChunkRecovery(() => import('@/components/views/PlanView').then((m) => ({ default: m.PlanView })));
 const SessionTimelineTab = lazyWithChunkRecovery(() => import('@/components/session/SessionTimelineTab').then((m) => ({ default: m.SessionTimelineTab })));
+const AgentRunTab = lazyWithChunkRecovery(() => import('@/components/session/AgentRunTab').then((m) => ({ default: m.AgentRunTab })));
 import { ProjectContextPanel } from './RightSidebarTabs';
 import { SidebarFilesTree } from './SidebarFilesTree';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -120,6 +121,7 @@ const getModeLabel = (
   if (mode === 'chat') return t('contextPanel.mode.chat');
   if (mode === 'localFile') return t('contextPanel.localFiles.title');
   if (mode === 'timeline') return t('contextPanel.mode.timeline');
+  if (mode === 'agentRun') return t('contextPanel.mode.agentRun');
   if (mode === 'file') return t('contextPanel.mode.files');
   if (mode === 'diff') return t('contextPanel.mode.diff');
   if (mode === 'walkthrough') return t('contextPanel.mode.walkthrough');
@@ -243,6 +245,10 @@ const getTabIcon = (
 
   if (tab.mode === 'timeline') {
     return <Icon name="history" className="h-3.5 w-3.5" />;
+  }
+
+  if (tab.mode === 'agentRun') {
+    return <Icon name="ai-agent" className="h-3.5 w-3.5" />;
   }
 
   if (tab.mode === 'terminal') {
@@ -1021,6 +1027,8 @@ export const ContextPanel: React.FC = () => {
                 ? <ProjectContextPanel />
             : activeTab?.mode === 'timeline'
                 ? <React.Suspense fallback={null}><SessionTimelineTab /></React.Suspense>
+        : activeTab?.mode === 'agentRun' && activeTab.agentRun
+            ? <React.Suspense fallback={null}><AgentRunTab sessionID={activeTab.agentRun.sessionID} agentId={activeTab.agentRun.agentId} directory={effectiveDirectory} /></React.Suspense>
         : activeTab?.mode === 'plan'
             ? <React.Suspense fallback={null}><PlanView
                 targetPath={activeTab.targetPath}

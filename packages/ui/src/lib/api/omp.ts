@@ -113,6 +113,8 @@ export const OMP_ENDPOINTS = {
   personas: '/api/omp/personas',
   persona: (name: string) => `/api/omp/personas/${encodeURIComponent(name)}`,
   agentRuns: '/api/omp/agent-runs',
+  agentRunTranscript: (sessionID: string, agentId: string) =>
+    `/api/omp/agent-runs/${encodeURIComponent(sessionID)}/${encodeURIComponent(agentId)}/transcript`,
   jobs: '/api/omp/jobs',
   commands: '/api/omp/commands',
   providers: '/api/omp/providers',
@@ -2490,6 +2492,8 @@ export interface OmpAgentRunRecord {
   createdAt: number;
   lastActivity: number;
   activity?: unknown;
+  /** Whether the server can read this run's transcript (registry ref). */
+  hasTranscript?: boolean;
   /** Snapshot-time metrics for a running agent; absent once parked/aborted. */
   live?: {
     tokens: number;
@@ -2514,6 +2518,7 @@ const AgentRunRecordSchema = z.looseObject({
   createdAt: z.number(),
   lastActivity: z.number(),
   activity: z.unknown().optional(),
+  hasTranscript: z.boolean().optional(),
   live: z.object({
     tokens: z.number(),
     cost: z.number(),
@@ -2532,12 +2537,44 @@ const parseAgentRunsSnapshot = (value: unknown): OmpAgentRunsSnapshot | null => 
   return parsed.success ? parsed.data : null;
 };
 
+/** GET /api/omp/agent-runs/{sessionID}/{agentId}/transcript row (ch 14 §4.1). */
+export interface OmpAgentRunTranscript {
+  sessionID: string;
+  agentId: string;
+  displayName: string;
+  status: OmpAgentRunStatus;
+  /** Durable task output artifact (`agent://` URL) when the run wrote one. */
+  outputPath?: string;
+  /** Wire-projected conversation messages (projectConversation output). */
+  messages: unknown[];
+}
+
+const AgentRunTranscriptSchema = z.object({
+  sessionID: z.string().min(1),
+  agentId: z.string().min(1),
+  displayName: z.string(),
+  status: z.enum(OMP_AGENT_RUN_STATUSES),
+  outputPath: z.string().optional(),
+  messages: z.array(z.unknown()),
+});
+
+export const parseOmpAgentRunTranscript = (value: unknown): OmpAgentRunTranscript | null => {
+  const parsed = AgentRunTranscriptSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
 export interface OmpAgentRunsAPI {
   /**
    * GET /api/omp/agent-runs?directory=… — one row per sessionID::agentId.
    * `unavailable` = agentRuns.v1 off / old engine (legacy child-session list).
    */
   list(options: { directory: string }): Promise<OmpFetchJsonResult<OmpAgentRunsSnapshot>>;
+  /**
+   * GET /api/omp/agent-runs/{sessionID}/{agentId}/transcript?directory=… —
+   * one run's wire-projected conversation (ch 14). `unavailable` = capability
+   * off / old engine; not-ok = row or transcript missing.
+   */
+  transcript(options: { sessionID: string; agentId: string; directory: string }): Promise<OmpFetchJsonResult<OmpAgentRunTranscript>>;
 }
 
 export const createOmpAgentRunsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAgentRunsAPI => {
@@ -2548,6 +2585,14 @@ export const createOmpAgentRunsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAg
         fetchImpl,
         OMP_ENDPOINTS.agentRuns,
         parseAgentRunsSnapshot,
+        { query: { directory } },
+      );
+    },
+    transcript({ sessionID, agentId, directory }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.agentRunTranscript(sessionID, agentId),
+        parseOmpAgentRunTranscript,
         { query: { directory } },
       );
     },
