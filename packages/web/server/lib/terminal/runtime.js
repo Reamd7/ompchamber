@@ -283,9 +283,8 @@ export function createTerminalRuntime({
     // see sequence numbers drift for events they cannot observe. A grid
     // attachment arriving later materializes from fullFrame() instead.
     session.grid.onFrame = (frame) => {
-      try {
-        if (session.status !== 'running' || !hasGridAttachment(session.id)) return;
-        publish(session, { t: 'grid', g: frame });
+      if (session.status !== 'running' || !hasGridAttachment(session.id)) return;
+      publish(session, { t: 'grid', g: frame });
     };
   };
 
