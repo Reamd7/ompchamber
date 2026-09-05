@@ -323,7 +323,7 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
     : '';
   if (lastOpenCodeError || managedProcess) {
     lines.push('');
-    lines.push('OpenCode process:');
+    lines.push('Engine process:');
     if (lastOpenCodeError) lines.push(`- last error: ${lastOpenCodeError}`);
     if (managedProcess) {
       lines.push(`- pid: ${formatUnknown(managedProcess.pid, '(none)')} exit=${formatUnknown(managedProcess.exitCode, '(running)')} signal=${formatUnknown(managedProcess.signalCode, '(none)')}`);
@@ -379,7 +379,7 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
   const isLikelyMac = /Mac OS X|Macintosh/.test(platform);
   if (isLikelyMac) {
     lines.push('');
-    lines.push('OpenCode CLI resolution:');
+    lines.push('Engine runtime resolution:');
 
     const launchDiagnostics = isRecord(openChamberHealth?.lastOpenCodeLaunchDiagnostics)
       ? openChamberHealth.lastOpenCodeLaunchDiagnostics
@@ -465,7 +465,7 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
 
   lines.push('');
   if (probes.length) {
-    lines.push('OpenCode API probes:');
+    lines.push('Engine API probes:');
     for (const probe of probes) {
       if (!probe.result) {
         lines.push(`- ${probe.label}: (no url)`);
@@ -476,7 +476,7 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
       lines.push(`- ${probe.label}: ${ok ? 'ok' : 'fail'} status=${status} time=${elapsedMs}ms ${summary}${suffix}`);
     }
   } else {
-    lines.push('OpenCode API probes: (skipped)');
+    lines.push('Engine API probes: (skipped)');
   }
 
   lines.push('');

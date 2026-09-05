@@ -1930,7 +1930,7 @@ export const settingsDict = {
   'settings.shared.projectSelector.switchProjectTitle': 'Switch project',
   'settings.ompchamber.defaults.title': 'Session Defaults',
   'settings.ompchamber.defaults.summaryPrefix': 'New sessions will start with:',
-  'settings.ompchamber.defaults.summaryOpenCodeDefault': 'OpenCode agent default',
+  'settings.ompchamber.defaults.summaryOpenCodeDefault': 'Engine agent default',
   'settings.ompchamber.defaults.field.defaultModel': 'Default Model',
   'settings.ompchamber.defaults.field.defaultThinking': 'Default Thinking',
   'settings.ompchamber.defaults.field.thinkingPlaceholder': 'Thinking',

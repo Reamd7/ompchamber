@@ -691,7 +691,7 @@ export async function activate(context: vscode.ExtensionContext) {
         probes.length ? '' : '',
         ...(probes.length
           ? [
-              'OpenCode API probes:',
+              'Engine API probes:',
               ...probes.map((probe) => {
                 if (!probe.result) return `- ${probe.label}: (no url)`;
                 const { ok, status, elapsedMs, summary } = probe.result;

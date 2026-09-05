@@ -116,8 +116,8 @@ ${desktopReturn ? `<a class="return" href="ompchamber://focus/mcp-auth">Return t
       const resolution = await getOpenCodeResolutionSnapshot(settings);
       res.json(resolution);
     } catch (error) {
-      console.error('Failed to resolve OpenCode binary:', error);
-      res.status(500).json({ error: 'Failed to resolve OpenCode binary' });
+      console.error('Failed to resolve engine runtime:', error);
+      res.status(500).json({ error: 'Failed to resolve engine runtime' });
     }
   });
 

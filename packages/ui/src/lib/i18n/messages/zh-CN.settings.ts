@@ -1908,7 +1908,7 @@ export const settingsDict = {
   'settings.shared.projectSelector.switchProjectTitle': '切换项目',
   'settings.ompchamber.defaults.title': '会话默认值',
   'settings.ompchamber.defaults.summaryPrefix': '新会话将默认使用：',
-  'settings.ompchamber.defaults.summaryOpenCodeDefault': 'OpenCode 智能体默认值',
+  'settings.ompchamber.defaults.summaryOpenCodeDefault': '引擎智能体默认值',
   'settings.ompchamber.defaults.field.defaultModel': '默认模型',
   'settings.ompchamber.defaults.field.defaultThinking': '默认思考模式',
   'settings.ompchamber.defaults.field.thinkingPlaceholder': '思考模式',
