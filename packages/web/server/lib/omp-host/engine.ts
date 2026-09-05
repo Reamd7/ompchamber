@@ -69,7 +69,7 @@ import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
-import type { AgentsSnapshotEntry, UriDomain } from './domain-uri.ts';
+import type { AgentsSnapshotEntry, DiskScanRow, UriDomain } from './domain-uri.ts';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Cap on concurrently live top-level sessions; idle sessions beyond this
 // are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
@@ -261,6 +261,10 @@ export class OmpHostEngine {
   sweeper: ReturnType<typeof setInterval>;
   /** Engine-wide subscription to the SDK's process-global agent registry. */
   unsubscribeGlobalRegistry: (() => void) | null = null;
+  /** Per-directory historical run rows (nested transcript scan), one shot. */
+  #diskRowsByDirectory = new Map<string, Array<DiskScanRow & { file: string }>>();
+  /** In-flight directory scans (dedup). */
+  #diskScanInFlight = new Map<string, Promise<void>>();
   /**
    * Subagent transcript path -> the child's own sessionID, read once from the
    * jsonl header (the path layout `<ts>_<hostID>/<task>.jsonl` carries only
@@ -455,6 +459,8 @@ export class OmpHostEngine {
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
       liveSessionIds: () => [...this.sessions.keys()],
       childSessionIdFor: (sessionFile) => this.#childSessionIdCached(sessionFile),
+      diskScan: (directory) => (this.#diskRowsByDirectory.get(normalizeDirectoryKey(directory)) ?? null)?.map(({ file, ...row }) => row) ?? null,
+      warmDiskScan: (directory) => this.#ensureDiskRows(normalizeDirectoryKey(directory)),
     });
     // The task executor registers every subagent into the SDK's process-global
     // registry (AgentRegistry.global()), not the per-session registries above.
@@ -1014,6 +1020,15 @@ export class OmpHostEngine {
       const childID = await this.#childSessionIdFor(sessionFile);
       if (childID === sessionID) return { path: sessionFile, ref };
     }
+    // Historical runs (post-restart, no registry ref): the one-shot disk
+    // scan already mapped this directory's transcripts to child ids.
+    await this.#ensureDiskRows(directoryKey);
+    const cold = (this.#diskRowsByDirectory.get(directoryKey) ?? []).find(
+      (row) => row.childSessionID === sessionID
+    );
+    if (cold && isPathUnder(path.resolve(cold.file), root)) {
+      return { path: cold.file, ref: { displayName: cold.displayName ?? cold.agentId } };
+    }
     return null;
   }
 
@@ -1060,6 +1075,70 @@ export class OmpHostEngine {
   #childSessionIdCached(sessionFile: string | null | undefined): string | undefined {
     if (!sessionFile) return undefined;
     return this.#childSessionIdByFile.get(sessionFile);
+  }
+
+  /** One-shot per directory: scan nested transcripts into cached rows. */
+  async #ensureDiskRows(directoryKey: string): Promise<void> {
+    if (!directoryKey || this.#diskRowsByDirectory.has(directoryKey)) return;
+    const inFlight = this.#diskScanInFlight.get(directoryKey);
+    if (inFlight) return inFlight;
+    const scan = (async () => {
+      const rows = await this.#scanDiskRows(directoryKey);
+      if (rows) this.#diskRowsByDirectory.set(directoryKey, rows);
+    })().finally(() => {
+      this.#diskScanInFlight.delete(directoryKey);
+    });
+    this.#diskScanInFlight.set(directoryKey, scan);
+    return scan;
+  }
+
+  /**
+   * Historical run rows for one directory: every nested transcript under the
+   * directory's sessions root (`<ts>_<hostID>/<task>.jsonl`). Host transcripts
+   * live at the top level and never match; registry rows win over these.
+   */
+  async #scanDiskRows(directoryKey: string): Promise<Array<DiskScanRow & { file: string }> | null> {
+    const root = this.#sessionDirFor(directoryKey);
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.promises.readdir(root, { withFileTypes: true });
+    } catch {
+ return null; // unknown directory — no rows, nothing cached
+    }
+    const rows: Array<DiskScanRow & { file: string }> = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const hostID = sessionIDFromSessionFile(path.join(root, entry.name, 'x.jsonl'));
+      if (!hostID) continue;
+      let files: string[];
+      try {
+        files = await fs.promises.readdir(path.join(root, entry.name));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue;
+        const filePath = path.join(root, entry.name, file);
+        const stats = await fs.promises.stat(filePath).catch(() => null);
+        const agentId = file.slice(0, -'.jsonl'.length);
+        const childID = await this.#childSessionIdFor(filePath);
+        const row: DiskScanRow & { file: string } = {
+          file: filePath,
+          sessionID: hostID,
+          agentId,
+          directory: directoryKey,
+          displayName: agentId,
+          kind: 'sub',
+          // Aggregator disk rows are 'historical' by construction.
+          createdAt: Math.round(stats.birthtimeMs) || 0,
+          lastActivity: Math.round(stats.mtimeMs) || 0,
+          hasTranscript: true
+        };
+        if (childID) row.childSessionID = childID;
+        rows.push(row);
+      }
+    }
+    return rows;
   }
 
   async updateSession({ sessionID, directory, title, metadata, timeArchived }: { sessionID: string; directory?: string; title?: string; metadata?: Record<string, SessionMetadataValue>; timeArchived?: number }) {

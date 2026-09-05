@@ -273,6 +273,43 @@ describe('subagent session read resolution (read-only drill-in)', () => {
     }
   });
 });
+
+describe('disk scan: historical run rows (restart persistence)', () => {
+  test('ensureDirectory surfaces nested transcripts as historical rows with childSessionID', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    // Restart-persistence layout: <root>/<ts>_<hostID>/<Task>.jsonl. The
+    // mocked SessionManager derives sessionId from the file basename, so
+    // childSessionID === the task name here; the real engine reads the header.
+    const subDir = path.join(sessionDir, '2026-09-05T00-00-00-000Z_s2');
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(path.join(subDir, 'BranchScout.jsonl'), JSON.stringify({ type: 'message', message: { role: 'user', content: 'research', timestamp: 1 } }) + '\n');
+    const snapshot = await engine.uriDomain?.aggregator.ensureDirectory('/repo');
+    const row = snapshot?.agentRuns.find((r) => r.agentId === 'BranchScout');
+    expect(row).toBeTruthy();
+    expect(row?.sessionID).toBe('s2');
+    expect(row?.status).toBe('historical');
+    expect(row?.childSessionID).toBe('BranchScout');
+    expect(row?.hasTranscript).toBe(true);
+  });
+
+  test('post-restart: session reads resolve a historical run with no registry ref', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const subDir = path.join(sessionDir, '2026-09-05T00-00-00-000Z_s2');
+    mkdirSync(subDir, { recursive: true });
+    writeFileSync(path.join(subDir, 'BranchScout.jsonl'), JSON.stringify({ type: 'message', message: { role: 'user', content: 'research', timestamp: 1 } }) + '\n');
+    // No prompt (no live session), no registry refs — pure disk resolution.
+    const snapshot = await engine.uriDomain?.aggregator.ensureDirectory('/repo');
+    const row = snapshot?.agentRuns.find((r) => r.agentId === 'BranchScout');
+    expect(row?.childSessionID).toBe('BranchScout');
+    // The read endpoints resolve through the same disk cache.
+    const session = await engine.getSession({ sessionID: 'BranchScout', directory: '/repo' });
+    expect(session?.parentID).toBe('s2');
+    expect(session?.title).toBe('BranchScout');
+    const page = await engine.getMessagesPage({ sessionID: 'BranchScout', directory: '/repo' });
+    expect(Array.isArray(page?.messages)).toBe(true);
+  });
+});
+
 describe('OmpHostEngine prompt dispatch', () => {
   test('submits with TUI steer semantics and does not reject while streaming', async () => {
     const engine = new OmpHostEngine({ agentDir });
