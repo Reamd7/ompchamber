@@ -4,10 +4,22 @@
   "type": "module",
   "description": "Server-side terminal parsing: VT bytes in, parsed grid diff frames out. Layered so hosts can embed just the core (OpenChamber's terminal runtime) or the full PTY+WS stack.",
   "exports": {
-    ".": "./src/index.mjs",
-    "./core": "./src/core.mjs",
-    "./pty-session": "./src/pty-session.mjs",
-    "./server": "./src/server.mjs"
+    ".": {
+      "types": "./dist-types/index.d.mts",
+      "default": "./src/index.mjs"
+    },
+    "./core": {
+      "types": "./dist-types/core.d.mts",
+      "default": "./src/core.mjs"
+    },
+    "./pty-session": {
+      "types": "./dist-types/pty-session.d.mts",
+      "default": "./src/pty-session.mjs"
+    },
+    "./server": {
+      "types": "./dist-types/server.d.mts",
+      "default": "./src/server.mjs"
+    }
   },
   "files": [
     "src"
@@ -16,5 +28,11 @@
     "@xterm/headless": "^5.5.0",
     "@lydell/node-pty": "^1.1.0-beta.39",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
   }
 }

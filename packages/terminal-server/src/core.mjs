@@ -9,14 +9,6 @@
  *   core.write(ptyBytes);                      // feed
  *   core.resize(cols, rows);                   // emits a full frame next
  *
- * Frame shapes (JSON-serializable):
- *   { t:'full',   cols, rows, cells: number[][][], cursor: [x,y,visible] }
- *   { t:'rows',   rowsMap: { [y]: number[][] },  cursor }
- *   { t:'cursor', cursor }
- * Cell: [codepoint, fg(24bit), bg(24bit), flags, width]
- * flags bits match CellFlags: 1 bold, 2 italic, 4 underline, 8 strike,
- * 16 inverse, 32 invisible, 128 faint.
- *
  * This layer owns no PTY and no sockets — OpenChamber's terminal
  * runtime can embed it directly behind its existing WS protocol.
  */
@@ -26,8 +18,61 @@ import { DEFAULT_FG, DEFAULT_BG, paletteColor } from './palette.mjs';
 
 const { Terminal } = headless;
 
-/** Coalesce bursts: parse callbacks arriving in the same tick share one drain. */
+/**
+ * One parsed cell, fixed shape:
+ * [codepoint, fg(24bit), bg(24bit), flags, width]
+ * flags bits match ghostty-web CellFlags: 1 bold, 2 italic, 4 underline,
+ * 8 strike, 16 inverse, 32 invisible, 128 faint.
+ * @typedef {[number, number, number, number, number]} CellData
+ */
 
+/**
+ * Cursor as [x, y, visible].
+ * @typedef {[number, number, boolean]} CursorMsg
+ */
+
+/**
+ * Complete screen state; also what snapshots reconcile from.
+ * @typedef {object} FullFrame
+ * @property {'full'} t
+ * @property {number} cols
+ * @property {number} rows
+ * @property {CellData[][]} cells
+ * @property {CursorMsg} cursor
+ */
+
+/**
+ * Incremental row diff; keys are row indices as decimal strings (JSON
+ * object keys).
+ * @typedef {object} RowsFrame
+ * @property {'rows'} t
+ * @property {Record<string, CellData[]>} rowsMap
+ * @property {CursorMsg} cursor
+ */
+
+/** Cursor moved with no content change. */
+/**
+ * @typedef {object} CursorFrame
+ * @property {'cursor'} t
+ * @property {CursorMsg} cursor
+ */
+
+/** Any grid frame variant. @typedef {FullFrame | RowsFrame | CursorFrame} GridFrame */
+
+/**
+ * @typedef {object} GridCoreOptions
+ * @property {number} [cols] Initial columns (default 80).
+ * @property {number} [rows] Initial rows (default 24).
+ * @property {number} [maxCols] Column clamp (default 1000 — matches the
+ *   OpenChamber runtime's terminal dimension validation).
+ * @property {number} [maxRows] Row clamp (default 500).
+ */
+
+/**
+ * @param {import('@xterm/headless').IBufferCell} cell
+ * @param {boolean} isFg
+ * @returns {number}
+ */
 function colorOf(cell, isFg) {
   if (isFg ? cell.isFgDefault() : cell.isBgDefault()) return isFg ? DEFAULT_FG : DEFAULT_BG;
   if (isFg ? cell.isFgRGB() : cell.isBgRGB()) {
@@ -38,6 +83,10 @@ function colorOf(cell, isFg) {
   return paletteColor(idx);
 }
 
+/**
+ * @param {import('@xterm/headless').IBufferCell} cell
+ * @returns {number}
+ */
 function flagsOf(cell) {
   return (
     (cell.isBold() ? 1 : 0) |
@@ -50,24 +99,64 @@ function flagsOf(cell) {
   );
 }
 
+/**
+ * @param {import('@xterm/headless').IBufferLine | undefined} line
+ * @param {number} cols
+ * @returns {{ cells: CellData[], h: number }}
+ */
+function encodeRow(line, cols) {
+  const cells = new Array(cols);
+  let h = 2166136261;
+  for (let x = 0; x < cols; x++) {
+    const c = line?.getCell(x);
+    if (!c) {
+      // Past the row's allocated length: blank cell, no style.
+      cells[x] = [32, DEFAULT_FG, DEFAULT_BG, 0, 1];
+      h = (h ^ 32) >>> 0;
+      h = (h * 16777619) >>> 0;
+      continue;
+    }
+    // getCodePoint exists at runtime (xterm >= 5.5) but is absent from
+    // the shipped typings; probe it, else derive from getChars().
+    const cp = /** @type {{ getCodePoint?: () => number }} */ (c).getCodePoint?.()
+      ?? (c.getChars().codePointAt(0) ?? 32);
+    const cell = /** @type {CellData} */ ([
+      cp,
+      colorOf(c, true),
+      colorOf(c, false),
+      flagsOf(c),
+      c.getWidth ? c.getWidth() : 1,
+    ]);
+    cells[x] = cell;
+    h = (h ^ (cp + (cell[1] << 8) + (cell[2] << 4) + cell[3] + cell[4])) >>> 0;
+    h = (h * 16777619) >>> 0;
+  }
+  return { cells, h };
+}
+
 export class GridCore {
+  /** @param {GridCoreOptions} [options] */
   constructor({ cols = 80, rows = 24, maxCols = 1000, maxRows = 500 } = {}) {
     this.maxCols = maxCols;
     this.maxRows = maxRows;
     this.cols = Math.max(2, Math.min(maxCols, cols | 0));
     this.rows = Math.max(2, Math.min(maxRows, rows | 0));
     this.term = new Terminal({ cols: this.cols, rows: this.rows, scrollback: 0, allowProposedApi: true });
+    /** @type {number[] | null} */
     this.lastHashes = null;
-    /** Called with a frame after each parsed batch. */
+    /** Called with a frame after each parsed batch.
+     *  @type {((frame: GridFrame) => void) | null} */
     this.onFrame = null;
     this._drainQueued = false;
   }
 
-  /** Feed VT bytes. Frames arrive via onFrame once parsing completes. */
+  /** Feed VT bytes. Frames arrive via onFrame once parsing completes.
+   *  @param {string | Uint8Array} data */
   write(data) {
     this.term.write(data, () => this._queueDrain());
   }
 
+  /** @param {number} cols @param {number} rows */
   resize(cols, rows) {
     const c = Math.max(2, Math.min(this.maxCols, cols | 0));
     const r = Math.max(2, Math.min(this.maxRows, rows | 0));
@@ -79,6 +168,7 @@ export class GridCore {
     this._queueDrain();
   }
 
+  /** @returns {CursorMsg} */
   cursorMsg() {
     const b = this.term.buffer.active;
     const y = Math.min(this.rows - 1, Math.max(0, b.cursorY));
@@ -103,24 +193,29 @@ export class GridCore {
    * Force a complete frame (resets the diff baseline). Hosts use this to
    * materialize snapshots for newly attaching clients; the next drain()
    * diffs against this point.
+   * @returns {FullFrame}
    */
   fullFrame() {
     this.lastHashes = null;
-    return this.drain();
+    return /** @type {FullFrame} */ (this.drain());
   }
 
-  /** Compute the next diff frame. Also the sync API for hosts that prefer pull. */
+  /** Compute the next diff frame. Also the sync API for hosts that prefer pull.
+   *  @returns {GridFrame} */
   drain() {
     const buf = this.term.buffer.active;
     const { cols, rows } = this;
+    /** @type {Record<string, CellData[]>} */
     const payloadRows = {};
     const hashes = new Array(rows);
-    let full = this.lastHashes === null;
+    /** @type {number[] | null} */
+    const prev = this.lastHashes;
+    let full = prev === null;
     for (let y = 0; y < rows; y++) {
       const line = buf.getLine(y);
       const { cells, h } = line ? encodeRow(line, cols) : { cells: null, h: 0 };
       hashes[y] = h;
-      if (full || h !== this.lastHashes[y]) payloadRows[y] = cells;
+      if (full || h !== /** @type {number[]} */ (prev)[y]) payloadRows[y] = /** @type {CellData[]} */ (cells);
     }
     const cursor = this.cursorMsg();
     const changed = Object.keys(payloadRows).length;
@@ -153,24 +248,4 @@ export class GridCore {
       try { term.dispose(); } catch { /* already torn down */ }
     }, 0);
   }
-}
-
-function encodeRow(line, cols) {
-  const cells = new Array(cols);
-  let h = 2166136261;
-  for (let x = 0; x < cols; x++) {
-    const c = line.getCell(x);
-    const cp = c.getCodePoint ? c.getCodePoint() : (c.getChars().codePointAt(0) || 32);
-    const cell = [
-      cp,
-      colorOf(c, true),
-      colorOf(c, false),
-      flagsOf(c),
-      c.getWidth ? c.getWidth() : 1,
-    ];
-    cells[x] = cell;
-    h = (h ^ (cp + (cell[1] << 8) + (cell[2] << 4) + cell[3] + cell[4])) >>> 0;
-    h = (h * 16777619) >>> 0;
-  }
-  return { cells, h };
 }

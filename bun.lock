@@ -138,6 +138,9 @@
         "@xterm/headless": "^5.5.0",
         "ws": "^8.21.0",
       },
+      "devDependencies": {
+        "@types/ws": "^8",
+      },
     },
     "packages/ui": {
       "name": "@ompchamber/ui",
@@ -1486,6 +1489,8 @@
     "@types/vscode": ["@types/vscode@1.134.0", "https://mirrors.tencent.com/npm/@types/vscode/-/vscode-1.134.0.tgz", {}, "sha512-NDEu0hg4sF7+vvFsADsktqUJ6f80LHSZvVK2Ovo1XiQ0/VHck1O3zst+ZZyVA/uvz6vo6LcuoqU2q48YMqOwWw=="],
 
     "@types/whatwg-mimetype": ["@types/whatwg-mimetype@3.0.2", "https://mirrors.tencent.com/npm/@types/whatwg-mimetype/-/whatwg-mimetype-3.0.2.tgz", {}, "sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA=="],
+
+    "@types/ws": ["@types/ws@8.18.1", "https://mirrors.tencent.com/npm/@types/ws/-/ws-8.18.1.tgz", { "dependencies": { "@types/node": "*" } }, "sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg=="],
 
     "@typescript-eslint/eslint-plugin": ["@typescript-eslint/eslint-plugin@8.68.0", "https://mirrors.tencent.com/npm/@typescript-eslint/eslint-plugin/-/eslint-plugin-8.68.0.tgz", { "dependencies": { "@eslint-community/regexpp": "^4.12.2", "@typescript-eslint/scope-manager": "8.68.0", "@typescript-eslint/type-utils": "8.68.0", "@typescript-eslint/utils": "8.68.0", "@typescript-eslint/visitor-keys": "8.68.0", "ignore": "^7.0.5", "natural-compare": "^1.4.0", "ts-api-utils": "^2.5.0" }, "peerDependencies": { "@typescript-eslint/parser": "^8.68.0", "eslint": "^8.57.0 || ^9.0.0 || ^10.0.0", "typescript": ">=4.8.4 <6.1.0" } }, "sha512-WASHDpCm6qO5jj9g1a+8NiW5+GCkAyLReR56/4VruYmNgfUmqpxOfZ2Yfb8xGfJPWv5Qi6LSD8sXdces3vbp/Q=="],
 
