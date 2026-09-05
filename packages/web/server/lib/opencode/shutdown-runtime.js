@@ -101,7 +101,7 @@ export const createGracefulShutdownRuntime = (dependencies) => {
         try {
           await openCodeProcess.close();
         } catch (error) {
-          console.warn('Error closing OpenCode process:', error);
+          console.warn('Error closing engine process:', error);
         }
         setOpenCodeProcess(null);
       }

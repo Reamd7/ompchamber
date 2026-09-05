@@ -20,14 +20,14 @@ type BootstrapMessages = {
 };
 
 const EN_MESSAGES: BootstrapMessages = {
-  startingApi: 'Starting OpenCode API…',
+  startingApi: 'Starting the engine…',
   initializing: 'Initializing…',
   connecting: 'Connecting…',
   connected: 'Connected!',
   connectionError: 'Connection error',
   disconnected: 'Disconnected',
   reconnecting: 'Reconnecting…',
-  initialDataLoadFailed: 'OpenCode connected, but initial data load failed.',
+  initialDataLoadFailed: 'The engine connected, but initial data load failed.',
   cliNotFound: 'The local engine is not available. Check your OMPChamber installation.',
   providersReady: '✓ Providers',
   providersLoading: '… Providers',
@@ -58,15 +58,15 @@ const FR_MESSAGES: BootstrapMessages = {
 };
 
 const ZH_CN_MESSAGES: BootstrapMessages = {
-  startingApi: '正在启动 OpenCode API…',
+  startingApi: '正在启动引擎…',
   initializing: '正在初始化…',
   connecting: '正在连接…',
   connected: '已连接！',
   connectionError: '连接错误',
   disconnected: '已断开连接',
   reconnecting: '正在重新连接…',
-  initialDataLoadFailed: 'OpenCode 已连接，但初始数据加载失败。',
-  cliNotFound: '未找到 OpenCode CLI。请先安装它。',
+  initialDataLoadFailed: '引擎已连接，但初始数据加载失败。',
+  cliNotFound: '本地引擎不可用。请检查 OMPChamber 安装。',
   providersReady: '✓ 提供商',
   providersLoading: '… 提供商',
   agentsReady: '✓ 智能体',
@@ -77,15 +77,15 @@ const ZH_CN_MESSAGES: BootstrapMessages = {
 };
 
 const ZH_TW_MESSAGES: BootstrapMessages = {
-  startingApi: '正在啟動 OpenCode API…',
+  startingApi: '正在啟動引擎…',
   initializing: '正在初始化…',
   connecting: '正在連線…',
   connected: '已連線！',
   connectionError: '連線錯誤',
   disconnected: '已中斷連線',
   reconnecting: '正在重新連線…',
-  initialDataLoadFailed: 'OpenCode 已連線，但初始資料載入失敗。',
-  cliNotFound: '找不到 OpenCode CLI。請先安裝。',
+  initialDataLoadFailed: '引擎已連線，但初始資料載入失敗。',
+  cliNotFound: '找不到本地引擎。請檢查 OMPChamber 安裝。',
   providersReady: '✓ 提供者',
   providersLoading: '… 提供者',
   agentsReady: '✓ 代理',

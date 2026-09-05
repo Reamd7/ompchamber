@@ -865,7 +865,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         try {
           await state.openCodeProcess.close();
         } catch (error) {
-          console.warn('Error closing OpenCode process:', error);
+          console.warn('Error closing engine process:', error);
         }
         state.openCodeProcess = null;
         syncToHmrState();

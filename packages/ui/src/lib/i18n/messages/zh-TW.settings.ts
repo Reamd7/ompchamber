@@ -1805,7 +1805,7 @@ export const settingsDict = {
   'settings.shared.projectSelector.switchProjectTitle': '切換專案',
   'settings.ompchamber.defaults.title': '工作階段預設值',
   'settings.ompchamber.defaults.summaryPrefix': '新工作階段將預設使用：',
-  'settings.ompchamber.defaults.summaryOpenCodeDefault': 'OpenCode agent 預設',
+  'settings.ompchamber.defaults.summaryOpenCodeDefault': '引擎 agent 預設',
   'settings.ompchamber.defaults.field.defaultModel': '預設模型',
   'settings.ompchamber.defaults.field.defaultThinking': '預設思考模式',
   'settings.ompchamber.defaults.field.thinkingPlaceholder': '思考模式',

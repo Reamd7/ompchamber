@@ -27,12 +27,12 @@ This module provides OpenCode server integration utilities for the web server ru
 - `packages/web/server/lib/opencode/server-startup-runtime.js`: server listen/startup tunnel flow and process/signal handler orchestration runtime. Listen retries `EADDRINUSE` for a bounded window (defaults 500ms interval / 20s, `bindRetryIntervalMs`/`bindRetryWindowMs`) because a restart races the previous instance's graceful shutdown for the port.
 - `packages/web/server/lib/opencode/static-routes-runtime.js`: static asset/SPA fallback route registration and manifest route wiring.
 - `packages/web/server/lib/opencode/feature-routes-runtime.js`: feature route composition runtime for dynamic import-backed config/skill/provider route registration.
-- `packages/web/server/lib/opencode/opencode-resolution-runtime.js`: OpenCode binary resolution snapshot runtime for settings routes and diagnostics.
+- `packages/web/server/lib/opencode/opencode-resolution-runtime.js`: engine runtime resolution snapshot runtime for settings routes and diagnostics.
 - `packages/web/server/lib/opencode/tunnel-wiring-runtime.js`: tunnel service/routes composition runtime and active-port wiring for main server startup.
 - `packages/web/server/lib/opencode/startup-pipeline-runtime.js`: server startup tail orchestration runtime for terminal/proxy/static/start-listen flow.
 - `packages/web/server/lib/opencode/startup-performance.js`: opt-in startup phase diagnostics with fixed labels and numeric metadata allowlists.
 - `packages/web/server/lib/agent-tool/runtime.js`: managed OpenCode custom-tool materialization, environment injection, loopback authentication, and fixed CLI action dispatch.
-- `packages/web/server/lib/opencode/server-utils-runtime.js`: shared server runtime utilities for OpenCode proxy wiring, OpenCode port/readiness helpers, and snapshot fetchers.
+- `packages/web/server/lib/opencode/server-utils-runtime.js`: shared server runtime utilities for engine proxy wiring, engine port/readiness helpers, and snapshot fetchers.
 - `packages/web/server/lib/opencode/openchamber-routes.js`: OpenChamber update and models metadata route registration.
 - `packages/web/server/lib/opencode/pwa-manifest-routes.js`: PWA manifest route registration with recent-session shortcut resolution and short-lived caching.
 - `packages/web/server/lib/opencode/project-icon-routes.js`: project icon upload/read/discovery route registration and icon storage orchestration.
@@ -154,14 +154,14 @@ Transport-triggered health checks share the periodic monitor's failure accountin
 Managed health failures are classified as `timeout`, `connection_refused`, `connection_reset`, `invalid_response`, or `error`. The lifecycle retains the latest counted failure with a bounded detail string and source. Managed process wrappers continue capturing a sanitized, bounded stderr tail after readiness and retain exit code/signal. Before replacing a managed process, lifecycle snapshots the reason, latest health failure, process diagnostics/aliveness, busy-session count, and timestamp into `lastOpenCodeRestartDiagnostics`; successful startup does not clear this snapshot, and `/health` exposes it for post-restart diagnosis without process environment or credentials.
 
 ## Public exports (env-runtime.js)
-- `createOpenCodeEnvRuntime(dependencies)`: creates runtime that owns OpenCode CLI environment and binary discovery state.
-- omp host runtime resolution order is environment overrides (`OMPCHAMBER_OMP_HOST_RUNTIME`, legacy `OPENCODE_BINARY`), bundled Desktop CLI when available, PATH, known install locations, then platform shell discovery. There is no persisted settings override.
+- `createOpenCodeEnvRuntime(dependencies)`: creates runtime that owns the engine runtime environment and discovery state for the omp host launcher (the Bun runtime; `OPENCODE_BINARY` is a legacy alias of `OMPCHAMBER_OMP_HOST_RUNTIME`).
+- omp host runtime resolution order is environment overrides (`OMPCHAMBER_OMP_HOST_RUNTIME`, legacy `OPENCODE_BINARY`), PATH (`bun`), then known install locations. There is no persisted settings override.
 - Returned API:
   - `applyLoginShellEnvSnapshot()`
   - `getLoginShellEnvSnapshot()`
   - `ensureOpencodeCliEnv()`
   - `resolveOpencodeCliPath()`
-  - `resolveManagedOpenCodeLaunchSpec(opencodePath)`: resolves the effective managed OpenCode launch target, unwrapping Windows package-manager shims to a direct native binary or explicit runtime+script when possible.
+  - `resolveManagedOpenCodeLaunchSpec(opencodePath)`: resolves the effective launch target for the given engine runtime path, unwrapping Windows package-manager shims and node_modules wrappers to a direct native binary or an explicit runtime+script when possible.
   - `resolveGitBinaryForSpawn()`
   - `resolveWslExecutablePath()`
   - `buildWslExecArgs(execArgs, distroOverride?)`
@@ -342,7 +342,7 @@ Managed health failures are classified as `timeout`, `connection_refused`, `conn
   - `registerRoutes(app, routeDependencies)`
 
 ## Public exports (opencode-resolution-runtime.js)
-- `createOpenCodeResolutionRuntime(dependencies)`: creates runtime for OpenCode binary/source snapshot resolution.
+- `createOpenCodeResolutionRuntime(dependencies)`: creates runtime for engine runtime/source snapshot resolution.
 - Returned API:
   - `getOpenCodeResolutionSnapshot()`: returns the resolved omp host runtime details plus effective managed-launch fields (`launchBinary`, `launchArgs`, `launchWrapperType`) when applicable.
 
