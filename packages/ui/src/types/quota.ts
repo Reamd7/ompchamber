@@ -19,7 +19,8 @@ export type QuotaProviderId =
   | 'opencode-go'
   | 'crof'
   | 'deepseek'
-  | 'neuralwatt'
+ | 'exe-dev'
+  | 'hyper'  | 'neuralwatt'
   | 'xai';
 
 export interface UsageWindow {
