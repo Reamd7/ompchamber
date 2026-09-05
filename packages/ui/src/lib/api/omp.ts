@@ -2494,7 +2494,8 @@ export interface OmpAgentRunRecord {
   hasTranscript?: boolean;
   /** The run's own session id — drill-in opens it as a read-only chat. */
   childSessionID?: string;
-  /** Snapshot-time metrics for a running agent; absent once parked/aborted. */
+  /** Persisted run telemetry (registry history); outputPath is the durable artifact. */
+  history?: { outputPath?: string };
   live?: {
     tokens: number;
     cost: number;
@@ -2518,6 +2519,7 @@ const AgentRunRecordSchema = z.looseObject({
   createdAt: z.number(),
   lastActivity: z.number(),
   activity: z.unknown().optional(),
+  history: z.looseObject({ outputPath: z.string().optional() }).optional(),
   childSessionID: z.string().min(1).optional(),
   live: z.object({
     tokens: z.number(),

@@ -55,7 +55,9 @@ import {
     type TaskAgentRowStatus,
     type TaskToolSummaryEntry,
 } from './taskToolModel';
-import { openOmpArtifact } from '@/lib/omp/openArtifact';
+import { openOmpArtifact, fetchOmpArtifactText } from '@/lib/omp/openArtifact';
+import { useOmpAgentRunsForDirectory, useOmpAgentRunsStore } from '@/stores/useOmpAgentRunsStore';
+import type { OmpAgentRunRecord } from '@/lib/api/omp';
 import { formatCompactTokenCount } from '../turnUsage';
 import { areRenderRelevantPartsEqual } from '../renderCompare';
 import { useI18n } from '@/lib/i18n';
@@ -80,7 +82,6 @@ import { ApplyPatchFileButtons } from './ApplyPatchFileButtons';
 import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
 import { AskAnswerCard } from './AskAnswerCard';
 import { parseAskToolDetails } from './askToolDetails';
-import { useOmpAgentRunsForDirectory } from '@/stores/useOmpAgentRunsStore';
 
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
@@ -1233,11 +1234,72 @@ const TaskToolSummary: React.FC<{
         }
         return map;
     }, [agentRunsForDirectory]);
+    // Async task calls settle with a spawn notice, not the run's output; the
+    // finished report lives in the run's durable artifact. Rows here say when
+    // a run is settled and where its output is (constructed agent:// URL when
+    // no registry history survived — the engine resolves it from disk).
+    const runRowByAgent = React.useMemo(() => {
+        const map = new Map<string, OmpAgentRunRecord>();
+        for (const row of agentRunsForDirectory ?? []) map.set(row.agentId, row);
+        return map;
+    }, [agentRunsForDirectory]);
+    const artifactText = React.useRef<Map<string, string | null>>(new Map());
+    const [artifactOutput, setArtifactOutput] = React.useState<string | null>(null);
+    const [artifactLookupDone, setArtifactLookupDone] = React.useState(false);
+    const autoExpandedRef = React.useRef(false);
     const runtime = React.useContext(RuntimeAPIContext);
 
     const trimmedOutput = prepareTaskToolOutput(output);
     const hasOutput = trimmedOutput.length > 0;
+
     const [isOutputExpanded, setIsOutputExpanded] = React.useState(false);
+
+    // Card run ids from the progress snapshot; agentRows may be empty on
+    const cardRunIds = React.useMemo(
+        () => agentRows.flatMap((row) => (row.runId ? [row.runId] : [])),
+        [agentRows]
+    );
+    const cardSettled = React.useMemo(
+        () => cardRunIds.length > 0 && cardRunIds.every((runId) => {
+            const status = runRowByAgent.get(runId)?.status;
+            return status === undefined ? false : status !== 'running';
+        }),
+        [cardRunIds, runRowByAgent]
+    );
+    // The card depends on run rows (drill-in id, artifact path, settle state)
+    // — ensure the directory's rows load even when the work-status section
+    // is not mounted (historical sessions).
+    const loadAgentRuns = useOmpAgentRunsStore((state) => state.load);
+    const hasCardRuns = cardRunIds.length > 0;
+    React.useEffect(() => {
+        if (hasCardRuns && currentDirectory) void loadAgentRuns(currentDirectory);
+    }, [hasCardRuns, currentDirectory, loadAgentRuns]);
+    // Lazily resolve the runs' artifact text once the Output section is open
+    React.useEffect(() => {
+        if (!isOutputExpanded || artifactLookupDone || cardRunIds.length === 0 || !sessionId || !currentDirectory) return;
+        let cancelled = false;
+        setArtifactLookupDone(true);
+        void (async () => {
+            const parts: string[] = [];
+            for (const runId of cardRunIds) {
+                const url = runRowByAgent.get(runId)?.history?.outputPath ?? `agent://${runId}`;
+                const cached = artifactText.current.get(url);
+                const text = cached !== undefined ? cached : await fetchOmpArtifactText(url, sessionId, currentDirectory).catch(() => null);
+                if (!cancelled) artifactText.current.set(url, text);
+                if (text) parts.push(cardRunIds.length > 1 ? `## ${runId}\n\n${text}` : text);
+            }
+            if (!cancelled && parts.length > 0) setArtifactOutput(parts.join('\n\n---\n\n'));
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOutputExpanded, artifactLookupDone, cardRunIds, runRowByAgent, sessionId, currentDirectory]);
+    // A settled card shows its result inline (OpenCode parity) — expand once.
+    React.useEffect(() => {
+        if (autoExpandedRef.current || !cardSettled) return;
+        autoExpandedRef.current = true;
+        setIsOutputExpanded(true);
+    }, [cardSettled]);
 
     const handleOpenSession = (event: React.MouseEvent) => {
         event.stopPropagation();
@@ -1346,7 +1408,7 @@ const TaskToolSummary: React.FC<{
                     {isOutputExpanded ? (
                         <ToolScrollableSection maxHeightClass="max-h-[50vh]">
                             <div className="w-full min-w-0">
-                                <SimpleMarkdownRenderer content={trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
+                                <SimpleMarkdownRenderer content={artifactOutput ?? trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
                             </div>
                         </ToolScrollableSection>
                     ) : null}
