@@ -1,12 +1,23 @@
 # 第 14 章 · 运行对话记录读取面(Agent Run Transcript Read)
 
-状态:**随批次 B 实施**(计划见 docs/task-agent-progress-ui-plan.md 层 2 批次 B;B2 形态已裁决为侧板新标签页)。
+状态:**已重构——专用端点退役,读取并入标准会话读路径**(2026-09-05)。钻入统一为"打开该运行的子会话,只读"(OpenCode 子会话同款 UX:嵌入式 `mode:'chat', readOnly` 面板)。下述 §4.1 端点已删除;本章保留为设计沿革记录,现行契约为:
+
+1. **行携带 `childSessionID`**(活 ref 从 session 取,parked 由引擎预热缓存:sessionFile 头一次性读取,身份不可变)。
+2. **`GET /session/{childSessionID}` 与 `GET /session/{childSessionID}/message`** 解析子会话:目录作用域 = 转录文件位于该目录 sessions 根下;wire `parentID` = 宿主会话(共享 UI 对 parentID 会话禁 prompt,"Return to parent" 生效)。写路径(update/delete/materialize/fork/move)保持仅宿主语义。
+3. **UI**:任务卡行/工作状态行点击 → `openContextPanelTab(mode:'chat', dedupeKey: session:{childSessionID}, readOnly)`;`agentRun` 面板模式与 `AgentRunTab` 组件已删除。
+4. 历史磁盘行(diskScan 未接)暂不可点——与既有 backlog 一致。
+
+---
+
+## 以下为退役前的原始设计(2026-09-03,存档)
+
+状态:随批次 B 实施(计划见 docs/task-agent-progress-ui-plan.md 层 2 批次 B;B2 形态已裁决为侧板新标签页)。
 日期基线:2026-09-03(omp SDK 18.0.4)
 上游依据:04 章 §5.5(agent-runs 域)、§5.5.2(行操作门控先例);11 章(结构化读取面:on-demand 读取不进引导矩阵的先例)
 
 ---
 
-## 1. 域概述与边界
+## 1. 域概述与边界(存档)
 
 给"点开一条子代理运行,查看它的对话过程"提供权威读取端点与消费面。
 

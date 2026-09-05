@@ -919,6 +919,8 @@ export interface AgentRefLike {
       tokens?: { total?: number };
       cost?: number;
     };
+    /** The child session's own id (read-only drill-in resolves by it). */
+    sessionId?: string;
   } | null;
   sessionFile?: string | null;
   createdAt?: number;
@@ -945,6 +947,8 @@ export interface OmpAgentRun {
   status: string;
   createdAt: number;
   lastActivity: number;
+  /** The run's own session id — set when resolvable (live session or warmed cache). */
+  childSessionID?: string;
   activity?: string;
   history?: AgentRunHistory;
   live?: OmpAgentRunLive;
@@ -957,12 +961,17 @@ export interface OmpAgentRun {
  * hasTranscript, history drops patchPath/branchName (worktree paths), and
  * outputPath keeps only its agent:// URL form.
  */
-export const projectAgentRun = ({ sessionID, directory, ref, status }: {
+export const projectAgentRun = ({ sessionID, directory, ref, status, childSessionIdFor }: {
   sessionID: string;
   directory: string;
   ref: AgentRefLike;
   status?: string;
+  /** Sync transcript-header cache lookup (engine): childSessionID for parked runs. */
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
 }): OmpAgentRun => {
+  // Live sessions carry their id; parked runs resolve through the engine's
+  // warmed transcript-header cache (immutable identity, one open per file).
+  const childSessionID = ref.session?.sessionId ?? (ref.sessionFile ? childSessionIdFor?.(ref.sessionFile) : undefined);
   const history = ref.history
     ? {
         ...(ref.history.agent !== undefined ? { agent: ref.history.agent } : {}),
@@ -973,8 +982,9 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
         ...(ref.history.outputPath !== undefined ? { outputPath: ref.history.outputPath } : {}),
       }
     : undefined;
-  const statsProvider = ref.session?.getSessionStats;
-  const stats = statsProvider ? statsProvider() : undefined;
+  // Invoke on the session: the SDK accessor is a class method reading #stats —
+  // extracting it and calling bare leaves this === undefined and throws.
+  const stats = ref.session?.getSessionStats?.();
   const liveTokens = stats?.tokens?.total;
   const liveCost = stats?.cost;
   const row: OmpAgentRun = {
@@ -988,6 +998,7 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
     status: status ?? ref.status ?? 'historical',
     createdAt: ref.createdAt ?? 0,
     lastActivity: ref.lastActivity ?? 0,
+    ...(childSessionID ? { childSessionID } : {}),
     ...(ref.activity ? { activity: ref.activity } : {}),
     ...(history && Object.keys(history).length > 0 ? { history } : {}),
     hasTranscript: Boolean(ref.sessionFile),
@@ -1048,6 +1059,7 @@ export interface AgentRunsAggregatorDeps {
   snapshot?: () => AgentsSnapshotEntry[] | null | undefined;
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
   diskScan?: (directory: string) => DiskScanRow[] | null | undefined;
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
   coalesceMs?: number;
   setTimeout?: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
   clearTimeout?: (timer: AgentRunsTimerHandle) => void;
@@ -1081,12 +1093,13 @@ export class AgentRunsAggregator {
    *           clearTimeout?: (timer: AgentRunsTimerHandle) => void,
    *           now?: () => number }} options
    */
-  constructor({ snapshot, publish, diskScan, coalesceMs = 250, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout, now = () => Date.now() }: AgentRunsAggregatorDeps = {}) {
+  constructor({ snapshot, publish, diskScan, childSessionIdFor, coalesceMs = 250, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout, now = () => Date.now() }: AgentRunsAggregatorDeps = {}) {
     if (typeof snapshot !== 'function') throw new TypeError('AgentRunsAggregator: snapshot callback is required');
     if (typeof publish !== 'function') throw new TypeError('AgentRunsAggregator: publish callback is required');
     this.#snapshot = snapshot;
     this.#publish = publish;
     this.#diskScan = diskScan;
+    this.#childSessionIdFor = childSessionIdFor;
     this.#coalesceMs = coalesceMs;
     this.#setTimer = setTimer;
     this.#clearTimer = clearTimer;
@@ -1096,6 +1109,7 @@ export class AgentRunsAggregator {
   #snapshot: () => AgentsSnapshotEntry[] | null | undefined;
   #publish: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
   #diskScan: ((directory: string) => DiskScanRow[] | null | undefined) | undefined;
+  #childSessionIdFor: ((sessionFile: string) => string | undefined) | undefined;
   #coalesceMs: number;
   #setTimer: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
   #clearTimer: (timer: AgentRunsTimerHandle) => void;
@@ -1123,7 +1137,7 @@ export class AgentRunsAggregator {
           : [];
       for (const ref of refs) {
         if (!ref || typeof ref.id !== 'string') continue;
-        next.set(agentRunKey(entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref }));
+        next.set(agentRunKey(entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref, childSessionIdFor: this.#childSessionIdFor }));
       }
     }
     if (this.#diskScan) {
@@ -1388,48 +1402,6 @@ export const handleAgentRunAction = async ({
   return json({ error: 'invalid-kind' }, { status: 400 });
 };
 
-/** GET /omp/agent-runs/{sessionID}/{agentId}/transcript payload (ch 14 §4.1). */
-export interface AgentRunTranscriptResult {
-  sessionID: string;
-  agentId: string;
-  displayName: string;
-  status: string;
-  messages: unknown[];
-  /** Durable task output artifact (`agent://` URL) when the run wrote one. */
-  outputPath?: string;
-}
-
-export interface AgentRunTranscriptInput {
-  aggregator: { row(sessionID: string, agentId: string): OmpAgentRun | null };
-  read: (sessionID: string, agentId: string, directory: string) => Promise<AgentRunTranscriptResult | null>;
-  sessionID: string;
-  agentId: string;
-  directory?: string | null;
-}
-
-/**
- * GET /omp/agent-runs/{sessionID}/{agentId}/transcript gating core (ch 14
- * §4.1). Row resolution mirrors §5.5.2: unknown row or cross-directory
- * request → 404; a known row without a readable registry transcript → 404
- * `no-transcript` (historical disk rows carry no path — ch 14 OQ-2).
- */
-export const handleAgentRunTranscript = async ({
-  aggregator,
-  read,
-  sessionID,
-  agentId,
-  directory,
-}: AgentRunTranscriptInput): Promise<Response> => {
-  const row = aggregator.row(sessionID, agentId);
-  if (!row) return json({ error: 'agent-run-not-found' }, { status: 404 });
-  if (directory && normalizeDirectoryKey(directory) !== row.directory) {
-    return json({ error: 'agent-run-not-found' }, { status: 404 });
-  }
-  const result = await read(sessionID, agentId, row.directory);
-  if (!result) return json({ error: 'no-transcript' }, { status: 404 });
-  return json(result);
-};
-
 // ---------------------------------------------------------------------------
 // §5.6 jobs (master R12)
 // ---------------------------------------------------------------------------
@@ -1600,13 +1572,12 @@ export interface UriDomainDeps {
   localOptionsFor?: LocalOptionsForHook;
   sessionTreeData?: (directory: string | null) => Promise<SessionTreeData>;
   entryTreeFor?: (sessionID: string, directory: string | null) => Promise<{ manager: EntryTreeManagerLike } | null>;
-  agentsSnapshot?: () => AgentsSnapshotEntry[];
   diskScan?: (directory: string) => DiskScanRow[] | null | undefined;
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
+  agentsSnapshot?: () => AgentsSnapshotEntry[];
   liveSessionIds?: () => string[];
   actions?: AgentRunActions;
-  /** Chapter-14 run transcript read; null = no readable registry transcript. */
-  agentRunTranscript?: (sessionID: string, agentId: string, directory: string) => Promise<AgentRunTranscriptResult | null>;
   /** Per-session local:// file rows (artifacts.v1); null = unknown session. */
   localFiles?: (sessionID: string, directory: string) => ArtifactsListResult | null | Promise<ArtifactsListResult | null>;
 }
@@ -1646,7 +1617,6 @@ export interface UriDomain {
   agentRuns: {
     list: (input: { directory?: string | null }) => Response;
     action: (input: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) => Promise<Response>;
-    transcript: (input: { sessionID?: string; agentId?: string; directory?: string | null }) => Promise<Response>;
   };
   jobs: (input: { recentLimit?: number }) => Promise<Response>;
   mount: (route: UriRoute) => void;
@@ -1683,10 +1653,10 @@ export const createUriDomain = ({
   entryTreeFor,
   agentsSnapshot,
   diskScan,
+  childSessionIdFor,
   publish,
   liveSessionIds = () => [],
   actions = {},
-  agentRunTranscript,
 }: UriDomainDeps = {}): UriDomain => {
   // SAFETY: OmpFeatures is a boolean flag record; the hook form returns it,
   // the raw form is the record itself — both reads are flag lookups.
@@ -1701,6 +1671,7 @@ export const createUriDomain = ({
     snapshot: () => (typeof agentsSnapshot === 'function' ? agentsSnapshot() : []),
     ...(publish ? { publish } : { publish: () => {} }),
     ...(diskScan ? { diskScan } : {}),
+    ...(childSessionIdFor ? { childSessionIdFor } : {}),
   });
 
   const gate = (key: string) => (featureOn(key) ? null : featureUnavailable(key));
@@ -1753,14 +1724,6 @@ export const createUriDomain = ({
   const agentRuns = ({ directory }: { directory?: string | null }) => json(runs.snapshot(directory ?? null));
   const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) =>
     handleAgentRunAction({ aggregator: runs, descriptors, actions, sessionID: sessionID ?? '', agentId: agentId ?? '', directory, body: body ?? {} });
-  const agentRunTranscriptHandler = ({ sessionID, agentId, directory }: { sessionID?: string; agentId?: string; directory?: string | null }) =>
-    handleAgentRunTranscript({
-      aggregator: runs,
-      read: agentRunTranscript ?? (async () => null),
-      sessionID: sessionID ?? '',
-      agentId: agentId ?? '',
-      directory,
-    });
   const jobs = ({ recentLimit }: { recentLimit?: number }) =>
     handleJobsRequest({
       liveSessionIds: liveSessionIds(),
@@ -1838,16 +1801,6 @@ export const createUriDomain = ({
         body,
       });
     });
-    route('GET', '/omp/agent-runs/{sessionID}/{agentId}/transcript', async (request: Request, ctx?: UriRouteContext) => {
-      const blocked = gate('agentRuns.v1');
-      if (blocked) return blocked;
-      const url = new URL(request.url);
-      return agentRunTranscriptHandler({
-        sessionID: ctx?.params.sessionID,
-        agentId: ctx?.params.agentId,
-        directory: directoryOf({ query: url.searchParams, headers: ctx?.headers }),
-      });
-    });
     route('GET', '/omp/jobs', async (request) => {
       const url = new URL(request.url);
       const recentLimit = Number(url.searchParams.get('recentLimit') ?? 5) || 5;
@@ -1862,7 +1815,7 @@ export const createUriDomain = ({
     artifacts: { list: artifactsList },
     uri: { resolve: uriResolve, open: uriOpen, info: uriInfo, content: uriContent },
     tree: { sessionTree, entryTree },
-    agentRuns: { list: agentRuns, action: agentRunAction, transcript: agentRunTranscriptHandler },
+    agentRuns: { list: agentRuns, action: agentRunAction },
     jobs,
     mount,
     dispose: () => runs.dispose(),

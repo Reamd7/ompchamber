@@ -80,6 +80,7 @@ import { ApplyPatchFileButtons } from './ApplyPatchFileButtons';
 import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
 import { AskAnswerCard } from './AskAnswerCard';
 import { parseAskToolDetails } from './askToolDetails';
+import { useOmpAgentRunsForDirectory } from '@/stores/useOmpAgentRunsStore';
 
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
@@ -1115,8 +1116,8 @@ const TaskAgentRowItem = React.memo(({
                             onOpenArtifact(artifactPath);
                         }}
                         onPointerDown={(event) => event.stopPropagation()}
-                        aria-label={t('contextPanel.agentRun.openArtifact')}
-                        title={t('contextPanel.agentRun.openArtifact')}
+                        aria-label={t('chat.toolPart.taskAgent.openArtifact')}
+                        title={t('chat.toolPart.taskAgent.openArtifact')}
                     >
                         <Icon name="attachment-2" className="h-3 w-3" />
                     </button>
@@ -1221,6 +1222,17 @@ const TaskToolSummary: React.FC<{
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
     const showToolFileIcons = useUIStore((state) => state.showToolFileIcons);
+    const agentRunsForDirectory = useOmpAgentRunsForDirectory(currentDirectory ?? null);
+    // Progress-snapshot rows carry only the run's agentId; the read-only chat
+    // drill-in needs the run's own sessionID, resolved from the agent-runs
+    // rows of the same directory.
+    const childSessionIdByAgent = React.useMemo(() => {
+        const map = new Map<string, string>();
+        for (const row of agentRunsForDirectory ?? []) {
+            if (row.childSessionID) map.set(row.agentId, row.childSessionID);
+        }
+        return map;
+    }, [agentRunsForDirectory]);
     const runtime = React.useContext(RuntimeAPIContext);
 
     const trimmedOutput = prepareTaskToolOutput(output);
@@ -1274,16 +1286,16 @@ const TaskToolSummary: React.FC<{
                     rows={agentRows}
                     isExpanded={isExpanded}
                     animateTailText={animateTailText}
-                    onOpenArtifact={onOpenArtifact}
                     onOpenRun={currentDirectory && parentSessionId && !isEmbeddedSessionChat() && !isMobile && !runtime?.runtime.isVSCode
                         ? (runId) => {
+                            const childSessionID = childSessionIdByAgent.get(runId);
+                            if (!childSessionID) return;
                             const label = agentRows.find((row) => row.runId === runId)?.agent ?? runId;
                             openContextPanelTab(currentDirectory, {
-                                mode: 'agentRun',
-                                dedupeKey: `run:${parentSessionId}::${runId}`,
+                                mode: 'chat',
+                                dedupeKey: `session:${childSessionID}`,
                                 label,
                                 readOnly: true,
-                                agentRun: { sessionID: parentSessionId, agentId: runId },
                             });
                         }
                         : undefined}

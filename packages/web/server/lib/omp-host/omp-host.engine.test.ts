@@ -178,31 +178,6 @@ afterAll(() => {
 // fields pad them with `undefined` — the destructured values are identical.
 
 describe('agent-runs aggregator: process-global registry mapping (registry split-brain fix)', () => {
-  test('transcript read falls back to the global registry with ownership check', async () => {
-    const engine = new OmpHostEngine({ agentDir });
-    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
-    // Subagent transcript file on disk under the s2 artifacts layout.
-    const subDir = path.join(sessionDir, '2026-09-04T00-00-00-000Z_s2');
-    mkdirSync(subDir, { recursive: true });
-    const subFile = path.join(subDir, 'ScoutRun.jsonl');
-    writeFileSync(subFile, JSON.stringify({ type: 'message', message: { role: 'user', content: 'count files', timestamp: 1 } }) + '\n');
-    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
-    const globalRegistry = AgentRegistry.global();
-    const originalGet = globalRegistry.get.bind(globalRegistry);
-    globalRegistry.get = (id: string) => (id === 'ScoutRun' ? { id: 'ScoutRun', displayName: 'Scout', kind: 'sub', status: 'running', session: null, sessionFile: subFile, createdAt: 1, lastActivity: 9 } : originalGet(id));
-    try {
-      const transcript = await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'ScoutRun', directory: '/repo' });
-      expect(transcript?.agentId).toBe('ScoutRun');
-      expect(Array.isArray(transcript?.messages)).toBe(true);
-      // Ownership: a global ref whose sessionFile maps to ANOTHER session is refused.
-      const foreign = await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'NotMine', directory: '/repo' });
-      globalRegistry.get = (id: string) => (id === 'NotMine' ? { id: 'NotMine', displayName: 'X', kind: 'sub', status: 'running', session: null, sessionFile: path.join(sessionDir, '2026-09-04T00-00-00-000Z_s_other', 'NotMine.jsonl'), createdAt: 1, lastActivity: 9 } : originalGet(id));
-      expect(await engine.getAgentRunTranscript({ sessionID: 's2', agentId: 'NotMine', directory: '/repo' })).toBeNull();
-      void foreign;
-    } finally {
-      globalRegistry.get = originalGet;
-    }
-  });
 
   test('global-registry subagent refs map to their owning live session via sessionFile', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -244,6 +219,60 @@ describe('agent-runs aggregator: process-global registry mapping (registry split
   });
 });
 
+describe('subagent session read resolution (read-only drill-in)', () => {
+  const subFile = path.join(sessionDir, '2026-09-04T00-00-00-000Z_s2', 'ScoutRun.jsonl');
+
+  test('getSession resolves a subagent transcript by its own sessionID with wire parentID', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const originalList = globalRegistry.list.bind(globalRegistry);
+    globalRegistry.list = () => [{ id: 'ScoutRun', displayName: 'Scout', kind: 'sub', status: 'parked', session: null, sessionFile: subFile, createdAt: 1, lastActivity: 9 }] as unknown as ReturnType<typeof globalRegistry.list>;
+    try {
+      // The mock SessionManager derives sessionId from the file basename.
+      const session = await engine.getSession({ sessionID: 'ScoutRun', directory: '/repo' });
+      expect(session?.id).toBe('ScoutRun');
+      expect(session?.parentID).toBe('s2');
+      expect(session?.title).toBe('Scout');
+      // Messages read through the same resolution: a non-null page, empty here
+      // (the mocked buildSessionContext yields no messages).
+      const page = await engine.getMessagesPage({ sessionID: 'ScoutRun', directory: '/repo' });
+      expect(Array.isArray(page?.messages)).toBe(true);
+    } finally {
+      globalRegistry.list = originalList;
+    }
+  });
+
+  test('a transcript outside the directory sessions root is refused', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const originalList = globalRegistry.list.bind(globalRegistry);
+    globalRegistry.list = () => [{ id: 'Foreign', displayName: 'F', kind: 'sub', status: 'parked', session: null, sessionFile: path.join(tmpdir(), 'elsewhere', 'Foreign.jsonl'), createdAt: 1, lastActivity: 2 }] as unknown as ReturnType<typeof globalRegistry.list>;
+    try {
+      expect(await engine.getSession({ sessionID: 'Foreign', directory: '/repo' })).toBeNull();
+    } finally {
+      globalRegistry.list = originalList;
+    }
+  });
+
+  test('agent-runs rows carry childSessionID from the live session accessor', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const originalList = globalRegistry.list.bind(globalRegistry);
+    globalRegistry.list = () => [{ id: 'ScoutRun', displayName: 'Scout', kind: 'sub', status: 'running', session: { sessionId: 'ScoutRun' }, sessionFile: subFile, createdAt: 1, lastActivity: 9 }] as unknown as ReturnType<typeof globalRegistry.list>;
+    try {
+      const snapshot = engine.uriDomain?.aggregator.refresh();
+      const row = snapshot?.agentRuns.find((r) => r.agentId === 'ScoutRun');
+      expect(row?.childSessionID).toBe('ScoutRun');
+    } finally {
+      globalRegistry.list = originalList;
+    }
+  });
+});
 describe('OmpHostEngine prompt dispatch', () => {
   test('submits with TUI steer semantics and does not reject while streaming', async () => {
     const engine = new OmpHostEngine({ agentDir });

@@ -1,6 +1,6 @@
 # omp task 工具多 agent 进度 UI：两层工作计划
 
-> 状态：**层 1 与层 2 批次 A/B/C 完成；registry 分脑已修（`3a93d272`）；异步 job 卡片复活链已铺至浏览器**（传输层实测：引擎复活发射 1300+ HIT、WebSocket 到达 52 个 task 部件含 tokens=22409 实时快照）。**剩最后半步**：事件从 WS 到目录 store 的应用/记录重建段——卡片 DOM 仍显示 spawn 快照；下一轮在 event-pipeline 的 onEvents/applyDirectoryEvent 加一处插桩即可定位。已落基础设施：projector 复活机制（会话共享 finalToolParts 映射、toolName 随行、asyncState 终态推导）、agent_end 不再清空 projector、UI reducer 对 task+details 快照的闪变防护豁免（测试覆盖）。历史磁盘行（diskScan）仍未接。
+> 状态：**层 1 与层 2 批次 A/B/C 完成；registry 分脑已修；异步复活链铺至浏览器；钻入已重构为"真·只读子会话视图"（方案 B，2026-09-05）**——`agentRun` 专用面板与 transcript 端点整体退役，任务卡行/工作状态行点击直接打开该运行的子会话聊天（OpenCode 子会话同款嵌入式 `mode:'chat', readOnly` iframe）。服务端：`getSession`/`getMessagesPage` 在宿主查找未命中后解析子会话（全局 registry ref → sessionFile 头 → childSessionID 缓存，目录作用域 = 转录位于该目录 sessions 根下；写路径保持仅宿主），wire `parentID` = 宿主（UI 内建禁 prompt + Return to parent）；行携带 `childSessionID`（活 ref 从 session getter，parked 由 onChange 预热缓存）。开发栈实测全通：行 `child=01a0713b-bf8f…`、`GET /api/session/{child}` 200 带 parentID、消息端点 8 条、点 Open run 后 iframe 渲染子代理完整对话（markdown + 工具行），且卡片行实时指标流式跳动（41K · 2m28s）。**仍开放**：WS→store 应用段的异步卡片 DOM 半步（transport 已证到达）；历史磁盘行 diskScan 未接（重启后旧行不可点）。
 >
 > **Rebase 复验（2026-09-03，rebase 至 v1.27.1 之后）**：层 1 全部改动完好；omp-host 369/0、ui 官方隔离跑 830/832 文件（唯一失败文件为 main 继承的 `terminalApi.test.ts`，见文末缺陷登记）。新 main 带来三处与层 2 相关的变化：① 子会话分支已支持每行花费（`useSubagentCostRollup`，按 `parentID` 子会话递归汇总）——批次 A2 的范围据此修正；② omp-host 已全量 strict 化（`1c5da257`），层 1 代码在其上类型检查通过；③ 词典新增土耳其语 `tr.ts`——层 1 的 8 个 `taskAgent` 键已补译（`2c4fe2e0` 之后的补丁）。
 >

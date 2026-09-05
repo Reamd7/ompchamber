@@ -26,7 +26,6 @@ import {
   projectAgentRun,
   ParkedAgentDescriptors,
   handleAgentRunAction,
-  handleAgentRunTranscript,
   handleJobsRequest,
   artifactsDirForSessionFile,
   JOBS_UNAVAILABLE_REASON,
@@ -503,13 +502,19 @@ describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
   });
 
   test('running rows carry live metrics from the session stats accessor', () => {
+    // The real SDK session is a class whose getSessionStats reads #stats — an
+    // unbound invocation throws, so the mock must be a this-sensitive method.
+    class StatsSession {
+      #stats = { tokens: { total: 1500 }, cost: 0.042 };
+      getSessionStats() {
+        return this.#stats;
+      }
+    }
     const row = projectAgentRun({
       sessionID: 'ses_1',
       directory: DIRECTORY,
       ref: ref({
-        session: {
-          getSessionStats: () => ({ tokens: { total: 1500 }, cost: 0.042 }),
-        },
+        session: new StatsSession(),
       }),
     });
     // durationMs = lastActivity - createdAt, computed from registry fields.
@@ -815,43 +820,6 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
         })
       ).status,
     ).toBe(404); // wrong directory scope
-  });
-});
-
-describe('agent-run transcript read (ch 14 §4.1)', () => {
-  const rowFor = (agentId: string) => projectAgentRun({ sessionID: 'ses_A', directory: DIRECTORY, ref: ref({ id: agentId }) });
-  const read = async () => ({
-    sessionID: 'ses_A',
-    agentId: 'Anna',
-    displayName: 'Anna',
-    status: 'running',
-    messages: [{ info: { id: 'msg_1', role: 'user' }, parts: [] }],
-  });
-
-  test('unknown row and cross-directory request answer 404 agent-run-not-found', async () => {
-    const aggregator = { row: () => null };
-    const missing = await handleAgentRunTranscript({ aggregator, read, sessionID: 'ses_A', agentId: 'Ghost', directory: DIRECTORY });
-    expect(missing.status).toBe(404);
-    expect(await missing.json()).toEqual({ error: 'agent-run-not-found' });
-
-    const scoped = { row: () => rowFor('Anna') };
-    const wrongDirectory = await handleAgentRunTranscript({ aggregator: scoped, read, sessionID: 'ses_A', agentId: 'Anna', directory: 'C:/elsewhere' });
-    expect(wrongDirectory.status).toBe(404);
-    expect(await wrongDirectory.json()).toEqual({ error: 'agent-run-not-found' });
-  });
-
-  test('a known row without a readable transcript answers 404 no-transcript', async () => {
-    const aggregator = { row: () => rowFor('Anna') };
-    const response = await handleAgentRunTranscript({ aggregator, read: async () => null, sessionID: 'ses_A', agentId: 'Anna', directory: DIRECTORY });
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: 'no-transcript' });
-  });
-
-  test('a readable run returns the projected transcript body verbatim', async () => {
-    const aggregator = { row: () => rowFor('Anna') };
-    const response = await handleAgentRunTranscript({ aggregator, read, sessionID: 'ses_A', agentId: 'Anna', directory: DIRECTORY });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(await read());
   });
 });
 
