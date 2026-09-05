@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-09-05
+
+- **Terminal: closing a tab no longer kills a session that another window or device still shows.** Each window keeps alive the terminal sessions it has open, so closing a tab ends the session only when it's open nowhere else; the kill action stays immediate no matter what. This also fixes a close bug where a session's last tab sometimes couldn't kill it and the closed tab reappeared on its own.
+- Terminal: a session left behind by a crashed client no longer runs forever — streaming output no longer counts as activity, so an abandoned session is shut down like any other idle one instead of consuming resources indefinitely.
+
 ## [1.27.1] - 2026-09-03
 
 - **Terminal: a command that floods output no longer freezes the whole app.** Streaming hundreds of megabytes (a big `cat`, verbose build logs) used to pile up in the server until every other feature timed out and the terminal tab died — the app stayed responsive throughout instead, memory stays bounded, and the terminal keeps showing the latest output while it catches up, resynchronizing automatically once the flood ends. Scroll throughput also improved (~50% on large streams).
