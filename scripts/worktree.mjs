@@ -15,8 +15,9 @@
 // Worktrees live under .worktrees/<dir> (gitignored), where <dir> is the name
 // with every "/" replaced by "_". Each one persists a port pair in
 // .dev-ports.json that scripts/dev-web-hmr.mjs prefers over the
-// shared defaults, so `bun run dev` in every worktree binds its own UI/API
-// ports and parallel checkouts never collide.
+// ports and parallel checkouts never collide. Submodules are populated before
+// `bun install` because `git worktree add` leaves them as empty gitlinks and
+// the file: workspace deps resolve against their contents.
 
 import { spawnSync } from 'node:child_process';
 import fs, { realpathSync } from 'node:fs';
@@ -200,7 +201,17 @@ async function main() {
 
   if (interactive) clack.intro(`worktree init ${name}`);
 
-  // ── Create worktree, then install; roll both back on failure ────────────
+  const rollback = () => {
+    git(['worktree', 'remove', '--force', worktreePath]);
+    // `worktree remove` can fail mid-submodule-breakage and leave the
+    // directory behind with a stale registration; guarantee the cleanup.
+    if (fs.existsSync(worktreePath)) {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+      git(['worktree', 'prune']);
+    }
+    git(['branch', '-D', branch]);
+  };
+
   const addResult = git(['worktree', 'add', '-b', branch, worktreePath, base], {
     stdio: interactive ? 'inherit' : 'pipe',
   });
@@ -210,14 +221,31 @@ async function main() {
   }
   writeDevPorts(worktreePath, ports);
 
+  // `git worktree add` checks out tracked files only: submodules stay empty
+  // gitlinks, and bun resolves the file: workspace deps (references/
+  // ghostty-web) before the root preinstall hook can repair that. Populate
+  // them here so install starts from a complete checkout. Deliberately not
+  // --recursive: git cannot init submodules nested inside another submodule
+  // from a linked worktree (miscomputed gitdir), and install only needs the
+  // vendored package's own files — its nested ghostty sources are only for
+  // rebuilding the wasm and stay uninitialized in worktrees.
+  const submoduleResult = git(
+    ['-C', worktreePath, 'submodule', 'update', '--init'],
+    { stdio: interactive ? 'inherit' : 'pipe' },
+  );
+  if (submoduleResult.status !== 0) {
+    rollback();
+    emit(fail(`git submodule update failed (worktree and branch rolled back): ${(submoduleResult.stderr ?? '').trim()}`));
+    process.exit(1);
+  }
+
   const installResult = spawnSync('bun', ['install'], {
     cwd: worktreePath,
     stdio: interactive ? 'inherit' : 'pipe',
     encoding: 'utf8',
   });
   if (installResult.status !== 0) {
-    git(['worktree', 'remove', '--force', worktreePath]);
-    git(['branch', '-D', branch]);
+    rollback();
     emit(fail(`bun install failed (worktree and branch rolled back): ${(installResult.stderr ?? '').trim()}`));
     process.exit(1);
   }
@@ -232,7 +260,7 @@ async function main() {
     apiPort: ports.apiPort,
     human: [
       `worktree ${relative} ready (branch ${branch})`,
-      `ports: UI ${ports.uiPort} / API ${ports.apiPort} → ${WORKTREES_DIRNAME}/${name}/.dev-ports.json`,
+      `ports: UI ${ports.uiPort} / API ${ports.apiPort} → ${WORKTREES_DIRNAME}/${worktreeDirName(name)}/.dev-ports.json`,
       `next: cd ${relative} && bun run dev`,
     ].join('\n'),
     quiet: `${relative} branch=${branch} ui=${ports.uiPort} api=${ports.apiPort}`,
