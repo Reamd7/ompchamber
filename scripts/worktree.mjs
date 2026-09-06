@@ -4,12 +4,17 @@
 // Usage:
 //   bun run worktree init <name> [--branch <b>] [--base <ref>] [--json] [--quiet]
 //
-// Branch names (the name itself, or --branch) must satisfy the git
-// check-ref-format rules GitHub enforces; invalid names are rejected with
-// exit code 2 before any side effect.
+// Branch names (the name itself, or --branch) must start with "feature/" or
+// "hotfix/" and satisfy the git check-ref-format rules GitHub enforces;
+// invalid names are rejected with exit code 2 before any side effect.
 //
-// Worktrees live under .worktrees/<name> (gitignored). Each one persists a
-// port pair in .dev-ports.json that scripts/dev-web-hmr.mjs prefers over the
+// The name may contain "/", so it can be typed as the branch itself
+// (`worktree init feature/foo`); the directory under .worktrees/ replaces
+// every "/" with "_" (.worktrees/feature_foo) while the branch keeps it.
+//
+// Worktrees live under .worktrees/<dir> (gitignored), where <dir> is the name
+// with every "/" replaced by "_". Each one persists a port pair in
+// .dev-ports.json that scripts/dev-web-hmr.mjs prefers over the
 // shared defaults, so `bun run dev` in every worktree binds its own UI/API
 // ports and parallel checkouts never collide.
 
@@ -21,26 +26,34 @@ import { parseArgs } from 'node:util';
 import * as clack from '@clack/prompts';
 import { allocateDevPorts, writeDevPorts, WORKTREES_DIRNAME } from './worktree-ports.mjs';
 
-const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export function validateWorktreeName(name) {
-  if (typeof name !== 'string' || name.length === 0) {
+  if (!name) {
     return { ok: false, reason: 'name is required' };
   }
-  if (name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+  if (name === '.' || name === '..' || name.includes('\\')) {
     return { ok: false, reason: `invalid name "${name}"` };
   }
   if (!NAME_PATTERN.test(name)) {
-    return { ok: false, reason: `invalid name "${name}" (use letters, digits, ".", "-", "_")` };
+    return { ok: false, reason: `invalid name "${name}" (use letters, digits, ".", "-", "_", "/")` };
   }
   return { ok: true };
+}
+
+// Directory under .worktrees/ for a worktree name: every "/" becomes "_", so
+// branch-shaped names (feature/foo) map to a flat directory (feature_foo).
+export function worktreeDirName(name) {
+  return name.replaceAll('/', '_');
 }
 
 // git check-ref-format(1) refname rules, which GitHub branch creation also
 // enforces, applied to branch names. One deliberate extra: names must not
 // start with "-", which GitHub rejects and which every git command spawned
-// below would misparse as an option.
+// below would misparse as an option. On top of the format rules, worktree
+// branches are policy-scoped to the feature/ and hotfix/ prefixes.
 const BRANCH_FORBIDDEN_CHARS = /[\s~^:?*[\\\x00-\x1f\x7f]/;
+const BRANCH_PREFIX_PATTERN = /^(?:feature|hotfix)\//;
 
 export function validateBranchName(branch) {
   if (!branch) {
@@ -62,6 +75,9 @@ export function validateBranchName(branch) {
   }
   if (branch.split('/').some((part) => part.startsWith('.'))) {
     return invalid('path segments must not start with "."');
+  }
+  if (!BRANCH_PREFIX_PATTERN.test(branch)) {
+    return invalid('must start with "feature/" or "hotfix/"');
   }
   return { ok: true };
 }
@@ -129,10 +145,15 @@ async function main() {
   let name = positionalName;
   if (!name && interactive) {
     name = await clack.text({
-      message: 'Worktree name (branch and directory under .worktrees/):',
+      message: 'Worktree name (branch; must start with "feature/" or "hotfix/"):',
       validate: (value) => {
-        const check = validateWorktreeName(String(value ?? '').trim());
-        return check.ok ? undefined : check.reason;
+        const candidate = String(value ?? '').trim();
+        const nameCheck = validateWorktreeName(candidate);
+        if (!nameCheck.ok) return nameCheck.reason;
+        // The name doubles as the branch, so enforce the branch policy here
+        // too; otherwise the prompt would accept values main() rejects.
+        const branchCheck = validateBranchName(candidate);
+        return branchCheck.ok ? undefined : branchCheck.reason;
       },
     });
     if (clack.isCancel(name)) {
@@ -156,7 +177,7 @@ async function main() {
   }
 
   const base = values.base ?? 'HEAD';
-  const worktreePath = path.join(repoRoot, WORKTREES_DIRNAME, name);
+  const worktreePath = path.join(repoRoot, WORKTREES_DIRNAME, worktreeDirName(name));
 
   if (fs.existsSync(worktreePath)) {
     emit(fail(`${worktreePath} already exists`, 2));
