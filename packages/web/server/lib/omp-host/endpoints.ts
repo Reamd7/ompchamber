@@ -802,6 +802,9 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       // (mis-addressed archive incident).
       const directoryKey = normalizeDirectoryKey(directory);
       all = all.filter((session) => normalizeDirectoryKey(session.directory ?? '') === directoryKey);
+      // Subagent runs no longer join the session list (maintainer ruling:
+      // sidebar stays host-sessions-only; the drill-in reads them through
+      // getSession/getMessagesPage's subagent resolution instead).
     }
     all.sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0));
     const page = Number.isFinite(limit) && limit > 0 ? all.slice(0, limit) : all;

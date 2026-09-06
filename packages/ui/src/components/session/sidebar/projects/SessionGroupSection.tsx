@@ -817,38 +817,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
             hideActions={false}
             archivedBucket={group.isArchivedBucket === true}
           >
-            {nodes.map((node) => <SessionTreeItem
-              key={node.session.id}
-              node={node}
-              pinnedSessionIds={pinnedSessionIds}
-              expandedParents={expandedParents}
-              hasSessionSearchQuery={hasSessionSearchQuery}
-              normalizedSessionSearchQuery={normalizedSessionSearchQuery}
-              notifyOnSubtasks={notifyOnSubtasks}
-              editingId={editingId}
-               editTitle={editTitle}
-              openSidebarMenuKey={openSidebarMenuKey}
-              mobileVariant={mobileVariant}
-              alwaysShowActions={alwaysShowActions}
-              groupDirectory={scopeDirectory ?? group.directory}
-              projectId={projectId}
-              archivedBucket={group.isArchivedBucket === true}
-              renderExtras={{ subtreeContainsEditing, menuOpenSessionId, nodeStructureKey: resolveNodeStructureKey(node), childRenderExtrasFor }}
-              setEditingId={props.setEditingId}
-              setEditTitle={props.setEditTitle}
-               toggleParent={props.toggleParent}
-               setOpenSidebarMenuKey={props.setOpenSidebarMenuKey}
-               allowReselect={props.allowReselect}
-               onSessionSelected={props.onSessionSelected}
-               isSessionSearchOpen={props.isSessionSearchOpen}
-               sessionSearchQuery={props.sessionSearchQuery}
-               setSessionSearchQuery={props.setSessionSearchQuery}
-               setIsSessionSearchOpen={props.setIsSessionSearchOpen}
-               deleteSessionConfirm={props.deleteSessionConfirm}
-              setDeleteSessionConfirm={props.setDeleteSessionConfirm}
-              startFolderRename={props.startFolderRename}
-              startSessionWorktreeMenuLoad={props.startSessionWorktreeMenuLoad}
-             />)}
+            {nodes.map((node) => renderSessionNode(node))}
           </SessionFolderItem>
         )}
       </DroppableFolderWrapper>
@@ -956,6 +925,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
      startSessionWorktreeMenuLoad={props.startSessionWorktreeMenuLoad}
    />;
 
+
   const body = (
     <SessionFolderDndScope
       scopeKey={folderScopes[0]?.scopeKey ?? folderScopeKey}
@@ -984,7 +954,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
             // re-renders synchronously before paint. Rendering the plain rows
             // meanwhile keeps the container's height real so the scroller
             // never collapses/clamps during the flip.
-            visibleSessions.map(renderSessionNode)
+            visibleSessions.map((node) => renderSessionNode(node))
           ) : (
           <div style={{ height: sessionVirtualizer.getTotalSize(), position: 'relative' }}>
             {/* Absolutely positioned rows (canonical tanstack layout): with
@@ -1025,7 +995,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
           )}
         </div>
       ) : (
-        visibleSessions.map(renderSessionNode)
+        visibleSessions.map((node) => renderSessionNode(node))
       )}
       {totalSessions === 0 && allFoldersForGroup.length === 0 ? (
         // pl-[26px] lines the text up with the worktree sub-header label

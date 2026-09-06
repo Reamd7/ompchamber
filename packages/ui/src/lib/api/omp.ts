@@ -2490,7 +2490,18 @@ export interface OmpAgentRunRecord {
   createdAt: number;
   lastActivity: number;
   activity?: unknown;
-}
+  /** Whether the server can read this run's transcript (registry ref). */
+  hasTranscript?: boolean;
+  /** The run's own session id — drill-in opens it as a read-only chat. */
+  childSessionID?: string;
+  /** Persisted run telemetry (registry history); outputPath is the durable artifact. */
+  history?: { outputPath?: string };
+  live?: {
+    tokens: number;
+    cost: number;
+    durationMs: number;
+  };
+};
 
 export interface OmpAgentRunsSnapshot {
   agentRuns: OmpAgentRunRecord[];
@@ -2508,6 +2519,13 @@ const AgentRunRecordSchema = z.looseObject({
   createdAt: z.number(),
   lastActivity: z.number(),
   activity: z.unknown().optional(),
+  history: z.looseObject({ outputPath: z.string().optional() }).optional(),
+  childSessionID: z.string().min(1).optional(),
+  live: z.object({
+    tokens: z.number(),
+    cost: z.number(),
+    durationMs: z.number(),
+  }).optional(),
 });
 
 const AgentRunsSnapshotSchema = z.object({
@@ -2520,6 +2538,7 @@ const parseAgentRunsSnapshot = (value: unknown): OmpAgentRunsSnapshot | null => 
   const parsed = AgentRunsSnapshotSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 };
+
 
 export interface OmpAgentRunsAPI {
   /**

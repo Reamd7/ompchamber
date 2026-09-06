@@ -69,7 +69,7 @@ import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
-import type { UriDomain } from './domain-uri.ts';
+import type { AgentsSnapshotEntry, DiskScanRow, UriDomain } from './domain-uri.ts';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Cap on concurrently live top-level sessions; idle sessions beyond this
 // are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
@@ -142,6 +142,8 @@ interface HostSession {
   lastAssistantWireId: string | null;
   awaitingAsyncSince: number | null;
   agentRegistry: AgentRegistry;
+  /** Cross-turn finalized tool parts — async-job task updates revive them. */
+  finalToolParts: Map<string, { id: string; messageID: string; toolName: string }>;
   extensionUiInitialized: boolean;
   extensionUiPromise: Promise<unknown> | null;
   planHandlerAttached: boolean;
@@ -149,6 +151,8 @@ interface HostSession {
   /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
   turnToolResults?: Map<string, { content?: unknown; isError?: boolean; timestamp?: number }> | null;
   unsubscribe?: () => void;
+  /** Agent-registry event subscription feeding the agent-runs aggregator. */
+  unsubscribeAgentRegistry?: () => void;
 }
 
 /** The SessionManager surface #infoFromManager reads (SDK SessionManager). */
@@ -196,6 +200,62 @@ interface SessionListInfo {
   modified: Date | string;
 }
 
+/**
+ * Subagent sessionFiles live at `<sessionsRoot>/<ts>_<sessionID>/<agent>.jsonl`
+ * (SDK artifacts layout). Returns the owning session id, or undefined for
+ * layouts that do not carry one (in-memory runs, unexpected shapes).
+ */
+const sessionIDFromSessionFile = (sessionFile: string | null | undefined): string | undefined => {
+  if (sessionFile === null || sessionFile === undefined || sessionFile.length === 0) return undefined;
+  const dirName = path.basename(path.dirname(sessionFile));
+  const separator = dirName.indexOf('_');
+  if (separator <= 0) return undefined;
+  const sessionID = dirName.slice(separator + 1);
+  return sessionID.length > 0 ? sessionID : undefined;
+};
+
+/** Case-insensitive on win32 (sessions roots arrive with mixed separators). */
+const isPathUnder = (candidate: string, root: string): boolean => {
+  const relative = path.relative(root, candidate);
+  if (relative === '') return false;
+  const normalized = process.platform === 'win32' ? relative.toLowerCase() : relative;
+  return !normalized.startsWith('..') && !path.isAbsolute(normalized);
+};
+
+/**
+ * Read a transcript's session id from its leading bytes only. SessionManager
+ * parses the whole file; the child-id scan touches every nested transcript in
+ * a directory and must stay bounded — the session header rides one of the
+ * first lines (a title entry may precede it).
+ */
+const CHILD_ID_PROBE_BYTES = 262144;
+const readSessionHeaderId = async (sessionFile: string): Promise<string | undefined> => {
+  const handle = await fs.promises.open(sessionFile, 'r').catch(() => null);
+  if (!handle) return undefined;
+  try {
+    const buffer = Buffer.alloc(CHILD_ID_PROBE_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, CHILD_ID_PROBE_BYTES, 0);
+    const text = buffer.subarray(0, bytesRead).toString('utf8');
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('{')) continue;
+      let entry: unknown;
+      try {
+        entry = JSON.parse(trimmed);
+      } catch {
+        continue; // header not reached within the probe window
+      }
+      if (entry && typeof entry === 'object' && 'type' in entry && 'id' in entry) {
+        const typed = entry as { type?: unknown; id?: unknown };
+        if (typed.type === 'session' && typeof typed.id === 'string' && typed.id) return typed.id;
+      }
+    }
+    return undefined;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+};
+
 export class OmpHostEngine {
   /** In-flight #materialize dedup (`${directory}\0${sessionId}` → promise); prevents duplicate AgentSessions on lease/prompt races. */
   #materializeInFlight = new Map<string, Promise<HostSession>>();
@@ -234,6 +294,20 @@ export class OmpHostEngine {
   bootError: unknown;
   bootPromise: Promise<void> | null;
   sweeper: ReturnType<typeof setInterval>;
+  /** Engine-wide subscription to the SDK's process-global agent registry. */
+  unsubscribeGlobalRegistry: (() => void) | null = null;
+  /** Per-directory historical run rows (nested transcript scan), one shot. */
+  #diskRowsByDirectory = new Map<string, Array<DiskScanRow & { file: string }>>();
+  /** In-flight directory scans (dedup). */
+  #diskScanInFlight = new Map<string, Promise<void>>();
+  /**
+   * Subagent transcript path -> the child's own sessionID, read once from the
+   * jsonl header (the path layout `<ts>_<hostID>/<task>.jsonl` carries only
+   * the host id). Identity is immutable, so the cache never invalidates.
+   */
+  #childSessionIdByFile = new Map<string, string>();
+  /** In-flight #warmChildSessionIds run (dedup). */
+  #childSessionIdWarm: Promise<void> | null = null;
   /** Lazily-created counters for AgentSessionEvent members with no manifest case. */
   unknownEventCounts: Map<string, number> | undefined;
   /** How long abort() waits for the agent teardown before force-disposing. */
@@ -388,16 +462,53 @@ export class OmpHostEngine {
       },
       localFiles: (sessionID, directory) =>
         this.#listLocalFiles(sessionID, normalizeDirectoryKey(directory)),
-      agentsSnapshot: () =>
-        [...this.sessions.values()]
+      agentsSnapshot: () => {
+        // Per-session registries carry each live session's own agent ref;
+        // subagent refs land in the SDK's process-global registry instead
+        // (task executor uses AgentRegistry.global() throughout), so both
+        // sources must feed the aggregator. Global refs map back to a live
+        // session via the sessionFile layout `<ts>_<sessionID>/<agent>.jsonl`.
+        const entries: AgentsSnapshotEntry[] = [...this.sessions.values()]
           .filter((hostSession) => hostSession.agentRegistry && hostSession.agentSession)
           .map((hostSession) => ({
             sessionID: hostSession.sessionId,
             directory: hostSession.directory,
             registry: hostSession.agentRegistry
-          })),
+          }));
+        const byKey = new Map(entries.map((entry) => [entry.sessionID, entry]));
+        for (const ref of AgentRegistry.global().list()) {
+          const sessionID = sessionIDFromSessionFile(ref.sessionFile);
+          if (!sessionID) continue;
+          const owner = this.sessions.get(sessionID);
+          if (!owner) continue; // cold/parked runs surface via diskScan
+          let entry: AgentsSnapshotEntry | undefined = byKey.get(sessionID);
+          if (!entry) {
+            entry = { sessionID, directory: owner.directory, refs: [] };
+            byKey.set(sessionID, entry);
+            entries.push(entry);
+          }
+          (entry.refs ??= []).push(ref);
+        }
+        return entries;
+      },
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
-      liveSessionIds: () => [...this.sessions.keys()]
+      liveSessionIds: () => [...this.sessions.keys()],
+      childSessionIdFor: (sessionFile) => this.#childSessionIdCached(sessionFile),
+      diskScan: (directory) => (this.#diskRowsByDirectory.get(normalizeDirectoryKey(directory)) ?? null)?.map(({ file, ...row }) => row) ?? null,
+      warmDiskScan: (directory) => this.#ensureDiskRows(normalizeDirectoryKey(directory)),
+    });
+    // The task executor registers every subagent into the SDK's process-global
+    // registry (AgentRegistry.global()), not the per-session registries above.
+    // One engine-wide subscription keeps the aggregator current for subagent
+    // spawn/status/activity changes across every live session.
+    this.unsubscribeGlobalRegistry = AgentRegistry.global().onChange(() => {
+      // Warm the childSessionID cache for new transcripts (one open per file),
+      // then refresh: warmed rows re-publish with childSessionID set so the
+      // UI drill-in can open the run's read-only session view.
+      void this.#warmChildSessionIds().then(() => {
+        this.uriDomain?.aggregator.refresh();
+      });
+      this.uriDomain?.aggregator.refresh();
     });
     this.bootError = null;
     this.bootPromise = null;
@@ -655,7 +766,9 @@ export class OmpHostEngine {
   #disposeSession(session: HostSession | undefined) {
     if (!session || !session.agentSession) return;
     session.unsubscribe?.();
+    session.unsubscribeAgentRegistry?.();
     session.unsubscribe = undefined;
+    session.unsubscribeAgentRegistry = undefined;
     // Domain release: modes tracker + pending dialogs for this session (R11).
     this.modesDomain?.release?.(session.sessionId, session.directory);
     this.dialogs?.registry?.abortForSession?.(
@@ -815,8 +928,13 @@ export class OmpHostEngine {
         )
       );
     }
+    // Subagent runs no longer join the session list (maintainer ruling: the
+    // sidebar stays host-sessions-only). Their conversations remain readable
+    // through getSession/getMessagesPage's subagent resolution for the
+    // read-only drill-in.
     return out;
   }
+
 
   async listAllSessions({ archived }: { archived?: boolean } = {}) {
     await this.#boot();
@@ -872,14 +990,35 @@ export class OmpHostEngine {
     const live = this.sessions.get(sessionID);
     if (live) return this.#wireSessionFromLive(live);
     const file = await this.#findSessionFile(sessionID, directoryKey);
-    if (!file) return null;
-    const manager = await SessionManager.open(file.path);
-    try {
-      const info = this.#infoFromManager(manager, file.path, directoryKey);
-      return this.#wireSession(info, directoryKey, (this.registry.get(directoryKey, sessionID) ?? undefined));
-    } finally {
-      await manager.close();
+    if (file) {
+      const manager = await SessionManager.open(file.path);
+      try {
+        const info = this.#infoFromManager(manager, file.path, directoryKey);
+        return this.#wireSession(info, directoryKey, (this.registry.get(directoryKey, sessionID) ?? undefined));
+      } finally {
+        await manager.close();
+      }
     }
+    // Subagent sessions (task-tool runs) resolve read-only: the registry ref
+    // locates the transcript, and wire parentID (host session) makes the
+    // shared UI treat it as a non-promptable child session.
+    const subagent = await this.#findSubagentSessionFile(sessionID, directoryKey);
+    if (subagent) {
+      const manager = await SessionManager.open(subagent.path);
+      try {
+        const info = this.#infoFromManager(manager, subagent.path, directoryKey);
+        const parentID = sessionIDFromSessionFile(subagent.path);
+        const base = this.#wireSession(
+          { ...info, title: info.title || subagent.ref.displayName || info.id },
+          directoryKey,
+          undefined
+        );
+        return parentID ? { ...base, parentID } : base;
+      } finally {
+        await manager.close();
+      }
+    }
+    return null;
   }
 
   #infoFromManager(manager: SessionManagerLike, filePath: string, directoryKey: string) {
@@ -903,6 +1042,136 @@ export class OmpHostEngine {
     const hit = infos.find((info) => info.id === sessionID);
     if (hit) return { path: hit.path, dir };
     return null;
+  }
+
+  /**
+   * Resolve a subagent session's transcript file by the child's own
+   * sessionID. Scope: the transcript must live under `directoryKey`'s
+   * sessions root (the dir-key layout owns the file), and only read paths may
+   * use this — update/delete/materialize/fork keep host-only semantics via
+   * #findSessionFile.
+   */
+  async #findSubagentSessionFile(sessionID: string, directoryKey: string) {
+    const root = path.resolve(this.#sessionDirFor(directoryKey));
+    for (const ref of AgentRegistry.global().list()) {
+      const sessionFile = ref.sessionFile;
+      if (!sessionFile) continue;
+      if (!isPathUnder(path.resolve(sessionFile), root)) continue;
+      const childID = await this.#childSessionIdFor(sessionFile);
+      if (childID === sessionID) return { path: sessionFile, ref };
+    }
+    // Historical runs (post-restart, no registry ref): the one-shot disk
+    // scan already mapped this directory's transcripts to child ids.
+    await this.#ensureDiskRows(directoryKey);
+    const cold = (this.#diskRowsByDirectory.get(directoryKey) ?? []).find(
+      (row) => row.childSessionID === sessionID
+    );
+    if (cold && isPathUnder(path.resolve(cold.file), root)) {
+      return { path: cold.file, ref: { displayName: cold.displayName ?? cold.agentId } };
+    }
+    return null;
+  }
+
+  async #childSessionIdFor(sessionFile: string): Promise<string | undefined> {
+    const cached = this.#childSessionIdByFile.get(sessionFile);
+    if (cached) return cached;
+    const id = await readSessionHeaderId(sessionFile);
+    if (id) this.#childSessionIdByFile.set(sessionFile, id);
+    return id;
+  }
+  /**
+   * Warm the childSessionID cache for every global-registry transcript under
+   * the live directories so agent-runs rows can carry `childSessionID`
+   * synchronously (projectAgentRun has no async surface). One open per file,
+   * ever; a refresh follows so warmed rows re-publish.
+   */
+  #warmChildSessionIds(): Promise<void> {
+    this.#childSessionIdWarm ??= (async () => {
+      const roots = [...this.sessions.values()].map((hostSession) =>
+        path.resolve(this.#sessionDirFor(normalizeDirectoryKey(hostSession.directory))));
+      const pending: string[] = [];
+      for (const ref of AgentRegistry.global().list()) {
+        const sessionFile = ref.sessionFile;
+        if (!sessionFile || this.#childSessionIdByFile.has(sessionFile)) continue;
+        if (!roots.some((root) => isPathUnder(path.resolve(sessionFile), root))) continue;
+        pending.push(sessionFile);
+      }
+      await Promise.all(pending.map((file) => this.#childSessionIdFor(file)));
+    })().finally(() => {
+      this.#childSessionIdWarm = null;
+    });
+    return this.#childSessionIdWarm;
+  }
+
+  /** Sync cache read for snapshot projection (agentsSnapshot rows). */
+  #childSessionIdCached(sessionFile: string | null | undefined): string | undefined {
+    if (!sessionFile) return undefined;
+    return this.#childSessionIdByFile.get(sessionFile);
+  }
+
+  /** One-shot per directory: scan nested transcripts into cached rows. */
+  async #ensureDiskRows(directoryKey: string): Promise<void> {
+    if (!directoryKey || this.#diskRowsByDirectory.has(directoryKey)) return;
+    const inFlight = this.#diskScanInFlight.get(directoryKey);
+    if (inFlight) return inFlight;
+    const scan = (async () => {
+      const rows = await this.#scanDiskRows(directoryKey);
+      if (rows) this.#diskRowsByDirectory.set(directoryKey, rows);
+    })().finally(() => {
+      this.#diskScanInFlight.delete(directoryKey);
+    });
+    this.#diskScanInFlight.set(directoryKey, scan);
+    return scan;
+  }
+
+  /**
+   * Historical run rows for one directory: every nested transcript under the
+   * directory's sessions root (`<ts>_<hostID>/<task>.jsonl`). Host transcripts
+   * live at the top level and never match; registry rows win over these.
+   */
+  async #scanDiskRows(directoryKey: string): Promise<Array<DiskScanRow & { file: string }> | null> {
+    const root = this.#sessionDirFor(directoryKey);
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.promises.readdir(root, { withFileTypes: true });
+    } catch {
+ return null; // unknown directory — no rows, nothing cached
+    }
+    const rows: Array<DiskScanRow & { file: string }> = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const hostID = sessionIDFromSessionFile(path.join(root, entry.name, 'x.jsonl'));
+      if (!hostID) continue;
+      let files: string[];
+      try {
+        files = await fs.promises.readdir(path.join(root, entry.name));
+      } catch {
+        continue;
+      }
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue;
+        const filePath = path.join(root, entry.name, file);
+        const stats = await fs.promises.stat(filePath).catch(() => null);
+        if (!stats) continue;
+        const agentId = file.slice(0, -'.jsonl'.length);
+        const childID = await this.#childSessionIdFor(filePath);
+        const row: DiskScanRow & { file: string } = {
+          file: filePath,
+          sessionID: hostID,
+          agentId,
+          directory: directoryKey,
+          displayName: agentId,
+          kind: 'sub',
+          // Aggregator disk rows are 'historical' by construction.
+          createdAt: Math.round(stats.birthtimeMs) || 0,
+          lastActivity: Math.round(stats.mtimeMs) || 0,
+          hasTranscript: true
+        };
+        if (childID) row.childSessionID = childID;
+        rows.push(row);
+      }
+    }
+    return rows;
   }
 
   async updateSession({ sessionID, directory, title, metadata, timeArchived }: { sessionID: string; directory?: string; title?: string; metadata?: Record<string, SessionMetadataValue>; timeArchived?: number }) {
@@ -1072,6 +1341,22 @@ export class OmpHostEngine {
         wireIdFor
       });
     }
+    // Subagent transcripts (task-tool runs): resolved read-only through the
+    // global registry; projected with the child's own sessionID so the
+    // embedded read-only chat's parts/message ids stay self-consistent.
+    const subagent = await this.#findSubagentSessionFile(sessionID, directoryKey);
+    if (subagent) {
+      const manager = await SessionManager.open(subagent.path);
+      try {
+        const context = manager.buildSessionContext({ transcript: true });
+        return projectConversation(context.messages ?? [], {
+          sessionID,
+          directory: directoryKey
+        });
+      } finally {
+        await manager.close().catch(() => {});
+      }
+    }
     return null;
   }
 
@@ -1221,6 +1506,9 @@ export class OmpHostEngine {
     }
     const persona = personaState.status === 'active' ? personaState.persona : null;
     const agentRegistry = new AgentRegistry();
+    // Shared across every projector generation of this session: async-job
+    // task updates outlive the turn that spawned them.
+    const finalToolParts = new Map<string, { id: string; messageID: string; toolName: string }>();
     const { session, setToolUIContext } = await createAgentSession({
       cwd: directoryKey,
       sessionManager: manager,
@@ -1273,6 +1561,7 @@ export class OmpHostEngine {
       awaitingAsyncSince: null,
       // Retained for the agent-runs aggregator (spec 04 §5.5).
       agentRegistry,
+      finalToolParts,
       // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
       sdkResult: { setToolUIContext },
       extensionUiInitialized: false,
@@ -1294,6 +1583,16 @@ export class OmpHostEngine {
         console.error('[omp-host] event projection error:', error);
       }
     });
+    // Registry events drive the agent-runs aggregator (spec 04 §5.5): without
+    // this wiring the snapshot stays at revision 0 forever — rows never appear
+    // and omp.agents.updated never publishes, so every UI consumer (work-status
+    // rows, header badge, transcript row resolution) sees an empty world even
+    // while subagents run. Coalescing lives inside the aggregator (notify
+    // schedules one flush per directory); refresh() is the rebuild step.
+    hostSession.unsubscribeAgentRegistry = agentRegistry.onChange(() => {
+      this.uriDomain?.aggregator.refresh();
+    });
+    this.uriDomain?.aggregator.refresh();
     // Modes tracker for this session (cold-recovery + mode_change appends).
     this.modesDomain?.trackerFor(sessionId, directoryKey);
     // The freshly materialized host session is not published in `sessions`
@@ -1556,7 +1855,8 @@ export class OmpHostEngine {
           sessionID: sessionId,
           directory,
           agent: wireAgentFor(hostSession.currentPersona),
-          emit: (type, properties, dir) => this.bus.emit(type, properties, dir)
+          emit: (type, properties, dir) => this.bus.emit(type, properties, dir),
+          sharedFinalToolParts: hostSession.finalToolParts
         });
         hostSession.projector.setParentID(hostSession.lastUserWireId ?? '');
         hostSession.projector.startAssistant(event.message);
@@ -1606,10 +1906,15 @@ export class OmpHostEngine {
       }
       case 'tool_execution_update': {
         // Partial results (05 §5.6): running-state append; never terminal —
-        // tool_execution_end owns completion.
+        // tool_execution_end owns completion. The task tool's partial details
+        // carry the per-subagent AgentProgress snapshot the transcript renders
+        // live; other tools stay text/asyncState-only until a consumer needs
+        // their partial details on the wire.
+        const partial = typeof event.partialResult === 'string' ? undefined : event.partialResult;
         hostSession.projector?.toolPartial(event.toolCallId, {
           text: typeof event.partialResult === 'string' ? event.partialResult : (event.partialResult?.text ?? event.partialResult?.output),
-          asyncState: event.partialResult?.details?.async?.state
+          asyncState: event.partialResult?.details?.async?.state,
+          ...(event.toolName === 'task' && partial?.details !== undefined ? { details: partial.details } : {}),
         });
         return;
       }
@@ -1686,7 +1991,12 @@ export class OmpHostEngine {
           );
           if (finished?.id) hostSession.lastAssistantWireId = finished.id;
         }
-        hostSession.projector = null;
+        // The settled projector STAYS alive: async-job task updates keep
+        // arriving after the turn ends and revive the finalized parts via
+        // the session-shared finalToolParts map (see toolPartial). Stray
+        // message_update deltas cannot bleed in — they only flow during a
+        // live turn, and the next assistant message_start replaces the
+        // projector wholesale.
         hostSession.turnToolResults = null;
         this.registry.update(directory, sessionId, { timeUpdated: Date.now() });
         const info = this.#wireSessionFromLive(hostSession);
@@ -1961,7 +2271,6 @@ export class OmpHostEngine {
     return out;
   }
 
-  /** Per-turn telemetry (05 §5.9): usage/ttft/duration per assistant message. */
   async getTelemetry({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;

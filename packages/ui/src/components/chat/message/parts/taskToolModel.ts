@@ -141,3 +141,173 @@ export const prepareTaskToolOutput = (output: string | undefined): string => {
     if (!output) return '';
     return capToolOutputText(stripTaskMetadataFromOutput(output));
 };
+
+/** One subagent row on the omp task tool card (AgentProgress / SingleResult). */
+export type TaskAgentRowStatus = 'pending' | 'running' | 'completed' | 'failed' | 'aborted';
+
+export type TaskAgentRow = {
+    key: string;
+    agent: string;
+    status: TaskAgentRowStatus;
+    label?: string;
+    detail?: string;
+    tokens?: number;
+    durationMs?: number;
+    retryAttempt?: number;
+    retryMax?: number;
+    retryExhausted?: boolean;
+    /** Durable task output artifact (`agent://` URL) on settled rows. */
+    outputPath?: string;
+    /** Registry agent id (≡ progress.id): the drill-in jump target. */
+    runId?: string;
+    /** Last recent-output line while running; the freshest activity tail. */
+    tailText?: string;
+    /** Nested subagent rows (one level) while this run dispatches its own. */
+    nested?: TaskAgentRow[];
+};
+
+const TASK_AGENT_ROW_STATUSES: readonly TaskAgentRowStatus[] = ['pending', 'running', 'completed', 'failed', 'aborted'];
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined => {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
+};
+
+const asTrimmedText = (value: unknown): string | undefined => {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+};
+
+const asNonNegativeNumber = (value: unknown): number | undefined => {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+};
+
+const progressStatusOf = (value: unknown): TaskAgentRowStatus | undefined => {
+    return TASK_AGENT_ROW_STATUSES.find((status) => status === value);
+};
+
+/** Last non-empty recent-output line, trimmed — the row's activity tail. */
+const lastRecentOutput = (value: unknown): string | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const candidate = value[index];
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+};
+
+/**
+ * One nesting level only (ch 14 plan batch C): the live snapshot of a
+ * subagent that itself dispatched subagents. Deeper recursion is flattened
+ * away — the card stays readable.
+ */
+const nestedRowsOf = (value: unknown): TaskAgentRow[] | undefined => {
+  const details = asRecord(value);
+  const progress = Array.isArray(details?.progress) ? details.progress : [];
+  if (progress.length === 0) return undefined;
+  return taskAgentRowsFrom(progress, 'progress', 1).map((entry) => entry.row);
+};
+
+const settledStatusOf = (record: Record<string, unknown>): TaskAgentRowStatus => {
+  if (record.aborted === true) return 'aborted';
+  return (asNonNegativeNumber(record.exitCode) ?? 1) === 0 ? 'completed' : 'failed';
+};
+
+const taskAgentRowsFrom = (
+    entries: unknown[],
+    kind: 'progress' | 'result',
+    depth = 0,
+): Array<{ row: TaskAgentRow; order: number }> => {
+    const rows: Array<{ row: TaskAgentRow; order: number }> = [];
+    entries.forEach((entry, position) => {
+        const record = asRecord(entry);
+        if (!record) return;
+        const status = kind === 'progress' ? progressStatusOf(record.status) : settledStatusOf(record);
+        if (!status) return;
+        const row: TaskAgentRow = {
+            key: asTrimmedText(record.id) ?? `${kind}:${asNonNegativeNumber(record.index) ?? position}`,
+            agent: asTrimmedText(record.agent) ?? 'agent',
+            status,
+            label: asTrimmedText(record.description) ?? asTrimmedText(record.task),
+            detail: kind === 'progress'
+                ? asTrimmedText(record.currentTool) ?? asTrimmedText(record.lastIntent)
+                : asTrimmedText(record.error),
+            outputPath: kind === 'result' ? asTrimmedText(record.outputPath) : undefined,
+            runId: asTrimmedText(record.id),
+            tailText: kind === 'progress' ? lastRecentOutput(record.recentOutput) : undefined,
+            nested: kind === 'progress' && depth === 0 ? nestedRowsOf(record.inflightTaskDetails) : undefined,
+            tokens: asNonNegativeNumber(record.tokens),
+            durationMs: asNonNegativeNumber(record.durationMs),
+        };
+        if (kind === 'progress') {
+            const retryState = asRecord(record.retryState);
+            const retryFailure = asRecord(record.retryFailure);
+            if (retryState) {
+                row.retryAttempt = asNonNegativeNumber(retryState.attempt);
+                row.retryMax = asNonNegativeNumber(retryState.maxAttempts);
+            } else if (retryFailure) {
+                row.retryAttempt = asNonNegativeNumber(retryFailure.attempt);
+                row.retryExhausted = true;
+            }
+        }
+        rows.push({ row, order: asNonNegativeNumber(record.index) ?? position });
+    });
+    return rows;
+};
+
+/**
+ * Per-agent rows for the omp task tool. Live updates carry AgentProgress[]
+ * snapshots in `metadata.details.progress`; the settled result carries
+ * SingleResult[] in `metadata.details.results`. Both ride the
+ * omp-host `state.metadata.details` projection. Settled results win over a
+ * stale live snapshot when both are present; unrecognized shapes yield no
+ * rows rather than a degraded guess.
+ */
+/**
+ * Dispatch title for one run, read from loaded session parts — the same chain
+ * the task card header renders (input.description, metadata.description,
+ * state.title). Null when the dispatching card is not in the loaded window.
+ */
+export const readTaskRunTitle = (
+    getParts: (messageID: string) => unknown[],
+    messageIDs: readonly string[],
+    runId: string,
+): string | null => {
+    for (let index = messageIDs.length - 1; index >= 0; index -= 1) {
+        for (const part of getParts(messageIDs[index] ?? '')) {
+            const record = asRecord(part);
+            if (!record || record.type !== 'tool' || record.tool !== 'task') continue;
+            const state = asRecord(record.state);
+            if (!state) continue;
+            const metadata = asRecord(state.metadata);
+            if (!readTaskAgentRows(metadata).some((row) => row.runId === runId)) continue;
+            const input = asRecord(state.input);
+            return asTrimmedText(input?.description)
+                ?? asTrimmedText(metadata?.description)
+                ?? asTrimmedText(state.title)
+                ?? null;
+        }
+    }
+    return null;
+};
+export const readTaskAgentRows = (metadata: unknown): TaskAgentRow[] => {
+    const details = asRecord(asRecord(metadata)?.details);
+    if (!details) return [];
+    const results = Array.isArray(details.results) ? details.results : [];
+    const entries = results.length > 0 ? results : Array.isArray(details.progress) ? details.progress : [];
+    const kind = results.length > 0 ? 'result' : 'progress';
+    return taskAgentRowsFrom(entries, kind)
+        .sort((a, b) => a.order - b.order)
+        .map((entry) => entry.row);
+};
+
+/** Compact duration the way the TUI task renderer prints it. */
+export const formatAgentDuration = (durationMs: number): string => {
+    if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+    if (durationMs < 60000) return `${(durationMs / 1000).toFixed(1)}s`;
+    const minutes = Math.floor(durationMs / 60000);
+    const seconds = Math.round((durationMs % 60000) / 1000);
+    return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+};

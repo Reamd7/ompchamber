@@ -4,8 +4,11 @@ import { useAllLiveSessions, useAllSessionStatuses, useDirectorySync } from '@/s
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { useOmpFeatureEnabled } from '@/hooks/useOmpFeatureEnabled';
+import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
+import { formatAgentDuration, readTaskRunTitle } from '../message/parts/taskToolModel';
+import { getSyncMessages, getSyncParts } from '@/sync/sync-refs';
+import { openSubagentRun } from '@/lib/omp/openSubagentRun';
 import {
   useOmpAgentRunsForDirectory,
   useOmpAgentRunsRevision,
@@ -18,6 +21,7 @@ import { useOmpPendingDialogSessions } from '@/sync/useOmpDialogStore';
 import type { OmpAgentRunRecord } from '@/lib/api/omp';
 import { formatCost } from './subagentCost';
 import { useSubagentCostRollup } from './useSubagentCostRollup';
+import { formatCompactTokenCount } from '../message/turnUsage';
 import type { State } from '@/sync/types';
 
 type Props = {
@@ -122,6 +126,18 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
   if (agentRunsEnabled) {
     if (runs.length === 0) return null;
     const busyRuns = runs.filter((row) => row.status === 'running').length;
+    // Dispatch titles for the loaded window, newest-first (the card usually
+    // sits near the tail); one shared parts scan for every row.
+    const runTitleFor = React.useCallback(
+      (runId: string) => (sessionId
+        ? readTaskRunTitle(
+            (messageID) => getSyncParts(messageID, directory ?? undefined),
+            getSyncMessages(sessionId, directory ?? undefined).map((message) => message.id),
+            runId,
+          )
+        : null),
+      [directory, sessionId],
+    );
     return (
       <WorkStatusCollapsibleSection
         id={SECTION_ID}
@@ -131,27 +147,43 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
         summary={busyRuns > 0 ? `${busyRuns}/${runs.length}` : runs.length}
       >
         <div className="max-h-56 overflow-y-auto">
-          {runs.map((row) => {
-            const label = row.displayName?.trim() || row.agentId;
-            const ompBlocked = (ompDialogCounts.get(row.sessionID) ?? 0) > 0;
-            return (
-              <WorkStatusRow
-                key={row.key}
-                label={label}
-                value={ompBlocked && row.status === 'running' ? (
-                  <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
-                ) : row.status === 'running' ? (
-                  <WorkStatusValue tone="info">{t('chat.workStatus.subagent.working')}</WorkStatusValue>
-                ) : row.status === 'parked' ? (
-                  <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.parked')}</WorkStatusValue>
-                ) : row.status === 'aborted' ? (
-                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.aborted')}</WorkStatusValue>
-                ) : (
-                  <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.done')}</WorkStatusValue>
-                )}
-              />
-            );
-          })}
+        {runs.map((row) => {
+          // Card parity: prefer the dispatch title (the same chain the task
+          // card header renders) read from the loaded session parts; the run
+          // name stays the fallback for runs whose card is not loaded.
+          const label = runTitleFor(row.agentId) ?? row.displayName?.trim() ?? row.agentId;
+          const ompBlocked = (ompDialogCounts.get(row.sessionID) ?? 0) > 0;
+          const live = row.live;
+          const statusValue = ompBlocked && row.status === 'running' ? (
+            <WorkStatusValue tone="warning">{t('dialogs.omp.workStatus.waitingAnswer')}</WorkStatusValue>
+          ) : row.status === 'running' ? (
+            <WorkStatusValue tone="info">{t('chat.workStatus.subagent.working')}</WorkStatusValue>
+          ) : row.status === 'parked' ? (
+            <WorkStatusValue tone="warning">{t('chat.workStatus.subagent.parked')}</WorkStatusValue>
+          ) : row.status === 'aborted' ? (
+            <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.aborted')}</WorkStatusValue>
+          ) : (
+            <WorkStatusValue tone="muted">{t('chat.workStatus.subagent.done')}</WorkStatusValue>
+          );
+          return (
+            <WorkStatusRow
+              key={row.key}
+              label={label}
+              onClick={directory && row.childSessionID && row.sessionID
+                ? () => openSubagentRun({ childSessionID: row.childSessionID ?? '', parentSessionID: row.sessionID, runId: row.agentId, label, directory })
+                : undefined}
+              ariaLabel={t('chat.workStatus.action.openAgentRun', { name: label })}
+              value={(
+                <>
+                  {statusValue}
+                  {live && live.tokens > 0 ? <WorkStatusValue tone="muted">{formatCompactTokenCount(live.tokens)}</WorkStatusValue> : null}
+                  {live && live.durationMs > 0 ? <WorkStatusValue tone="muted">{formatAgentDuration(live.durationMs)}</WorkStatusValue> : null}
+                  {live && live.cost > 0 ? <WorkStatusValue tone="muted">{formatCost(live.cost)}</WorkStatusValue> : null}
+                </>
+              )}
+            />
+          );
+        })}
         </div>
       </WorkStatusCollapsibleSection>
     );

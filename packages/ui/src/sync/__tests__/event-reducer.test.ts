@@ -111,7 +111,43 @@ describe("applyDirectoryEvent", () => {
       type: "message.part.updated",
       properties: { part: currentPart },
     } as Event)).toBe(true)
+
     expect(draft.part.msg_1).toEqual([legacyPart, currentPart])
+  })
+  test("async-job task snapshots regress a finalized part (live refresh), plain running still dropped", () => {
+    const finalizedTask = {
+      id: "prt_task1",
+      messageID: "msg_1",
+      sessionID: "ses_1",
+      type: "tool",
+      tool: "task",
+      state: { status: "completed", metadata: { details: { progress: [{ id: "a", status: "pending", tokens: 0 }] } } },
+    } as unknown as Part
+    const draft = state({
+      message: { ses_1: [{ id: "msg_1", sessionID: "ses_1", role: "assistant", time: { created: 1 } } as Message] },
+      part: { msg_1: [finalizedTask] },
+    })
+
+    // Live snapshot after finalization: applied (async job still running).
+    const liveSnapshot = {
+      ...finalizedTask,
+      state: { status: "running", metadata: { details: { progress: [{ id: "a", status: "running", tokens: 42 }] } } },
+    } as unknown as Part
+    expect(applyDirectoryEvent(draft, {
+      type: "message.part.updated",
+      properties: { part: liveSnapshot },
+    } as Event)).toBe(true)
+    expect((draft.part.msg_1[0] as unknown as { state: { status: string } }).state.status).toBe("running")
+
+    // A plain running update without a details snapshot is still flicker-dropped.
+    const reFinalized = { ...finalizedTask, state: { status: "completed" } } as unknown as Part
+    ;(draft.part.msg_1 as Part[])[0] = reFinalized
+    const plainRunning = { ...finalizedTask, state: { status: "running" } } as unknown as Part
+    expect(applyDirectoryEvent(draft, {
+      type: "message.part.updated",
+      properties: { part: plainRunning },
+    } as Event)).toBe(false)
+    expect((draft.part.msg_1[0] as unknown as { state: { status: string } }).state.status).toBe("completed")
   })
 
   test("replaces an optimistic user part in place instead of appending it", () => {
