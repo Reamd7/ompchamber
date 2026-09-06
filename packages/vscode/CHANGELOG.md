@@ -1,3 +1,7 @@
+## [1.29.0] - 2026-09-06
+
+- Wording: user-facing copy now says "engine" instead of "OpenCode" — status messages, error notices, and the status report (Ctrl/Cmd+Shift+L) section headers ("Engine process", "Engine API probes"). Strings only.
+
 ## [1.27.0] - 2026-09-03
 
 - Chat: resizing the panel while reading an idle conversation no longer snaps the view back to the bottom — if the re-wrapped text leaves the viewport past the end, the view unpins and the scroll-to-bottom pill offers the way back; a streaming session still returns to its live edge once the resize settles.

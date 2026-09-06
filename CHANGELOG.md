@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-09-06
+
+- **Terminal: output now renders on the GPU.** The terminal paints through a WebGL pipeline, falling back to the Canvas renderer automatically where WebGL isn't available, so heavy output stays smooth; terminal library fixes ride along, covering alt-screen handling and frame-writing edge cases.
+- UI: user-facing copy now says "engine" instead of "OpenCode" — status messages, session error notices, the command palette entry, and the status report section headers ("Engine process", "Engine API probes"), in English, 简体中文, and 繁體中文. Strings only; no behavior changes.
+- A standalone terminal app (Electron shell plus web mode) and a reusable server-side terminal parsing module now live in the repo.
+
 ## [1.28.0] - 2026-09-05
 
 - **Terminal: closing a tab no longer kills a session that another window or device still shows.** Each window keeps alive the terminal sessions it has open, so closing a tab ends the session only when it's open nowhere else; the kill action stays immediate no matter what. This also fixes a close bug where a session's last tab sometimes couldn't kill it and the closed tab reappeared on its own.
