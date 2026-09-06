@@ -249,6 +249,7 @@ const normalizeContextPanelProjectPlanRef = (value: unknown): ProjectRef | null 
   return id && path ? { id, path } : null;
 };
 
+
 const buildDefaultContextPanelTabDedupeKey = (mode: ContextPanelMode, targetPath: string | null): string => {
   if (mode === 'file') {
     return targetPath || mode;

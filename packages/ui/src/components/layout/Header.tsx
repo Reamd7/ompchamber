@@ -20,6 +20,7 @@ import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
 import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionMessagesResolved } from '@/sync/sync-context';
 import { useDirectoryStore as useAppDirectoryStore } from '@/stores/useDirectoryStore';
+import { useOmpAgentRunsBusyCount } from '@/stores/useOmpAgentRunsStore';
 import { isChatDirectoryForHome } from '@/lib/chatDirectories';
 import { useSync } from '@/sync/use-sync';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -762,6 +763,9 @@ export const Header: React.FC = () => {
 
   const gitBranchForDirectory = useGitBranchLabel(openDirectory || null);
   const currentBranchLabel = gitBranchForDirectory || currentSessionWorktreeBranch || catalogWorktreeBranch;
+  // Global "subagents running" badge (spec 04 §5.5.1): directory-level busy
+  // count, visible even while the work-status panel itself is hidden.
+  const agentRunsBusyCount = useOmpAgentRunsBusyCount(openDirectory || null);
   const isChatContext = isNewSessionDraftOpen
     ? draftTarget === 'chat'
     : isChatDirectoryForHome(sessionDirectory || selectedSessionDirectory, homeDirectory);
@@ -1450,6 +1454,16 @@ export const Header: React.FC = () => {
                       <span className="truncate">{worktreeBadge}</span>
                     </span>
                   ) : null}
+                </span>
+              ) : null}
+              {agentRunsBusyCount > 0 ? (
+                <span
+                  className="inline-flex min-w-0 max-w-full items-center gap-1.5 truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75"
+                  aria-label={t('layout.header.subagentsRunning', { count: agentRunsBusyCount })}
+                  title={t('layout.header.subagentsRunning', { count: agentRunsBusyCount })}
+                >
+                  <Icon name="ai-agent" className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate tabular-nums">{agentRunsBusyCount}</span>
                 </span>
               ) : null}
             </div>

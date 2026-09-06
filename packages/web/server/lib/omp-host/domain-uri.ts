@@ -909,12 +909,31 @@ export interface AgentRefLike {
   kind?: string;
   parentId?: string;
   status?: string;
-  session?: unknown;
+  /**
+   * Live AgentSession while the agent is running (SDK: null exactly when
+   * parked/aborted). Structurally narrowed to the public stats accessor —
+   * the only surface the snapshot needs.
+   */
+  session?: {
+    getSessionStats?: () => {
+      tokens?: { total?: number };
+      cost?: number;
+    };
+    /** The child session's own id (read-only drill-in resolves by it). */
+    sessionId?: string;
+  } | null;
   sessionFile?: string | null;
   createdAt?: number;
   lastActivity?: number;
   activity?: string;
   history?: AgentRunHistory;
+}
+
+/** Snapshot-time metrics for a running agent; absent once parked/aborted. */
+export interface OmpAgentRunLive {
+  tokens: number;
+  cost: number;
+  durationMs: number;
 }
 
 export interface OmpAgentRun {
@@ -928,8 +947,11 @@ export interface OmpAgentRun {
   status: string;
   createdAt: number;
   lastActivity: number;
+  /** The run's own session id — set when resolvable (live session or warmed cache). */
+  childSessionID?: string;
   activity?: string;
   history?: AgentRunHistory;
+  live?: OmpAgentRunLive;
   hasTranscript: boolean;
 }
 
@@ -939,12 +961,17 @@ export interface OmpAgentRun {
  * hasTranscript, history drops patchPath/branchName (worktree paths), and
  * outputPath keeps only its agent:// URL form.
  */
-export const projectAgentRun = ({ sessionID, directory, ref, status }: {
+export const projectAgentRun = ({ sessionID, directory, ref, status, childSessionIdFor }: {
   sessionID: string;
   directory: string;
   ref: AgentRefLike;
   status?: string;
+  /** Sync transcript-header cache lookup (engine): childSessionID for parked runs. */
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
 }): OmpAgentRun => {
+  // Live sessions carry their id; parked runs resolve through the engine's
+  // warmed transcript-header cache (immutable identity, one open per file).
+  const childSessionID = ref.session?.sessionId ?? (ref.sessionFile ? childSessionIdFor?.(ref.sessionFile) : undefined);
   const history = ref.history
     ? {
         ...(ref.history.agent !== undefined ? { agent: ref.history.agent } : {}),
@@ -955,7 +982,12 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
         ...(ref.history.outputPath !== undefined ? { outputPath: ref.history.outputPath } : {}),
       }
     : undefined;
-  return {
+  // Invoke on the session: the SDK accessor is a class method reading #stats —
+  // extracting it and calling bare leaves this === undefined and throws.
+  const stats = ref.session?.getSessionStats?.();
+  const liveTokens = stats?.tokens?.total;
+  const liveCost = stats?.cost;
+  const row: OmpAgentRun = {
     key: agentRunKey(sessionID, ref.id),
     sessionID,
     directory,
@@ -966,10 +998,19 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
     status: status ?? ref.status ?? 'historical',
     createdAt: ref.createdAt ?? 0,
     lastActivity: ref.lastActivity ?? 0,
+    ...(childSessionID ? { childSessionID } : {}),
     ...(ref.activity ? { activity: ref.activity } : {}),
     ...(history && Object.keys(history).length > 0 ? { history } : {}),
     hasTranscript: Boolean(ref.sessionFile),
   };
+  if (stats && liveTokens !== undefined && Number.isFinite(liveTokens)) {
+    row.live = {
+      tokens: liveTokens,
+      cost: liveCost !== undefined && Number.isFinite(liveCost) ? liveCost : 0,
+      durationMs: Math.max(0, (ref.lastActivity ?? 0) - (ref.createdAt ?? 0)),
+    };
+  }
+  return row;
 };
 
 export interface AgentsSnapshotEntry {
@@ -986,9 +1027,11 @@ export interface DiskScanRow {
   displayName?: string;
   kind?: string;
   parentId?: string;
+  hasTranscript?: boolean;
+  /** The run's own session id (transcript header) — read-only drill-in target. */
+  childSessionID?: string;
   createdAt?: number;
   lastActivity?: number;
-  hasTranscript?: boolean;
 }
 
 export interface AgentRunsPublishScope {
@@ -1018,6 +1061,9 @@ export interface AgentRunsAggregatorDeps {
   snapshot?: () => AgentsSnapshotEntry[] | null | undefined;
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
   diskScan?: (directory: string) => DiskScanRow[] | null | undefined;
+  /** Engine hook: fill its disk-scan cache for a directory (async, one shot). */
+  warmDiskScan?: (directory: string) => Promise<void>;
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
   coalesceMs?: number;
   setTimeout?: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
   clearTimeout?: (timer: AgentRunsTimerHandle) => void;
@@ -1051,12 +1097,14 @@ export class AgentRunsAggregator {
    *           clearTimeout?: (timer: AgentRunsTimerHandle) => void,
    *           now?: () => number }} options
    */
-  constructor({ snapshot, publish, diskScan, coalesceMs = 250, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout, now = () => Date.now() }: AgentRunsAggregatorDeps = {}) {
+  constructor({ snapshot, publish, diskScan, childSessionIdFor, warmDiskScan, coalesceMs = 250, setTimeout: setTimer = setTimeout, clearTimeout: clearTimer = clearTimeout, now = () => Date.now() }: AgentRunsAggregatorDeps = {}) {
     if (typeof snapshot !== 'function') throw new TypeError('AgentRunsAggregator: snapshot callback is required');
     if (typeof publish !== 'function') throw new TypeError('AgentRunsAggregator: publish callback is required');
     this.#snapshot = snapshot;
     this.#publish = publish;
     this.#diskScan = diskScan;
+    this.#childSessionIdFor = childSessionIdFor;
+    this.#warmDiskScan = warmDiskScan;
     this.#coalesceMs = coalesceMs;
     this.#setTimer = setTimer;
     this.#clearTimer = clearTimer;
@@ -1066,6 +1114,9 @@ export class AgentRunsAggregator {
   #snapshot: () => AgentsSnapshotEntry[] | null | undefined;
   #publish: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
   #diskScan: ((directory: string) => DiskScanRow[] | null | undefined) | undefined;
+  #childSessionIdFor: ((sessionFile: string) => string | undefined) | undefined;
+  #ensureDirectories = new Set<string>();
+  #warmDiskScan: ((directory: string) => Promise<void>) | undefined;
   #coalesceMs: number;
   #setTimer: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
   #clearTimer: (timer: AgentRunsTimerHandle) => void;
@@ -1093,13 +1144,14 @@ export class AgentRunsAggregator {
           : [];
       for (const ref of refs) {
         if (!ref || typeof ref.id !== 'string') continue;
-        next.set(agentRunKey(entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref }));
+        next.set(agentRunKey(entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref, childSessionIdFor: this.#childSessionIdFor }));
       }
     }
     if (this.#diskScan) {
       const directories = new Set([
         ...[...next.values()].map((row) => row.directory),
         ...previousDirectories,
+        ...this.#ensureDirectories,
       ]);
       for (const directory of directories) {
         for (const cold of this.#diskScan(directory) ?? []) {
@@ -1118,6 +1170,7 @@ export class AgentRunsAggregator {
             createdAt: cold.createdAt ?? 0,
             lastActivity: cold.lastActivity ?? 0,
             hasTranscript: cold.hasTranscript ?? true,
+            ...(cold.childSessionID ? { childSessionID: cold.childSessionID } : {}),
           });
         }
       }
@@ -1128,6 +1181,19 @@ export class AgentRunsAggregator {
     for (const directory of previousDirectories) this.#dirty.add(directory);
     this.notify();
     return this.snapshot();
+  }
+
+  /**
+   * List-endpoint entry: warm the engine's disk cache for a directory, then
+   * rebuild so historical rows surface even for directories with no live
+   * rows (refresh alone only scans directories that already have rows).
+   */
+  async ensureDirectory(directory: string): Promise<AgentRunsSnapshot> {
+    const key = normalizeDirectoryKey(directory);
+    if (!key) return this.snapshot();
+    this.#ensureDirectories.add(key);
+    await this.#warmDiskScan?.(key);
+    return this.refresh();
   }
 
   /** Mark dirty and schedule the coalesced publish (one event per directory). */
@@ -1528,9 +1594,12 @@ export interface UriDomainDeps {
   localOptionsFor?: LocalOptionsForHook;
   sessionTreeData?: (directory: string | null) => Promise<SessionTreeData>;
   entryTreeFor?: (sessionID: string, directory: string | null) => Promise<{ manager: EntryTreeManagerLike } | null>;
-  agentsSnapshot?: () => AgentsSnapshotEntry[];
   diskScan?: (directory: string) => DiskScanRow[] | null | undefined;
+  /** Engine hook: fill its disk-scan cache for a directory (async, one shot). */
+  warmDiskScan?: (directory: string) => Promise<void>;
+  childSessionIdFor?: (sessionFile: string) => string | undefined;
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
+  agentsSnapshot?: () => AgentsSnapshotEntry[];
   liveSessionIds?: () => string[];
   actions?: AgentRunActions;
   /** Per-session local:// file rows (artifacts.v1); null = unknown session. */
@@ -1570,7 +1639,7 @@ export interface UriDomain {
     entryTree: (input: { sessionID: string; directory?: string | null }) => Promise<Response>;
   };
   agentRuns: {
-    list: (input: { directory?: string | null }) => Response;
+    list: (input: { directory?: string | null }) => Promise<Response>;
     action: (input: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) => Promise<Response>;
   };
   jobs: (input: { recentLimit?: number }) => Promise<Response>;
@@ -1608,6 +1677,8 @@ export const createUriDomain = ({
   entryTreeFor,
   agentsSnapshot,
   diskScan,
+  warmDiskScan,
+  childSessionIdFor,
   publish,
   liveSessionIds = () => [],
   actions = {},
@@ -1625,6 +1696,8 @@ export const createUriDomain = ({
     snapshot: () => (typeof agentsSnapshot === 'function' ? agentsSnapshot() : []),
     ...(publish ? { publish } : { publish: () => {} }),
     ...(diskScan ? { diskScan } : {}),
+    ...(childSessionIdFor ? { childSessionIdFor } : {}),
+    ...(warmDiskScan ? { warmDiskScan } : {}),
   });
 
   const gate = (key: string) => (featureOn(key) ? null : featureUnavailable(key));
@@ -1668,13 +1741,17 @@ export const createUriDomain = ({
   };
   const sessionTree = async ({ directory }: { directory?: string | null }) =>
     buildSessionTree((await sessionTreeData?.(directory ?? null)) ?? []);
-  const entryTree = async ({ sessionID, directory }: { sessionID?: string; directory?: string | null }) => {
-    if (typeof sessionID !== 'string' || !sessionID) return json({ error: 'sessionID required' }, { status: 400 });
+  const entryTree = async ({ sessionID, directory }: { sessionID: string; directory?: string | null }) => {
     const found = await entryTreeFor?.(sessionID, directory ?? null);
     if (!found?.manager) return json({ error: 'session-not-found' }, { status: 404 });
     return json(buildEntryTreeSnapshot({ sessionID, directory: directory ?? null, manager: found.manager }));
   };
-  const agentRuns = ({ directory }: { directory?: string | null }) => json(runs.snapshot(directory ?? null));
+  const agentRuns = async ({ directory }: { directory?: string | null }) => {
+    // Historical rows surface lazily: warm the engine's disk cache for the
+    // requested directory first (no-op once scanned), then answer.
+    if (directory) await runs.ensureDirectory(directory);
+    return json(runs.snapshot(directory ?? null));
+  };
   const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) =>
     handleAgentRunAction({ aggregator: runs, descriptors, actions, sessionID: sessionID ?? '', agentId: agentId ?? '', directory, body: body ?? {} });
   const jobs = ({ recentLimit }: { recentLimit?: number }) =>

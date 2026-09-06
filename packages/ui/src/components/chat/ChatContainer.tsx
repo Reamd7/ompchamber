@@ -1616,7 +1616,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             <div
                 ref={composerSlotRef}
                 className={cn(
-                    'relative z-10 flex min-h-0',
+                    'relative z-10 flex min-h-0 flex-col',
                     isDesktopExpandedInput
                         ? 'flex-1 min-h-0 bg-background'
                         : draftLayoutVisible && !useCompactDraftLayout

@@ -500,6 +500,41 @@ describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
     expect(serialized).not.toContain('.jsonl');
     expect(serialized).not.toContain('C:/leak');
   });
+
+  test('running rows carry live metrics from the session stats accessor', () => {
+    // The real SDK session is a class whose getSessionStats reads #stats — an
+    // unbound invocation throws, so the mock must be a this-sensitive method.
+    class StatsSession {
+      #stats = { tokens: { total: 1500 }, cost: 0.042 };
+      getSessionStats() {
+        return this.#stats;
+      }
+    }
+    const row = projectAgentRun({
+      sessionID: 'ses_1',
+      directory: DIRECTORY,
+      ref: ref({
+        session: new StatsSession(),
+      }),
+    });
+    // durationMs = lastActivity - createdAt, computed from registry fields.
+    expect(row.live).toEqual({ tokens: 1500, cost: 0.042, durationMs: 9 });
+  });
+
+  test('live metrics are absent without a live session or a stats provider', () => {
+    expect(projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref({ session: null }) }).live).toBeUndefined();
+    expect(projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref({ session: {} }) }).live).toBeUndefined();
+  });
+
+  test('non-finite live tokens degrade to no live payload instead of NaN', () => {
+    const row = projectAgentRun({
+      sessionID: 'ses_1',
+      directory: DIRECTORY,
+      ref: ref({ session: { getSessionStats: () => ({ tokens: { total: Number.NaN }, cost: Number.NaN }) } }),
+    });
+    expect(row.live).toBeUndefined();
+  });
+
 });
 
 describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
@@ -594,6 +629,32 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     aggregator.dispose();
   });
 
+  test('ensureDirectory warms the disk cache and surfaces rows for directories without live rows', async () => {
+    let warmed: string[] = [];
+    let coldRows: Array<Record<string, unknown>> = [];
+    const aggregator = new AgentRunsAggregator({
+      snapshot: () => [], // no live rows at all — the pure-historical case
+      diskScan: () => coldRows.map((row) => row as never),
+      warmDiskScan: async (directory) => {
+        // The engine hook is one-shot per directory (its own cache); model that.
+        if (warmed.includes(directory)) return;
+        warmed.push(directory);
+        coldRows = [{ sessionID: 'ses_old', agentId: 'BranchScout', directory, childSessionID: 'ses_child_1' }];
+      },
+      publish: () => {},
+    });
+    // No ensure yet: refresh scans nothing (no live rows, no previous rows).
+    expect(aggregator.refresh().agentRuns).toEqual([]);
+    const snapshot = await aggregator.ensureDirectory(DIRECTORY);
+    expect(warmed).toEqual([DIRECTORY]);
+    const row = snapshot.agentRuns.find((r) => r.agentId === 'BranchScout');
+    expect(row?.status).toBe('historical');
+    expect(row?.childSessionID).toBe('ses_child_1');
+    // One shot: the second ensure does not re-warm.
+    await aggregator.ensureDirectory(DIRECTORY);
+    expect(warmed).toEqual([DIRECTORY]);
+    aggregator.dispose();
+  });
   test('directory filter + emptied-directory publishes a full-replace empty snapshot', () => {
     const events: Array<{ type: string; payload?: { revision?: number; agentRuns?: Array<{ key: string }> }; scope?: { directory?: string } }> = [];
     let snapshot = () => [{ sessionID: 'ses_A', directory: DIRECTORY, registry: makeRegistry(ref()) }];

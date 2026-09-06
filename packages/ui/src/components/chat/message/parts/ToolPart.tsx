@@ -44,13 +44,22 @@ import { getToolIcon } from './toolPresentation';
 import { useDurationTickerNow } from '@/hooks/useDurationTicker';
 import {
     buildTaskSummaryEntriesFromSession,
+    formatAgentDuration,
     normalizeTaskSummaryEntries,
     parseTaskMetadataBlock,
     prepareTaskToolOutput,
+    readTaskAgentRows,
     readTaskSessionIdFromOutput,
     readTaskSessionIdFromRecord,
+    type TaskAgentRow,
+    type TaskAgentRowStatus,
     type TaskToolSummaryEntry,
 } from './taskToolModel';
+import { openSubagentRun } from '@/lib/omp/openSubagentRun';
+import { openOmpArtifact, fetchOmpArtifactText } from '@/lib/omp/openArtifact';
+import { useOmpAgentRunsForDirectory, useOmpAgentRunsStore } from '@/stores/useOmpAgentRunsStore';
+import type { OmpAgentRunRecord } from '@/lib/api/omp';
+import { formatCompactTokenCount } from '../turnUsage';
 import { areRenderRelevantPartsEqual } from '../renderCompare';
 import { useI18n } from '@/lib/i18n';
 import {
@@ -995,9 +1004,209 @@ const TaskSummaryEntriesList = React.memo(({
 });
 
 TaskSummaryEntriesList.displayName = 'TaskSummaryEntriesList';
+const TASK_AGENT_ROW_STATUS_META = {
+    pending: { dotClass: 'bg-muted-foreground/40', labelKey: 'chat.toolPart.taskAgent.status.pending' },
+    running: { dotClass: 'bg-[var(--status-info)] animate-pulse', labelKey: 'chat.toolPart.taskAgent.status.running' },
+    completed: { dotClass: 'bg-[var(--status-success)]', labelKey: 'chat.toolPart.taskAgent.status.completed' },
+    failed: { dotClass: 'bg-[var(--status-error)]', labelKey: 'chat.toolPart.taskAgent.status.failed' },
+    aborted: { dotClass: 'bg-muted-foreground/60', labelKey: 'chat.toolPart.taskAgent.status.aborted' },
+} as const satisfies Record<TaskAgentRowStatus, { dotClass: string; labelKey: string }>;
+
+const getTaskAgentRowSignature = (row: TaskAgentRow): string => {
+    return [
+        row.key,
+        row.agent,
+        row.status,
+        row.label ?? '',
+        row.detail ?? '',
+        row.tokens,
+        row.durationMs,
+        row.retryAttempt,
+        row.retryMax,
+        row.retryExhausted ? 1 : 0,
+        row.outputPath ?? '',
+        row.runId ?? '',
+        row.tailText ?? '',
+        (row.nested ?? []).map(getTaskAgentRowSignature).join('\u0002'),
+    ].join('\u0001');
+};
+
+const areTaskAgentRowsRenderEqual = (prevRows: TaskAgentRow[], nextRows: TaskAgentRow[]): boolean => {
+    if (prevRows === nextRows) return true;
+    if (prevRows.length !== nextRows.length) return false;
+    for (let index = 0; index < prevRows.length; index += 1) {
+        if (getTaskAgentRowSignature(prevRows[index]) !== getTaskAgentRowSignature(nextRows[index])) {
+            return false;
+        }
+    }
+    return true;
+};
+
+const TaskAgentRowItem = React.memo(({
+    row,
+    animateTailText,
+    onOpenArtifact,
+    onOpenRun,
+}: {
+    row: TaskAgentRow;
+    animateTailText: boolean;
+    onOpenArtifact?: (outputPath: string) => void;
+    onOpenRun?: (runId: string) => void;
+}) => {
+    const { t } = useI18n();
+    const statusMeta = TASK_AGENT_ROW_STATUS_META[row.status];
+    const metaBits: string[] = [];
+    if (row.tokens !== undefined) metaBits.push(formatCompactTokenCount(row.tokens));
+    if (row.durationMs !== undefined) metaBits.push(formatAgentDuration(row.durationMs));
+    const retryLabel = row.retryExhausted
+        ? t('chat.toolPart.taskAgent.retriesExhausted', { attempt: row.retryAttempt ?? 0 })
+        : row.retryAttempt !== undefined
+            ? t('chat.toolPart.taskAgent.retrying', { attempt: row.retryAttempt, maxAttempts: row.retryMax ?? 0 })
+            : undefined;
+    const artifactPath = typeof row.outputPath === 'string' ? row.outputPath : null;
+    const runId = typeof row.runId === 'string' ? row.runId : null;
+    const tailText = row.status === 'running' && typeof row.tailText === 'string' ? row.tailText : null;
+    return (
+        <ToolRevealOnMount animate={animateTailText} wipe>
+            <div data-run-id={runId ?? undefined} className="flex gap-2 items-center min-w-0 w-full">
+                <span
+                    className={cn('flex-shrink-0 h-1.5 w-1.5 rounded-full', statusMeta.dotClass)}
+                    title={t(statusMeta.labelKey)}
+                />
+                <span className="typography-meta flex-shrink-0" style={{ color: 'var(--tools-title)' }}>
+                    {row.agent}
+                </span>
+                {row.label ? (
+                    <Text
+                        variant={animateTailText && row.status === 'running' ? 'generate-effect' : 'static'}
+                        className="typography-meta flex-1 min-w-0 truncate text-muted-foreground/70"
+                        style={{ color: 'var(--tools-description)' }}
+                        title={row.label}
+                    >
+                        {row.label}
+                    </Text>
+                ) : (
+                    <span className="flex-1 min-w-0" />
+                )}
+                {tailText ? (
+                    <Text
+                        variant={animateTailText ? 'generate-effect' : 'static'}
+                        className="typography-meta flex-shrink-0 max-w-[38%] truncate text-muted-foreground/50"
+                        title={tailText}
+                    >
+                        {tailText}
+                    </Text>
+                ) : null}
+                {row.status === 'running' && row.detail ? (
+                    <span className="typography-meta flex-shrink-0 text-muted-foreground/70">{row.detail}</span>
+                ) : null}
+                {metaBits.length > 0 ? (
+                    <span className="typography-meta flex-shrink-0 tabular-nums text-muted-foreground/50">
+                        {metaBits.join(' · ')}
+                    </span>
+                ) : null}
+                {retryLabel ? (
+                    <span className="typography-meta flex-shrink-0 text-[var(--status-warning)]">{retryLabel}</span>
+                ) : null}
+                {artifactPath && onOpenArtifact ? (
+                    <button
+                        type="button"
+                        className="flex-shrink-0 text-muted-foreground/60 transition-colors hover:text-primary"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenArtifact(artifactPath);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label={t('chat.toolPart.taskAgent.openArtifact')}
+                        title={t('chat.toolPart.taskAgent.openArtifact')}
+                    >
+                        <Icon name="attachment-2" className="h-3 w-3" />
+                    </button>
+                ) : null}
+                {runId && onOpenRun ? (
+                    <button
+                        type="button"
+                        className="flex-shrink-0 text-muted-foreground/60 transition-colors hover:text-primary"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenRun(runId);
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        aria-label={t('chat.toolPart.taskAgent.openRun')}
+                        title={t('chat.toolPart.taskAgent.openRun')}
+                    >
+                        <Icon name="external-link" className="h-3 w-3" />
+                    </button>
+                ) : null}
+            </div>
+            {row.nested && row.nested.length > 0 ? (
+                <div className="ml-4 mt-0.5 flex flex-col gap-1 border-l border-border/80 pl-3">
+                    {row.nested.map((nestedRow) => (
+                        <TaskAgentRowItem
+                            key={`nested:${nestedRow.key}`}
+                            row={nestedRow}
+                            animateTailText={animateTailText}
+                            onOpenArtifact={onOpenArtifact}
+                            onOpenRun={onOpenRun}
+                        />
+                    ))}
+                </div>
+            ) : null}
+        </ToolRevealOnMount>
+    );
+}, (prev, next) => {
+    return prev.animateTailText === next.animateTailText
+        && prev.onOpenArtifact === next.onOpenArtifact
+        && prev.onOpenRun === next.onOpenRun
+        && getTaskAgentRowSignature(prev.row) === getTaskAgentRowSignature(next.row);
+});
+
+TaskAgentRowItem.displayName = 'TaskAgentRowItem';
+
+const TASK_AGENT_ROWS_VISIBLE_LIMIT = 8;
+
+const TaskAgentRowsList = React.memo(({
+    rows,
+    isExpanded,
+    animateTailText,
+    onOpenArtifact,
+    onOpenRun,
+}: {
+    rows: TaskAgentRow[];
+    isExpanded: boolean;
+    animateTailText: boolean;
+    onOpenArtifact?: (outputPath: string) => void;
+    onOpenRun?: (runId: string) => void;
+}) => {
+    const { t } = useI18n();
+    const visibleRows = isExpanded ? rows : rows.slice(0, TASK_AGENT_ROWS_VISIBLE_LIMIT);
+    const hiddenCount = Math.max(0, rows.length - visibleRows.length);
+
+    return (
+        <div className="w-full min-w-0 space-y-1">
+            {visibleRows.map((row) => (
+                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} onOpenArtifact={onOpenArtifact} onOpenRun={onOpenRun} />
+            ))}
+            {hiddenCount > 0 ? (
+                <div className="typography-micro text-muted-foreground/70">
+                    {t('chat.toolPart.taskAgent.moreAgents', { count: hiddenCount })}
+                </div>
+            ) : null}
+        </div>
+    );
+}, (prev, next) => {
+    return prev.isExpanded === next.isExpanded
+        && prev.animateTailText === next.animateTailText
+        && prev.onOpenArtifact === next.onOpenArtifact
+        && prev.onOpenRun === next.onOpenRun
+        && areTaskAgentRowsRenderEqual(prev.rows, next.rows);
+});
+
+TaskAgentRowsList.displayName = 'TaskAgentRowsList';
 
 const TaskToolSummary: React.FC<{
     entries: TaskToolSummaryEntry[];
+    agentRows: TaskAgentRow[];
     isExpanded: boolean;
     isMobile: boolean;
     output?: string;
@@ -1006,17 +1215,91 @@ const TaskToolSummary: React.FC<{
     input?: Record<string, unknown>;
     animateTailText?: boolean;
     isActive?: boolean;
-}> = ({ entries, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
+    onOpenArtifact?: (outputPath: string) => void;
+    parentSessionId?: string;
+}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false, onOpenArtifact, parentSessionId }) => {
     const { t } = useI18n();
     const currentDirectory = useEffectiveDirectory();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
     const showToolFileIcons = useUIStore((state) => state.showToolFileIcons);
+    const agentRunsForDirectory = useOmpAgentRunsForDirectory(currentDirectory ?? null);
+    // Progress-snapshot rows carry only the run's agentId; the read-only chat
+    // drill-in needs the run's own sessionID, resolved from the agent-runs
+    // rows of the same directory.
+    const childSessionIdByAgent = React.useMemo(() => {
+        const map = new Map<string, string>();
+        for (const row of agentRunsForDirectory ?? []) {
+            if (row.childSessionID) map.set(row.agentId, row.childSessionID);
+        }
+        return map;
+    }, [agentRunsForDirectory]);
+    // Async task calls settle with a spawn notice, not the run's output; the
+    // finished report lives in the run's durable artifact. Rows here say when
+    // a run is settled and where its output is (constructed agent:// URL when
+    // no registry history survived — the engine resolves it from disk).
+    const runRowByAgent = React.useMemo(() => {
+        const map = new Map<string, OmpAgentRunRecord>();
+        for (const row of agentRunsForDirectory ?? []) map.set(row.agentId, row);
+        return map;
+    }, [agentRunsForDirectory]);
+    const artifactText = React.useRef<Map<string, string | null>>(new Map());
+    const [artifactOutput, setArtifactOutput] = React.useState<string | null>(null);
+    const [artifactLookupDone, setArtifactLookupDone] = React.useState(false);
+    const autoExpandedRef = React.useRef(false);
     const runtime = React.useContext(RuntimeAPIContext);
 
     const trimmedOutput = prepareTaskToolOutput(output);
     const hasOutput = trimmedOutput.length > 0;
+
     const [isOutputExpanded, setIsOutputExpanded] = React.useState(false);
+
+    // Card run ids from the progress snapshot; agentRows may be empty on
+    const cardRunIds = React.useMemo(
+        () => agentRows.flatMap((row) => (row.runId ? [row.runId] : [])),
+        [agentRows]
+    );
+    const cardSettled = React.useMemo(
+        () => cardRunIds.length > 0 && cardRunIds.every((runId) => {
+            const status = runRowByAgent.get(runId)?.status;
+            return status === undefined ? false : status !== 'running';
+        }),
+        [cardRunIds, runRowByAgent]
+    );
+    // The card depends on run rows (drill-in id, artifact path, settle state)
+    // — ensure the directory's rows load even when the work-status section
+    // is not mounted (historical sessions).
+    const loadAgentRuns = useOmpAgentRunsStore((state) => state.load);
+    const hasCardRuns = cardRunIds.length > 0;
+    React.useEffect(() => {
+        if (hasCardRuns && currentDirectory) void loadAgentRuns(currentDirectory);
+    }, [hasCardRuns, currentDirectory, loadAgentRuns]);
+    // Lazily resolve the runs' artifact text once the Output section is open
+    React.useEffect(() => {
+        if (!isOutputExpanded || artifactLookupDone || cardRunIds.length === 0 || !sessionId || !currentDirectory) return;
+        let cancelled = false;
+        setArtifactLookupDone(true);
+        void (async () => {
+            const parts: string[] = [];
+            for (const runId of cardRunIds) {
+                const url = runRowByAgent.get(runId)?.history?.outputPath ?? `agent://${runId}`;
+                const cached = artifactText.current.get(url);
+                const text = cached !== undefined ? cached : await fetchOmpArtifactText(url, sessionId, currentDirectory).catch(() => null);
+                if (!cancelled) artifactText.current.set(url, text);
+                if (text) parts.push(cardRunIds.length > 1 ? `## ${runId}\n\n${text}` : text);
+            }
+            if (!cancelled && parts.length > 0) setArtifactOutput(parts.join('\n\n---\n\n'));
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [isOutputExpanded, artifactLookupDone, cardRunIds, runRowByAgent, sessionId, currentDirectory]);
+    // A settled card shows its result inline (OpenCode parity) — expand once.
+    React.useEffect(() => {
+        if (autoExpandedRef.current || !cardSettled) return;
+        autoExpandedRef.current = true;
+        setIsOutputExpanded(true);
+    }, [cardSettled]);
 
     const handleOpenSession = (event: React.MouseEvent) => {
         event.stopPropagation();
@@ -1042,7 +1325,7 @@ const TaskToolSummary: React.FC<{
         ? input.subagent_type
         : 'subagent';
 
-    if (entries.length === 0 && !hasOutput && !sessionId) {
+    if (entries.length === 0 && agentRows.length === 0 && !hasOutput && !sessionId) {
         return (
             <div className="relative pr-2 pb-2 pt-2 space-y-2 pl-[1.4375rem]">
                 <div className="typography-meta text-muted-foreground/70">
@@ -1060,6 +1343,20 @@ const TaskToolSummary: React.FC<{
                 'before:top-[-0.25rem] before:bottom-0'
             )}
         >
+            {agentRows.length > 0 ? (
+                <TaskAgentRowsList
+                    rows={agentRows}
+                    isExpanded={isExpanded}
+                    animateTailText={animateTailText}
+                    onOpenRun={(runId) => {
+                        const childSessionID = childSessionIdByAgent.get(runId);
+                        if (!childSessionID || !currentDirectory || !sessionId) return;
+                        const label = agentRows.find((row) => row.runId === runId)?.agent ?? runId;
+                        openSubagentRun({ childSessionID, parentSessionID: parentSessionId ?? sessionId, runId, label, directory: currentDirectory });
+                    }}
+                />
+            ) : null}
+
             {entries.length > 0 ? (
                 <TaskSummaryEntriesList
                     entries={entries}
@@ -1104,7 +1401,7 @@ const TaskToolSummary: React.FC<{
                     {isOutputExpanded ? (
                         <ToolScrollableSection maxHeightClass="max-h-[50vh]">
                             <div className="w-full min-w-0">
-                                <SimpleMarkdownRenderer content={trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
+                                <SimpleMarkdownRenderer content={artifactOutput ?? trimmedOutput} variant="tool" onShowPopup={onShowPopup} />
                             </div>
                         </ToolScrollableSection>
                     ) : null}
@@ -1983,6 +2280,9 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
         }
         return metadataTaskSummaryEntries;
     }, [childSessionTaskSummaryEntries, metadataTaskSummaryEntries]);
+    const taskAgentRows = React.useMemo<TaskAgentRow[]>(() => {
+        return isTaskTool ? readTaskAgentRows(metadata) : [];
+    }, [isTaskTool, metadata]);
     const diffStats = React.useMemo(() => {
         return (normalizedPartTool === 'edit' || normalizedPartTool === 'multiedit' || normalizedPartTool === 'apply_patch')
             ? parseDiffStats(metadata)
@@ -1996,7 +2296,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
     const descriptionPath = getToolDescriptionPath(normalizedPart, state, currentDirectory);
     const description = getToolDescription(normalizedPart, state, currentDirectory);
     const displayName = getToolMetadata(normalizedPartTool || part.tool).displayName;
-    
+
     // Tool title/description — shown inline as context
     const justificationText = React.useMemo(() => {
         if (normalizedPartTool === 'bash') {
@@ -2149,7 +2449,7 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
 
     const iconStyle = !isTaskTool && isError ? TOOL_ERROR_ICON_STYLE : TOOL_NORMAL_ICON_STYLE;
     const titleStyle = !isTaskTool && isError ? TOOL_ERROR_TITLE_STYLE : TOOL_NORMAL_TITLE_STYLE;
-    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (taskSummaryEntries.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
+    const shouldRenderTaskSummary = useDeferredExpandedContent(isTaskTool && (taskSummaryEntries.length > 0 || taskAgentRows.length > 0 || isActive || shouldTreatAsFinalized || !!taskSessionId));
     const shouldRenderExpandedContent = useDeferredExpandedContent(!isTaskTool && isExpanded);
 
     if (!shouldTreatAsFinalized && !isActive && !isTaskTool) {
@@ -2168,7 +2468,6 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
                 onKeyDown={isMultiFileApplyPatch ? (event) => {
                     if (event.target !== event.currentTarget) return;
                     if (event.key !== 'Enter' && event.key !== ' ') return;
-                    event.preventDefault();
                     onToggle(part.id);
                 } : handleMainKeyDown}
                 role="button"
@@ -2329,6 +2628,11 @@ const ToolPartContent: React.FC<ToolPartProps> = ({
             {shouldRenderTaskSummary ? (
                 <TaskToolSummary
                     entries={taskSummaryEntries}
+                    agentRows={taskAgentRows}
+                    onOpenArtifact={part.sessionID && currentDirectory ? (outputPath) => {
+                        void openOmpArtifact(outputPath, part.sessionID, currentDirectory);
+                    } : undefined}
+                    parentSessionId={part.sessionID}
                     isExpanded={isExpanded}
                     isMobile={isMobile}
                     output={taskOutputString}

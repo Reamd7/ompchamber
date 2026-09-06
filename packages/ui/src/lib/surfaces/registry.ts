@@ -15,7 +15,7 @@ export type ContextSurfaceId =
   | 'context'
   | 'browser'
   | 'chat'
-  | 'timeline';
+  | 'timeline'
 
 export type ContextSurfaceDescriptor = {
   id: ContextSurfaceId;
