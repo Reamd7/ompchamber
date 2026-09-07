@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-09-07
+
+- **Chat: subagents now show live progress while they run.** When the agent dispatches subagents, each task card in the conversation lists them with a live row apiece — status (pending, running, retrying, completed, failed, aborted), token count, elapsed time, and the latest activity — the header badge counts how many are still running, and the work status panel's Subagents section carries the same live totals. Rows keep updating even when a dispatch outlives the turn that started it.
+- **Chat: click any subagent to read its run.** Rows on task cards and in the work status panel open the subagent's transcript read-only — in the side panel on desktop, in place on mobile and VS Code — and a finished run's final report renders right on its card. Runs from past sessions stay openable after an app restart.
+- Dev: `bun run worktree` now requires the branch name to start with `feature/` or `hotfix/`; invalid names are rejected with exit code 2 before any worktree or branch is created.
+- Dev: new worktrees initialize submodules before `bun install`, fixing installs that failed in fresh worktrees because the vendored ghostty-web package was still an empty checkout.
+
 ## [1.29.0] - 2026-09-06
 
 - **Terminal: output now renders on the GPU.** The terminal paints through a WebGL pipeline, falling back to the Canvas renderer automatically where WebGL isn't available, so heavy output stays smooth; terminal library fixes ride along, covering alt-screen handling and frame-writing edge cases.

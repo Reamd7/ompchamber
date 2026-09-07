@@ -1,3 +1,8 @@
+## [1.30.0] - 2026-09-07
+
+- Chat: task cards now show live progress for every subagent the agent dispatches — status, token count, elapsed time, retries, and the latest activity — and a finished run's final report renders right on its card.
+- Chat: subagent rows on task cards and in the work status panel now open that run's transcript read-only, right in the extension.
+
 ## [1.29.0] - 2026-09-06
 
 - Wording: user-facing copy now says "engine" instead of "OpenCode" — status messages, error notices, and the status report (Ctrl/Cmd+Shift+L) section headers ("Engine process", "Engine API probes"). Strings only.

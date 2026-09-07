@@ -27,7 +27,7 @@
   "dependencies": {
     "@xterm/headless": "^5.5.0",
     "@lydell/node-pty": "^1.1.0-beta.39",
-    "ws": "^8.21.0"
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/ws": "^8"

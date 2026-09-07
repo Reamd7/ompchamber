@@ -13,7 +13,11 @@ import { Osc133Scanner, buildZshOsc133Wrapper, buildBashOsc133Rc } from './shell
 import * as osModule from 'node:os';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
-import { GridCore } from '@ompchamber/terminal-server';
+// Vendored from packages/terminal-server/src (same repo, synced on change):
+// the published CLI tarball ships server sources raw, and a workspace
+// dependency cannot resolve inside it — npm installs fail on the
+// workspace:* specifier. A relative import travels with the tarball.
+import { GridCore } from './vendor/ompchamber-terminal-server/index.mjs';
 import { createRequire } from 'node:module';
 
 const MAX_SESSIONS = 20;
