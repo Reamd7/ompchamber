@@ -1,5 +1,8 @@
 import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  'settings.openchamber.opencodeCli.actions.restart': 'OpenCode\'u yeniden başlat',
+  'settings.openchamber.opencodeCli.restart.external': 'Bu OpenCode, OpenChamber dışında başlatıldı. Başlattığınız yerden yeniden başlatın.',
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode yeniden başlatılamadı.',
   'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
   'commandPalette.item.restartOpenCode': 'OpenCode\'u yeniden başlat',
   'settings.providers.page.quotaCredentials.usageToken': 'Kullanım API anahtarı',
@@ -5238,6 +5241,7 @@ export const dict = {
   'chat.chatInput.draftPicker.projectTitle': 'Proje',
   'chat.chatInput.draftPicker.searchProjects': 'Projelerde ara...',
   'chat.chatInput.draftPicker.searchBranches': 'Branch\'lerde ara...',
+  'chat.chatInput.draftPicker.noProjectsFound': 'Proje bulunamadı.',
   'chat.chatInput.worktrees': 'Worktree\'ler',
   'chat.chatInput.worktreeNew': '+ Yeni',
   'chat.chatInput.drop.insertMention': 'Mention olarak eklemek için bırak',

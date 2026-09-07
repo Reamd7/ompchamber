@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'chat.chatInput.draftPicker.noProjectsFound': 'Nenhum projeto encontrado.',
   'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
   'commandPalette.item.restartOpenCode': 'Reiniciar OpenCode',
   'helpDialog.proTips.title': 'Pro tips:',
@@ -3380,8 +3381,7 @@ export const dict: Record<I18nKey, string> = {
   'quota.window.chat': 'Chat Requests',
   'quota.window.completions': 'Completions',
   'quota.window.premiumInteractions': 'Créditos de IA',  'chat.workStatus.ariaLabel': 'Status do trabalho',  'chat.workStatus.context.label': 'Contexto',
-  'chat.workStatus.cost.breakdown': 'Sessão {session} · Subagentes {subagents}',
-  'chat.workStatus.git.changedFileSingle': '{count} arquivo alterado',
+  'chat.workStatus.cost.breakdown': 'Sessão {session} · Subagentes {subagents}',  'chat.workStatus.git.changedFileSingle': '{count} arquivo alterado',
   'chat.workStatus.git.changedFilePlural': '{count} arquivos alterados',
   'chat.workStatus.pr.untitled': 'Pull request sem título',
   'chat.workStatus.pr.draft': 'Rascunho',

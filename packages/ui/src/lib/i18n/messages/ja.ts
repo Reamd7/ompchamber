@@ -2583,6 +2583,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.draftPicker.projectTitle': 'プロジェクト',
   'chat.chatInput.draftPicker.searchProjects': 'プロジェクトを検索...',
   'chat.chatInput.draftPicker.searchBranches': 'ブランチを検索...',
+  'chat.chatInput.draftPicker.noProjectsFound': 'プロジェクトが見つかりません。',
   'chat.chatInput.worktrees': 'ワークツリー',
   'chat.chatInput.worktreeNew': '+ 新規',
   'chat.chatInput.drop.insertMention': 'ドロップしてメンションとして挿入',
