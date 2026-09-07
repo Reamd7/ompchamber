@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import { OverlayScrollbar } from './OverlayScrollbar';
+import { useUIStore } from '@/stores/useUIStore';
 
 class TestResizeObserver implements ResizeObserver {
   static instances: TestResizeObserver[] = [];
@@ -65,6 +66,7 @@ describe('OverlayScrollbar', () => {
   };
 
   beforeEach(() => {
+    useUIStore.getState().setAlwaysShowScrollbars(false);
     windowInstance = new Window();
     pendingFrames = new Map();
     nextFrameId = 1;
@@ -140,7 +142,115 @@ describe('OverlayScrollbar', () => {
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    useUIStore.getState().setAlwaysShowScrollbars(false);
     windowInstance.close();
+  });
+
+  test('starts hidden and hides again after scrolling by default', async () => {
+    await renderScrollbar({ hideDelayMs: 10 });
+    const scrollbar = host.querySelector<HTMLElement>('.overlay-scrollbar');
+    expect(scrollbar?.dataset.visible).toBe('false');
+    scroller.dispatchEvent(new window.Event('scroll'));
+    expect(scrollbar?.dataset.visible).toBe('true');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(scrollbar?.dataset.visible).toBe('false');
+  });
+
+  test('shows overflowing thumbs immediately and keeps them visible without user input', async () => {
+    useUIStore.getState().setAlwaysShowScrollbars(true);
+    await renderScrollbar({ hideDelayMs: 10, suppressVisibility: true, userIntentOnly: true });
+    const scrollbar = host.querySelector<HTMLElement>('.overlay-scrollbar');
+    expect(scrollbar?.dataset.visible).toBe('true');
+    expect(host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="vertical"]')?.hidden).toBe(false);
+    expect(host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="horizontal"]')?.hidden).toBe(true);
+
+    verticalLayoutReads = 0;
+    scrollbarCommits = 0;
+    scrollTop = 200;
+    for (let i = 0; i < 100; i += 1) scroller.dispatchEvent(new window.Event('scroll'));
+    expect(pendingFrames.size).toBe(1);
+    await flushFrames();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(scrollbar?.dataset.visible).toBe('true');
+    expect(host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="vertical"]')?.style.transform).toBe('translate3d(0, 34px, 0)');
+    expect(verticalLayoutReads).toBe(0);
+    expect(scrollbarCommits).toBe(0);
+  });
+
+  test('updates mounted scrollbars and cancels an existing hide timer when the preference changes', async () => {
+    await renderScrollbar({ hideDelayMs: 10 });
+    const scrollbar = host.querySelector<HTMLElement>('.overlay-scrollbar');
+    scroller.dispatchEvent(new window.Event('scroll'));
+    await act(async () => useUIStore.getState().setAlwaysShowScrollbars(true));
+    await flushFrames();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(scrollbar?.dataset.visible).toBe('true');
+    expect(TestResizeObserver.instances).toHaveLength(1);
+    expect(TestResizeObserver.instances[0]?.disconnectCount).toBe(1);
+
+    await act(async () => useUIStore.getState().setAlwaysShowScrollbars(false));
+    expect(scrollbar?.dataset.visible).toBe('false');
+    scroller.dispatchEvent(new window.Event('scroll'));
+    expect(scrollbar?.dataset.visible).toBe('true');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(scrollbar?.dataset.visible).toBe('false');
+  });
+
+  test('keeps non-overflowing axes hidden and responds to content resizing in always-visible mode', async () => {
+    useUIStore.getState().setAlwaysShowScrollbars(true);
+    let contentHeight = 100;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => contentHeight });
+    Object.defineProperty(scroller, 'scrollWidth', { configurable: true, get: () => 300 });
+    await renderScrollbar({ disableHorizontal: false });
+    const vertical = host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="vertical"]');
+    const horizontal = host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="horizontal"]');
+    expect(vertical?.hidden).toBe(true);
+    expect(horizontal?.hidden).toBe(false);
+
+    contentHeight = 500;
+    TestResizeObserver.instances[0]?.trigger();
+    await flushFrames();
+    expect(vertical?.hidden).toBe(false);
+    contentHeight = 100;
+    TestResizeObserver.instances[0]?.trigger();
+    await flushFrames();
+    expect(vertical?.hidden).toBe(true);
+  });
+
+  test('drops stale thumbs and pending work when the scrolling element disappears or is replaced', async () => {
+    useUIStore.getState().setAlwaysShowScrollbars(true);
+    await renderScrollbar();
+    const scrollbar = host.querySelector<HTMLElement>('.overlay-scrollbar');
+    const vertical = host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="vertical"]');
+    scroller.dispatchEvent(new window.Event('scroll'));
+    expect(pendingFrames.size).toBe(1);
+
+    containerRef.current = null;
+    await renderScrollbar();
+    expect(pendingFrames.size).toBe(0);
+    expect(scrollbar?.dataset.visible).toBe('false');
+    expect(vertical?.hidden).toBe(true);
+    scroller.dispatchEvent(new window.Event('scroll'));
+    expect(pendingFrames.size).toBe(0);
+
+    const replacement = document.createElement('div');
+    Object.defineProperties(replacement, {
+      clientHeight: { value: 100 },
+      scrollHeight: { value: 100 },
+    });
+    containerRef.current = replacement;
+    await renderScrollbar();
+    expect(scrollbar?.dataset.visible).toBe('true');
+    expect(vertical?.hidden).toBe(true);
+
+    containerRef.current = scroller;
+    await renderScrollbar();
+    expect(vertical?.hidden).toBe(false);
+    expect(scrollbar?.dataset.visible).toBe('true');
+    replacement.dispatchEvent(new window.Event('scroll'));
+    expect(pendingFrames.size).toBe(0);
+    scroller.dispatchEvent(new window.Event('scroll'));
+    expect(pendingFrames.size).toBe(1);
   });
 
   test('moves the thumb without rereading layout during steady scrolling', async () => {
@@ -213,6 +323,7 @@ describe('OverlayScrollbar', () => {
   });
 
   test('uses the rendered thumb travel when dragging', async () => {
+    useUIStore.getState().setAlwaysShowScrollbars(true);
     await renderScrollbar();
     const thumb = host.querySelector<HTMLElement>('[data-overlay-scrollbar-thumb="vertical"]');
     if (!thumb) throw new Error('OverlayScrollbar did not render its vertical thumb');

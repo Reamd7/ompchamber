@@ -16,6 +16,7 @@ import { useSkillsCatalogStore } from '@/stores/useSkillsCatalogStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Tooltip, TooltipTrigger } from '@/components/ui/tooltip';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { AgentsSidebar } from '@/components/sections/agents/AgentsSidebar';
 import { AgentsPage } from '@/components/sections/agents/AgentsPage';
 import { BehaviorPage } from '@/components/sections/behavior/BehaviorPage';
@@ -898,7 +899,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         </div>
 
         {/* Scrollable nav items */}
-        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+        <ScrollableOverlay outerClassName="flex-1 min-h-0" disableHorizontal>
           <div className="flex flex-col gap-0.5 px-4 pt-4 pb-2">
             {hasSearchQuery ? (
               settingsSearchResults.length > 0 ? (() => {
@@ -1013,7 +1014,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
               ));
             })()}
           </div>
-        </div>
+        </ScrollableOverlay>
 
         {/* Footer */}
         <div className="overflow-hidden transition-opacity duration-150 opacity-100">
