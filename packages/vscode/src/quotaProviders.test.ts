@@ -15,6 +15,7 @@ const ORIGINAL_FS = { ...fs };
 const AUTH = JSON.stringify({
   openai: { access: 'test-token' },
   crof: { key: 'test-token' },
+  'cline-pass': { key: 'test-token' },
   neuralwatt: { key: 'test-token' },
   'opencode-go': { key: 'test-token' },
   'zai-coding-plan': { key: 'test-token' },
@@ -145,6 +146,67 @@ describe('Crof quota provider (VS Code parity)', () => {
     }) as unknown as Response) as typeof fetch;
 
     const result = await fetchQuotaForProvider('crof');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'Invalid response from provider');
+  });
+});
+
+describe('ClinePass quota provider (VS Code parity)', () => {
+  // Live-verified response shape of
+  // GET https://api.cline.bot/api/v1/users/me/plan/usage-limits
+  const documentedPayload = {
+    data: {
+      limits: [
+        { type: 'five_hour', percentUsed: 43, resetsAt: '2026-09-08T17:00:44.598174595Z' },
+        { type: 'weekly', percentUsed: 17, resetsAt: '2026-09-13T17:00:44.598174595Z' },
+        { type: 'monthly', percentUsed: 8, resetsAt: '2026-10-01T00:00:00Z' },
+      ],
+    },
+    success: true,
+  };
+
+  test('maps documented limit kinds to 5h/weekly/monthly windows', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse(documentedPayload)));
+
+    const result = await fetchQuotaForProvider('cline-pass');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'cline-pass');
+    assert.equal(result.usage!.windows['5h']!.usedPercent, 43);
+    assert.equal(result.usage!.windows['5h']!.windowSeconds, 18_000);
+    assert.equal(result.usage!.windows['5h']!.resetAt, Date.parse('2026-09-08T17:00:44.598174595Z'));
+    assert.equal(result.usage!.windows.weekly!.usedPercent, 17);
+    assert.equal(result.usage!.windows.weekly!.windowSeconds, 604_800);
+    assert.equal(result.usage!.windows.monthly!.usedPercent, 8);
+    assert.equal(result.usage!.windows.monthly!.windowSeconds, null);
+  });
+
+  test('ignores unknown limit types and rejects responses without quota data', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({ data: { limits: [{ type: 'quarterly', percentUsed: 5 }] } })));
+
+    const result = await fetchQuotaForProvider('cline-pass');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.usage, null);
+    assert.equal(result.error, 'No quota data in response');
+  });
+
+  test('maps 401 to session-expired with ClinePass branding', async () => {
+    stubFetchFailing(async () => ({}), { ok: false, status: 401 });
+
+    const result = await fetchQuotaForProvider('cline-pass');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.error, 'Session expired — please re-authenticate with ClinePass');
+  });
+
+  test('reports invalid-response on JSON parse failure', async () => {
+    stubFetchFailing(async () => { throw new SyntaxError('Unexpected token'); }, { ok: true, status: 200 });
+
+    const result = await fetchQuotaForProvider('cline-pass');
 
     assert.equal(result.ok, false);
     assert.equal(result.error, 'Invalid response from provider');
