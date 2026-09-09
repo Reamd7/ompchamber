@@ -7,7 +7,7 @@
 
 | 功能线 | 提交数 | v2 | 引擎 | 服务端 | 价值 | 进度 |
 |---|---|---|---|---|---|---|
-| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 0/9 |
+| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 2/9 (2吸) |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 0/5 |
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 1/5 (0吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
@@ -43,8 +43,8 @@
 | - [ ] | `d5fbd86e9` | feat(diff): show a loading state on collapsed-context separators | `自身` |  |
 | - [ ] | `bb7bededf` | feat(git): review published pull request diffs in Changes | `服务端` |  |
 | - [ ] | `a1d4eda4c` | feat(git): float actions beside each diff hunk | `服务端` |  |
-| - [ ] | `138f9ba02` | feat(git): safely apply individual diff hunks (#3443) | `服务端` |  |
-| - [ ] | `ebe5f93fb` | feat(git): per-hunk stage, unstage, and discard actions in Changes view | `自身` |  |
+| - [x] | `138f9ba02` | feat(git): safely apply individual diff hunks (#3443) | `服务端` | PORTED(服务端移植 server-rs) |
+| - [x] | `ebe5f93fb` | feat(git): per-hunk stage, unstage, and discard actions in Changes view | `自身` | PORTED(干净落地) |
 
 ## - [ ] 主题/外观 — 🟢 高价值 / 自身能力
 

@@ -325,9 +325,11 @@ impl GitService {
     /// 以补丁形式应用单个 hunk，整体运行于 index 队列内。action 映射 flags：
     /// stage → `--cached`、unstage → `--cached --reverse`、discard → `--reverse`，
     /// 非法值直接报 "Invalid hunk action"。patch 必填且须包含 `@@ ` hunk 头；
-    /// 补丁推断出的目标路径（`extract_patch_target_path`）必须与请求文件一致；
-    /// 补丁先写入临时文件，`git apply --check` 预检失败提示 hunk 已不适用，
-    /// 预检通过才真正 apply，最后清理临时文件。
+    /// canonical-hunk 校验：重取该文件当前 diff（unstage 用 staged 侧），
+    /// 补丁必须与之某个 hunk 逐字节一致（`patch_is_current_hunk`），否则先做
+    /// 目标路径比对（`extract_patch_target_path`），再报 "Hunk no longer
+    /// applies — refresh and try again."；补丁先写入临时文件，`git apply
+    /// --check` 预检，预检通过才真正 apply，最后清理临时文件。
     pub async fn apply_hunk(
         &self,
         directory: &str,
@@ -353,6 +355,7 @@ impl GitService {
 
         let directory = directory.to_string();
         let queue_directory = directory.clone();
+        let unstage = action == "unstage";
         self.with_index_queue(Some(&queue_directory), |service| {
             let flags: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
             let patch = patch.to_string();
@@ -371,12 +374,22 @@ impl GitService {
                     std::slice::from_ref(&fc.repo_path),
                 )?;
 
-                let target_path = extract_patch_target_path(&patch);
-                if let Some(target) = target_path
-                    && target != fc.repo_path
-                    && target != file_path
-                {
-                    return Err("patch target path does not match the requested file".to_string());
+                // Applicability alone is insufficient: a previously staged or
+                // committed hunk may still reverse cleanly against the working
+                // tree. Accept only a canonical hunk from this file's current
+                // working/index diff.
+                let current = service
+                    .get_diff(&directory, Some(&file_path), unstage, Some(3))
+                    .await?;
+                if !patch_is_current_hunk(&current, &patch) {
+                    let target_path = extract_patch_target_path(&patch);
+                    if let Some(target) = target_path
+                        && target != fc.repo_path
+                        && target != file_path
+                    {
+                        return Err("patch target path does not match the requested file".to_string());
+                    }
+                    return Err("Hunk no longer applies — refresh and try again.".to_string());
                 }
 
                 let tmp_path = std::env::temp_dir().join(format!(
@@ -3083,12 +3096,18 @@ fn hex_random_suffix() -> String {
         .collect()
 }
 
-/// `extractPatchTargetPath` — first `---`/`+++` target that is a real path.
-/// 扫描补丁文本中首个 `---`/`+++` 头部行，取其路径 token 并归一化
-/// （跳过 `/dev/null`、剥离 `a/`/`b/` 前缀）；用于从补丁内容推断目标文件路径，
+/// `extractPatchTargetPath` — last `---`/`+++` target in the patch header.
+/// 只扫描首个 `@@ ` hunk 头之前的头部行（hunk 正文里以 `---`/`+++` 开头的
+/// 删除/新增行不再是路径来源），取其路径 token 并归一化（跳过 `/dev/null`、
+/// 剥离 `a/`/`b/` 前缀），返回**最后一个**有效目标（即 b 侧路径）；
 /// 找不到有效路径时返回 `None`。
 pub(crate) fn extract_patch_target_path(patch: &str) -> Option<String> {
-    for line in patch.lines() {
+    let first_hunk = patch
+        .lines()
+        .position(|line| line.starts_with("@@ ") || line.starts_with("@@\t"))
+        .unwrap_or(patch.lines().count());
+    let mut target = None;
+    for line in patch.lines().take(first_hunk) {
         let trimmed = line.trim_start();
         let value = if let Some(rest) = trimmed.strip_prefix("---") {
             rest.trim_start()
@@ -3098,10 +3117,35 @@ pub(crate) fn extract_patch_target_path(patch: &str) -> Option<String> {
             continue;
         };
         if let Some(path) = normalize_patch_target_path(parse_patch_path_token(value)) {
-            return Some(path);
+            target = Some(path);
         }
     }
-    None
+    target
+}
+
+/// `applyHunk` 的 canonical-hunk 校验：补丁必须与该文件当前 diff 中某个
+/// hunk 逐字节一致。按 `@@ ` 行切分 `current`，候选 = 文件头部（首个 hunk
+/// 之前的内容）+ 单个 hunk 的切片；任一候选等于 `patch` 即通过。
+/// 仅凭 `git apply --check` 可逆性不足以证明补丁是新鲜的——已暂存或已提交
+/// 的旧 hunk 仍可能对工作区干净地反向应用。
+pub(crate) fn patch_is_current_hunk(current: &str, patch: &str) -> bool {
+    let starts: Vec<usize> = current
+        .match_indices("@@ ")
+        .filter(|&(i, _)| i == 0 || current.as_bytes()[i - 1] == b'\n')
+        .map(|(i, _)| i)
+        .collect();
+    if starts.is_empty() {
+        return false;
+    }
+    let header = &current[..starts[0]];
+    starts
+        .iter()
+        .enumerate()
+        .any(|(index, &start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(current.len());
+            let candidate = format!("{}{}", header, &current[start..end]);
+            candidate == patch
+        })
 }
 
 /// 解析 diff 头部行中的路径 token：空串与 `/dev/null` 视为无路径；带引号形式按

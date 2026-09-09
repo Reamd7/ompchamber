@@ -1060,7 +1060,8 @@ impl GitService {
         context_lines: Option<i64>,
     ) -> ServiceResult<String> {
         let context = self.repository_context(directory).await?;
-        let mut args: Vec<String> = vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+        let mut args: Vec<String> =
+            vec!["diff".into(), "--no-color".into(), "--full-index".into(), NO_EXT_DIFF.into()];
         let file_context = match file_path {
             Some(path) if !path.is_empty() => Some(
                 self.resolve_git_file_context(&context.directory_path, &context.repo_root, path)
@@ -1127,8 +1128,12 @@ impl GitService {
             .join("\n"));
         }
 
-        let mut no_index_args: Vec<String> =
-            vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+        let mut no_index_args: Vec<String> = vec![
+            "diff".into(),
+            "--no-color".into(),
+            "--full-index".into(),
+            NO_EXT_DIFF.into(),
+        ];
         if let Some(lines) = context_lines {
             no_index_args.push(format!("-U{}", lines.max(0)));
         }
@@ -1187,8 +1192,12 @@ impl GitService {
                 let fc = self
                     .resolve_git_file_context(&context.directory_path, &context.repo_root, path)
                     .await?;
-                let mut args: Vec<String> =
-                    vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+                let mut args: Vec<String> = vec![
+                    "diff".into(),
+                    "--no-color".into(),
+                    "--full-index".into(),
+                    NO_EXT_DIFF.into(),
+                ];
                 args.push(format!("-U{}", context_lines.max(0)));
                 args.extend([
                     "--no-index".into(),

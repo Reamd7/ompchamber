@@ -44,7 +44,7 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { findDiffScrollAnchor, getRestoredDiffScrollTop, type DiffScrollAnchor } from './diffScrollAnchor';
 import { useI18n } from '@/lib/i18n';
 import type { I18nKey } from '@/lib/i18n/store';
-import { fileDiffFromPatch, extractHunkPatch } from '@/lib/diff/patchFileDiff';
+import { fileDiffFromPatch, isBinaryPatch, extractHunkPatch, haveMatchingPatchVersions } from '@/lib/diff/patchFileDiff';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { startReviewFlow } from '@/lib/reviewFlow';
 import { WALKTHROUGH_ACTION_CLASS } from '@/components/views/walkthrough/walkthroughAction';
@@ -194,8 +194,6 @@ const getFirstChangedModifiedLine = (original: string, modified: string): number
     return 1;
 };
 
-const isBinaryPatch = (patch: string): boolean =>
-    /^Binary files .+ differ$/m.test(patch) || /^GIT binary patch$/m.test(patch);
 
 const listTurnDiffs = (value: unknown): TurnSnapshotDiff[] => {
     if (!Array.isArray(value)) return [];
@@ -608,9 +606,11 @@ interface MultiFileDiffEntryProps {
     initialDiffData?: DiffData | null;
     /** Hide stage/unstage/revert actions (read-only scopes like branch diffs). */
     readOnlyActions?: boolean;
+    /** Hunk mutations require a live working/index diff, never a turn snapshot. */
+    hunkActionsEnabled?: boolean;
 }
 
-const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
+export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     directory,
     file,
     layout,
@@ -628,6 +628,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     loadFullFiles = false,
     initialDiffData = null,
     readOnlyActions = false,
+    hunkActionsEnabled = false,
 }) => {
     const { t } = useI18n();
     const { git } = useRuntimeAPIs();
@@ -645,6 +646,8 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     const [isLoading, setIsLoading] = React.useState(false);
     const [fileAction, setFileAction] = React.useState<FileDiffAction | null>(null);
     const [hunkAction, setHunkAction] = React.useState<HunkBusyState>(null);
+    const mutationInFlight = React.useRef(false);
+    const [canonicalPatch, setCanonicalPatch] = React.useState<{ scope: string; patch: string } | null>(null);
     const [forceRenderLarge, setForceRenderLarge] = React.useState(false);
     const [localDiffData, setLocalDiffData] = React.useState<DiffData | null>(null);
     const [stagedDiffData, setStagedDiffData] = React.useState<DiffData | null>(null);
@@ -655,6 +658,9 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     const renderSideBySide = layout === 'side-by-side';
     const desiredContextMode: DiffContextMode = loadFullFiles ? 'full' : 'patch';
     const fileStatusKey = `${file.index}:${file.working_dir}:${file.insertions}:${file.deletions}`;
+    const hunkEligible = hunkActionsEnabled && !readOnlyActions && !initialDiffData && !isImageFile(file.path);
+    const patchScope = JSON.stringify([getRuntimeKey(), directory, file.path, staged, fileStatusKey, diffRetryNonce]);
+    const actionPatch = canonicalPatch?.scope === patchScope ? canonicalPatch.patch : null;
 
     const diffData = React.useMemo<DiffData | null>(() => {
         if (initialDiffData) return initialDiffData;
@@ -692,7 +698,8 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
 
     React.useEffect(() => {
         if (!isExpanded || !isMounted) return;
-        if (!directory || initialDiffData || (diffData && diffDataMatchesContextMode)) {
+        if (diffLoadError) return;
+        if (!directory || initialDiffData || (diffData && diffDataMatchesContextMode && (!hunkEligible || actionPatch !== null))) {
             lastDiffRequestRef.current = null;
             setIsLoading(false);
             return;
@@ -709,17 +716,32 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
         let cancelled = false;
         const runtimeKey = getRuntimeKey();
         const contextLines = loadFullFiles ? FULL_CONTEXT_DIFF_LINES : DEFAULT_CONTEXT_DIFF_LINES;
-        const fetchPromise = isImageFile(file.path)
+        const displayRequest = isImageFile(file.path)
             ? git.getGitFileDiff(directory, { path: file.path, staged })
+            : !loadFullFiles && actionPatch !== null
+                ? Promise.resolve({ diff: actionPatch })
             : git.getGitDiff(directory, { path: file.path, staged, contextLines });
+        const canonicalRequest = hunkEligible && loadFullFiles && actionPatch === null
+            ? git.getGitDiff(directory, { path: file.path, staged, contextLines: DEFAULT_CONTEXT_DIFF_LINES }).then((response) => response.diff)
+            : Promise.resolve(actionPatch);
+        const fetchPromise = Promise.all([displayRequest, canonicalRequest]);
         const timeoutMs = DIFF_REQUEST_TIMEOUT_MS;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+            timeout = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
         });
 
         void Promise.race([fetchPromise, timeoutPromise])
-            .then((response) => {
-                if (cancelled) return;
+            .then(([response, normalPatch]) => {
+                if (cancelled || runtimeKey !== getRuntimeKey()) return;
+
+                const patch = 'diff' in response && !loadFullFiles ? response.diff : normalPatch;
+                if (hunkEligible && loadFullFiles && patch !== null && (patch.match(/^@@\s/gm)?.length ?? 0) > 1
+                    && ('diff' in response && !haveMatchingPatchVersions(response.diff, patch))) {
+                    setCanonicalPatch(null);
+                    throw new Error(t('diffView.hunk.unavailable'));
+                }
+                if (hunkEligible && patch !== null) setCanonicalPatch({ scope: patchScope, patch });
 
                 if ('diff' in response) {
                     const nextDiff = createTextDiffDataFromPatch(file.path, response.diff, desiredContextMode);
@@ -744,30 +766,41 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                 setIsLoading(false);
             })
             .catch((error) => {
-                if (cancelled) return;
+                if (cancelled || runtimeKey !== getRuntimeKey()) return;
                 const message = error instanceof Error ? error.message : String(error);
                 setDiffLoadError(message);
                 setIsLoading(false);
-            });
+            }).finally(() => clearTimeout(timeout));
 
         return () => {
             cancelled = true;
+            clearTimeout(timeout);
             if (lastDiffRequestRef.current === requestKey) {
                 lastDiffRequestRef.current = null;
             }
         };
-    }, [desiredContextMode, diffData, diffDataMatchesContextMode, diffRetryNonce, directory, file.path, fileStatusKey, git, initialDiffData, isExpanded, isMounted, loadFullFiles, setDiff, staged]);
-
+    }, [actionPatch, hunkEligible, patchScope, desiredContextMode, diffData, diffDataMatchesContextMode, diffRetryNonce, directory, file.path, fileStatusKey, git, initialDiffData, isExpanded, isMounted, loadFullFiles, diffLoadError, setDiff, staged, t]);
     const handleToggle = React.useCallback(() => {
         handleOpenChange(!isExpanded);
         handleSelect();
     }, [handleOpenChange, handleSelect, isExpanded]);
 
+    const invalidatePatch = React.useCallback(() => {
+        setDiffLoadError(null);
+        setCanonicalPatch(null);
+        setLocalDiffData(null);
+        setStagedDiffData(null);
+        lastDiffRequestRef.current = null;
+        setDiffRetryNonce((nonce) => nonce + 1);
+    }, []);
+
     const handleFileAction = React.useCallback(async (action: FileDiffAction) => {
-        if (!directory || fileAction !== null) {
+        if (!directory || mutationInFlight.current || fileAction !== null) {
             return;
         }
 
+        mutationInFlight.current = true;
+        const runtimeKey = getRuntimeKey();
         setFileAction(action);
         try {
             if (action === 'stage') {
@@ -777,7 +810,9 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
             } else {
                 await git.revertGitFile(directory, file.path, { scope: 'working' });
             }
-            setDiffRetryNonce((nonce) => nonce + 1);
+            if (runtimeKey !== getRuntimeKey()) return;
+            invalidatePatch();
+            sessionEvents.requestGitRefresh({ directory, paths: [file.path] });
             await fetchStatus(directory, git);
         } catch (error) {
             const fallbackKey = action === 'unstage'
@@ -787,21 +822,25 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                     : 'gitView.toast.revertFailed';
             toast.error(error instanceof Error ? error.message : t(fallbackKey));
         } finally {
+            mutationInFlight.current = false;
             setFileAction((current) => (current === action ? null : current));
         }
-    }, [directory, fetchStatus, file.path, fileAction, git, t]);
+    }, [directory, fetchStatus, file.path, fileAction, git, invalidatePatch, t]);
 
     const handleHunkAction = React.useCallback(async (hunkIndex: number, action: HunkDiffAction) => {
-        if (!directory || hunkAction !== null || fileAction !== null) {
+        if (!directory || !hunkEligible || isLoading || diffLoadError || mutationInFlight.current || hunkAction !== null || fileAction !== null) {
             return;
         }
 
-        const hunkPatch = diffData?.patch ? extractHunkPatch(diffData.patch, hunkIndex) : null;
+        const hunkPatch = actionPatch ? extractHunkPatch(actionPatch, hunkIndex) : null;
         if (!hunkPatch) {
             toast.error(t('diffView.hunk.unavailable'));
             return;
         }
 
+        if ((staged && action !== 'unstage') || (!staged && action === 'unstage')) return;
+        mutationInFlight.current = true;
+        const runtimeKey = getRuntimeKey();
         setHunkAction({ index: hunkIndex, action });
         try {
             const hunkMutation = action === 'stage'
@@ -814,14 +853,19 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                 return;
             }
             await hunkMutation(directory, file.path, hunkPatch);
-            setDiffRetryNonce((nonce) => nonce + 1);
+            if (runtimeKey !== getRuntimeKey()) return;
+            invalidatePatch();
+            sessionEvents.requestGitRefresh({ directory, paths: [file.path] });
             await fetchStatus(directory, git);
         } catch (error) {
+            if (runtimeKey !== getRuntimeKey()) return;
+            invalidatePatch();
             toast.error(error instanceof Error && error.message ? error.message : t('diffView.hunk.unavailable'));
         } finally {
+            mutationInFlight.current = false;
             setHunkAction((current) => (current?.index === hunkIndex && current.action === action ? null : current));
         }
-    }, [directory, diffData, fetchStatus, file.path, fileAction, git, hunkAction, t]);
+    }, [actionPatch, hunkEligible, isLoading, diffLoadError, directory, fetchStatus, file.path, fileAction, git, hunkAction, invalidatePatch, staged, t]);
 
     return (
         <div ref={setSectionRef} className="scroll-mt-9 border-b border-[var(--interactive-border)]/40 last:border-b-0">
@@ -951,7 +995,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                             <button
                                 type="button"
                                 className="typography-ui-label text-primary hover:underline"
-                                onClick={() => setDiffRetryNonce((nonce) => nonce + 1)}
+                                onClick={() => invalidatePatch()}
                             >
                                 {t('diffView.actions.retry')}
                             </button>
@@ -990,14 +1034,13 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                             />
                             <div className="pointer-events-none absolute bottom-3 right-3 z-20">
                                 <div className="pointer-events-auto flex items-center gap-1.5">
-                                    {!readOnlyActions && diffData?.patch ? (
+                                    {hunkEligible && actionPatch !== null ? (
                                         <HunkActions
                                             filePath={file.path}
-                                            patch={diffData.patch}
+                                            patch={actionPatch}
                                             staged={staged}
                                             busyHunk={hunkAction}
-                                            disabled={fileAction !== null || hunkAction !== null}
-                                            onAction={handleHunkAction}
+                                            disabled={isLoading || Boolean(diffLoadError) || fileAction !== null || hunkAction !== null}                                            onAction={handleHunkAction}
                                         />
                                     ) : null}
                                     {!readOnlyActions ? (
@@ -1005,7 +1048,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                                             filePath={file.path}
                                             staged={staged}
                                             busyAction={fileAction}
-                                            disabled={fileAction !== null}
+                                            disabled={fileAction !== null || hunkAction !== null}
                                             onAction={handleFileAction}
                                         />
                                     ) : null}
@@ -1970,7 +2013,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         <div className="flex flex-col [overflow-anchor:none]" data-diff-virtual-content>
                             {changedFiles.map((file) => (
                                 <MultiFileDiffEntry
-                                    key={`${file.path}:${fileDiffRefreshNonce.get(file.path) ?? 0}`}
+                                    key={`${getRuntimeKey()}:${effectiveDirectory}:${file.path}:${fileDiffRefreshNonce.get(file.path) ?? 0}`}
                                     directory={effectiveDirectory}
                                     file={file}
                                     layout={getLayoutForFile(file)}
@@ -1989,6 +2032,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                                     staged={getFileStaged(file.path)}
                                     loadFullFiles={loadFullFiles}
                                     readOnlyActions={activeDiffScope === 'branch'}
+                                    hunkActionsEnabled={activeDiffScope === 'all' || activeDiffScope === 'working' || activeDiffScope === 'staged'}
                                     initialDiffData={
                                         activeDiffScope === 'turn'
                                             ? lastTurnDiffData.get(file.path) ?? null

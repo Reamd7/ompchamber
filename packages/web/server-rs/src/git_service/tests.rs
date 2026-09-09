@@ -701,6 +701,67 @@ fn branch_creation_source_rules() {
     assert_eq!(parse_branch_creation_source(""), None);
 }
 
+/// 验证补丁目标路径解析：仅扫描首个 `@@ ` 之前的头部行，取最后一个有效
+/// 目标（b 侧）；hunk 正文里的 `---`/`+++` 行不再当作路径来源。
+#[test]
+fn patch_target_path_reads_header_and_takes_last_target() {
+    use super::service_ops::extract_patch_target_path;
+
+    let patch = "diff --git a/one.txt b/two.txt\n\
+                 index aaa..bbb 100644\n\
+                 --- a/one.txt\n\
+                 +++ b/two.txt\n\
+                 @@ -1,3 +1,3 @@\n\
+                 -old\n\
+                 --- deleted marker line inside hunk body\n\
+                 +new\n";
+    assert_eq!(extract_patch_target_path(patch), Some("two.txt".to_string()));
+
+    // Header-only scan: a `+++ b/other.txt` line after the first hunk is ignored.
+    let stale = "diff --git a/a.txt b/a.txt\n\
+                 --- a/a.txt\n\
+                 +++ b/a.txt\n\
+                 @@ -1 +1 @@\n\
+                 -x\n\
+                 +y\n\
+                 +++ b/decoy.txt\n";
+    assert_eq!(extract_patch_target_path(stale), Some("a.txt".to_string()));
+
+    assert_eq!(extract_patch_target_path("--- /dev/null\n+++ b/new.txt\n"), Some("new.txt".to_string()));
+    assert_eq!(extract_patch_target_path("@@ -1 +1 @@\n-x\n"), None);
+}
+
+/// 验证 canonical-hunk 校验：候选 = 文件头部 + 单个 hunk 切片，
+/// 与提交补丁逐字节一致才通过；无 hunk 头或不匹配均拒绝。
+#[test]
+fn patch_is_current_hunk_matches_only_whole_hunks() {
+    use super::service_ops::patch_is_current_hunk;
+
+    let current = "diff --git a/f.txt b/f.txt\n\
+                   index 111..222 100644\n\
+                   --- a/f.txt\n\
+                   +++ b/f.txt\n\
+                   @@ -1,3 +1,3 @@\n\
+                   context\n\
+                   -old\n\
+                   +new\n\
+                   @@ -10,2 +10,2 @@\n\
+                   -far old\n\
+                   +far new\n";
+    let header = "diff --git a/f.txt b/f.txt\nindex 111..222 100644\n--- a/f.txt\n+++ b/f.txt\n";
+    let second_hunk = "@@ -10,2 +10,2 @@\n-far old\n+far new\n";
+    assert!(patch_is_current_hunk(current, &format!("{}{}", header, second_hunk)));
+
+    // Header alone or a stale hunk from a different snapshot is rejected.
+    assert!(!patch_is_current_hunk(current, header));
+    assert!(!patch_is_current_hunk(
+        current,
+        &format!("{}@@ -99 +99 @@\n-nope\n", header)
+    ));
+    // No hunk headers in the current diff → nothing to match.
+    assert!(!patch_is_current_hunk("index 111..222\n", "@@ -1 +1 @@\n+x\n"));
+}
+
 /// 验证日志 base ref 的本地优先解析：本地分支存在则优先，其次
 /// origin/<from>，都不可用则原样返回；空白/缺失返回 None。
 #[tokio::test]
