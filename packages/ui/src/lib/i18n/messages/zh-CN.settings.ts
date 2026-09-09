@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '工作树',
   'settings.behavior.page.worktreeFetchSource.enable': '创建工作树前先从远程获取',
   'settings.behavior.page.worktreeFetchSource.enableAria': '创建工作树前先从远程仓库获取变更',
@@ -66,7 +67,6 @@ export const settingsDict = {
   'settings.view.pendingRestart.confirm.cancel': '取消',
   'settings.view.actions.backToSettings': '返回设置',
   'settings.view.actions.closeSettings': '关闭设置',
-  'settings.view.actions.openSectionList': '打开分组列表',
   'settings.view.actions.closeSettingsWithShortcut': '关闭设置（{shortcut}+,）',
   'settings.view.actions.back': '返回',
   'settings.view.actions.resizeNavigation': '调整设置导航宽度',

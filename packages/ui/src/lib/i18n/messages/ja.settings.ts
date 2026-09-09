@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'ワークツリー',
   'settings.behavior.page.worktreeFetchSource.enable': 'ワークツリー作成前にリモートから取得',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'ワークツリー作成前にリモートから変更を取得する',
@@ -66,7 +67,6 @@ export const settingsDict = {
   'settings.view.pendingRestart.confirm.cancel': 'キャンセル',
   'settings.view.actions.backToSettings': '設定に戻る',
   'settings.view.actions.closeSettings': '設定を閉じる',
-  'settings.view.actions.openSectionList': 'セクション一覧を開く',
   'settings.view.actions.closeSettingsWithShortcut': '設定を閉じる ({shortcut}+,)',
   'settings.view.actions.back': '戻る',
   'settings.view.actions.resizeNavigation': '設定ナビゲーションのサイズ変更',

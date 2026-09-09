@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '워크트리',
   'settings.behavior.page.worktreeFetchSource.enable': '워크트리를 만들기 전에 원격에서 가져오기',
   'settings.behavior.page.worktreeFetchSource.enableAria': '워크트리를 만들기 전에 원격에서 변경 사항 가져오기',
@@ -66,7 +67,6 @@ export const settingsDict = {
   'settings.view.pendingRestart.confirm.cancel': '취소',
   'settings.view.actions.backToSettings': '설정으로 돌아가기',
   'settings.view.actions.closeSettings': '설정 닫기',
-  'settings.view.actions.openSectionList': '섹션 목록 열기',
   'settings.view.actions.closeSettingsWithShortcut': '설정 닫기 ({shortcut}+,)',
   'settings.view.actions.back': '뒤로',
   'settings.view.actions.resizeNavigation': '설정 내비게이션 크기 조정',

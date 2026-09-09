@@ -2380,7 +2380,6 @@ export const settingsDict = {
   'settings.view.actions.openSectionList': 'Otwórz listę sekcji',
   'settings.view.actions.reloadOpenCode': 'Przeładuj silnik',
   'settings.view.actions.reloadOpenCodeTooltip': 'Uruchom ponownie silnik i przeładuj jego konfigurację.',
-
   'settings.view.actions.applyAndRestartOpenCode': 'Zastosuj i uruchom ponownie',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': 'Zastosuj 1 oczekującą zmianę konfiguracji i uruchom ponownie silnik.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': 'Zastosuj {count} oczekujących zmian konfiguracji i uruchom ponownie silnik.',

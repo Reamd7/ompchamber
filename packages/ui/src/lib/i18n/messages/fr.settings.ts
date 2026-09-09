@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'Worktrees',
   'settings.behavior.page.worktreeFetchSource.enable': 'Récupérer le dépôt distant avant de créer des worktrees',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'Récupérer les changements du dépôt distant avant de créer des worktrees',
@@ -66,7 +67,6 @@ export const settingsDict = {
   'settings.view.pendingRestart.confirm.cancel': 'Annuler',
   'settings.view.actions.backToSettings': 'Retour aux paramètres',
   'settings.view.actions.closeSettings': 'Fermer les paramètres',
-  'settings.view.actions.openSectionList': 'Ouvrir la liste des sections',
   'settings.view.actions.closeSettingsWithShortcut': 'Fermer les paramètres ({shortcut}+,)',
   'settings.view.actions.back': 'Retour',
   'settings.view.actions.resizeNavigation': 'Redimensionner la navigation dans les paramètres',

@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '工作樹',
   'settings.behavior.page.worktreeFetchSource.enable': '建立工作樹前先從遠端擷取',
   'settings.behavior.page.worktreeFetchSource.enableAria': '建立工作樹前先從遠端儲存庫擷取變更',
@@ -64,7 +65,6 @@ export const settingsDict = {
   'settings.view.pendingRestart.confirm.cancel': '取消',
   'settings.view.actions.backToSettings': '返回設定頁',
   'settings.view.actions.closeSettings': '關閉設定',
-  'settings.view.actions.openSectionList': '開啟群組清單',
   'settings.view.actions.closeSettingsWithShortcut': '關閉設定（{shortcut}+,）',
   'settings.view.actions.back': '返回',
   'settings.view.actions.resizeNavigation': '調整設定導覽寬度',
