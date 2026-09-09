@@ -2,8 +2,9 @@ import React, { act, useState } from 'react';
 import { test, expect } from 'bun:test';
 import { Window } from 'happy-dom';
 
-test('allows repeated base selection with search and keyboard navigation', async () => {
+const checkBranchSelection = async (mobile: boolean, tablet = false) => {
   const dom = new Window({ url: 'http://localhost' });
+  if (mobile && !tablet) dom.happyDOM.setWindowSize({ width: 390, height: 844 });
   const originals = new Map<string, PropertyDescriptor | undefined>();
   const globals = {
     window: dom,
@@ -38,6 +39,7 @@ test('allows repeated base selection with search and keyboard navigation', async
   function Harness() {
     const [base, setBase] = useState<string | null>(null);
     return <BranchComparisonSelector
+      mobile={mobile}
       branches={['feature', 'main', 'parent', 'remotes/origin/main']}
       currentBranch="feature"
       base={base}
@@ -60,6 +62,11 @@ test('allows repeated base selection with search and keyboard navigation', async
   try {
     await act(async () => root.render(<I18nProvider><Harness /></I18nProvider>));
     await act(async () => trigger().click());
+    if (mobile) {
+      if (tablet) expect(document.querySelector('[role="dialog"]')).toBeNull();
+      else expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      if (!tablet) expect(document.activeElement).not.toBe(document.querySelector('input'));
+    }
     expect(document.querySelector('[data-value="refs/heads/feature"]')).toBeNull();
     await press('ArrowDown');
     const afterDown = selectedRef();
@@ -95,6 +102,10 @@ test('allows repeated base selection with search and keyboard navigation', async
       trigger().dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true }));
     });
     expect(document.querySelector('input')).toBeNull();
+    await act(async () => trigger().click());
+    await press('Escape');
+    expect(document.querySelector('input')).toBeNull();
+    expect(choices).toHaveLength(3);
   } finally {
     await act(async () => root.unmount());
     await dom.happyDOM.abort();
@@ -103,4 +114,9 @@ test('allows repeated base selection with search and keyboard navigation', async
       else Reflect.deleteProperty(globalThis, name);
     }
   }
-});
+};
+
+for (const mobile of [false, true]) {
+  test(`allows repeated base selection with search and keyboard navigation (mobile=${mobile})`, () => checkBranchSelection(mobile));
+}
+test('keeps the mobile branch picker anchored on tablets', () => checkBranchSelection(true, true));

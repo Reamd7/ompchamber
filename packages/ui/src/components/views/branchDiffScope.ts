@@ -63,15 +63,6 @@ export const coerceDiffScope = <T extends string>(
 ): T | 'working' => (scope === 'branch' && !branchScopeAvailable ? 'working' : scope);
 
 /**
- * Identity of one `base...head` range in one repository. Range-cache entries
- * are only valid within a single range: the same file path can carry different
- * content under a different base or head, so a cache keyed by path alone leaks
- * stale patches across branch and base switches.
- */
-export const branchRangeKey = (directory: string, base: string, head: string): string =>
-  JSON.stringify([directory, base, head]);
-
-/**
  * Bounded per-directory retry for a request whose failure leaves no result and
  * no signal beyond the in-flight flag settling back to false.
  *

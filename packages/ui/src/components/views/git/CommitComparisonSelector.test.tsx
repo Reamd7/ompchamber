@@ -3,8 +3,9 @@ import { expect, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import type { GitLogEntry } from '@/lib/api/types';
 
-test('shows commit metadata and shares repeated searched selections between two pickers', async () => {
+const checkCommitSelection = async (mobile: boolean, tablet = false) => {
   const dom = new Window({ url: 'http://localhost' });
+  if (mobile && !tablet) dom.happyDOM.setWindowSize({ width: 390, height: 844 });
   const originals = new Map<string, PropertyDescriptor | undefined>();
   const globals = {
     window: dom, document: dom.document, navigator: dom.navigator, location: dom.location,
@@ -34,7 +35,7 @@ test('shows commit metadata and shares repeated searched selections between two 
   function Harness() {
     const [hash, setHash] = useState<string | null>(null);
     return <>{['changes', 'walkthrough'].map((name) => <section key={name} data-picker={name}>
-      <CommitComparisonSelector commits={commits} selectedHash={hash} loading={false} error={null}
+      <CommitComparisonSelector mobile={mobile} commits={commits} selectedHash={hash} loading={false} error={null}
         onRefresh={() => { refreshes += 1; }}
         onSelect={(commit) => { selected.push(commit.hash); setHash(commit.hash); }} />
     </section>)}</>;
@@ -55,6 +56,11 @@ test('shows commit metadata and shares repeated searched selections between two 
   try {
     await act(async () => root.render(<I18nProvider><Harness /></I18nProvider>));
     await act(async () => trigger('changes').click());
+    if (mobile) {
+      if (tablet) expect(document.querySelector('[role="dialog"]')).toBeNull();
+      else expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+      if (!tablet) expect(document.activeElement).not.toBe(input());
+    }
     const first = document.querySelector('[cmdk-item]');
     expect(first?.textContent).toContain('fix: first commit');
     expect(first?.textContent).toContain('Test Author');
@@ -85,4 +91,9 @@ test('shows commit metadata and shares repeated searched selections between two 
       else Reflect.deleteProperty(globalThis, name);
     }
   }
-});
+};
+
+for (const mobile of [false, true]) {
+  test(`shows commit metadata and shares repeated searched selections between two pickers (mobile=${mobile})`, () => checkCommitSelection(mobile));
+}
+test('keeps the mobile commit picker anchored on tablets', () => checkCommitSelection(true, true));

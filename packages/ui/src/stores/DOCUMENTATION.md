@@ -31,8 +31,8 @@ These stores act like centralized keyed caches. UI should consume narrow slices 
 
 ### UI state stores
 
-`useCommitSelectionStore.ts` shares the selected commit between Changes and
-walkthrough. Choices are session-only and keyed by runtime, directory, and
+`useCommitSelectionStore.ts` shares the selected commit between desktop/mobile
+Changes and walkthrough. Choices are session-only and keyed by runtime, directory, and
 checked-out branch, with at most 100 remembered choices. The picker history
 belongs to `useCommitComparison`, loads only while Commit mode is active, and
 is limited to the latest 50 commits. History failure stays distinct from an
@@ -42,23 +42,12 @@ commits have pushed it beyond the latest 50.
 
 `hooks/useGitComparison.ts` owns the local file-list state used by desktop and
 mobile comparisons. Its key contains runtime, directory, and the complete
-branch/commit/PR source. A source change hides the old list immediately; failed
-reads remain errors, and manual retries cannot publish into a superseded scope.
+ranch/commit source. A source change hides the old list immediately; failedreads remain errors, and manual retries cannot publish into a superseded scope.
 The hook also resolves per-file patch requests, including a commit rename's
 previous path. Views own their lazy patch caches through `useRangeKeyedCache`.
 Mobile requests only the active detail path and suspends reads while its
 keep-alive workspace pane is hidden.
 
-`usePullRequestSelectionStore.ts` shares session-only PR choices across desktop,
-mobile Changes and walkthrough, keyed by runtime, directory and checked-out
-branch. Explicit selection bounds remembered choices to 100 entries. A choice
-contains the PR number and its repository, so fork and upstream PRs with equal
-numbers remain distinct. `usePullRequestComparison` owns the searchable,
-paginated list while PR mode is active. The shared GitHub PR status store's
-fork/remote-aware resolver supplies the initial choice, independently of list
-pagination. An absent match requires selection. External walkthrough handoffs
-apply once, and later picker changes
-remain authoritative when a retained panel becomes visible again.
 Examples:
 
 - `useUIStore.ts`

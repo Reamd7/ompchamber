@@ -3,7 +3,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { describe, expect, test } from 'bun:test';
 
 import {
-    branchRangeKey,
     coerceDiffScope,
     isBranchScopeAvailable,
     isBranchScopeDefinitelyUnavailable,
@@ -127,20 +126,6 @@ describe('isBranchScopeDefinitelyUnavailable', () => {
         expect(isBranchScopeDefinitelyUnavailable(null, null, false, true)).toBe(false);
         expect(isBranchScopeDefinitelyUnavailable(null, null, true, false)).toBe(true);
         expect(coerceDiffScope('branch', !isBranchScopeDefinitelyUnavailable(null, null, true, false))).toBe('working');
-    });
-});
-
-describe('branchRangeKey', () => {
-    test('distinguishes bases, heads, and directories for the same path', () => {
-        // The same file path can carry different diff content per range; a cache
-        // keyed by path alone would leak a previous branch's patch.
-        const keys = [
-            branchRangeKey('/repo', 'main', 'feature-a'),
-            branchRangeKey('/repo', 'develop', 'feature-a'),
-            branchRangeKey('/repo', 'main', 'feature-b'),
-            branchRangeKey('/other', 'main', 'feature-a'),
-        ];
-        expect(new Set(keys).size).toBe(4);
     });
 });
 

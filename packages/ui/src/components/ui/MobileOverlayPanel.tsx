@@ -117,6 +117,7 @@ export const MobileOverlayPanel: React.FC<MobileOverlayPanelProps> = ({
         entered ? 'opacity-100' : 'opacity-0',
       )}
       role="dialog"
+      aria-label={title}
       aria-modal="true"
       onClick={onClose}
       // The panel centers over the CHAT column, not the whole app: on a tablet

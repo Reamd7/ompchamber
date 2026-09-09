@@ -28,6 +28,7 @@ export const haveMatchingPatchVersions = (displayPatch: string, actionPatch: str
   const displayHeader = patchVersionHeader(displayPatch);
   return displayHeader !== null && displayHeader === patchVersionHeader(actionPatch);
 };
+
 export const fileDiffFromPatch = (
   file: string,
   patch: string,
