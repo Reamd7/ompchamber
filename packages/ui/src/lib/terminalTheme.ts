@@ -95,10 +95,11 @@ export function getGhosttyTerminalOptions(
     fontFamily: augmentedFontFamily,
     ...TERMINAL_TYPOGRAPHY,
     allowTransparency: false,
-    // WebGL2 instanced renderer with automatic Canvas 2D fallback (no GL
-    // context available). 'auto' is also the fork default; explicit here so
-    // the product's rendering path is visible at the single construction site.
-    renderer: 'auto' as const,
+    // Canvas 2D renderer. The fork's WebGL2 renderer (and its 'auto'
+    // default) is still an in-progress internal implementation, so the
+    // product stays on canvas; explicit here so the rendering path is
+    // visible at the single construction site.
+    renderer: 'canvas' as const,
     theme: {
       background: theme.background,
       foreground: theme.foreground,
