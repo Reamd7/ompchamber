@@ -34,6 +34,7 @@ import { DiffViewToggle } from '@/components/chat/message/DiffViewToggle';
 import type { DiffViewMode } from '@/components/chat/message/types';
 import { ReviewFlowDialog, type ReviewFlowExecution } from '@/components/session/ReviewFlowDialog';
 import { PierreDiffViewer } from './PierreDiffViewer';
+import { HunkActions, type HunkBusyState, type HunkDiffAction } from './git/HunkActions';
 import { useDeviceInfo } from '@/lib/device';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
@@ -43,7 +44,7 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { findDiffScrollAnchor, getRestoredDiffScrollTop, type DiffScrollAnchor } from './diffScrollAnchor';
 import { useI18n } from '@/lib/i18n';
 import type { I18nKey } from '@/lib/i18n/store';
-import { fileDiffFromPatch } from '@/lib/diff/patchFileDiff';
+import { fileDiffFromPatch, extractHunkPatch } from '@/lib/diff/patchFileDiff';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { startReviewFlow } from '@/lib/reviewFlow';
 import { WALKTHROUGH_ACTION_CLASS } from '@/components/views/walkthrough/walkthroughAction';
@@ -643,6 +644,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     const [diffLoadError, setDiffLoadError] = React.useState<string | null>(null);
     const [isLoading, setIsLoading] = React.useState(false);
     const [fileAction, setFileAction] = React.useState<FileDiffAction | null>(null);
+    const [hunkAction, setHunkAction] = React.useState<HunkBusyState>(null);
     const [forceRenderLarge, setForceRenderLarge] = React.useState(false);
     const [localDiffData, setLocalDiffData] = React.useState<DiffData | null>(null);
     const [stagedDiffData, setStagedDiffData] = React.useState<DiffData | null>(null);
@@ -788,6 +790,38 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
             setFileAction((current) => (current === action ? null : current));
         }
     }, [directory, fetchStatus, file.path, fileAction, git, t]);
+
+    const handleHunkAction = React.useCallback(async (hunkIndex: number, action: HunkDiffAction) => {
+        if (!directory || hunkAction !== null || fileAction !== null) {
+            return;
+        }
+
+        const hunkPatch = diffData?.patch ? extractHunkPatch(diffData.patch, hunkIndex) : null;
+        if (!hunkPatch) {
+            toast.error(t('diffView.hunk.unavailable'));
+            return;
+        }
+
+        setHunkAction({ index: hunkIndex, action });
+        try {
+            const hunkMutation = action === 'stage'
+                ? git.stageGitHunk
+                : action === 'unstage'
+                    ? git.unstageGitHunk
+                    : git.revertGitHunk;
+            if (!hunkMutation) {
+                toast.error(t('diffView.hunk.unsupported'));
+                return;
+            }
+            await hunkMutation(directory, file.path, hunkPatch);
+            setDiffRetryNonce((nonce) => nonce + 1);
+            await fetchStatus(directory, git);
+        } catch (error) {
+            toast.error(error instanceof Error && error.message ? error.message : t('diffView.hunk.unavailable'));
+        } finally {
+            setHunkAction((current) => (current?.index === hunkIndex && current.action === action ? null : current));
+        }
+    }, [directory, diffData, fetchStatus, file.path, fileAction, git, hunkAction, t]);
 
     return (
         <div ref={setSectionRef} className="scroll-mt-9 border-b border-[var(--interactive-border)]/40 last:border-b-0">
@@ -955,7 +989,17 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                                 wrapLines={wrapLines}
                             />
                             <div className="pointer-events-none absolute bottom-3 right-3 z-20">
-                                <div className="pointer-events-auto">
+                                <div className="pointer-events-auto flex items-center gap-1.5">
+                                    {!readOnlyActions && diffData?.patch ? (
+                                        <HunkActions
+                                            filePath={file.path}
+                                            patch={diffData.patch}
+                                            staged={staged}
+                                            busyHunk={hunkAction}
+                                            disabled={fileAction !== null || hunkAction !== null}
+                                            onAction={handleHunkAction}
+                                        />
+                                    ) : null}
                                     {!readOnlyActions ? (
                                         <FileDiffActions
                                             filePath={file.path}
