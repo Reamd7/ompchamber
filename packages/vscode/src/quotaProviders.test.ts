@@ -27,8 +27,8 @@ const AUTH = JSON.stringify({
 ((fs as unknown) as { existsSync: () => boolean }).existsSync = () => true;
 ((fs as unknown) as { readFileSync: () => string }).readFileSync = () => AUTH;
 
-import { fetchQuotaForProvider } from './quotaProviders';
-
+import { fetchClinePassQuota, fetchHyperQuota, fetchOllamaCloudQuota, fetchQuotaForProvider } from './quotaProviders';
+import { validateCredential } from './quotaCredentials';
 type MockResponseInit = { ok?: boolean; status?: number };
 
 after(() => {
@@ -174,14 +174,13 @@ describe('ClinePass quota provider (VS Code parity)', () => {
 
     assert.equal(result.ok, true);
     assert.equal(result.providerId, 'cline-pass');
-    assert.equal(result.usage!.windows['5h']!.usedPercent, 43);
-    assert.equal(result.usage!.windows['5h']!.windowSeconds, 18_000);
-    assert.equal(result.usage!.windows['5h']!.resetAt, Date.parse('2026-09-08T17:00:44.598174595Z'));
-    assert.equal(result.usage!.windows.weekly!.usedPercent, 17);
-    assert.equal(result.usage!.windows.weekly!.windowSeconds, 604_800);
-    assert.equal(result.usage!.windows.monthly!.usedPercent, 8);
-    assert.equal(result.usage!.windows.monthly!.windowSeconds, null);
-  });
+   assert.equal(result.usage?.windows['5h']?.usedPercent, 43);
+    assert.equal(result.usage?.windows['5h']?.windowSeconds, 18_000);
+    assert.equal(result.usage?.windows['5h']?.resetAt, Date.parse('2026-09-08T17:00:44.598174595Z'));
+    assert.equal(result.usage?.windows.weekly?.usedPercent, 17);
+    assert.equal(result.usage?.windows.weekly?.windowSeconds, 604_800);
+    assert.equal(result.usage?.windows.monthly?.usedPercent, 8);
+    assert.equal(result.usage?.windows.monthly?.windowSeconds, null);  });
 
   test('ignores unknown limit types and rejects responses without quota data', async () => {
     stubFetchReturning(() => Promise.resolve(mockResponse({ data: { limits: [{ type: 'quarterly', percentUsed: 5 }] } })));
@@ -212,7 +211,59 @@ describe('ClinePass quota provider (VS Code parity)', () => {
     assert.equal(result.ok, false);
     assert.equal(result.error, 'Invalid response from provider');
   });
-});
+  const readAuth = () => ({ 'cline-pass': { key: 'test-token' } });
+
+  for (const limit of [
+    { type: 'constructor', percentUsed: 5 }, { type: 'toString', percentUsed: 5 },
+    { type: '__proto__', percentUsed: 5 }, { type: 'weekly', percentUsed: '' },
+    { type: 'weekly', percentUsed: ' ' }, { type: 'weekly', percentUsed: true },
+    { type: 'weekly', percentUsed: null }, null,
+  ]) {
+    test(`skips malformed windows independently: ${JSON.stringify(limit)}`, async () => {
+      const invalid = await fetchClinePassQuota({ readAuth, fetchImpl: async () => Response.json({ data: { limits: [limit] } }) });
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.usage, null);
+      const mixed = await fetchClinePassQuota({ readAuth, fetchImpl: async () => Response.json({ data: { limits: [limit, { type: 'monthly', percentUsed: 8 }] } }) });
+      assert.equal(mixed.ok, true);
+      assert.ok(mixed.usage);
+      assert.deepEqual(Object.keys(mixed.usage.windows), ['monthly']);
+    });
+  }
+
+  for (const percentUsed of [0, '0', '51']) {
+    test(`accepts percentage ${JSON.stringify(percentUsed)}`, async () => {
+      const result = await fetchClinePassQuota({ readAuth, fetchImpl: async () => Response.json({ data: { limits: [{ type: 'weekly', percentUsed }] } }) });
+      assert.equal(result.ok, true);
+      assert.equal(result.usage?.windows.weekly?.usedPercent, Number(percentUsed));
+    });
+  }
+
+  for (const entry of [{ key: '' }, { key: ' ' }, { key: 42 }, {}]) {
+    test(`falls back to a usable token: ${JSON.stringify(entry)}`, async () => {
+      const result = await fetchClinePassQuota({
+        readAuth: () => ({ 'cline-pass': { ...entry, token: 'test-token' } }),
+        fetchImpl: async (_url, options) => {
+          assert.equal(new Headers(options.headers).get('Authorization'), 'Bearer test-token');
+          return Response.json(documentedPayload);
+        },
+      });
+      assert.equal(result.ok, true);
+    });
+  }
+
+  test('does not request usage without usable credentials', async () => {
+    const result = await fetchClinePassQuota({ readAuth: () => ({ 'cline-pass': { key: 42 } }), fetchImpl: async () => { throw new Error('Unexpected fetch'); } });
+    assert.equal(result.configured, false);
+    assert.equal(result.error, 'Not configured');
+  });
+
+  test('recognizes the timeout exception from AbortSignal.timeout', async () => {
+    const result = await fetchClinePassQuota({ readAuth, fetchImpl: async () => { throw new DOMException('Timed out', 'TimeoutError'); } });
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.usage, null);
+    assert.equal(result.error, 'Request timed out');
+  });});
 
 describe('Codex quota provider (VS Code parity)', () => {
   test('coalesces concurrent refreshes for the same provider', async () => {

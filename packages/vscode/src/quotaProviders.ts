@@ -143,16 +143,6 @@ type CrofPayload = {
   credits?: number | string;
 };
 
-type ClinePayload = {
-  data?: {
-    limits?: Array<{
-      type?: string;
-      percentUsed?: number | string;
-      resetsAt?: string;
-    }>;
-  };
-};
-
 type ClineWindowKind = {
   key: string;
   windowSeconds: number | null;
@@ -1925,7 +1915,7 @@ const parseOllamaSettingsHtml = (html: string) => {
   return windows;
 };
 
-const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
+export const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
   const cookie = readCredential('ollama-cloud')?.cookie;
 
   if (!cookie) {
@@ -2717,9 +2707,13 @@ const CLINE_WINDOW_KINDS = new Map<string, ClineWindowKind>([
   ['monthly', { key: 'monthly', windowSeconds: null }],
 ]);
 
-const fetchClinePassQuota = async (): Promise<ProviderResult> => {
-  const auth = readAuthFile();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['cline-pass']));
+type ClineQuotaDependencies = {
+  readAuth?: () => AuthFile;
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+export const fetchClinePassQuota = async ({ readAuth = readAuthFile, fetchImpl = fetch }: ClineQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = readAuth();  const entry = normalizeAuthEntry(getAuthEntry(auth, ['cline-pass']));
   const apiKey = asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 
   if (!apiKey) {
@@ -2735,8 +2729,7 @@ const fetchClinePassQuota = async (): Promise<ProviderResult> => {
   const timeoutSignal = AbortSignal.timeout(15_000);
 
   try {
-    const response = await fetch(CLINE_PASS_USAGE_URL, {
-      method: 'GET',
+   const response = await fetchImpl(CLINE_PASS_USAGE_URL, {      method: 'GET',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Accept-Encoding': 'identity',
@@ -2756,11 +2749,9 @@ const fetchClinePassQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    // SAFETY: the Cline usage endpoint returns this documented JSON shape;
-    // every field is optional and validated before use below.
-    const payload = await response.json() as ClinePayload;
-    const limits = Array.isArray(payload?.data?.limits) ? payload.data.limits : [];
-
+   const payload = asObject(await response.json());
+    const data = asObject(payload?.data);
+    const limits = Array.isArray(data?.limits) ? data.limits : [];
     const windows: Record<string, UsageWindow> = {};
     for (const item of limits) {
       const limit = asObject(item);
@@ -2768,8 +2759,8 @@ const fetchClinePassQuota = async (): Promise<ProviderResult> => {
       const limitType = asNonEmptyString(limit.type);
       const kind = limitType === null ? undefined : CLINE_WINDOW_KINDS.get(limitType);
       if (!kind) continue;
-      const usedPercent = toNumber(limit.percentUsed);
-      if (usedPercent === null) continue;
+     const usedPercent = toNumber(asNonEmptyString(limit.percentUsed)
+        ?? (Number.isFinite(limit.percentUsed) ? limit.percentUsed : null));      if (usedPercent === null) continue;
       windows[kind.key] = toUsageWindow({
         usedPercent,
         windowSeconds: kind.windowSeconds,
@@ -2795,8 +2786,9 @@ const fetchClinePassQuota = async (): Promise<ProviderResult> => {
       usage: { windows },
     });
   } catch (error) {
-    const isTimeout = error instanceof DOMException && error.name === 'AbortError' && timeoutSignal.aborted;
-    const isParseError = error instanceof SyntaxError;
+   const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );    const isParseError = error instanceof SyntaxError;
     return buildResult({
       providerId: 'cline-pass',
       providerName: 'ClinePass',
@@ -2911,7 +2903,7 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
 const HYPER_QUOTA_URL = 'https://hyper.charm.land/v1/credits';
 const HYPER_CREDIT_TO_USD = 0.05;
 
-const fetchHyperQuota = async (): Promise<ProviderResult> => {
+export const fetchHyperQuota = async (): Promise<ProviderResult> => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['hyper'])) as Record<string, unknown> | null;
   const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
