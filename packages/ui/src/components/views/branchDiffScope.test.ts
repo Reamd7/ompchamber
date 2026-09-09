@@ -219,6 +219,48 @@ const installMinimalDom = () => {
 };
 
 describe('useRangeKeyedCache', () => {
+    test('refreshes visible paths on revision changes without blanking completed diffs or refetching on rerender', async () => {
+        const dom = installMinimalDom();
+        const root = createRoot(dom.container);
+        let revision = '1';
+        let paths = 'a.ts';
+        const requests: Array<{ path: string; result: ReturnType<typeof deferred<string>> }> = [];
+        type CapturedEntries = { entries: ReadonlyMap<string, string> | null };
+        const captured: CapturedEntries = { entries: null };
+        const Harness = () => {
+            captured.entries = useRangeKeyedCache('range', paths, (path) => {
+                const result = deferred<string>();
+                requests.push({ path, result });
+                return result.promise;
+            }, 'loading', revision);
+            return null;
+        };
+        try {
+            await act(async () => root.render(React.createElement(Harness)));
+            await act(async () => requests[0].result.resolve('old'));
+            await act(async () => root.render(React.createElement(Harness)));
+            expect(requests).toHaveLength(1);
+            revision = '2';
+            await act(async () => root.render(React.createElement(Harness)));
+            expect(requests).toHaveLength(2);
+            expect(captured.entries?.get('a.ts')).toBe('old');
+            // Changing visible paths cancels the stale refresh and must retry it.
+            paths = 'a.ts\0b.ts';
+            await act(async () => root.render(React.createElement(Harness)));
+            expect(requests.map(({ path }) => path)).toEqual(['a.ts', 'a.ts', 'a.ts', 'b.ts']);
+            await act(async () => {
+                requests[2].result.resolve('current');
+                requests[3].result.resolve('new file');
+                requests[1].result.resolve('stale');
+            });
+            expect(captured.entries?.get('a.ts')).toBe('current');
+            expect(captured.entries?.get('b.ts')).toBe('new file');
+        } finally {
+            await act(async () => root.unmount());
+            dom.restore();
+        }
+    });
+
     test('a stale completion from the previous range cannot write into the new range', async () => {
         const dom = installMinimalDom();
         const root: Root = createRoot(dom.container);

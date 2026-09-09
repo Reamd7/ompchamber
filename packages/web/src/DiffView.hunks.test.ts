@@ -1,5 +1,5 @@
 import { afterAll, test } from 'vitest';
-import { closeDiffHunkWorkers, exerciseDiffHunkActions } from '@openchamber/ui/components/views/DiffView.hunks.fixture';
+import { closeDiffHunkWorkers, exerciseDiffHunkActions } from '@ompchamber/ui/components/views/DiffView.hunks.fixture';
 
 afterAll(closeDiffHunkWorkers);
 

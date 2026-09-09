@@ -28,7 +28,7 @@
 | Spaces 隔离空间 | 12 | 0 | 2 | 12 | 🔴 大工程 / OC2 时代设计 | 12/12 (0吸/12跳) |
 | Extensions/SDK 平台 | 12 | 2 | 0 | 12 | 🔴 大工程 / 平台级 | 12/12 (0吸/12跳) |
 | OpenCode 2 迁移 | 2 | 2 | 0 | 2 | ⚫ OC2 依赖(不可用) | 2/2 (0吸/2跳) |
-| 其他 | 27 | 4 | 5 | 7 | 🟡 杂项 / 逐条判定 | 4/27 (0吸/4跳) |
+| 其他 | 27 | 4 | 5 | 7 | 🟡 杂项 / 逐条判定 | 5/27 (1吸/4跳) |
 
 ## - [ ] Git/Diff 增强 — 🟢 高价值 / 自身能力
 
@@ -319,7 +319,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `8ee477207` | feat: swap sidebar activity header when sticky | `自身` |  |
 | - [ ] | `819b2b218` | feat(relay): report app metadata on connections | `服务端` |  |
 | - [ ] | `b65bed1f0` | feat: preserve scroll and cursor positions across file preview views | `自身` |  |
-| - [ ] | `26b54dbe3` | feat(ui): unify change comparisons and compact message actions | `服务端` |  |
+| - [x] | `26b54dbe3` | feat(ui): unify change comparisons and compact message actions | `服务端` | PORTED(服务端移植 server-rs:commit-diff/commit-files/工作区区间对比) |
 | - [ ] | `8dce7ae6b` | feat: enable turn stats by default and prepare release notes | `引擎耦合?` |  |
 | - [ ] | `73040d71e` | feat: add search to the new session project picker (#3408) | `自身` |  |
 | - [ ] | `1b1421a59` | feat(chats): relocate managed chat worktrees via OPENCHAMBER_CHATS_DIR (#3135) | `服务端` |  |

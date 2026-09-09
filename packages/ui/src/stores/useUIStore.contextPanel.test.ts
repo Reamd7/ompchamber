@@ -2,11 +2,20 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { CONTEXT_SURFACES, sortContextSurfaces } from '../lib/surfaces/registry';
 import { useUIStore } from './useUIStore';
 
+const getContextPanelTabs = (directory: string) => useUIStore.getState().contextPanelByDirectory[directory]?.tabs ?? [];
+
 beforeEach(() => {
   useUIStore.setState({ contextPanelByDirectory: {}, contextRailOrder: [] });
 });
 
 describe('useUIStore context panel tabs', () => {
+  test('preserves Commit mode when context tabs are normalized', () => {
+    useUIStore.getState().openContextPanelTab('/repo', { mode: 'diff', diffScope: 'commit' });
+    useUIStore.getState().openContextPanelTab('/repo', { mode: 'file', targetPath: '/repo/README.md' });
+    const diffTab = getContextPanelTabs('/repo').find((tab) => tab.mode === 'diff');
+    expect(diffTab?.diffScope).toBe('commit');
+  });
+
   test('updates readOnly when an existing chat tab is reopened', () => {
     const directory = '/repo';
 

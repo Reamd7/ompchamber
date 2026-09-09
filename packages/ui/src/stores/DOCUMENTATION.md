@@ -31,6 +31,15 @@ These stores act like centralized keyed caches. UI should consume narrow slices 
 
 ### UI state stores
 
+`useCommitSelectionStore.ts` shares the selected commit between Changes and
+walkthrough. Choices are session-only and keyed by runtime, directory, and
+checked-out branch, with at most 100 remembered choices. The picker history
+belongs to `useCommitComparison`, loads only while Commit mode is active, and
+is limited to the latest 50 commits. History failure stays distinct from an
+empty list; stale directory/runtime requests cannot replace current history or
+selection. A refreshed list preserves an explicit selection even when newer
+commits have pushed it beyond the latest 50.
+
 Examples:
 
 - `useUIStore.ts`

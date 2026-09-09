@@ -202,7 +202,7 @@ impl GitDeps {
                 let service = Arc::clone(&for_range);
                 Box::pin(async move {
                     service
-                        .get_range_diff(&directory, &base, &head, None, 3)
+                        .get_range_diff(&directory, &base, &head, None, 3, false)
                         .await
                 })
             }),

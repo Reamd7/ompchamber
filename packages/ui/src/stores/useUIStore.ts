@@ -12,9 +12,8 @@ import type { ProjectRef } from '@/lib/projectContextApi';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 
-export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch';
-export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'localFile' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'linear' | 'notes' | 'terminal' | 'timeline';
-export type MermaidRenderingMode = 'svg' | 'ascii';
+export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch' | 'commit';
+export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'localFile' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'linear' | 'notes' | 'terminal' | 'timeline';export type MermaidRenderingMode = 'svg' | 'ascii';
 export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
 export type ActivityRenderMode = 'collapsed' | 'summary';
@@ -234,7 +233,7 @@ const normalizeContextTabLabel = (value: string | null | undefined): string | nu
 };
 
 const normalizePendingDiffScope = (value: unknown): PendingDiffScope | null => {
-  return value === 'working' || value === 'staged' || value === 'turn' || value === 'branch' ? value : null;
+  return value === 'working' || value === 'staged' || value === 'turn' || value === 'branch' || value === 'commit' ? value : null;
 };
 
 /** A plan tab's owner must be a complete project reference or nothing; a

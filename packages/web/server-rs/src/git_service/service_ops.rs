@@ -2170,117 +2170,116 @@ impl GitService {
         Ok(json!({ "all": merged, "latest": latest, "total": base_total }))
     }
 
-    /// 获取单个提交的变更文件列表：先 `git show --numstat` 取
-    /// path/insertions/deletions（"-" 列表示二进制，计数按 0），再
-    /// `git show --name-status` 取 A/M/D/R/C 状态（R/C 取制表符分隔的最后一个路径），
-    /// 状态按 `numstat_destination_path` 归一化后的路径匹配；匹配不到时
-    /// 含 " => " 的路径记为 R，否则记为 M。
+    /// 获取单个提交的变更文件列表（`getCommitFiles` 新语义）：`show --format=
+    /// --root --diff-merges=first-parent --find-renames <hash>` 的 `-z`
+    /// numstat 与 name-status 双输出对齐,产出 {path, insertions,
+    /// deletions, isBinary, changeType[, previousPath]};name-status 中的
+    /// 路径在 numstat 统计里缺失时报 "Incomplete commit file statistics"。
     pub async fn get_commit_files(
         &self,
         directory: &str,
         commit_hash: &str,
     ) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
+        let commit = self
+            .resolve_commit_hash(&context.repo_root, commit_hash)
+            .await?;
+        let show_base = |commit: &str| -> Vec<String> {
+            vec![
+                "show".to_string(),
+                "--format=".to_string(),
+                "--root".to_string(),
+                "--diff-merges=first-parent".to_string(),
+                "--find-renames".to_string(),
+                commit.to_string(),
+            ]
+        };
+        let mut numstat_args = show_base(&commit);
+        numstat_args.extend(["--numstat".to_string(), "-z".to_string(), "--".to_string()]);
+        let mut name_args = show_base(&commit);
+        name_args.extend(["--name-status".to_string(), "-z".to_string(), "--".to_string()]);
         let numstat = self
-            .raw(
-                &context.repo_root,
-                &[
-                    "show".into(),
-                    "--numstat".into(),
-                    "--format=".into(),
-                    commit_hash.to_string(),
-                ],
-            )
+            .raw(&context.repo_root, &numstat_args)
             .await
-            .map_err(|f| {
-                failure_text(&f.stdout, &f.stderr, &f.message)
-                    .trim()
-                    .to_string()
-            })?;
+            .map_err(|f| failure_text(&f.stdout, &f.stderr, &f.message).trim().to_string())?;
+        let name_status = self
+            .raw(&context.repo_root, &name_args)
+            .await
+            .map_err(|f| failure_text(&f.stdout, &f.stderr, &f.message).trim().to_string())?;
 
-        let mut files: Vec<(String, i64, i64, bool)> = Vec::new();
-        for line in numstat.lines().filter(|l| !l.trim().is_empty()) {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() < 3 {
+        let mut stats: HashMap<String, (i64, i64, bool)> = HashMap::new();
+        let tokens: Vec<&str> = numstat.split('\0').collect();
+        let mut index = 0;
+        while index < tokens.len() {
+            let token = tokens[index];
+            let mut parts = token.splitn(3, '\t');
+            let (insertions_raw, deletions_raw, rest) =
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(a), Some(b), c) => (a, b, c),
+                    _ => {
+                        index += 1;
+                        continue;
+                    }
+                };
+            let valid = |v: &str| v == "-" || (!v.is_empty() && v.chars().all(|c| c.is_ascii_digit()));
+            if !valid(insertions_raw) || !valid(deletions_raw) {
+                index += 1;
                 continue;
             }
-            let file_path = parts[2..].join("\t");
+            let mut destination = rest.unwrap_or("").to_string();
+            if destination.is_empty() {
+                destination = tokens.get(index + 2).map(|t| t.to_string()).unwrap_or_default();
+                index += 2;
+            }
+            if !destination.is_empty() {
+                stats.insert(
+                    destination,
+                    (
+                        insertions_raw.parse::<i64>().unwrap_or(0),
+                        deletions_raw.parse::<i64>().unwrap_or(0),
+                        insertions_raw == "-",
+                    ),
+                );
+            }
+            index += 1;
+        }
+
+        let names: Vec<&str> = name_status.split('\0').collect();
+        let mut files = Vec::new();
+        let mut index = 0;
+        while index < names.len() {
+            let Some(change_type) = names[index].chars().next().map(|c| c.to_string()) else {
+                index += 1;
+                continue;
+            };
+            let renamed = change_type.starts_with('R') || change_type.starts_with('C');
+            let mut previous_path: Option<String> = None;
+            if renamed {
+                index += 1;
+                previous_path = names.get(index).map(|t| t.to_string());
+            }
+            index += 1;
+            let file_path = names.get(index).map(|t| t.to_string()).unwrap_or_default();
+            index += 1;
             if file_path.is_empty() {
                 continue;
             }
-            let insertions = if parts[0] == "-" {
-                0
-            } else {
-                parts[0].parse::<i64>().unwrap_or(0)
+            let Some(&(insertions, deletions, is_binary)) = stats.get(&file_path) else {
+                return Err("Incomplete commit file statistics".to_string());
             };
-            let deletions = if parts[1] == "-" {
-                0
-            } else {
-                parts[1].parse::<i64>().unwrap_or(0)
-            };
-            let is_binary = parts[0] == "-" && parts[1] == "-";
-            let change_type = if file_path.contains(" => ") { "R" } else { "M" };
-            files.push((file_path, insertions, deletions, is_binary));
-            let _ = change_type;
-        }
-
-        let name_status = self
-            .raw(
-                &context.repo_root,
-                &[
-                    "show".into(),
-                    "--name-status".into(),
-                    "--format=".into(),
-                    commit_hash.to_string(),
-                ],
-            )
-            .await
-            .unwrap_or_default();
-        let mut status_map: HashMap<String, String> = HashMap::new();
-        for line in name_status.lines().filter(|l| !l.trim().is_empty()) {
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            if parts.len() != 2 {
-                continue;
+            let mut entry = json!({
+                "path": file_path,
+                "insertions": insertions,
+                "deletions": deletions,
+                "isBinary": is_binary,
+                "changeType": change_type,
+            });
+            if let Some(previous) = previous_path.filter(|p| !p.is_empty()) {
+                entry["previousPath"] = Value::String(previous);
             }
-            let status = parts[0];
-            let first = status.chars().next().unwrap_or('M');
-            if !matches!(first, 'A' | 'M' | 'D' | 'R' | 'C') {
-                continue;
-            }
-            let path_part = parts[1];
-            let path = if (first == 'R' || first == 'C') && path_part.contains('\t') {
-                path_part.split('\t').next_back().unwrap_or(path_part)
-            } else {
-                path_part
-            };
-            status_map.insert(path.to_string(), first.to_string());
+            files.push(entry);
         }
-
-        let out: Vec<Value> = files
-            .into_iter()
-            .map(|(path, insertions, deletions, is_binary)| {
-                let base_path = numstat_destination_path(&path);
-                let change_type = status_map
-                    .get(&base_path)
-                    .or_else(|| status_map.get(&path))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        if path.contains(" => ") {
-                            "R".to_string()
-                        } else {
-                            "M".to_string()
-                        }
-                    });
-                json!({
-                    "path": path,
-                    "insertions": insertions,
-                    "deletions": deletions,
-                    "isBinary": is_binary,
-                    "changeType": change_type,
-                })
-            })
-            .collect();
-        Ok(json!({ "files": out }))
+        Ok(json!({ "files": files }))
     }
 
     /// 读取指定提交中某文件的改前/改后内容。directory/hash/file_path 任一为空直接报
@@ -3088,7 +3087,7 @@ fn relative(root: &Path, target: &Path) -> String {
 }
 
 /// 生成 8 位十六进制随机后缀，用于临时分支名/文件名去重。
-fn hex_random_suffix() -> String {
+pub(crate) fn hex_random_suffix() -> String {
     use rand::Rng;
     let mut rng = rand::rng();
     (0..8)
