@@ -17,7 +17,8 @@ import { useMcpStore } from '@/stores/useMcpStore';
 
 import { MobileChangesSurface } from './MobileChangesSurface';
 import { MobileFilesSurfaceRouter } from './MobileFilesSurfaceRouter';
-
+import { MobileFilesSurface } from './MobileFilesSurface';
+import { useEdgeSwipe } from './useEdgeSwipe';
 const DRAWER_ROOT_ID = 'mobile-surface-root';
 const ENTER_DELAY_MS = 16;
 // Slightly long, decelerating slide — matches the sessions drawer so both
@@ -96,8 +97,9 @@ const McpWorkspacePane: React.FC<{ onOpenMcpSettings: () => void }> = ({ onOpenM
        beside the chat (tablet, landscape). The caller owns the width and the
        open/close animation there; this component only fills it.
 
-    Closes via the header X, Escape (unless the terminal tab owns the keys), or
-    the Android back button (handled by MobileShell). */
+    Closes via the header X, a left-edge swipe back toward the right (the
+    mirror of the gesture that opened it), Escape (unless the terminal tab owns
+    the keys), or the Android back button (handled by MobileShell). */
 export const MobileWorkspaceDrawer: React.FC<{
   open: boolean;
   onClose: () => void;
@@ -113,6 +115,7 @@ export const MobileWorkspaceDrawer: React.FC<{
 }> = ({ open, onClose, tab, onTabChange, pendingChangesDiff, onOpenPlan, onOpenMcpSettings, variant = 'drawer' }) => {
   const { t } = useI18n();
   const rootRef = React.useRef<HTMLElement | null>(null);
+  const drawerRef = React.useRef<HTMLElement>(null);
   const [entered, setEntered] = React.useState(false);
   // Kept visible through the exit slide; flipped to hidden once it finishes.
   const [visible, setVisible] = React.useState(open);
@@ -124,6 +127,15 @@ export const MobileWorkspaceDrawer: React.FC<{
   React.useEffect(() => {
     tabRef.current = tab;
   }, [tab]);
+
+  // Swipe from the drawer's left edge back toward the right = close, the
+  // reverse of the right-edge swipe that opened it from the chat. Only the
+  // full-cover drawer has an edge to grab; the tablet panel is closed from the
+  // header instead.
+  useEdgeSwipe(drawerRef, {
+    enabled: variant === 'drawer' && open,
+    onLeftEdgeSwipe: () => onCloseRef.current(),
+  });
 
   // Tabs the user has actually opened — their panes stay mounted afterwards.
   const [visitedTabs, setVisitedTabs] = React.useState<ReadonlySet<MobileWorkspaceTab>>(() => new Set());
@@ -276,6 +288,7 @@ export const MobileWorkspaceDrawer: React.FC<{
 
   return createPortal(
     <section
+      ref={drawerRef}
       role="dialog"
       aria-modal="true"
       aria-label={t('mobile.header.openWorkspaceAria')}
