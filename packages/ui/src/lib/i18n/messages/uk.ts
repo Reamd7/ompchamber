@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.newSessionInProjectAria': 'Нова сесія в {label}',
   ...fileArtifactsI18n.uk,
   'sidebarFilesTree.menu.uploadFiles': 'Завантажити файли',
   'sidebarFilesTree.actions.uploadFilesTitle': 'Завантажити файли',
@@ -305,8 +306,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.scheduledTasks.dialog.toast.started': 'Завдання розпочато',
   'sessions.scheduledTasks.dialog.toast.startedPersistWarning': 'Завдання запущено, але його стан не вдалося зберегти. Воно може й надалі відображатися як виконуване до наступного успішного запуску.',
   'sessions.scheduledTasks.dialog.toast.runFailed': 'Не вдалося виконати завдання',
-  'sessions.scheduledTasks.dialog.confirm.deleteTask': 'Видалити заплановане завдання \\"{taskName}\\"?',
-  'sessions.scheduledTasks.dialog.confirm.deleteLoopFile': 'Видалити циклічне завдання «{taskName}» і його Markdown-файл?',
+  'sessions.scheduledTasks.dialog.confirm.deleteTask': 'Видалити заплановане завдання \\"{taskName}\\"?',  'sessions.scheduledTasks.dialog.confirm.deleteLoopFile': 'Видалити циклічне завдання «{taskName}» і його Markdown-файл?',
   'sessions.scheduledTasks.dialog.schedule.daily': 'Щодня {time}',
   'sessions.scheduledTasks.dialog.schedule.dailyWithTimezone': 'Щодня {time} ({timezone})',
   'sessions.scheduledTasks.dialog.schedule.weekly': 'Щотижня {days} {time}',

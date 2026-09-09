@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': '에이전트 그룹 검색…',
   'agentManager.sidebar.actions.newAgentGroup': '새 에이전트 그룹',
   'agentManager.sidebar.actions.more': '… 더 보기({count})',
@@ -262,7 +263,6 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.showArchived': '보관된 항목 표시 ({count})',
   'mobile.sessions.hideArchived': '보관된 항목 숨기기',
   'mobile.sessions.activeWorktreeAria': '활성 워크트리',
-  'mobile.sessions.activeProjectAria': '활성 프로젝트',
   'mobile.sessions.startNewChat': '새 채팅 시작',
   'mobile.sessions.newChat': '새 채팅',
   'mobile.sessions.editOrder': '프로젝트 순서 변경',
@@ -281,6 +281,7 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.deleteSessionAria': '{title} 삭제',
   'mobile.sessions.confirmDeleteSessionAria': '{title} 삭제 확인',
   'mobile.sessions.editProjectAria': '{label} 편집',
+  'mobile.sessions.newSessionInProjectAria': '{label}에서 새 세션',
   'mobile.projectEdit.worktreesTitle': '워크트리',
   'mobile.projectEdit.worktreesEmpty': '이 프로젝트에는 아직 워크트리가 없습니다.',
   'mobile.projectEdit.reorderHint': '드래그하여 워크트리 순서를 변경합니다.',

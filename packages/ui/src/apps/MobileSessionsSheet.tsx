@@ -270,7 +270,6 @@ const NewWorktreeIconButton: React.FC<{
   );
 };
 
-// Width of the swipe-revealed action area (rename + archive + delete buttons).
 /** Starts a session draft already pointed at this project — the mobile twin of
     the desktop sidebar's per-project "+". */
 const NewSessionIconButton: React.FC<{
@@ -296,9 +295,6 @@ const NewSessionIconButton: React.FC<{
   </button>
 );
 
-// Four 48px action slots: delete, archive, manual rename and AI rename.
-const ROW_ACTIONS_WIDTH = 192;
-const ROW_SWIPE_SNAP_MS = 180;
 
 /** Generic swipe-right-to-reveal wrapper for drawer rows (projects, worktrees).
     Same gesture mechanics as SessionRow's swipe actions: horizontal intent
@@ -392,6 +388,15 @@ const SessionRenameForm: React.FC<{
   const { t } = useI18n();
   const [value, setValue] = React.useState(initialTitle);
 
+  // Opens with the whole title selected, so the first keystroke replaces it.
+  // Stable ref callback: an inline one would re-run on every render and
+  // re-select the text mid-edit.
+  const focusRenameInput = React.useCallback((node: HTMLInputElement | null) => {
+    if (!node) return;
+    node.focus();
+    node.select();
+  }, []);
+
   const commit = () => {
     const next = value.trim();
     if (!next || next === initialTitle.trim()) {
@@ -415,7 +420,7 @@ const SessionRenameForm: React.FC<{
       }}
     >
       <input
-        autoFocus
+        ref={focusRenameInput}
         value={value}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
@@ -454,6 +459,11 @@ const SessionRenameForm: React.FC<{
     </form>
   );
 };
+
+// Width of the swipe-revealed action area (rename + archive + delete buttons).
+const ROW_ACTIONS_WIDTH = 192;
+const ROW_SWIPE_SNAP_MS = 180;
+
 
 const SessionRow: React.FC<{
   session: Session;
@@ -1424,6 +1434,15 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     onOpenChange(false);
   };
 
+  // Same contract as the desktop sidebar's per-project "+": the draft carries
+  // the project and its directory, so the app's current directory is not
+  // switched out from under the session that is still open behind the drawer.
+  const handleNewSessionInProject = (project: ProjectMeta) => {
+    setActiveProjectIdOnly(project.id);
+    openNewSessionDraft({ selectedProjectId: project.id, directoryOverride: project.path });
+    onOpenChange(false);
+  };
+
   const filteredNodes = React.useMemo(() => {
     if (!normalizedQuery) return projectNodes;
     return projectNodes.filter((node) => {
@@ -1455,18 +1474,10 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     );
   }, [normalizedQuery, pinnedSessionIds, projectsMeta, sessionOrderRanks, sessions]);
 
-  const searchProjectMatches = React.useMemo(() => {
-    if (!normalizedQuery) return [] as Array<ProjectMeta & { sessionCount: number }>;
-    return rankByQuery(projectsMeta, normalizedQuery, (project) => [project.label, project.path])
-      .map((project) => ({
-        ...project,
-        sessionCount: sessions.filter((session) => {
-          if (getParentId(session)) return false;
-          const directory = normalizePath(getSessionDirectory(session));
-          return projectMatchesExactDirectory(project, directory);
-        }).length,
-      }));
-  }, [normalizedQuery, projectsMeta, sessions]);
+  const searchProjectMatches = React.useMemo<ProjectMeta[]>(() => {
+    if (!normalizedQuery) return [];
+    return rankByQuery(projectsMeta, normalizedQuery, (project) => [project.label, project.path]);
+  }, [normalizedQuery, projectsMeta]);
 
   const hasNoMatches =
     normalizedQuery && searchSessionMatches.length === 0 && searchProjectMatches.length === 0;
@@ -1629,16 +1640,15 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                           <span className="block min-w-0 flex-1 truncate typography-ui-label text-foreground">
                             {project.label}
                           </span>
-                          <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">
-                            {project.sessionCount}
-                          </span>
                         </button>
                         {project.isGitRepo ? (
-                          <NewWorktreeIconButton
-                            className="mr-2"
-                            onClick={() => handleNewWorktree(project.id)}
-                          />
+                          <NewWorktreeIconButton onClick={() => handleNewWorktree(project.id)} />
                         ) : null}
+                        <NewSessionIconButton
+                          className="mr-2"
+                          label={t('mobile.sessions.newSessionInProjectAria', { label: project.label })}
+                          onClick={() => handleNewSessionInProject(project)}
+                        />
                       </div>
                     ))}
                   </div>
@@ -1810,17 +1820,15 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                           <span className="block min-w-0 flex-1 truncate typography-ui-label font-semibold text-foreground">
                             {node.project.label}
                           </span>
-                          {node.isActive ? <ActiveDot ariaLabel={t('mobile.sessions.activeProjectAria')} /> : null}
-                          <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">
-                            {node.totalSessions}
-                          </span>
                         </button>
                         {node.project.isGitRepo ? (
-                          <NewWorktreeIconButton
-                            className="mr-2"
-                            onClick={() => handleNewWorktree(node.project.id)}
-                          />
+                          <NewWorktreeIconButton onClick={() => handleNewWorktree(node.project.id)} />
                         ) : null}
+                        <NewSessionIconButton
+                          className="mr-2"
+                          label={t('mobile.sessions.newSessionInProjectAria', { label: node.project.label })}
+                          onClick={() => handleNewSessionInProject(node.project)}
+                        />
                       </div>
                     </MobileSwipeActionsRow>
 

@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.newSessionInProjectAria': 'Nova sessão em {label}',
   ...fileArtifactsI18n['pt-BR'],
   'sidebarFilesTree.menu.uploadFiles': 'Enviar arquivos',
   'sidebarFilesTree.actions.uploadFilesTitle': 'Enviar arquivos',
@@ -305,8 +306,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.scheduledTasks.dialog.toast.started': 'Tarefa iniciada',
   'sessions.scheduledTasks.dialog.toast.startedPersistWarning': 'A tarefa foi iniciada, mas o status não pôde ser salvo. Ela pode continuar aparecendo como em execução até a próxima execução bem-sucedida.',
   'sessions.scheduledTasks.dialog.toast.runFailed': 'Não foi possível executar a tarefa',
-  'sessions.scheduledTasks.dialog.confirm.deleteTask': 'Excluir tarefa agendada \\"{taskName}\\"?',
-  'sessions.scheduledTasks.dialog.confirm.deleteLoopFile': 'Excluir a tarefa de loop “{taskName}” e seu arquivo Markdown?',
+  'sessions.scheduledTasks.dialog.confirm.deleteTask': 'Excluir tarefa agendada \\"{taskName}\\"?',  'sessions.scheduledTasks.dialog.confirm.deleteLoopFile': 'Excluir a tarefa de loop “{taskName}” e seu arquivo Markdown?',
   'sessions.scheduledTasks.dialog.schedule.daily': 'Todos os dias {time}',
   'sessions.scheduledTasks.dialog.schedule.dailyWithTimezone': 'Todos os dias {time} ({timezone})',
   'sessions.scheduledTasks.dialog.schedule.weekly': 'Toda semana {days} {time}',

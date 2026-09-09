@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'vscodeLayout.actions.resizeSessionsSidebarAria': 'Redimensionner la barre latérale des sessions',
   ...fileArtifactsI18n.fr,
   'sessions.sidebar.project.folderMissing': 'Le dossier du projet est introuvable ou indisponible',
@@ -3158,13 +3159,13 @@ export const dict = {
   'mobile.sessions.showArchived': 'Afficher les archivées ({count})',
   'mobile.sessions.hideArchived': 'Masquer les archivées',
   'mobile.sessions.activeWorktreeAria': 'Worktree actif',
-  'mobile.sessions.activeProjectAria': 'Projet actif',
   'mobile.sessions.startNewChat': 'Démarrer un nouveau chat',
   'mobile.sessions.newChat': 'Nouveau chat',
   'mobile.sessions.editOrder': 'Réordonner les projets',
   'mobile.sessions.doneEditing': 'Terminé',
   'mobile.sessions.editOrderHint': 'Faites glisser la poignée pour réorganiser les projets. Touchez un projet pour afficher ses worktrees et les faire glisser aussi. Touchez la coche pour terminer.',
   'mobile.sessions.editProjectAria': 'Modifier {label}',
+  'mobile.sessions.newSessionInProjectAria': 'Nouvelle session dans {label}',
   'mobile.sessions.dragHandleAria': 'Faire glisser {label} pour réordonner',
   'mobile.sessions.moveUpAria': 'Déplacer {label} vers le haut',
   'mobile.sessions.moveDownAria': 'Déplacer {label} vers le bas',

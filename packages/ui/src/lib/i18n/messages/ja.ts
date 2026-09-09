@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'エージェントグループを検索...',
   'agentManager.sidebar.actions.newAgentGroup': '新規エージェントグループ',
   'agentManager.sidebar.actions.more': '... もっと見る（{count}）',
@@ -262,13 +263,13 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.showArchived': 'アーカイブを表示（{count}）',
   'mobile.sessions.hideArchived': 'アーカイブを非表示',
   'mobile.sessions.activeWorktreeAria': 'アクティブなワークツリー',
-  'mobile.sessions.activeProjectAria': 'アクティブなプロジェクト',
   'mobile.sessions.startNewChat': '新しいチャットを開始',
   'mobile.sessions.newChat': '新しいチャット',
   'mobile.sessions.editOrder': 'プロジェクトの並び替え',
   'mobile.sessions.doneEditing': '完了',
   'mobile.sessions.editOrderHint': 'ハンドルをドラッグしてプロジェクトを並べ替えます。プロジェクトをタップするとワークツリーが表示され、同様にドラッグできます。チェックをタップして完了します。',
   'mobile.sessions.editProjectAria': '{label}を編集',
+  'mobile.sessions.newSessionInProjectAria': '{label}で新しいセッション',
   'mobile.sessions.dragHandleAria': '{label}をドラッグして並び替え',
   'mobile.sessions.moveUpAria': '{label}を上に移動',
   'mobile.sessions.moveDownAria': '{label}を下に移動',

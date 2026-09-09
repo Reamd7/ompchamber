@@ -1,5 +1,6 @@
 import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'Agent Gruplarında Ara...',
   'agentManager.sidebar.actions.newAgentGroup': 'Yeni Agent Grubu',
   'agentManager.sidebar.actions.more': '... Daha Fazla ({count})',
@@ -2922,13 +2923,13 @@ export const dict = {
   'mobile.sessions.showArchived': 'Arşivlenenleri göster ({count})',
   'mobile.sessions.hideArchived': 'Arşivlenenleri gizle',
   'mobile.sessions.activeWorktreeAria': 'Etkin worktree',
-  'mobile.sessions.activeProjectAria': 'Etkin proje',
   'mobile.sessions.startNewChat': 'Yeni sohbet başlat',
   'mobile.sessions.newChat': 'Yeni sohbet',
   'mobile.sessions.editOrder': 'Projeleri yeniden sırala',
   'mobile.sessions.doneEditing': 'Tamam',
   'mobile.sessions.editOrderHint': 'Projeleri yeniden sıralamak için tutamacı sürükleyin. Worktree\'lerini görmek için bir projeye dokunun ve onları da sürükleyin. Bitirmek için onay işaretine dokunun.',
   'mobile.sessions.editProjectAria': '{label} öğesini düzenle',
+  'mobile.sessions.newSessionInProjectAria': '{label} içinde yeni session',
   'mobile.sessions.dragHandleAria': '{label} öğesini yeniden sıralamak için sürükleyin',
   'mobile.sessions.moveUpAria': '{label} öğesini yukarı taşı',
   'mobile.sessions.moveDownAria': '{label} öğesini aşağı taşı',

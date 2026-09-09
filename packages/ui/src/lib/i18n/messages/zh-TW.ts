@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': '搜尋 Agent 群組...',
   'agentManager.sidebar.actions.newAgentGroup': '新增 Agent 群組',
   'agentManager.sidebar.actions.more': '... 更多（{count}）',
@@ -262,7 +263,6 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.showArchived': '顯示已封存 ({count})',
   'mobile.sessions.hideArchived': '隱藏已封存',
   'mobile.sessions.activeWorktreeAria': '作用中的工作樹',
-  'mobile.sessions.activeProjectAria': '作用中的專案',
   'mobile.sessions.startNewChat': '開始新聊天',
   'mobile.sessions.newChat': '新聊天',
   'mobile.sessions.editOrder': '重新排序專案',
@@ -281,6 +281,7 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.deleteSessionAria': '刪除 {title}',
   'mobile.sessions.confirmDeleteSessionAria': '確認刪除 {title}',
   'mobile.sessions.editProjectAria': '編輯 {label}',
+  'mobile.sessions.newSessionInProjectAria': '在 {label} 中新增會話',
   'mobile.projectEdit.worktreesTitle': '工作樹',
   'mobile.projectEdit.worktreesEmpty': '此專案還沒有工作樹。',
   'mobile.projectEdit.reorderHint': '拖曳以重新排序工作樹。',

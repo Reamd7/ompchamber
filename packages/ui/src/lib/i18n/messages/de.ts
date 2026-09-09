@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'Agent-Gruppen durchsuchen...',
   'agentManager.sidebar.actions.newAgentGroup': 'Neue Agent-Gruppe',
   'agentManager.sidebar.actions.more': '... Mehr ({count})',
@@ -222,13 +223,13 @@ export const dict = {
   'mobile.sessions.showArchived': 'Archivierte anzeigen ({count})',
   'mobile.sessions.hideArchived': 'Archivierte ausblenden',
   'mobile.sessions.activeWorktreeAria': 'Aktives Worktree',
-  'mobile.sessions.activeProjectAria': 'Aktives Projekt',
   'mobile.sessions.startNewChat': 'Neuen Chat starten',
   'mobile.sessions.newChat': 'Neuer Chat',
   'mobile.sessions.editOrder': 'Projekte neu anordnen',
   'mobile.sessions.doneEditing': 'Fertig',
   'mobile.sessions.editOrderHint': 'Ziehe den Griff, um die Projekte neu anzuordnen. Tippe auf das Häkchen, um zu beenden.',
   'mobile.sessions.editProjectAria': '{label} bearbeiten',
+  'mobile.sessions.newSessionInProjectAria': 'Neue Sitzung in {label}',
   'mobile.sessions.dragHandleAria': '{label} ziehen, um neu anzuordnen',
   'mobile.sessions.moveUpAria': '{label} nach oben verschieben',
   'mobile.sessions.moveDownAria': '{label} nach unten verschieben',

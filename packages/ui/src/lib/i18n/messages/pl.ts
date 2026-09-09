@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'mobile.sessions.activeProjectAria': 'Active project',
   'vscodeLayout.actions.openAgentManagerAria': 'Otwórz menedżer agentów',
   ...fileArtifactsI18n.pl,
   'sessions.sidebar.project.folderMissing': 'Folder projektu nie istnieje lub jest niedostępny',
@@ -185,7 +186,6 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.showArchived': 'Pokaż zarchiwizowane ({count})',
   'mobile.sessions.hideArchived': 'Ukryj zarchiwizowane',
   'mobile.sessions.activeWorktreeAria': 'Aktywny worktree',
-  'mobile.sessions.activeProjectAria': 'Aktywny projekt',
   'mobile.sessions.startNewChat': 'Rozpocznij nowy czat',
   'mobile.sessions.newChat': 'Nowy czat',
   'mobile.sessions.editOrder': 'Zmień kolejność projektów',
@@ -204,6 +204,7 @@ export const dict: Record<I18nKey, string> = {
   'mobile.sessions.deleteSessionAria': 'Usuń {title}',
   'mobile.sessions.confirmDeleteSessionAria': 'Potwierdź usunięcie {title}',
   'mobile.sessions.editProjectAria': 'Edytuj {label}',
+  'mobile.sessions.newSessionInProjectAria': 'Nowa sesja w {label}',
   'mobile.projectEdit.worktreesTitle': 'Worktree',
   'mobile.projectEdit.worktreesEmpty': 'Ten projekt nie ma jeszcze worktree.',
   'mobile.projectEdit.reorderHint': 'Przeciągnij, aby zmienić kolejność worktree.',

@@ -14,7 +14,7 @@
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 1/1 (0吸/1跳) |
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 7/7 (3吸/4跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 4/4 (3吸/1半) |
-| Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 1/7 (1吸) |
+| Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 2/7 (2吸) |
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 4/4 (3吸/1跳) |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
@@ -124,7 +124,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 | - [ ] | `99b9c23c9` | feat(mobile): add branch and commit comparison views | `服务端` |  |
 | - [ ] | `47bc2f604` | feat(mobile): drill into the OpenCode settings pages from a phone | `自身` |  |
 | - [ ] | `7194d5d41` | feat(mobile): follow the project sort order in the sessions drawer | `自身` |  |
-| - [ ] | `baba83c4d` | feat(mobile): start a session in a project from the sessions drawer | `自身` |  |
+| - [x] | `baba83c4d` | feat(mobile): start a session in a project from the sessions drawer | `自身` | PORTED(MobileSwipeActionsRow 整组件落地) |
 | - [x] | `ff8edd6d4` | feat(mobile): close the drawers with the reverse edge swipe | `自身` | PORTED(干净织入) |
 
 ## - [x] VS Code — 🟢 中价值 / 自身能力
