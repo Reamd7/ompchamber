@@ -43,9 +43,11 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { getProjectLabel, normalizePath } from './mobilePaths';
 import { CHAT_DRAFT_PROJECT_ID, isChatDirectoryPath } from '@/lib/chatDirectories';
 import { partitionSidebarSessions } from '@/components/session/sidebar/list/sessionCollection';
+import { sortProjectsByOrder } from '@/components/session/sidebar/list/projectSort';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useI18n } from '@/lib/i18n';
 import { matchesRankQuery, rankByQuery } from '@/lib/search/fuzzySearch';
+import { updateDesktopSettings } from '@/lib/persistence';
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { cn } from '@/lib/utils';
 import {
@@ -57,6 +59,7 @@ import { mergeLiveSessionWithGlobalSession, refreshGlobalSessions, useGlobalSess
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
 import { useMobileSessionTreeStore } from '@/stores/useMobileSessionTreeStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useSessionDisplayStore, type ProjectSortOrder } from '@/stores/useSessionDisplayStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { orderWorktrees, useWorktreeOrderStore } from '@/stores/useWorktreeOrderStore';
 import {
@@ -96,6 +99,16 @@ type MobileSessionsSheetProps = {
 
 const EMPTY_PINNED_SESSION_IDS = new Set<string>();
 
+// Same orders, same labels as the desktop sidebar's sort menu — the setting
+// itself is shared, so the two surfaces must offer the same choices.
+const PROJECT_SORT_OPTIONS = [
+  ['manual', 'sessions.sidebar.header.projectSort.manual'],
+  ['a-z', 'sessions.sidebar.header.projectSort.aToZ'],
+  ['z-a', 'sessions.sidebar.header.projectSort.zToA'],
+  ['date-added', 'sessions.sidebar.header.projectSort.dateAdded'],
+  ['recent', 'sessions.sidebar.header.projectSort.recent'],
+] as const;
+
 // Pseudo-project key for the collapsible "recent" group's persisted expansion.
 
 type ProjectMeta = {
@@ -108,6 +121,9 @@ type ProjectMeta = {
   iconBackground?: string | null;
   isGitRepo: boolean;
   worktrees: WorktreeMetadata[];
+  /** Read by the 'date-added' / 'recent' project orders. */
+  addedAt?: number;
+  lastOpenedAt?: number;
 };
 
 type WorktreeBucket = {
@@ -936,6 +952,9 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const setActiveProject = useProjectsStore((state) => state.setActiveProject);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
   const reorderProjects = useProjectsStore((state) => state.reorderProjects);
+  const manualProjectOrder = useProjectsStore((state) => state.manualProjectOrder);
+  const projectSortOrder = useSessionDisplayStore((state) => state.projectSortOrder);
+  const setProjectSortOrder = useSessionDisplayStore((state) => state.setProjectSortOrder);
   const removeProject = useProjectsStore((state) => state.removeProject);
   const projectExpandedMap = useMobileSessionTreeStore((state) => state.projectExpanded);
   const worktreeExpandedMap = useMobileSessionTreeStore((state) => state.worktreeExpanded);
@@ -1047,21 +1066,27 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
 
   const projectsMeta = React.useMemo<ProjectMeta[]>(
     () =>
-      projects.map((project) => ({
-        id: project.id,
-        label: project.label?.trim() || getProjectLabel(project.path),
-        path: normalizePath(project.path),
-        icon: project.icon,
-        color: project.color,
-        iconImage: project.iconImage,
-        iconBackground: project.iconBackground,
-        isGitRepo: gitProjectPaths.has(normalizePath(project.path)),
-        worktrees: orderWorktrees(
-          worktreeOrderByProject[project.id],
-          worktreesByProject.get(normalizePath(project.path)) ?? [],
-        ),
-      })),
-    [gitProjectPaths, projects, worktreeOrderByProject, worktreesByProject],
+      sortProjectsByOrder(
+        projects.map((project) => ({
+          id: project.id,
+          label: project.label?.trim() || getProjectLabel(project.path),
+          path: normalizePath(project.path),
+          icon: project.icon,
+          color: project.color,
+          iconImage: project.iconImage,
+          iconBackground: project.iconBackground,
+          isGitRepo: gitProjectPaths.has(normalizePath(project.path)),
+          worktrees: orderWorktrees(
+            worktreeOrderByProject[project.id],
+            worktreesByProject.get(normalizePath(project.path)) ?? [],
+          ),
+          addedAt: project.addedAt,
+          lastOpenedAt: project.lastOpenedAt,
+        })),
+        projectSortOrder,
+        manualProjectOrder,
+      ),
+    [gitProjectPaths, manualProjectOrder, projectSortOrder, projects, worktreeOrderByProject, worktreesByProject],
   );
 
   /**
@@ -1397,6 +1422,16 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // The order is a shared setting, so persist it the same way the desktop
+  // sidebar does — picking it here follows the user to their other surfaces.
+  const handleProjectSortChange = (order: ProjectSortOrder) => {
+    setProjectSortOrder(order);
+    void updateDesktopSettings({ sidebarProjectSortOrder: order });
+    // Dragging projects rewrites the manual order; it means nothing while the
+    // list is sorted by something else.
+    if (order !== 'manual') setEditingOrder(false);
+  };
+
   const handleReorderDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
@@ -1481,7 +1516,9 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
 
   const hasNoMatches =
     normalizedQuery && searchSessionMatches.length === 0 && searchProjectMatches.length === 0;
-  const canEditOrder = !normalizedQuery && projectsMeta.length > 1;
+  // Drag order IS the manual order: offering it under another sort would let
+  // the user rearrange a list that is about to be re-sorted anyway.
+  const canEditOrder = !normalizedQuery && projectsMeta.length > 1 && projectSortOrder === 'manual';
 
   const editToggle = canEditOrder ? (
     <Button
@@ -1565,6 +1602,31 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                 </button>
               ) : null}
             </div>
+            {/* Sorting sits with the search field rather than in the header:
+                it scrolls away with it, so a setting touched once a month
+                costs no permanent room above the list. */}
+            {!normalizedQuery && projectsMeta.length > 1 ? (
+              <div
+                role="group"
+                aria-label={t('sessions.sidebar.header.actions.sortProjects')}
+                className="oc-hide-scrollbar -mx-4 mt-2 flex gap-1.5 overflow-x-auto px-4 pb-0.5"
+              >
+                {PROJECT_SORT_OPTIONS.map(([order, labelKey]) => (
+                  <Button
+                    key={order}
+                    type="button"
+                    variant="chip"
+                    size="sm"
+                    className="shrink-0"
+                    aria-pressed={projectSortOrder === order}
+                    onClick={() => handleProjectSortChange(order)}
+                    style={{ touchAction: 'manipulation' }}
+                  >
+                    {t(labelKey)}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
           </div>
           {projectsMeta.length === 0 && chatSessions.length === 0 ? (
             <MobileSessionsEmpty
