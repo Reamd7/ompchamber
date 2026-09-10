@@ -3,6 +3,12 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'sessions.aiRename.action': 'Renommer avec l’IA',
+  'sessions.aiRename.generating': 'Génération du titre de la session...',
+  'sessions.aiRename.checking': 'Vérification des échanges terminés...',
+  'sessions.aiRename.noCompletedTurns': 'Disponible après la première réponse terminée.',
+  'sessions.aiRename.failed': 'Impossible de renommer la session. Vérifiez les paramètres du petit modèle et réessayez.',
+  'sessions.aiRename.unsupported': 'Le renommage par IA n’est pas disponible dans VS Code.',
   'commitComparison.mode': 'Commit',
   'pullRequestComparison.select': 'Sélectionner une pull request',
   'commitComparison.select': 'Choisir un commit',

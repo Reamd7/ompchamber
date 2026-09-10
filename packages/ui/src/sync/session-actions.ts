@@ -42,7 +42,8 @@ import { normalizePath } from "@/lib/pathNormalization"
 import { mergeMessages } from "./optimistic"
 import { messagesBefore, messagesFrom } from "./message-ordering"
 import { deleteChatDirectory } from "@/lib/chatDirectories"
-
+import { createChatDraftIdentity } from "@/lib/chatDraftPersistence"
+import { cancelSessionTitleGeneration } from "./session-title-generation"
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
 // A relay-tunnel send fails when the tunnel drops, and the confirming refetch
@@ -1391,9 +1392,18 @@ export async function unarchiveSessions(
   return { restoredIds, failedIds }
 }
 
-export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
-  const sessionDirectory = getSessionDirectory(sessionId)
+export async function updateSessionTitle(
+  sessionId: string,
+  title: string,
+  options?: { directory?: string | null; expectedRuntimeKey?: string; signal?: AbortSignal },
+): Promise<void> {
+  if (isStaleRuntime(options?.expectedRuntimeKey)) throw new Error("runtime changed")
+  if (options?.signal) options.signal.throwIfAborted()
+  else cancelSessionTitleGeneration(sessionId)
+  const sessionDirectory = options?.directory ?? getSessionDirectory(sessionId)
   const session = await opencodeClient.updateSession(sessionId, { title }, sessionDirectory)
+  if (isStaleRuntime(options?.expectedRuntimeKey)) throw new Error("runtime changed")
+  options?.signal?.throwIfAborted()
   useGlobalSessionsStore.getState().upsertSession(session)
   mirrorSessionIntoLiveStores(session, sessionDirectory)
 }

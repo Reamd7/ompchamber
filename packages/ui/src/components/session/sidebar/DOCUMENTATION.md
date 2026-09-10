@@ -54,6 +54,12 @@ only changes priority. Row mounts must not start bootstrap work. Selection and
 activity subscriptions stay session-scoped so a structural list update does not
 make every row observe unrelated streaming updates.
 
+Session menus share `SessionAiRenameMenuItem` with header tabs and the
+single-session header. AI renaming uses the same leading spinner as a worktree
+move; the pending operation survives closing the menu or selecting another
+session. Eligibility loads only while a menu is open. See the AI session titles
+section in `sync/DOCUMENTATION.md` for context selection and mutation guards.
+
 ## Search
 
 Sidebar and Recent queries beginning with `ses_` match only the full session ID,
