@@ -1016,7 +1016,12 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'パスキーを削除できませんでした。',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': '保存された認証情報をクリアできませんでした。',
   'settings.ompchamber.sessionRetention.title': 'Session 保持',
-  'settings.ompchamber.sessionRetention.tooltip': '最終アクティビティに基づいて非アクティブな Session を自動的にアーカイブまたは削除します。最新5件の Session は保持されます。',
+
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'アーカイブ済みのセッションのみ',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': '削除を選択し、アーカイブ時点から保持期間を数えます。未アーカイブのセッションは保持されます。',
+  'settings.ompchamber.sessionRetention.archivedTooltip': '保持期間を過ぎたアーカイブ済みのセッションを削除します。最後にアーカイブされた5件、開いているセッション、実行中および共有中のセッションは保持されます。保護された子セッションまで削除される場合、親セッションは削除されません。',
+  'settings.ompchamber.sessionRetention.tooltip': '最終アクティビティに基づいて未アーカイブのセッションをアーカイブまたは削除します。最新5件、開いているセッション、実行中および共有中のセッションは保持されます。アーカイブ済みのセッションも保持されます。保護された子セッションまで削除される場合、親セッションは削除されません。',
+
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': '自動クリーンアップを有効化',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': '自動クリーンアップを有効化',
   'settings.ompchamber.sessionRetention.field.retentionPeriod': '保持期間',

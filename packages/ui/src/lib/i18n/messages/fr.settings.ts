@@ -901,7 +901,12 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'Impossible de supprimer le mot de passe.',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': 'Impossible d\\\'effacer l\\\'authentification enregistrée.',
   'settings.ompchamber.sessionRetention.title': 'Rétention de session',
-  'settings.ompchamber.sessionRetention.tooltip': 'Archivez ou supprimez automatiquement les sessions inactives en fonction de la dernière activité. Conserve les 5 sessions les plus récentes.',
+
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Uniquement les sessions archivées',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Utilise Supprimer et compte la période de conservation depuis l\'archivage. Les sessions non archivées sont conservées.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Supprime les sessions archivées dont la période de conservation a expiré. Conserve les 5 sessions archivées le plus récemment, la session ouverte, les sessions en cours et les sessions partagées. Une session parente est conservée si sa suppression supprimerait aussi une session enfant protégée.',
+  'settings.ompchamber.sessionRetention.tooltip': 'Archive ou supprime les sessions non archivées selon leur dernière activité. Conserve les 5 sessions les plus récentes, la session ouverte, les sessions en cours et les sessions partagées. Les sessions archivées sont conservées. Une session parente est conservée si sa suppression supprimerait aussi une session enfant protégée.',
+
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': 'Activer le nettoyage automatique',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': 'Activer le nettoyage automatique',
   'settings.ompchamber.sessionRetention.field.retentionPeriod': 'Période de conservation',

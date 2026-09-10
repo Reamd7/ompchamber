@@ -967,7 +967,12 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'Konnte Passkey nicht entfernen.',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': 'Konnte gespeicherte Authentifizierung nicht löschen.',
   'settings.ompchamber.sessionRetention.title': 'Sitzungsaufbewahrung',
-  'settings.ompchamber.sessionRetention.tooltip': 'Automatisches Archivieren oder Löschen inaktiver Sitzungen basierend auf letzter Aktivität. Behält die 5 neuesten Sitzungen bei.',
+
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Nur archivierte Sitzungen',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Verwendet Löschen und zählt die Aufbewahrungsdauer ab der Archivierung. Nicht archivierte Sitzungen bleiben erhalten.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Löscht archivierte Sitzungen nach Ablauf der Aufbewahrungsdauer. Behält die 5 zuletzt archivierten Sitzungen, die geöffnete Sitzung sowie laufende und geteilte Sitzungen. Eine übergeordnete Sitzung bleibt erhalten, wenn ihre Löschung auch eine geschützte untergeordnete Sitzung löschen würde.',
+  'settings.ompchamber.sessionRetention.tooltip': 'Archiviert oder löscht nicht archivierte Sitzungen anhand ihrer letzten Aktivität. Behält die 5 neuesten Sitzungen, die geöffnete Sitzung sowie laufende und geteilte Sitzungen. Archivierte Sitzungen bleiben erhalten. Eine übergeordnete Sitzung bleibt erhalten, wenn ihre Löschung auch eine geschützte untergeordnete Sitzung löschen würde.',
+
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': 'Automatische Bereinigung aktivieren',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': 'Automatische Bereinigung aktivieren',
   'settings.ompchamber.sessionRetention.field.retentionPeriod': 'Aufbewahrungszeitraum',

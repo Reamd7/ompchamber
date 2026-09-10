@@ -1,4 +1,7 @@
 export const dict = {
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Yalnızca arşivlenmiş oturumlar',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Sil seçeneğini kullanır ve saklama süresini arşivleme tarihinden itibaren sayar. Arşivlenmemiş oturumlar korunur.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Saklama süresi dolan arşivlenmiş oturumları siler. En son arşivlenen 5 oturumu, açık oturumu, çalışan ve paylaşılan oturumları korur. Bir üst oturumun silinmesi korunan bir alt oturumu da silecekse üst oturum korunur.',
   'settings.openchamber.visual.field.alwaysShowScrollbars': 'Kaydırma çubuklarını her zaman göster',
   'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Kaydırma çubuklarını, önce kaydırmadan tutabileceğiniz şekilde görünür tutar. Yalnızca bu cihazda geçerlidir.',
   'chat.liveActivity.title': 'Etkinlik',

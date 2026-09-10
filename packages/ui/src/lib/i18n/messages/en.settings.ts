@@ -1014,7 +1014,12 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'Could not remove passkey.',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': 'Could not clear saved authentication.',
   'settings.ompchamber.sessionRetention.title': 'Session Retention',
-  'settings.ompchamber.sessionRetention.tooltip': 'Automatically archive or delete inactive sessions based on last activity. Keeps the 5 most recent sessions.',
+  'settings.ompchamber.sessionRetention.tooltip': 'Archives or deletes unarchived sessions based on last activity. Keeps the 5 most recent sessions, the open session, running sessions and shared sessions. Archived sessions are kept. A parent is kept if deleting it would also delete a protected child.',
+
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Only archived sessions',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Uses Delete and counts the retention period from archiving. Unarchived sessions are kept.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Deletes expired archived sessions. Keeps the 5 most recently archived sessions, the open session, running sessions and shared sessions. A parent is kept if deleting it would also delete a protected child.',
+
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': 'Enable auto-cleanup',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': 'Enable Auto-Cleanup',
   'settings.ompchamber.sessionRetention.field.retentionPeriod': 'Retention Period',

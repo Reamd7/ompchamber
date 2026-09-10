@@ -421,6 +421,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['retention', 'archive', 'delete'],
   },
   {
+    id: 'sessions.retention-only-archived',
+    page: 'sessions',
+    titleKey: 'settings.ompchamber.sessionRetention.field.onlyArchived',
+    descriptionKey: 'settings.ompchamber.sessionRetention.field.onlyArchivedDescription',
+    keywords: ['archive', 'archived', 'only', 'delete', 'cleanup', 'retention'],
+  },
+  {
     id: 'sessions.retention-period',
     page: 'sessions',
     titleKey: 'settings.ompchamber.sessionRetention.field.retentionPeriod',

@@ -9,7 +9,7 @@
 |---|---|---|---|---|---|---|
 | Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 9/9 (9吸) |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 5/5 (2吸/3跳) |
-| 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 3/5 (2吸/1跳) |
+| 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 4/5 (3吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 0/1 |
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/7 |
@@ -66,7 +66,7 @@ work-until-done(v2 SDK 标记)、归档清理、精确搜索、AI 重命名、�
 |---|---|---|---|---|
 | - [ ] | `ea15762ee` | feat(sessions): keep sessions in work until the user marks them done | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 | - [ ] | `9dfdacf91` | feat(settings): add session warming toggle to Sessions settings | `服务端` |  |
-| - [ ] | `0e9e93dc7` | feat(sessions): add archived-only retention cleanup | `服务端` |  |
+| - [x] | `0e9e93dc7` | feat(sessions): add archived-only retention cleanup | `服务端` | PORTED(织入 fork 自动清理 hook;i18n 键改 ompchamber: 前缀;设置键走本地 persist) |
 | - [x] | `0c7653c4c` | feat: rename sessions with AI using recent conversation turns | `自身` | PORTED(v2 SDK 类型换绑 v1 wire;runtime 事件名改 ompchamber: 前缀) |
 | - [x] | `3903bfad8` | feat(sessions): add exact ID search to sidebar and archive (#3428) | `自身` | PORTED(干净落地) |
 
