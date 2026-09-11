@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+
+## [1.30.1] - 2026-09-11
+
+- Terminal: terminals render through the Canvas 2D renderer again — the WebGL pipeline shipped in 1.29.0 is still in development and is no longer the default.
+
 ## [1.30.0] - 2026-09-07
 
 - **Chat: subagents now show live progress while they run.** When the agent dispatches subagents, each task card in the conversation lists them with a live row apiece — status (pending, running, retrying, completed, failed, aborted), token count, elapsed time, and the latest activity — the header badge counts how many are still running, and the work status panel's Subagents section carries the same live totals. Rows keep updating even when a dispatch outlives the turn that started it.
