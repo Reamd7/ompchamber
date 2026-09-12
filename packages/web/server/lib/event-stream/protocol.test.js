@@ -25,6 +25,7 @@ describe('event stream protocol helpers', () => {
 
     expect(envelope).toEqual({
       eventId: 'evt-1',
+      eventName: 'message',
       directory: '/tmp/project',
       payload: { type: 'session.updated' },
     });
@@ -37,6 +38,7 @@ describe('event stream protocol helpers', () => {
 
     expect(envelope).toEqual({
       eventId: null,
+      eventName: null,
       directory: '/tmp/project',
       payload: {
         type: 'ompchamber:notification',
@@ -45,8 +47,23 @@ describe('event stream protocol helpers', () => {
     });
   });
 
-  it('returns null for malformed SSE blocks', () => {
-    expect(parseSseEventEnvelope('event: message\n')).toBeNull();
+  it('returns control frames for data-less event blocks and null for comments', () => {
+    // Data-less control frames (omp.stream.resync) carry their id and event
+    // name with no payload; comments carry nothing at all (plan §5.4).
+    expect(parseSseEventEnvelope('event: omp.stream.resync\nid: 42\n')).toEqual({
+      eventId: '42',
+      eventName: 'omp.stream.resync',
+      directory: null,
+      payload: null,
+    });
+    expect(parseSseEventEnvelope('event: message\n')).toEqual({
+      eventId: null,
+      eventName: 'message',
+      directory: null,
+      payload: null,
+    });
+    expect(parseSseEventEnvelope(': heartbeat\n')).toBeNull();
+    // Malformed data with no id/event carries nothing usable either.
     expect(parseSseEventEnvelope('data: {oops}\n')).toBeNull();
   });
 

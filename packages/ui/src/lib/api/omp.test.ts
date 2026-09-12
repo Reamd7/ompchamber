@@ -161,6 +161,75 @@ describe('createOmpEventsAPI.subscribeEvents', () => {
     subscription.close();
   });
 
+  test('resync adoption: resumeFrom becomes the reconnect cursor and the boot epoch is echoed', async () => {
+    const requestHeaders: Array<Record<string, string> | undefined> = [];
+    let connections = 0;
+    const fetchImpl = (async (_path: string, init?: RequestInit & { query?: Query }) => {
+      connections += 1;
+      requestHeaders.push(init?.headers as Record<string, string> | undefined);
+      if (connections === 1) {
+        return sseResponse([
+          'event: omp.stream.boot\ndata: {"id":0,"type":"omp.stream.boot","directory":"","schemaVersion":"1.0","createdAt":1,"payload":{"epoch":"boot-9"}}\n\n',
+          'event: omp.stream.resync\ndata: {"id":12,"type":"omp.stream.resync","directory":"","schemaVersion":"1.0","createdAt":2,"payload":{"scope":["model"],"lastEventId":3,"resumeFrom":12}}\n\n',
+        ]).response;
+      }
+      return sseResponse([envelopeFrame(envelope({ id: 13 }))]).response;
+    }) as unknown as typeof fetch;
+    const seen: OmpEventEnvelope[] = [];
+    const secondEvent = Promise.withResolvers<void>();
+    const api = createOmpEventsAPI({ fetchImpl });
+    const subscription = api.subscribeEvents(null, {
+      onEvent: (env) => {
+        seen.push(env);
+        if (env.id === 13) secondEvent.resolve();
+      },
+      onResync: () => {},
+    });
+    // The reconnect backoff (250ms) elapses while we wait for the second
+    // stream's event — no fixed sleeps.
+    await secondEvent.promise;
+    subscription.close();
+
+    expect(seen.map((env) => env.id)).toEqual([13]);
+    // The sentinel tail (12), not the stale cursor (3) and not the phantom
+    // next id; the learned boot epoch rides the reconnect (plan §5.2).
+    expect(requestHeaders[1]?.['Last-Event-ID']).toBe('12');
+    expect(requestHeaders[1]?.['x-omp-epoch']).toBe('boot-9');
+  });
+
+  test('boot frame never advances the event cursor', async () => {
+    const seen: OmpEventEnvelope[] = [];
+    const requestHeaders: Array<Record<string, string> | undefined> = [];
+    let connections = 0;
+    const fetchImpl = (async (_path: string, init?: RequestInit & { query?: Query }) => {
+      connections += 1;
+      requestHeaders.push(init?.headers as Record<string, string> | undefined);
+      if (connections === 1) {
+        return sseResponse([
+          'event: omp.stream.boot\ndata: {"id":0,"type":"omp.stream.boot","directory":"","schemaVersion":"1.0","createdAt":1,"payload":{"epoch":"boot-9"}}\n\n',
+          envelopeFrame(envelope({ id: 5 })),
+        ]).response;
+      }
+      return sseResponse([envelopeFrame(envelope({ id: 6 }))]).response;
+    }) as unknown as typeof fetch;
+    const secondEvent = Promise.withResolvers<void>();
+    const api = createOmpEventsAPI({ fetchImpl });
+    const subscription = api.subscribeEvents(null, {
+      onEvent: (env) => {
+        seen.push(env);
+        if (env.id === 6) secondEvent.resolve();
+      },
+      onResync: () => {},
+    });
+    await secondEvent.promise;
+    subscription.close();
+
+    // Boot's envelope id 0 must not become the cursor: the reconnect
+    // resumes from the last real event (5), not from 0.
+    expect(seen.map((env) => env.id)).toEqual([5, 6]);
+    expect(requestHeaders[1]?.['Last-Event-ID']).toBe('5');
+  });
+
   test('permanent 4xx takes the long cap: one attempt, one onDisconnect', async () => {
     let attempts = 0;
     let disconnects = 0;

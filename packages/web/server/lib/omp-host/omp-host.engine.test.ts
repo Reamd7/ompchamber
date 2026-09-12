@@ -298,7 +298,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     session.abort = mock(() => new Promise(() => {}));
 
     await expect(engine.abort({ sessionID: 's2', directory: '/repo' })).resolves.toBe(true);
-    expect(engine.sessions.has('s2')).toBe(false);
+    expect(engine.liveRecord('s2') != null).toBe(false);
     expect(session.dispose).toHaveBeenCalled();
 
     // Escalation must settle every client: one durable session.idle, routed
@@ -319,7 +319,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     });
 
     await expect(engine.abort({ sessionID: 's1', directory: '/repo' })).resolves.toBe(true);
-    expect(engine.sessions.has('s1')).toBe(true);
+    expect(engine.liveRecord('s1') != null).toBe(true);
     expect(engine.bus.replay.some((entry) => entry.envelope.type === 'session.idle')).toBe(false);
   });
 
@@ -336,14 +336,14 @@ describe('OmpHostEngine prompt dispatch', () => {
     // test exercised it).
     session.abort = mock(async () => {});
     session.dispose = mock(async () => {});
-    const live = engine.sessions.get('s2');
+    const live = engine.liveRecord('s2')?.payload;
     if (!live) throw new Error('s2 missing');
     live.awaitingAsyncSince = Date.now();
     const before = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle').length;
 
     await expect(engine.abort({ sessionID: 's2', directory: '/repo' })).resolves.toBe(true);
     expect(live.awaitingAsyncSince === null).toBe(true);
-    expect(engine.sessions.has('s2')).toBe(true);
+    expect(engine.liveRecord('s2') != null).toBe(true);
     expect(session.dispose).not.toHaveBeenCalled();
     const idle = engine.bus.replay.filter((entry) => entry.envelope.type === 'session.idle');
     expect(idle.length).toBe(before + 1);
@@ -455,7 +455,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(typeof options?.localProtocolOptions).toBe('object');
     // Retained for the agent-runs aggregator (04 §5.5).
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect((engine.sessions.get('s1') as { agentRegistry: unknown }).agentRegistry).toBe(options?.agentRegistry);
+    expect((engine.liveRecord('s1')?.payload as { agentRegistry: unknown } | undefined)?.agentRegistry).toBe(options?.agentRegistry);
     // A lease flip drives hasUI on the next materialization.
     engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's2', clientId: 'c1' });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'with lease', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });

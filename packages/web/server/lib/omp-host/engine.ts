@@ -23,6 +23,10 @@ import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility
 import type { ExtensionUIContext } from '@oh-my-pi/pi-coding-agent/extensibility/extensions';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.ts';
 import type { SessionMeta, SessionMetadataValue } from './registry.ts';
+import { LiveSessionRegistry, SessionBusyError, sessionKey, type LiveRecord } from './live-registry.ts';
+import { withColdManager } from './cold-reader.ts';
+import { readSessionEventRows, readSessionScalars, readTranscriptMessagePage } from './cold-transcript-page.ts';
+import { classifyExternalChange, fileSignature, tailEntryIdOf, type FileSignature } from './dual-write.ts';
 import { WireEventBus, OmpEventBus } from './events.ts';
 import {
   StreamProjector,
@@ -71,10 +75,14 @@ import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
 import type { UriDomain } from './domain-uri.ts';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
-// Cap on concurrently live top-level sessions; idle sessions beyond this
-// are swept after IDLE_SESSION_TTL_MS. Referenced by #sweepIdleSessions —
-// it was missing entirely and killed the engine on the first 60s sweep.
-const MAX_LIVE_SESSIONS = 16;
+// Idle-session sweep period (plan D2: 60s; the count gate is gone — quantity
+// is not a memory bound, idle lifetime is).
+const IDLE_SWEEP_INTERVAL_MS = 60_000;
+// Drain budget for a single eviction's agentSession.dispose (SDK default is
+// 5s; allow headroom for flush) and the global shutdown deadline for all
+// disposals combined (plan §3.4).
+const EVICT_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_DISPOSE_DEADLINE_MS = 10_000;
 
 // Bound on how long engine.abort waits for AgentSession.abort's teardown
 // (post-prompt drain + agent idle). The pi drain has no internal timeout on
@@ -128,6 +136,8 @@ interface AppliedPluginsSnapshot {
 
 /** Engine-side record for one live omp-host session id. */
 interface HostSession {
+  /** Registry key (`directory\0sessionID`) — lifecycle lookups go through it. */
+  key: string;
   sessionId: string;
   directory: string;
   agentSession: SdkAgentSession | null;
@@ -135,7 +145,6 @@ interface HostSession {
 
   currentPersona: string;
   projector: StreamProjector | null;
-  lastTouched: number;
   pendingUserWireId: string | null;
   lastUserWireId: string | null;
   syncedEntryKeys?: Set<string>;
@@ -149,6 +158,10 @@ interface HostSession {
   /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
   turnToolResults?: Map<string, { content?: unknown; isError?: boolean; timestamp?: number }> | null;
   unsubscribe?: () => void;
+  /** onSessionNameChanged unsubscribe (plan §3.3.2 — never leak the callback). */
+  nameUnsubscribe?: () => void;
+  /** Transcript identity at materialize; dual-write detection (plan §8). */
+  fileSignature: FileSignature | null;
 }
 
 /** The SessionManager surface #infoFromManager reads (SDK SessionManager). */
@@ -197,8 +210,14 @@ interface SessionListInfo {
 }
 
 export class OmpHostEngine {
-  /** In-flight #materialize dedup (`${directory}\0${sessionId}` → promise); prevents duplicate AgentSessions on lease/prompt races. */
-  #materializeInFlight = new Map<string, Promise<HostSession>>();
+  #live: LiveSessionRegistry<HostSession>;
+  /** True once shutdown started: new writers are rejected (plan §3.4). */
+  #closing = false;
+  /** Test seams: monotonic TTL clock + agent factory (defaults: real SDK). */
+  #now: () => number;
+  #createAgentSessionImpl: typeof createAgentSession;
+  /** Bound on unknown-event diagnostic keys (plan §6: no unbounded key set). */
+  static #UNKNOWN_EVENT_KEYS_MAX = 64;
 
   authStorage: AuthStorage | null;
   modelRegistry: ModelRegistry | null;
@@ -206,7 +225,6 @@ export class OmpHostEngine {
   bus: WireEventBus;
   /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
   ompBus: OmpEventBus;
-  sessions: Map<string, HostSession>;
   /**
    * Canonical-read wire id -> client messageID echoed at prompt time.
    *
@@ -238,30 +256,45 @@ export class OmpHostEngine {
   unknownEventCounts: Map<string, number> | undefined;
   /** How long abort() waits for the agent teardown before force-disposing. */
   abortTeardownTimeoutMs: number;
+  /** Single-eviction SDK drain budget (test injectable, plan §3.4). */
+  evictDrainTimeoutMs: number;
+  /** Global shutdown deadline across all disposals (test injectable). */
+  shutdownDisposeDeadlineMs: number;
 
-  constructor({ agentDir, abortTeardownTimeoutMs }: { agentDir?: string; abortTeardownTimeoutMs?: number } = {}) {
+  constructor({
+    agentDir,
+    abortTeardownTimeoutMs,
+    evictDrainTimeoutMs,
+    shutdownDisposeDeadlineMs,
+    now,
+    createAgentSession: createAgentSessionImpl,
+  }: {
+    agentDir?: string;
+    abortTeardownTimeoutMs?: number;
+    evictDrainTimeoutMs?: number;
+    shutdownDisposeDeadlineMs?: number;
+    /** Monotonic clock for idle TTL (plan §4.2; test injectable). */
+    now?: () => number;
+    /** Agent factory seam for lifecycle tests (default: SDK createAgentSession). */
+    createAgentSession?: typeof createAgentSession;
+  } = {}) {
     this.authStorage = null;
     this.modelRegistry = null;
     this.registry = new SessionMetaRegistry({ agentDir });
     this.bus = new WireEventBus();
     /** How long abort() waits for the agent teardown before force-disposing (test injectable). */
     this.abortTeardownTimeoutMs = abortTeardownTimeoutMs ?? ABORT_TEARDOWN_TIMEOUT_MS;
+    this.evictDrainTimeoutMs = evictDrainTimeoutMs ?? EVICT_DRAIN_TIMEOUT_MS;
+    this.shutdownDisposeDeadlineMs = shutdownDisposeDeadlineMs ?? SHUTDOWN_DISPOSE_DEADLINE_MS;
+    this.#now = now ?? (() => performance.now());
+    this.#createAgentSessionImpl = createAgentSessionImpl ?? createAgentSession;
+    this.#live = new LiveSessionRegistry<HostSession>({ now: this.#now });
     /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
     this.ompBus = new OmpEventBus();
-    /** @type {Map<string, HostSession>} */
-    this.sessions = new Map();
     /**
      * Canonical-read wire id -> client messageID echoed at prompt time.
-     *
-     * The wire contract requires the server to echo the client's messageID so
-     * the optimistic UI message reconciles in place, but pi's persisted
-     * UserMessage carries no id field to store it in. This map bridges the two:
-     * prompt() records the pending client id, the user message_start event
-     * captures pi's canonical message identity, and cold projections resolve
-     * the same wire id both live and on re-fetch. Without it a re-fetch during
-     * or after the turn projected a second, different id for the same message
-     * and the UI rendered the user's prompt twice.
-     * @type {Map<string, string>}
+     * (See the field comment; the map itself is data-proportional by design —
+     * plan D5 tracks its long-session growth as a known risk.)
      */
     this.wireIdOverrides = new Map();
     /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
@@ -290,7 +323,7 @@ export class OmpHostEngine {
             durable: options.durable !== false
           }),
       appendFor: (sessionId, directoryKey) => (mode, data) => {
-        const hostSession = this.sessions.get(sessionId);
+        const hostSession = this.#liveHostAnywhere(directoryKey, sessionId);
         const manager = hostSession?.agentSession?.sessionManager;
         if (!manager?.appendModeChange) return undefined;
         const entryId = manager.appendModeChange(mode, data);
@@ -298,7 +331,7 @@ export class OmpHostEngine {
         return entryId;
       },
       sessionContextFor: (sessionId, directoryKey) => {
-        const hostSession = this.sessions.get(sessionId);
+        const hostSession = this.#liveHostAnywhere(directoryKey, sessionId);
         try {
           return hostSession?.agentSession?.sessionManager?.buildSessionContext?.();
         } catch {
@@ -380,28 +413,37 @@ export class OmpHostEngine {
         return artifactsDir ? createLocalProtocolOptions(sessionId, directoryKey, artifactsDir) : null;
       },
       sessionTreeData: async (directory) => this.listSessions({ directory: directory ?? undefined }),
+      // Cold entry tree (plan §7.1): build the snapshot inside withColdManager
+      // so the cold manager is closed and its entries mirror released on
+      // every path — the old contract handed a raw manager to the URI domain
+      // and never closed it.
       entryTreeFor: async (sessionID, directory) => {
-        const file = await this.#findSessionFile(sessionID, normalizeDirectoryKey(directory));
+        const directoryKey = normalizeDirectoryKey(directory);
+        const file = await this.#findSessionFile(sessionID, directoryKey);
         if (!file) return null;
-        const manager = await SessionManager.open(file.path);
-        return { manager };
+        const tree = await withColdManager(file.path, (manager) =>
+          buildEntryTreeSnapshot({ sessionID, directory: directoryKey, manager }),
+        );
+        return { tree };
       },
       localFiles: (sessionID, directory) =>
         this.#listLocalFiles(sessionID, normalizeDirectoryKey(directory)),
       agentsSnapshot: () =>
-        [...this.sessions.values()]
-          .filter((hostSession) => hostSession.agentRegistry && hostSession.agentSession)
-          .map((hostSession) => ({
-            sessionID: hostSession.sessionId,
-            directory: hostSession.directory,
-            registry: hostSession.agentRegistry
+        this.#live
+          .snapshot()
+          .filter((record) => record.state === 'live' && record.payload)
+          .map((record) => ({
+            sessionID: record.sessionId,
+            directory: record.directory,
+            registry: record.payload!.agentRegistry
           })),
       publish: (type, payload, scope) => this.ompBus.publish(type, payload, scope),
-      liveSessionIds: () => [...this.sessions.keys()]
+      liveSessionIds: () =>
+        this.#live.snapshot().filter((record) => record.state === 'live' || record.state === 'materializing').map((record) => record.sessionId)
     });
     this.bootError = null;
     this.bootPromise = null;
-    this.sweeper = setInterval(() => this.#sweepIdleSessions(), 60_000);
+    this.sweeper = setInterval(() => this.#sweepIdleSessions(), IDLE_SWEEP_INTERVAL_MS);
     this.sweeper.unref?.();
   }
 
@@ -492,13 +534,13 @@ export class OmpHostEngine {
   }
 
   async #attachDialogUi(directory: string, sessionId: string) {
-    const hostSession = this.sessions.get(sessionId) ?? (await this.#materialize(sessionId, directory));
+    const hostSession = this.#liveHostAnywhere(directory, sessionId) ?? (await this.#materialize(sessionId, directory));
     if (!hostSession) return;
     await this.#setDialogUiContext(hostSession, directory, sessionId, true);
   }
 
   #detachDialogUi(directory: string, sessionId: string) {
-    const hostSession = this.sessions.get(sessionId);
+    const hostSession = this.#liveHostAnywhere(directory, sessionId);
     if (!hostSession) return;
     try {
       this.#applyToolUiContext(hostSession.sdkResult, undefined, false);
@@ -639,36 +681,234 @@ export class OmpHostEngine {
     return result;
   }
 
+  /**
+   * Idle reaper (plan §4): every live record idle beyond the TTL is a
+   * candidate — there is no live-count gate (quantity is not a memory
+   * bound). Candidate selection happens outside the gate, but the evict
+   * decision re-reads state, TTL, inFlight, leases, pending dialogs and
+   * every SDK activity signal INSIDE the per-key gate, with no unprotected
+   * await between the checks and beginDispose.
+   */
   #sweepIdleSessions() {
-    const now = Date.now();
-    const entries = [...this.sessions.entries()];
-    if (entries.length <= MAX_LIVE_SESSIONS) return;
-    for (const [id, session] of entries) {
-      if (session.agentSession?.isStreaming) continue;
-      if (now - session.lastTouched < IDLE_SESSION_TTL_MS) continue;
-      this.#disposeSession(session);
-      this.sessions.delete(id);
-      if (this.sessions.size <= MAX_LIVE_SESSIONS) break;
+    const now = this.#now();
+    for (const record of this.#live.snapshot()) {
+      if (record.state !== 'live') continue;
+      if (now - record.lastUsedAt < IDLE_SESSION_TTL_MS) continue;
+      void this.#live
+        .withOperation(record.key, async () => {
+          const current = this.#live.byKey(record.key);
+          if (!current || current !== record || current.state !== 'live') return;
+          if (this.#now() - current.lastUsedAt < IDLE_SESSION_TTL_MS) return;
+          if (current.inFlight > 0) return;
+          if (this.#recordIsActive(current)) return;
+          this.#evictRecord(current, 'idle-ttl');
+        })
+        .catch((error) => {
+          console.warn('[omp-host] idle sweep error:', errorText(error));
+        });
+    }
+    // Periodic transport hygiene (plan §6): tokens expire even without mints.
+    this.uriDomain?.tokens?.sweep?.();
+  }
+
+  /** Interval target; public so the lifecycle tests drive it deterministically. */
+  sweepIdleSessionsNow() {
+    this.#sweepIdleSessions();
+  }
+
+  /** Full activity guard set (plan §4.1) read from the live SDK session. */
+  #recordIsActive(record: LiveRecord<HostSession>): boolean {
+    const hostSession = record.payload;
+    if (!hostSession) return false;
+    if (hostSession.awaitingAsyncSince !== null) return true;
+    const session = hostSession.agentSession;
+    if (!session) return false;
+    if (
+      session.isStreaming ||
+      session.isAborting ||
+      session.isRetrying ||
+      session.isCompacting ||
+      session.isGeneratingHandoff ||
+      session.isBashRunning ||
+      session.isEvalRunning ||
+      session.hasPendingBashMessages ||
+      session.hasPendingPythonMessages ||
+      session.hasPostPromptWork ||
+      session.queuedMessageCount > 0
+    ) {
+      return true;
+    }
+    try {
+      if (session.hasPendingAsyncWork()) return true;
+    } catch {
+      // Getter must not veto eviction by throwing.
+    }
+    if (this.dialogs.registry.pendingCount({ directory: record.directory, sessionId: record.sessionId }) > 0) {
+      return true;
+    }
+    if (this.dialogs.hasUISnapshotFor(record.directory, record.sessionId).holders > 0) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Tear the host side off a record: subscriptions, domain handles, UI.
+   * Every release settles independently (plan §3.3 step 6): a throwing
+   * unsubscribe must not skip the remaining teardown or — worse — abort
+   * #evictRecord before the disposal promise exists, which would strand an
+   * evicting record that can never finish.
+   */
+  #releaseHostHandles(hostSession: HostSession): void {
+    const failures: string[] = [];
+    const attempt = (release: () => void) => {
+      try {
+        release();
+      } catch (error) {
+        failures.push(errorText(error));
+      }
+    };
+    attempt(() => {
+      hostSession.unsubscribe?.();
+      hostSession.unsubscribe = undefined;
+    });
+    attempt(() => {
+      hostSession.nameUnsubscribe?.();
+      hostSession.nameUnsubscribe = undefined;
+    });
+    hostSession.extensionUiPromise = null;
+    hostSession.extensionUiInitialized = false;
+    const { sessionId, directory } = hostSession;
+    attempt(() => this.modesDomain?.release?.(sessionId, directory));
+    attempt(() => this.dialogs?.releaseSession?.(directory, sessionId, 'session disposed'));
+    attempt(() => this.uriDomain?.descriptors?.releaseForSession?.(directory, sessionId));
+    attempt(() => this.uriDomain?.aggregator?.releaseForSession?.(directory, sessionId));
+    // wireIdOverrides cleanup (plan D5): necessary, not sufficient — the map
+    // still grows with live long sessions by design until phase 5 lands a
+    // stable wire id.
+    const prefix = `${directory}\u0000${sessionId}\u0000`;
+    for (const key of this.wireIdOverrides.keys()) {
+      if (key.startsWith(prefix)) this.wireIdOverrides.delete(key);
+    }
+    if (failures.length > 0) {
+      console.warn(`[omp-host] partial host-handle release failure for ${sessionId}:`, failures.join('; '));
     }
   }
 
-  #disposeSession(session: HostSession | undefined) {
-    if (!session || !session.agentSession) return;
-    session.unsubscribe?.();
-    session.unsubscribe = undefined;
-    // Domain release: modes tracker + pending dialogs for this session (R11).
-    this.modesDomain?.release?.(session.sessionId, session.directory);
-    this.dialogs?.registry?.abortForSession?.(
-      {
-        directory: session.directory,
-        sessionId: session.sessionId
-      },
-      'session disposed'
-    );
-    const agentSession = session.agentSession;
-    session.agentSession = null;
-    void agentSession.dispose().catch(() => {});
+  async #artifactsDirFor(sessionId: string, directoryKey: string) {
+    const manager = this.#liveHostAnywhere(directoryKey, sessionId)?.agentSession?.sessionManager;
+    const liveDir = manager?.getArtifactsDir?.();
+    if (typeof liveDir === 'string' && liveDir) return liveDir;
+    const file = await this.#findSessionFile(sessionId, directoryKey);
+    return file ? artifactsDirForSessionFile(file.path) : null;
   }
+
+  /** Release per-directory host state when the directory goes quiet (plan §6). */
+  #maybeReleaseDirectoryState(directory: string): void {
+    if (this.#live.liveDirectories().has(normalizeDirectoryKey(directory))) return;
+    this.chrome?.releaseDirectory?.(directory);
+    // Sidecar meta map: disk stays authoritative; the next access reloads.
+    this.registry.release(directory);
+  }
+
+  /**
+   * Evict one live record (plan §3.4). MUST run inside the record's
+   * operation gate. Order: beginDispose (sync, before the first await) →
+   * host teardown → session.idle → the single saved dispose promise.
+   *
+   * The host-side transition is SYNCHRONOUS: by the time this returns, the
+   * record is `evicting` with its unsubscribe/domain handles torn off and
+   * the SDK disposal running detached. Callers decide whether — and how
+   * long — to await the returned promise; awaiting it inside a gate body
+   * would let a never-settling disposal occupy the gate forever.
+   */
+  #evictRecord(
+    record: LiveRecord<HostSession>,
+    reason: string,
+    { emitIdle = true }: { emitIdle?: boolean } = {},
+  ): Promise<'disposed' | 'failed'> {
+    if (!this.#live.beginEvict(record)) {
+      return record.disposePromise ?? Promise.resolve('disposed');
+    }
+    const hostSession = record.payload;
+    const agentSession = hostSession?.agentSession ?? null;
+    record.payload = null;
+    try {
+      // Step 1: reject new SDK work before the host's first await.
+      agentSession?.beginDispose?.();
+    } catch {
+      // beginDispose must not block teardown when it throws.
+    }
+    if (hostSession) {
+      // Step 2: host handles come off synchronously; late events after this
+      // point can only land on an already-evicting record.
+      this.#releaseHostHandles(hostSession);
+      hostSession.agentSession = null;
+      this.#maybeReleaseDirectoryState(hostSession.directory);
+    }
+    if (emitIdle) {
+      // Step 3: clients learn the session left live state without waiting
+      // for a possibly slow SDK drain.
+      this.bus.emit('session.idle', { sessionID: record.sessionId }, record.directory);
+    }
+    if (!agentSession) {
+      this.#live.finishEvict(record, true);
+      return Promise.resolve('disposed');
+    }
+    // Step 4: one saved, detached dispose promise; its settle (success or
+    // failure) is the only thing that can move the record out of `evicting`.
+    // Failed disposal → observable quarantine tombstone; the SDK object
+    // stays referenced by this promise chain so the same file cannot gain a
+    // second writer (plan §3.4). errorText bounds the rejection to a
+    // message string before it reaches domain state.
+    const disposePromise = (async (): Promise<'disposed' | 'failed'> => {
+      try {
+        await agentSession.dispose({ drainTimeoutMs: this.evictDrainTimeoutMs });
+        this.#live.finishEvict(record, true);
+        return 'disposed';
+      } catch (rejection) {
+        console.warn(`[omp-host] session ${record.sessionId} disposal failed (${reason}):`, errorText(rejection));
+        this.#live.finishEvict(record, false, errorText(rejection));
+        return 'failed';
+      }
+    })();
+    record.disposePromise = disposePromise;
+    return disposePromise;
+  }
+
+  /** Bounded wait for a record's disposal (never parks on a hung drain). */
+  #awaitDisposalBounded(record: LiveRecord<HostSession>): Promise<'disposed' | 'failed' | 'timeout'> {
+    const disposal = record.disposePromise ?? Promise.resolve('disposed' as const);
+    // SAFETY: the race always resolves with one of the three literal arms.
+    return Promise.race([
+      disposal,
+      new Promise((resolve) => setTimeout(() => resolve('timeout' as const), this.evictDrainTimeoutMs * 2)),
+    ]) as Promise<'disposed' | 'failed' | 'timeout'>;
+  }
+
+  /**
+   * Directory-keyed live lookup (plan §3.2): the requested directory must
+   * own the record. Cross-directory same-id records never satisfy each other.
+   */
+  #liveHost(directory: string | null | undefined, sessionId: string): HostSession | null {
+    if (!directory) return null;
+    return this.#live.getLive(directory, sessionId)?.payload ?? null;
+  }
+
+  /**
+   * Live lookup when the caller's directory may differ from the owning one
+   * (getSession/updateSession semantics: a live session owns its registry
+   * entry and answers first). The exact-key hit is preferred; the id-only
+   * fallback returns the unique live record and refuses the ambiguous
+   * two-directories case instead of guessing (plan §3.2).
+   */
+  #liveHostAnywhere(directory: string | null | undefined, sessionId: string): HostSession | null {
+    const keyed = this.#liveHost(directory, sessionId);
+    if (keyed) return keyed;
+    const byId = this.#live.bySessionId(sessionId);
+    return byId && byId.state === 'live' ? byId.payload : null;
+  }
+
   #sessionDirFor(cwd: string) {
     return SessionManager.getDefaultSessionDir(cwd, this.registry.agentDir);
   }
@@ -677,23 +917,6 @@ export class OmpHostEngine {
     const hash = crypto.createHash('sha256').update(directoryKey).digest('hex');
     return `prj_${hash.slice(0, 20)}`;
   }
-  /**
-   * Per-session artifacts directory for local:// root pinning (TUI parity,
-   * spec 04 §5.2.3): live sessions answer from their own SessionManager;
-   * cold sessions derive it from the transcript path (sessionFile minus
-   * '.jsonl'). Never the project-level session directory — sessions in one
-   * directory keep private local:// roots, and cross-session carry-over is
-   * the SDK's explicit copy semantics (fork/plan-approve), not shared state.
-   * Null when the session is unknown to this directory.
-   */
-  async #artifactsDirFor(sessionId: string, directoryKey: string) {
-    const manager = this.sessions.get(sessionId)?.agentSession?.sessionManager;
-    const liveDir = manager?.getArtifactsDir?.();
-    if (typeof liveDir === 'string' && liveDir) return liveDir;
-    const file = await this.#findSessionFile(sessionId, directoryKey);
-    return file ? artifactsDirForSessionFile(file.path) : null;
-  }
-
   /** Bounded walk depth for #listLocalFiles — local:// roots are shallow
    *  (plans, handoff notes, scratch); anything deeper is a runaway, not data. */
   static #LOCAL_WALK_MAX_DEPTH = 8;
@@ -795,7 +1018,7 @@ export class OmpHostEngine {
     const seen = new Set();
     for (const info of infos) {
       seen.add(info.id);
-      out.push(this.#wireSession(info, directoryKey, metas.get(info.id), this.sessions.get(info.id)));
+      out.push(this.#wireSession(info, directoryKey, metas.get(info.id), this.#liveHost(directoryKey, info.id) ?? undefined));
     }
     // Registry-only sessions (omp transcript pruned externally) stay listed so
     // deletion/archival bookkeeping keeps working.
@@ -869,17 +1092,32 @@ export class OmpHostEngine {
   async getSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    const live = this.sessions.get(sessionID);
+    const live = this.#liveHostAnywhere(directoryKey, sessionID);
     if (live) return this.#wireSessionFromLive(live);
     const file = await this.#findSessionFile(sessionID, directoryKey);
     if (!file) return null;
-    const manager = await SessionManager.open(file.path);
-    try {
+    // Header scalars stream without a manager (plan §7.2); null → the
+    // manager arm below keeps the invalid-header rewrite/mint behavior.
+    const scalars = await readSessionScalars(file.path);
+    if (scalars) {
+      const created = scalars.createdIso ? Date.parse(scalars.createdIso) : Date.now();
+      const modified = scalars.modifiedIso ? Date.parse(scalars.modifiedIso) : created;
+      const info = {
+        id: scalars.id,
+        // SessionManager.open's fallback for a missing/deleted recorded cwd is
+        // the launch project dir; the host process never setProjectDir's, so
+        // process.cwd() is the same value.
+        cwd: scalars.cwd ?? process.cwd(),
+        title: scalars.title,
+        created: new Date(created),
+        modified: new Date(Number.isFinite(modified) ? modified : created)
+      };
+      return this.#wireSession(info, directoryKey, (this.registry.get(directoryKey, sessionID) ?? undefined));
+    }
+    return withColdManager(file.path, (manager) => {
       const info = this.#infoFromManager(manager, file.path, directoryKey);
       return this.#wireSession(info, directoryKey, (this.registry.get(directoryKey, sessionID) ?? undefined));
-    } finally {
-      await manager.close();
-    }
+    });
   }
 
   #infoFromManager(manager: SessionManagerLike, filePath: string, directoryKey: string) {
@@ -907,7 +1145,7 @@ export class OmpHostEngine {
 
   async updateSession({ sessionID, directory, title, metadata, timeArchived }: { sessionID: string; directory?: string; title?: string; metadata?: Record<string, SessionMetadataValue>; timeArchived?: number }) {
     await this.#boot();
-    const live = this.sessions.get(sessionID);
+    const live = this.#liveHostAnywhere(directory, sessionID);
     // A live session owns its registry entry under its own directory, and
     // getSession answers from the live record first regardless of the
     // requested directory. Writing the patch under a differing requested
@@ -961,20 +1199,47 @@ export class OmpHostEngine {
   async deleteSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    const file = await this.#findSessionFile(sessionID, directoryKey);
-    const live = this.sessions.get(sessionID);
-    const info = live ? this.#wireSessionFromLive(live) : await this.getSession({ sessionID, directory: directoryKey });
-    this.#disposeSession(live);
-    this.sessions.delete(sessionID);
-    if (file) {
-      try {
-        fs.rmSync(file.path, { force: true });
-      } catch {
-        // Deleting a missing transcript is success.
+    const live = this.#liveHostAnywhere(directoryKey, sessionID);
+    const fromKey = live ? normalizeDirectoryKey(live.directory) : directoryKey;
+    const key = sessionKey(fromKey, sessionID);
+    // Response snapshot before teardown (a live manager still answers the
+    // title); the mutation itself runs entirely inside the gate below.
+    const info = live ? this.#wireSessionFromLive(live) : await this.getSession({ sessionID, directory: fromKey });
+    // Serialize the WHOLE delete under the owning key's gate — evict,
+    // bounded disposal wait, registry row, transcript removal (plan §3.4).
+    // Await INSIDE the gate: a re-materialize squeezing between disposal
+    // and rmSync would resurrect a second writer on the file being deleted.
+    // A disposal that fails or outlives the bounded wait refuses the delete
+    // with a retryable busy error — unlinking a transcript a live writer
+    // still holds is the POSIX orphan-write / Windows locked-file hazard.
+    await this.#live.withOperation(key, async () => {
+      const record = this.#live.get(fromKey, sessionID);
+      if (record && record.state === 'live') {
+        this.#evictRecord(record, 'delete', { emitIdle: false });
       }
-    }
-    this.registry.remove(directoryKey, sessionID);
-    this.bus.emit('session.deleted', { sessionID }, directoryKey);
+      const blocking = this.#live.byKey(key);
+      if (blocking) {
+        const outcome = await this.#awaitDisposalBounded(blocking);
+        if (outcome !== 'disposed') {
+          throw new SessionBusyError(
+            outcome === 'failed' ? 'session-failed' : 'session-evicting',
+            `session ${sessionID} is not deletable: disposal ${outcome === 'timeout' ? 'did not settle' : `failed (${blocking.failure?.reason ?? 'unknown'})`}`,
+            sessionID,
+          );
+        }
+      }
+      const file = await this.#findSessionFile(sessionID, fromKey);
+      this.uriDomain?.descriptors?.releaseForSession?.(fromKey, sessionID);
+      this.uriDomain?.aggregator?.releaseForSession?.(fromKey, sessionID);
+      this.registry.remove(fromKey, sessionID);
+      if (file) {
+        // Removal failures propagate: answering "deleted" while a writer
+        // still holds the transcript is the lie this gate exists to kill.
+        fs.rmSync(file.path, { force: true });
+      }
+    });
+    this.#maybeReleaseDirectoryState(fromKey);
+    this.bus.emit('session.deleted', { sessionID }, fromKey);
     return info;
   }
   #wireSessionFromLive(live: HostSession) {
@@ -1006,6 +1271,50 @@ export class OmpHostEngine {
    * next-older cursor (see paginateProjectedMessages).
    */
   async getMessagesPage({ sessionID, directory, limit, before }: { sessionID: string; directory?: string; limit?: number; before?: string }) {
+    await this.#boot();
+    const directoryKey = normalizeDirectoryKey(directory);
+    const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
+    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
+    const live = this.#liveHostAnywhere(directoryKey, sessionID);
+    const liveCount = live?.agentSession?.messages?.length ?? -1;
+    const file = await this.#findSessionFile(sessionID, directoryKey);
+    const externalChange = live
+      ? classifyExternalChange(live.fileSignature, file?.path ?? '')
+      : 'unchanged';
+    if (file) {
+      // Windowed cold read (plan §7.2): metadata pass + bounded content pass
+      // produce the requested page without materializing the transcript;
+      // labeled fallbacks keep the full-materialization arm below.
+      const agent = wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent));
+      const streamed = await readTranscriptMessagePage(file.path, {
+        sessionID,
+        directory: directoryKey,
+        agent,
+        wireIdFor,
+        limit,
+        before,
+      });
+      if (streamed) {
+        const liveArmWins = externalChange !== 'dirty' && liveCount >= 0 && liveCount >= streamed.fileMessageCount;
+        if (liveArmWins) {
+          return paginateProjectedMessages(
+            this.#mergeTurnEventDividers(
+              projectConversation(live?.agentSession?.messages ?? [], {
+                sessionID,
+                directory: directoryKey,
+                agent,
+                wireIdFor
+              }),
+              streamed.dividerEntries,
+              sessionID
+            ),
+            { limit, before }
+          );
+        }
+        if (streamed.fileMessageCount > 0 || liveCount < 0) return streamed.page;
+        return null;
+      }
+    }
     const projected = await this.#projectedMessages(sessionID, directory);
     if (!projected) return null;
     return paginateProjectedMessages(projected, { limit, before });
@@ -1015,7 +1324,7 @@ export class OmpHostEngine {
     const directoryKey = normalizeDirectoryKey(directory);
     const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
     const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
-    const live = this.sessions.get(sessionID);
+    const live = this.#liveHostAnywhere(directoryKey, sessionID);
     const liveSession = live?.agentSession ?? null;
     const liveCount = liveSession?.messages?.length ?? -1;
 
@@ -1025,9 +1334,17 @@ export class OmpHostEngine {
     // the summary), which used to blank the UI — so read the live list only
     // when it is at least as complete as the file.
     const file = await this.#findSessionFile(sessionID, directoryKey);
+    // Dual-write classification (plan §8): an external rewrite that shrank
+    // or mutated the transcript must not be masked by a longer, now-stale
+    // live mirror — dirty means the file arm is the display truth outright.
+    const externalChange = live
+      ? classifyExternalChange(live.fileSignature, file?.path ?? '')
+      : 'unchanged';
     if (file) {
-      const manager = await SessionManager.open(file.path);
-      try {
+      // Labeled fallback (plan §7.1): the file arm needs entries for
+      // turn-state stampers and dividers, so it full-materializes through a
+      // cold manager that withColdManager closes and releases in finally.
+      return withColdManager(file.path, (manager) => {
         const context = manager.buildSessionContext({ transcript: true });
         const fileMessages = context.messages ?? [];
         const entries = manager.getEntries() ?? [];
@@ -1038,7 +1355,10 @@ export class OmpHostEngine {
         // Timeline dividers for the same turn-state entries: model and mode
         // switches render as slim dividers at their point in the log.
         const mergeDividers = (projected: ProjectedMessage[]) => this.#mergeTurnEventDividers(projected, entries, sessionID);
-        if (liveCount >= 0 && liveCount >= fileMessages.length) {
+        // Dirty external rewrite: the file is the truth even when the stale
+        // live mirror is longer (plan §8.1 step 4).
+        const liveArmWins = externalChange !== 'dirty' && liveCount >= 0 && liveCount >= fileMessages.length;
+        if (liveArmWins) {
           return mergeDividers(
             projectConversation(liveSession?.messages ?? [], {
               sessionID,
@@ -1060,9 +1380,10 @@ export class OmpHostEngine {
             })
           );
         }
-      } finally {
-        await manager.close().catch(() => {});
-      }
+        // SAFETY: both consume arms returned ProjectedMessage[]; the null
+        // arm matches the outer no-file/no-live contract.
+        return null as ProjectedMessage[] | null;
+      });
     }
     if (liveCount >= 0) {
       return projectConversation(liveSession?.messages ?? [], {
@@ -1179,140 +1500,209 @@ export class OmpHostEngine {
     return available.find((model) => `${model.provider}/${model.id}` === wanted) ?? available.find((model) => model.id === selector.modelID);
   }
 
-  async #materialize(sessionId: string, directoryKey: string) {
-    // Concurrent materialization dedup: a UI-lease attach racing the first
-    // prompt (leases.acquire is fire-and-forget) used to build two
-    // AgentSessions for one id — the loser never entered `sessions`, leaked
-    // its event subscription, and extension UI initialized twice. Callers
-    // now share one in-flight promise per session.
-    const flightKey = `${directoryKey}\u0000${sessionId}`;
-    const inFlight = this.#materializeInFlight.get(flightKey);
-    if (inFlight) return inFlight;
-    // SAFETY: #materializeNow resolves non-null once boot succeeded; the
-    // map type admits null only for symmetry with #materialize callers.
-    const run = this.#materializeNow(sessionId, directoryKey).finally(() => {
-      this.#materializeInFlight.delete(flightKey);
-    });
-    // SAFETY: #materializeNow resolves a live HostSession once boot has
-    // succeeded; the map type only admits null for external symmetry.
-    this.#materializeInFlight.set(flightKey, run as Promise<HostSession>);
-    return run;
+  /**
+   * Materialize (or join) the live session for one key (plan §3.2/§3.3).
+   * Runs inside the per-key operation gate: concurrent callers serialize,
+   * the second one joins the freshly committed record. An evicting record
+   * is awaited once (bounded by the drain budget) and retried exactly once;
+   * a quarantined (failed) or shutting-down key rejects with a retryable
+   * SessionBusyError instead of silently building a second writer.
+   */
+  async #materialize(sessionId: string, directoryKey: string): Promise<HostSession | null> {
+    const key = sessionKey(directoryKey, sessionId);
+    return this.#live.withOperation(key, () => this.#materializeGated(sessionId, directoryKey));
   }
 
-  async #materializeNow(sessionId: string, directoryKey: string) {
-    const existing = this.sessions.get(sessionId);
-    if (existing?.agentSession) return existing;
+  async #materializeGated(sessionId: string, directoryKey: string): Promise<HostSession | null> {
+    await this.#boot();
+    for (let attempt = 0; ; attempt += 1) {
+      const liveRecord = this.#live.getLive(directoryKey, sessionId);
+      if (liveRecord) {
+        // A materialize is a user-visible live operation: refresh the TTL.
+        this.#live.touch(liveRecord);
+        return liveRecord.payload;
+      }
+      const record = this.#live.get(directoryKey, sessionId);
+      if (record?.state === 'evicting') {
+        if (attempt >= 1) {
+          throw new SessionBusyError('session-evicting', `session ${sessionId} is evicting`, sessionId);
+        }
+        // Wait for the single disposal promise — bounded: a disposal that
+        // never settles must park this caller at a retryable busy error,
+        // not forever (plan §3.4 timeout rule).
+        await Promise.race([
+          record.disposePromise ?? Promise.resolve('disposed' as const),
+          new Promise((resolve) => setTimeout(resolve, this.evictDrainTimeoutMs * 2)),
+        ]).catch(() => {});
+        continue;
+      }
+      if (this.#closing) {
+        throw new SessionBusyError('host-shutting-down', 'host is shutting down', sessionId);
+      }
+      break;
+    }
+    const record = this.#live.beginMaterialize(directoryKey, sessionId);
+    try {
+      const hostSession = await this.#materializeNow(sessionId, directoryKey);
+      if (!hostSession) {
+        // Session file absent — cold miss, not a setup failure.
+        this.#live.failMaterialize(record);
+        return null;
+      }
+      this.#live.commitMaterialize(record, hostSession);
+      return hostSession;
+    } catch (error) {
+      // #materializeNow already released its resources in its finally
+      // block (plan §3.3); drop the dedup row and rethrow.
+      this.#live.failMaterialize(record);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Build one live session. Runs inside the key's gate with a
+   * `materializing` record open. Every step after the first await is
+   * guarded by a try/finally that releases each installed resource
+   * exactly once (plan §3.3): event unsubscribe, name unsubscribe,
+   * agentSession.dispose, temporary-manager close, and the domain handles.
+   */
+  async #materializeNow(sessionId: string, directoryKey: string): Promise<HostSession | null> {
     const file = await this.#findSessionFile(sessionId, directoryKey);
     if (!file) return null;
     const manager = await SessionManager.open(file.path, this.#sessionDirFor(directoryKey));
-    const meta = this.registry.get(directoryKey, sessionId);
-    // Model comes from the session's persisted selector when set; otherwise
-    // createAgentSession resolves the settings default (defaultModel /
-    // defaultProvider) exactly like the TUI. Pinning getAvailable()[0] here
-    // used to override the user's configured default with whichever model
-    // happened to sort first.
-    const model = this.#resolveModel(meta?.model ? splitModelSelector(meta.model) : undefined);
-    // Persona overlay (02 §5.1 D-B2): 'build'/'plan'/unset → standard
-    // session; a persona name → top-level systemPrompt/toolset override;
-    // unknown name (deleted persona) → degrade to standard with a notice.
-    const personaState = personaFor(meta, this.personas);
-    if (personaState.status === 'missing') {
-      console.warn(`[omp-host] session ${sessionId} references unknown persona "${personaState.name}"; using a standard session`);
-    }
-    const persona = personaState.status === 'active' ? personaState.persona : null;
-    const agentRegistry = new AgentRegistry();
-    const { session, setToolUIContext } = await createAgentSession({
-      cwd: directoryKey,
-      sessionManager: manager,
-      authStorage: this.authStorage ?? undefined,
-      modelRegistry: this.modelRegistry ?? undefined,
-      // Per-directory keyed Settings injection (spec 06 §5.1, master R6):
-      // the session consumes this directory's global+project layering.
-      // Absent store (degraded boot) falls back to the SDK singleton.
-      ...(this.settingsStore ? { settings: await this.settingsStore.settingsFor(directoryKey) } : {}),
-      // One registry per session: the SDK's global registry admits a single
-      // "Main" agent per process generation, and omp-host embeds several
-      // concurrent top-level sessions. The instance is retained on the
-      // host session for the agent-runs aggregator (spec 04 §5.5).
-      agentRegistry,
-      // R13: hasUI authority is the per-session UI lease, never the
-      // capability. No lease at creation → fail-closed for approval tools.
-      hasUI: this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI,
-      // R7/R8: local:// resolution stays session-pinned to THIS session's
-      // artifacts dir (TUI parity, spec 04 §5.2.3); zero global mutation.
-      localProtocolOptions: createLocalProtocolOptions(sessionId, directoryKey, () =>
-        manager.getArtifactsDir(),
-      ),
-      ...(model ? { model } : {}),
-      // Persona overlay (02 §5.1 D-B2): constructor-time systemPrompt and
-      // toolset come from the persona resource; the deleted build/plan
-      // agent pair and the planYolo mapping never reach createAgentSession
-      // (plan mode is a session mode driven by the mode endpoints, §5.8).
-      ...(persona?.systemPrompt ? { systemPrompt: persona.systemPrompt } : {}),
-      ...(Array.isArray(persona?.tools) && persona.tools.length > 0 ? { toolNames: persona.tools } : {})
-    });
-    const hostSession: HostSession = existing ?? {
-      sessionId,
-      directory: directoryKey,
-      agentSession: null,
-      currentPersona: personaKeyFor(meta?.persona ?? meta?.agent),
-      projector: null,
-      lastTouched: Date.now(),
-      pendingUserWireId: null,
-      lastUserWireId: null,
-      // Transcript roles without dedicated SDK events (custom/dividers) are
-      // tail-synced at agent_end / compaction_end; this set remembers what
-      // was already emitted so syncs are idempotent (spec 05 §5.5).
-      // Re-read the map row: `existing` was narrowed by the early return above.
-      syncedEntryKeys: this.sessions.get(sessionId)?.syncedEntryKeys ?? new Set(),
-      // Wire id of the most recently settled assistant message — feeds
-      // omp.retry.started.supersededMessageID (spec 05 §5.3.2).
-      lastAssistantWireId: null,
-      // agent_end {isTerminal:false} keeps the session busy until a later
-      // terminal settle (spec 05 §5.7); status snapshots must not downgrade.
-      awaitingAsyncSince: null,
-      // Retained for the agent-runs aggregator (spec 04 §5.5).
-      agentRegistry,
-      // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
-      sdkResult: { setToolUIContext },
-      extensionUiInitialized: false,
-      extensionUiPromise: null,
-      planHandlerAttached: false,
-      // Plugin application snapshot (plugins.v1): the discovery set this
-      // session bound at materialization — feeds the Settings → Plugins
-      // "applied in sessions" projection and stays frozen for the session's
-      // lifetime (TS extension modules are not rebound by reload).
-      appliedPlugins: null
-    };
-    hostSession.appliedPlugins = await this.#snapshotAppliedPlugins(directoryKey);
-    hostSession.agentSession = session;
-    hostSession.lastTouched = Date.now();
-    hostSession.unsubscribe = session.subscribe((event) => {
-      try {
-        this.#handleEngineEvent(hostSession, event);
-      } catch (error) {
-        console.error('[omp-host] event projection error:', error);
+    let agentCreated = false;
+    let hostSession: HostSession | null = null;
+    try {
+      const meta = this.registry.get(directoryKey, sessionId);
+      // Model comes from the session's persisted selector when set; otherwise
+      // createAgentSession resolves the settings default (defaultModel /
+      // defaultProvider) exactly like the TUI. Pinning getAvailable()[0] here
+      // used to override the user's configured default with whichever model
+      // happened to sort first.
+      const model = this.#resolveModel(meta?.model ? splitModelSelector(meta.model) : undefined);
+      // Persona overlay (02 §5.1 D-B2): 'build'/'plan'/unset → standard
+      // session; a persona name → top-level systemPrompt/toolset override;
+      // unknown name (deleted persona) → degrade to standard with a notice.
+      const personaState = personaFor(meta, this.personas);
+      if (personaState.status === 'missing') {
+        console.warn(`[omp-host] session ${sessionId} references unknown persona "${personaState.name}"; using a standard session`);
       }
-    });
-    // Modes tracker for this session (cold-recovery + mode_change appends).
-    this.modesDomain?.trackerFor(sessionId, directoryKey);
-    // The freshly materialized host session is not published in `sessions`
-    // until all setup below succeeds. Apply and await the lease context
-    // directly; routing through #attachDialogUi would miss it in that short
-    // window and leave extension approvals/headless commands unusable.
-    if (this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI) {
-      await this.#setDialogUiContext(hostSession, directoryKey, sessionId, true);
-    }
-    session.sessionManager?.onSessionNameChanged?.(() => {
-      const info = this.#wireSessionFromLive(hostSession);
-      this.registry.update(directoryKey, sessionId, {
-        title: info.title,
-        timeUpdated: Date.now()
+      const persona = personaState.status === 'active' ? personaState.persona : null;
+      const agentRegistry = new AgentRegistry();
+      const { session, setToolUIContext } = await this.#createAgentSessionImpl({
+        cwd: directoryKey,
+        sessionManager: manager,
+        authStorage: this.authStorage ?? undefined,
+        modelRegistry: this.modelRegistry ?? undefined,
+        // Per-directory keyed Settings injection (spec 06 §5.1, master R6):
+        // the session consumes this directory's global+project layering.
+        // Absent store (degraded boot) falls back to the SDK singleton.
+        ...(this.settingsStore ? { settings: await this.settingsStore.settingsFor(directoryKey) } : {}),
+        // One registry per session: the SDK's global registry admits a single
+        // "Main" agent per process generation, and omp-host embeds several
+        // concurrent top-level sessions. The instance is retained on the
+        // host session for the agent-runs aggregator (spec 04 §5.5).
+        agentRegistry,
+        // R13: hasUI authority is the per-session UI lease, never the
+        // capability. No lease at creation → fail-closed for approval tools.
+        hasUI: this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI,
+        // R7/R8: local:// resolution stays session-pinned to THIS session's
+        // artifacts dir (TUI parity, spec 04 §5.2.3); zero global mutation.
+        localProtocolOptions: createLocalProtocolOptions(sessionId, directoryKey, () =>
+          manager.getArtifactsDir(),
+        ),
+        ...(model ? { model } : {}),
+        // Persona overlay (02 §5.1 D-B2): constructor-time systemPrompt and
+        // toolset come from the persona resource; the deleted build/plan
+        // agent pair and the planYolo mapping never reach createAgentSession
+        // (plan mode is a session mode driven by the mode endpoints, §5.8).
+        ...(persona?.systemPrompt ? { systemPrompt: persona.systemPrompt } : {}),
+        ...(Array.isArray(persona?.tools) && persona.tools.length > 0 ? { toolNames: persona.tools } : {})
       });
-      this.bus.emit('session.updated', { sessionID: sessionId, info }, directoryKey);
-    });
-    this.sessions.set(sessionId, hostSession);
-    return hostSession;
+      agentCreated = true;
+      hostSession = {
+        key: sessionKey(directoryKey, sessionId),
+        sessionId,
+        directory: directoryKey,
+        agentSession: null,
+        currentPersona: personaKeyFor(meta?.persona ?? meta?.agent),
+        projector: null,
+        pendingUserWireId: null,
+        lastUserWireId: null,
+        syncedEntryKeys: new Set(),
+        lastAssistantWireId: null,
+        // agent_end {isTerminal:false} keeps the session busy until a later
+        // terminal settle (spec 05 §5.7); status snapshots must not downgrade.
+        awaitingAsyncSince: null,
+        // Retained for the agent-runs aggregator (spec 04 §5.5).
+        agentRegistry,
+        // CreateAgentSessionResult handle for setToolUIContext (spec 03 R13).
+        sdkResult: { setToolUIContext },
+        extensionUiInitialized: false,
+        extensionUiPromise: null,
+        planHandlerAttached: false,
+        // Plugin application snapshot (plugins.v1): the discovery set this
+        // session bound at materialization — feeds the Settings → Plugins
+        // "applied in sessions" projection and stays frozen for the session's
+        // lifetime (TS extension modules are not rebound by reload).
+        appliedPlugins: null,
+        // Dual-write identity at materialize (plan §8): later external
+        // writes are classified against this.
+        fileSignature: fileSignature(file.path, tailEntryIdOf(file.path))
+      };
+      hostSession.appliedPlugins = await this.#snapshotAppliedPlugins(directoryKey);
+      hostSession.agentSession = session;
+      hostSession.unsubscribe = session.subscribe((event) => {
+        try {
+          this.#handleEngineEvent(hostSession!, event);
+        } catch (error) {
+          console.error('[omp-host] event projection error:', error);
+        }
+      });
+      // Modes tracker for this session (cold-recovery + mode_change appends).
+      this.modesDomain?.trackerFor(sessionId, directoryKey);
+      // Apply and await the lease context before publishing the record so a
+      // lease that raced materialization still gets its extension UI.
+      if (this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI) {
+        await this.#setDialogUiContext(hostSession, directoryKey, sessionId, true);
+      }
+      hostSession.nameUnsubscribe = session.sessionManager?.onSessionNameChanged?.(() => {
+        const info = this.#wireSessionFromLive(hostSession!);
+        this.registry.update(directoryKey, sessionId, {
+          title: info.title,
+          timeUpdated: Date.now()
+        });
+        this.bus.emit('session.updated', { sessionID: sessionId, info }, directoryKey);
+      });
+      return hostSession;
+    } catch (error) {
+      // Failure cleanup (plan §3.3): every installed resource is released
+      // independently and idempotently; the original error propagates.
+      const cleanup = hostSession;
+      await Promise.allSettled([
+        (async () => {
+          cleanup?.unsubscribe?.();
+          if (cleanup) cleanup.unsubscribe = undefined;
+        })(),
+        (async () => {
+          cleanup?.nameUnsubscribe?.();
+          if (cleanup) cleanup.nameUnsubscribe = undefined;
+        })(),
+        (async () => {
+          if (cleanup) this.#releaseHostHandles(cleanup);
+        })(),
+        (async () => {
+          const agent = cleanup?.agentSession;
+          if (cleanup) cleanup.agentSession = null;
+          if (agentCreated && agent) await agent.dispose({ drainTimeoutMs: this.evictDrainTimeoutMs });
+        })(),
+        (async () => {
+          if (!agentCreated) await manager.close().catch(() => {});
+        })(),
+      ]);
+      throw error;
+    }
   }
 
   /**
@@ -1340,7 +1730,10 @@ export class OmpHostEngine {
 
   /** Live per-session plugin application snapshots (plugins.v1 projection). */
   appliedPluginsSnapshots(): Array<{ sessionId: string; directory: string } & AppliedPluginsSnapshot> {
-    return [...this.sessions.values()]
+    return this.#live
+      .snapshot()
+      .filter((record) => record.state === 'live' && record.payload)
+      .map((record) => record.payload!)
       .filter((hostSession): hostSession is HostSession & { appliedPlugins: AppliedPluginsSnapshot } =>
         Boolean(hostSession.agentSession && hostSession.appliedPlugins))
       .map((hostSession) => ({
@@ -1379,7 +1772,7 @@ export class OmpHostEngine {
       console.warn('[omp-host] reload agent discovery refresh failed:', errorText(error));
     }
     let sessionsRefreshed = 0;
-    for (const hostSession of this.sessions.values()) {
+    for (const hostSession of this.#live.snapshot().map((record) => record.payload).filter((payload): payload is HostSession => payload !== null)) {
       if (hostSession.directory !== directoryKey || !hostSession.agentSession) continue;
       if (sessionId && hostSession.sessionId !== sessionId) continue;
       try {
@@ -1517,6 +1910,11 @@ export class OmpHostEngine {
    * the real CI guard against unregistered SDK additions.
    */
   #handleEngineEvent(hostSession: HostSession, event: AgentSessionEvent) {
+    // Late-event guard (plan §3.4): after eviction begins, events may still
+    // arrive from in-flight SDK emission; they must land on a still-live
+    // record only — an evicting/failed record starts no new work.
+    const record = this.#live.byKey(hostSession.key);
+    if (!record || record.state !== 'live' || record.payload !== hostSession) return;
     const { sessionId, directory } = hostSession;
     const session = hostSession.agentSession;
     if (!session) return;
@@ -1691,6 +2089,8 @@ export class OmpHostEngine {
         this.registry.update(directory, sessionId, { timeUpdated: Date.now() });
         const info = this.#wireSessionFromLive(hostSession);
         this.bus.emit('session.updated', { sessionID: sessionId, info }, directory);
+        // Transcript roles without dedicated SDK events (dividers, custom
+        // notes) tail-sync here, before the busy/idle decision.
         this.#tailSyncTranscript(hostSession);
         if (event.isTerminal === false) {
           // Async delivery will resume the session (05 §5.7): scheduling
@@ -1919,7 +2319,14 @@ export class OmpHostEngine {
         const unknownEvent = event as { type?: string } | null | undefined;
         console.error(`[omp-host] unhandled AgentSessionEvent type: ${unknownEvent?.type}`);
         this.unknownEventCounts = this.unknownEventCounts ?? new Map();
-        this.unknownEventCounts.set(unknownEvent?.type ?? 'unknown', (this.unknownEventCounts.get(unknownEvent?.type ?? 'unknown') ?? 0) + 1);
+        // Bounded diagnostic keys (plan §6): unknown types fold into a fixed
+        // `other` bucket once the key set is full; total drops are counted.
+        const type = unknownEvent?.type ?? 'unknown';
+        if (this.unknownEventCounts.size >= OmpHostEngine.#UNKNOWN_EVENT_KEYS_MAX && !this.unknownEventCounts.has(type)) {
+          this.unknownEventCounts.set('other', (this.unknownEventCounts.get('other') ?? 0) + 1);
+        } else {
+          this.unknownEventCounts.set(type, (this.unknownEventCounts.get(type) ?? 0) + 1);
+        }
         return;
       }
     }
@@ -1930,7 +2337,10 @@ export class OmpHostEngine {
     const AWAITING_ASYNC_TIMEOUT_MS = 10 * 60 * 1000;
     const now = Date.now();
     const statuses: Record<string, { type: 'busy' } | { type: 'idle' }> = {};
-    for (const [id, live] of this.sessions) {
+    for (const record of this.#live.snapshot()) {
+      const live = record.payload;
+      if (!live || record.state !== 'live') continue;
+      const id = record.sessionId;
       if (live.directory !== normalizeDirectoryKey(directory)) continue;
       const stale = live.awaitingAsyncSince !== null && now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
       if (stale) live.awaitingAsyncSince = null;
@@ -2009,13 +2419,20 @@ export class OmpHostEngine {
         .map((kind) => kind.trim())
         .filter(Boolean)
     );
-    const out = [];
-    const manager = await SessionManager.open(file.path);
-    try {
+    // Structured rows + retry-recovery stream from one scan (plan §7.2);
+    // null → manager arm below (legacy versions, blob refs).
+    const streamedRows = await readSessionEventRows(
+      file.path,
+      wanted,
+      this.#wireIdResolver(directoryKey, sessionID)
+    );
+    if (streamedRows) return streamedRows;
+    const out = await withColdManager(file.path, async (manager) => {
+      const rows: unknown[] = [];
       for (const entry of manager.getEntries() ?? []) {
         const kind = entry.type === 'compaction' ? 'compaction' : entry.type === 'branch_summary' ? 'branch_summary' : entry.type === 'model_change' ? 'model_change' : entry.type === 'mode_change' ? 'mode_change' : entry.type === 'ttsr_injection' ? 'ttsr_injection' : null;
         if (!kind || (wanted.size > 0 && !wanted.has(kind))) continue;
-        out.push({
+        rows.push({
           kind,
           id: entry.id,
           timestamp: Date.parse(entry.timestamp ?? '') || undefined,
@@ -2032,9 +2449,8 @@ export class OmpHostEngine {
           ...(entry.type === 'ttsr_injection' ? { rules: entry.injectedRules } : {}),
         });
       }
-    } finally {
-      await manager.close();
-    }
+      return rows;
+    });
     if (wanted.size === 0 || wanted.has('retry_recovery')) {
       const context = await this.#transcriptContext(sessionID, directory);
       const directoryKeyNow = normalizeDirectoryKey(directory);
@@ -2062,12 +2478,7 @@ export class OmpHostEngine {
     const directoryKey = normalizeDirectoryKey(directory);
     const file = await this.#findSessionFile(sessionID, directoryKey);
     if (!file) return null;
-    const manager = await SessionManager.open(file.path);
-    try {
-      return manager.buildSessionContext({ transcript: true });
-    } finally {
-      await manager.close();
-    }
+    return withColdManager(file.path, (manager) => manager.buildSessionContext({ transcript: true }));
   }
 
   async prompt({
@@ -2091,12 +2502,24 @@ export class OmpHostEngine {
   }): Promise<ProjectedMessage | null> {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
+    // Dual-write gate (plan §8.2): when the transcript changed externally in
+    // a way the live mirror cannot absorb (dirty rewrite) and the session is
+    // inactive, rebuild the writer from disk — bounded to one bounded retry,
+    // never during streaming/retry/compaction/async work, and always through
+    // the key's gate so no second writer can appear.
+    await this.#reloadIfDirty(sessionID, directoryKey);
     const hostSession = await this.#materialize(sessionID, directoryKey);
     if (!hostSession) return null;
     const session = hostSession.agentSession;
     if (!session) return null;
     if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
-    hostSession.lastTouched = Date.now();
+    const promptRecord = this.#live.byKey(hostSession.key);
+    if (promptRecord && promptRecord.state === 'live') {
+      // A prompt is a user-visible write: refresh the idle TTL. The turn's
+      // streaming lifetime is guarded by the SDK activity getters; the
+      // in-flight slot below covers only the synchronous dispatch window.
+      this.#live.touch(promptRecord);
+    }
 
     // Model switching: resolve and apply when the requested selector differs.
     if (model && (model.providerID || model.modelID)) {
@@ -2127,8 +2550,17 @@ export class OmpHostEngine {
     }
     if (nextPersona !== hostSession.currentPersona) {
       // The persona shapes the session's system prompt and toolset at
-      // construction, so rebuild the AgentSession over the same transcript.
-      this.#disposeSession(hostSession);
+      // construction, so rebuild the AgentSession over the same transcript —
+      // through the gate: the old session must finish disposing before the
+      // replacement materializes (plan §3.4, no double writer).
+      const personaRecord = this.#live.byKey(hostSession.key);
+      await this.#live.withOperation(sessionKey(directoryKey, sessionID), async () => {
+        const record = this.#live.byKey(hostSession.key);
+        if (record && record.state === 'live' && record.payload === hostSession) {
+          this.#evictRecord(record, 'persona-rebuild', { emitIdle: false });
+        }
+      });
+      if (personaRecord) await this.#awaitDisposalBounded(personaRecord);
       this.registry.update(directoryKey, sessionID, {
         persona: nextPersona === 'standard' ? undefined : nextPersona,
         agent: undefined
@@ -2210,11 +2642,49 @@ export class OmpHostEngine {
     if (imageContents.length === 0 && await this.#tryRunSkillCommand(hostSession, textOnly, streamingBehavior)) {
       return wire;
     }
-    await session.prompt(textOnly, {
-      images: imageContents,
-      streamingBehavior
-    });
+    const dispatchRecord = this.#live.byKey(hostSession.key);
+    if (dispatchRecord && dispatchRecord.state === 'live') this.#live.beginUse(dispatchRecord);
+    try {
+      await session.prompt(textOnly, {
+        images: imageContents,
+        streamingBehavior
+      });
+    } finally {
+      // Terminal activity (streaming, async work) is read from the SDK
+      // getters by the sweeper; the dispatch slot must never outlive the
+      // dispatch itself — a lost agent_end must not pin the session forever.
+      if (dispatchRecord && dispatchRecord.state === 'live') this.#live.endUse(dispatchRecord);
+    }
     return wire;
+  }
+
+  /**
+   * Bounded dirty-reload (plan §8.2): classify the transcript against the
+   * live record's materialize-time signature; on `dirty` with every activity
+   * guard quiet, evict inside the key's gate and let the caller's
+   * #materialize rebuild from disk. Reloads are never attempted while the
+   * session streams/retries/compacts/holds async work — those turns keep the
+   * steer/queue semantics instead, and "absolute freshness" stays best-effort
+   * (plan D6).
+   */
+  async #reloadIfDirty(sessionID: string, directoryKey: string): Promise<void> {
+    const record = this.#live.get(directoryKey, sessionID);
+    if (!record || record.state !== 'live' || !record.payload) return;
+    if (record.inFlight > 0 || this.#recordIsActive(record)) return;
+    const file = await this.#findSessionFile(sessionID, directoryKey);
+    if (!file) return;
+    if (classifyExternalChange(record.payload.fileSignature, file.path) !== 'dirty') return;
+    console.warn(`[omp-host] transcript for ${sessionID} changed externally; rebuilding live writer from disk`);
+    await this.#live.withOperation(sessionKey(directoryKey, sessionID), async () => {
+      const current = this.#live.byKey(sessionKey(directoryKey, sessionID));
+      if (!current || current.state !== 'live' || !current.payload) return;
+      // Recheck inside the gate: activity may have arrived since selection.
+      if (current.inFlight > 0 || this.#recordIsActive(current)) return;
+      if (classifyExternalChange(current.payload.fileSignature, file.path) !== 'dirty') return;
+      this.#evictRecord(current, 'dual-write-reload');
+    });
+    const after = this.#live.get(directoryKey, sessionID);
+    if (after && after.state === 'evicting') await this.#awaitDisposalBounded(after);
   }
 
   /**
@@ -2263,7 +2733,8 @@ export class OmpHostEngine {
     if (!hostSession) return { ok: false, error: 'session not found' };
     const session = hostSession.agentSession;
     if (!session) return { ok: false, error: 'session not found' };
-    hostSession.lastTouched = Date.now();
+    const modelRecord = this.#live.byKey(hostSession.key);
+    if (modelRecord && modelRecord.state === 'live') this.#live.touch(modelRecord);
     const target = this.#resolveModel(model);
     if (!target) return { ok: false, error: 'unknown model' };
     if (modelSelector(target) !== modelSelector(session.model)) {
@@ -2295,7 +2766,7 @@ export class OmpHostEngine {
 
   async abort({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
-    const live = this.sessions.get(sessionID);
+    const live = this.#liveHostAnywhere(directory, sessionID);
     if (!live?.agentSession) return false;
     // AgentSession.abort() delivers the cancellation signal synchronously,
     // then awaits the full turn teardown (post-prompt drain + agent idle).
@@ -2346,9 +2817,18 @@ export class OmpHostEngine {
     console.warn(
       `[omp-host] abort teardown did not settle within ${this.abortTeardownTimeoutMs}ms; force-disposing session ${sessionID}`
     );
-    this.#disposeSession(live);
-    this.sessions.delete(sessionID);
+    // Clients learn the live state ended before any drain; then the bounded
+    // disposal starts inside the key's gate and is awaited outside it.
     this.bus.emit('session.idle', { sessionID }, live.directory);
+    const record = this.#live.get(live.directory, sessionID);
+    if (record && record.state === 'live') {
+      await this.#live
+        .withOperation(record.key, async () => {
+          this.#evictRecord(record, 'abort-force-dispose', { emitIdle: false });
+        })
+        .catch(() => {});
+      await this.#awaitDisposalBounded(record);
+    }
     return true;
   }
 
@@ -2464,7 +2944,7 @@ export class OmpHostEngine {
    */
   liveCommandsFor(directory: string | null) {
     const directoryKey = normalizeDirectoryKey(directory);
-    for (const hostSession of this.sessions.values()) {
+    for (const hostSession of this.#live.snapshot().map((record) => record.payload).filter((payload): payload is HostSession => payload !== null)) {
       if (hostSession.directory !== directoryKey) continue;
       const session = hostSession.agentSession;
       if (!session?.extensionRunner) continue;
@@ -2510,7 +2990,7 @@ export class OmpHostEngine {
   async getTodos({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    const hostSession = this.sessions.get(sessionID);
+    const hostSession = this.#liveHostAnywhere(directoryKey, sessionID);
     if (!hostSession?.agentSession) return [];
     const phases = hostSession.agentSession.getTodoPhases();
     const latest = phases[phases.length - 1];
@@ -2525,17 +3005,82 @@ export class OmpHostEngine {
     }));
   }
 
+  /**
+   * Counters-only stream diagnostics (docs/plan.md §9.1, phase 0 slice).
+   * Returns sizes and estimates — never transcripts, payloads, paths, or
+   * credentials. All "bytes" fields are the buses' declared serialized
+   * estimates (UTF-16 units), not JS-heap measures; `process.*Bytes` are
+   * Node's own memoryUsage counters. The data-proportional counts are
+   * labeled as such (plan §6): they grow with live data by design and are
+   * not bounded caches.
+   *
+   * §9.1 also asks for OS handle and child-process counts. Under Bun,
+   * `process._getActiveHandles()`/`getActiveResourcesInfo()` are stubs that
+   * always return `[]` — reporting them would masquerade as authoritative
+   * zeros, so they are deliberately absent. Child processes are covered by
+   * the external sampler scripts/perf/process-tree-sample.mjs instead.
+   */
+  getStreamDiagnostics() {
+    const memory = process.memoryUsage();
+    return {
+      wireBus: this.bus.stats(),
+      ompBus: this.ompBus.stats(),
+      dataProportional: {
+        liveSessions: this.#live.stats(),
+        wireIdOverrides: this.wireIdOverrides.size,
+        personas: this.personas.size,
+      },
+      process: {
+        heapUsedBytes: memory.heapUsed,
+        externalBytes: memory.external,
+        arrayBufferBytes: memory.arrayBuffers,
+        rssBytes: memory.rss,
+      },
+    };
+  }
+
+  /**
+   * Graceful shutdown (plan §3.4): close the intake, synchronously
+   * beginDispose every live record (inside each key's gate), then wait for
+   * all disposals under one global deadline. Records whose disposal has not
+   * settled by the deadline stay quarantined in the registry — observably
+   * failed, still blocking new writers — instead of being cleared and
+   * masquerading as released. `sessions.clear()` before these steps was not
+   * a shutdown.
+   */
   async shutdown() {
+    this.#closing = true;
     clearInterval(this.sweeper);
+    const records = this.#live.snapshot();
+    const deadline = new Promise((resolve) => setTimeout(resolve, this.shutdownDisposeDeadlineMs));
+    await Promise.all(
+      records.map((record) =>
+        this.#live
+          .withOperation(record.key, async () => {
+            const current = this.#live.byKey(record.key);
+            if (!current || current.state !== 'live') return;
+            const disposal = this.#evictRecord(current, 'shutdown', { emitIdle: false });
+            // The gate body itself is bounded by the global deadline: a
+            // disposal that never settles must not park shutdown (the
+            // record simply stays `evicting` — quarantined, observable).
+            await Promise.race([disposal, deadline]);
+          })
+          .catch((error) => {
+            console.warn('[omp-host] shutdown dispose failed:', errorText(error));
+          }),
+      ),
+    );
+    const quarantined = this.#live.stats();
+    if (quarantined.evicting > 0 || quarantined.failed > 0) {
+      console.warn(
+        `[omp-host] shutdown: ${quarantined.evicting} disposal(s) still draining, ${quarantined.failed} quarantined — restart clears them`,
+      );
+    }
     try {
       await this.dialogs?.dispose?.('omp-host shutdown');
     } catch {
       // Settle-all is best-effort at shutdown.
     }
-    for (const session of this.sessions.values()) {
-      this.#disposeSession(session);
-    }
-    this.sessions.clear();
     this.uriDomain?.dispose?.();
     try {
       await this.settingsStore?.disposeAll?.();
@@ -2579,37 +3124,76 @@ export class OmpHostEngine {
 
   /**
    * Move a session to another project directory: relocate the transcript via
-   * omp's SessionManager.moveTo and migrate the sidecar metadata.
+   * omp's SessionManager.moveTo and migrate the sidecar metadata. A live
+   * session is evicted (awaited, inside the owning key's gate) first — the
+   * old cold-path opened a second writable manager while a live writer held
+   * the same file (plan §3.4). Ownership transfers cold; the next prompt in
+   * the destination materializes fresh.
    */
   async moveSession({ sessionID, destination }: { sessionID: string; destination: string }) {
     await this.#boot();
     const toKey = normalizeDirectoryKey(destination);
-    const live = this.sessions.get(sessionID);
-    const fromKey = live?.directory ?? (await this.#locateDirectory(sessionID));
+    const live = this.#liveHostById(sessionID);
+    const fromKey = live ? normalizeDirectoryKey(live.directory) : ((await this.#locateDirectory(sessionID)) ?? null);
     if (!fromKey) return null;
-    const file = await this.#findSessionFile(sessionID, fromKey);
-    if (file) {
-      const manager = await SessionManager.open(file.path);
-      try {
-        await manager.moveTo(toKey, this.#sessionDirFor(toKey));
-      } finally {
-        await manager.close();
+    const key = sessionKey(fromKey, sessionID);
+    // Evict → bounded disposal wait → transcript relocation ALL inside the
+    // owning key's gate: an interleaved materialize would open a second
+    // writer on the file being moved, and a disposal that fails or times
+    // out must refuse the move instead of relocating under a live writer
+    // (plan §3.4). Ownership transfers cold; the next prompt in the
+    // destination materializes fresh.
+    await this.#live.withOperation(key, async () => {
+      const record = this.#live.get(fromKey, sessionID);
+      if (record && record.state === 'live') {
+        this.#evictRecord(record, 'move', { emitIdle: true });
       }
-    }
-    this.registry.move(fromKey, toKey, sessionID);
+      const blocking = this.#live.byKey(key);
+      if (blocking) {
+        const outcome = await this.#awaitDisposalBounded(blocking);
+        if (outcome !== 'disposed') {
+          throw new SessionBusyError(
+            outcome === 'failed' ? 'session-failed' : 'session-evicting',
+            `session ${sessionID} is not movable: disposal ${outcome === 'timeout' ? 'did not settle' : `failed (${blocking.failure?.reason ?? 'unknown'})`}`,
+            sessionID,
+          );
+        }
+      }
+      const file = await this.#findSessionFile(sessionID, fromKey);
+      if (file) {
+        // The relocating manager is a cold read of the same file: close +
+        // release in finally, same contract as every other cold open.
+        await withColdManager(file.path, (manager) => manager.moveTo(toKey, this.#sessionDirFor(toKey)));
+      }
+      this.registry.move(fromKey, toKey, sessionID);
+    });
+    this.#maybeReleaseDirectoryState(fromKey);
     const session = await this.getSession({ sessionID, directory: toKey });
     if (session) this.bus.emit('session.updated', { sessionID, info: session }, toKey);
     return session;
   }
 
   async #locateDirectory(sessionID: string) {
-    for (const [id, live] of this.sessions) {
-      if (id === sessionID) return live.directory;
-    }
+    const record = this.#live.bySessionId(sessionID);
+    if (record === undefined) return null; // same id live in two directories — refuse to guess
+    if (record !== null) return record.directory;
     const byDirectory = await this.listAllSessions({});
     for (const [directory, list] of byDirectory) {
       if (list.some((session: { id: string }) => session.id === sessionID)) return directory;
     }
     return null;
+  }
+
+  /** Unique live payload by id (null-ambiguous on two-directory duplicates). */
+  #liveHostById(sessionId: string): HostSession | null {
+    const record = this.#live.bySessionId(sessionId);
+    return record && record.state === 'live' ? record.payload : null;
+  }
+
+  /** Test/diagnostics view: live record access by id. */
+  liveRecord(sessionId: string, directory?: string): LiveRecord<HostSession> | null {
+    if (directory) return this.#live.get(directory, sessionId);
+    const record = this.#live.bySessionId(sessionId);
+    return record === undefined ? null : record;
   }
 }

@@ -14,6 +14,7 @@ import { errorText } from './omp-parity.ts';
 import { fileURLToPath } from 'node:url';
 import { isDispatchableInvocation, runWorkerDispatch } from './worker-dispatch.ts';
 import { OmpHostEngine } from './engine.ts';
+import { SessionBusyError } from './live-registry.ts';
 import { registerEndpoints } from './endpoints.ts';
 import type { EndpointOptions, RouteHandler, RouteMount } from './endpoints.ts';
 
@@ -99,6 +100,20 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
           // this boundary instead of polluting the route-table contract.
           return (await entry.handler(request, { params, url, headers: request.headers, engine: hostEngine })) as Response;
         } catch (error) {
+          // Lifecycle refusals are retryable, not server faults (plan §3.4):
+          // a mid-eviction/quarantined key answers 409 in the same
+          // SessionBusyError wire shape the generated contract already uses.
+          if (error instanceof SessionBusyError) {
+            return Response.json(
+              {
+                _tag: 'SessionBusyError',
+                sessionID: error.sessionId ?? params.id ?? '',
+                message: errorText(error),
+                code: error.code,
+              },
+              { status: 409 },
+            );
+          }
           console.error('[omp-host] handler error:', pathname, error);
           return Response.json(
             { name: 'UnknownError', data: { message: errorText(error) } },

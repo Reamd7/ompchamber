@@ -238,7 +238,8 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     // the harness owns this materialized s1 session and simulates an
     // out-of-band model change by writing the field in place — the runtime
     // write is byte-for-byte what it was before.
-    const s1Session = h.engine.sessions.get('s1')!.agentSession as { model: { provider: string; id: string } };
+    const s1Session = h.engine.liveRecord('s1')?.payload?.agentSession as { model: { provider: string; id: string } } | undefined;
+    if (!s1Session) throw new Error('s1 missing');
     s1Session.model = { provider: 'p1', id: 'fallback' };
     h.emit({ type: 'model_changed' });
     expect(h.wireOf('session.updated').length).toBe(before + 1);
@@ -565,7 +566,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
   test('tail-sync projects unannounced dividers on terminal agent_end', async () => {
     const h = await harness();
-    const live = h.engine.sessions.get('s1');
+    const live = h.engine.liveRecord('s1')?.payload ?? undefined;
     // SAFETY: a well-formed SDK assistant message — every field the SdkMessage
     // variant declares beyond role/content/model/timestamp is optional and
     // unread by the tail-sync projection under test.
@@ -592,7 +593,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
   test('skill slash command prompts the skill-prompt message instead of a plain prompt', async () => {
     const h = await harness();
-    const live = h.engine.sessions.get('s1');
+    const live = h.engine.liveRecord('s1')?.payload ?? undefined;
     const calls: Array<{ kind: 'prompt' | 'custom'; text?: string; customType?: string; details?: { name?: string; path?: string } }> = [];
     if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.prompt = async (text: string) => { calls.push({ kind: 'prompt', text }); return true; };
@@ -611,7 +612,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
   test('unknown skill commands and plain prompts fall through to session.prompt', async () => {
     const h = await harness();
-    const live = h.engine.sessions.get('s1');
+    const live = h.engine.liveRecord('s1')?.payload ?? undefined;
     const calls: string[] = [];
     if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.prompt = async (text: string) => { calls.push(text); return true; };
@@ -646,7 +647,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
 
   test('tail-sync projects unannounced developer notes and stays idempotent', async () => {
     const h = await harness();
-    const live = h.engine.sessions.get('s1');
+    const live = h.engine.liveRecord('s1')?.payload ?? undefined;
     if (!live?.agentSession) throw new Error('s1 missing');
     live.agentSession.messages.push(
       { role: 'user', content: 'hi', timestamp: 50 },

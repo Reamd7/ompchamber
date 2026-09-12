@@ -11,63 +11,76 @@ export const MESSAGE_STREAM_WS_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 // proactively start shedding low-priority updates before the hard disconnect.
 export const MESSAGE_STREAM_WS_BACKPRESSURE_WARN_BYTES = 12 * 1024 * 1024;
 
+/**
+ * Parse one SSE block into `{ eventId, eventName, directory, payload }`.
+ * Data-less blocks carrying an `event:` name or `id:` are control frames
+ * (payload null) — dropping them would hide resync/restart controls
+ * (docs/plan.md §5.4). Blocks with none of the three are comments → null.
+ */
 export function parseSseEventEnvelope(block) {
   if (!block || typeof block !== 'string') {
     return null;
   }
 
-  const eventId = block
-    .split('\n')
-    .find((line) => line.startsWith('id:'))
-    ?.slice(3)
-    .trim() || null;
-
-  const dataLines = block
-    .split('\n')
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => line.slice(5).replace(/^\s/, ''));
-
-  if (dataLines.length === 0) {
-    return null;
+  const lines = block.split('\n');
+  let eventId = null;
+  let eventName = null;
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith('id:')) {
+      eventId = line.slice(3).trim() || null;
+    } else if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim() || null;
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).replace(/^\s/, ''));
+    }
   }
 
   const payloadText = dataLines.join('\n').trim();
-  if (!payloadText) {
-    return null;
+  let parsed;
+  if (payloadText) {
+    try {
+      parsed = JSON.parse(payloadText);
+    } catch {
+      parsed = undefined;
+    }
+  }
+  if (parsed === undefined) {
+    if (eventId === null && eventName === null) {
+      return null;
+    }
+    return { eventId, eventName, directory: null, payload: null };
   }
 
-  try {
-    const parsed = JSON.parse(payloadText);
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof parsed.payload === 'object' &&
-      parsed.payload !== null
-    ) {
-      return {
-        eventId,
-        directory: typeof parsed.directory === 'string' && parsed.directory.length > 0 ? parsed.directory : null,
-        payload: parsed.payload,
-      };
-    }
-
-    const directory =
-      typeof parsed?.directory === 'string' && parsed.directory.length > 0
-        ? parsed.directory
-        : typeof parsed?.properties?.directory === 'string' && parsed.properties.directory.length > 0
-          ? parsed.properties.directory
-          : typeof parsed?.properties?.info?.directory === 'string' && parsed.properties.info.directory.length > 0
-            ? parsed.properties.info.directory
-            : null;
-
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    typeof parsed.payload === 'object' &&
+    parsed.payload !== null
+  ) {
     return {
       eventId,
-      directory,
-      payload: parsed,
+      eventName,
+      directory: typeof parsed.directory === 'string' && parsed.directory.length > 0 ? parsed.directory : null,
+      payload: parsed.payload,
     };
-  } catch {
-    return null;
   }
+
+  const directory =
+    typeof parsed?.directory === 'string' && parsed.directory.length > 0
+      ? parsed.directory
+      : typeof parsed?.properties?.directory === 'string' && parsed.properties.directory.length > 0
+        ? parsed.properties.directory
+        : typeof parsed?.properties?.info?.directory === 'string' && parsed.properties.info.directory.length > 0
+          ? parsed.properties.info.directory
+          : null;
+
+  return {
+    eventId,
+    eventName,
+    directory,
+    payload: parsed,
+  };
 }
 
 export function sendMessageStreamWsFrame(socket, payload) {
@@ -121,6 +134,15 @@ export function sendMessageStreamWsFrame(socket, payload) {
   } catch {
     return false;
   }
+}
+
+/** Transport-level resync control frame (docs/plan.md §5.2): cursor + epoch. */
+export function sendWsResyncFrame(socket, { eventId, epoch }) {
+  return sendMessageStreamWsFrame(socket, {
+    type: 'resync',
+    ...(typeof eventId === 'string' && eventId.length > 0 ? { eventId } : {}),
+    ...(typeof epoch === 'string' && epoch.length > 0 ? { epoch } : {}),
+  });
 }
 
 export function sendMessageStreamWsEvent(socket, payload, options = {}) {

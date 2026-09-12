@@ -371,6 +371,12 @@ export interface DialogsDomain {
   hasUISnapshotFor(directory: string, sessionId: string): LeaseSnapshot;
   /** Mount the endpoint group onto the shared route table. */
   mount(route: DialogsRouteMount, options?: DialogEndpointOptions): DialogsDomain;
+  /**
+   * Per-session release (docs/plan.md §6): settle pending dialogs and drop
+   * the cached bridge so session eviction cannot leak a per-session
+   * WebUIContext. Shutdown keeps `dispose`.
+   */
+  releaseSession(directory: string, sessionId: string, reason?: string): void;
   /** Host lifecycle exit: settle everything, drop every lease (R11). */
   dispose(reason?: string): Promise<number>;
 }
@@ -1554,6 +1560,11 @@ export const createDomainDialogs = ({
     mount(route: DialogsRouteMount, options: DialogEndpointOptions = {}) {
       registerDialogEndpoints(route, { leases, registry, ...options });
       return this;
+    },
+    /** Per-session release (plan §6): settle dialogs + drop the bridge. */
+    releaseSession(directory: string, sessionId: string, reason: string = 'session disposed') {
+      registry.abortForSession({ directory, sessionId }, reason);
+      bridges.delete(sessionKey(directory, sessionId));
     },
     /** Host lifecycle exit: settle everything, drop every lease (R11). */
     async dispose(reason: string = 'omp-host shutdown') {

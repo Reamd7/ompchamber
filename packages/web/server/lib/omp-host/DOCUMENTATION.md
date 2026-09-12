@@ -31,11 +31,12 @@ sync engine, and web server call; everything else answers 404.
   re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
   `worker-dispatch.test.js` pins the full selector list.
 - `engine.ts` — `OmpHostEngine`: model/auth boot, session materialization
-  (cold reads via `SessionManager` transcript projection, live turns via
-  `createAgentSession` + event pump), session operations, idle sweeping.
-  Materialization injects the per-directory keyed `Settings` instance
-  (`options.settings`, spec 06 §5.1/master R6), the lease-driven `hasUI`
-  snapshot (R13), and session-pinned `localProtocolOptions` (R7/R8), and
+  through `LiveSessionRegistry` (directory-keyed records, per-key gates,
+  eviction state machine, quarantine tombstones — docs/plan.md §3.2-3.4),
+  idle-TTL sweeper with the full SDK activity-guard set and no live-count
+  gate (§4), and event projection. `sessions` map is gone: lookups are
+  directory-keyed (`#liveHost`/`#liveHostAnywhere`); test access goes
+  through `liveRecord(id, directory?)`. The record
   retains the private `AgentRegistry` + `CreateAgentSessionResult` handle
   for the agent-runs aggregator and `setToolUIContext`. The first live lease
   initializes the SDK extension runner through its canonical
@@ -50,14 +51,37 @@ sync engine, and web server call; everything else answers 404.
 - `events.ts` — `RingEventBus` (durable/volatile replay split) with the wire
   `WireEventBus` on top, plus `OmpEventBus`: the single omp-native channel
   (envelope `{id,type,directory,sessionID?,schemaVersion,createdAt,payload}`,
-  process-global monotonic ids, 512-durable ring, gap/restart detection
-  feeding `omp.stream.resync`).
-- `registry.ts` — per-project sidecar metadata, written atomically.
+  process-global monotonic ids, gap/restart detection feeding
+  `omp.stream.resync`). Durable replay is capped by entries AND estimated
+  bytes (docs/plan.md §5.1): over-budget single events skip the ring as
+  holes, hole ranges are merged and bounded, `replayState` classifies
+  `ok|restart|gap` globally-conservatively across directories, `epoch`
+  identifies the boot, and `subscribeSince` is reentrancy-safe. Byte
+  figures are declared serialized estimates (UTF-16 units), never heap
+  measures; `stats()` is the O(1) observation port.
+- `live-registry.ts` — `LiveSessionRegistry`: directory-keyed live records
+  (`normalize(directory)\0sessionID`), the materializing → live → evicting →
+  cold|failed state machine, per-key operation gates for mutation
+  boundaries, monotonic-clock TTL bookkeeping, in-flight counts, and
+  quarantine tombstones for failed disposals (docs/plan.md §3.2-3.4).
+- `cold-reader.ts` — `withColdManager`: every cold GET runs open → consume →
+  close+releaseRetainedEntries in `finally`, with O(1) open/close/release
+  counters proving no cold read leaks a manager (docs/plan.md §7).
+- `dual-write.ts` — file signature (size+mtime+tail entry id) and
+  conservative external-change classification (append vs dirty); the engine
+  rebuilds a live writer from disk on dirty + inactive, inside the key's
+  gate (docs/plan.md §8).
 - `endpoints.ts` — wire route handlers + the `/omp/*` parity group:
   capabilities, the omp SSE channel, transcript structured reads
   (custom-messages/telemetry/entries), `GET /agent-dir` (the Node web server
   cannot import this SDK — it resolves the profile-scoped omp agent dir
-  here), and mounts for the domain modules below.
+  here), `GET /omp/diagnostics` (counters-only observation port, plan §9.1),
+  and mounts for the domain modules below. Both SSE endpoints carry
+  `x-omp-epoch` (boot identity), emit `omp.stream.boot` in-band, send a
+  data-less `omp.stream.resync` control with the real tail id when a
+  resume cursor cannot be proven (gap, restart, or epoch mismatch —
+  epoch-less resumers always downgrade to reconcile, plan §5.2), and close
+  dead-slow consumers instead of buffering without bound.
 - `omp-parity.ts` — `ompFeatures()` capability table (the server-adjudicated
   switchboard, master R2) + registry access.
 - `domain-models.ts` (specs 01/06) — per-directory keyed Settings store

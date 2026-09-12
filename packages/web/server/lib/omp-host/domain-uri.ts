@@ -253,11 +253,16 @@ export class UriTokenService {
       maxReads: this.maxReads,
       reads: 0,
     });
-    this.#sweep();
+    this.sweep();
     return { id, expiresAt };
   }
 
-  #sweep(): void {
+  /**
+   * Sweep expired/exhausted tokens. Issue-time sweeping only runs when
+   * tokens are being minted; the engine's idle sweeper calls this
+   * periodically so idle hosts do not retain tokens forever (plan §6).
+   */
+  sweep(): void {
     const now = this.now();
     for (const [id, entry] of this.#entries) {
       if (entry.expiresAt <= now || entry.reads >= entry.maxReads) this.#entries.delete(id);
@@ -890,7 +895,17 @@ export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
 
 const STATUS_ORDER = { running: 0, idle: 1, parked: 2, aborted: 3, historical: 4 } satisfies Record<AgentRunStatus, number>;
 
-const agentRunKey = (sessionID: string, agentId: string): string => `${sessionID}::${agentId}`;
+/**
+ * Rows key on the SAME composite identity as LiveSessionRegistry (plan
+ * §3.1): session ids are unique per directory, not per process — the same
+ * id materialized under two worktrees must never overwrite each other's
+ * row, descriptor, or release.
+ */
+const agentRunKey = (directory: string, sessionID: string, agentId: string): string =>
+  `${normalizeDirectoryKey(directory)}\u0000${sessionID}::${agentId}`;
+
+const agentRunSessionPrefix = (directory: string, sessionID: string): string =>
+  `${normalizeDirectoryKey(directory)}\u0000${sessionID}::`;
 
 export interface AgentRunHistory {
   agent?: string;
@@ -956,7 +971,7 @@ export const projectAgentRun = ({ sessionID, directory, ref, status }: {
       }
     : undefined;
   return {
-    key: agentRunKey(sessionID, ref.id),
+    key: agentRunKey(directory, sessionID, ref.id),
     sessionID,
     directory,
     agentId: ref.id,
@@ -1056,7 +1071,7 @@ export class AgentRunsAggregator {
     if (typeof publish !== 'function') throw new TypeError('AgentRunsAggregator: publish callback is required');
     this.#snapshot = snapshot;
     this.#publish = publish;
-    this.#diskScan = diskScan;
+    this.#diskScan = diskScan ?? null;
     this.#coalesceMs = coalesceMs;
     this.#setTimer = setTimer;
     this.#clearTimer = clearTimer;
@@ -1065,15 +1080,32 @@ export class AgentRunsAggregator {
 
   #snapshot: () => AgentsSnapshotEntry[] | null | undefined;
   #publish: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
-  #diskScan: ((directory: string) => DiskScanRow[] | null | undefined) | undefined;
-  #coalesceMs: number;
-  #setTimer: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
-  #clearTimer: (timer: AgentRunsTimerHandle) => void;
-  #now: () => number;
   #rows = new Map<string, OmpAgentRun>();
   #revision = 0;
   #generatedAt = 0;
   #timer: AgentRunsTimerHandle | null = null;
+
+  /**
+   * Drop one owner session's rows (docs/plan.md §6): engine calls this on
+   * evict/delete so a dead session's agent rows do not survive as stale
+   * projections. The next refresh rebuilds from live registries only.
+   */
+  releaseForSession(directory: string, sessionID: string): number {
+    const prefix = agentRunSessionPrefix(directory, sessionID);
+    let dropped = 0;
+    for (const key of this.#rows.keys()) {
+      if (key.startsWith(prefix)) {
+        this.#rows.delete(key);
+        dropped += 1;
+      }
+    }
+    return dropped;
+  }
+  #now: () => number;
+  #diskScan: ((directory: string) => DiskScanRow[] | null | undefined) | null;
+  #coalesceMs: number;
+  #setTimer: (fn: () => void, ms?: number) => AgentRunsTimerHandle;
+  #clearTimer: (timer: AgentRunsTimerHandle) => void;
   #dirty = new Set<string>();
 
   /** Rebuild rows from live registries (+ cold scan), then notify. */
@@ -1093,7 +1125,7 @@ export class AgentRunsAggregator {
           : [];
       for (const ref of refs) {
         if (!ref || typeof ref.id !== 'string') continue;
-        next.set(agentRunKey(entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref }));
+        next.set(agentRunKey(directory, entry.sessionID, ref.id), projectAgentRun({ sessionID: entry.sessionID, directory, ref }));
       }
     }
     if (this.#diskScan) {
@@ -1104,7 +1136,7 @@ export class AgentRunsAggregator {
       for (const directory of directories) {
         for (const cold of this.#diskScan(directory) ?? []) {
           if (!cold || typeof cold.agentId !== 'string' || typeof cold.sessionID !== 'string') continue;
-          const key = agentRunKey(cold.sessionID, cold.agentId);
+          const key = agentRunKey(directory, cold.sessionID, cold.agentId);
           if (next.has(key)) continue; // registry row wins over disk row
           next.set(key, {
             key,
@@ -1181,9 +1213,18 @@ export class AgentRunsAggregator {
     };
   }
 
-  /** One row by two-part address, or null. */
-  row(sessionID: string, agentId: string): OmpAgentRun | null {
-    return this.#rows.get(agentRunKey(sessionID, agentId)) ?? null;
+  /** One row by directory+session+agent, or null. */
+  row(sessionID: string, agentId: string, directory?: string | null): OmpAgentRun | null {
+    if (directory) return this.#rows.get(agentRunKey(directory, sessionID, agentId)) ?? null;
+    // Unscoped lookup: same session id under two directories is ambiguous —
+    // refuse to guess (live-registry parity) rather than pick one.
+    let found: OmpAgentRun | null = null;
+    for (const candidate of this.#rows.values()) {
+      if (candidate.sessionID !== sessionID || candidate.agentId !== agentId) continue;
+      if (found !== null) return null;
+      found = candidate;
+    }
+    return found;
   }
 
   /** Stop any pending publish (engine dispose hook). */
@@ -1197,6 +1238,8 @@ export class AgentRunsAggregator {
 export interface ParkedAgentDescriptor {
   sessionID: string;
   agentId: string;
+  /** Owning directory — session ids collide across directories (plan §3.1). */
+  directory?: string;
   ref?: AgentRefLike;
   revive: () => Promise<object>;
 }
@@ -1216,21 +1259,41 @@ export class ParkedAgentDescriptors {
    * @param {{ sessionID: string, agentId: string, ref?: object,
    *           revive: () => Promise<object> }} descriptor
    */
-  register({ sessionID, agentId, ref, revive }: ParkedAgentDescriptor): void {
+  register({ sessionID, agentId, directory, ref, revive }: ParkedAgentDescriptor): void {
     if (typeof revive !== 'function') throw new TypeError('descriptor.revive is required');
-    this.#map.set(agentRunKey(sessionID, agentId), { sessionID, agentId, ref, revive });
+    this.#map.set(agentRunKey(directory ?? '', sessionID, agentId), { sessionID, agentId, directory, ref, revive });
   }
 
-  has(sessionID: string, agentId: string): boolean {
-    return this.#map.has(agentRunKey(sessionID, agentId));
+  has(sessionID: string, agentId: string, directory?: string): boolean {
+    return this.#map.has(agentRunKey(directory ?? '', sessionID, agentId));
   }
 
   /** Consume the descriptor (single claim — a failed revive re-registers). */
-  claim(sessionID: string, agentId: string): ParkedAgentDescriptor | null {
-    const key = agentRunKey(sessionID, agentId);
+  claim(sessionID: string, agentId: string, directory?: string | null): ParkedAgentDescriptor | null {
+    const key = agentRunKey(directory ?? '', sessionID, agentId);
     const descriptor = this.#map.get(key);
     if (descriptor) this.#map.delete(key);
     return descriptor ?? null;
+  }
+
+  /**
+   * Drop every descriptor owned by one session (docs/plan.md §6): the
+   * revive closures hold registry/runtime references, so owner
+   * evict/delete/dispose must release them. Scoped by directory+id —
+   * releasing by id alone would tear down another directory's parked
+   * descriptors under a same-id session. Aggregator rows survive — they
+   * are transcript projections, not descriptors.
+   */
+  releaseForSession(directory: string, sessionID: string): number {
+    const prefix = agentRunSessionPrefix(directory, sessionID);
+    let dropped = 0;
+    for (const key of this.#map.keys()) {
+      if (key.startsWith(prefix)) {
+        this.#map.delete(key);
+        dropped += 1;
+      }
+    }
+    return dropped;
   }
 
   get size() {
@@ -1265,7 +1328,7 @@ export interface AgentRunActionBody {
 }
 
 export interface AgentRunActionInput {
-  aggregator: { row(sessionID: string, agentId: string): OmpAgentRun | null };
+  aggregator: { row(sessionID: string, agentId: string, directory?: string | null): OmpAgentRun | null };
   descriptors: ParkedAgentDescriptors;
   actions: AgentRunActions;
   sessionID: string;
@@ -1291,7 +1354,7 @@ export const handleAgentRunAction = async ({
   directory,
   body = {},
 }: AgentRunActionInput): Promise<Response> => {
-  const row = aggregator.row(sessionID, agentId);
+  const row = aggregator.row(sessionID, agentId, directory);
   if (!row) return json({ error: 'agent-run-not-found' }, { status: 404 });
   if (directory && normalizeDirectoryKey(directory) !== row.directory) {
     return json({ error: 'agent-run-not-found' }, { status: 404 });
@@ -1310,7 +1373,7 @@ export const handleAgentRunAction = async ({
     if (row.status !== 'parked') {
       return json({ error: 'not-parked', status: row.status }, { status: 409 });
     }
-    const descriptor = descriptors.claim(sessionID, agentId);
+    const descriptor = descriptors.claim(sessionID, agentId, directory);
     if (!descriptor) {
       return json({ error: 'reviver-unavailable', revivable: false }, { status: 409 });
     }
@@ -1342,7 +1405,7 @@ export const handleAgentRunAction = async ({
     const mode = rawMode === 'steer' ? 'steer' : 'prompt';
     if (row.status === 'parked') {
       // chat on parked = revive first (TUI parity), then prompt/steer.
-      const descriptor = descriptors.claim(sessionID, agentId);
+      const descriptor = descriptors.claim(sessionID, agentId, directory);
       if (!descriptor) {
         return json({ error: 'reviver-unavailable', revivable: false }, { status: 409 });
       }
@@ -1527,7 +1590,7 @@ export interface UriDomainDeps {
   router?: InternalUrlRouter;
   localOptionsFor?: LocalOptionsForHook;
   sessionTreeData?: (directory: string | null) => Promise<SessionTreeData>;
-  entryTreeFor?: (sessionID: string, directory: string | null) => Promise<{ manager: EntryTreeManagerLike } | null>;
+  entryTreeFor?: (sessionID: string, directory: string | null) => Promise<{ tree: EntryTreeSnapshot } | null>;
   agentsSnapshot?: () => AgentsSnapshotEntry[];
   diskScan?: (directory: string) => DiskScanRow[] | null | undefined;
   publish?: (type: string, payload: AgentsUpdatedPayload, scope: AgentRunsPublishScope) => void;
@@ -1585,11 +1648,10 @@ export interface UriDomain {
  *     liveSessionManagerOrColdArtifactsDir). Used at BOTH the resolve
  *     endpoint and #materialize (sdk createAgentSession localProtocolOptions).
  * - sessionTreeData(directory) → wire session records (engine.listSessions).
- * - entryTreeFor(sessionID, directory) → { manager } | null (live session's
- *     SessionManager, or cold read-only SessionManager.open — no agent).
+ * - entryTreeFor(sessionID, directory) → { tree } | null: an already-built
+ *     snapshot; the engine owns the cold manager's close/release (plan §7.1).
  * - agentsSnapshot() → [{ sessionID, directory, registry }] (private
  *     registries of live host sessions; engine retains them at #materialize).
- * - diskScan(directory) → cold rows for historical projection (optional).
  * - localFiles(sessionID, directory) → { files: [{ref,size,modifiedAt}],
  *     truncated } | null (engine walk of that session's local:// root; null
  *     = session unknown; absent root = authoritative empty). Artifacts browse.
@@ -1668,11 +1730,11 @@ export const createUriDomain = ({
   };
   const sessionTree = async ({ directory }: { directory?: string | null }) =>
     buildSessionTree((await sessionTreeData?.(directory ?? null)) ?? []);
-  const entryTree = async ({ sessionID, directory }: { sessionID?: string; directory?: string | null }) => {
+  const entryTree = async ({ sessionID, directory }: { sessionID?: string | null; directory?: string | null }) => {
     if (typeof sessionID !== 'string' || !sessionID) return json({ error: 'sessionID required' }, { status: 400 });
     const found = await entryTreeFor?.(sessionID, directory ?? null);
-    if (!found?.manager) return json({ error: 'session-not-found' }, { status: 404 });
-    return json(buildEntryTreeSnapshot({ sessionID, directory: directory ?? null, manager: found.manager }));
+    if (!found?.tree) return json({ error: 'session-not-found' }, { status: 404 });
+    return json(found.tree);
   };
   const agentRuns = ({ directory }: { directory?: string | null }) => json(runs.snapshot(directory ?? null));
   const agentRunAction = ({ sessionID, agentId, directory, body }: { sessionID?: string; agentId?: string; directory?: string | null; body?: AgentRunActionBody | null }) =>

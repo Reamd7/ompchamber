@@ -32,9 +32,15 @@ import {
   createUriDomain,
 } from './domain-uri.ts';
 import { ompFeatures } from './omp-parity.ts';
+import { normalizeDirectoryKey } from './registry.ts';
 import type { UriRequestBody, UriResolveBody } from './domain-uri.ts';
 
 const DIRECTORY = 'C:/proj/alpha';
+
+/** Row keys are composite directory\0session::agent (plan §3.1) — opaque to
+ *  consumers; tests reconstruct them to pin the format. */
+const runKey = (directory: string, sessionID: string, agentId: string) =>
+  `${normalizeDirectoryKey(directory)}\u0000${sessionID}::${agentId}`;
 
 // ---------------------------------------------------------------------------
 // shared fixtures
@@ -491,7 +497,7 @@ const makeRegistry = (...refs: import('./domain-uri.ts').AgentRefLike[]) => ({ l
 describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
   test('row carries the two-part key and NO absolute paths', () => {
     const row = projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref() });
-    expect(row.key).toBe('ses_1::Anna');
+    expect(row.key).toBe(runKey(DIRECTORY, 'ses_1', 'Anna'));
     expect(row.hasTranscript).toBe(true);
     expect(row.history?.outputPath).toBe('agent://Anna');
     expect('sessionFile' in row).toBe(false);
@@ -527,7 +533,7 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     };
   };
 
-  test('keys rows by sessionID::agentId — same flat id across sessions stays distinct', () => {
+  test('keys rows by directory+sessionID+agentId — same flat id across sessions stays distinct', () => {
     const aggregator = new AgentRunsAggregator({
       snapshot: () => [
         { sessionID: 'ses_A', directory: DIRECTORY, registry: makeRegistry(ref()) },
@@ -536,7 +542,41 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
       publish: () => {},
     });
     const { agentRuns } = aggregator.refresh();
-    expect(agentRuns.map((r) => r.key).sort()).toEqual(['ses_A::Anna', 'ses_B::Anna']);
+    expect(agentRuns.map((r) => r.key).sort()).toEqual([
+      runKey(DIRECTORY, 'ses_A', 'Anna'),
+      runKey('C:/proj/beta', 'ses_B', 'Anna'),
+    ]);
+    aggregator.dispose();
+  });
+
+  test('the same session id materialized under two directories stays two isolated rows', () => {
+    const aggregator = new AgentRunsAggregator({
+      snapshot: () => [
+        { sessionID: 'same', directory: DIRECTORY, registry: makeRegistry(ref({ id: 'Anna', activity: 'alpha work' })) },
+        { sessionID: 'same', directory: 'C:/proj/beta', registry: makeRegistry(ref({ id: 'Anna', activity: 'beta work' })) },
+      ],
+      publish: () => {},
+    });
+    const { agentRuns } = aggregator.refresh();
+    expect(agentRuns).toHaveLength(2);
+    expect(aggregator.row('same', 'Anna', DIRECTORY)?.activity).toBe('alpha work');
+    expect(aggregator.row('same', 'Anna', 'C:/proj/beta')?.activity).toBe('beta work');
+    expect(aggregator.row('same', 'Anna')).toBeNull(); // ambiguous unscoped — never guess
+    aggregator.dispose();
+  });
+
+  test('releaseForSession drops only the owning directory\'s rows', () => {
+    const aggregator = new AgentRunsAggregator({
+      snapshot: () => [
+        { sessionID: 'same', directory: DIRECTORY, registry: makeRegistry(ref({ id: 'Anna' })) },
+        { sessionID: 'same', directory: 'C:/proj/beta', registry: makeRegistry(ref({ id: 'Bob', displayName: 'Bob' })) },
+      ],
+      publish: () => {},
+    });
+    aggregator.refresh();
+    expect(aggregator.releaseForSession(DIRECTORY, 'same')).toBe(1);
+    expect(aggregator.row('same', 'Anna', DIRECTORY)).toBeNull();
+    expect(aggregator.row('same', 'Bob', 'C:/proj/beta')?.agentId).toBe('Bob');
     aggregator.dispose();
   });
 
@@ -562,7 +602,7 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
     expect((events[0].payload as { revision?: number }).revision).toBe(1);
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-    expect(((events[0].payload as { agentRuns?: Array<{ key: string }> }).agentRuns ?? []).map((r) => r.key)).toEqual(['ses_A::Anna']);
+    expect(((events[0].payload as { agentRuns?: Array<{ key: string }> }).agentRuns ?? []).map((r) => r.key)).toEqual([runKey(DIRECTORY, 'ses_A', 'Anna')]);
 
     registry = makeRegistry(ref({ status: 'idle', activity: undefined }));
     aggregator.refresh();
@@ -588,8 +628,8 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
     const { agentRuns } = aggregator.refresh();
     const ghost = agentRuns.find((r) => r.agentId === 'Ghost');
     expect(ghost?.status).toBe('historical');
-    expect(ghost?.key).toBe('ses_C::Ghost');
-    const live = agentRuns.find((r) => r.key === 'ses_A::Anna');
+    expect(ghost?.key).toBe(runKey(DIRECTORY, 'ses_C', 'Ghost'));
+    const live = agentRuns.find((r) => r.key === runKey(DIRECTORY, 'ses_A', 'Anna'));
     expect(live?.status).toBe('running'); // registry wins, never historical
     aggregator.dispose();
   });
@@ -741,6 +781,7 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
     ctx.descriptors.register({
       sessionID: 'ses_A',
       agentId: 'Parked',
+      directory: DIRECTORY,
       ref: ref({ id: 'Parked', status: 'parked' }),
       revive: async () => ({}),
     });
@@ -748,7 +789,7 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
     expect(revived.status).toBe(200);
     expect(revived.body).toEqual({ ok: true, status: 'running' });
     expect(ctx.calls.revive).toBe(1);
-    expect(ctx.descriptors.has('ses_A', 'Parked')).toBe(false); // single claim
+    expect(ctx.descriptors.has('ses_A', 'Parked', DIRECTORY)).toBe(false); // single claim
     const second = await act(ctx, 'Parked', { kind: 'revive' });
     expect(second.status).toBe(409);
   });
@@ -762,7 +803,7 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
     expect(killed.body).toEqual({ ok: true, status: 'aborted' });
     expect(ctx.calls.kill).toBe(1);
 
-    ctx.descriptors.register({ sessionID: 'ses_A', agentId: 'Parked', revive: async () => ({}) });
+    ctx.descriptors.register({ sessionID: 'ses_A', agentId: 'Parked', directory: DIRECTORY, revive: async () => ({}) });
     const chatted = await act(ctx, 'Parked', { kind: 'chat', text: 'status?', mode: 'steer' });
     expect(chatted.body).toEqual({ ok: true, status: 'running' });
     expect(ctx.calls.revive).toBe(1);
@@ -942,7 +983,7 @@ describe('createUriDomain + mount (integration surface)', () => {
     );
     // SAFETY: agent-runs body is the aggregator snapshot.
     const runsBody = await runs.json() as { agentRuns: Array<{ key: string }>; revision: number };
-    expect(runsBody.agentRuns.map((r) => r.key)).toEqual(['ses_A::Anna']);
+    expect(runsBody.agentRuns.map((r) => r.key)).toEqual([runKey(DIRECTORY, 'ses_A', 'Anna')]);
     expect(runsBody.revision).toBeGreaterThan(0);
 
     // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.

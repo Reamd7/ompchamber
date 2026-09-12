@@ -166,6 +166,8 @@ export type SessionMaterializationReason =
   | "child-session-discovered"
   | "ensure-session-messages"
   | "stream-reconnect"
+  | "stream-resync"
+  | "queue-overflow"
   | "transport-switch"
   | "stale-status-resync"
   | "settled-running-tool"

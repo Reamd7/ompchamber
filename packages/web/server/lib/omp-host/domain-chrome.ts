@@ -121,6 +121,13 @@ export interface DomainChrome {
   setStatus: (directory: string, sessionId: string, key: string, text: string | undefined) => void;
   noteDropped: (directory: string, method: string) => void;
   snapshot: (directory: string) => ChromeSnapshot;
+  /**
+   * Drop one directory's slice (docs/plan.md §6): the engine calls this when
+   * the directory's last live session leaves, so per-directory widget/status
+   * tables cannot accumulate across every project ever opened. A directory
+   * with a remaining live session must never be released by the caller.
+   */
+  releaseDirectory: (directory: string) => void;
 }
 
 /**
@@ -241,7 +248,11 @@ export const createDomainChrome = ({ publishFor, now = () => Date.now() }: Domai
     };
   };
 
-  return { bridgeHandlersFor, setWidget, setStatus, noteDropped, snapshot };
+  const releaseDirectory = (directory: string) => {
+    directories.delete(dirKey(directory));
+  };
+
+  return { bridgeHandlersFor, setWidget, setStatus, noteDropped, snapshot, releaseDirectory };
 };
 
 export interface ChromeRouteMountOptions {

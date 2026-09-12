@@ -109,7 +109,7 @@ export class SessionMetaRegistry {
     // `parentID` untouched — that pairing means genuine subagent parentage.
     let migrated = false;
     for (const [id, meta] of map) {
-      if (typeof meta?.parentID === 'string' && meta.parentID.length > 0 && !('forkParentID' in meta)) {
+      if (meta?.parentID !== undefined && meta.parentID.length > 0 && !('forkParentID' in meta)) {
         const { parentID, ...rest } = meta;
         map.set(id, { ...rest, forkParentID: parentID });
         migrated = true;
@@ -154,6 +154,15 @@ export class SessionMetaRegistry {
   /** All metadata entries for a directory (sessionId -> meta). */
   entries(directoryKey: string): Map<string, SessionMeta> {
     return this.#load(normalizeDirectoryKey(directoryKey));
+  }
+
+  /**
+   * Drop one directory's in-memory map when it goes quiet (plan §6): the
+   * JSON file stays authoritative, so the next access simply reloads. Bound
+   * the cache to directories that still hold live state.
+   */
+  release(directoryKey: string): void {
+    this.cache.delete(normalizeDirectoryKey(directoryKey));
   }
 
   /**

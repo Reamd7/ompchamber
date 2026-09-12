@@ -21,6 +21,7 @@ import { registerProvidersDomainRoutes } from './domain-providers.ts';
 import type { Settings, Skill } from '@oh-my-pi/pi-coding-agent';
 import type { OmpHostEngine } from './engine.ts';
 import type { PublishFn, SettingsStore } from './domain-models.ts';
+import type { ReplayState } from './events.ts';
 import type { ProjectedMessage } from './projection.ts';
 
 
@@ -209,16 +210,143 @@ const git = async (cwd: string, ...args: string[]): Promise<string | null> => {
   }
 };
 
-/** SSE response init: streaming headers Bun keeps open past its idle cap. */
-const sseResponseInit = (): ResponseInit => ({
+/**
+ * SSE response init: streaming headers Bun keeps open past its idle cap.
+ * `x-omp-epoch` is the boot identity (plan §5.2.1): raw-fetch readers
+ * (upstream-reader) compare it on connect; in-band consumers read the
+ * `omp.stream.boot` frame instead.
+ */
+const sseResponseInit = (epoch: string): ResponseInit => ({
   status: 200,
   headers: {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
+    'x-omp-epoch': epoch,
   },
 });
+
+/** Queued-but-undrained bytes beyond this mark a dead-slow consumer. */
+const MAX_SSE_BACKLOG_BYTES = 16 * 1024 * 1024;
+/** A frame this large is only fatal while the connection is already behind. */
+const MAX_SSE_BACKLOG_FRAME_BYTES = 8 * 1024 * 1024;
+
+
+/**
+ * Shared SSE connection lifecycle (plan §5.3/§5.3.1): `send()` enqueues with
+ * deterministic teardown on enqueue failure, request abort, or slow-consumer
+ * backlog. `ReadableStream.enqueue()` carries no network backpressure, so a
+ * client that stops draining would otherwise buffer without bound; the
+ * stream's byte-sized queuing strategy makes `desiredSize` the drained-byte
+ * signal — exceeding the backlog bound closes the connection (the client
+ * reconnects into the gap/resync contract instead of silently queuing
+ * gigabytes). desiredSize here counts BYTES (the size function returns
+ * byteLength), never chunk count.
+ */
+const startSseStream = (
+  request: Request,
+  epoch: string,
+  onReady: (send: (frame: string) => void) => () => void,
+): Response => {
+  const stream = new ReadableStream(
+    {
+      start(controller) {
+        const encoder = new TextEncoder();
+        let closed = false;
+        let unsubscribe: (() => void) | null = null;
+        let heartbeat: ReturnType<typeof setInterval> | undefined;
+        const finish = () => {
+          if (closed) return;
+          closed = true;
+          if (heartbeat !== undefined) {
+            clearInterval(heartbeat);
+            heartbeat = undefined;
+          }
+          unsubscribe?.();
+          unsubscribe = null;
+          try {
+            controller.close();
+          } catch {
+            // Already closed or errored by the consumer.
+          }
+        };
+        const send = (frame: string) => {
+          if (closed) return;
+          const chunk = encoder.encode(frame);
+          const backlog = controller.desiredSize ?? 0;
+          if (backlog <= -MAX_SSE_BACKLOG_BYTES || (backlog < 0 && chunk.byteLength > MAX_SSE_BACKLOG_FRAME_BYTES)) {
+            // Slow consumer: close, do not buffer unboundedly.
+            finish();
+            return;
+          }
+          try {
+            controller.enqueue(chunk);
+          } catch {
+            finish();
+          }
+        };
+        const onReadyResult = onReady(send);
+        if (closed) {
+          // finish() ran inside the initial replay (slow-consumer close or a
+          // synchronous abort): detach the just-returned bus subscription
+          // now — a closed stream never calls finish() again, so leaving it
+          // would leak the subscriber for the bus's lifetime.
+          try {
+            onReadyResult?.();
+          } catch {
+            // Teardown is best-effort on an already-dead stream.
+          }
+          return;
+        }
+        unsubscribe = onReadyResult ?? null;
+        // Heartbeat and the abort hook only exist once the stream is live:
+        // creating the interval before onReady would leak it when the
+        // initial replay throws.
+        heartbeat = setInterval(() => send(':heartbeat\n\n'), 15000);
+        request.signal.addEventListener('abort', finish, { once: true });
+        if (request.signal.aborted) finish();
+      },
+    },
+    // desiredSize must measure serialized bytes: the default count strategy
+    // would let thousands of multi-megabyte frames pass under a chunk cap.
+    { highWaterMark: 0, size: (chunk?: Uint8Array) => chunk?.byteLength ?? 0 },
+  );
+  return new Response(stream, sseResponseInit(epoch));
+};
+
+/** Structural bus face the resume planner needs. */
+interface ResumableBus {
+  readonly epoch: string;
+  replayState(lastEventId: number): ReplayState;
+  tailEventId(): number | null;
+}
+
+interface ResumePlan {
+  resync: boolean;
+  /** Subscription baseline: the client cursor when provable, else the tail. */
+  baseline: number;
+  state: ReplayState;
+}
+
+/**
+ * Decide replay-versus-resync for an SSE resume (plan §5.2/§5.2.1).
+ * - Fresh connects (no cursor) replay the whole retained ring.
+ * - A cursor the ring cannot bridge (evicted range, hole, restart) resyncs.
+ * - A cursor without this boot's epoch cannot be proven to belong to this
+ *   process — numeric comparison only detects client-ahead restarts — so
+ *   epoch-less resuming clients (TUI, older builds) get the safe downgrade:
+ *   discard-resume + explicit reconcile, never a guessed suffix.
+ * - After a resync verdict the baseline switches to the real tail (0 when
+ *   the ring is empty): replaying the old suffix would deliver the very
+ *   half-events the control frame just disavowed.
+ */
+const planResume = (bus: ResumableBus, lastEventId: number, clientEpoch: string | null): ResumePlan => {
+  const state: ReplayState = lastEventId > 0 ? bus.replayState(lastEventId) : { status: 'ok' };
+  const epochMismatch = lastEventId > 0 && clientEpoch !== bus.epoch;
+  const resync = state.status !== 'ok' || epochMismatch;
+  return { resync, state, baseline: resync ? bus.tailEventId() ?? 0 : lastEventId };
+};
 
 /**
  * Per-request route context host.ts dispatches into every registered
@@ -414,6 +542,11 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   });
   route('GET', '/global/config', async () => json(await configPayload()));
   route('PATCH', '/global/config', async () => json(await configPayload()));
+
+  // Counters-only observation port (plan §9.1, phase 0 slice; decision D9):
+  // counts and declared byte estimates, never transcripts/payloads/paths.
+  // Gated by the host's own Basic auth like every other route.
+  route('GET', '/omp/diagnostics', async () => json(engine.getStreamDiagnostics()));
 
   // ---- sessions ----
   route('GET', '/session', async (request, ctx) => {
@@ -939,98 +1072,67 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const url = new URL(request.url);
     const rawDirectory = url.searchParams.get('directory');
     const directory = rawDirectory ? normalizeDirectoryKey(rawDirectory) : null;
+    const bus = engine.ompBus;
     const lastEventId = Number(request.headers.get('last-event-id') ?? 0) || 0;
-    let closed = false;
-    const stream = new ReadableStream({
-      start(controller) {
-        const encoder = new TextEncoder();
-        const send = (text: string) => {
-          if (closed) return;
-          try {
-            controller.enqueue(encoder.encode(text));
-          } catch {
-            closed = true;
-          }
-        };
-        send(':ok\n\n');
-        const bus = engine.ompBus;
-        const state = bus.replayState(lastEventId);
-        if (state.status !== 'ok') {
-          const resyncId = bus.nextEventId;
-          const envelope = {
-            id: resyncId,
-            type: 'omp.stream.resync',
-            directory: directory ?? '',
-            schemaVersion: bus.schemaVersion,
-            createdAt: Date.now(),
-            payload: {
-              scope: ['sessions', 'modes', 'model', 'dialogs', 'chrome', 'settings', 'agents', 'jobs', 'queue', 'tree', 'transcript'],
-              lastEventId,
-            },
-          };
-          send(`event: omp.stream.resync\ndata: ${JSON.stringify(envelope)}\n\n`);
-        }
-        const unsubscribe = bus.subscribeSince(
-          lastEventId,
-          (entry) => {
-            send(`id: ${entry.eventId}\nevent: ${entry.envelope.type}\ndata: ${JSON.stringify(entry.envelope)}\n\n`);
+    const resyncPlan = planResume(bus, lastEventId, request.headers.get('x-omp-epoch'));
+    return startSseStream(request, bus.epoch, (send) => {
+      // omp boot identity rides an envelope-shaped frame (the native client
+      // parses by event name); no SSE `id` line, never in the replay ring.
+      send(`event: omp.stream.boot\ndata: ${JSON.stringify({ id: 0, type: 'omp.stream.boot', directory: directory ?? '', schemaVersion: bus.schemaVersion, createdAt: Date.now(), payload: { epoch: bus.epoch } })}\n\n`);
+      if (resyncPlan.resync) {
+        const reason = resyncPlan.state.status === 'ok' ? 'epoch' : resyncPlan.state.status;
+        const envelope = {
+          id: resyncPlan.baseline,
+          type: 'omp.stream.resync',
+          directory: directory ?? '',
+          schemaVersion: bus.schemaVersion,
+          createdAt: Date.now(),
+          payload: {
+            scope: ['sessions', 'modes', 'model', 'dialogs', 'chrome', 'settings', 'agents', 'jobs', 'queue', 'tree', 'transcript'],
+            lastEventId,
+            // Reconnectable tail (0 = fresh): never the phantom next id —
+            // an id that never entered the ring makes every reconnect
+            // re-trigger resync (plan §5.2).
+            resumeFrom: resyncPlan.baseline,
+            reason,
           },
-          directory ? { directory } : {},
-        );
-        const heartbeat = setInterval(() => send(':heartbeat\n\n'), 15000);
-        request.signal.addEventListener('abort', () => {
-          closed = true;
-          clearInterval(heartbeat);
-          unsubscribe();
-          try {
-            controller.close();
-          } catch {
-            // Already closed.
-          }
-        });
-      },
+        };
+        send(`event: omp.stream.resync\nid: ${resyncPlan.baseline}\ndata: ${JSON.stringify(envelope)}\n\n`);
+      }
+      return bus.subscribeSince(
+        resyncPlan.baseline,
+        (entry) => {
+          send(`id: ${entry.eventId}\nevent: ${entry.envelope.type}\ndata: ${JSON.stringify(entry.envelope)}\n\n`);
+        },
+        directory ? { directory } : {},
+      );
     });
-    return new Response(stream, sseResponseInit());
   });
 
   // ---- SSE ----
   const sseHandler = (request: Request, { global }: { global: boolean }) => {
+    const bus = engine.bus;
     const directory = global ? null : directoryFromRequest({ url: new URL(request.url), headers: request.headers });
     const lastEventId = Number(request.headers.get('last-event-id') ?? 0) || 0;
-    let closed = false;
-    const stream = new ReadableStream({
-      start(controller) {
-        const encoder = new TextEncoder();
-        const send = (text: string) => {
-          if (closed) return;
-          try {
-            controller.enqueue(encoder.encode(text));
-          } catch {
-            closed = true;
-          }
-        };
-        send(':ok\n\n');
-        const unsubscribe = engine.bus.subscribeSince(
-          lastEventId,
-          (entry) => {
-            send(`id: ${entry.eventId}\nevent: ${entry.envelope.type}\ndata: ${JSON.stringify(entry.envelope)}\n\n`);
-          },
-          directory ? { directory } : {},
-        );
-        const heartbeat = setInterval(() => send(':heartbeat\n\n'), 15000);
-        request.signal.addEventListener('abort', () => {
-          closed = true;
-          clearInterval(heartbeat);
-          unsubscribe();
-          try {
-            controller.close();
-          } catch {
-            // Already closed.
-          }
-        });
-      },
+    const resyncPlan = planResume(bus, lastEventId, request.headers.get('x-omp-epoch'));
+    return startSseStream(request, bus.epoch, (send) => {
+      // In-band boot identity, data-bearing so the generated SSE client
+      // surfaces it through onSseEvent. Never carries an `id` (must not
+      // move the cursor) and never enters the replay ring.
+      send(`event: omp.stream.boot\ndata: ${JSON.stringify({ epoch: bus.epoch })}\n\n`);
+      if (resyncPlan.resync) {
+        // Data-less in-band wire control (plan §5.2): the `id` line is the
+        // reconnectable tail — 0 clears stale cursors when the ring is empty.
+        send(`event: omp.stream.resync\nid: ${resyncPlan.baseline}\n\n`);
+      }
+      return bus.subscribeSince(
+        resyncPlan.baseline,
+        (entry) => {
+          send(`id: ${entry.eventId}\nevent: ${entry.envelope.type}\ndata: ${JSON.stringify(entry.envelope)}\n\n`);
+        },
+        directory ? { directory } : {},
+      );
     });
-    return new Response(stream, sseResponseInit());
   };
 
   return { sseHandler };
