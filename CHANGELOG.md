@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.30.3] - 2026-09-13
+
+- **Engine Status now includes a memory monitor.** An overview tab shows per-process cards, a heap attribution bar, and message bus counters, and a resident-sessions tab lists sessions from 10 MB up with their estimated sizes plus a release action that moves an idle session out of memory — it reloads from disk the next time it's opened.
+- **Chat: the session sidebar now marks which sessions the engine keeps in memory.** Resident rows carry a color-coded state glyph — loading, live, archiving, failed — and hovering it shows the estimated transcript size.
+- Chat: reconnects and app-server restarts resynchronize correctly — the transcript no longer resumes from a stale position, a stream stuck on an oversized block recovers on its own instead of stalling, and a missed-events refetch only reloads the affected directory instead of everything.
+- Chat: assistant messages keep stable identifiers across restarts and reconnects, so reconnects no longer risk duplicated assistant entries in the timeline.
+- The copied status report now includes an Engine memory section.
+
 ## [1.30.2] - 2026-09-13
 
 - **Server: memory now stays bounded on long-running instances.** Sessions idle out of memory and reload from disk on demand, and paging through an old transcript streams the file from disk instead of parsing the whole session first — a server that has served many or large sessions no longer grows memory the longer it runs.

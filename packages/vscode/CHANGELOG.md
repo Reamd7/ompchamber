@@ -1,3 +1,10 @@
+## [1.30.3] - 2026-09-13
+
+- The session sidebar now marks which sessions the engine keeps in memory: resident rows carry a color-coded state glyph — loading, live, archiving, failed — and hovering it shows the estimated transcript size.
+- Chat: reconnects and app-server restarts resynchronize correctly — the transcript no longer resumes from a stale position, a stream stuck on an oversized block recovers on its own instead of stalling, and a missed-events refetch only reloads the affected directory instead of everything.
+- Chat: assistant messages keep stable identifiers across restarts and reconnects, so reconnects no longer risk duplicated assistant entries in the timeline.
+- The copied status report (Ctrl/Cmd+Shift+L) now includes an Engine memory section.
+
 ## [1.30.2] - 2026-09-13
 
 - Chat: a connection that misses events — a network hiccup or a restart of the app server it talks to — now notices the gap and refetches what it missed, instead of continuing from stale state until the panel is reloaded.
