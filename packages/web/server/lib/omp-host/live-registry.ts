@@ -13,9 +13,12 @@
 // - Eviction state machine: materializing → live → evicting → (cold | failed).
 //   `evicting` and `failed` block new writers for that key; a failed dispose
 //   becomes an observable quarantine tombstone instead of a deleted map row.
+//   `failed` may re-enter `evicting` only through `retryEvict` — the engine's
+//   cooldown-gated re-dispose path, never a fresh writer.
 // - `failed` tombstones retain nothing but metadata; the SDK object a failed
 //   disposal could not release is retained by the engine's dispose-promise
-//   chain, deliberately, so the same file cannot gain a second writer.
+//   chain (and the record's `retryDispose` closure), deliberately, so the
+//   same file cannot gain a second writer.
 // - Idle TTL bookkeeping uses the injected monotonic clock (default
 //   performance.now); wall clock stays out of TTL math (plan §4.2).
 
@@ -54,8 +57,19 @@ export interface LiveRecord<TPayload> {
   /** Active withLiveSession operations (plan §3.2). */
   inFlight: number;
   readonly createdAt: number;
-  /** Set when a disposal failed: quarantine reason for diagnostics. */
-  failure: { reason: string; at: number } | null;
+  /**
+   * Set when a disposal failed: quarantine reason for diagnostics.
+   * `attempts` counts every settled dispose call — the initial one plus
+   * each cooldown-gated retry — so the sweeper can stop resurrecting a
+   * permanently failing SDK object.
+   */
+  failure: { reason: string; at: number; attempts: number } | null;
+  /**
+   * Engine-installed re-dispose closure for the failed tombstone: retains
+   * the SDK object the failed dispose could not release so a retry can
+   * finish the job — and so the file cannot gain a second writer.
+   */
+  retryDispose: (() => Promise<void>) | null;
 }
 
 export interface LiveRegistryStats {
@@ -65,6 +79,11 @@ export interface LiveRegistryStats {
   failed: number;
   /** Total non-cold records (any state). */
   total: number;
+  /**
+   * endUse calls that arrived with nothing in flight — an unbalanced
+   * begin/end pair is a bug; count it instead of silently clamping.
+   */
+  inFlightUnderflow: number;
 }
 
 export interface LiveSessionRegistryOptions {
@@ -76,6 +95,7 @@ export class LiveSessionRegistry<TPayload> {
   readonly now: () => number;
   #records = new Map<string, LiveRecord<TPayload>>();
   #gates = new Map<string, Promise<unknown>>();
+  #inFlightUnderflow = 0;
 
   constructor({ now }: LiveSessionRegistryOptions = {}) {
     this.now = now ?? (() => performance.now());
@@ -140,6 +160,7 @@ export class LiveSessionRegistry<TPayload> {
       inFlight: 0,
       createdAt: this.now(),
       failure: null,
+      retryDispose: null,
     };
     this.#records.set(key, record);
     return record;
@@ -191,9 +212,21 @@ export class LiveSessionRegistry<TPayload> {
   }
 
   /**
+   * failed → evicting for a bounded re-dispose attempt (plan §3.4 recovery
+   * rule): the tombstone is not a life sentence — a transient dispose
+   * failure (Windows file lock, AV scan) gets cooldown-gated retries from
+   * the sweeper instead of a permanent 409.
+   */
+  retryEvict(record: LiveRecord<TPayload>): boolean {
+    if (record.state !== 'failed') return false;
+    record.state = 'evicting';
+    return true;
+  }
+
+  /**
    * evicting → cold on success; evicting → failed tombstone otherwise (the
-   * key stays blocked; only a process restart or explicit manual recovery
-   * clears it — plan §3.4).
+   * key stays blocked; only a process restart, a cooldown-gated retry, or
+   * explicit manual recovery clears it — plan §3.4).
    */
   finishEvict(record: LiveRecord<TPayload>, ok: boolean, reason?: string): void {
     if (record.state !== 'evicting') return;
@@ -202,7 +235,11 @@ export class LiveSessionRegistry<TPayload> {
       return;
     }
     record.state = 'failed';
-    record.failure = { reason: reason ?? 'dispose failed', at: this.now() };
+    record.failure = {
+      reason: reason ?? 'dispose failed',
+      at: this.now(),
+      attempts: (record.failure?.attempts ?? 0) + 1,
+    };
     record.payload = null;
   }
 
@@ -217,7 +254,13 @@ export class LiveSessionRegistry<TPayload> {
   }
 
   endUse(record: LiveRecord<TPayload>): void {
-    record.inFlight = Math.max(0, record.inFlight - 1);
+    if (record.inFlight <= 0) {
+      // An endUse without a beginUse is an accounting bug — observable in
+      // stats() rather than silently clamped to zero.
+      this.#inFlightUnderflow += 1;
+      return;
+    }
+    record.inFlight -= 1;
   }
 
   /** Snapshot for the sweeper (ordered copy; safe to iterate while mutating). */
@@ -244,7 +287,7 @@ export class LiveSessionRegistry<TPayload> {
       else if (record.state === 'evicting') evicting += 1;
       else failed += 1;
     }
-    return { materializing, live, evicting, failed, total: this.#records.size };
+    return { materializing, live, evicting, failed, total: this.#records.size, inFlightUnderflow: this.#inFlightUnderflow };
   }
 
   /** Test/diagnostics: drop a quarantine tombstone (manual recovery path). */

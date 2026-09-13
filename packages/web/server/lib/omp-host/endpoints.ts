@@ -548,6 +548,18 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   // Gated by the host's own Basic auth like every other route.
   route('GET', '/omp/diagnostics', async () => json(engine.getStreamDiagnostics()));
 
+  // Memory monitor's per-row release: evict an idle resident session back to
+  // cold. 'active' answers 409 — the session has work or a UI lease and the
+  // monitor must not claim a release that did not happen.
+  route('POST', '/omp/sessions/{sessionID}/release', async (request, ctx) => {
+    const directory = projectDirectory(ctx);
+    const outcome = await engine.releaseSession({ sessionID: ctx.params.sessionID, directory });
+    if (outcome === 'active') {
+      return json({ error: 'session-active', released: false }, { status: 409 });
+    }
+    return json({ released: outcome === 'released' });
+  });
+
   // ---- sessions ----
   route('GET', '/session', async (request, ctx) => {
     const directory = projectDirectory(ctx);

@@ -4,13 +4,14 @@ export const DEFAULT_UPSTREAM_STALL_TIMEOUT_MS = 20_000;
 export const UPSTREAM_STALL_TIMEOUT_CONCURRENT_MS = DEFAULT_UPSTREAM_STALL_TIMEOUT_MS * 3;
 export const DEFAULT_UPSTREAM_RECONNECT_DELAY_MS = 250;
 // Parser guard (docs/plan.md §5.3.1): a block that exceeds this is not
-// dropped silently — the connection aborts and reconnects so the host's
-// hole→gap→resync contract disavows the range explicitly. The cap must sit
-// ABOVE the largest event the host's replay ring can retain (the wire bus
-// keeps events up to a 2 MiB serialized estimate whose JSON form can be
-// roughly double), or an oversized-but-retained event would reconnect-loop
-// this reader forever.
-export const DEFAULT_UPSTREAM_MAX_BLOCK_BYTES = 8 * 1024 * 1024;
+// dropped silently — complete blocks get their `id:` line extracted and the
+// range is disavowed through a synthesized resync control; an unfinished
+// oversize buffer aborts the connection instead. The cap must sit ABOVE the
+// largest event the host's replay ring can retain (the wire bus keeps events
+// up to a 2 MiB serialized estimate, and JSON.stringify's \uXXXX escaping can
+// expand control/escape-heavy payloads ~6x beyond that estimate), or an
+// oversized-but-retained event would reconnect-loop this reader forever.
+export const DEFAULT_UPSTREAM_MAX_BLOCK_BYTES = 16 * 1024 * 1024;
 /** Header the omp host echoes for boot-identity resume (plan §5.2.1). */
 export const UPSTREAM_EPOCH_HEADER = 'x-omp-epoch';
 
@@ -111,11 +112,19 @@ export function createUpstreamSseReader({
   /**
    * Handle one parsed block. Control frames (no payload) advance the cursor
    * and surface the event name; their ids must move `lastEventId` so
-   * reconnects do not re-request the disavowed range (plan §5.4).
+   * reconnects do not re-request the disavowed range (plan §5.4). Malformed
+   * blocks are the opposite case: data was present and lost, so the cursor
+   * must NOT advance — a reconnect re-requests the range instead of a
+   * silent skip.
    */
   const handleBlock = (block) => {
     const envelope = parseBlock(block);
     if (!envelope) return;
+    if (envelope.malformed === true) {
+      stats.droppedBlocks += 1;
+      stats.droppedBytes += block.length;
+      return;
+    }
     const blockEventId = stringOrNull(envelope.eventId);
     if (blockEventId !== null) {
       lastEventId = blockEventId;
@@ -207,6 +216,13 @@ export function createUpstreamSseReader({
             const changed = lastEpoch !== null;
             if (changed) {
               stats.epochChanges += 1;
+              // The cursor belongs to the boot that issued it: echoing the
+              // NEW epoch with the OLD id would let a numeric collision
+              // verdict a wrong suffix `ok` (plan §5.2.1). If this
+              // connection dies before the resync frame heals the cursor,
+              // the next connect must go in fresh rather than attest a boot
+              // it never consumed.
+              lastEventId = '';
             }
             lastEpoch = upstreamEpoch;
             onEpochChange?.({ epoch: upstreamEpoch, changed });
@@ -225,12 +241,31 @@ export function createUpstreamSseReader({
               if (block.length <= maxBlockBytes) {
                 handleBlock(block);
               } else {
-                // Never drop silently: abort → reconnect → the cursor we
-                // did NOT advance makes the host verdict this range
-                // hole→gap→resync instead of a silent loss.
+                // Over-budget block: never drop silently and never
+                // reconnect-loop on a retained replay entry. The `id:` line
+                // is readable without a full parse — advancing the cursor
+                // past it and surfacing a synthesized resync lets the
+                // consumer reconcile the disavowed range explicitly
+                // (plan §5.4). An id-less oversize block still aborts.
                 stats.droppedBlocks += 1;
                 stats.droppedBytes += block.length;
-                throw new Error(`upstream SSE block exceeded ${maxBlockBytes} bytes`);
+                const idLine = block.split('\n').find((line) => line.startsWith('id:'));
+                const droppedId = stringOrNull(idLine?.slice(3).trim());
+                if (droppedId === null) {
+                  throw new Error(`upstream SSE block exceeded ${maxBlockBytes} bytes`);
+                }
+                lastEventId = droppedId;
+                onEvent?.({
+                  block: null,
+                  envelope: null,
+                  payload: null,
+                  eventId: droppedId,
+                  eventName: 'omp.stream.resync',
+                  directory: null,
+                  // Not an upstream frame — consumers must not dedupe it
+                  // against a connect-time epoch restart.
+                  synthesized: true,
+                });
               }
               separatorIndex = buffer.indexOf('\n\n');
             }
@@ -295,6 +330,10 @@ export function createUpstreamSseReader({
     stop,
     getLastEventId() {
       return lastEventId;
+    },
+    /** Last upstream boot identity learned from `x-omp-epoch`, or null. */
+    getEpoch() {
+      return lastEpoch;
     },
     getStats() {
       return { ...stats };

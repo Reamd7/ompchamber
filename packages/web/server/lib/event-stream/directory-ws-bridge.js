@@ -86,9 +86,10 @@ export function acceptDirectoryMessageStreamWsConnection({
         // the client reconciles instead of missing the gap silently
         // (docs/plan.md §5.4).
         if (eventName === 'omp.stream.resync') {
-          sendWsResyncFrame(socket, {
-            eventId: stringOrNull(eventId) ?? undefined,
-          });
+          const epoch = reader?.getEpoch?.();
+          const resyncFrame = { eventId: stringOrNull(eventId) ?? undefined };
+          if (epoch) resyncFrame.epoch = epoch;
+          sendWsResyncFrame(socket, resyncFrame);
         }
         return;
       }
@@ -145,10 +146,13 @@ export function acceptDirectoryMessageStreamWsConnection({
         getHeaders: getOpenCodeAuthHeaders,
         onConnect() {
           if (!streamReady) {
-            sendMessageStreamWsFrame(socket, {
-              type: 'ready',
-              scope: 'directory',
-            });
+            const epoch = reader?.getEpoch?.();
+            // Same boot-identity handoff as the global bridge: without it a
+            // WS-only client cannot echo `epoch` on reconnect and the resume
+            // verdict degrades to cursor-only.
+            const readyFrame = { type: 'ready', scope: 'directory' };
+            if (epoch) readyFrame.epoch = epoch;
+            sendMessageStreamWsFrame(socket, readyFrame);
             streamReady = true;
           }
 

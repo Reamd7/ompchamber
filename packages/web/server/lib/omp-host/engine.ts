@@ -23,7 +23,7 @@ import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility
 import type { ExtensionUIContext } from '@oh-my-pi/pi-coding-agent/extensibility/extensions';
 import { SessionMetaRegistry, normalizeDirectoryKey } from './registry.ts';
 import type { SessionMeta, SessionMetadataValue } from './registry.ts';
-import { LiveSessionRegistry, SessionBusyError, sessionKey, type LiveRecord } from './live-registry.ts';
+import { LiveSessionRegistry, SessionBusyError, sessionKey, type LiveRecord, type LiveSessionState } from './live-registry.ts';
 import { withColdManager } from './cold-reader.ts';
 import { readSessionEventRows, readSessionScalars, readTranscriptMessagePage } from './cold-transcript-page.ts';
 import { classifyExternalChange, fileSignature, tailEntryIdOf, type FileSignature } from './dual-write.ts';
@@ -83,6 +83,12 @@ const IDLE_SWEEP_INTERVAL_MS = 60_000;
 // disposals combined (plan §3.4).
 const EVICT_DRAIN_TIMEOUT_MS = 8_000;
 const SHUTDOWN_DISPOSE_DEADLINE_MS = 10_000;
+// Failed-tombstone recovery (plan §3.4): a transient dispose failure
+// (Windows file lock, AV scan) must not 409 the session until a restart.
+// The sweeper retries the retained re-dispose closure past a cooldown, up
+// to a bounded total attempt count.
+const FAILED_DISPOSE_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+const FAILED_DISPOSE_MAX_ATTEMPTS = 3;
 
 // Bound on how long engine.abort waits for AgentSession.abort's teardown
 // (post-prompt drain + agent idle). The pi drain has no internal timeout on
@@ -146,6 +152,13 @@ interface HostSession {
   currentPersona: string;
   projector: StreamProjector | null;
   pendingUserWireId: string | null;
+  /**
+   * Client-echoed user wire ids (canonical → client messageID, plan phase 5
+   * compact mapping): scoped to this live record so the entries die with the
+   * session instead of accumulating process-wide. Assistant ids need no
+   * entry — the stable formula makes live and cold ids identical.
+   */
+  wireIdEchoes: Map<string, string>;
   lastUserWireId: string | null;
   syncedEntryKeys?: Set<string>;
   lastAssistantWireId: string | null;
@@ -200,6 +213,18 @@ interface WireSessionRecord {
   metadata?: Record<string, SessionMetadataValue>;
   time: { created: number; updated: number; archived?: number };
   revert?: { messageID: string };
+  /**
+   * Live-registry state when a non-cold record exists; absent = cold
+   * (no writer, no entries mirror in memory). 'failed' is the quarantine
+   * tombstone — the SDK object is still held pending retry.
+   */
+  live?: LiveSessionState;
+  /**
+   * Transcript bytes — the honest proxy for a session's memory cost
+   * (measured heap ≈ 1.3× the jsonl size): `fileSignature.size` for live
+   * records, the SessionManager.list size for cold ones.
+   */
+  transcriptBytes?: number;
 }
 /** The SessionInfo fields the wire projection reads. Synthesized rows
  * (registry-only, live-only) provide exactly these; full SDK SessionInfos
@@ -211,6 +236,8 @@ interface SessionListInfo {
   title?: string;
   created: Date | string;
   modified: Date | string;
+  /** Transcript file bytes when the listing knows them (SessionManager.list). */
+  size?: number;
 }
 
 /**
@@ -278,6 +305,8 @@ export class OmpHostEngine {
   #createAgentSessionImpl: typeof createAgentSession;
   /** Bound on unknown-event diagnostic keys (plan §6: no unbounded key set). */
   static #UNKNOWN_EVENT_KEYS_MAX = 64;
+  /** Cap on per-session diagnostic rows — data-proportional but bounded. */
+  static #DIAGNOSTIC_SESSION_ROWS_MAX = 256;
 
   authStorage: AuthStorage | null;
   modelRegistry: ModelRegistry | null;
@@ -285,19 +314,6 @@ export class OmpHostEngine {
   bus: WireEventBus;
   /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
   ompBus: OmpEventBus;
-  /**
-   * Canonical-read wire id -> client messageID echoed at prompt time.
-   *
-   * The wire contract requires the server to echo the client's messageID so
-   * the optimistic UI message reconciles in place, but pi's persisted
-   * UserMessage carries no id field to store it in. This map bridges the two:
-   * prompt() records the pending client id, the user message_start event
-   * captures pi's canonical message identity, and cold projections resolve
-   * the same wire id both live and on re-fetch. Without it a re-fetch during
-   * or after the turn projected a second, different id for the same message
-   * and the UI rendered the user's prompt twice.
-   */
-  wireIdOverrides: Map<string, string>;
   /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
   personas: Map<string, Persona>;
   /** Per-directory keyed Settings store (spec 06 §5.1, master R6). */
@@ -365,12 +381,6 @@ export class OmpHostEngine {
     this.#live = new LiveSessionRegistry<HostSession>({ now: this.#now });
     /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
     this.ompBus = new OmpEventBus();
-    /**
-     * Canonical-read wire id -> client messageID echoed at prompt time.
-     * (See the field comment; the map itself is data-proportional by design —
-     * plan D5 tracks its long-session growth as a known risk.)
-     */
-    this.wireIdOverrides = new Map();
     /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
     this.personas = new Map();
     /** Per-directory keyed Settings store (spec 06 §5.1, master R6). */
@@ -801,23 +811,67 @@ export class OmpHostEngine {
   #sweepIdleSessions() {
     const now = this.#now();
     for (const record of this.#live.snapshot()) {
-      if (record.state !== 'live') continue;
-      if (now - record.lastUsedAt < IDLE_SESSION_TTL_MS) continue;
+      if (record.state === 'live') {
+        if (now - record.lastUsedAt < IDLE_SESSION_TTL_MS) continue;
+        void this.#live
+          .withOperation(record.key, async () => {
+            const current = this.#live.byKey(record.key);
+            if (!current || current !== record || current.state !== 'live') return;
+            if (this.#now() - current.lastUsedAt < IDLE_SESSION_TTL_MS) return;
+            if (current.inFlight > 0) return;
+            if (this.#recordIsActive(current)) return;
+            this.#evictRecord(current, 'idle-ttl');
+          })
+          .catch((error) => {
+            console.warn('[omp-host] idle sweep error:', errorText(error));
+          });
+        continue;
+      }
+      if (record.state !== 'failed') continue;
+      const failure = record.failure;
+      if (!failure || failure.attempts >= FAILED_DISPOSE_MAX_ATTEMPTS) continue;
+      if (now - failure.at < FAILED_DISPOSE_RETRY_COOLDOWN_MS) continue;
       void this.#live
         .withOperation(record.key, async () => {
           const current = this.#live.byKey(record.key);
-          if (!current || current !== record || current.state !== 'live') return;
-          if (this.#now() - current.lastUsedAt < IDLE_SESSION_TTL_MS) return;
-          if (current.inFlight > 0) return;
-          if (this.#recordIsActive(current)) return;
-          this.#evictRecord(current, 'idle-ttl');
+          if (!current || current !== record || current.state !== 'failed') return;
+          await this.#retryFailedDispose(current);
         })
         .catch((error) => {
-          console.warn('[omp-host] idle sweep error:', errorText(error));
+          console.warn('[omp-host] failed-dispose retry error:', errorText(error));
         });
     }
     // Periodic transport hygiene (plan §6): tokens expire even without mints.
     this.uriDomain?.tokens?.sweep?.();
+  }
+
+  /**
+   * Bounded re-dispose of a quarantined record (plan §3.4 recovery rule):
+   * re-enters `evicting` — the key stays blocked to writers — then runs the
+   * retained `retryDispose` closure detached on `record.disposePromise`,
+   * exactly like #evictRecord, so a hung drain cannot occupy the gate. A
+   * tombstone with nothing retained simply releases; a settle failure
+   * re-tombs with a bumped attempt count.
+   */
+  async #retryFailedDispose(record: LiveRecord<HostSession>): Promise<void> {
+    if (!this.#live.retryEvict(record)) return;
+    const retry = record.retryDispose;
+    if (!retry) {
+      this.#live.finishEvict(record, true);
+      return;
+    }
+    record.disposePromise = (async (): Promise<'disposed' | 'failed'> => {
+      try {
+        await retry();
+        this.#live.finishEvict(record, true);
+        return 'disposed';
+      } catch (error) {
+        console.warn(`[omp-host] session ${record.sessionId} disposal retry failed:`, errorText(error));
+        this.#live.finishEvict(record, false, errorText(error));
+        return 'failed';
+      }
+    })();
+    await this.#awaitDisposalBounded(record);
   }
 
   /** Interval target; public so the lifecycle tests drive it deterministically. */
@@ -896,13 +950,8 @@ export class OmpHostEngine {
     attempt(() => this.dialogs?.releaseSession?.(directory, sessionId, 'session disposed'));
     attempt(() => this.uriDomain?.descriptors?.releaseForSession?.(directory, sessionId));
     attempt(() => this.uriDomain?.aggregator?.releaseForSession?.(directory, sessionId));
-    // wireIdOverrides cleanup (plan D5): necessary, not sufficient — the map
-    // still grows with live long sessions by design until phase 5 lands a
-    // stable wire id.
-    const prefix = `${directory}\u0000${sessionId}\u0000`;
-    for (const key of this.wireIdOverrides.keys()) {
-      if (key.startsWith(prefix)) this.wireIdOverrides.delete(key);
-    }
+    // Client-echoed user wire ids need no explicit release here: they live on
+    // the HostSession record (plan phase 5 compact mapping) and die with it.
     if (failures.length > 0) {
       console.warn(`[omp-host] partial host-handle release failure for ${sessionId}:`, failures.join('; '));
     }
@@ -966,6 +1015,7 @@ export class OmpHostEngine {
     }
     if (!agentSession) {
       this.#live.finishEvict(record, true);
+      if (emitIdle) this.#emitColdSessionUpdated(record);
       return Promise.resolve('disposed');
     }
     // Step 4: one saved, detached dispose promise; its settle (success or
@@ -978,6 +1028,7 @@ export class OmpHostEngine {
       try {
         await agentSession.dispose({ drainTimeoutMs: this.evictDrainTimeoutMs });
         this.#live.finishEvict(record, true);
+        if (emitIdle) this.#emitColdSessionUpdated(record);
         return 'disposed';
       } catch (rejection) {
         console.warn(`[omp-host] session ${record.sessionId} disposal failed (${reason}):`, errorText(rejection));
@@ -986,17 +1037,60 @@ export class OmpHostEngine {
       }
     })();
     record.disposePromise = disposePromise;
+    // The failed tombstone keeps a re-dispose path (plan §3.4 recovery): the
+    // closure retains the SDK object so the sweeper's cooldown-gated retry
+    // can finish a transient failure instead of quarantining until restart.
+    record.retryDispose = async () => {
+      await agentSession.dispose({ drainTimeoutMs: this.evictDrainTimeoutMs });
+    };
     return disposePromise;
+  }
+
+  /**
+   * After a record leaves the registry, clients holding its session row see
+   * `live` flip to absent (cold) without waiting for a list refresh —
+   * `session.updated` replaces the stored record wholesale.
+   */
+  #emitColdSessionUpdated(record: LiveRecord<HostSession>) {
+    // A dispose that settled late must not clobber a newer live record for
+    // the same id — directory moves and prompt-time rematerialization both
+    // emit their own session.updated carrying the current state.
+    if (this.#live.bySessionId(record.sessionId)) return;
+    const meta = this.registry.get(record.directory, record.sessionId);
+    const now = Date.now();
+    this.bus.emit(
+      'session.updated',
+      {
+        sessionID: record.sessionId,
+        info: this.#wireSession(
+          {
+            id: record.sessionId,
+            cwd: record.directory,
+            title: meta?.title,
+            created: new Date(meta?.timeCreated ?? now),
+            modified: new Date(meta?.timeUpdated ?? now),
+          },
+          record.directory,
+          meta ?? undefined,
+        ),
+      },
+      record.directory,
+    );
   }
 
   /** Bounded wait for a record's disposal (never parks on a hung drain). */
   #awaitDisposalBounded(record: LiveRecord<HostSession>): Promise<'disposed' | 'failed' | 'timeout'> {
     const disposal = record.disposePromise ?? Promise.resolve('disposed' as const);
-    // SAFETY: the race always resolves with one of the three literal arms.
-    return Promise.race([
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    const settled = Promise.race([
       disposal,
-      new Promise((resolve) => setTimeout(() => resolve('timeout' as const), this.evictDrainTimeoutMs * 2)),
-    ]) as Promise<'disposed' | 'failed' | 'timeout'>;
+      new Promise((resolve) => {
+        timeoutTimer = setTimeout(() => resolve('timeout' as const), this.evictDrainTimeoutMs * 2);
+      }),
+    ]);
+    // The losing timer arm must not keep the event loop busy (or hold a
+    // shutdown open) for the full drain window after disposal wins.
+    return settled.finally(() => clearTimeout(timeoutTimer)) as Promise<'disposed' | 'failed' | 'timeout'>;
   }
 
   /**
@@ -1087,6 +1181,9 @@ export class OmpHostEngine {
    * Wire Session record for an omp SessionInfo + registry metadata.
    */
   #wireSession(info: SessionListInfo, directoryKey: string, meta: SessionMeta | undefined, live?: HostSession | undefined): WireSessionRecord {
+    // Any non-cold record (materializing through failed tombstone) means the
+    // transcript still occupies memory; absent record = cold.
+    const record = this.#live.get(normalizeDirectoryKey(info.cwd || directoryKey), info.id);
     // The live session's actual model wins over the sidecar projection — a
     // roles-resolved session (no registry selector) still reports the model
     // it is really running (spec 01 §5.5 badge seeding).
@@ -1113,6 +1210,11 @@ export class OmpHostEngine {
       ...(personaKeyFor(meta?.persona ?? meta?.agent) !== 'standard' ? { agent: wireAgentFor(personaKeyFor(meta?.persona ?? meta?.agent)) } : {}),
       ...(selector ? { model: { id: selector.modelID, providerID: selector.providerID } } : {}),
       ...(meta?.metadata ? { metadata: meta.metadata } : {}),
+      ...(record ? { live: record.state } : {}),
+      ...(() => {
+        const transcriptBytes = record?.payload?.fileSignature?.size ?? info.size;
+        return Number.isFinite(transcriptBytes) ? { transcriptBytes } : {};
+      })(),
       time: {
         created: info.created instanceof Date ? info.created.getTime() : Date.parse(info.created) || Date.now(),
         updated: info.modified instanceof Date ? info.modified.getTime() : Date.parse(info.modified) || Date.now(),
@@ -1218,8 +1320,10 @@ export class OmpHostEngine {
       // manager arm below keeps the invalid-header rewrite/mint behavior.
       const scalars = await readSessionScalars(file.path);
       if (scalars) {
-        const created = scalars.createdIso ? Date.parse(scalars.createdIso) : Date.now();
-        const modified = scalars.modifiedIso ? Date.parse(scalars.modifiedIso) : created;
+        const createdParsed = scalars.createdIso ? Date.parse(scalars.createdIso) : NaN;
+        const created = Number.isFinite(createdParsed) ? createdParsed : Date.now();
+        const modifiedParsed = scalars.modifiedIso ? Date.parse(scalars.modifiedIso) : NaN;
+        const modified = Number.isFinite(modifiedParsed) ? modifiedParsed : created;
         const info = {
           id: scalars.id,
           // SessionManager.open's fallback for a missing/deleted recorded cwd is
@@ -1463,6 +1567,40 @@ export class OmpHostEngine {
         meta
       )
     );
+  }
+
+  /**
+   * Manual release of an idle resident session — the memory monitor's
+   * "release" action (`POST /omp/sessions/{id}/release`). Returns
+   * `'cold'` when nothing is resident (idempotent no-op), `'active'` when
+   * the session still has work or UI leases (the caller surfaces it as a
+   * conflict), `'released'` once the eviction handoff is accepted — the
+   * post-dispose `session.updated` flips client rows to cold.
+   */
+  async releaseSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
+    await this.#boot();
+    const directoryKey = normalizeDirectoryKey(directory);
+    const anywhere = this.#liveHostAnywhere(directoryKey, sessionID);
+    const fromKey = anywhere ? normalizeDirectoryKey(anywhere.directory) : directoryKey;
+    const key = sessionKey(fromKey, sessionID);
+    let outcome: 'cold' | 'active' | 'released' = 'cold';
+    await this.#live.withOperation(key, async () => {
+      const record = this.#live.get(fromKey, sessionID);
+      if (!record) return;
+      if (record.state !== 'live') {
+        // Still resident but mid-transition — report active so the UI
+        // does not claim a release that did not happen.
+        outcome = 'active';
+        return;
+      }
+      if (record.inFlight > 0 || this.#recordIsActive(record)) {
+        outcome = 'active';
+        return;
+      }
+      this.#evictRecord(record, 'manual-release');
+      outcome = 'released';
+    });
+    return outcome;
   }
 
   async deleteSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
@@ -1719,29 +1857,22 @@ export class OmpHostEngine {
     return typeof defaultLevel === 'string' && defaultLevel.length > 0 ? defaultLevel : undefined;
   }
 
+  /**
+   * Echo resolver for projections of a session that is live in this process
+   * (plan phase 5 compact mapping): canonical id → the id the client already
+   * saw. User entries map the canonical formula id to the echoed client
+   * messageID; assistant entries exist only on the SDK's rare
+   * timestamp-rewrite paths (see the message_end handler) — the stable
+   * formula makes live and cold assistant ids identical otherwise, so the
+   * map stays empty for normal turns.
+   */
   #wireIdResolver(directoryKey: string, sessionID: string) {
-    if (this.wireIdOverrides.size === 0) return undefined;
-    const prefix = `${directoryKey}\u0000${sessionID}\u0000`;
+    const echoes = this.#liveHostAnywhere(directoryKey, sessionID)?.wireIdEchoes;
+    if (!echoes || echoes.size === 0) return undefined;
     return (message: WireIdMessageInput | null | undefined) => {
       if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
-      return this.wireIdOverrides.get(prefix + deterministicWireId(message));
+      return echoes.get(deterministicWireId(message));
     };
-  }
-
-  /**
-   * Keep a finished assistant turn's cold-projection id aligned with the id
-   * the streaming projector already emitted. Live streaming derives the wire
-   * id at message_start (empty content, start timestamp); the persisted
-   * message finalizes both, so a re-fetch would otherwise project a second,
-   * different id for the same message and the UI would render it twice.
-   */
-  #bridgeAssistantWireId(hostSession: HostSession, finalMessage: AssistantMessageInput) {
-    const liveId = hostSession.projector?.current?.id;
-    if (!liveId) return;
-    const seed = textOfContent(finalMessage.content) || (finalMessage.content?.[0]?.name ?? '');
-    const coldId = wireMessageId('assistant', finalMessage.timestamp, seed);
-    if (coldId === liveId) return;
-    this.wireIdOverrides.set(`${hostSession.directory}\u0000${hostSession.sessionId}\u0000${coldId}`, liveId);
   }
 
   /**
@@ -1751,10 +1882,11 @@ export class OmpHostEngine {
    * joins omp.retry.ended notes by projected WIRE id (the TUI joins the same
    * update onto its component by persistenceKey — entryId is persistence
    * layer only). Resolve the timestamp segment to the live assistant
-   * message, derive its wire id (cold form, bridged to the live streaming id
-   * via wireIdOverrides), then fall back to the most recent settled
-   * assistant wire id (the TUI's FIFO analog). The raw key is the last
-   * resort so the payload stays joinable-shaped even when nothing matches.
+   * message and derive its wire id (the stable formula id, identical to the
+   * id the streaming projector emitted), then fall back to the most recent
+   * settled assistant wire id (the TUI's FIFO analog). The raw key is the
+   * last resort so the payload stays joinable-shaped even when nothing
+   * matches.
    */
   #retryWireIdFor(hostSession: HostSession, update: { entryId?: string; persistenceKey?: string }): string {
     const key = update.persistenceKey ?? update.entryId ?? '';
@@ -1765,16 +1897,7 @@ export class OmpHostEngine {
     const match = Number.isFinite(timestamp)
       ? [...messages].filter(isAssistant).reverse().find((m) => m.timestamp === timestamp)
       : undefined;
-    if (match) {
-      const seed = textOfContent(match.content)
-        || (Array.isArray(match.content) && match.content[0]?.type === 'toolCall'
-          ? (match.content[0].name ?? '')
-          : '');
-      const coldId = wireMessageId('assistant', match.timestamp, seed);
-      return this.wireIdOverrides.get(
-        `${hostSession.directory}\u0000${hostSession.sessionId}\u0000${coldId}`,
-      ) ?? coldId;
-    }
+    if (match) return hostSession.wireIdEchoes.get(deterministicWireId(match)) ?? deterministicWireId(match);
     return hostSession.lastAssistantWireId ?? key;
   }
 
@@ -1815,10 +1938,15 @@ export class OmpHostEngine {
         // Wait for the single disposal promise — bounded: a disposal that
         // never settles must park this caller at a retryable busy error,
         // not forever (plan §3.4 timeout rule).
+        let evictWaitTimer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           record.disposePromise ?? Promise.resolve('disposed' as const),
-          new Promise((resolve) => setTimeout(resolve, this.evictDrainTimeoutMs * 2)),
-        ]).catch(() => {});
+          new Promise((resolve) => {
+            evictWaitTimer = setTimeout(resolve, this.evictDrainTimeoutMs * 2);
+          }),
+        ])
+          .catch(() => {})
+          .finally(() => clearTimeout(evictWaitTimer));
         continue;
       }
       if (this.#closing) {
@@ -1828,10 +1956,11 @@ export class OmpHostEngine {
     }
     const record = this.#live.beginMaterialize(directoryKey, sessionId);
     try {
-      const hostSession = await this.#materializeNow(sessionId, directoryKey);
+      const hostSession = await this.#materializeNow(sessionId, directoryKey, record);
       if (!hostSession) {
         // Session file absent — cold miss, not a setup failure.
         this.#live.failMaterialize(record);
+        this.#maybeReleaseDirectoryState(directoryKey);
         return null;
       }
       this.#live.commitMaterialize(record, hostSession);
@@ -1840,6 +1969,7 @@ export class OmpHostEngine {
       // #materializeNow already released its resources in its finally
       // block (plan §3.3); drop the dedup row and rethrow.
       this.#live.failMaterialize(record);
+      this.#maybeReleaseDirectoryState(directoryKey);
       throw error;
     }
   }
@@ -1852,7 +1982,11 @@ export class OmpHostEngine {
    * exactly once (plan §3.3): event unsubscribe, name unsubscribe,
    * agentSession.dispose, temporary-manager close, and the domain handles.
    */
-  async #materializeNow(sessionId: string, directoryKey: string): Promise<HostSession | null> {
+  async #materializeNow(
+    sessionId: string,
+    directoryKey: string,
+    record: LiveRecord<HostSession>,
+  ): Promise<HostSession | null> {
     const file = await this.#findSessionFile(sessionId, directoryKey);
     if (!file) return null;
     const manager = await SessionManager.open(file.path, this.#sessionDirFor(directoryKey));
@@ -1917,6 +2051,7 @@ export class OmpHostEngine {
         currentPersona: personaKeyFor(meta?.persona ?? meta?.agent),
         projector: null,
         pendingUserWireId: null,
+        wireIdEchoes: new Map(),
         lastUserWireId: null,
         syncedEntryKeys: new Set(),
         lastAssistantWireId: null,
@@ -1942,6 +2077,11 @@ export class OmpHostEngine {
       };
       hostSession.appliedPlugins = await this.#snapshotAppliedPlugins(directoryKey);
       hostSession.agentSession = session;
+      // Publish the payload on the record BEFORE the lease await below: the
+      // engine-event guard accepts materializing records whose payload
+      // matches, so SDK events emitted between subscribe and
+      // commitMaterialize are processed instead of silently dropped.
+      record.payload = hostSession;
       hostSession.unsubscribe = session.subscribe((event) => {
         try {
           this.#handleEngineEvent(hostSession!, event);
@@ -2213,7 +2353,7 @@ export class OmpHostEngine {
     // arrive from in-flight SDK emission; they must land on a still-live
     // record only — an evicting/failed record starts no new work.
     const record = this.#live.byKey(hostSession.key);
-    if (!record || record.state !== 'live' || record.payload !== hostSession) return;
+    if (!record || (record.state !== 'live' && record.state !== 'materializing') || record.payload !== hostSession) return;
     const { sessionId, directory } = hostSession;
     const session = hostSession.agentSession;
     if (!session) return;
@@ -2224,7 +2364,7 @@ export class OmpHostEngine {
           hostSession.pendingUserWireId = null;
           if (pending) {
             const canonicalId = wireMessageId('user', event.message.timestamp, textOfContent(event.message.content));
-            this.wireIdOverrides.set(`${directory}\u0000${sessionId}\u0000${canonicalId}`, pending);
+            hostSession.wireIdEchoes.set(canonicalId, pending);
           }
           return;
         }
@@ -2277,7 +2417,16 @@ export class OmpHostEngine {
       case 'message_end': {
         if (event.message?.role !== 'assistant' || !hostSession.projector) return;
         const finished = hostSession.projector.finishAssistant(event.message, hostSession.turnToolResults ?? new Map());
-        this.#bridgeAssistantWireId(hostSession, event.message);
+        // Stable formula (plan phase 5): normally the persisted message keeps
+        // the creation timestamp, so its deterministic id IS the id the
+        // projector emitted at message_start and no entry is recorded. The
+        // SDK's error-normalization paths (empty/failed stream reset) rewrite
+        // the timestamp in place; only then does the cold id drift from the
+        // live id, and a single echo entry absorbs it.
+        const settledAssistantId = finished ? deterministicWireId(event.message) : null;
+        if (finished?.id && settledAssistantId !== finished.id) {
+          hostSession.wireIdEchoes.set(settledAssistantId ?? '', finished.id);
+        }
         if (finished?.id) {
           hostSession.lastAssistantWireId = finished.id;
           const usage = event.message.usage ?? {};
@@ -2684,20 +2833,14 @@ export class OmpHostEngine {
   async getTelemetry({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;
-    const directoryKey = normalizeDirectoryKey(directory);
-    const wireIdFor = this.#wireIdResolver(directoryKey, sessionID);
+    // Assistant telemetry ids use the stable formula (plan phase 5) — the
+    // same id the streaming projector emitted, no echo resolution needed.
     const out = [];
     for (const message of context.messages ?? []) {
       if (!message || message.role !== 'assistant') continue;
-      const seed = textOfContent(message.content)
-        || (Array.isArray(message.content) && message.content[0]?.type === 'toolCall'
-          ? (message.content[0].name ?? '')
-          : '');
-      const baseId = wireMessageId('assistant', message.timestamp, seed);
-      const overridden = wireIdFor?.(message);
       const usage: UsageInput = message.usage ?? {};
       out.push({
-        messageID: overridden ?? baseId,
+        messageID: deterministicWireId(message),
         timestamp: message.timestamp,
         input: usage.input ?? 0,
         output: usage.output ?? 0,
@@ -2762,18 +2905,11 @@ export class OmpHostEngine {
     });
     if (wanted.size === 0 || wanted.has('retry_recovery')) {
       const context = await this.#transcriptContext(sessionID, directory);
-      const directoryKeyNow = normalizeDirectoryKey(directory);
-      const wireIdFor = this.#wireIdResolver(directoryKeyNow, sessionID);
       for (const message of context?.messages ?? []) {
         if (!message || message.role !== 'assistant' || !message.retryRecovery) continue;
-        const seed = textOfContent(message.content)
-          || (Array.isArray(message.content) && message.content[0]?.type === 'toolCall'
-            ? (message.content[0].name ?? '')
-            : '');
-        const baseId = wireMessageId('assistant', message.timestamp, seed);
         out.push({
           kind: 'retry_recovery',
-          messageID: wireIdFor?.(message) ?? baseId,
+          messageID: deterministicWireId(message),
           timestamp: message.timestamp,
           retryRecovery: message.retryRecovery
         });
@@ -3331,12 +3467,31 @@ export class OmpHostEngine {
    */
   getStreamDiagnostics() {
     const memory = process.memoryUsage();
+    const now = this.#live.now();
+    const records = this.#live.snapshot();
+    // Per-record rows let a UI attribute the resident footprint. The payload's
+    // fileSignature.size is the transcript-size proxy; null once the payload
+    // is detached (evicting/failed — the bytes are still held but no longer
+    // attributed to a known file).
+    const sessions = records.slice(0, OmpHostEngine.#DIAGNOSTIC_SESSION_ROWS_MAX).map((record) => ({
+      id: record.sessionId,
+      directory: record.directory,
+      state: record.state,
+      inFlight: record.inFlight,
+      idleMs: Math.max(0, now - record.lastUsedAt),
+      transcriptBytes: record.payload?.fileSignature?.size ?? null,
+      failure: record.failure ? { reason: record.failure.reason, attempts: record.failure.attempts } : null,
+    }));
     return {
       wireBus: this.bus.stats(),
       ompBus: this.ompBus.stats(),
       dataProportional: {
-        liveSessions: this.#live.stats(),
-        wireIdOverrides: this.wireIdOverrides.size,
+        liveSessions: {
+          ...this.#live.stats(),
+          sessions,
+          truncated: records.length > sessions.length,
+        },
+        wireIdEchoes: records.reduce((sum, record) => sum + (record.payload?.wireIdEchoes.size ?? 0), 0),
         personas: this.personas.size,
       },
       process: {
@@ -3361,24 +3516,34 @@ export class OmpHostEngine {
     this.#closing = true;
     clearInterval(this.sweeper);
     const records = this.#live.snapshot();
-    const deadline = new Promise((resolve) => setTimeout(resolve, this.shutdownDisposeDeadlineMs));
-    await Promise.all(
-      records.map((record) =>
-        this.#live
-          .withOperation(record.key, async () => {
-            const current = this.#live.byKey(record.key);
-            if (!current || current.state !== 'live') return;
-            const disposal = this.#evictRecord(current, 'shutdown', { emitIdle: false });
-            // The gate body itself is bounded by the global deadline: a
-            // disposal that never settles must not park shutdown (the
-            // record simply stays `evicting` — quarantined, observable).
-            await Promise.race([disposal, deadline]);
-          })
-          .catch((error) => {
-            console.warn('[omp-host] shutdown dispose failed:', errorText(error));
-          }),
-      ),
-    );
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise((resolve) => {
+      deadlineTimer = setTimeout(resolve, this.shutdownDisposeDeadlineMs);
+    });
+    try {
+      await Promise.all(
+        records.map((record) =>
+          this.#live
+            .withOperation(record.key, async () => {
+              const current = this.#live.byKey(record.key);
+              if (!current || current.state !== 'live') return;
+              const disposal = this.#evictRecord(current, 'shutdown', { emitIdle: false });
+              // The gate body itself is bounded by the global deadline: a
+              // disposal that never settles must not park shutdown (the
+              // record simply stays `evicting` — quarantined, observable).
+              await Promise.race([disposal, deadline]);
+            })
+            .catch((error) => {
+              console.warn('[omp-host] shutdown dispose failed:', errorText(error));
+            }),
+        ),
+      );
+    } finally {
+      // An early-settled shutdown must not leave the deadline armed — the
+      // live timer would keep the event loop (and the process) alive for
+      // the full window after everything already drained.
+      clearTimeout(deadlineTimer);
+    }
     const quarantined = this.#live.stats();
     if (quarantined.evicting > 0 || quarantined.failed > 0) {
       console.warn(

@@ -69,6 +69,20 @@ type SecondaryMeta = {
   branchLabel?: string | null;
 };
 
+/** Compact byte readout for the resident glyph's tooltip (est. sizes). */
+const formatResidentBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = -1;
+  do {
+    value /= 1024;
+    unit += 1;
+  } while (value >= 1024 && unit < units.length - 1);
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+};
+
 export type SessionNodeItemProps = {
   node: SessionNode;
   depth?: number;
@@ -457,6 +471,29 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const worktreeLoadSequenceRef = React.useRef(0);
   const sessionPermissions = useSessionPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
   const sessionGoal = getSessionGoal(resolvedSession);
+  // omp host wire extras: `live` = non-cold residency state, transcriptBytes =
+  // the session's memory-cost proxy (transcript file size, not a heap reading).
+  const residency = session as SessionResidencyFields;
+  const residentGlyph = residency.live ? (
+    <span
+      className="inline-flex flex-shrink-0 items-center"
+      title={typeof residency.transcriptBytes === 'number'
+        ? t('sessions.sidebar.session.status.residentWithSize', { size: formatResidentBytes(residency.transcriptBytes) })
+        : t('sessions.sidebar.session.status.resident')}
+      aria-label={t('sessions.sidebar.session.status.residentShort')}
+    >
+      <Icon
+        name="database-2"
+        className={cn(
+          'h-3 w-3',
+          residency.live === 'live' && 'text-primary',
+          residency.live === 'materializing' && 'text-status-info',
+          residency.live === 'evicting' && 'text-status-warning',
+          residency.live === 'failed' && 'text-destructive',
+        )}
+      />
+    </span>
+  ) : null;
   const sessionGoalGlyph = sessionGoal ? (
     // SAFETY: sessionGoalStatusLabelKey contains an i18n key for every SessionGoalStatus.
     <span
@@ -1383,6 +1420,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                           ) : (
                             <>
                               {sessionGoalGlyph}
+                              {residentGlyph}
                               {showInlineBranchMarker ? (
                                 <Icon
                                   name="git-branch"
@@ -1394,7 +1432,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                             </>
                           )}
                         </span>
-                      ) : (showActivityDuration || sessionGoalGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
+                      ) : (showActivityDuration || sessionGoalGlyph || residentGlyph || showInlineBranchMarker || renderContext === 'recent') ? (
                         <div className="relative ml-1 flex h-4 flex-shrink-0 items-center justify-end">
                           <span className={cn(
                             'inline-flex items-center gap-1 whitespace-nowrap text-right transition-opacity duration-150',
@@ -1411,6 +1449,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                             ) : (
                               <>
                                 {sessionGoalGlyph}
+                                {residentGlyph}
                                 {showInlineBranchMarker ? (
                                   <Icon
                                     name="git-branch"
@@ -1686,6 +1725,11 @@ const hasExpansionMembershipChange = (prev: SessionNodeItemProps, next: SessionN
   );
 };
 
+// The omp host extends the wire Session with `live` (residency state) and
+// `transcriptBytes` (memory-cost proxy) — the resident glyph renders them,
+// so the comparator must observe both or an eviction never repaints the row.
+type SessionResidencyFields = Session & { live?: string; transcriptBytes?: number };
+
 const areSessionRenderSemanticsEqual = (prev: Session, next: Session): boolean => (
   prev.id === next.id
   && prev.title === next.title
@@ -1695,6 +1739,8 @@ const areSessionRenderSemanticsEqual = (prev: Session, next: Session): boolean =
   && prev.time?.created === next.time?.created
   && prev.time?.updated === next.time?.updated
   && prev.time?.archived === next.time?.archived
+  && (prev as SessionResidencyFields).live === (next as SessionResidencyFields).live
+  && (prev as SessionResidencyFields).transcriptBytes === (next as SessionResidencyFields).transcriptBytes
 );
 
 // Returns the name of the first prop whose change requires a render, or null

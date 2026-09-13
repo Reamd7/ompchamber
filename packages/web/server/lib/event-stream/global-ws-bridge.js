@@ -76,10 +76,14 @@ export function createGlobalMessageStreamWsBridge({
       return;
     }
 
-    const sent = sendMessageStreamWsFrame(socket, {
-      type: 'ready',
-      scope: 'global',
-    });
+    const upstreamEpoch = globalHub.getStats().upstreamEpoch;
+    // A WS client that never saw a resync otherwise has no way to learn the
+    // boot identity its cursor belongs to — without it the epoch verdict in
+    // replayEvents stays degraded for exactly the clients it exists to
+    // protect.
+    const readyFrame = { type: 'ready', scope: 'global' };
+    if (upstreamEpoch) readyFrame.epoch = upstreamEpoch;
+    const sent = sendMessageStreamWsFrame(socket, readyFrame);
     if (!sent) {
       removeClient(socket);
       return;
@@ -151,10 +155,10 @@ export function createGlobalMessageStreamWsBridge({
         }
 
         if (status.wasReady) {
-          const sent = sendMessageStreamWsFrame(socket, {
-            type: 'ready',
-            scope: 'global',
-          });
+          const reconnectEpoch = globalHub.getStats().upstreamEpoch;
+          const readyFrame = { type: 'ready', scope: 'global' };
+          if (reconnectEpoch) readyFrame.epoch = reconnectEpoch;
+          const sent = sendMessageStreamWsFrame(socket, readyFrame);
           if (!sent) {
             removeClient(socket);
           }

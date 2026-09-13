@@ -306,7 +306,9 @@ describe('global WS bridge resync fan-out', () => {
     const socket = makeSocket();
     bridge.accept(socket, { requestedLastEventId: 'evt-2' });
 
-    expect(socket.sent).toContainEqual({ type: 'ready', scope: 'global' });
+    // The ready frame carries the upstream epoch so a WS-only client can
+    // echo it on its next resume (plan §5.2.1).
+    expect(socket.sent).toContainEqual({ type: 'ready', scope: 'global', epoch: 'boot-x' });
     expect(socket.sent).toContainEqual({ type: 'resync', eventId: 'evt-7', epoch: 'boot-x' });
     // No event frames after a gap verdict — the client must reconcile.
     expect(socket.sent.filter((frame) => frame.type === 'event')).toHaveLength(0);
@@ -353,7 +355,7 @@ describe('global WS bridge resync fan-out', () => {
     const socket = makeSocket();
     bridge.accept(socket, { requestedLastEventId: 'evt-2', requestedEpoch: 'boot-x' });
 
-    expect(socket.sent).toContainEqual({ type: 'ready', scope: 'global' });
+    expect(socket.sent).toContainEqual({ type: 'ready', scope: 'global', epoch: 'boot-x' });
     expect(socket.sent).toContainEqual({
       type: 'event',
       eventId: 'evt-3',

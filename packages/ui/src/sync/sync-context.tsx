@@ -2486,11 +2486,16 @@ export function SyncProvider(props: {
           lastDisconnectReason: reason,
         })
       },
-      onResync: (reason) => {
+      onResync: (reason, directory) => {
         // The server disavowed stream continuity (gap/restart control or a
-        // local queue overflow): reconcile every directory from HTTP even if
-        // the boot was recent — resync means observed state may be stale
-        // (docs/plan.md §5.2).
+        // local queue overflow): reconcile from HTTP even if the boot was
+        // recent — resync means observed state may be stale (docs/plan.md
+        // §5.2). A scoped overflow only disavowed that directory's window;
+        // reconciling every directory would multiply the burst.
+        if (directory) {
+          triggerDirectoryResync(directory, reason)
+          return
+        }
         for (const dir of childStores.children.keys()) {
           triggerDirectoryResync(dir, reason)
         }

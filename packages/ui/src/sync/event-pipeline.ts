@@ -48,7 +48,10 @@ const MAX_TRACKED_DIRECTORIES = 64
 const MAX_DIRECTORY_KEY_LENGTH = 1024
 const MAX_QUEUED_EVENTS_PER_DIRECTORY = 4096
 const MAX_QUEUED_BYTES_PER_DIRECTORY = 8 * 1024 * 1024
-const ESTIMATE_EVENT_MAX_NODES = 512
+// Matches the host-side estimator bound (omp-host/events.ts): a lower cap
+// made wide-but-legitimate snapshots (a large todo list, a dense session
+// state) permanently undeliverable — every occurrence paid a full resync.
+const ESTIMATE_EVENT_MAX_NODES = 4096
 
 /** JSON-shaped payload the size estimator walks (recursive wire data). */
 type EstimableJson = string | number | boolean | null | EstimableJson[] | { [key: string]: EstimableJson }
@@ -110,10 +113,12 @@ export type EventPipelineInput = {
   /**
    * Called when the server disavows stream continuity (resync control,
    * restart, or local queue overflow): consumers must reconcile
-   * authoritative state for every directory before trusting deltas again
-   * (docs/plan.md §5.2). The pipeline keeps its transport alive.
+   * authoritative state before trusting deltas again (docs/plan.md §5.2).
+   * `directory` scopes the loss — a queue overflow only disavows that
+   * directory's window; an absent directory means the whole stream is
+   * untrustworthy. The pipeline keeps its transport alive.
    */
-  onResync?: (reason: "stream-resync" | "queue-overflow") => void
+  onResync?: (reason: "stream-resync" | "queue-overflow", directory?: string) => void
   /** Called when transport switches (e.g. WS timeout → SSE fallback) without actual disconnection. */
   onTransportSwitch?: () => void
   transport?: "auto" | "ws" | "sse"
@@ -398,7 +403,14 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       clearTimeout(d.timer)
       d.timer = undefined
     }
-    if (d.queue.length === 0) return
+    if (d.queue.length === 0) {
+      // Overflow can empty a queue behind a still-pending timer — a record
+      // with nothing left to deliver releases its tracked-directory slot
+      // just like a drained flush does.
+      directories.delete(directory)
+      overflow.dirCapNotified = false
+      return
+    }
 
     const events = d.queue
     const sizes = d.sizes
@@ -584,7 +596,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
         // reconcile once per overflow episode instead of losing an unseen
         // directory's events silently (断流不是空状态).
         overflow.dirCapNotified = true
-        onResync?.("queue-overflow")
+        onResync?.("queue-overflow", routedDirectory)
       }
       return
     }
@@ -606,9 +618,16 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       d.sizes.length = 0
       d.bytes = 0
       d.coalesced.clear()
-      onResync?.("queue-overflow")
+      onResync?.("queue-overflow", routedDirectory)
       if (eventBytes > MAX_QUEUED_BYTES_PER_DIRECTORY) {
         overflow.droppedEvents += 1
+        // Nothing was reseeded — an empty untracked record would pin one of
+        // the MAX_TRACKED_DIRECTORIES slots until this directory's next
+        // event arrives.
+        if (!d.timer) {
+          directories.delete(routedDirectory)
+          overflow.dirCapNotified = false
+        }
         return
       }
     }
@@ -889,6 +908,13 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
             readyTimer = undefined
           }
           streamErrorLogged = false
+          // The bridge attaches the upstream boot epoch so a WS-only client
+          // can echo it on the next resume — resync frames are no longer
+          // the only way to learn it.
+          const readyEpoch = typeof frame.epoch === "string" ? frame.epoch : ""
+          if (readyEpoch.length > 0) {
+            serverEpoch = readyEpoch
+          }
           markConnected()
           return
         }

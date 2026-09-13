@@ -130,6 +130,8 @@ export const OMP_ENDPOINTS = {
   pluginsApplied: '/api/omp/plugins/applied',
   pluginsReload: '/api/omp/plugins/reload',
   pluginExtensions: '/api/omp/plugins/extensions',
+  diagnostics: '/api/omp/diagnostics',
+  sessionRelease: (id: string) => `/api/omp/sessions/${encodeURIComponent(id)}/release`,
  } as const;
 
 // ---------------------------------------------------------------------------
@@ -1493,9 +1495,11 @@ const BOOT_EVENT_NAME = 'omp.stream.boot';
 // Parse-buffer cap (docs/plan.md §5.3.1): an unfinished or oversized block
 // beyond this aborts the attempt — never a silent drop — and the retry's
 // Last-Event-ID resume converges through the host's hole→gap→resync
-// contract. Sits above the omp bus's largest retained event so replayed
-// events never trigger a reconnect loop.
-const OMP_MAX_SSE_BLOCK_CHARS = 4 * 1024 * 1024;
+// contract. The omp bus retains events up to `maxEventBytes` of ESTIMATED
+// UTF-16 units; JSON.stringify inflates control-character-dense payloads
+// by up to 6× (\uXXXX), so this sits far above the largest retained event
+// — replayed events must never trigger a reconnect loop.
+const OMP_MAX_SSE_BLOCK_CHARS = 16 * 1024 * 1024;
 
 const isOffline = (): boolean =>
   typeof navigator === 'object' && navigator !== null && navigator.onLine === false;
@@ -2948,3 +2952,74 @@ export const createOmpPluginsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpPlug
     },
   };
 };
+
+// ---------------------------------------------------------------------------
+// Diagnostics API — GET /api/omp/diagnostics counters snapshot. Counts and
+// declared byte estimates only (host contract: no transcripts/payloads/paths).
+// `transcriptBytes` is a transcript-size proxy for resident cost, never a
+// heap attribution — surfaces must label it as an estimate.
+// ---------------------------------------------------------------------------
+
+const OmpLiveSessionStateSchema = z.enum(['materializing', 'live', 'evicting', 'failed']);
+
+const OmpDiagnosticsSessionRowSchema = z.object({
+  id: z.string(),
+  directory: z.string(),
+  state: OmpLiveSessionStateSchema,
+  inFlight: z.number(),
+  idleMs: z.number(),
+  transcriptBytes: z.number().nullable(),
+  failure: z.object({ reason: z.string(), attempts: z.number() }).nullable(),
+});
+
+const OmpBusStatsSchema = z.object({
+  retainedEntries: z.number(),
+  retainedBytes: z.number(),
+  capacity: z.number(),
+  maxBytes: z.number(),
+  evictedEntries: z.number(),
+  evictedBytes: z.number(),
+  overBudgetEvents: z.number(),
+  subscribers: z.number(),
+});
+
+const OmpDiagnosticsSchema = z.object({
+  wireBus: OmpBusStatsSchema,
+  ompBus: OmpBusStatsSchema,
+  dataProportional: z.object({
+    liveSessions: z.object({
+      materializing: z.number(),
+      live: z.number(),
+      evicting: z.number(),
+      failed: z.number(),
+      total: z.number(),
+      inFlightUnderflow: z.number(),
+      sessions: z.array(OmpDiagnosticsSessionRowSchema),
+      truncated: z.boolean(),
+    }),
+    wireIdEchoes: z.number(),
+    personas: z.number(),
+  }),
+  process: z.object({
+    heapUsedBytes: z.number(),
+    externalBytes: z.number(),
+    arrayBufferBytes: z.number(),
+    rssBytes: z.number(),
+  }),
+});
+export type OmpDiagnostics = z.infer<typeof OmpDiagnosticsSchema>;
+export type OmpDiagnosticsSessionRow = z.infer<typeof OmpDiagnosticsSessionRowSchema>;
+
+export const createOmpDiagnosticsAPI = (apiOptions: OmpJsonApiOptions = {}) => ({
+  get: () =>
+    ompFetchJson(
+      apiOptions.fetchImpl ?? runtimeFetch,
+      OMP_ENDPOINTS.diagnostics,
+      (value) => {
+        const parsed = OmpDiagnosticsSchema.safeParse(value);
+        return parsed.success ? parsed.data : null;
+      },
+      {},
+      true,
+    ),
+});

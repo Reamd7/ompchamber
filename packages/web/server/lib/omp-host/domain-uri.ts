@@ -523,6 +523,10 @@ export interface WireSessionRecord {
   /** Fork lineage (registry forkParentID): the wire parentID stays reserved
    * for subagent sessions; the session tree reads this instead. */
   forkParentID?: string;
+  /** Non-cold live-registry state; absent = cold (nothing resident). */
+  live?: string;
+  /** Transcript file bytes — the session's memory-cost proxy. */
+  transcriptBytes?: number;
   time?: { created?: number; updated?: number };
 }
 

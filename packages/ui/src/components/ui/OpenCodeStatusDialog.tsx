@@ -10,6 +10,7 @@ import { toast } from '@/components/ui';
 import { useUIStore } from '@/stores/useUIStore';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useI18n } from '@/lib/i18n';
+import { EngineMemorySection } from './EngineMemorySection';
 
 export const OpenCodeStatusDialog: React.FC = () => {
   const { t } = useI18n();
@@ -39,6 +40,10 @@ export const OpenCodeStatusDialog: React.FC = () => {
             {t('openCodeStatusDialog.description')}
           </DialogDescription>
         </DialogHeader>
+
+        {/* The memory section polls /api/omp/diagnostics only while the
+            dialog is open — mount-gated, never a background cost. */}
+        {isOpenCodeStatusDialogOpen ? <EngineMemorySection /> : null}
 
         <div className="flex items-center justify-end">
           <button
