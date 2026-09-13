@@ -1,6 +1,6 @@
 {
   "name": "@ompchamber/electron",
-  "version": "1.30.2",
+  "version": "1.30.3",
   "private": true,
   "description": "Electron desktop runtime for OMPChamber",
   "author": "OMPChamber",
