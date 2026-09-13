@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.30.2] - 2026-09-13
+
+- **Server: memory now stays bounded on long-running instances.** Sessions idle out of memory and reload from disk on demand, and paging through an old transcript streams the file from disk instead of parsing the whole session first — a server that has served many or large sessions no longer grows memory the longer it runs.
+- Sync: a connection that misses events — a network hiccup or an app-server restart — now notices the gap and refetches what it missed, instead of silently showing stale state; a stream that falls behind now resynchronizes instead of queueing without limit.
+- Server: transcript files rewritten outside the app (another tool editing or restoring sessions) are detected and reloaded, so the app no longer builds on a stale in-memory copy.
 
 ## [1.30.1] - 2026-09-11
 

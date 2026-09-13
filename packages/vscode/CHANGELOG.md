@@ -1,3 +1,7 @@
+## [1.30.2] - 2026-09-13
+
+- Chat: a connection that misses events — a network hiccup or a restart of the app server it talks to — now notices the gap and refetches what it missed, instead of continuing from stale state until the panel is reloaded.
+
 ## [1.30.0] - 2026-09-07
 
 - Chat: task cards now show live progress for every subagent the agent dispatches — status, token count, elapsed time, retries, and the latest activity — and a finished run's final report renders right on its card.
