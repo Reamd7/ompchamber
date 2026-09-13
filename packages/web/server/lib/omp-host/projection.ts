@@ -457,13 +457,17 @@ export const wireMessageId = (role: string | null | undefined, timestamp: number
 
 /**
  * Deterministic wire id of one engine message — the exact derivation the
- * user/assistant projectors use (assistant messages with no text seed from
- * the first content block's name).
+ * user/assistant projectors use. Assistant ids are content-independent
+ * (docs/plan.md phase 5 stable formula): the SDK mints the message
+ * timestamp once at creation and never mutates it, so seeding from the
+ * empty string makes the streaming projector's message_start id and the
+ * cold projection of the persisted message identical by construction — no
+ * bridging map is needed for assistant messages. User ids keep the content
+ * digest: user messages arrive complete and queued prompts can share a
+ * timestamp, so content is the discriminator there.
  */
 export const deterministicWireId = (message: WireIdMessageInput) => {
-  const seed = message.role === 'assistant' && !textOfContent(message.content)
-    ? ((Array.isArray(message.content) ? message.content[0]?.name : undefined) ?? '')
-    : textOfContent(message.content);
+  const seed = message.role === 'assistant' ? '' : textOfContent(message.content);
   return wireMessageId(message.role, message.timestamp, seed);
 };
 
@@ -1046,8 +1050,9 @@ export const projectAssistantMessage = (
   toolResults: Map<string, ProjectedToolResult>,
   { sessionID, agent, directory, parentID, wireId }: AssistantProjectionOptions,
 ): ProjectedMessage => {
-  const seed = textOfContent(message.content) || (message.content?.[0]?.name ?? '');
-  const id = wireId ?? wireMessageId('assistant', message.timestamp, seed);
+  // Stable formula (plan phase 5): content-independent, so this cold arm
+  // matches the streaming projector's start id without a bridging map.
+  const id = wireId ?? deterministicWireId(message);
   const selector = {
     providerID: message.provider ?? splitModelSelector(message.model ?? '').providerID,
     modelID: message.model ?? ''
@@ -1368,9 +1373,11 @@ export class StreamProjector {
 
   /** Returns the wire message info for the started assistant message. */
   startAssistant(message: AssistantMessageInput): WireMessageInfo {
-    const seed = textOfContent(message.content) || (message.content?.[0]?.name ?? '');
+    // Stable formula (plan phase 5): seed is content-independent so the
+    // start-time id equals every later cold re-projection of the settled
+    // message (the SDK never mutates the creation timestamp).
     this.current = {
-      id: wireMessageId('assistant', message.timestamp, seed),
+      id: deterministicWireId(message),
       sessionID: this.sessionID,
       role: 'assistant',
       time: { created: message.timestamp },

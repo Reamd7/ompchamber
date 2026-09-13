@@ -1,6 +1,6 @@
 # omp-host 内存问题:链路、概念与病灶记录
 
-状态说明:本文是**阶段 0-4 修复前的基线证据记录**,不是当前代码的描述——下文"二级"表格里引用的行号与代码形态对应打补丁前的工作树,当前实现以 `docs/plan.md` v4.3 及各模块为准。不修改 SDK。文中把 leak、retention、churn 和 SDK writer 成本分开。即使 Wire ring 与 idle session 修复完成，`wireIdOverrides` 的长会话增长仍是独立阻塞项。历史 stash 不视为当前代码。
+状态说明:本文是**阶段 0-4 修复前的基线证据记录**,不是当前代码的描述——下文"二级"表格里引用的行号与代码形态对应打补丁前的工作树,当前实现以 `docs/plan.md` v4.3 及各模块为准。不修改 SDK。文中把 leak、retention、churn 和 SDK writer 成本分开。阶段 0-4 与阶段 5 均已落地后，`wireIdOverrides` 作为独立阻塞项已关闭：助手 id 走稳定公式（内容无关），用户 echo 与 timestamp 重写漂移合并为 live record 级 `wireIdEchoes`，随驱逐/删除释放（见 plan §15）。历史 stash 不视为当前代码。
 
 ## 概念(大白话)
 
@@ -198,11 +198,11 @@ sequenceDiagram
 | 压缩不删老条目 | SDK `session-manager.ts` 的 `type: "compaction"` 路径 | 压缩往同一文件追加标记;老条目仍保留。这里说明 writer 成本,不等于 host leak |
 | `OmpEventBus.replayState` 空 ring / restart 判断 | `events.ts:174-180` | 空 ring 的 gap 分支读取 `replay[0].eventId` 会抛异常；只比较 `lastEventId >= nextEventId` 不能识别旧 cursor 小于新进程当前 id 的 restart。 |
 | `moveSession`、`deleteSession`、`shutdown` 的 live 清理 | `engine.ts:2528-2545,2584-2602` | 当前路径不等待所有 `dispose()`，move 还可能在已有 live writer 时再次 open；Map 变小不等于对象已释放。 |
-| `wireIdOverrides` 无删除路径 | `engine.ts:1138,1530`，全文件无 `delete`/`clear` | 每次 live/cold ID 合流都可能追加一项；session delete 目前不会清理。不能用未经证明的固定 LRU，稳定 ID 或紧凑映射完成前属于独立 retained-memory 风险。 |
+| `wireIdOverrides` 无删除路径 | `engine.ts`（基线快照） | 基线期每次 live/cold ID 合流都可能追加一项且无清理。**阶段 5 已关闭**：助手桥接删除（稳定公式），用户/漂移 echo 挂 live record 随会话释放，见 plan §15。 |
 
 ### 三级:推断(重要!尚未直接证实)
 
 - **3 GB 工作集的构成 = 浏览过的活会话对象**：当前仍未拿到运行中 host 的 live 清单。“最多 16 个 × 单文件放大倍数”只是上界估算，不能当成拆账。观察口要记录每个 live record 的 entries、signature 和 retained estimate。
 - **65 GB commit 的构成 = 留存环 + 解析 churn**：仍未证实。Wire replay、web hub、partial snapshot、worker、native allocator 和 page cache 都可能贡献曲线；worker 另有 `worker-dispatch.ts` 防误启动修复，是否仍有子进程 retention 必须看 process tree，不能从 RSS 猜。
 - **重放实验**：重启 OMPChamber 后依次打开大旧会话，记录 live record 和容器计数，切走并等待超过 TTL，确认闲置 record 完成 dispose 后 retained estimate 下降。RSS 不下降本身不算失败。
-阶段 2 的 idle 回收只能解决“闲置 writer 未按 TTL 释放”这一类 retention。它不能单独证明 host 总内存回到基线，也不能解决长会话的 `wireIdOverrides` 增长。最终验收必须分别报告 ring、live writer、ID map、冷读 churn、projector、worker 和 allocator。
+阶段 2 的 idle 回收只能解决“闲置 writer 未按 TTL 释放”这一类 retention。它不能单独证明 host 总内存回到基线。（阶段 5 落地后，长会话的 `wireIdOverrides` 增长已关闭：助手 id 无需映射，用户/漂移 echo 随会话记录释放。）最终验收必须分别报告 ring、live writer、ID map、冷读 churn、projector、worker 和 allocator。

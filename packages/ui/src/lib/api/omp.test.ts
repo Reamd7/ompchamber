@@ -4,6 +4,7 @@ import {
   createOmpAgentRunsAPI,
   createOmpCapabilitiesAPI,
   createOmpCommandsAPI,
+  createOmpDiagnosticsAPI,
   createOmpEventsAPI,
   createOmpPersonasAPI,
   createOmpPluginsAPI,
@@ -1061,5 +1062,63 @@ describe('parseOmpPendingDialog — ask wire contract', () => {
     expect(parseOmpDialogsSnapshotPayload({ dialogs: [wireAskDialog] })).toEqual([
       parseOmpPendingDialog(wireAskDialog),
     ]);
+  });
+});
+
+describe('createOmpDiagnosticsAPI — /api/omp/diagnostics', () => {
+  const diagnosticsPayload = {
+    wireBus: { retainedEntries: 3, retainedBytes: 1024, capacity: 128, maxBytes: 65536, evictedEntries: 1, evictedBytes: 256, overBudgetEvents: 0, subscribers: 2 },
+    ompBus: { retainedEntries: 0, retainedBytes: 0, capacity: 64, maxBytes: 32768, evictedEntries: 0, evictedBytes: 0, overBudgetEvents: 0, subscribers: 1 },
+    dataProportional: {
+      liveSessions: {
+        materializing: 0,
+        live: 1,
+        evicting: 0,
+        failed: 0,
+        total: 1,
+        inFlightUnderflow: 0,
+        sessions: [{ id: 'ses_1', directory: '/repo', state: 'live', inFlight: 0, idleMs: 5000, transcriptBytes: 2048, failure: null }],
+        truncated: false,
+      },
+      wireIdEchoes: 4,
+      personas: 2,
+    },
+    process: { heapUsedBytes: 100, externalBytes: 10, arrayBufferBytes: 5, rssBytes: 200 },
+  };
+
+  test('parses the counters snapshot and per-session rows', async () => {
+    const calls: Array<{ path: string }> = [];
+    const api = createOmpDiagnosticsAPI({
+      fetchImpl: (async (path: string) => {
+        calls.push({ path });
+        return jsonResponse(200, diagnosticsPayload);
+      }) as unknown as typeof fetch,
+    });
+    const result = await api.get();
+    expect(calls[0]?.path).toBe('/api/omp/diagnostics');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.dataProportional.liveSessions.sessions[0]?.state).toBe('live');
+      expect(result.data.process.heapUsedBytes).toBe(100);
+    }
+  });
+
+  test('404/501 degrades to unavailable; transport failure never reports empty success', async () => {
+    const unavailable = createOmpDiagnosticsAPI({
+      fetchImpl: (async () => jsonResponse(404, { error: 'no route' })) as unknown as typeof fetch,
+    });
+    expect(await unavailable.get()).toEqual({ ok: false, unavailable: true });
+
+    const dead = createOmpDiagnosticsAPI({
+      fetchImpl: (async () => { throw new Error('network down'); }) as unknown as typeof fetch,
+    });
+    expect(await dead.get()).toEqual({ ok: false, unavailable: false });
+
+    const malformed = createOmpDiagnosticsAPI({
+      fetchImpl: (async () => jsonResponse(200, { nope: true })) as unknown as typeof fetch,
+    });
+    // Missing the whole shape on an old-engine route is treated as
+    // "surface absent" (invalidIsUnavailable), not a parse failure.
+    expect(await malformed.get()).toEqual({ ok: false, unavailable: true });
   });
 });

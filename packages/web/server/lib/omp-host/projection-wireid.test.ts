@@ -47,13 +47,14 @@ const entries: TranscriptEntryInput[] = [
 describe('resolveWireIdToEntryId', () => {
   test('resolves user and assistant text wire ids to entry ids', () => {
     const userWire = wireMessageId('user', TS, 'reply with exactly: ok');
-    const assistantWire = wireMessageId('assistant', TS + 10, 'ok');
+    // Stable formula (plan phase 5): assistant ids are content-independent.
+    const assistantWire = wireMessageId('assistant', TS + 10, '');
     expect(resolveWireIdToEntryId(entries, userWire)).toBe('e1');
     expect(resolveWireIdToEntryId(entries, assistantWire)).toBe('e2');
   });
 
-  test('non-message entries are skipped; assistant-without-text seeds from block name', () => {
-    const toolWire = wireMessageId('assistant', TS + 20, 'bash');
+  test('non-message entries are skipped; assistant ids ignore content', () => {
+    const toolWire = wireMessageId('assistant', TS + 20, '');
     // SAFETY: the e9 row is a message entry; the label routes it to the resolver.
     const e9Row: TranscriptEntryInput = entry('e9', assistantToolOnly);
     expect(resolveWireIdToEntryId([e9Row], toolWire)).toBe('e9');

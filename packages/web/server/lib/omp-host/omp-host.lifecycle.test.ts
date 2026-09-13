@@ -386,6 +386,63 @@ describe('LiveSessionRegistry lifecycle (plan §3.2-3.4)', () => {
     expect(h.engine.getStreamDiagnostics().dataProportional.liveSessions.total).toBe(0);
   });
 
+  test('wire sessions carry live state; a settled eviction emits a cold session.updated', async () => {
+    const h = await createHarness();
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+
+    const listed = await h.engine.listSessions({ directory: '/repo' });
+    const wire = listed.find((session) => session.id === 's1');
+    expect(wire?.live).toBe('live');
+    expect(wire?.transcriptBytes).toBe(0);
+
+    h.clock.now += 31 * 60_000;
+    h.engine.sweepIdleSessionsNow();
+    await settle(40);
+    expect(h.engine.liveRecord('s1')).toBeNull();
+
+    // The post-eviction session.updated replaces the stored record wholesale
+    // — `live` absent marks the session cold for every client holding it.
+    const updates = h.engine.bus.replay.filter(
+      (entry) => entry.envelope.type === 'session.updated' && entry.envelope.properties?.info?.id === 's1',
+    );
+    const last = updates.at(-1)?.envelope.properties?.info;
+    expect(last?.live).toBeUndefined();
+  });
+
+  test('stream diagnostics reports one bounded row per non-cold record', async () => {
+    const h = await createHarness();
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+
+    const diagnostics = h.engine.getStreamDiagnostics();
+    const rows = diagnostics.dataProportional.liveSessions.sessions;
+    expect(diagnostics.dataProportional.liveSessions.truncated).toBe(false);
+    const row = rows.find((entry) => entry.id === 's1');
+    expect(row?.state).toBe('live');
+    expect(row?.directory).toBe('/repo');
+    expect(row?.transcriptBytes).toBe(0);
+    expect(row?.idleMs).toBe(0);
+
+    h.engine.sweepIdleSessionsNow();
+    expect(h.engine.getStreamDiagnostics().dataProportional.liveSessions.sessions).toHaveLength(1);
+  });
+
+  test('releaseSession evicts an idle resident, refuses active, no-ops cold', async () => {
+    const h = await createHarness();
+    // Cold session: nothing resident → idempotent no-op.
+    expect(await h.engine.releaseSession({ sessionID: 's1', directory: '/repo' })).toBe('cold');
+
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+    expect(await h.engine.releaseSession({ sessionID: 's1', directory: '/repo' })).toBe('released');
+    await settle(40);
+    expect(h.engine.liveRecord('s1')).toBeNull();
+
+    // Active session: the release refuses rather than killing a live turn.
+    const busy = await createHarness({ sessionOverrides: { s1: { isStreaming: true } } });
+    await busy.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+    expect(await busy.engine.releaseSession({ sessionID: 's1', directory: '/repo' })).toBe('active');
+    expect(busy.engine.liveRecord('s1')?.state).toBe('live');
+  });
+
   test('a throwing host unsubscribe cannot strand an evicting record', async () => {
     const disposed: string[] = [];
     const h = await createHarness({
@@ -563,24 +620,28 @@ describe('LiveSessionRegistry lifecycle (plan §3.2-3.4)', () => {
     expect(h.engine.liveRecord('s1')?.state).toBe('live');
   });
 
-  test('eviction clears wireIdOverrides scoped to the record (plan D5)', async () => {
+  test('eviction drops the record-scoped wireIdEchoes; live sessions keep theirs (plan D5/phase 5)', async () => {
     const h = await createHarness({
       files: [{ id: 's1', cwd: '/repo' }, { id: 's2', cwd: '/repo' }],
       sessionOverrides: {
-        // s2 stays active through the sweep so its overrides must survive.
+        // s2 stays active through the sweep so its echoes must survive.
         s2: { isStreaming: true },
       },
     });
     await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
     await h.engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm' });
-    h.engine.wireIdOverrides.set('/repo s1 cold-a', 'live-a');
-    h.engine.wireIdOverrides.set('/repo s2 cold-b', 'live-b');
+    // Echo entries ride the live record (compact mapping): each session's
+    // map dies with its own record — no process-wide accumulation.
+    h.engine.liveRecord('s1')?.payload?.wireIdEchoes.set('cold-a', 'live-a');
+    h.engine.liveRecord('s2')?.payload?.wireIdEchoes.set('cold-b', 'live-b');
     h.clock.now += 31 * 60_000;
     h.engine.sweepIdleSessionsNow();
     await settle(30);
     expect(h.engine.liveRecord('s1')).toBeNull();
     expect(h.engine.liveRecord('s2')?.state).toBe('live');
-    expect([...h.engine.wireIdOverrides.keys()]).toEqual(['/repo s2 cold-b']);
+    expect(h.engine.liveRecord('s2')?.payload?.wireIdEchoes.get('cold-b')).toBe('live-b');
+    // Aggregate diagnostics observe the surviving session's entries only.
+    expect(h.engine.getStreamDiagnostics().dataProportional.wireIdEchoes).toBe(1);
   });
 
   test('HTTP boundary: prompt against an evicting record answers 409 SessionBusyError (plan §3.4)', async () => {

@@ -1,6 +1,6 @@
 # omp-host 内存优化计划（v4.3，OpenChamber-owned）
 
-状态：阶段 0-4 已实施（阶段 0 的 benchmark/process-tree 采样、阶段 1 replay 止血、阶段 2 live 生命周期、阶段 3 冷读释放、阶段 4 双写检测）；§7.2 的两遍扫描 reader 也已落地（`cold-transcript-page.ts`：`getMessagesPage`/`getSession`/`getEntries` 的冷臂走 metadata pass + 按字节区间回读 fed 窗口；用自有 scanner 而非 `visitEntriesFromFileStream` 是为了记录每条 record 的字节区间，第二遍只读窗口——§7.2 允许自有 parser 承担单条 record 上限；`#entryTreeFor`/`getTranscriptContext` 仍是标注过的 full-materialization fallback）。阶段 5（稳定 wire ID）为**已记录的停机状态**：`wireIdOverrides` 现在在 session 驱逐/删除时清理（必要条件），但长活跃会话中仍随消息数增长——设计一个稳定 wire ID 公式需要长会话压测、跨目录同 ID、冷读/实时/重连与多客户端 optimistic 矩阵的全部证据（阶段 5 验收），未完成前该表是**已知的长会话 retained-memory 风险，总体内存目标未完成**（决策 D5）。本文只描述 OpenChamber 侧的改动。这里的 "OpenChamber-owned/host-only" 意味着**不修改 `@oh-my-pi/pi-coding-agent`**；阶段 1 仍会触及 `packages/web` 的 event hub 和 `packages/ui` 的传输消费者，因为 replay 的边界跨进程。所有"至多一个 writer""已释放"等硬保证都只在**单个 omp-host 进程、已解析到同一 canonical transcript path**的范围内成立；外部 omp TUI 或另一个 host 进程不受本地 registry 控制。**不打补丁，不改依赖，不访问 SDK 私有字段。**
+状态：阶段 0-5 已实施（阶段 0 的 benchmark/process-tree 采样、阶段 1 replay 止血、阶段 2 live 生命周期、阶段 3 冷读释放、阶段 4 双写检测、§7.2 两遍扫描 reader、阶段 5 ID 合约——设计见 §15）。阶段 5 的结论：助手 wire id 采用内容无关的稳定公式，assistant 桥接整体删除；用户 messageID echo 与 SDK timestamp 重写漂移合并为 live record 级 `wireIdEchoes` 紧凑映射，随会话驱逐/删除释放，诊断聚合计数并标注 data-proportional——进程级无 owner 的 `wireIdOverrides` 容器已删除。剩余阶段 6（收敛与清理：旧冷读路径删除的可行性复核、死代码清理、benchmark 更新）。本文只描述 OpenChamber 侧的改动。这里的 "OpenChamber-owned/host-only" 意味着**不修改 `@oh-my-pi/pi-coding-agent`**；阶段 1 仍会触及 `packages/web` 的 event hub 和 `packages/ui` 的事件管线。列出的行号以实施时工作树为准，历史行号仅用于取证。
 
 ## 一、边界与承诺
 
@@ -233,7 +233,7 @@ hub 的 `stop()`/上游重启不能把旧连接 epoch 的 replay 与新 epoch �
 
 | 容器 | 当前风险 | Host-only 处理 |
 |---|---|---|
-| `wireIdOverrides` | 无界，且承载 ID 合流语义 | session delete 清理只是必要条件，不是长期上界。稳定 ID 或可证明的紧凑/持久化映射完成前，这个表仍会随长会话增长，不能把阶段 2 的回收称为内存问题已解决；阶段 5 是内存目标的阻塞项。 |
+| `wireIdOverrides` | 已关闭（阶段 5）：助手 id 走稳定公式（seed 恒为空串，SDK 创建后不改 timestamp），冷读/实时天然一致，无需映射；仅 timestamp 被 SDK 错误规范化重写时记一条漂移 echo。用户 messageID echo 迁移到 live record 的 `wireIdEchoes`（紧凑映射），随驱逐/删除释放，诊断聚合计数，显式标注 data-proportional。 | 全局进程级映射已删除；不再有无 owner 的增长容器。 |
 | `dialogs.bridges` | 每个 session 建 bridge，正常 session dispose 没有 delete | 给 dialogs domain 增加 `releaseSession`，驱逐和删除时调用；shutdown 保留 `dispose`。 |
 | `domain-chrome.directories` | 目录和 dropped counters 没有 per-directory release | 增加目录生命周期或有界 TTL，保留仍有 lease/live session 的目录。 |
 | `SessionMetaRegistry.cache` | 每个访问过的目录进程常驻；单个目录内的 session map 是与持久化元数据成比例的权威索引，也可能很大 | 先限制目录级驻留并在无 live/lease/in-flight 时丢内存副本；`entries()` 不得把可变 Map 借给长期调用者。单目录内条目/字节上限需要 sidecar 格式或索引设计，阶段 0 未证明前只报告 data-proportional，不宣称全局 bounded。 |
@@ -333,7 +333,7 @@ Windows 记录字段名称必须和含义一致。不要把 `PagedMemorySize64`�
 | **2 live 生命周期** | `LiveSessionRegistry`、materialization failure cleanup、evicting state、awaited disposal、完整活动守卫、dialog/chrome/mode/descriptor 清理、目录 key、move/delete/shutdown 串行化。 | fake clock 下符合活动定义的 idle session 在 TTL 后从 live Map 和 per-session containers 消失；并发 prompt/attach 不建立双实例；失败 setup 不留 subscription/name callback；active getter 和 pending dialog 不被驱逐；dispose 未落定时不能复活同文件；失败 dispose 进入可观测 quarantine，受控 restart/manual-recovery 路径有界且可测试。回滚只关闭新 sweeper，不恢复 fire-and-forget delete。 |
 | **3 冷读拆分** | `ColdTranscriptReader` 接管已经证明可窗口化的普通 GET；`getSession`、`getEntries`、`getTranscriptContext`、`#entryTreeFor` 和普通列表投影分别改用只读 adapter、两遍扫描/临时 offset index 或明确标注的 full-materialization fallback。先移除 writer 依赖，再优化峰值内存，不能假设一个 visitor 足以复现所有 branch/transcript 语义。 | 新旧 projection 逐消息一致，包含 branch、compaction、malformed record、blob 和分页边界；任何冷 GET 都不创建 writer/AgentSession；tree/URI 路径显式关闭临时资源；只有通过 bounded proof 的查询才报告内存上界，其余 fallback 单独报告峰值 heap、CPU 和 IO。 |
 | **4 双写收敛** | size/mtime/tail signature、dirty 分类、有限 reload/recheck、move 的 ownership transfer、前端 refetch 门。 | TUI append 被 GET 看见；保留尾 ID 的 rewrite 至少被 signature 判 dirty，否则测试必须把它标为已知 best effort；reload 竞态不丢 entry；streaming 不触发 reload。无锁下的“绝对最新”从硬承诺中删除。 |
-| **5 ID 合约** | 仅在前面证据和测试完成后设计稳定 wire ID。可选 host sidecar 或新 ID 公式，但必须处理多客户端 optimistic message。 | 通过长会话压力、跨目录同 ID、冷读/实时/重连和多客户端 optimistic 矩阵后，旧映射可被删除或有界化。若不能证明兼容，阶段停止并明确记录“内存目标未完成”；保留 process-lifetime mapping 是兼容性停机状态，不是通过验收，也不能把它称作 bounded。 |
+| **5 ID 合约** | 已完成（见 §15）：助手 wire id 改为内容无关的稳定公式（timestamp + 空 seed），删除 assistant 桥接；用户 echo 与罕见的 SDK timestamp 重写漂移合并为 live record 级 `wireIdEchoes` 紧凑映射。验收矩阵（长会话、跨目录同 ID、冷读/实时/重连、多客户端 optimistic、漂移吸收）由 `omp-host.wireid.test.ts` 覆盖。 | 正常回合 echo 表为空（或仅用户条目）；驱逐后冷读助手 id 仍与流式 id 相同；跨目录不串扰；未引入任意 LRU。 |
 | **6 收敛与清理** | 删除旧冷读路径、移除临时诊断开关以外的死代码，更新 owning docs 和 benchmark。 | 运行 focused tests、package checks、实际 host smoke 和重复内存场景。确认没有依赖 SDK 私有实现。 |
 
 顺序：**0 → 1 → 2 → 3 → 4 → 5 → 6**。阶段 1 和阶段 2 可以分别回滚。阶段 3 依赖阶段 2 的 canonical path、资源所有权和诊断接口；阶段 4 依赖阶段 2 的 per-key operation gate；阶段 5 依赖阶段 1/3/4 的事件和投影对账证据。阶段 1 的回滚只能关闭 replay resume 并强制对账，不能回到无界数组。阶段 5 不得作为阶段 1 的顺手改动。
@@ -365,7 +365,7 @@ Windows 记录字段名称必须和含义一致。不要把 `PagedMemorySize64`�
 | D2 | live TTL | 30 分钟，60 秒 sweep，无 `<=16` 闸 |
 | D3 | 活跃内存上限 | 先做观测和压力告警，不强杀活跃 session；固定上限需要另行决定产品降级语义 |
 | D4 | host wire 与 web hub replay | 两者都做条目和字节双上限，gap/restart 明确；具体字节值按阶段 0 的各自事件分布确定 |
-| D5 | wire ID map | 禁止任意固定 LRU；session-delete 清理是必要但不充分。稳定 ID、可证明的紧凑映射或持久化索引未完成前，wire map 是已知的长会话 retained-memory 风险，不能宣称总体内存目标完成。 |
+| D5 | wire ID map | 已按阶段 5 关闭：助手 id 稳定公式（无映射）；用户/漂移 echo 为 live record 级紧凑映射，随会话生命周期释放，诊断可观测。未引入固定 LRU。 |
 | D6 | 最新性 | 无跨进程锁时是检测、吸收、重检的 best effort，不宣称绝对最新 |
 | D7 | 查看语义 | 现有需要扩展/UI context 的 attach 仍可 materialize；普通历史 GET 不 materialize |
 | D8 | rewrite 检测 | tail ID 是快速提示；signature/fingerprint 才能触发 dirty，不能把 tail ID 写成完整证明 |
@@ -390,3 +390,13 @@ Windows 记录字段名称必须和含义一致。不要把 `PagedMemorySize64`�
 - v4.1（host-only 审查收紧）：明确当前已确认的无界留存与未确认的 GB 归因；区分 wire/native gap 契约；补充生成 SSE client 的非 2xx 重试陷阱、reentrant subscribe gap、累计 tool partial churn、目录 key 覆盖范围和 dispose 前 idle 通知顺序。禁止用回滚恢复无界 replay。
 - v3（代码评审后）：事实基线补 wire 环无界、`loadSessionMessagesReadOnly` 非流式、`wireIdOverrides` 无界、活跃信号、pending dialogs、revert、move 和驱逐竞态。
 - v2：整合版。
+
+## 十五、阶段 5 设计记录（ID 合约）
+
+**稳定公式（助手）**：`wireMessageId('assistant', timestamp, '')`。依据：SDK 在消息创建时一次性赋 `timestamp: Date.now()` 与 `content: []`，之后只追加 content；`message_start` 与 `message_end`/落盘携带同一 timestamp（bundle 取证：创建路径 `{role:"assistant",content:[],...,timestamp:Date.now()}`，转换 `hp(e)` 为浅展开）。seed 固定为空串使 `startAssistant` 在 message_start 铸造的 id 与落盘消息的 `deterministicWireId` 恒等——冷读、实时、重连、驱逐后重读全部一致，且跨引擎重启稳定。碰撞面：同会话两条助手消息共享同一毫秒——单会话串行对话循环（每条助手消息需一次 provider 往返）不可达，且旧实现 live 侧本就有同样暴露。
+
+**漂移吸收（异常路径）**：SDK 的错误规范化路径（空/失败流的重置，bundle 取证 `CHo` 与流内 reset 回调）会原地重写 `timestamp`。`message_end` 处理器在 `deterministicWireId(event.message) !== finished.id` 时记录**一条** echo（cold → live），使冷读/_retry join 仍解析到客户端已见 id。正常回合该条件恒假，表零增长。
+
+**紧凑映射（用户 echo + 漂移）**：`HostSession.wireIdEchoes: Map<coldId, liveId>`。用户 echo 保留原语义（wire 合约要求回显客户端 `messageID`，pi 落盘 UserMessage 无 id 字段）。映射挂在 live record 上：随驱逐/删除一起释放（不再有进程级前缀扫描）、按目录天然隔离、诊断以 `dataProportional.wireIdEchoes` 聚合上报。deploy 边界的 id 值变化（助手 digest 输入从最终文本变为空串）与引擎重启同一等级——epoch/resync/全量对账已覆盖。
+
+**验收**：`packages/web/server/lib/omp-host/omp-host.wireid.test.ts` 覆盖矩阵——长会话（50 回合，助手 echo 零条目、投影 id 恒等）、跨目录同 sessionID（echo 不串扰）、冷读/实时/驱逐后（助手 id 不变、用户回退 canonical）、多客户端 optimistic（各自 echo 独立）、timestamp 重写漂移（恰一条 echo，冷读解析回 live id）。既有 `omp-host.dispositions.test.ts` 的 retry join 用例即为漂移路径的回归覆盖。

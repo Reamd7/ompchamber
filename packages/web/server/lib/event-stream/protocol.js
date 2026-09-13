@@ -16,6 +16,9 @@ export const MESSAGE_STREAM_WS_BACKPRESSURE_WARN_BYTES = 12 * 1024 * 1024;
  * Data-less blocks carrying an `event:` name or `id:` are control frames
  * (payload null) — dropping them would hide resync/restart controls
  * (docs/plan.md §5.4). Blocks with none of the three are comments → null.
+ * A block with `data:` that fails JSON.parse is NOT a control frame: it
+ * returns `malformed: true` so the caller can refuse to advance the cursor
+ * instead of silently skipping a lost business event.
  */
 export function parseSseEventEnvelope(block) {
   if (!block || typeof block !== 'string') {
@@ -49,7 +52,11 @@ export function parseSseEventEnvelope(block) {
     if (eventId === null && eventName === null) {
       return null;
     }
-    return { eventId, eventName, directory: null, payload: null };
+    const control = { eventId, eventName, directory: null, payload: null };
+    // Non-empty but unparseable data marks a malformed business block, not
+    // a control frame; absent data stays a clean control.
+    if (payloadText.length > 0) control.malformed = true;
+    return control;
   }
 
   if (

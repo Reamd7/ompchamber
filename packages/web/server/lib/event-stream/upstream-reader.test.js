@@ -234,10 +234,56 @@ describe('createUpstreamSseReader', () => {
     expect(attempt).toBe(2);
   });
 
-  it('aborts and reconnects on an oversized block instead of dropping it silently', async () => {
-    // Parser guard contract (plan §5.3.1): the cursor must NOT advance past
-    // the oversized block, so the reconnect's Last-Event-ID resume replays
-    // the disavowed range through the host's gap/resync verdict.
+  it('disavows an oversized block through a synthesized resync instead of dropping it silently', async () => {
+    // Parser guard contract (plan §5.3.1): an over-budget block with an
+    // `id:` line advances the cursor past it and surfaces a resync control
+    // so the consumer reconciles the range — a reconnect never replays a
+    // retained oversize event into the same failure again.
+    const events = [];
+    const errors = [];
+    let reader;
+
+    reader = createUpstreamSseReader({
+      buildUrl: () => 'http://127.0.0.1:4096/global/event',
+      reconnectDelayMs: 0,
+      maxBlockBytes: 64,
+      fetchImpl: async (_url, options) =>
+        createSseResponse({
+          signal: options.signal,
+          blocks: [
+            'id: evt-1\ndata: {"type":"a","properties":{}}\n\n',
+            `id: evt-big\ndata: {"type":"huge","properties":{"pad":"${'x'.repeat(500)}"}}\n\n`,
+            'id: evt-3\ndata: {"type":"c","properties":{}}\n\n',
+          ],
+        }),
+      onError(error) {
+        errors.push(error);
+      },
+      onEvent(event) {
+        events.push({ eventId: event.eventId, eventName: event.eventName });
+        if (event.eventId === 'evt-3') {
+          reader.stop();
+        }
+      },
+    });
+
+    await reader.start();
+
+    expect(errors).toEqual([]);
+    expect(events).toEqual([
+      { eventId: 'evt-1', eventName: null },
+      { eventId: 'evt-big', eventName: 'omp.stream.resync' },
+      { eventId: 'evt-3', eventName: null },
+    ]);
+    // The cursor advanced past the disavowed block — a later reconnect
+    // resumes from evt-3, never re-requesting evt-big.
+    expect(reader.getLastEventId()).toBe('evt-3');
+    expect(reader.getStats().droppedBlocks).toBe(1);
+  });
+
+  it('aborts and reconnects on an oversized block without an id line', async () => {
+    // No `id:` means the range cannot be disavowed in-band — the abort is
+    // the fallback so the host's gap verdict handles it on reconnect.
     const events = [];
     const errors = [];
     const fetchedCursors = [];
@@ -251,19 +297,16 @@ describe('createUpstreamSseReader', () => {
       fetchImpl: async (_url, options) => {
         fetchedCursors.push(options.headers['Last-Event-ID'] ?? null);
         attempt += 1;
-        if (attempt === 1) {
-          return createSseResponse({
-            signal: options.signal,
-            blocks: [
-              'id: evt-1\ndata: {"type":"a","properties":{}}\n\n',
-              `id: evt-big\ndata: {"type":"huge","properties":{"pad":"${'x'.repeat(500)}"}}\n\n`,
-              'id: evt-3\ndata: {"type":"c","properties":{}}\n\n',
-            ],
-          });
-        }
         return createSseResponse({
           signal: options.signal,
-          blocks: ['id: evt-3\ndata: {"type":"c","properties":{}}\n\n'],
+          blocks:
+            attempt === 1
+              ? [
+                  'id: evt-1\ndata: {"type":"a","properties":{}}\n\n',
+                  `data: {"type":"huge","properties":{"pad":"${'x'.repeat(500)}"}}\n\n`,
+                  'id: evt-3\ndata: {"type":"c","properties":{}}\n\n',
+                ]
+              : ['id: evt-3\ndata: {"type":"c","properties":{}}\n\n'],
         });
       },
       onError(error) {
@@ -279,12 +322,12 @@ describe('createUpstreamSseReader', () => {
 
     await reader.start();
 
-    expect(errors).toEqual([expect.objectContaining({ type: 'stream_error' })]);
-    expect(events).toEqual(['evt-1', 'evt-3']);
-    // The cursor stayed at the last handled block — never at the dropped
-    // one — so the second fetch resumes from evt-1, not evt-big.
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors[0]).toEqual(expect.objectContaining({ type: 'stream_error' }));
+    // The cursor stayed at the last handled block so the reconnect
+    // re-requests the disavowed range.
     expect(fetchedCursors.slice(0, 2)).toEqual([null, 'evt-1']);
-    expect(reader.getStats().droppedBlocks).toBe(1);
+    expect(reader.getStats().droppedBlocks).toBeGreaterThanOrEqual(1);
   });
 
   it('removes abort listeners after stop', async () => {

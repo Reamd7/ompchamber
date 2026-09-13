@@ -28,7 +28,7 @@ const mountSse = (): MountedSse => {
   const getStreamDiagnostics = () => ({
     wireBus: wireBus.stats(),
     ompBus: ompBus.stats(),
-    dataProportional: { liveSessions: 0, wireIdOverrides: 0, personas: 0 },
+    dataProportional: { liveSessions: 0, wireIdEchoes: 0, personas: 0 },
     process: { heapUsedBytes: 0, externalBytes: 0, arrayBufferBytes: 0, rssBytes: 0 },
   });
   const { sseHandler } = registerEndpoints(

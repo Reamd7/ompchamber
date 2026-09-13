@@ -66,12 +66,13 @@ import type {
  * record's in-flight size stays bounded by the record itself — the scanner
  * holds ≤ one line + one chunk (plan §7.2 caveat).
  *
- * Between the two passes the file may gain appends; the page is computed
- * from the pass-1 snapshot and pass 2 selects by byte range + id check, so
- * a concurrent append yields a self-consistent page at the earlier read
- * point — the same contract `SessionManager.open` gives (it reads once). A
- * needed record whose id/type no longer matches means a mid-read rewrite —
- * fallback.
+ * Between the two passes the file may gain appends or be rewritten; the
+ * pass-2 reads re-verify each needed record's id+type at its pass-1 byte
+ * range, and a final size/mtime comparison rejects ANY mid-read change —
+ * including pure appends — so an actively-appended transcript falls back
+ * to the manager arm rather than serving a page folded from stale metas.
+ * That makes the streamed arm a cold-read optimization only: hot files
+ * pay one scan then take the labeled fallback.
  */
 
 /** Cap on retained turn-event divider entries per scan. */

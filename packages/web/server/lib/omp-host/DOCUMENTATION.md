@@ -64,6 +64,9 @@ sync engine, and web server call; everything else answers 404.
   cold|failed state machine, per-key operation gates for mutation
   boundaries, monotonic-clock TTL bookkeeping, in-flight counts, and
   quarantine tombstones for failed disposals (docs/plan.md §3.2-3.4).
+  Tombstones keep the failed SDK object reachable through `retryDispose`;
+  the engine sweeper re-disposes them under a cooldown/bounded-attempt
+  policy (`failed → evicting` via `retryEvict`, never a fresh writer).
 - `cold-reader.ts` — `withColdManager`: every cold GET runs open → consume →
   close+releaseRetainedEntries in `finally`, with O(1) open/close/release
   counters proving no cold read leaks a manager (docs/plan.md §7).
@@ -75,7 +78,14 @@ sync engine, and web server call; everything else answers 404.
   capabilities, the omp SSE channel, transcript structured reads
   (custom-messages/telemetry/entries), `GET /agent-dir` (the Node web server
   cannot import this SDK — it resolves the profile-scoped omp agent dir
-  here), `GET /omp/diagnostics` (counters-only observation port, plan §9.1),
+  here), `GET /omp/diagnostics` (counters-only observation port, plan §9.1 —
+  includes a bounded per-session live table, capped at
+  `#DIAGNOSTIC_SESSION_ROWS_MAX` rows with `truncated`, plus process memory
+  from `process.memoryUsage()`; `transcriptBytes` is the declared resident-
+  cost proxy, never a measured per-session heap attribution),
+  `POST /omp/sessions/{id}/release` (the memory monitor's manual evict —
+  returns `released` for an idle resident, 409 `session-active` while the
+  session has work or a UI lease, `cold` as an idempotent no-op),
   and mounts for the domain modules below. Both SSE endpoints carry
   `x-omp-epoch` (boot identity), emit `omp.stream.boot` in-band, send a
   data-less `omp.stream.resync` control with the real tail id when a
@@ -146,17 +156,29 @@ sync engine, and web server call; everything else answers 404.
 - Deterministic ids: wire message ids are `msg_<role letter><base36 timestamp><digest>`
   (`a` assistant, `u` user, `c` custom transcript notes) derived from omp
   message identity — never from persistence entry ids. Live streaming and
-  cold re-projection must agree for the same message: streaming derives an
-  assistant id at `message_start` (empty content, start timestamp) while the
-  persisted message finalizes both, and prompted user messages must echo the
-  client's `messageID` for optimistic reconciliation. The engine bridges
-  these through an in-memory `wireIdOverrides` map (cold id → live/echo id,
-  captured from the user `message_start` and assistant `message_end` events)
-  that cold projections resolve via `wireIdFor`; without it every re-fetch
-  projected a second, different id for the same message and the UI rendered
-  the prompt or reply twice. Overrides live only for the engine process
-  lifetime — an engine restart forces a reconnect whose authoritative refetch
-  replaces client state wholesale, so stale live ids cannot linger.
+  cold re-projection must agree for the same message. Assistant ids use the
+  phase-5 stable formula (docs/plan.md 阶段 5): the digest seeds from the
+  empty string, because the SDK mints the message timestamp once at creation
+  and never mutates it on the normal path — so the streaming projector's
+  `message_start` id and every cold re-projection of the settled message are
+  identical by construction, with no bridging map. The SDK's
+  error-normalization resets (empty/failed streams) rewrite the timestamp in
+  place; for exactly that drift the `message_end` handler records one echo
+  entry (cold id → live id). Prompted user messages must echo the client's
+  `messageID` for optimistic reconciliation, and pi's persisted UserMessage
+  carries no id field to store it in, so those echoes are captured at the
+  user `message_start`. Both echo kinds live on the HostSession record
+  (`wireIdEchoes`, the phase-5 compact mapping): they die with the session's
+  eviction/deletion instead of accumulating process-wide, they are scoped by
+  directory so two directories with the same session id never cross-resolve,
+  and `GET /omp/diagnostics` reports the aggregate as a labeled
+  data-proportional count. Echoes exist only for the engine process
+  lifetime — an engine restart forces a reconnect whose authoritative
+  refetch replaces client state wholesale, so stale echo ids cannot linger.
+  Two assistant messages in one session would collide only if they shared a
+  millisecond timestamp; a single conversation loop cannot produce that
+  (each assistant message requires a provider roundtrip), and the live side
+  had the same exposure before phase 5.
   Transcript `custom_message` entries (advisor nudges, todo reminders, late
   diagnostics) project as assistant-side notes prefixed `[omp:<type>]` with
   `synthetic: true` parts; entries marked `display: false` are dropped.
@@ -216,6 +238,14 @@ sync engine, and web server call; everything else answers 404.
   directory's sessions, because directory child stores seed their session
   lists from scoped requests and foreign records poison client-side
   containment lookups.
+- Session wire records carry residency: non-cold records expose `live`
+  (`materializing`/`live`/`evicting`/`failed` — absent means cold) and
+  `transcriptBytes` (live file-signature size when resident, else the list
+  `size` — a resident-cost proxy, not measured heap attribution). A
+  successful eviction emits a post-dispose `session.updated` so stored
+  rows flip cold without a list refresh; the emit is skipped when a newer
+  live record for the id already exists (move/rematerialize races) so a
+  late dispose cannot clobber it.
 - SDK usage follows the TUI's semantics wherever both exist; when omp-host
   behavior diverges from the TUI, the TUI is wrong-by-default and the change
   needs an explicit reason. Currently aligned: submission dispatch always

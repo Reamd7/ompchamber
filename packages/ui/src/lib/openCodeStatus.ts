@@ -6,6 +6,7 @@ import { opencodeClient } from './opencode/client';
 import { runtimeFetch } from './runtime-fetch';
 import { getRecentSendFailures } from '@/sync/send-failure-log';
 import { getRecentSessionErrors } from '@/sync/session-error-log';
+import { createOmpDiagnosticsAPI } from './api/omp';
 
 declare const __APP_VERSION__: string | undefined;
 
@@ -477,6 +478,41 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
     }
   } else {
     lines.push('Engine API probes: (skipped)');
+  }
+
+  // Engine memory snapshot — same /api/omp/diagnostics contract the dialog's
+  // structured section polls; transcript bytes are the resident-cost proxy
+  // (~1.3× heap), not measured attribution.
+  const diagnostics = await createOmpDiagnosticsAPI().get().catch(() => null);
+  if (diagnostics?.ok) {
+    const fmtBytes = (bytes: number): string => {
+      if (!Number.isFinite(bytes)) return '(n/a)';
+      if (bytes < 1024) return `${bytes} B`;
+      const units = ['KB', 'MB', 'GB'];
+      let value = bytes;
+      let unit = -1;
+      do {
+        value /= 1024;
+        unit += 1;
+      } while (value >= 1024 && unit < units.length - 1);
+      return `${value.toFixed(1)} ${units[unit]}`;
+    };
+    const live = diagnostics.data.dataProportional.liveSessions;
+    const residentBytes = live.sessions.reduce((sum, row) => sum + (row.transcriptBytes ?? 0), 0);
+    lines.push('');
+    lines.push('Engine memory (omp host):');
+    lines.push(`- process: heap=${fmtBytes(diagnostics.data.process.heapUsedBytes)} rss=${fmtBytes(diagnostics.data.process.rssBytes)} external=${fmtBytes(diagnostics.data.process.externalBytes + diagnostics.data.process.arrayBufferBytes)}`);
+    lines.push(`- resident sessions: live=${live.live} materializing=${live.materializing} evicting=${live.evicting} failed=${live.failed} total=${live.total} est-transcript=${fmtBytes(residentBytes)}`);
+    for (const row of live.sessions.slice(0, 16)) {
+      lines.push(`  - ${row.id.slice(0, 16)} ${row.state} ~${row.transcriptBytes === null ? '?' : fmtBytes(row.transcriptBytes)} idle=${Math.round(row.idleMs / 1000)}s inFlight=${row.inFlight}`);
+    }
+    if (live.truncated || live.sessions.length > 16) lines.push('  … (truncated)');
+    lines.push(`- wire bus: ${diagnostics.data.wireBus.retainedEntries}/${diagnostics.data.wireBus.capacity} entries ${fmtBytes(diagnostics.data.wireBus.retainedBytes)} subscribers=${diagnostics.data.wireBus.subscribers} evicted=${diagnostics.data.wireBus.evictedEntries} overBudget=${diagnostics.data.wireBus.overBudgetEvents}`);
+    lines.push(`- omp bus: ${diagnostics.data.ompBus.retainedEntries}/${diagnostics.data.ompBus.capacity} entries ${fmtBytes(diagnostics.data.ompBus.retainedBytes)} subscribers=${diagnostics.data.ompBus.subscribers} evicted=${diagnostics.data.ompBus.evictedEntries} overBudget=${diagnostics.data.ompBus.overBudgetEvents}`);
+    lines.push(`- counters: wireIdEchoes=${diagnostics.data.dataProportional.wireIdEchoes} personas=${diagnostics.data.dataProportional.personas} inFlightUnderflow=${live.inFlightUnderflow}`);
+  } else {
+    lines.push('');
+    lines.push(`Engine memory (omp host): ${diagnostics?.unavailable ? 'not supported by this engine build' : 'fetch failed'}`);
   }
 
   lines.push('');

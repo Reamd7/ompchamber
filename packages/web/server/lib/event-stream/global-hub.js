@@ -76,6 +76,10 @@ export function createGlobalMessageStreamHub({
   let generation = 0;
   /** Upstream boot identity when the upstream advertises one (omp host). */
   let upstreamEpoch = null;
+  /** (generation, epoch) a restart was already broadcast for: the same
+   *  connect's resync control frame must not notify clients twice. */
+  let restartBroadcastGen = -1;
+  let restartBroadcastEpoch = null;
   const stats = { evictedEntries: 0, evictedBytes: 0, resyncs: 0, restarts: 0 };
 
   const notifySubscriber = (kind, subscriber, payload) => {
@@ -104,6 +108,10 @@ export function createGlobalMessageStreamHub({
   };
 
   const REPLAY_COMPACT_THRESHOLD = 1024;
+
+  /** Newest retained event id, or null when nothing live remains in the ring. */
+  const retainedTailEventId = () =>
+    replay.length > replayHead ? replay[replay.length - 1].event?.eventId ?? null : null;
 
   const clearReplay = (reason) => {
     const retained = replay.length - replayHead;
@@ -157,7 +165,7 @@ export function createGlobalMessageStreamHub({
     // tail + remembered epoch. Without them the upstream replays its whole
     // ring into an already-populated buffer — duplicate retained entries and
     // a duplicate live burst for attached clients.
-    const replayTail = replay.length > 0 ? replay[replay.length - 1].event?.eventId : null;
+    const replayTail = retainedTailEventId();
     reader = createUpstreamSseReader({
       signal: controller.signal,
       initialLastEventId: stringOrNull(replayTail) ?? '',
@@ -199,6 +207,8 @@ export function createGlobalMessageStreamHub({
         if (!rebooted) return;
         stats.restarts += 1;
         clearReplay('upstream-epoch-change');
+        restartBroadcastGen = gen;
+        restartBroadcastEpoch = epoch;
         notifyStatus({ type: 'restart', epoch, reason: 'upstream-epoch-change' });
       },
       onEvent(event) {
@@ -213,7 +223,18 @@ export function createGlobalMessageStreamHub({
           if (event.eventName === 'omp.stream.resync') {
             stats.resyncs += 1;
             clearReplay('upstream-resync');
-            notifyStatus({ type: 'restart', epoch: upstreamEpoch, reason: 'upstream-resync' });
+            // A connect-time resync is the host's verdict on the stale-epoch
+            // echo — the epoch-change handler already broadcast the restart
+            // for this (generation, epoch); sending another resync to every
+            // client would double the reconcile burst. Mid-stream synthesized
+            // resyncs (over-budget drops) and later verdicts still notify.
+            const duplicateRestart =
+              event.synthesized !== true &&
+              gen === restartBroadcastGen &&
+              upstreamEpoch === restartBroadcastEpoch;
+            if (!duplicateRestart) {
+              notifyStatus({ type: 'restart', epoch: upstreamEpoch, reason: 'upstream-resync' });
+            }
           }
           return;
         }
@@ -281,7 +302,7 @@ export function createGlobalMessageStreamHub({
     },
     /** Newest retained event id, or null when the replay is empty. */
     tailEventId() {
-      return replay.length > replayHead ? replay[replay.length - 1].event.eventId ?? null : null;
+      return retainedTailEventId();
     },
     /**
      * Replay after `eventId`. `gap` means the requested id is no longer
