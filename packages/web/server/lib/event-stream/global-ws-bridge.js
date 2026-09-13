@@ -1,4 +1,4 @@
-import { sendMessageStreamWsEvent, sendMessageStreamWsFrame } from './protocol.js';
+import { sendMessageStreamWsEvent, sendMessageStreamWsFrame, sendWsResyncFrame } from './protocol.js';
 
 function shouldTriggerUpstreamHealthCheck(upstream) {
   if (!upstream) {
@@ -22,17 +22,44 @@ export function createGlobalMessageStreamWsBridge({
 }) {
   const clients = new Set();
   const clientLastEventIds = new Map();
+  // Boot epoch each client's cursor belongs to — numeric upstream ids
+  // restart per boot, so a cursor without its epoch is unprovable.
+  const clientEpochs = new Map();
   const readyClients = new Set();
 
   const removeClient = (socket) => {
     clients.delete(socket);
     clientLastEventIds.delete(socket);
+    clientEpochs.delete(socket);
     readyClients.delete(socket);
     wsClients.delete(socket);
   };
 
   const replayEvents = (socket, requestedLastEventId) => {
-    for (const entry of globalHub.replayAfter(requestedLastEventId)) {
+    const upstreamEpoch = globalHub.getStats().upstreamEpoch;
+    const clientEpoch = clientEpochs.get(socket) ?? '';
+    // A cross-boot cursor can still numerically match a new-boot replay
+    // entry — only the epoch disproves it. Epoch-less clients keep the old
+    // cursor-only verdict (documented degraded path; our own pipeline
+    // always sends one).
+    const epochMismatch = Boolean(requestedLastEventId && clientEpoch && upstreamEpoch && clientEpoch !== upstreamEpoch);
+    const { status, events } = epochMismatch ? { status: 'gap', events: [] } : globalHub.replayAfter(requestedLastEventId);
+    if (status === 'gap') {
+      // Requested id was evicted or cleared: send an explicit resync
+      // control with the reconnectable tail — never a silent suffix
+      // (docs/plan.md §5.4).
+      const tail = globalHub.tailEventId() ?? '';
+      const sent = sendWsResyncFrame(socket, { eventId: tail, epoch: upstreamEpoch });
+      if (!sent) {
+        removeClient(socket);
+        return;
+      }
+      clientLastEventIds.set(socket, tail);
+      // The client adopts the resync tail under the CURRENT upstream epoch.
+      clientEpochs.set(socket, upstreamEpoch ?? '');
+      return;
+    }
+    for (const entry of events) {
       const sent = sendMessageStreamWsEvent(socket, entry.payload, {
         directory: entry.directory,
         eventId: entry.eventId,
@@ -136,6 +163,24 @@ export function createGlobalMessageStreamWsBridge({
       return;
     }
 
+    if (status.type === 'restart') {
+      // Upstream rebooted or resynced: every client cursor is untrustworthy.
+      for (const socket of Array.from(clients)) {
+        if (!readyClients.has(socket)) {
+          continue;
+        }
+        const tail = globalHub.tailEventId() ?? '';
+        const sent = sendWsResyncFrame(socket, { eventId: tail, epoch: status.epoch });
+        if (!sent) {
+          removeClient(socket);
+          continue;
+        }
+        clientLastEventIds.set(socket, tail);
+        clientEpochs.set(socket, status.epoch ?? '');
+      }
+      return;
+    }
+
     if (status.type === 'initial-error') {
       const error = status.error;
       if (error?.type === 'upstream_unavailable') {
@@ -160,7 +205,7 @@ export function createGlobalMessageStreamWsBridge({
     }
   });
 
-  const accept = (socket, { requestedLastEventId = '' } = {}) => {
+  const accept = (socket, { requestedLastEventId = '', requestedEpoch = '' } = {}) => {
     const pingInterval = setInterval(() => {
       if (socket.readyState !== 1) {
         return;
@@ -193,6 +238,7 @@ export function createGlobalMessageStreamWsBridge({
 
     clients.add(socket);
     clientLastEventIds.set(socket, requestedLastEventId);
+    clientEpochs.set(socket, requestedEpoch);
     globalHub.start();
     if (globalHub.isConnected()) {
       markReady(socket, requestedLastEventId);

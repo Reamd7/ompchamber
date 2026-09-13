@@ -11,7 +11,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createDomainChrome, registerChromeDomainRoutes } from './domain-chrome.ts';
 import type { DomainChrome } from './domain-chrome.ts';
-import type { OmpEventEnvelope } from './events.ts';
+import type { OmpEventBus, OmpEventEnvelope } from './events.ts';
 
 const DIR = '/repo';
 const SESSION = 'ses_1';
@@ -216,7 +216,8 @@ describe('dialog bridge delegation (domain-dialogs integration)', () => {
     const registry = new PendingDialogRegistry({
       // Structural OmpEventBus stub: PendingDialogRegistry only ever calls
       // bus.publish() (#emit in domain-dialogs.ts) and this test drives no
-      // dialog lifecycle, so no member runs; the rest satisfy the class shape.
+      // SAFETY: structural double cast across the class's private ring
+      // internals (nominal once #fields exist); only publish() can run here.
       bus: {
         capacity: 0,
         durableDefault: false,
@@ -228,7 +229,7 @@ describe('dialog bridge delegation (domain-dialogs integration)', () => {
         publish: () => envelopeStub,
         subscribeSince: () => () => false,
         replayState: () => ({ status: 'ok' }),
-      },
+      } as unknown as OmpEventBus,
     });
 
     const { chrome } = setup();

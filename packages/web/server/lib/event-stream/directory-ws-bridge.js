@@ -1,5 +1,9 @@
-import { sendMessageStreamWsEvent, sendMessageStreamWsFrame } from './protocol.js';
+import { sendMessageStreamWsEvent, sendMessageStreamWsFrame, sendWsResyncFrame } from './protocol.js';
 import { createUpstreamSseReader } from './upstream-reader.js';
+
+/** Non-empty-string arm check for untrusted boundary values (no `typeof`). */
+const stringOrNull = (value) =>
+  Object.prototype.toString.call(value) === '[object String]' && value.length > 0 ? value : null;
 
 function shouldTriggerUpstreamHealthCheck(upstream) {
   if (!upstream) {
@@ -16,6 +20,7 @@ function shouldTriggerUpstreamHealthCheck(upstream) {
 export function acceptDirectoryMessageStreamWsConnection({
   socket,
   requestedLastEventId,
+  requestedEpoch,
   requestedDirectory,
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
@@ -71,12 +76,27 @@ export function acceptDirectoryMessageStreamWsConnection({
   });
 
   const run = async () => {
-    const forwardEvent = ({ envelope, payload }) => {
+    const forwardEvent = ({ envelope, payload, eventId, eventName }) => {
+      if (eventName === 'omp.stream.boot') {
+        // Transport identity metadata: never forwarded as a business event.
+        return;
+      }
+      if (payload === null || payload === undefined) {
+        // Data-less upstream control: relay as an explicit resync control so
+        // the client reconciles instead of missing the gap silently
+        // (docs/plan.md §5.4).
+        if (eventName === 'omp.stream.resync') {
+          sendWsResyncFrame(socket, {
+            eventId: stringOrNull(eventId) ?? undefined,
+          });
+        }
+        return;
+      }
       const directory = requestedDirectory || envelope?.directory || 'global';
 
       sendMessageStreamWsEvent(socket, payload, {
         directory,
-        eventId: typeof envelope?.eventId === 'string' && envelope.eventId.length > 0 ? envelope.eventId : undefined,
+        eventId: stringOrNull(eventId) ?? undefined,
       });
 
       processForwardedEventPayload(payload, (syntheticPayload) => {
@@ -98,6 +118,10 @@ export function acceptDirectoryMessageStreamWsConnection({
 
       reader = createUpstreamSseReader({
         initialLastEventId: requestedLastEventId,
+        // The client's cursor only proves a resume under the boot it
+        // learned it on — echo the epoch so the host can verdict the first
+        // connect `ok` instead of forcing a resync (plan §5.2.1).
+        initialEpoch: requestedEpoch,
         signal: controller.signal,
         stallTimeoutMs: upstreamStallTimeoutMs,
         reconnectDelayMs: upstreamReconnectDelayMs,

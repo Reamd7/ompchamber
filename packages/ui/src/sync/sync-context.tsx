@@ -2486,6 +2486,15 @@ export function SyncProvider(props: {
           lastDisconnectReason: reason,
         })
       },
+      onResync: (reason) => {
+        // The server disavowed stream continuity (gap/restart control or a
+        // local queue overflow): reconcile every directory from HTTP even if
+        // the boot was recent — resync means observed state may be stale
+        // (docs/plan.md §5.2).
+        for (const dir of childStores.children.keys()) {
+          triggerDirectoryResync(dir, reason)
+        }
+      },
       onTransportSwitch: () => {
         // Transport changes are gap-prone in real networks. Treat them like a
         // reconnect and refresh active session snapshots from HTTP.

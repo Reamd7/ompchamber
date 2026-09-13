@@ -3,9 +3,23 @@ import { parseSseEventEnvelope } from './protocol.js';
 export const DEFAULT_UPSTREAM_STALL_TIMEOUT_MS = 20_000;
 export const UPSTREAM_STALL_TIMEOUT_CONCURRENT_MS = DEFAULT_UPSTREAM_STALL_TIMEOUT_MS * 3;
 export const DEFAULT_UPSTREAM_RECONNECT_DELAY_MS = 250;
+// Parser guard (docs/plan.md §5.3.1): a block that exceeds this is not
+// dropped silently — the connection aborts and reconnects so the host's
+// hole→gap→resync contract disavows the range explicitly. The cap must sit
+// ABOVE the largest event the host's replay ring can retain (the wire bus
+// keeps events up to a 2 MiB serialized estimate whose JSON form can be
+// roughly double), or an oversized-but-retained event would reconnect-loop
+// this reader forever.
+export const DEFAULT_UPSTREAM_MAX_BLOCK_BYTES = 8 * 1024 * 1024;
+/** Header the omp host echoes for boot-identity resume (plan §5.2.1). */
+export const UPSTREAM_EPOCH_HEADER = 'x-omp-epoch';
+
+/** Non-empty-string arm check for untrusted boundary values (no `typeof`). */
+const stringOrNull = (value) =>
+  Object.prototype.toString.call(value) === '[object String]' && value.length > 0 ? value : null;
 
 function resolveTimeoutMs(value, fallback) {
-  const resolved = typeof value === 'function' ? value() : value;
+  const resolved = value instanceof Function ? value() : value;
   return Number.isFinite(resolved) ? resolved : fallback;
 }
 
@@ -32,7 +46,7 @@ function waitForReconnectDelay(ms, signal) {
 }
 
 function normalizeHeaders(headers) {
-  if (!headers || typeof headers !== 'object') {
+  if (!(headers instanceof Object)) {
     return {};
   }
 
@@ -40,7 +54,7 @@ function normalizeHeaders(headers) {
 }
 
 async function cancelResponseBody(response) {
-  if (response?.body && typeof response.body.cancel === 'function') {
+  if (response?.body && response.body.cancel instanceof Function) {
     await response.body.cancel().catch(() => {});
   }
 }
@@ -51,19 +65,28 @@ export function createUpstreamSseReader({
   fetchImpl = fetch,
   parseBlock = parseSseEventEnvelope,
   initialLastEventId = '',
+  initialEpoch = '',
   signal,
   stallTimeoutMs = DEFAULT_UPSTREAM_STALL_TIMEOUT_MS,
   reconnectDelayMs = DEFAULT_UPSTREAM_RECONNECT_DELAY_MS,
+  maxBlockBytes = DEFAULT_UPSTREAM_MAX_BLOCK_BYTES,
   onEvent,
   onConnect,
   onDisconnect,
   onError,
+  onEpochChange,
 }) {
   let running = null;
   let stopped = false;
   let activeController = null;
-  let lastEventId = typeof initialLastEventId === 'string' ? initialLastEventId : '';
+  let lastEventId = stringOrNull(initialLastEventId) ?? '';
+  /** Last upstream boot identity; echoed on reconnects to detect restarts.
+   *  `initialEpoch` lets a proxying reader (directory WS bridge) forward the
+   *  downstream client's learned epoch so the first connect can still prove
+   *  an `ok` same-boot resume. */
+  let lastEpoch = stringOrNull(initialEpoch);
   let stopListenerAttached = false;
+  const stats = { droppedBlocks: 0, droppedBytes: 0, epochChanges: 0 };
 
   function detachStopListener() {
     if (!stopListenerAttached) return;
@@ -84,6 +107,28 @@ export function createUpstreamSseReader({
       activeController.abort();
     }
   }
+
+  /**
+   * Handle one parsed block. Control frames (no payload) advance the cursor
+   * and surface the event name; their ids must move `lastEventId` so
+   * reconnects do not re-request the disavowed range (plan §5.4).
+   */
+  const handleBlock = (block) => {
+    const envelope = parseBlock(block);
+    if (!envelope) return;
+    const blockEventId = stringOrNull(envelope.eventId);
+    if (blockEventId !== null) {
+      lastEventId = blockEventId;
+    }
+    onEvent?.({
+      block,
+      envelope,
+      payload: envelope.payload ?? null,
+      eventId: envelope.eventId ?? null,
+      eventName: envelope.eventName ?? null,
+      directory: envelope.directory ?? null,
+    });
+  };
 
   const start = () => {
     if (running) {
@@ -120,6 +165,9 @@ export function createUpstreamSseReader({
           }, currentStallTimeoutMs);
         };
 
+        let buffer = '';
+        let currentResponse = null;
+
         try {
           const url = buildUrl();
           const headers = {
@@ -131,11 +179,17 @@ export function createUpstreamSseReader({
           if (lastEventId) {
             headers['Last-Event-ID'] = lastEventId;
           }
+          if (lastEpoch) {
+            // Boot-identity echo: lets the upstream distinguish a same-boot
+            // resume from a stale cross-boot cursor (plan §5.2.1).
+            headers[UPSTREAM_EPOCH_HEADER] = lastEpoch;
+          }
 
           const response = await fetchImpl(url.toString(), {
             headers,
             signal: controller.signal,
           });
+          currentResponse = response;
 
           if (!response?.ok || !response.body) {
             onError?.({
@@ -148,11 +202,45 @@ export function createUpstreamSseReader({
             continue;
           }
 
+          const upstreamEpoch = response.headers?.get?.(UPSTREAM_EPOCH_HEADER) ?? null;
+          if (upstreamEpoch && upstreamEpoch !== lastEpoch) {
+            const changed = lastEpoch !== null;
+            if (changed) {
+              stats.epochChanges += 1;
+            }
+            lastEpoch = upstreamEpoch;
+            onEpochChange?.({ epoch: upstreamEpoch, changed });
+          }
+
           onConnect?.({ response, lastEventId });
 
           const decoder = new TextDecoder();
           const reader = response.body.getReader();
-          let buffer = '';
+
+          const consumeBuffer = () => {
+            let separatorIndex = buffer.indexOf('\n\n');
+            while (separatorIndex !== -1 && !stopped && !signal?.aborted) {
+              const block = buffer.slice(0, separatorIndex);
+              buffer = buffer.slice(separatorIndex + 2);
+              if (block.length <= maxBlockBytes) {
+                handleBlock(block);
+              } else {
+                // Never drop silently: abort → reconnect → the cursor we
+                // did NOT advance makes the host verdict this range
+                // hole→gap→resync instead of a silent loss.
+                stats.droppedBlocks += 1;
+                stats.droppedBytes += block.length;
+                throw new Error(`upstream SSE block exceeded ${maxBlockBytes} bytes`);
+              }
+              separatorIndex = buffer.indexOf('\n\n');
+            }
+            if (buffer.length > maxBlockBytes) {
+              // An unfinished block already past the budget can only grow.
+              stats.droppedBlocks += 1;
+              stats.droppedBytes += buffer.length;
+              throw new Error(`upstream SSE block exceeded ${maxBlockBytes} bytes without a separator`);
+            }
+          };
 
           resetStallTimer();
 
@@ -164,43 +252,11 @@ export function createUpstreamSseReader({
 
             resetStallTimer();
             buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
-
-            let separatorIndex = buffer.indexOf('\n\n');
-            while (separatorIndex !== -1 && !stopped && !signal?.aborted) {
-              const block = buffer.slice(0, separatorIndex);
-              buffer = buffer.slice(separatorIndex + 2);
-              const envelope = parseBlock(block);
-              if (envelope?.payload) {
-                if (typeof envelope.eventId === 'string' && envelope.eventId.length > 0) {
-                  lastEventId = envelope.eventId;
-                }
-                onEvent?.({
-                  block,
-                  envelope,
-                  payload: envelope.payload,
-                  eventId: envelope.eventId,
-                  directory: envelope.directory,
-                });
-              }
-              separatorIndex = buffer.indexOf('\n\n');
-            }
+            consumeBuffer();
           }
 
-          if (!stopped && !signal?.aborted && buffer.trim().length > 0) {
-            const block = buffer.trim();
-            const envelope = parseBlock(block);
-            if (envelope?.payload) {
-              if (typeof envelope.eventId === 'string' && envelope.eventId.length > 0) {
-                lastEventId = envelope.eventId;
-              }
-              onEvent?.({
-                block,
-                envelope,
-                payload: envelope.payload,
-                eventId: envelope.eventId,
-                directory: envelope.directory,
-              });
-            }
+          if (!stopped && !signal?.aborted && buffer.trim().length > 0 && buffer.length <= maxBlockBytes) {
+            handleBlock(buffer.trim());
           }
         } catch (error) {
           if (!stopped && !signal?.aborted && abortReason !== 'upstream_stalled') {
@@ -211,6 +267,10 @@ export function createUpstreamSseReader({
           }
         } finally {
           clearStallTimer();
+          // Release the body reader and drop the parser remainder: a
+          // reconnect never inherits half a block (plan §5.4).
+          await cancelResponseBody(currentResponse);
+          buffer = '';
           signal?.removeEventListener('abort', abortActive);
           if (activeController === controller) {
             activeController = null;
@@ -235,6 +295,9 @@ export function createUpstreamSseReader({
     stop,
     getLastEventId() {
       return lastEventId;
+    },
+    getStats() {
+      return { ...stats };
     },
   };
 }

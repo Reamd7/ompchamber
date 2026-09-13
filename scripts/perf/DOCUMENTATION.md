@@ -15,6 +15,8 @@ or extending these scripts. The methodology rules they enforce come from
 | `bun run profile:switch` | How long switching sessions from the sidebar takes, cold and warm. || `bun run profile:browser` | A manually driven capture, for interactions that cannot be scripted. |
 | `bun run profile:switch` | What switching between two sessions in the sidebar costs: wall time to a stable message list, long-task distribution, main-thread blockage, and CPU self time. |
 | `bun run bench:terminal` | How fast a terminal scrolls (`cat` 500 MiB) and repaints (DOOM-fire fps). Runs inside the terminal under test, not over CDP. |
+| `bun scripts/perf/session-open-bench.ts` | What one server-side session load allocates and retains: open, full projection, read-only loader, live materialize/dispose, event-ring burst — each with baseline/steady/quiescence memory intervals. |
+| `node scripts/perf/process-tree-sample.mjs` | Whether a pid's child processes return to baseline after spawn/exit or accumulate — counted in the tree, never inferred from RSS. |
 
 The `profile:*` commands measure a real browser over CDP; `bench:terminal`
 measures the terminal it runs inside. Pass `--help` to any of them for the
@@ -170,6 +172,84 @@ Validity notes: the cat test refuses non-tty stdout because a pipe measurement
 is meaningless (`--force` exists for mechanics checks only), fire requires a
 120x22 window, the clock is checked before timing anything, and the fps is
 the operator's transcription of the program's own counter, not a scrape.
+
+## session-open-bench
+
+`bun scripts/perf/session-open-bench.ts` measures what one session load
+actually allocates and retains, on the server side, against the same session
+file repeated (`--repeat`, default 20; the largest `.jsonl` under
+`~/.omp/agent/sessions`, or `--file`/`--root`/`--limit` to pick one, or
+`--synthetic[=MB]` to generate a fixture through the SDK's own append API).
+It is the phase-0 instrument for the omp-host memory plan (docs/plan.md §9.2):
+*how much retained and temporary memory do the host's session-load paths
+contribute per operation — open, full projection, read-only loader, live
+materialize/dispose, event ring — and does an explicitly released
+`SessionManager` actually return its heap?*
+
+Scenarios (`--scenario name[,name...]`, default all):
+
+| Scenario | Measures |
+|---|---|
+| `open` | `SessionManager.open` + `getEntries` + explicit `close()`/`releaseRetainedEntries()` — the parse cost every cold read pays today. |
+| `projection` | The engine's cold GET path end to end: open → `buildSessionContext({transcript:true})` → `buildTurnStateStamper` → `projectConversation` → close/release. |
+| `cold-reader` | The SDK's public read-only loader `loadSessionMessagesReadOnly` (no writer, no session lock). |
+| `ring` | `RingEventBus` burst of `message.part.updated`-sized events under production caps; asserts entry AND byte caps hold, that over-budget events skip the ring, and reports per-emit µs plus `stats()`. |
+| `live-materialize` | `createAgentSession` → `beginDispose()` → `dispose()` round-trips. When a headless session cannot boot (no resolvable model), it prints an explicit `skipped: requires …` row — absence is reported, never faked as zero. |
+
+Every scenario records three intervals from `process.memoryUsage()`
+(heapUsed/external/rss): **baseline** (after a forced full GC, before work),
+**steady** (after the first iteration — rows 2..n), and **quiescence** (after
+the final close/release + full GC + one settle). `heapReturnedMB` is
+baseline − quiescence heapUsed (negative ⇒ net retained); `rssHighWaterMB` is
+the RSS non-return and is allocator high-water — never leak evidence and never
+proof of release (plan §2.2). Warmup opens are untimed and explicitly
+closed/released; a manager never outlives its scenario. `retainedBytes` from
+the ring is a declared serialized-size estimate, not a JS-heap measure.
+
+```bash
+bun scripts/perf/session-open-bench.ts --repeat 20                      # largest real session
+bun scripts/perf/session-open-bench.ts --synthetic --repeat 3           # no real sessions on this machine
+bun scripts/perf/session-open-bench.ts --scenario ring --ring-events 10000
+```
+
+Artifacts: `artifacts/session-open-bench/results.jsonl` (one row per
+iteration; the ring reports per bucket of emits) and `summary.json` (one
+summary block per scenario). The bench proves allocation/retention behavior
+of the measured scenarios only — it does not attribute production-host
+dominators (plan §9.2); that needs the diagnostics endpoint plus
+`process-tree-sample`.
+
+## process-tree-sample
+
+`node scripts/perf/process-tree-sample.mjs` samples the descendant tree of a
+pid (`--pid`, default self) every `--interval` ms (default 1000) until
+`--duration` ms (default 60000) or SIGINT, printing one JSONL row per sample
+(`{t, totalChildren, byName, depth}`) and a final summary
+(`{maxChildren, finalChildren, samples, backend}`). It is the phase-0
+instrument for the plan's worker question: *do child processes (workers, tool
+subprocesses, detached runs) return to baseline after spawn/disconnect/
+shutdown, or do they accumulate?* That must be proven by counting the tree —
+never inferred from RSS or commit, which the plan (§2) explicitly refuses as
+leak evidence.
+
+```bash
+node scripts/perf/process-tree-sample.mjs --pid <host pid> --interval 1000 --duration 300000
+node scripts/perf/process-tree-sample.mjs --out worker-leak.jsonl          # also persists under artifacts/process-tree/
+node scripts/perf/process-tree-sample.mjs --smoke                          # self-test
+```
+
+Backends, no new dependencies: Windows uses one PowerShell
+`Get-CimInstance Win32_Process` probe per sample (falling back to wmic, then
+to a tasklist flat count that is reported as flat — `totalChildren: null` —
+never passed off as a tree); POSIX uses `ps -eo pid=,ppid=,comm=,args=`. The
+sampler prunes its own probe process from each snapshot so it never counts
+itself. A Windows PowerShell probe costs roughly 0.3–1 s per sample, so very
+small `--interval` values cannot be honored — samples take as long as the
+backend takes. PPID reuse can graft unrelated orphans onto the tree for a
+single sample; treat lone spikes without a matching spawn as suspect.
+`--smoke` spawns a short-lived child, asserts it appears and that the count
+returns to baseline after exit, and exits non-zero on failure.
+
 ## Reading The Results
 
 Every run writes a JSON summary next to any raw capture, so results can be
@@ -233,3 +313,5 @@ be a measurement, never a disabled instrument.
 | `idle-probe.mjs` | Page-side instrumentation installed before application code runs; attributes scheduled work to the call site that scheduled it. Must never change observable behaviour. |
 | `scenario.mjs` | Shared scenario setup, currently sidebar expansion. Setup always runs before the measured window. |
 | `animation-fixture.html` | Isolated animation variants for `profile:animation`. |
+| `session-open-bench.ts` | Phase-0 omp-host memory bench: per-scenario session-load allocation/retention with baseline/steady/quiescence intervals (docs/plan.md §9.2). |
+| `process-tree-sample.mjs` | Phase-0 child-process tree sampler with platform backends and a `--smoke` self-test. |

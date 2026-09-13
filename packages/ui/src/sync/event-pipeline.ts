@@ -39,6 +39,59 @@ const RETRY_BACKOFF_BASE_MS = 250
 const RETRY_BACKOFF_CAP_VISIBLE_MS = 5_000
 const RETRY_BACKOFF_CAP_HIDDEN_OR_OFFLINE_MS = 60_000
 const RETRY_BACKOFF_MAX_EXPONENT = 8
+// Local retention caps (docs/plan.md §5.3.1): the per-directory queues are
+// the browser-side tail of the transport — without bounds, a stalled
+// consumer or hostile directory fan-out turns them into an unbounded
+// retention chain. Overflow drops the queued window for that directory and
+// asks the consumer to reconcile instead of silently growing.
+const MAX_TRACKED_DIRECTORIES = 64
+const MAX_DIRECTORY_KEY_LENGTH = 1024
+const MAX_QUEUED_EVENTS_PER_DIRECTORY = 4096
+const MAX_QUEUED_BYTES_PER_DIRECTORY = 8 * 1024 * 1024
+const ESTIMATE_EVENT_MAX_NODES = 512
+
+/** JSON-shaped payload the size estimator walks (recursive wire data). */
+type EstimableJson = string | number | boolean | null | EstimableJson[] | { [key: string]: EstimableJson }
+
+/**
+ * Bounded shallow serialized-size estimate in UTF-16 units, never a heap
+ * claim. Counts the WHOLE event — object keys and full string length — so
+ * a single arbitrarily large event cannot pass under the queue's byte cap
+ * on a clamped estimate. A structure beyond the node bound reports
+ * MAX_SAFE_INTEGER: it overflows the queue cap and takes the drop+resync
+ * path instead of being undercounted. Union arms branch by structure
+ * (null / Array / Object / scalar), never `typeof`.
+ */
+const estimateEventBytes = (payload: Event): number => {
+  let total = 0
+  let nodes = 0
+  const stack: unknown[] = [payload]
+  while (stack.length > 0) {
+    nodes += 1
+    if (nodes > ESTIMATE_EVENT_MAX_NODES) return Number.MAX_SAFE_INTEGER
+    const current = stack.pop()
+    if (current === null || current === undefined) {
+      total += 4
+    } else if (Array.isArray(current)) {
+      total += 8
+      for (const item of current) stack.push(item)
+    } else if (current instanceof Object) {
+      total += 8
+      // SAFETY: wire events carry JSON data — an Object arm here is a plain
+      // JSON record whose values are again estimable.
+      for (const [key, item] of Object.entries(current as Record<string, EstimableJson>)) {
+        total += key.length
+        stack.push(item)
+      }
+    } else {
+      // Scalar arm (string/number/boolean, plus any smuggled primitive):
+      // the string form's length approximates the serialized size.
+      total += 4 + String(current).length
+    }
+  }
+  return total
+}
+
 type EventPipelineDelivery = {
   onEvent: (directory: string, payload: Event) => void
   onEvents?: never
@@ -54,6 +107,13 @@ export type EventPipelineInput = {
   onReconnect?: () => void
   /** Called when the stream disconnects (heartbeat timeout, network error, or transport failure). */
   onDisconnect?: (reason: string) => void
+  /**
+   * Called when the server disavows stream continuity (resync control,
+   * restart, or local queue overflow): consumers must reconcile
+   * authoritative state for every directory before trusting deltas again
+   * (docs/plan.md §5.2). The pipeline keeps its transport alive.
+   */
+  onResync?: (reason: "stream-resync" | "queue-overflow") => void
   /** Called when transport switches (e.g. WS timeout → SSE fallback) without actual disconnection. */
   onTransportSwitch?: () => void
   transport?: "auto" | "ws" | "sse"
@@ -62,18 +122,30 @@ export type EventPipelineInput = {
   wsReadyTimeoutMs?: number
 } & EventPipelineDelivery
 
+export type EventPipelineStats = {
+  /** Events dropped by the directory/queue caps (plan §5.3.1). */
+  droppedEvents: number
+  /** Overflow-driven reconciles triggered. */
+  overflowResyncs: number
+  trackedDirectories: number
+  queuedEvents: number
+}
+
 export type EventPipeline = {
   cleanup: () => void
   reconnect: (reason?: string) => void
+  stats: () => EventPipelineStats
 }
 
 type MessageStreamWsFrame = {
-  type: "ready" | "event" | "error" | "backpressure"
+  type: "ready" | "event" | "error" | "backpressure" | "resync"
   payload?: unknown
   eventId?: string
   directory?: string
   message?: string
   scope?: "global" | "directory"
+  /** Transport control metadata carried by resync frames. */
+  epoch?: string
 }
 
 const normalizeOMPChamberSessionStatus = (payload: Event): Event | null => {
@@ -205,7 +277,7 @@ function resolveEventPayload(payload: unknown): Event | null {
   return null
 }
 
-function buildGlobalEventWsUrl(lastEventId?: string): string {
+function buildGlobalEventWsUrl(lastEventId?: string, serverEpoch?: string): string {
   let baseUrl = "/api"
   try {
     const client = opencodeClient as { getBaseUrl?: () => string }
@@ -216,9 +288,18 @@ function buildGlobalEventWsUrl(lastEventId?: string): string {
     baseUrl = "/api"
   }
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
+  // The resume pair only makes sense together: a numeric event id without
+  // its boot epoch is unprovable across an upstream restart (§5.4).
+  let resume: { lastEventId: string; epoch?: string } | undefined
+  if (lastEventId && lastEventId.length > 0) {
+    resume = { lastEventId }
+    if (serverEpoch && serverEpoch.length > 0) {
+      resume.epoch = serverEpoch
+    }
+  }
   return getRuntimeUrlResolver().websocket(
     `${normalizedBase}global/event/ws`,
-    lastEventId && lastEventId.length > 0 ? { lastEventId } : undefined,
+    resume,
   )
 }
 
@@ -228,13 +309,17 @@ function buildGlobalEventWsUrl(lastEventId?: string): string {
 // its path+query to the tunnel, which returns a socket-like with the exact
 // on* handler surface this pipeline uses. Direct-URL runtimes keep the native
 // WebSocket path, wrapped to the same shape so the caller holds one type.
-function openGlobalEventSocket(lastEventId?: string): RelayTunnelWebSocket {
-  const url = buildGlobalEventWsUrl(lastEventId)
+function openGlobalEventSocket(lastEventId?: string, serverEpoch?: string): RelayTunnelWebSocket {
+  const url = buildGlobalEventWsUrl(lastEventId, serverEpoch)
   return openRuntimeWebSocket(url)
 }
 
 type DirectoryQueue = {
   queue: Event[]
+  /** Serialized-size estimate per queued event, index-aligned with `queue`. */
+  sizes: number[]
+  /** Estimated retained bytes of `queue` (declared UTF-16 estimate). */
+  bytes: number
   buffer: Event[]
   coalesced: Map<string, number>
   timer: ReturnType<typeof setTimeout> | undefined
@@ -253,6 +338,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     onEvents,
     onReconnect,
     onDisconnect,
+    onResync,
     onTransportSwitch,
     routeDirectory,
     transport = "auto",
@@ -263,7 +349,10 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   const abort = new AbortController()
   let disconnected = false
   let lastEventId: string | undefined
+  /** Server boot identity learned from omp.stream.boot (echoed on resume). */
+  let serverEpoch: string | undefined
   let wsFallbackUntil = 0
+  const overflow = { droppedEvents: 0, overflowResyncs: 0, dirCapNotified: false }
 
   const directories = new Map<string, DirectoryQueue>()
 
@@ -272,6 +361,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     if (d) return d
     d = {
       queue: [],
+      sizes: [],
+      bytes: 0,
       buffer: [],
       coalesced: new Map(),
       timer: undefined,
@@ -310,9 +401,13 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     if (d.queue.length === 0) return
 
     const events = d.queue
+    const sizes = d.sizes
     d.queue = d.buffer
     d.buffer = events
     d.queue.length = 0
+    d.sizes = []
+    sizes.length = 0
+    d.bytes = 0
     d.coalesced.clear()
 
     d.last = Date.now()
@@ -327,6 +422,14 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     }
 
     d.buffer.length = 0
+    if (d.queue.length === 0 && !d.timer) {
+      // Quiet directories release their tracking record so the
+      // MAX_TRACKED_DIRECTORIES cap bounds PENDING fan-out, not the set of
+      // directories ever seen this session. (Events re-enqueued during
+      // delivery keep the record alive.)
+      directories.delete(directory)
+      overflow.dirCapNotified = false
+    }
   }
 
   const flushAll = () => {
@@ -467,7 +570,48 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     countSyncPerformance("pipelineRawEvents")
     const normalizedPayload = normalizeEventType(payload)
     const routedDirectory = routeDirectory?.(directory, normalizedPayload) || directory
+
+    // Directory fan-out caps (plan §5.3.1): an unbounded directories map is
+    // an unbounded retention chain in this process.
+    if (routedDirectory.length > MAX_DIRECTORY_KEY_LENGTH) {
+      overflow.droppedEvents += 1
+      return
+    }
+    if (!directories.has(routedDirectory) && directories.size >= MAX_TRACKED_DIRECTORIES) {
+      overflow.droppedEvents += 1
+      if (!overflow.dirCapNotified) {
+        // 64 directories with pending work means real fan-out pressure —
+        // reconcile once per overflow episode instead of losing an unseen
+        // directory's events silently (断流不是空状态).
+        overflow.dirCapNotified = true
+        onResync?.("queue-overflow")
+      }
+      return
+    }
     const d = getOrCreateDir(routedDirectory)
+
+    const eventBytes = estimateEventBytes(normalizedPayload)
+    if (
+      d.queue.length >= MAX_QUEUED_EVENTS_PER_DIRECTORY
+      || d.bytes + eventBytes > MAX_QUEUED_BYTES_PER_DIRECTORY
+    ) {
+      // The consumer is not draining this directory: drop the queued window
+      // and reconcile instead of retaining an unbounded backlog. The
+      // incoming event re-seeds the fresh queue (plan §5.3.1) — unless it
+      // alone exceeds the budget: reseeding it would re-trip the overflow
+      // on the very next event, so it is dropped with the window.
+      overflow.droppedEvents += d.queue.length
+      overflow.overflowResyncs += 1
+      d.queue.length = 0
+      d.sizes.length = 0
+      d.bytes = 0
+      d.coalesced.clear()
+      onResync?.("queue-overflow")
+      if (eventBytes > MAX_QUEUED_BYTES_PER_DIRECTORY) {
+        overflow.droppedEvents += 1
+        return
+      }
+    }
 
     // A full part snapshot is a coalescing barrier for that part's deltas:
     // drop its pending delta coalescing keys so a delta arriving after the
@@ -517,15 +661,21 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
         if (normalizedPayload.type === "message.part.delta") {
           const prev = d.queue[i] as unknown as { properties: { delta: string } }
           const inc = normalizedPayload.properties as { delta: string }
-          d.queue[i] = {
+          const merged = {
             ...normalizedPayload,
             properties: {
               ...(normalizedPayload.properties as object),
               delta: prev.properties.delta + inc.delta,
             },
           } as unknown as Event
+          d.queue[i] = merged
+          const mergedBytes = estimateEventBytes(merged)
+          d.bytes += mergedBytes - (d.sizes[i] ?? 0)
+          d.sizes[i] = mergedBytes
         } else {
           d.queue[i] = normalizedPayload
+          d.bytes += eventBytes - (d.sizes[i] ?? 0)
+          d.sizes[i] = eventBytes
         }
         countSyncPerformance("pipelineCoalescedEvents")
         syncDebug.pipeline.coalesced(normalizedPayload.type, k)
@@ -535,6 +685,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     }
 
     d.queue.push(normalizedPayload)
+    d.sizes.push(eventBytes)
+    d.bytes += eventBytes
     scheduleDir(routedDirectory)
   }
 
@@ -554,11 +706,31 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   }
 
   const runSseAttempt = async (signal: AbortSignal) => {
-    const events = await sdk.global.event({
+    const request: Parameters<typeof sdk.global.event>[0] = {
       signal,
-      ...(lastEventId && lastEventId.length > 0 ? { headers: { "Last-Event-ID": lastEventId } } : {}),
-      onSseEvent: (event: { id?: unknown }) => {
+      onSseEvent: (event: { id?: unknown; event?: unknown; data?: unknown }) => {
         resetHeartbeat()
+        const eventName = typeof event.event === "string" ? event.event : ""
+        if (eventName === "omp.stream.resync") {
+          // In-band wire control (no data): adopt the reconnectable tail —
+          // 0 clears the cursor — and reconcile. Never carry the old cursor
+          // into the next reconnect (plan §5.2).
+          const id = typeof event.id === "string" ? event.id : ""
+          lastEventId = id.length > 0 && id !== "0" ? id : undefined
+          onResync?.("stream-resync")
+          return
+        }
+        if (eventName === "omp.stream.boot") {
+          // SAFETY: the boot frame's data is a JSON object by contract; the
+          // prototype tag proves epoch's string arm at this parse boundary.
+          const record = event.data instanceof Object ? (event.data as { epoch?: unknown }) : null
+          const epoch = record?.epoch
+          if (epoch !== undefined && epoch !== null && Object.prototype.toString.call(epoch) === "[object String]") {
+            const learned = String(epoch)
+            if (learned.length > 0) serverEpoch = learned
+          }
+          return
+        }
         if (typeof event.id === "string" && event.id.length > 0) {
           lastEventId = event.id
         }
@@ -569,7 +741,17 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
         streamErrorLogged = true
         console.error("[event-pipeline] SSE stream error", error)
       },
-    })
+    }
+    // Resume headers: Last-Event-ID carries the cursor and x-omp-epoch the
+    // boot identity that makes it provable (docs/plan.md §5.2.1). Both ride
+    // together — a cursor without its epoch is unprovable.
+    if (lastEventId && lastEventId.length > 0) {
+      request.headers = { "Last-Event-ID": lastEventId }
+      if (serverEpoch && serverEpoch.length > 0) {
+        request.headers["x-omp-epoch"] = serverEpoch
+      }
+    }
+    const events = await sdk.global.event(request)
 
     markConnected()
 
@@ -620,7 +802,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       let settled = false
       let opened = false
       let readyAt = 0
-      const socket: RelayTunnelWebSocket = openGlobalEventSocket(lastEventId)
+      const socket: RelayTunnelWebSocket = openGlobalEventSocket(lastEventId, serverEpoch)
       const setFallbackCode = (error: Error, force = false) => {
         if ((force || !opened) && transport === "auto") {
           wsFallbackUntil = Date.now() + WS_FALLBACK_WINDOW_MS
@@ -726,6 +908,19 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
 
         if (frame.type === "backpressure") {
           backpressureUntil = Date.now() + BACKPRESSURE_MODE_MS
+          return
+        }
+
+        if (frame.type === "resync") {
+          // Transport control from the bridge: adopt the sentinel tail
+          // (empty/0 = fresh) and reconcile — everything before it was
+          // disavowed by the server (docs/plan.md §5.2).
+          const eventId = typeof frame.eventId === "string" ? frame.eventId : ""
+          lastEventId = eventId.length > 0 && eventId !== "0" ? eventId : undefined
+          if (frame.epoch !== undefined && frame.epoch.length > 0) {
+            serverEpoch = frame.epoch
+          }
+          onResync?.("stream-resync")
           return
         }
 
@@ -951,7 +1146,31 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     }
     abort.abort()
     flushAll()
+    // Drop every directory timer and queue reference: cleanup must not leave
+    // retention chains behind (plan §5.3.1).
+    for (const d of directories.values()) {
+      clearTimeout(d.timer)
+      d.queue.length = 0
+      d.sizes.length = 0
+      d.buffer.length = 0
+      d.coalesced.clear()
+      d.bytes = 0
+    }
+    directories.clear()
   }
 
-  return { cleanup, reconnect }
+  const stats = (): EventPipelineStats => {
+    let queuedEvents = 0
+    for (const d of directories.values()) {
+      queuedEvents += d.queue.length
+    }
+    return {
+      droppedEvents: overflow.droppedEvents,
+      overflowResyncs: overflow.overflowResyncs,
+      trackedDirectories: directories.size,
+      queuedEvents,
+    }
+  }
+
+  return { cleanup, reconnect, stats }
 }

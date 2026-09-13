@@ -1489,6 +1489,13 @@ const RETRY_BACKOFF_CAP_HIDDEN_OR_OFFLINE_MS = 60_000;
 const RETRY_BACKOFF_MAX_EXPONENT = 8;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
 const RESYNC_EVENT_NAME = 'omp.stream.resync';
+const BOOT_EVENT_NAME = 'omp.stream.boot';
+// Parse-buffer cap (docs/plan.md §5.3.1): an unfinished or oversized block
+// beyond this aborts the attempt — never a silent drop — and the retry's
+// Last-Event-ID resume converges through the host's hole→gap→resync
+// contract. Sits above the omp bus's largest retained event so replayed
+// events never trigger a reconnect loop.
+const OMP_MAX_SSE_BLOCK_CHARS = 4 * 1024 * 1024;
 
 const isOffline = (): boolean =>
   typeof navigator === 'object' && navigator !== null && navigator.onLine === false;
@@ -1622,6 +1629,8 @@ export const createOmpEventsAPI = (options: OmpEventsApiOptions = {}): OmpEvents
     subscribeEvents(directory, handlers) {
       const lifecycle = new AbortController();
       let lastEventId: number | null = null;
+      /** Server boot identity; echoed on reconnects (docs/plan.md §5.2.1). */
+      let serverEpoch: string | null = null;
       let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
       let consecutiveFailures = 0;
       let disconnected = false;
@@ -1637,6 +1646,9 @@ export const createOmpEventsAPI = (options: OmpEventsApiOptions = {}): OmpEvents
         const headers: Record<string, string> = { Accept: 'text/event-stream' };
         if (lastEventId !== null) {
           headers['Last-Event-ID'] = String(lastEventId);
+        }
+        if (serverEpoch !== null) {
+          headers['x-omp-epoch'] = serverEpoch;
         }
         const response = await fetchImpl(OMP_ENDPOINTS.events, {
           method: 'GET',
@@ -1683,20 +1695,49 @@ export const createOmpEventsAPI = (options: OmpEventsApiOptions = {}): OmpEvents
               handlers.onReconnect?.();
             }
             buffer += value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+            if (buffer.length > OMP_MAX_SSE_BLOCK_CHARS) {
+              // An unfinished/oversized block can no longer be trusted:
+              // abort so the retry's Last-Event-ID resume converges through
+              // gap/resync instead of losing durable content silently.
+              throw new Error(`omp events stream block exceeded ${OMP_MAX_SSE_BLOCK_CHARS} chars`);
+            }
             const blocks = buffer.split('\n\n');
             buffer = blocks.pop() ?? '';
             for (const block of blocks) {
               const frame = parseOmpSseBlock(block);
               if (frame === null) continue;
+              if (frame.eventName === BOOT_EVENT_NAME) {
+                const bootEnvelope = frame.data !== undefined ? parseEnvelope(safeJsonParse(frame.data)) : null;
+                // SAFETY: the boot payload is {epoch?: string} by contract;
+                // the prototype tag proves the string arm at this boundary.
+                const epoch = (bootEnvelope?.payload as { epoch?: unknown } | undefined)?.epoch;
+                if (epoch !== undefined && epoch !== null && Object.prototype.toString.call(epoch) === '[object String]') {
+                  const learned = String(epoch);
+                  if (learned.length > 0) serverEpoch = learned;
+                }
+                continue;
+              }
               if (frame.eventName === RESYNC_EVENT_NAME) {
                 const envelope = frame.data !== undefined ? parseEnvelope(safeJsonParse(frame.data)) : null;
-                const payload = envelope?.payload;
-                if (payload && typeof payload === 'object' && Array.isArray((payload as { scope?: unknown }).scope)) {
-                  const scopeRecord = payload as { scope: unknown[]; lastEventId?: unknown };
+                // SAFETY: the resync payload is {scope: string[], lastEventId?,
+                // resumeFrom?} per the host control contract; instanceof +
+                // Array.isArray + isFinite are the boundary parse.
+                const payload = envelope?.payload instanceof Object
+                  ? (envelope.payload as { scope?: unknown; lastEventId?: unknown; resumeFrom?: unknown })
+                  : null;
+                if (payload !== null && Array.isArray(payload.scope)) {
                   handlers.onResync({
-                    scope: scopeRecord.scope.filter((name): name is string => typeof name === 'string'),
-                    lastEventId: typeof scopeRecord.lastEventId === 'number' ? scopeRecord.lastEventId : null,
+                    scope: payload.scope.filter((name): name is string => Object.prototype.toString.call(name) === '[object String]'),
+                    // SAFETY: Number.isFinite proved the number arm.
+                    lastEventId: Number.isFinite(payload.lastEventId) ? (payload.lastEventId as number) : null,
                   });
+                  // Adopt the real tail/sentinel as the reconnect cursor —
+                  // an unadopted stale cursor re-triggers resync on every
+                  // reconnect (docs/plan.md §5.2). 0/null means fresh.
+                  // SAFETY: Number.isFinite proved the number arm.
+                  const resumeFrom = Number.isFinite(payload.resumeFrom) ? (payload.resumeFrom as number) : null;
+                  const envelopeId = envelope !== null && envelope.id > 0 ? envelope.id : null;
+                  lastEventId = resumeFrom !== null && resumeFrom > 0 ? resumeFrom : envelopeId;
                 }
                 continue;
               }

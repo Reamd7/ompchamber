@@ -21,6 +21,10 @@ import {
 // removed; the terminal runtime races the same close with a timeout.
 const MESSAGE_STREAM_CLOSE_TIMEOUT_MS = 1000;
 
+/** Non-empty-string arm check for untrusted boundary values (no `typeof`). */
+const stringOrNull = (value) =>
+  Object.prototype.toString.call(value) === '[object String]' && value.length > 0 ? value : null;
+
 export function createGlobalUiEventBroadcaster({
   sseClients,
   wsClients,
@@ -45,8 +49,8 @@ export function createGlobalUiEventBroadcaster({
     if (hasWsClients) {
       for (const socket of Array.from(wsClients)) {
         const sent = sendMessageStreamWsEvent(socket, payload, {
-          directory: typeof options.directory === 'string' && options.directory.length > 0 ? options.directory : 'global',
-          eventId: typeof options.eventId === 'string' && options.eventId.length > 0 ? options.eventId : undefined,
+          directory: stringOrNull(options.directory) ?? 'global',
+          eventId: stringOrNull(options.eventId) ?? undefined,
         });
         if (!sent) {
           wsClients.delete(socket);
@@ -101,16 +105,20 @@ export function createMessageStreamWsRuntime({
   });
 
   wsServer.on('connection', (socket, req) => {
-    const rawUrl = typeof req?.url === 'string' ? req.url : MESSAGE_STREAM_GLOBAL_WS_PATH;
+    const rawUrl = stringOrNull(req?.url) ?? MESSAGE_STREAM_GLOBAL_WS_PATH;
     const pathname = parseRequestPathname(rawUrl);
     const requestUrl = new URL(rawUrl, 'http://127.0.0.1');
     const isGlobalStream = pathname === MESSAGE_STREAM_GLOBAL_WS_PATH;
     const requestedLastEventId = requestUrl.searchParams.get('lastEventId')?.trim() || '';
     const requestedDirectory = requestUrl.searchParams.get('directory')?.trim() || '';
+    // Boot identity of the client's cursor (plan §5.4): the bridge can only
+    // prove an `ok` resume when the epoch still matches the upstream's.
+    const requestedEpoch = requestUrl.searchParams.get('epoch')?.trim() || '';
 
     if (isGlobalStream) {
       globalBridge.accept(socket, {
         requestedLastEventId,
+        requestedEpoch,
       });
       return;
     }
@@ -123,6 +131,7 @@ export function createMessageStreamWsRuntime({
     acceptDirectoryMessageStreamWsConnection({
       socket,
       requestedLastEventId,
+      requestedEpoch,
       requestedDirectory,
       buildOpenCodeUrl,
       getOpenCodeAuthHeaders,

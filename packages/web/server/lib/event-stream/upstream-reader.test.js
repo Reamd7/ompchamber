@@ -234,6 +234,59 @@ describe('createUpstreamSseReader', () => {
     expect(attempt).toBe(2);
   });
 
+  it('aborts and reconnects on an oversized block instead of dropping it silently', async () => {
+    // Parser guard contract (plan §5.3.1): the cursor must NOT advance past
+    // the oversized block, so the reconnect's Last-Event-ID resume replays
+    // the disavowed range through the host's gap/resync verdict.
+    const events = [];
+    const errors = [];
+    const fetchedCursors = [];
+    let attempt = 0;
+    let reader;
+
+    reader = createUpstreamSseReader({
+      buildUrl: () => 'http://127.0.0.1:4096/global/event',
+      reconnectDelayMs: 0,
+      maxBlockBytes: 64,
+      fetchImpl: async (_url, options) => {
+        fetchedCursors.push(options.headers['Last-Event-ID'] ?? null);
+        attempt += 1;
+        if (attempt === 1) {
+          return createSseResponse({
+            signal: options.signal,
+            blocks: [
+              'id: evt-1\ndata: {"type":"a","properties":{}}\n\n',
+              `id: evt-big\ndata: {"type":"huge","properties":{"pad":"${'x'.repeat(500)}"}}\n\n`,
+              'id: evt-3\ndata: {"type":"c","properties":{}}\n\n',
+            ],
+          });
+        }
+        return createSseResponse({
+          signal: options.signal,
+          blocks: ['id: evt-3\ndata: {"type":"c","properties":{}}\n\n'],
+        });
+      },
+      onError(error) {
+        errors.push(error);
+      },
+      onEvent(event) {
+        events.push(event.eventId);
+        if (event.eventId === 'evt-3' && attempt >= 2) {
+          reader.stop();
+        }
+      },
+    });
+
+    await reader.start();
+
+    expect(errors).toEqual([expect.objectContaining({ type: 'stream_error' })]);
+    expect(events).toEqual(['evt-1', 'evt-3']);
+    // The cursor stayed at the last handled block — never at the dropped
+    // one — so the second fetch resumes from evt-1, not evt-big.
+    expect(fetchedCursors.slice(0, 2)).toEqual([null, 'evt-1']);
+    expect(reader.getStats().droppedBlocks).toBe(1);
+  });
+
   it('removes abort listeners after stop', async () => {
     const tracked = createTrackedSignal();
     let attempt = 0;
