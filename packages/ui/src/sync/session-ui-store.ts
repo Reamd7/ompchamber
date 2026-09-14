@@ -1264,10 +1264,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     })
 
     writeRuntimeSessionMemory(runtimeMemoryKey(), { sessionId: null, directory, draft: nextDraft })
-    // Clear composer attachments when opening a new session draft.
-    // Attachments from the previous session (e.g. restored by revert) must
-    // not bleed into the new session's input.
-    useInputStore.getState().clearAttachedFiles()
+    // Composer attachments are scoped by draft identity (see
+    // useComposerAttachments): the selection change above makes the composer
+    // stash the outgoing session's files and restore the draft's own stash,
+    // so the previous session's attachments cannot bleed into the draft.
 
     if (options?.initialPrompt) {
       useInputStore.getState().setPendingInputText(options.initialPrompt)
@@ -1933,7 +1933,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const preceding = targetIndex > 0 ? messages[targetIndex - 1] : undefined
       if (preceding && textPart?.text) {
         await get().revertToMessage(sessionId, preceding.id)
-        useInputStore.getState().setPendingInputText(String(textPart.text), "replace")
+        useInputStore.getState().setPendingInputText(String(textPart.text), "replace", sessionId)
         const { toast } = await import("sonner")
         const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
         const { dictionary } = useI18nStore.getState()

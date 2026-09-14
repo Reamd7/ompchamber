@@ -130,6 +130,21 @@ export type VSCodeActiveEditorFile = {
 export type InputState = {
   pendingInputText: string | null
   pendingInputMode: "replace" | "append" | "append-inline"
+  /**
+   * Session the pending text is addressed to; `null` means whichever composer
+   * is current. A session-addressed restore (fork refill, revert prefill) must
+   * not be consumed while the composer still shows another session — the chat
+   * column trails the live selection while the incoming session loads, so an
+   * unguarded consume would bind the text to the outgoing session's draft.
+   */
+  pendingInputSessionId: string | null
+  /**
+   * Attachments a session-addressed restore (fork refill, revert prefill) is
+   * waiting to put on the composer; same addressing rule as
+   * `pendingInputSessionId` — a `null` sessionId applies to whichever composer
+   * is current. Applied wholesale on consume, replacing existing attachments.
+   */
+  pendingAttachmentRestore: { files: AttachedFile[]; sessionId: string | null } | null
   pendingSyntheticParts: SyntheticContextPart[] | null
   /**
    * Text a draft preset chip asked to submit immediately. Set by surfaces that
@@ -140,8 +155,10 @@ export type InputState = {
   attachedFiles: AttachedFile[]
   activeEditorFile: VSCodeActiveEditorFile | null
 
-  setPendingInputText: (text: string | null, mode?: "replace" | "append" | "append-inline") => void
+  setPendingInputText: (text: string | null, mode?: "replace" | "append" | "append-inline", sessionId?: string | null) => void
   consumePendingInputText: () => { text: string; mode: "replace" | "append" | "append-inline" } | null
+  setPendingAttachmentRestore: (files: AttachedFile[] | null, sessionId?: string | null) => void
+  consumePendingAttachmentRestore: () => { files: AttachedFile[]; sessionId: string | null } | null
   requestPresetSubmit: (text: string, type: "command" | "skill") => void
   consumePendingPresetSubmit: () => { text: string; type: "command" | "skill" } | null
   setPendingSyntheticParts: (parts: SyntheticContextPart[] | null) => void
@@ -157,22 +174,49 @@ export type InputState = {
   addRestoredAttachment: (file: { url: string; mimeType: string; filename: string }) => void
 }
 
+export const buildRestoredAttachment = ({ url, mimeType, filename }: { url: string; mimeType: string; filename: string }): AttachedFile => ({
+  id: `restored-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  // Use "local" source so the file renders in AttachedFilesList.
+  // Set serverPath to the URL so ImagePreview can use it as the img src
+  // when dataUrl is not a data: URL. sanitizeAttachmentsForSend leaves
+  // dataUrl alone for non-server sources, so the URL stays intact on send.
+  file: new File([], filename, { type: mimeType }),
+  dataUrl: url,
+  mimeType,
+  filename,
+  size: getDataUrlByteSize(url),
+  source: "local",
+  serverPath: url,
+})
+
 export const useInputStore = create<InputState>()((set, get) => ({
   pendingInputText: null,
   pendingInputMode: "replace",
+  pendingInputSessionId: null,
+  pendingAttachmentRestore: null,
   pendingSyntheticParts: null,
   pendingPresetSubmit: null,
   attachedFiles: [],
   activeEditorFile: null,
 
-  setPendingInputText: (text, mode = "replace") =>
-    set({ pendingInputText: text, pendingInputMode: mode }),
+  setPendingInputText: (text, mode = "replace", sessionId = null) =>
+    set({ pendingInputText: text, pendingInputMode: mode, pendingInputSessionId: sessionId }),
 
   consumePendingInputText: () => {
     const { pendingInputText, pendingInputMode } = get()
     if (pendingInputText === null) return null
-    set({ pendingInputText: null, pendingInputMode: "replace" })
+    set({ pendingInputText: null, pendingInputMode: "replace", pendingInputSessionId: null })
     return { text: pendingInputText, mode: pendingInputMode }
+  },
+
+  setPendingAttachmentRestore: (files, sessionId = null) =>
+    set({ pendingAttachmentRestore: files === null ? null : { files, sessionId } }),
+
+  consumePendingAttachmentRestore: () => {
+    const { pendingAttachmentRestore } = get()
+    if (pendingAttachmentRestore === null) return null
+    set({ pendingAttachmentRestore: null })
+    return pendingAttachmentRestore
   },
 
   requestPresetSubmit: (text, type) => set({ pendingPresetSubmit: { text, type } }),
@@ -295,22 +339,7 @@ export const useInputStore = create<InputState>()((set, get) => ({
     set({ activeEditorFile: file })
   },
 
-  addRestoredAttachment: ({ url, mimeType, filename }) => {
-    const id = `restored-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    // Use "local" source so the file renders in AttachedFilesList.
-    // Set serverPath to the URL so ImagePreview can use it as the img src
-    // when dataUrl is not a data: URL. sanitizeAttachmentsForSend leaves
-    // dataUrl alone for non-server sources, so the URL stays intact on send.
-    const attached: AttachedFile = {
-      id,
-      file: new File([], filename, { type: mimeType }),
-      dataUrl: url,
-      mimeType,
-      filename,
-      size: getDataUrlByteSize(url),
-      source: "local",
-      serverPath: url,
-    }
-    set((s) => ({ attachedFiles: [...s.attachedFiles, attached] }))
+  addRestoredAttachment: (file) => {
+    set((s) => ({ attachedFiles: [...s.attachedFiles, buildRestoredAttachment(file)] }))
   },
 }))

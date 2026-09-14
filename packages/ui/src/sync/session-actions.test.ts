@@ -14,6 +14,7 @@ let sessionUpdateResult: { data?: unknown; error?: unknown; response?: { status?
 let sessionMessagesResult: { data?: unknown; error?: unknown; response?: { status?: number } } = { data: [] }
 const sessionMessageRecords = new Map<string, Array<{ info: Message; parts: Part[] }>>()
 const failingRevertSessionIds = new Set<string>()
+let forkSessionResult = { id: "fork-1", directory: "/test/project", time: { created: 3 } }
 const failingUnrevertSessionIds = new Set<string>()
 let afterUnrevertCall: ((sessionId: string) => void) | null = null
 let sessionDeleteError: unknown | null = null
@@ -142,6 +143,13 @@ mock.module("@/lib/opencode/client", () => ({
       replyCalls.push({ method: "question.reply", params: { requestID: requestId, answers, directory } })
       return Promise.resolve(true)
     }),
+    forkSession: mock((sessionId: string, messageId: string | undefined, directory?: string | null) => {
+      replyCalls.push({
+        method: "session.fork",
+        params: { sessionID: sessionId, messageID: messageId, directory },
+      })
+      return Promise.resolve(forkSessionResult)
+    }),
     revertSession: mock((sessionId: string, messageId: string, partId?: string, directory?: string | null) => {
       replyCalls.push({
         method: "session.revert",
@@ -201,19 +209,53 @@ mock.module("./session-ui-store", () => ({
 }))
 
 // Mock useInputStore
-const inputState = {
+type MockInputState = {
+  pendingInputText: string | null
+  pendingInputMode: string
+  pendingInputSessionId: string | null
+  pendingAttachmentRestore: { files: unknown[]; sessionId: string | null } | null
+  attachedFiles: unknown[]
+  setPendingInputText: (text: string | null, mode?: "replace" | "append" | "append-inline", sessionId?: string | null) => void
+  setPendingAttachmentRestore: (files: unknown[] | null, sessionId?: string | null) => void
+  consumePendingAttachmentRestore: () => { files: unknown[]; sessionId: string | null } | null
+  clearAttachedFiles: () => void
+  addRestoredAttachment: (attachment: { url: string; mimeType: string; filename: string }) => void
+}
+const inputState: MockInputState = {
   pendingInputText: "",
-  pendingInputMode: "normal" as const,
+  pendingInputMode: "normal",
+  pendingInputSessionId: null,
+  pendingAttachmentRestore: null,
   attachedFiles: [],
+  setPendingInputText: (text, mode, sessionId) => {
+    inputState.pendingInputText = text
+    inputState.pendingInputMode = mode ?? "replace"
+    inputState.pendingInputSessionId = sessionId ?? null
+  },
+  setPendingAttachmentRestore: (files, sessionId) => {
+    inputState.pendingAttachmentRestore = files === null ? null : { files, sessionId: sessionId ?? null }
+  },
+  consumePendingAttachmentRestore: () => {
+    const pending = inputState.pendingAttachmentRestore
+    inputState.pendingAttachmentRestore = null
+    return pending
+  },
   clearAttachedFiles: () => {
     inputState.attachedFiles = []
   },
-  addRestoredAttachment: (attachment: never) => {
+  addRestoredAttachment: (attachment) => {
     inputState.attachedFiles = [...inputState.attachedFiles, attachment]
   },
 }
 
 mock.module("./input-store", () => ({
+  buildRestoredAttachment: (file: { url: string; mimeType: string; filename: string }) => ({
+    id: "restored-test",
+    dataUrl: file.url,
+    mimeType: file.mimeType,
+    filename: file.filename,
+    serverPath: file.url,
+  }),
   useInputStore: {
     getState: () => inputState,
     setState: (patch: Partial<typeof inputState>) => Object.assign(inputState, patch),
@@ -1243,6 +1285,8 @@ describe("revertToMessage passes session directory", () => {
     Object.assign(inputState, {
       pendingInputText: "previous draft",
       pendingInputMode: "normal" as const,
+      pendingInputSessionId: "stale-session",
+      pendingAttachmentRestore: { files: [{ filename: "stale.png" }], sessionId: "stale-session" },
       attachedFiles: [],
     })
   })
@@ -1251,10 +1295,11 @@ describe("revertToMessage passes session directory", () => {
     const session = { id: "session-a", time: { created: 1 } } as Session
     const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 2 } } as Message
     const targetPart = { id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part
+    const targetFilePart = { id: "prt_f", messageID: "msg_2", type: "file", url: "data:image/png;base64,AAAA", mime: "image/png", filename: "shot.png" } as Part
     const sessionStore = createStore({}, {
       session: [session],
       message: { "session-a": [targetMessage] },
-      part: { "msg_2": [targetPart] },
+      part: { "msg_2": [targetPart, targetFilePart] },
     })
     const currentStore = createStore({})
     const childStores = createChildStores([
@@ -1272,6 +1317,14 @@ describe("revertToMessage passes session directory", () => {
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert?.messageID).toBe("msg_2")
     expect(currentStore.getState().session).toHaveLength(0)
     expect(inputState.pendingInputText).toBe("edit this")
+    // The restored text is addressed to the reverted session so the composer
+    // cannot consume it while still showing a different session.
+    expect(inputState.pendingInputSessionId).toBe("session-a")
+    // Restored file parts go to the same addressed pending slot, not straight
+    // into the visible attachment list.
+    expect(inputState.pendingAttachmentRestore?.sessionId).toBe("session-a")
+    expect((inputState.pendingAttachmentRestore?.files[0] as { filename?: string } | undefined)?.filename).toBe("shot.png")
+    expect(inputState.attachedFiles).toEqual([])
   })
 
   test("rolls back optimistic revert when the SDK returns an error", async () => {
@@ -1300,6 +1353,8 @@ describe("revertToMessage passes session directory", () => {
     expect((thrown as Error).message).toContain("session.revert failed (500)")
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert).toBe(undefined)
     expect(inputState.pendingInputText).toBe("previous draft")
+    expect(inputState.pendingInputSessionId).toBe("stale-session")
+    expect(inputState.pendingAttachmentRestore?.sessionId).toBe("stale-session")
   })
 
   test("reverts recursive descendants at their first user message on or after the parent cutoff", async () => {
@@ -1403,6 +1458,74 @@ describe("revertToMessage passes session directory", () => {
       "idle-child",
       "root",
     ])
+  })
+})
+
+describe("forkFromMessage", () => {
+  beforeEach(() => {
+    replyCalls.length = 0
+    forkSessionResult = { id: "fork-1", directory: "/test/project", time: { created: 3 } }
+    Object.assign(inputState, {
+      pendingInputText: null,
+      pendingInputMode: "replace" as const,
+      pendingInputSessionId: null,
+      pendingAttachmentRestore: null,
+      attachedFiles: [],
+    })
+  })
+
+  test("addresses the restored input to the forked session, not the source", async () => {
+    const session = { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session
+    const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 2 } } as Message
+    const targetPart = { id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part
+    const targetFilePart = { id: "prt_f", messageID: "msg_2", type: "file", url: "data:image/png;base64,AAAA", mime: "image/png", filename: "shot.png" } as Part
+    const sessionStore = createStore({}, {
+      session: [session],
+      message: { "session-a": [targetMessage] },
+      part: { msg_2: [targetPart, targetFilePart] },
+    })
+
+    const { setActionRefs, forkFromMessage } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/test/project", sessionStore]]), () => "/test/project")
+
+    await forkFromMessage("session-a", "msg_2")
+
+    expect(replyCalls.find((call) => call.method === "session.fork")?.params).toEqual({
+      sessionID: "session-a",
+      messageID: "msg_2",
+      directory: "/test/project",
+    })
+    // The fork lands in the source session's directory store so the sidebar
+    // picks it up immediately.
+    expect(sessionStore.getState().session.map((entry) => entry.id)).toContain("fork-1")
+    // The composer refill is addressed to the fork: the chat column trails the
+    // selection while the fork's messages load, so an unaddressed refill would
+    // be consumed by the source session's composer and persisted as its draft.
+    expect(inputState.pendingInputText).toBe("edit this")
+    expect(inputState.pendingInputSessionId).toBe("fork-1")
+    // Image/file parts follow the same addressing: they wait for the fork's
+    // composer instead of landing on the source session's attachment list.
+    expect(inputState.pendingAttachmentRestore?.sessionId).toBe("fork-1")
+    expect((inputState.pendingAttachmentRestore?.files[0] as { filename?: string } | undefined)?.filename).toBe("shot.png")
+    expect(inputState.attachedFiles).toEqual([])
+  })
+
+  test("whole-session fork carries no composer refill", async () => {
+    const session = { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session
+    const sessionStore = createStore({}, { session: [session] })
+
+    const { setActionRefs, forkSession } = await import("./session-actions")
+    setActionRefs(mockSdk as unknown as OpencodeClient, createChildStores([["/test/project", sessionStore]]), () => "/test/project")
+
+    await forkSession("session-a")
+
+    expect(replyCalls.find((call) => call.method === "session.fork")?.params).toEqual({
+      sessionID: "session-a",
+      messageID: undefined,
+      directory: "/test/project",
+    })
+    expect(sessionStore.getState().session.map((entry) => entry.id)).toContain("fork-1")
+    expect(inputState.pendingInputText).toBe(null)
   })
 })
 

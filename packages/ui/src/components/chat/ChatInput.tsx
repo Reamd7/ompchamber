@@ -151,6 +151,7 @@ import {
 import { useAutocompletePosition } from './composer/state/useAutocompletePosition';
 import { useMessageHistory } from './composer/state/useMessageHistory';
 import { useComposerDraft } from './composer/state/useComposerDraft';
+import { useComposerAttachments } from './composer/state/useComposerAttachments';
 import { useDraftTarget } from './composer/state/useDraftTarget';
 import { useMobileComposerShell } from './composer/state/useMobileComposerShell';
 import { useMobileViewportPin } from './composer/state/useMobileViewportPin';
@@ -414,6 +415,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingPresetSubmit = useInputStore((s) => s.pendingPresetSubmit);
     const setPendingInputText = useInputStore((s) => s.setPendingInputText);
     const pendingInputText = useInputStore((s) => s.pendingInputText);
+    const pendingInputSessionId = useInputStore((s) => s.pendingInputSessionId);
+    const pendingAttachmentRestore = useInputStore((s) => s.pendingAttachmentRestore);
+    const consumePendingAttachmentRestore = useInputStore((s) => s.consumePendingAttachmentRestore);
 
     React.useEffect(() => {
         if (!newSessionDraftOpen || newSessionDraft.target !== 'chat' || message.trim().length === 0) return;
@@ -863,6 +867,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         onDraftRestored: () => composerRef.current?.selectAll(),
     });
 
+    // Attachment scoping: stash the outgoing identity's files and restore the
+    // incoming identity's, mirroring the draft switch above. Declared before
+    // the pending-restore consumers below so a session-addressed restore lands
+    // after the previous session's attachments have been moved aside.
+    useComposerAttachments(chatDraftIdentity);
+
     // Focus textarea when new session draft is opened
     const prevNewSessionDraftOpenRef = React.useRef(newSessionDraftOpen);
     React.useEffect(() => {
@@ -905,9 +915,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         composerRef.current?.blur();
     }, [isMobile]);
 
-    // Consume pending input text (e.g., from revert action)
+    // Consume pending input text (e.g., from revert action). A restore
+    // addressed to a specific session waits for this composer to show it:
+    // the chat column trails the live selection while the incoming session
+    // loads, so consuming early would bind the text — and its persisted
+    // draft — to the session still on screen.
     React.useEffect(() => {
-        if (pendingInputText !== null) {
+        if (pendingInputText !== null && (!pendingInputSessionId || pendingInputSessionId === currentSessionId)) {
             const pending = consumePendingInputText();
             if (pending?.text) {
                 if (pending.mode === 'append') {
@@ -927,7 +941,20 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 }, 0);
             }
         }
-    }, [pendingInputText, consumePendingInputText]);
+    }, [pendingInputText, pendingInputSessionId, currentSessionId, consumePendingInputText]);
+
+    // Consume a session-addressed attachment restore (fork/revert) under the
+    // same rule as pending input text: only once this composer shows the
+    // addressed session, or the files — and the send affordance they create —
+    // would land on the session still on screen.
+    React.useEffect(() => {
+        if (pendingAttachmentRestore !== null && (!pendingAttachmentRestore.sessionId || pendingAttachmentRestore.sessionId === currentSessionId)) {
+            const restore = consumePendingAttachmentRestore();
+            if (restore) {
+                useInputStore.getState().setAttachedFiles(restore.files);
+            }
+        }
+    }, [pendingAttachmentRestore, currentSessionId, consumePendingAttachmentRestore]);
 
     const hasContent = message.trim().length > 0 || attachedFiles.length > 0 || hasDrafts;
     const hasQueuedMessages = queuedMessages.length > 0;

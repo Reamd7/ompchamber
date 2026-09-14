@@ -161,12 +161,25 @@ and the send path reading the same grammar.
   metadata back to render context blocks. PR instructions precede the PR diff.
   Queueing a message leaves context drafts in their store on purpose — the send
   that later delivers the queue consumes them.
+- Pending restores are session-addressed. `useInputStore`'s `pendingInputText`
+  and `pendingAttachmentRestore` carry a `sessionId` when a producer restores
+  into a specific session (fork refill, revert prefill); `ChatInput` consumes
+  them only while the composer shows that session. The chat column trails the
+  live selection while an incoming session loads, so consuming early would bind
+  the text, draft, and attachments to the outgoing session.
 - `state/useComposerDraft.ts` — a draft belongs to a (runtime, directory,
   session) identity. Writes are debounced while typing but forced at every edge
   where the page may stop running, because a pending timer is not a saved
   draft. Two orderings are load-bearing: the debounced write is skipped once
   while a draft is being restored, and a deleted draft's empty signature is
   recorded before a queued write could resurrect it.
+- `state/useComposerAttachments.ts` — `attachedFiles` is one global list, so
+  the hook scopes it to the same draft identity: on a switch it stashes the
+  outgoing identity's files under `lib/composerAttachmentStash.ts` and restores
+  the incoming identity's. It must be declared before the pending-restore
+  consumers so a session-addressed restore lands after the outgoing list is
+  moved aside. The stash is memory-only — attachments do not survive a reload
+  today, and their data URLs are too large for the persisted draft envelope.
 - `state/useDraftTarget.ts` — the draft can target a directory that does not
   exist yet (a worktree being created). It must survive not appearing in the
   branch list, or the selector snaps back to the project root mid-creation. It
