@@ -179,7 +179,7 @@ export const EngineMemorySection: React.FC = () => {
   const unattributed = Math.max(0, heap - residentBytes - bufferBytes);
 
   return (
-    <section className="rounded-lg border border-border/60 bg-surface-muted/40 text-xs">
+    <section className="@container rounded-lg border border-border/60 bg-surface-muted/40 text-xs">
       <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
         <div className="flex items-center gap-1">
           {(['overview', 'sessions'] as const).map((key) => (
@@ -209,7 +209,7 @@ export const EngineMemorySection: React.FC = () => {
         ) : data ? (
           tab === 'overview' ? (
             <div className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 @lg:grid-cols-4">
                 <MetricCard label={t('openCodeStatusDialog.memory.processHeap')} value={formatBytes(data.process.heapUsedBytes)} />
                 <MetricCard label={t('openCodeStatusDialog.memory.processRss')} value={formatBytes(data.process.rssBytes)} />
                 <MetricCard
@@ -247,7 +247,7 @@ export const EngineMemorySection: React.FC = () => {
                 ]}
               />
 
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-muted-foreground">
+              <div className="grid grid-cols-1 @sm:grid-cols-2 gap-x-6 gap-y-1 text-muted-foreground">
                 <div className="flex items-center justify-between gap-3">
                   <span>{t('openCodeStatusDialog.memory.wireBus')}</span>
                   <span className="tabular-nums">

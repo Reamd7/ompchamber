@@ -1,7 +1,7 @@
 import React from 'react';
 
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useViewportStore } from '@/sync/viewport-store';
+import { getViewportSessionMemory, useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync } from '@/sync/sync-context';
 import { MEMORY_LIMITS } from '@/stores/types/sessionTypes';
 import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
@@ -14,18 +14,21 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Icon } from "@/components/icon/Icon";
 import type { IconName } from '@/components/icon/icons';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, type I18nKey } from '@/lib/i18n';
+import { EngineMemorySection } from './EngineMemorySection';
 
 interface DebugPanelProps {
   onClose?: () => void;
 }
 
-type DebugTab = 'memory' | 'streaming' | 'requests';
+type DebugTab = 'memory' | 'engine' | 'streaming' | 'requests';
 
 function getDebugTabIcon(tab: DebugTab): IconName {
   switch (tab) {
     case 'memory':
       return 'database-2';
+    case 'engine':
+      return 'server';
     case 'streaming':
       return 'bar-chart-box';
     case 'requests':
@@ -51,6 +54,59 @@ const formatDuration = (durationMs: number): string => {
 // Fixed-width seconds format ("XX.XX s") for the percentile series so the
 // legend/labels don't jitter as values change. Pair with `tabular-nums`.
 const formatSeconds = (durationMs: number): string => `${(durationMs / 1000).toFixed(2)} s`;
+
+const MIN_PANEL_WIDTH_PX = 448;
+
+// Known stream-perf metric IDs → label keys. Metrics carrying a dynamic
+// trailing segment (e.g. `…props_changed.callbacks`) resolve by prefix and
+// keep the suffix raw; unknown IDs fall back to the raw metric name.
+const METRIC_LABEL_KEYS = new Map<string, I18nKey>([
+  ['ui.sidebar.selection_scroll_anchor_adjustment', 'memoryDebugPanel.metricName.sidebarScrollAnchorAdjustment'],
+  ['ui.sidebar_session_node.render', 'memoryDebugPanel.metricName.sidebarSessionNodeRender'],
+  ['ui.sidebar_session_node.props_changed', 'memoryDebugPanel.metricName.sidebarSessionNodePropsChanged'],
+  ['ui.global_sessions.event_update_deferred', 'memoryDebugPanel.metricName.globalSessionsEventUpdateDeferred'],
+  ['ui.global_sessions.event_update_immediate', 'memoryDebugPanel.metricName.globalSessionsEventUpdateImmediate'],
+  ['ui.global_sessions.event_update_publication', 'memoryDebugPanel.metricName.globalSessionsEventUpdatePublication'],
+  ['ui.sidebar.project_section.reused', 'memoryDebugPanel.metricName.sidebarProjectSectionReused'],
+  ['ui.sidebar.project_section.rebuilt', 'memoryDebugPanel.metricName.sidebarProjectSectionRebuilt'],
+  ['ui.sidebar.project_section.rebuilt_reason', 'memoryDebugPanel.metricName.sidebarProjectSectionRebuiltReason'],
+  ['ui.sidebar_projects_list.render', 'memoryDebugPanel.metricName.sidebarProjectsListRender'],
+  ['ui.session_sidebar.render', 'memoryDebugPanel.metricName.sessionSidebarRender'],
+  ['ui.session_sidebar.source', 'memoryDebugPanel.metricName.sessionSidebarSource'],
+  ['ui.header.render', 'memoryDebugPanel.metricName.headerRender'],
+  ['ui.assistant_text_part.render', 'memoryDebugPanel.metricName.assistantTextRender'],
+  ['ui.assistant_text_part.display_len', 'memoryDebugPanel.metricName.assistantTextDisplayLen'],
+  ['ui.message_list_entry.render', 'memoryDebugPanel.metricName.messageListEntryRender'],
+  ['ui.message_list.render', 'memoryDebugPanel.metricName.messageListRender'],
+  ['ui.message_list.base_display_ms', 'memoryDebugPanel.metricName.messageListBaseDisplayMs'],
+  ['ui.message_list.retry_overlay_ms', 'memoryDebugPanel.metricName.messageListRetryOverlayMs'],
+  ['ui.message_list.render_entries_ms', 'memoryDebugPanel.metricName.messageListRenderEntriesMs'],
+  ['ui.markdown_renderer.render', 'memoryDebugPanel.metricName.markdownRender'],
+  ['ui.markdown_renderer.content_len', 'memoryDebugPanel.metricName.markdownContentLen'],
+  ['ui.markdown_renderer.dom_cache', 'memoryDebugPanel.metricName.markdownDomCache'],
+  ['ui.markdown_renderer.settled_paint.reused', 'memoryDebugPanel.metricName.markdownSettledPaintReused'],
+  ['ui.chat_message.render', 'memoryDebugPanel.metricName.chatMessageRender'],
+  ['ui.turns.projection_ms', 'memoryDebugPanel.metricName.turnsProjectionMs'],
+  ['vscode.webview.sse_chunk', 'memoryDebugPanel.metricName.vscodeWebviewSseChunk'],
+  ['vscode.webview.sse_chunk_bytes', 'memoryDebugPanel.metricName.vscodeWebviewSseChunkBytes'],
+  ['vscode.webview.sse_end', 'memoryDebugPanel.metricName.vscodeWebviewSseEnd'],
+  ['vscode.webview.sse_start_ms', 'memoryDebugPanel.metricName.vscodeWebviewSseStartMs'],
+]);
+
+const metricDisplayLabel = (t: ReturnType<typeof useI18n>['t'], metric: string): string => {
+  let candidate: string | undefined = metric;
+  while (candidate) {
+    const key = METRIC_LABEL_KEYS.get(candidate);
+    if (key) {
+      const label = t(key);
+      const suffix = metric.length > candidate.length ? metric.slice(candidate.length + 1) : '';
+      return suffix ? `${label} · ${suffix}` : label;
+    }
+    const dot = candidate.lastIndexOf('.');
+    candidate = dot > 0 ? candidate.slice(0, dot) : undefined;
+  }
+  return metric;
+};
 
 const MetricCard: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => {
   return (
@@ -100,7 +156,9 @@ const PerfSection: React.FC<{ title: string; snapshot: StreamPerfSnapshot; empty
                 className="rounded-md border border-[var(--interactive-border)] p-2"
                 style={{ backgroundColor: 'color-mix(in srgb, var(--surface-elevated) 88%, transparent)' }}
               >
-                <div className="typography-meta font-medium text-[var(--surface-foreground)] break-all">{entry.metric}</div>
+                <div className="typography-meta font-medium text-[var(--surface-foreground)] break-all" title={entry.metric}>
+                  {metricDisplayLabel(t, entry.metric)}
+                </div>
                 <div className="mt-1 grid grid-cols-4 gap-2 typography-meta text-[var(--surface-muted-foreground)]">
                   <span>{t('memoryDebugPanel.metric.countValue', { value: entry.count })}</span>
                   <span>{t('memoryDebugPanel.metric.avgValue', { value: entry.avg })}</span>
@@ -196,6 +254,30 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
   const [streamSnapshot, setStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getStreamPerfSnapshot());
   const [vscodeStreamSnapshot, setVsCodeStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getVsCodeStreamPerfSnapshot());
   const [requestsSnapshot, setRequestsSnapshot] = React.useState<RequestsInFlightSnapshot>(() => getRequestsInFlightSnapshot());
+  const [panelWidthPx, setPanelWidthPx] = React.useState<number | null>(null);
+  const resizeDragRef = React.useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizeStart = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const card = event.currentTarget.parentElement;
+    const startWidth = card ? card.getBoundingClientRect().width : MIN_PANEL_WIDTH_PX;
+    resizeDragRef.current = { startX: event.clientX, startWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, []);
+
+  const handleResizeMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = resizeDragRef.current;
+    if (!drag) return;
+    const maxWidth = Math.max(MIN_PANEL_WIDTH_PX, window.innerWidth - 32);
+    const next = drag.startWidth + (drag.startX - event.clientX);
+    setPanelWidthPx(Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH_PX, next)));
+  }, []);
+
+  const handleResizeEnd = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizeDragRef.current) return;
+    resizeDragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
   const ageLines = [
     { label: 'p50', current: requestsSnapshot.ageP50, samples: requestsSnapshot.p50Samples, color: 'var(--status-success)' },
     { label: 'p90', current: requestsSnapshot.ageP90, samples: requestsSnapshot.p90Samples, color: 'var(--status-info)' },
@@ -274,20 +356,24 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
           assistantMessageCount += 1;
         }
       }
-      const memoryState = sessionMemoryState.get(session.id);
+      const memoryState = getViewportSessionMemory(session.id);
       return {
         id: session.id,
         title: session.title || t('memoryDebugPanel.common.untitled'),
         assistantMessageCount,
         messageCount: messages.length,
         userMessageCount,
+        hasMemoryState: Boolean(memoryState),
         isStreaming: memoryState?.isStreaming || false,
         isZombie: memoryState?.isZombie || false,
         backgroundCount: memoryState?.backgroundMessageCount || 0,
         lastAccessed: memoryState?.lastAccessedAt || 0,
         isCurrent: session.id === currentSessionId
       };
-    }).sort((a, b) => b.lastAccessed - a.lastAccessed);
+    // Only sessions actually holding renderer memory — the directory index
+    // lists every known session, most of which have no cached messages.
+    }).filter(stat => stat.messageCount > 0 || stat.hasMemoryState)
+      .sort((a, b) => b.lastAccessed - a.lastAccessed);
   }, [sessions, messageRecord, sessionMemoryState, currentSessionId, t]);
 
   const cachedSessionCount = Object.keys(messageRecord).length;
@@ -308,9 +394,25 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
 
   return (
     <Card
-      className="fixed bottom-4 right-4 z-50 w-[28rem] p-4 shadow-none bottom-safe-area"
-      style={{ backgroundColor: 'color-mix(in srgb, var(--surface-background) 94%, transparent)' }}
+      className="@container fixed bottom-4 right-4 z-50 p-4 shadow-none bottom-safe-area"
+      style={{
+        backgroundColor: 'color-mix(in srgb, var(--surface-background) 94%, transparent)',
+        width: panelWidthPx ?? MIN_PANEL_WIDTH_PX,
+        maxWidth: 'calc(100vw - 2rem)',
+      }}
     >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t('memoryDebugPanel.resizeHandle')}
+        title={t('memoryDebugPanel.resizeHandle')}
+        onPointerDown={handleResizeStart}
+        onPointerMove={handleResizeMove}
+        onPointerUp={handleResizeEnd}
+        onPointerCancel={handleResizeEnd}
+        className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize hover:bg-interactive-hover"
+        style={{ touchAction: 'none' }}
+      />
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Icon
@@ -372,6 +474,14 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
         </Button>
         <Button
           size="sm"
+          variant={activeTab === 'engine' ? 'secondary' : 'ghost'}
+          className="flex-1"
+          onClick={() => setActiveTab('engine')}
+        >
+          {t('memoryDebugPanel.tabs.engine')}
+        </Button>
+        <Button
+          size="sm"
           variant={activeTab === 'streaming' ? 'secondary' : 'ghost'}
           className="flex-1"
           onClick={() => setActiveTab('streaming')}
@@ -390,7 +500,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
 
       {activeTab === 'memory' ? (
         <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2 typography-meta">
+          <div className="grid grid-cols-2 @xl:grid-cols-4 gap-2 typography-meta">
             <MetricCard label={t('memoryDebugPanel.metric.totalMessages')} value={messageRoleCounts.total} />
             <MetricCard label={t('memoryDebugPanel.metric.cachedSessions')} value={`${cachedSessionCount} / ${MEMORY_LIMITS.MAX_SESSIONS}`} />
             <MetricCard label={t('memoryDebugPanel.metric.userMessages')} value={messageRoleCounts.user} />
@@ -480,6 +590,10 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
             </Tooltip>
           </div>
         </div>
+      ) : activeTab === 'engine' ? (
+        // Mount-gated polling: the section fetches /api/omp/diagnostics only
+        // while this tab is visible.
+        <EngineMemorySection />
       ) : activeTab === 'streaming' ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 rounded-md border border-[var(--interactive-border)] px-3 py-2 typography-meta text-[var(--surface-muted-foreground)]">
@@ -495,7 +609,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
             </Button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 @xl:grid-cols-4 gap-2">
             <MetricCard label={t('memoryDebugPanel.metric.uiMetrics')} value={streamSnapshot.entries.length} />
             <MetricCard label={t('memoryDebugPanel.metric.vscodeMetrics')} value={vscodeStreamSnapshot.entries.length} />
             <MetricCard label={t('memoryDebugPanel.metric.messageListRenders')} value={streamMetricCounts.messageListRender} />
