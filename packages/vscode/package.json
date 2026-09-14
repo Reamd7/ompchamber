@@ -2,7 +2,7 @@
   "name": "ompchamber-vscode",
   "displayName": "OMPChamber",
   "description": "%extension.description%",
-  "version": "1.30.3",
+  "version": "1.31.0",
   "publisher": "fedaykindev",
   "private": true,
   "repository": {

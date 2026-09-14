@@ -1,3 +1,10 @@
+## [1.31.0] - 2026-09-14
+
+- Chat: `!` shell commands now work — prefixing a message with `!` runs the command in the session's directory and streams its output into a card in the conversation; `!!` keeps the output out of the model's context.
+- Chat: attaching a text or PDF file no longer gets rejected by the provider or breaks later turns — attachments are routed by content type, and an attached image no longer renders twice.
+- Chat: forking or reverting a message no longer drops the restored text and attachments onto the previous session's composer, and file attachments no longer carry over when switching sessions.
+- Chat: the "engine did not start a reply" warning no longer fires while a request is still being prepared.
+
 ## [1.30.3] - 2026-09-13
 
 - The session sidebar now marks which sessions the engine keeps in memory: resident rows carry a color-coded state glyph — loading, live, archiving, failed — and hovering it shows the estimated transcript size.

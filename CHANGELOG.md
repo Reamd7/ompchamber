@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-09-14
+
+- **Chat: `!` shell commands now work.** Typing `!` before a composer message quietly did nothing — the command now runs in the session's directory and streams its output into a card in the conversation. `!!` runs it without feeding output back to the model, and a bare `cd` is refused.
+- Chat: attaching a text or PDF file no longer breaks the session — every attachment was being sent to the model as image bytes, which providers rejected, and the stored bad block then broke every later turn. Images still go as images, readable text inlines as file content, and undecodable binaries are noted in the transcript instead.
+- Chat: forking or reverting a message no longer drops the restored text and attachments onto the previous session's composer, where they could be persisted or sent by mistake.
+- Chat: file attachments no longer carry into the next session when you switch — the list is stashed per session like the text draft.
+- Chat: an image attached to a message no longer renders twice in the transcript.
+- Chat: the "engine did not start a reply" warning no longer fires while a request is still being prepared — the session reports busy the moment a dispatch is accepted.
+- Dev: the memory debug panel gains an Engine tab — engine heap/RSS and resident transcript sessions now sit next to the renderer metrics they were conflated with; the panel edge is draggable, and its streaming, zombie, and background markers work again.
+
 ## [1.30.3] - 2026-09-13
 
 - **Engine Status now includes a memory monitor.** An overview tab shows per-process cards, a heap attribution bar, and message bus counters, and a resident-sessions tab lists sessions from 10 MB up with their estimated sizes plus a release action that moves an idle session out of memory — it reloads from disk the next time it's opened.

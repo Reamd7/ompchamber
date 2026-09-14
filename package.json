@@ -1,6 +1,6 @@
 {
   "name": "ompchamber-monorepo",
-  "version": "1.30.3",
+  "version": "1.31.0",
   "description": "OMPChamber monorepo workspace for web, ui, and desktop runtimes",
   "private": true,
   "type": "module",
