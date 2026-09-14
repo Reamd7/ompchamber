@@ -146,14 +146,32 @@ export function routeMessage(params: {
 }): Promise<void> {
   const requestDirectory = params.directory ?? undefined
   if (params.inputMode === "shell") {
-    return opencodeClient.shellSession({
-      runtimeKey: params.runtimeKey,
-      sessionId: params.sessionId,
-      directory: requestDirectory,
-      agent: params.agent ?? "",
-      model: { providerID: params.providerID, modelID: params.modelID },
-      command: params.content,
-    }).then(() => undefined)
+    if (params.runtimeKey && params.runtimeKey !== getRuntimeKey()) {
+      throw new Error('Message was not sent because the runtime changed.')
+    }
+    // omp `!` local execution (07 §3.2 / GAP-G05): the composer consumes the
+    // mode-entering `!`, so a leading `!` still on the content is the `!!`
+    // marker — the result stays out of model context. The card streams via
+    // wire message events; this call only awaits the outcome.
+    const excludeFromContext = params.content.startsWith('!')
+    const command = excludeFromContext ? params.content.slice(1) : params.content
+    const directory = requestDirectory ?? useDirectoryStore.getState().currentDirectory ?? undefined
+    if (!directory) throw new Error('session.bash failed: session directory is unavailable')
+    const api = getRegisteredRuntimeAPIs()?.ompSession
+    if (!api) throw new Error('session.bash failed: runtime APIs unavailable')
+    return api.runBash({
+      sessionID: params.sessionId,
+      directory,
+      command,
+      excludeFromContext,
+    }).then((result) => {
+      if (result.ok) return
+      throw new Error(
+        result.unavailable
+          ? 'session.bash failed: shell commands are not supported by this engine'
+          : `session.bash failed${result.error ? ` (${result.error})` : ''}`,
+      )
+    })
   }
 
   // Slash commands — fire and forget, SSE delivers messages and status
@@ -1800,8 +1818,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     // Standing project context — pinned notes and plans, and the memory index.
     // Prepended so it reads as background before the message it accompanies,
-    // and empty unless the session is actually missing it.
-    const knowledge = await fetchSessionKnowledge(currentSessionDirectory, targetSessionId || "")
+    // and empty unless the session is actually missing it. Shell sends carry
+    // no model-bound content, so fetching — and especially reporting — would
+    // wrongly mark pinned context delivered.
+    const knowledge = inputMode === "shell"
+      ? { text: "", signature: "" }
+      : await fetchSessionKnowledge(currentSessionDirectory, targetSessionId || "")
     const prefixParts: Array<{ text: string; attachments?: AttachedFile[]; synthetic?: boolean; metadata?: ContextPartMetadata }> =
       knowledge.text ? [{ text: knowledge.text, synthetic: true }] : []
     const partsWithPinnedContext = prefixParts.length > 0

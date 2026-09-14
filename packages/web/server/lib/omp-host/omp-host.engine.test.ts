@@ -2,6 +2,7 @@ import { describe, test, expect, mock, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { WireEventEnvelope } from './events.ts';
 
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-engine-test-'));
 const sessionDir = path.join(agentDir, 'sessions');
@@ -48,6 +49,17 @@ const makeFakeSession = (id: string) => ({
   setThinkingLevel: mock(() => {}),
   maybeStartTitleGeneration: () => {},
   prompt: mock(async () => true),
+  executeBash: mock(async () => ({
+    output: '',
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+    totalLines: 0,
+    totalBytes: 0,
+    outputLines: 0,
+    outputBytes: 0,
+  })),
+  isBashRunning: false,
   getTodoPhases: (): [] => [],
   steer: mock(async () => {}),
   abort: mock(async () => {}),
@@ -871,5 +883,205 @@ describe('OmpHostEngine fork boundary (wire messageID)', () => {
     await engine.fork({ sessionID: 's1', directory: '/repo' });
 
     expect(forkMutations).toEqual([]);
+  });
+});
+
+describe('OmpHostEngine executeBash (`!` local shell)', () => {
+  const bashRecord = (overrides = {}) => ({
+    role: 'bashExecution',
+    command: 'pwd',
+    output: '/repo\n',
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+    timestamp: 0,
+    ...overrides,
+  });
+  const bashResult = (overrides = {}) => ({
+    output: '/repo\n',
+    exitCode: 0,
+    cancelled: false,
+    truncated: false,
+    totalLines: 1,
+    totalBytes: 6,
+    outputLines: 1,
+    outputBytes: 6,
+    ...overrides,
+  });
+
+  type PartView = { messageID?: string; shellAction?: { command?: string; output?: string; status?: string } };
+
+  test('runs the session bash runner, emits running→settled cards, and echo-bridges the persisted row', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const events: WireEventEnvelope[] = [];
+    engine.bus.subscribeSince(0, (entry) => events.push(entry.envelope), { directory: '/repo' });
+
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    const record = bashRecord();
+    session.executeBash = mock(async (command: string, onChunk?: (chunk: string) => void) => {
+      onChunk?.('/re');
+      onChunk?.('po\n');
+      record.timestamp = Date.now();
+      session.messages.push(record);
+      return bashResult();
+    });
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'pwd' });
+
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    expect(session.executeBash).toHaveBeenCalledWith('pwd', expect.any(Function), { excludeFromContext: false, useUserShell: true });
+    expect(outcome.result).toMatchObject({ output: '/repo\n', exitCode: 0, cancelled: false, truncated: false, timedOut: false });
+    expect(outcome.message.info.role).toBe('user');
+    expect(outcome.message.info.metadata?.ompRole).toBe('bash');
+    expect(outcome.message.parts[0]?.shellAction).toMatchObject({ command: 'pwd', output: '/repo\n', status: 'completed' });
+
+    // SAFETY: test fixture narrowing — `part` here is the emitted
+    // message.part.updated payload this test's own dispatch produces.
+    const shellParts = events
+      .filter((event) => event.type === 'message.part.updated')
+      .map((event) => event.properties.part as PartView | undefined)
+      .filter((part): part is PartView => Boolean(part?.shellAction));
+    expect(shellParts.length).toBeGreaterThanOrEqual(3);
+    // Every emitted card — running, streamed chunks, settled — carries the
+    // dispatch-time live id, so the client reconciles onto one row.
+    expect(new Set(shellParts.map((part) => part.messageID))).toEqual(new Set([outcome.message.info.id]));
+    expect(shellParts[0]?.shellAction?.status).toBe('running');
+    expect(shellParts[0]?.shellAction?.output).toBe('');
+    expect(shellParts.map((part) => part.shellAction?.output)).toContain('/re');
+    expect(shellParts.at(-1)?.shellAction?.status).toBe('completed');
+    expect(shellParts.at(-1)?.shellAction?.output).toBe('/repo\n');
+
+    // Busy is claimed up front and handed back once the run settles.
+    const statuses = events.filter((event) => event.type === 'session.status' || event.type === 'session.idle');
+    expect(statuses[0]?.properties.status).toEqual({ type: 'busy' });
+    expect(statuses.at(-1)?.type).toBe('session.idle');
+
+    // The canonical record id echo-bridges onto the live row id, so a later
+    // transcript re-projection does not mint a second card.
+    const projected = await engine.getMessages({ sessionID: 's1', directory: '/repo' });
+    const row = projected?.find((message) => message.info.metadata?.ompRole === 'bash');
+    expect(row?.info.id).toBe(outcome.message.info.id);
+  });
+
+  test('a non-zero exit projects an error card without failing the request', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    const record = bashRecord({ command: 'false', output: 'boom', exitCode: 3 });
+    session.executeBash = mock(async () => {
+      record.timestamp = Date.now();
+      session.messages.push(record);
+      return bashResult({ output: 'boom', exitCode: 3 });
+    });
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'false' });
+
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    expect(outcome.result.exitCode).toBe(3);
+    expect(outcome.message.parts[0]?.shellAction?.status).toBe('error');
+    expect(outcome.message.info.metadata?.exitCode).toBe(3);
+  });
+
+  test('an aborted run settles as a cancelled card', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    // The abort path (session.abort → abortBash) resolves the run with
+    // cancelled: true — the record and result agree.
+    const record = bashRecord({ command: 'sleep 60', output: '', exitCode: undefined, cancelled: true });
+    session.executeBash = mock(async () => {
+      record.timestamp = Date.now();
+      session.messages.push(record);
+      return bashResult({ output: '', exitCode: undefined, cancelled: true });
+    });
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'sleep 60' });
+
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    expect(outcome.result.cancelled).toBe(true);
+    expect(outcome.message.parts[0]?.shellAction?.status).toBe('cancelled');
+    expect(outcome.message.info.metadata?.cancelled).toBe(true);
+  });
+
+  test('a thrown dispatch settles the running card as an error and rethrows', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const events: WireEventEnvelope[] = [];
+    engine.bus.subscribeSince(0, (entry) => events.push(entry.envelope), { directory: '/repo' });
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    session.executeBash = mock(async () => {
+      throw new Error('runner exploded');
+    });
+
+    await expect(engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'pwd' })).rejects.toThrow('runner exploded');
+
+    // SAFETY: test fixture narrowing — `part` is the message.part.updated
+    // payload this test's own dispatch produces.
+    const shellParts = events
+      .filter((event) => event.type === 'message.part.updated')
+      .map((event) => event.properties.part as PartView | undefined)
+      .filter((part): part is PartView => Boolean(part?.shellAction));
+    expect(shellParts.at(-1)?.shellAction?.status).toBe('error');
+    expect(shellParts.at(-1)?.shellAction?.output).toBe('runner exploded');
+    // The failed dispatch still hands the session back to idle.
+    expect(events.at(-1)?.type).toBe('session.idle');
+  });
+
+  test('a mid-turn run defers its record; the echo registers when the record lands', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s1');
+    session.messages = [];
+    session.isStreaming = true;
+    // Deferred append: while the session streams, the SDK parks the record
+    // in pendingMessages — it is NOT visible in session.messages yet.
+    session.executeBash = mock(async () => bashResult());
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'pwd' });
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') return;
+    const liveId = outcome.message.info.id;
+
+    // The record lands at the turn's pendingMessages flush; the first
+    // projection that sees it must re-emit the live row id, not the
+    // canonical execution id.
+    const record = bashRecord();
+    record.timestamp = Date.now();
+    session.messages.push(record);
+    const projected = await engine.getMessages({ sessionID: 's1', directory: '/repo' });
+    const row = projected?.find((message) => message.info.metadata?.ompRole === 'bash');
+    expect(row?.info.id).toBe(liveId);
+    session.isStreaming = false;
+  });
+
+  test('`cd` refuses outright rather than moving the pinned session directory', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s1');
+    session.executeBash = mock(async () => bashResult());
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'cd ..' });
+
+    expect(outcome.status).toBe('refused');
+    expect(session.executeBash).not.toHaveBeenCalled();
+  });
+
+  test('an unknown session answers notFound and settles back to idle', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const events: WireEventEnvelope[] = [];
+    engine.bus.subscribeSince(0, (entry) => events.push(entry.envelope), { directory: '/repo' });
+
+    const outcome = await engine.executeBash({ sessionID: 'missing', directory: '/repo', command: 'pwd' });
+
+    expect(outcome.status).toBe('notFound');
+    const statuses = events.filter((event) => event.type === 'session.status' || event.type === 'session.idle');
+    expect(statuses[0]?.properties.status).toEqual({ type: 'busy' });
+    expect(statuses.at(-1)?.type).toBe('session.idle');
   });
 });

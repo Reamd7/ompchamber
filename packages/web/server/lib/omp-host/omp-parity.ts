@@ -70,6 +70,10 @@ export const ompFeatures = () => ({
   // capability gate for command enumeration (TUI/ACP enumerate
   // unconditionally, settings-gated only), so the switch is ours alone.
   'commands.v1': true,
+  // 07 §3.2 / GAP-G05: `!` local execution surface — POST /omp/sessions/{id}/bash
+  // runs the session's own BashRunner (executeBash) and projects the persisted
+  // bashExecution record onto the wire as a synthetic user card.
+  'bash.v1': true,
   // jobs: SDK AsyncJobManager only attaches to the first top-level session;
   // capability stays false until upstream injection (master R12).
   'jobs.v1': false,

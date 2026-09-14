@@ -9,6 +9,7 @@ import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 
@@ -278,16 +279,19 @@ describe('draft materialization transition identity', () => {
 });
 
 describe('routeMessage directory scoping', () => {
-  test('runs sends in the provided session directory', async () => {
+  const withRunBash = (runBash) => {
+    registerRuntimeAPIs({ ompSession: { runBash } });
+    return () => registerRuntimeAPIs(null);
+  };
+
+  test('runs `!` sends through the omp bash route in the provided session directory', async () => {
     // The session directory travels as an explicit request param (not via
     // client-wide directory scoping), so concurrent sends can't cross-talk.
     const calls = [];
-    const originalShellSession = opencodeClient.shellSession;
-
-    opencodeClient.shellSession = async (params) => {
-      calls.push(params);
-      return { info: {}, parts: [] };
-    };
+    const restore = withRunBash(async (input) => {
+      calls.push(input);
+      return { ok: true, result: {} };
+    });
 
     try {
       await routeMessage({
@@ -299,12 +303,57 @@ describe('routeMessage directory scoping', () => {
         inputMode: 'shell',
       });
     } finally {
-      opencodeClient.shellSession = originalShellSession;
+      restore();
     }
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].sessionId).toBe('session-a');
+    expect(calls[0].sessionID).toBe('session-a');
     expect(calls[0].directory).toBe('/session/project');
+    expect(calls[0].command).toBe('pwd');
+    expect(calls[0].excludeFromContext).toBe(false);
+  });
+
+  test('`!!` marks the run excludeFromContext and strips the second bang', async () => {
+    const calls = [];
+    const restore = withRunBash(async (input) => {
+      calls.push(input);
+      return { ok: true, result: {} };
+    });
+
+    try {
+      await routeMessage({
+        sessionId: 'session-a',
+        directory: '/session/project',
+        content: '!rm -rf scratch',
+        inputMode: 'shell',
+      });
+    } finally {
+      restore();
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].command).toBe('rm -rf scratch');
+    expect(calls[0].excludeFromContext).toBe(true);
+  });
+
+  test('an unavailable omp bash route rejects the send with a clear error', async () => {
+    const calls = [];
+    const restore = withRunBash(async (input) => {
+      calls.push(input);
+      return { ok: false, unavailable: true };
+    });
+
+    try {
+      await expect(routeMessage({
+        sessionId: 'session-a',
+        directory: '/session/project',
+        content: 'pwd',
+        inputMode: 'shell',
+      })).rejects.toThrow(/not supported/i);
+    } finally {
+      restore();
+    }
+    expect(calls).toHaveLength(1);
   });
 });
 

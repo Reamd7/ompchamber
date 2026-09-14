@@ -15,6 +15,7 @@ import {
 } from '@oh-my-pi/pi-coding-agent/session/messages';
 import {
   deterministicWireId,
+  executionWireId,
   projectConversation,
   projectTurnEventDivider,
   wireMessageId,
@@ -253,12 +254,11 @@ const classifyEmit = (
       }
     } else if (message.role === 'bashExecution' || message.role === 'pythonExecution') {
       emit.producesWire = true;
-      const kind = message.role === 'pythonExecution' ? 'python' : 'bash';
-      const command = message.role === 'pythonExecution' ? message.code : message.command;
-      const output = String(message.output ?? '');
-      const cancelled = message.cancelled ? ' (cancelled)' : '';
-      const exit = message.exitCode !== undefined ? ` [exit ${message.exitCode}]` : '';
-      emit.wireId = wireMessageId('custom', emit.created, `[omp:${kind}] ` + command + output + exit + cancelled);
+      // Same fold as projectTranscript: the row lands after the turn it
+      // follows (flush the parked assistant first), and the live
+      // dispatcher's echo id wins when one was registered (executeBash).
+      emit.flushes = true;
+      emit.wireId = wireIdFor?.(message) ?? executionWireId(message);
     } else if (message.role === 'fileMention') {
       emit.producesWire = true;
       const files = Array.isArray(message.files) ? message.files : [];

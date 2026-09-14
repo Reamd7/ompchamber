@@ -1,5 +1,6 @@
 import type { Part } from '@/lib/opencode/wire'
 import { readContextPart } from '@/lib/messages/contextParts'
+import { isShellActionPart } from './partUtils'
 
 const GITHUB_ISSUE_CONTEXT_PREFIX = 'GitHub issue context (JSON)';
 const GITHUB_PR_CONTEXT_PREFIX = 'GitHub pull request context (JSON)';
@@ -125,6 +126,9 @@ export const normalizeUserDisplayParts = (parts: Part[], options?: { planModeEna
             if (!synthetic) return true;
             if (part.type !== 'text') return false;
             if (readContextPart(part)) return true;
+            // The omp `!` row's shell card rides a `shellAction` payload on a
+            // synthetic text part — dropping it hides the whole row.
+            if (isShellActionPart(part)) return true;
             const text = (part as { text?: unknown }).text;
             if (typeof text !== 'string') {
                 return false;

@@ -17,6 +17,9 @@ type LastMessageState = {
   role: string;
   timestamp: number;
   hasError: boolean;
+  // omp-synthesized execution rows (`!`/`$` cards) are role 'user' but
+  // self-contained — no reply is ever expected after them.
+  expectsNoReply: boolean;
 } | null;
 
 // The last message of a session, with whether it already carries an error of
@@ -31,18 +34,20 @@ const useLastMessageState = (sessionId: string, directory?: string): LastMessage
     const last = messages && messages.length > 0 ? messages[messages.length - 1] : null;
     // SAFETY: store messages are SDK `Message` records; `error` is the optional
     // assistant-message error the SDK types carry, read here only for presence.
-    const info = last as { role?: string; time?: { completed?: number; created?: number }; error?: unknown } | null;
+    const info = last as { role?: string; time?: { completed?: number; created?: number }; error?: unknown; metadata?: { ompRole?: unknown } } | null;
     if (!info) {
       cacheRef.current = null;
       return null;
     }
+    const ompRole = info.metadata?.ompRole;
     const next: LastMessageState = {
       role: typeof info.role === 'string' ? info.role : '',
       timestamp: info.time?.completed ?? info.time?.created ?? 0,
       hasError: Boolean(info.error),
+      expectsNoReply: ompRole === 'bash' || ompRole === 'python',
     };
     const cached = cacheRef.current;
-    if (cached && cached.role === next.role && cached.timestamp === next.timestamp && cached.hasError === next.hasError) {
+    if (cached && cached.role === next.role && cached.timestamp === next.timestamp && cached.hasError === next.hasError && cached.expectsNoReply === next.expectsNoReply) {
       return cached;
     }
     cacheRef.current = next;
@@ -75,7 +80,7 @@ export const SessionErrorNotice: React.FC<SessionErrorNoticeProps> = ({ sessionI
   // A user message that the session is idle on, with nothing after it for a
   // while, is a reply that never began: the send was accepted but OpenCode
   // produced neither a message nor an error for it.
-  const unansweredSince = !reportedError && isIdle && lastMessage?.role === 'user' ? lastMessage.timestamp : null;
+  const unansweredSince = !reportedError && isIdle && lastMessage?.role === 'user' && !lastMessage.expectsNoReply ? lastMessage.timestamp : null;
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => {
     if (unansweredSince === null) return undefined;

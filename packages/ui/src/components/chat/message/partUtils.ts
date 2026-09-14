@@ -1,5 +1,6 @@
 import type { Part } from '@/lib/opencode/wire'
 import { readContextPart } from '@/lib/messages/contextParts'
+import { z } from 'zod'
 
 type PartWithText = Part & { text?: string; content?: string; value?: string };
 
@@ -27,6 +28,31 @@ export const isEmptyTextPart = (part: Part): boolean => {
     const text = extractTextContent(part);
     return !text || text.trim().length === 0;
 };
+
+export type ShellActionPartLike = Part & {
+    type: 'text';
+    shellAction?: {
+        command?: unknown;
+        output?: unknown;
+        status?: unknown;
+    };
+};
+
+// Shell-card carrier: the omp `!`/`$` row ships its card payload on a
+// synthetic text part's `shellAction` field — the field, not the text, is
+// what the shell renderer reads. Values stay `unknown`: renderers defensively
+// read command/output/status per field.
+const ShellActionCarrierSchema = z.object({
+    type: z.literal('text'),
+    shellAction: z.object({
+        command: z.unknown().optional(),
+        output: z.unknown().optional(),
+        status: z.unknown().optional(),
+    }),
+});
+
+export const isShellActionPart = (part: Part): part is ShellActionPartLike =>
+    ShellActionCarrierSchema.safeParse(part).success;
 
 type PartWithSynthetic = Part & { synthetic?: boolean };
 

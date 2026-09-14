@@ -86,6 +86,12 @@ sync engine, and web server call; everything else answers 404.
   `POST /omp/sessions/{id}/release` (the memory monitor's manual evict —
   returns `released` for an idle resident, 409 `session-active` while the
   session has work or a UI lease, `cold` as an idempotent no-op),
+  `POST /omp/sessions/{id}/bash` (the `!` composer's local execution —
+  capability `bash.v1`; runs the command through the session's own
+  BashRunner in its working directory and returns the projected card plus
+  the result summary; `excludeFromContext` carries `!!` semantics; bare
+  `cd` refuses 400 because the TUI's session-cwd move would re-key a
+  session this host pins to its owning directory),
   and mounts for the domain modules below. Both SSE endpoints carry
   `x-omp-epoch` (boot identity), emit `omp.stream.boot` in-band, send a
   data-less `omp.stream.resync` control with the real tail id when a
@@ -183,8 +189,10 @@ sync engine, and web server call; everything else answers 404.
   diagnostics) project as assistant-side notes prefixed `[omp:<type>]` with
   `synthetic: true` parts; entries marked `display: false` are dropped.
 - Failure honesty: unimplemented OpenCode features return explicit 501s
-  (session sharing, provider OAuth via API, MCP OAuth bridging, session
-  shell), not empty successes.
+  (session sharing, provider OAuth via API, MCP OAuth bridging), not empty
+  successes. The wire `session.shell` route stays 501 — OpenCode's
+  model-mediated shell has no omp analog — while the `!` composer mode runs
+  through the omp-native `POST /omp/sessions/{id}/bash` route.
 - Stop is bounded: `engine.abort` waits up to 10s (constructor-injectable) for
   the pi teardown, then force-disposes the bricked session, drops it from the
   live map, and emits `session.idle` under the session's own directory so
@@ -208,6 +216,20 @@ sync engine, and web server call; everything else answers 404.
   without a running turn (`session.isStreaming` false — thrown dispatch,
   dropped prompt, queued-but-idle followUp), a compensating `session.idle`
   restores the real state so the session never sticks on busy.
+- `engine.executeBash` (`!` composer mode) follows the same accepted-for-
+  dispatch contract: busy up front, the record pinned `beginUse` for the
+  command's whole lifetime, and a compensating `session.idle` only when no
+  turn and no bash run remains. The running card emits immediately as a
+  user-side `[omp:bash]` synthetic row under a dispatch-time live id —
+  the record's canonical id is unknowable until the SDK mints its timestamp
+  at completion — and streamed chunks ride `message.part.updated` with the
+  cumulative `shellAction` snapshot. At settle the record's canonical
+  `executionWireId` echo-bridges onto the live id, so cold re-projection
+  re-emits the row the client already has. A mid-turn `!` defers its record
+  to the SDK's `pendingMessages` flush; `pendingShellEchoes` on the
+  HostSession registers the echo lazily on the first projection that sees
+  the landed record (matching in completion order by role, command, and a
+  `timestamp >= dispatch` bound — record timestamps are completion times).
 - Every emitted event carries the session's directory so `/event?directory=`
   scoping and the web server's hub routing stay correct.
 - Message history paging follows the OpenCode cursor contract:

@@ -1185,6 +1185,30 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return json(result);
   });
 
+  route('POST', '/omp/sessions/{id}/bash', async (request, ctx) => {
+    if (ompFeatures()['bash.v1'] !== true) {
+      return featureUnavailable('bash.v1');
+    }
+    const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
+    if (!directory) return badRequest('directory is required');
+    const body = await readJsonBody<{ command?: unknown; excludeFromContext?: unknown }>(request);
+    const command = stringOf(body?.command)?.trim();
+    if (!command) return badRequest('command is required');
+    // `!` local execution (07 §3.2): the session's own BashRunner executes
+    // the command and persists a bashExecution record; the engine projects
+    // running → settled card updates onto the wire while it runs. `!!`
+    // semantics ride `excludeFromContext` (result stays out of model context).
+    const outcome = await engine.executeBash({
+      sessionID: ctx.params.id,
+      directory,
+      command,
+      excludeFromContext: body?.excludeFromContext === true,
+    });
+    if (outcome.status === 'notFound') return notFound('session not found');
+    if (outcome.status === 'refused') return badRequest(outcome.error);
+    return json({ ok: true, message: outcome.message, result: outcome.result });
+  });
+
   route('GET', '/omp/events', async (request) => {
     // Single omp-native event channel (05 §5.2.1, master R1). Same frame
     // format as the wire SSE; Last-Event-ID resumes durable entries only,

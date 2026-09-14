@@ -112,7 +112,7 @@ omp 的 AGENTS.md 不是单一文件,而是一组 context-file discovery provide
 | GAP-G02 | 删 OpenCode 升级面(wire 桩 + 托管升级路由 + toast + i18n) | 删 | P3(可提前) | 低 | 确认桌面打包不再托管外部 OpenCode 二进制(开放问题 4) |
 | GAP-G03 | 删 permission 协议链 V1+V2(host 桩、reducer、store、服务端 auto-accept 运行时、卡片/toast/tray/VS Code 桥、agent 权限编辑器、`Session.permission`) | 删 | P3 | **高**(触及 ~30 文件、zustand persist、VS Code/tray 双运行时、eviction 不变量) | 第 03 章审批桥落地 |
 | GAP-G04 | 删 question 协议链(端点、reducer、卡片、恢复、发送时自动拒答) | 删 | P3 | 中 | 第 03 章 ask 对话框桥落地 |
-| GAP-G05 | 删 OpenCode shell 会话通道(端点 501、client.shellSession、inputMode 路由、UserShellActionPart) | 删 | P3 | 中(`!` 交互暂缺替代) | 第 02 章 `!` 本地执行面(executeBash 经 RuntimeAPIs)落地 |
+| GAP-G05 | 删 OpenCode shell 会话通道(端点 501、client.shellSession、inputMode 路由、UserShellActionPart)。**2026-09-14:`!` 面已落地(`/omp/sessions/{id}/bash` + wire shellAction 卡),删除面收窄 —— `client.shellSession` 已删、`inputMode` 分支与 `UserShellActionPart` 转正为 omp 载体不删(增量见 §5.5)** | 删 | P3 | 中(`!` 交互暂缺替代 → 已解除) | 第 02 章 `!` 本地执行面(executeBash 经 RuntimeAPIs)落地 —— **已满足** |
 | GAP-G06 | tui-bridge 事件契约(tui.command/toast 等):停止消费 + 守卫 | 删(消费侧为空,纯守卫) | P1 | 极低 | 无 |
 | GAP-G07 | session.next.* durable stream 类型:裁决"不采用",加契约守卫 | 删(裁决+守卫) | P1 | 极低 | 无 |
 | GAP-G08 | 未生产 wire 事件分诊(REVISED R2:HOLD 清零):diff/message.removed/vcs/lsp/project/integration/catalog/**compacted/error** 全删;`message.part.removed` **不删**(D6-R5:05 章 P2 门控首产) | 删+留 | P3(diff 等可提前;error 链排在 05 章 P1 投产后) | 中(error/message.removed 消费链是活代码) | 05 章 v3 已定稿:error 不生产(05 §5.11)、compaction 走 omp 轨(05 §5.5)、retry 回收不产消息壳删除(05 §5.3.2);`session.error` 链删除的运行时前置 = 05 章 P1 事件面投产;`message.part.removed` 归 05 章注册表管辖 |
@@ -239,6 +239,8 @@ Step B(host):`endpoints.js:338-341` 四条路由删除。
 
 - **用户可见变化**:过渡期(02 章端点未落地时)若必须先删,`!` 前缀输入暂时按普通 prompt 处理 —— **不推荐**;标准顺序是 02 章先行,本章 P3 删旧通道,用户无感切换。
 - **风险**:中。注意 `buildOutgoingMessage`/tokenizer 测试对 inputMode 的引用需同步。
+
+**2026-09-14 增量(已落地,未提交)**:`!` 本地执行面按建议形状投产 —— `POST /omp/sessions/{id}/bash`(bash.v1 能力位)包 `AgentSession.executeBash(command, onChunk, {excludeFromContext, useUserShell:true})`,运行/流式/终态卡片经 wire `message.updated`/`message.part.updated` 以 `shellAction` part 下发,持久化 `bashExecution` 记录经 wireId echo 桥复用同一张卡;`!!` 前缀携带 `excludeFromContext`。**与本节计划的偏差**:①`cd` 未做持久化(`sessionManager.moveTo` 会搬动会话文件、改写 registry 的 directory 归属,host 边界直接拒绝裸 `cd`;复合命令里的 `cd` 不持久,与 TUI deferred `cd` 拒绝一致);②`UserShellActionPart` **不删** —— 它现在就是 omp 壳卡片的渲染器;③`inputMode==='shell'` 分支**不删** —— 改指向 `ompSession.runBash`;`client.shellSession` 已删;UI 侧两处配套:`normalizeUserDisplayParts` 按 `shellAction` payload 放行卡片载体(synthetic text part 不再被白名单滤掉),`SessionErrorNotice` 对 `ompRole` `bash`/`python` 行豁免"未回复"看门狗。P3 残余面收窄为:wire `/session/{id}/shell` 501 桩、i18n shell 键、gen `session.shell` 类型(守卫生效前)。
 
 ### 5.6 GAP-G06 tui-bridge 事件契约
 

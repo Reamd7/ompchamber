@@ -35,16 +35,18 @@ import {
   projectCustomMessage,
   projectDeveloperMessage,
   projectDividerMessage,
+  projectExecutionMessage,
   projectUserMessage,
   buildTurnStateStamper,
   projectTurnEventDivider,
   wireMessageId,
+  executionWireId,
   deterministicWireId,
   resolveWireIdToEntryId,
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.ts';
-import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMessageInput, WireIdMessageInput, UserProjectionOptions } from './projection.ts';
+import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMessageInput, ShellExecutionMessageInput, WireIdMessageInput, UserProjectionOptions } from './projection.ts';
 import { createSettingsStore } from './domain-models.ts';
 import { createDomainDialogs } from './domain-dialogs.ts';
 import {
@@ -68,7 +70,9 @@ import {
 } from './domain-uri.ts';
 import { resolveLocalUrlToPath } from '@oh-my-pi/pi-coding-agent/internal-urls/local-protocol';
 import type { AgentSession, AgentSessionEvent, AuthStorage, CreateAgentSessionResult, SessionInfo, SessionEntry } from '@oh-my-pi/pi-coding-agent';
-import type { CustomMessage, HookMessage } from '@oh-my-pi/pi-coding-agent';
+import type { BashExecutionMessage, CustomMessage, HookMessage } from '@oh-my-pi/pi-coding-agent';
+import { isPersistentShellCdCommand } from '@oh-my-pi/pi-coding-agent/exec/bash-executor';
+import type { BashResult } from '@oh-my-pi/pi-coding-agent/exec/bash-executor';
 import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
@@ -159,6 +163,14 @@ interface HostSession {
    * entry — the stable formula makes live and cold ids identical.
    */
   wireIdEchoes: Map<string, string>;
+  /**
+   * Deferred `!` echo bridges (executeBash): a mid-turn bash record defers to
+   * the SDK's pendingMessages flush, so it is not in session.messages when the
+   * dispatch resolves. Each entry carries the dispatch-time live id; the next
+   * #wireIdResolver call drains it once the record lands, registering the
+   * canonical → live echo so cold projections keep emitting the live row id.
+   */
+  pendingShellEchoes?: Array<{ liveId: string; command: string; started: number; output: string; exitCode: number | undefined; cancelled: boolean }>;
   lastUserWireId: string | null;
   syncedEntryKeys?: Set<string>;
   lastAssistantWireId: string | null;
@@ -1864,12 +1876,48 @@ export class OmpHostEngine {
    * messageID; assistant entries exist only on the SDK's rare
    * timestamp-rewrite paths (see the message_end handler) — the stable
    * formula makes live and cold assistant ids identical otherwise, so the
-   * map stays empty for normal turns.
+   * map stays empty for normal turns. `!` execution records map their
+   * canonical execution id to the dispatch-time live id (see executeBash).
    */
   #wireIdResolver(directoryKey: string, sessionID: string) {
-    const echoes = this.#liveHostAnywhere(directoryKey, sessionID)?.wireIdEchoes;
+    const live = this.#liveHostAnywhere(directoryKey, sessionID);
+    if (live?.pendingShellEchoes?.length) {
+      // Deferred `!` records land at the turn's pendingMessages flush; bridge
+      // their canonical ids to the live rows the dispatch already emitted as
+      // soon as they become visible in the session's message list. Records
+      // append in completion order while pending entries queue in dispatch
+      // order, so two concurrent same-command runs can resolve out of order —
+      // the full result fingerprint (output/exitCode/cancelled, verbatim in
+      // the record) identifies the run regardless of landing order, and the
+      // claimed set keeps a matched record from resolving twice.
+      const messages = live.agentSession?.messages ?? [];
+      const claimed = new Set<object>();
+      live.pendingShellEchoes = live.pendingShellEchoes.filter((pending) => {
+        const record = messages.find(
+          (m): m is BashExecutionMessage =>
+            m.role === 'bashExecution'
+            && m.command === pending.command
+            && m.output === pending.output
+            && m.exitCode === pending.exitCode
+            && m.cancelled === pending.cancelled
+            && m.timestamp >= pending.started
+            && !claimed.has(m)
+        );
+        if (!record) return true;
+        claimed.add(record);
+        live.wireIdEchoes.set(executionWireId(record), pending.liveId);
+        return false;
+      });
+      if (!live.pendingShellEchoes.length) live.pendingShellEchoes = undefined;
+    }
+    const echoes = live?.wireIdEchoes;
     if (!echoes || echoes.size === 0) return undefined;
     return (message: WireIdMessageInput | null | undefined) => {
+      if (message?.role === 'bashExecution' || message?.role === 'pythonExecution') {
+        // SAFETY: the role check narrows the wire-id input to the execution
+        // shape executionWireId reads (command/code/output/exitCode/cancelled).
+        return echoes.get(executionWireId(message as ShellExecutionMessageInput));
+      }
       if (message?.role !== 'user' && message?.role !== 'assistant') return undefined;
       return echoes.get(deterministicWireId(message));
     };
@@ -3128,6 +3176,182 @@ export class OmpHostEngine {
       // a limbo session awaiting an async ack does not get a spurious idle.
       const current = hostSession ? this.#live.byKey(hostSession.key)?.payload : null;
       if (!current || (!current.agentSession?.isStreaming && current.awaitingAsyncSince === null)) {
+        this.bus.emit('session.idle', { sessionID }, directoryKey);
+      }
+    }
+  }
+
+  /**
+   * `!` local shell execution (07 §3.2 / GAP-G05): runs the command through
+   * the session's own BashRunner — the same primitive the TUI's `!` input
+   * uses — so the result persists as a `bashExecution` transcript record.
+   * The one divergence is `cd`: the TUI's session-cwd move would re-key a
+   * session this host pins to its owning directory, so it refuses outright
+   * instead of moving bookkeeping nothing can observe. The wire
+   * `session.shell` route stays 501 (OpenCode's model-mediated shell
+   * semantics do not exist in omp); the UI's shell-mode composer calls the
+   * omp-native route that lands here instead.
+   *
+   * Events: the running row emits immediately as a user-side synthetic
+   * `[omp:bash]` card — the same shape `projectExecutionMessage` produces for
+   * the settled record — under a dispatch-time live wire id. At settle the
+   * record's canonical id is echo-bridged onto it (wireIdEchoes), so every
+   * later projection keeps emitting the row the client already has. A
+   * mid-turn dispatch defers its record to the SDK's pendingMessages flush;
+   * the echo then registers lazily the first time the record appears in the
+   * session's messages (see #wireIdResolver).
+   */
+  async executeBash({
+    sessionID,
+    directory,
+    command,
+    excludeFromContext,
+  }: {
+    sessionID: string;
+    directory?: string;
+    command: string;
+    excludeFromContext?: boolean;
+  }): Promise<
+    | { status: 'ok'; message: ProjectedMessage; result: { output: string; exitCode?: number; cancelled: boolean; truncated: boolean; timedOut: boolean } }
+    | { status: 'refused'; error: string }
+    | { status: 'notFound' }
+  > {
+    const directoryKey = normalizeDirectoryKey(directory);
+    // `!cd` is the TUI's session-cwd move: the executor runs it in a
+    // persistent shell and the controller then relocates the session file
+    // (SessionManager.moveTo). This host pins a session to its owning
+    // directory — live records, registry meta, and the UI's directory-scoped
+    // lists are all keyed by it — so a silent cwd move would strand the
+    // session's bookkeeping. Refuse outright instead of reporting a move
+    // that never happened (the TUI itself refuses a deferred `cd`).
+    if (isPersistentShellCdCommand(command)) {
+      return { status: 'refused', error: '`!cd` moves the session working directory, which is not supported here — the session stays pinned to its project directory.' };
+    }
+    // Accepted-for-dispatch contract, same as prompt(): report busy up front —
+    // boot/materialize can take seconds, and the running card below is the UI's
+    // visible "working" state while the command executes. beginUse also makes
+    // the authoritative /session/status snapshot agree. The finally hands the
+    // real state back when nothing else is running.
+    this.bus.emit('session.status', { sessionID, status: { type: 'busy' } }, directoryKey);
+    let hostSession: HostSession | null = null;
+    let dispatchRecord: LiveRecord<HostSession> | null = null;
+    try {
+      await this.#boot();
+      await this.#reloadIfDirty(sessionID, directoryKey);
+      hostSession = await this.#materialize(sessionID, directoryKey);
+      if (!hostSession) return { status: 'notFound' };
+      const session = hostSession.agentSession;
+      if (!session) return { status: 'notFound' };
+      dispatchRecord = this.#live.byKey(hostSession.key) ?? null;
+      if (dispatchRecord && dispatchRecord.state === 'live') {
+        // Pin against the idle sweep for the command's whole lifetime: a
+        // long-running `!` must not evict the session under it.
+        this.#live.beginUse(dispatchRecord);
+        this.#live.touch(dispatchRecord);
+      }
+      if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
+
+      const agent = wireAgentFor(hostSession.currentPersona);
+      const started = Date.now();
+      // The record's canonical id is unknowable until the SDK mints the record
+      // timestamp at completion, so the running card carries a dispatch-time
+      // live id; the settle step bridges the canonical id to it.
+      const liveId = wireMessageId('custom', started, `[omp:bash] ${command}`);
+      let output = '';
+      const runningProjection = () => projectExecutionMessage(
+        { role: 'bashExecution', command, output, timestamp: started },
+        { sessionID, agent, wireId: liveId, status: 'running' }
+      );
+      const running = runningProjection();
+      this.bus.emit('message.updated', { sessionID, info: running.info }, directoryKey);
+      this.bus.emit('message.part.updated', { sessionID, part: running.parts[0], time: Date.now() }, directoryKey);
+
+      let result: BashResult;
+      try {
+        result = await session.executeBash(command, (chunk) => {
+          output += chunk;
+          // Fresh part per emit: queued bus frames serialize lazily, so a
+          // mutated part would smuggle later state into earlier events.
+          this.bus.emit('message.part.updated', {
+            sessionID,
+            part: runningProjection().parts[0],
+            time: Date.now()
+          }, directoryKey);
+        }, { excludeFromContext: excludeFromContext === true, useUserShell: true });
+      } catch (error) {
+        // Settle the running card as an error so the row does not spin
+        // forever, then propagate — the route answers 500.
+        const failed = projectExecutionMessage(
+          { role: 'bashExecution', command, output: errorText(error), timestamp: started },
+          { sessionID, agent, wireId: liveId, status: 'error' }
+        );
+        this.bus.emit('message.updated', { sessionID, info: failed.info }, directoryKey);
+        this.bus.emit('message.part.updated', { sessionID, part: failed.parts[0], time: Date.now() }, directoryKey);
+        throw error;
+      }
+
+      // The SDK appends the bashExecution record before executeBash resolves —
+      // except mid-turn (deferred to the pendingMessages flush at turn end) or
+      // after a branch transition (detached destination writes only the old
+      // branch's file, never session.messages — the live card below is then
+      // the whole visible surface, correctly). The full result fingerprint
+      // keeps concurrent same-command `!` runs from claiming each other's
+      // record: output/exitCode/cancelled land verbatim (#createMessage).
+      const record = [...(session.messages ?? [])].reverse().find(
+        (m): m is BashExecutionMessage =>
+          m.role === 'bashExecution'
+          && m.command === command
+          && m.output === result.output
+          && m.exitCode === result.exitCode
+          && m.cancelled === result.cancelled
+          && m.timestamp >= started
+      );
+      const projected = projectExecutionMessage(
+        record ?? {
+          role: 'bashExecution',
+          command,
+          output: result.output,
+          exitCode: result.exitCode,
+          cancelled: result.cancelled,
+          timestamp: started
+        },
+        { sessionID, agent, wireId: liveId }
+      );
+      if (record) {
+        hostSession.wireIdEchoes.set(executionWireId(record), liveId);
+      } else {
+        // Deferred append (mid-turn `!`): register the echo lazily when the
+        // record lands — #wireIdResolver drains this list on each projection.
+        (hostSession.pendingShellEchoes ??= []).push({
+          liveId,
+          command,
+          started,
+          output: result.output,
+          exitCode: result.exitCode,
+          cancelled: result.cancelled
+        });
+      }
+      this.bus.emit('message.updated', { sessionID, info: projected.info }, directoryKey);
+      this.bus.emit('message.part.updated', { sessionID, part: projected.parts[0], time: Date.now() }, directoryKey);
+      return {
+        status: 'ok',
+        message: projected,
+        result: {
+          output: result.output,
+          exitCode: result.exitCode,
+          cancelled: result.cancelled,
+          truncated: Boolean(result.truncated),
+          timedOut: Boolean(result.timedOut)
+        }
+      };
+    } finally {
+      // Same settlement contract as prompt(): the in-flight slot must not
+      // outlive the dispatch, and the busy emit above gets a compensating
+      // idle only when nothing else is running — a concurrent turn or a
+      // second `!` keeps the session busy.
+      if (dispatchRecord && dispatchRecord.state === 'live') this.#live.endUse(dispatchRecord);
+      const current = hostSession ? this.#live.byKey(hostSession.key)?.payload : null;
+      if (!current || (!current.agentSession?.isStreaming && !current.agentSession?.isBashRunning && current.awaitingAsyncSince === null)) {
         this.bus.emit('session.idle', { sessionID }, directoryKey);
       }
     }

@@ -1103,30 +1103,6 @@ class OpencodeService {
     return Boolean(response.data);
   }
 
-  async shellSession(params: {
-    runtimeKey?: string;
-    sessionId: string;
-    command: string;
-    agent?: string;
-    model?: { providerID?: string; modelID?: string };
-    messageId?: string;
-    directory?: string | null;
-  }): Promise<{ info: Message; parts: Part[] }> {
-    this.assertRuntimeUnchanged(params.runtimeKey);
-    const requestDirectory = this.normalizeCandidatePath(params.directory ?? null) ?? this.currentDirectory;
-    const response = await this.client.session.shell({
-      sessionID: params.sessionId,
-      ...(requestDirectory ? { directory: requestDirectory } : {}),
-      messageID: params.messageId,
-      agent: params.agent,
-      ...(params.model?.providerID && params.model?.modelID
-        ? { model: { providerID: params.model.providerID, modelID: params.model.modelID } }
-        : {}),
-      command: params.command,
-    });
-    return unwrapSdkData(response, 'session.shell') as { info: Message; parts: Part[] };
-  }
-
   async revertSession(sessionId: string, messageId: string, partId?: string, directory?: string | null): Promise<Session> {
     const requestDirectory = this.normalizeCandidatePath(directory) ?? this.currentDirectory;
     const response = await this.client.session.revert({

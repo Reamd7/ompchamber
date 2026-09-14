@@ -96,6 +96,7 @@ export const OMP_ENDPOINTS = {
   sessionQueue: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/queue`,
   sessionTree: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/tree`,
   sessionModel: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/model`,
+  sessionBash: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/bash`,
   sessionPlan: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/plan`,
   sessionPlanReview: (sessionID: string) => `/api/omp/sessions/${encodeURIComponent(sessionID)}/plan/review`,
   models: '/api/omp/models',
@@ -290,10 +291,58 @@ export interface OmpSessionReadOptions {
   kinds?: readonly OmpSessionEntryKind[];
 }
 
+/** `!` local-execution dispatch input (07 §3.2 / GAP-G05): the composer strips
+ * the mode-entering `!`, so `command` carries the bare shell line; a `!!`
+ * prefix arrives as a leading `!` and maps to `excludeFromContext`. */
+export interface OmpSessionBashInput {
+  sessionID: string;
+  directory: string;
+  command: string;
+  /** `!!` semantics — the result stays out of model context. */
+  excludeFromContext?: boolean;
+}
+
+/** Settled outcome summary; the shell card itself streams through wire events. */
+interface OmpSessionBashOutcome {
+  output?: string;
+  exitCode?: number;
+  cancelled?: boolean;
+  truncated?: boolean;
+  timedOut?: boolean;
+}
+
+export type OmpSessionBashResult =
+  | { ok: true; result: OmpSessionBashOutcome }
+  /** 404/501: the omp host does not offer the surface (old engine / feature off). */
+  | { ok: false; unavailable: true }
+  /** Command dispatch failed — session missing, evicting, or a dispatch error. */
+  | { ok: false; unavailable: false; error?: string };
+
+const SessionBashResultSchema = z.looseObject({
+  ok: z.literal(true),
+  result: z.looseObject({
+    output: z.string().optional(),
+    exitCode: z.number().optional(),
+    cancelled: z.boolean().optional(),
+    truncated: z.boolean().optional(),
+    timedOut: z.boolean().optional(),
+  }).optional(),
+});
+
+const SessionBashErrorSchema = z.looseObject({
+  error: z.string().optional(),
+  data: z.looseObject({ message: z.string().optional() }).optional(),
+});
+
 export interface OmpSessionAPI {
   getCustomMessages(sessionID: string, options: OmpSessionReadOptions): Promise<OmpFetchJsonResult<OmpCustomMessageEntry[]>>;
   getTelemetry(sessionID: string, options: OmpSessionReadOptions): Promise<OmpFetchJsonResult<OmpTurnTelemetryEntry[]>>;
   getEntries(sessionID: string, options: OmpSessionReadOptions): Promise<OmpFetchJsonResult<OmpSessionEntry[]>>;
+  /** `!` shell-mode dispatch (07 §3.2): runs the command in the session's own
+   * working directory through its BashRunner; the card streams via wire
+   * `message.updated`/`message.part.updated` events while this call awaits
+   * completion. */
+  runBash(input: OmpSessionBashInput): Promise<OmpSessionBashResult>;
 }
 
 export const createOmpSessionAPI = (apiOptions: OmpJsonApiOptions = {}): OmpSessionAPI => {
@@ -326,6 +375,43 @@ export const createOmpSessionAPI = (apiOptions: OmpJsonApiOptions = {}): OmpSess
           },
         },
       );
+    },
+    async runBash(input) {
+      const body: Pick<OmpSessionBashInput, 'command' | 'excludeFromContext'> = { command: input.command };
+      if (input.excludeFromContext) body.excludeFromContext = true;
+      let response: Response;
+      try {
+        response = await fetchImpl(OMP_ENDPOINTS.sessionBash(input.sessionID), {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          query: { directory: input.directory },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        return { ok: false, unavailable: false };
+      }
+      // status alone classifies the outcome; the body only carries the
+      // optional error text.
+      const payload = await response.json().catch(() => null);
+      const parsedError = SessionBashErrorSchema.safeParse(payload);
+      const errorMessage = parsedError.success ? (parsedError.data.error ?? parsedError.data.data?.message) : undefined;
+      if (response.status === 404 || response.status === 501) {
+        // The route's own 404 ('session not found') is a dispatch failure; an
+        // old engine / feature-off answer degrades the surface instead.
+        if (errorMessage === 'session not found') {
+          return { ok: false, unavailable: false, error: errorMessage };
+        }
+        return { ok: false, unavailable: true };
+      }
+      if (!response.ok) {
+        const failed: OmpSessionBashResult = { ok: false, unavailable: false };
+        if (errorMessage) failed.error = errorMessage;
+        return failed;
+      }
+      const parsed = SessionBashResultSchema.safeParse(payload);
+      return parsed.success
+        ? { ok: true, result: parsed.data.result ?? {} }
+        : { ok: false, unavailable: false };
     },
   };
 };

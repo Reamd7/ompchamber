@@ -120,6 +120,8 @@ export interface ShellExecutionMessageInput {
   output?: string;
   exitCode?: number;
   cancelled?: boolean;
+  /** `!!`/`$$` marker: the record stays out of model context. */
+  excludeFromContext?: boolean;
   timestamp: number;
 }
 
@@ -212,6 +214,8 @@ export interface WireMessageMetadata {
   command?: string;
   exitCode?: number;
   cancelled?: boolean;
+  /** `!!`/`$$` dispatch marker: the execution record is excluded from model context. */
+  excludeFromContext?: boolean;
   tokensBefore?: number;
   warning?: string;
   fromId?: string;
@@ -256,6 +260,15 @@ export interface WireMessagePart {
   callID?: string;
   tool?: string;
   state?: WireToolState;
+  /** `!` local-execution card payload (OpenCode user-shell row shape): the
+   * UI's shell card reads these fields on a `type: 'text'` part and never
+   * renders `text` itself. `status` runs 'running' while output streams and
+   * settles to 'completed' | 'error' | 'cancelled'. */
+  shellAction?: {
+    command?: string;
+    output?: string;
+    status?: string;
+  };
 }
 
 /** Wire message info (flat view: user and assistant variants share the core fields). */
@@ -960,15 +973,40 @@ export const projectDividerMessage = (
   };
 };
 
+/** Options for the `!`/`$` execution-row projector. */
+export interface ExecutionProjectionOptions extends BasicProjectionOptions {
+  /** Live-issued wire id. A `!` dispatch emits its running card before the
+   * transcript record exists (the SDK mints the record timestamp at
+   * completion), so the engine mints this id at dispatch and registers it on
+   * `wireIdEchoes` at settle — the phase-5 echo bridge then makes every later
+   * cold projection emit the same row id. */
+  wireId?: string;
+  /** Live-run status override: persisted records are always terminal, so a
+   * running dispatch reports 'running' while output streams. */
+  status?: string;
+}
+
+/** Canonical cold wire id for a `!`/`$` execution record — the formula the
+ * live dispatcher's echo bridge and every cold projection must agree on. */
+export const executionWireId = (message: ShellExecutionMessageInput): string => {
+  const kind = message.role === 'pythonExecution' ? 'python' : 'bash';
+  const command = kind === 'python' ? (message.code ?? '') : (message.command ?? '');
+  const output = String(message.output ?? '');
+  const cancelled = message.cancelled ? ' (cancelled)' : '';
+  const exit = message.exitCode !== undefined ? ` [exit ${message.exitCode}]` : '';
+  return wireMessageId('custom', message.timestamp, `[omp:${kind}] ` + command + output + exit + cancelled);
+};
+
 /**
  * Project a `!`/`$` shell-kernel execution role into a user-side synthetic
  * message (spec 05 §5.10, GAP-E14). Standalone segment (parentID='') so
  * turn pairing never anchors on it; the `[omp:bash]`/`[omp:python]` prefix
- * routes the UI to the execution-card renderer (shellAction classification).
+ * routes the UI to the execution-card renderer, and the part's `shellAction`
+ * payload (command/output/status) feeds its existing shell card.
  */
 export const projectExecutionMessage = (
   message: ShellExecutionMessageInput,
-  { sessionID, agent }: BasicProjectionOptions,
+  { sessionID, agent, wireId, status }: ExecutionProjectionOptions,
 ): ProjectedMessage => {
   const kind = message.role === 'pythonExecution' ? 'python' : 'bash';
   const command = kind === 'python' ? (message.code ?? '') : (message.command ?? '');
@@ -976,7 +1014,13 @@ export const projectExecutionMessage = (
   const output = String(message.output ?? '');
   const cancelled = message.cancelled ? ' (cancelled)' : '';
   const exit = message.exitCode !== undefined ? ` [exit ${message.exitCode}]` : '';
-  const id = wireMessageId('custom', message.timestamp, label + command + output + exit + cancelled);
+  const id = wireId ?? executionWireId(message);
+  const shellStatus = status
+    ?? (message.cancelled
+      ? 'cancelled'
+      : message.exitCode !== undefined && message.exitCode !== 0
+        ? 'error'
+        : 'completed');
   return {
     info: {
       id,
@@ -989,7 +1033,8 @@ export const projectExecutionMessage = (
         ompRole: kind,
         command,
         exitCode: message.exitCode,
-        cancelled: Boolean(message.cancelled)
+        cancelled: Boolean(message.cancelled),
+        excludeFromContext: Boolean(message.excludeFromContext)
       }
     },
     parts: [
@@ -1000,7 +1045,8 @@ export const projectExecutionMessage = (
         type: 'text',
         text: `${label}$ ${command}${exit}${cancelled}${output ? `\n${output}` : ''}`,
         synthetic: true,
-        time: { start: message.timestamp }
+        time: { start: message.timestamp },
+        shellAction: { command, output, status: shellStatus }
       }
     ]
   };
@@ -1288,7 +1334,16 @@ export const projectConversation = (
       );
     } else if (message.role === 'bashExecution' || message.role === 'pythonExecution') {
       // Standalone user-side segment: never anchors turn pairing (05 §5.10).
-      out.push(projectExecutionMessage(message, options));
+      // Flush first so the row renders after the turn it follows in
+      // transcript order, and honor the live dispatcher's echo id so a
+      // re-projection reconciles onto the row the dispatch already emitted.
+      flushAssistant();
+      out.push(
+        projectExecutionMessage(message, {
+          ...options,
+          wireId: options?.wireIdFor?.(message)
+        })
+      );
     } else if (message.role === 'fileMention') {
       out.push(projectFileMentionMessage(message, options));
     } else if (message.role === 'toolResult') {

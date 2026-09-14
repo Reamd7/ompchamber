@@ -12,7 +12,7 @@ import type { StreamPhase, ToolPopupContent, AgentMentionInfo } from './types';
 import type { TurnActivityGroup, TurnChangedFile, TurnGroupingContext } from '../lib/turns/types';
 import { cn } from '@/lib/utils';
 import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
-import { isEmptyTextPart, extractTextContent } from './partUtils';
+import { isEmptyTextPart, extractTextContent, isShellActionPart, type ShellActionPartLike } from './partUtils';
 import { FadeInOnReveal } from './FadeInOnReveal';
 import { Button } from '@/components/ui/button';
 import { SaveProjectPlanDialog } from '@/components/session/SaveProjectPlanDialog';
@@ -164,22 +164,8 @@ type SubtaskPartLike = Part & {
     };
 };
 
-type ShellActionPartLike = Part & {
-    type: 'text';
-    shellAction?: {
-        command?: unknown;
-        output?: unknown;
-        status?: unknown;
-    };
-};
-
 const isSubtaskPart = (part: Part): part is SubtaskPartLike => {
     return part.type === 'subtask';
-};
-
-const isShellActionPart = (part: Part): part is ShellActionPartLike => {
-    const textPart = part as unknown as { type?: unknown; shellAction?: unknown };
-    return textPart.type === 'text' && typeof textPart.shellAction === 'object' && textPart.shellAction !== null;
 };
 
 const normalizeSubtaskModel = (model: SubtaskPartLike['model']): string | null => {
