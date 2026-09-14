@@ -1933,7 +1933,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       const preceding = targetIndex > 0 ? messages[targetIndex - 1] : undefined
       if (preceding && textPart?.text) {
         await get().revertToMessage(sessionId, preceding.id)
-        useInputStore.getState().setPendingInputText(String(textPart.text), "replace")
+        useInputStore.getState().setPendingInputText(String(textPart.text), "replace", sessionId)
         const { toast } = await import("sonner")
         const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
         const { dictionary } = useI18nStore.getState()

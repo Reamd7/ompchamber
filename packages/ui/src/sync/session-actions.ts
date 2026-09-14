@@ -6,7 +6,8 @@
 import type { OpencodeClient, Session, Message, Part } from '@/lib/opencode/wire'
 import { Binary } from "./binary"
 import { useSessionUIStore } from "./session-ui-store"
-import { useInputStore } from "./input-store"
+import { useInputStore, buildRestoredAttachment } from "./input-store"
+import type { AttachedFile } from "@/stores/types/sessionTypes"
 import type { ChildStoreManager } from "./child-store"
 import { computeSubtreeIds } from "./scoped-blocking-requests"
 import { opencodeClient } from "@/lib/opencode/client"
@@ -602,16 +603,21 @@ function getSessionReplyClient(sessionId?: string): OpencodeClient {
   return sdk()
 }
 
-function restoreFilePartsToInput(fileParts: Array<Record<string, unknown>>): void {
-  useInputStore.getState().clearAttachedFiles()
+function restoreFilePartsToInput(fileParts: Array<Record<string, unknown>>, sessionId?: string | null): void {
+  const restored: AttachedFile[] = []
   for (const filePart of fileParts) {
     const url = typeof filePart.url === "string" ? filePart.url : ""
     const mime = typeof filePart.mime === "string" ? filePart.mime : "application/octet-stream"
     const filename = typeof filePart.filename === "string" ? filePart.filename : "attachment"
     if (url) {
-      useInputStore.getState().addRestoredAttachment({ url, mimeType: mime, filename })
+      restored.push(buildRestoredAttachment({ url, mimeType: mime, filename }))
     }
   }
+  // The restore is addressed to a session, not applied immediately: the chat
+  // column trails the live selection while an incoming session loads, so an
+  // immediate write would put the files — and the send affordance they
+  // create — on the outgoing session's composer.
+  useInputStore.getState().setPendingAttachmentRestore(restored, sessionId)
 }
 
 /**
@@ -2045,23 +2051,25 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
   const prevInputAttachments = [...useInputStore.getState().attachedFiles]
   const prevInputText = useInputStore.getState().pendingInputText
   const prevInputMode = useInputStore.getState().pendingInputMode
+  const prevInputSessionId = useInputStore.getState().pendingInputSessionId
+  const prevAttachmentRestore = useInputStore.getState().pendingAttachmentRestore
   const draftTarget: InlineCommentDraftTarget | null = directory
     ? { directory, sessionKey: sessionId }
     : null
   const prevDrafts = draftTarget ? useInlineCommentDraftStore.getState().getDrafts(draftTarget) : []
 
-  // Restore reverted message text and file attachments to input
+  // Restore reverted message text and file attachments to input. The text is
+  // addressed to this session's composer so it cannot land on whichever
+  // session the chat column happens to be showing during a switch.
   if (messageText) {
-    useInputStore.setState({
-      pendingInputText: messageText,
-      pendingInputMode: "replace" as const,
-    })
+    useInputStore.getState().setPendingInputText(messageText, "replace", sessionId)
   }
 
-  // Restore file/image attachments from the target message.
-  // Clear existing attachments first — previous revert's attachments
-  // must not carry over, even when the current message has no files.
-  restoreFilePartsToInput(submittedFileParts)
+  // Restore file/image attachments from the target message, addressed to this
+  // session's composer. The pending restore replaces existing attachments on
+  // consume, so a previous revert's attachments still cannot carry over, even
+  // when the current message has no files.
+  restoreFilePartsToInput(submittedFileParts, sessionId)
   if (draftTarget) restoreContextPartsToInput(submittedContextParts, draftTarget)
 
   // Call SDK and merge authoritative result into store
@@ -2091,10 +2099,12 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
     store.setState({
       session: rollback,
     })
-    // Rollback input store: restore previous text and attachments
+    // Rollback input store: restore previous text, pending restore, and attachments
     useInputStore.setState({
       pendingInputText: prevInputText,
       pendingInputMode: prevInputMode,
+      pendingInputSessionId: prevInputSessionId,
+      pendingAttachmentRestore: prevAttachmentRestore,
       attachedFiles: prevInputAttachments,
     })
     if (draftTarget) {
@@ -2208,15 +2218,17 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
 
   // Restore forked message text and file attachments to input. The engine
   // bounds the fork BEFORE this message (omp /branch semantics), so the
-  // composer refill is the re-ask affordance.
+  // composer refill is the re-ask affordance. The text is addressed to the
+  // forked session: the chat column trails the selection while the fork's
+  // messages load, and an untagged refill would be consumed by the source
+  // session's composer (and persisted as its draft).
   if (messageText) {
-    useInputStore.setState({
-      pendingInputText: messageText,
-      pendingInputMode: "replace" as const,
-    })
+    useInputStore.getState().setPendingInputText(messageText, "replace", forkedSession.id)
   }
-  // Clear existing attachments and restore file parts from the forked message.
-  restoreFilePartsToInput(fileParts)
+  // Restore file parts from the forked message onto the fork's composer
+  // (consumed once the chat column shows the fork; replaces existing
+  // attachments there, same as the text refill).
+  restoreFilePartsToInput(fileParts, forkedSession.id)
   // The forked session is a fresh draft target, so the attached context of the
   // forked message follows the text into its composer.
   if (directory) {

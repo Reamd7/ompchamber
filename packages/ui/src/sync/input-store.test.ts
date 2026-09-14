@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { strToU8, zipSync } from "fflate"
-import { useInputStore } from "./input-store"
+import { buildRestoredAttachment, useInputStore } from "./input-store"
 
 class MockFileReader {
   result: string | ArrayBuffer | null = null
@@ -50,6 +50,56 @@ const waitForReaderCount = async (count: number) => {
 
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
 
+describe("pending input session addressing", () => {
+  beforeEach(() => {
+    useInputStore.setState({
+      pendingInputText: null,
+      pendingInputMode: "replace",
+      pendingInputSessionId: null,
+      pendingAttachmentRestore: null,
+    })
+    useInputStore.getState().setAttachedFiles([])
+  })
+
+  test("setPendingInputText records the addressed session and consume clears it", () => {
+    useInputStore.getState().setPendingInputText("fork me", "replace", "session-fork")
+
+    expect(useInputStore.getState().pendingInputText).toBe("fork me")
+    expect(useInputStore.getState().pendingInputSessionId).toBe("session-fork")
+
+    const pending = useInputStore.getState().consumePendingInputText()
+    expect(pending).toEqual({ text: "fork me", mode: "replace" })
+    expect(useInputStore.getState().pendingInputSessionId).toBe(null)
+  })
+
+  test("a pending write without a session is unaddressed and clears a stale address", () => {
+    useInputStore.getState().setPendingInputText("fork me", "replace", "session-fork")
+    useInputStore.getState().setPendingInputText("anyone", "append")
+
+    expect(useInputStore.getState().pendingInputText).toBe("anyone")
+    expect(useInputStore.getState().pendingInputSessionId).toBe(null)
+  })
+
+  test("attachment restore records the addressed session and consume clears the slot", () => {
+    const file = buildRestoredAttachment({ url: "data:image/png;base64,AAAA", mimeType: "image/png", filename: "shot.png" })
+    useInputStore.getState().setPendingAttachmentRestore([file], "session-fork")
+
+    expect(useInputStore.getState().pendingAttachmentRestore).toEqual({ files: [file], sessionId: "session-fork" })
+
+    const pending = useInputStore.getState().consumePendingAttachmentRestore()
+    expect(pending?.files).toEqual([file])
+    expect(useInputStore.getState().pendingAttachmentRestore).toBe(null)
+    expect(useInputStore.getState().attachedFiles).toEqual([])
+  })
+
+  test("attachment restore without a session is unaddressed", () => {
+    const file = buildRestoredAttachment({ url: "data:image/png;base64,AAAA", mimeType: "image/png", filename: "shot.png" })
+    useInputStore.getState().setPendingAttachmentRestore([file])
+
+    expect(useInputStore.getState().pendingAttachmentRestore).toEqual({ files: [file], sessionId: null })
+  })
+})
+
 describe("input-store attachments", () => {
   beforeEach(() => {
     pendingReaders.length = 0
@@ -57,6 +107,7 @@ describe("input-store attachments", () => {
     useInputStore.setState({
       pendingInputText: null,
       pendingInputMode: "replace",
+      pendingInputSessionId: null,
       pendingSyntheticParts: null,
       activeEditorFile: null,
     })

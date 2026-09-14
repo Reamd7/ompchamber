@@ -71,6 +71,7 @@ mock.module("@/stores/useConfigStore", () => ({
 }))
 
 mock.module("../input-store", () => ({
+  buildRestoredAttachment: (file: unknown) => file,
   useInputStore: {
     getState: () => ({
       clearAttachedFiles: () => undefined,

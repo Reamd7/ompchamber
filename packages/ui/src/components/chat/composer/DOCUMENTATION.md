@@ -161,6 +161,12 @@ and the send path reading the same grammar.
   metadata back to render context blocks. PR instructions precede the PR diff.
   Queueing a message leaves context drafts in their store on purpose — the send
   that later delivers the queue consumes them.
+- Pending restores are session-addressed. `useInputStore`'s `pendingInputText`
+  and `pendingAttachmentRestore` carry a `sessionId` when a producer restores
+  into a specific session (fork refill, revert prefill); `ChatInput` consumes
+  them only while the composer shows that session. The chat column trails the
+  live selection while an incoming session loads, so consuming early would bind
+  the text, draft, and attachments to the outgoing session.
 - `state/useComposerDraft.ts` — a draft belongs to a (runtime, directory,
   session) identity. Writes are debounced while typing but forced at every edge
   where the page may stop running, because a pending timer is not a saved
