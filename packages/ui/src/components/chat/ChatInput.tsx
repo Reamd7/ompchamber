@@ -151,6 +151,7 @@ import {
 import { useAutocompletePosition } from './composer/state/useAutocompletePosition';
 import { useMessageHistory } from './composer/state/useMessageHistory';
 import { useComposerDraft } from './composer/state/useComposerDraft';
+import { useComposerAttachments } from './composer/state/useComposerAttachments';
 import { useDraftTarget } from './composer/state/useDraftTarget';
 import { useMobileComposerShell } from './composer/state/useMobileComposerShell';
 import { useMobileViewportPin } from './composer/state/useMobileViewportPin';
@@ -865,6 +866,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         onIdentityChange: () => setInputMode('normal'),
         onDraftRestored: () => composerRef.current?.selectAll(),
     });
+
+    // Attachment scoping: stash the outgoing identity's files and restore the
+    // incoming identity's, mirroring the draft switch above. Declared before
+    // the pending-restore consumers below so a session-addressed restore lands
+    // after the previous session's attachments have been moved aside.
+    useComposerAttachments(chatDraftIdentity);
 
     // Focus textarea when new session draft is opened
     const prevNewSessionDraftOpenRef = React.useRef(newSessionDraftOpen);

@@ -173,6 +173,13 @@ and the send path reading the same grammar.
   draft. Two orderings are load-bearing: the debounced write is skipped once
   while a draft is being restored, and a deleted draft's empty signature is
   recorded before a queued write could resurrect it.
+- `state/useComposerAttachments.ts` — `attachedFiles` is one global list, so
+  the hook scopes it to the same draft identity: on a switch it stashes the
+  outgoing identity's files under `lib/composerAttachmentStash.ts` and restores
+  the incoming identity's. It must be declared before the pending-restore
+  consumers so a session-addressed restore lands after the outgoing list is
+  moved aside. The stash is memory-only — attachments do not survive a reload
+  today, and their data URLs are too large for the persisted draft envelope.
 - `state/useDraftTarget.ts` — the draft can target a directory that does not
   exist yet (a worktree being created). It must survive not appearing in the
   branch list, or the selector snaps back to the project root mid-creation. It

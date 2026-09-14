@@ -1,5 +1,6 @@
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { clearChatDraft, createChatDraftIdentity } from '@/lib/chatDraftPersistence';
+import { clearComposerAttachments } from '@/lib/composerAttachmentStash';
 import { createMessageQueueTarget, useMessageQueueStore } from '@/stores/messageQueueStore';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import { useTodosPersistStore } from '@/stores/useTodosPersistStore';
@@ -20,5 +21,8 @@ export const cleanupPersistedSessionState = (identity: {
   useInlineCommentDraftStore.getState().clearSessionDrafts(identity.runtimeKey, identity.directory, identity.sessionId);
   useSessionPinnedStore.getState().clearPinnedSession(identity.runtimeKey, identity.directory, identity.sessionId);
   const chatDraftIdentity = createChatDraftIdentity(identity.runtimeKey, identity.directory, identity.sessionId);
-  if (chatDraftIdentity) clearChatDraft(chatDraftIdentity, true);
+  if (chatDraftIdentity) {
+    clearChatDraft(chatDraftIdentity, true);
+    clearComposerAttachments(chatDraftIdentity);
+  }
 };

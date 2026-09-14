@@ -1264,10 +1264,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     })
 
     writeRuntimeSessionMemory(runtimeMemoryKey(), { sessionId: null, directory, draft: nextDraft })
-    // Clear composer attachments when opening a new session draft.
-    // Attachments from the previous session (e.g. restored by revert) must
-    // not bleed into the new session's input.
-    useInputStore.getState().clearAttachedFiles()
+    // Composer attachments are scoped by draft identity (see
+    // useComposerAttachments): the selection change above makes the composer
+    // stash the outgoing session's files and restore the draft's own stash,
+    // so the previous session's attachments cannot bleed into the draft.
 
     if (options?.initialPrompt) {
       useInputStore.getState().setPendingInputText(options.initialPrompt)
