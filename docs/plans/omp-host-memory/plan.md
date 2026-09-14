@@ -381,7 +381,7 @@ Windows 记录字段名称必须和含义一致。不要把 `PagedMemorySize64`�
 
 ## 十三、相关文档
 
-`docs/memory.md` 已同步为本计划的证据分级：明确 wire replay、ID map、session 回收策略、tree manager 清理和 per-domain containers 的已确认留存；把冷读 RSS 台阶、reader 的 branch/index 限制和 1.4/3.4 GB 归因保留为未确认；把“无 SDK 改动下不能解决的活跃超长 writer”写成非目标。
+`baseline-evidence.md` 已同步为本计划的证据分级：明确 wire replay、ID map、session 回收策略、tree manager 清理和 per-domain containers 的已确认留存；把冷读 RSS 台阶、reader 的 branch/index 限制和 1.4/3.4 GB 归因保留为未确认；把“无 SDK 改动下不能解决的活跃超长 writer”写成非目标。
 
 ## 十四、修订记录
 

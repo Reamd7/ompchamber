@@ -1,6 +1,13 @@
 # 终端增强实施计划（第一批：最小投入 × 最高价值）
 
-> 从 TODO-terminal-gap.md 挑选：每项 ≤ 半天工作量，均为 P0/P1 级差距
+> 状态（2026-09-14 复核）：**本批 5 项全部落地**
+> 1. Ctrl+方向键：按结论保留 CSI `\e[1;5C/D`（terminalInput.test.ts 锁定该行为）
+> 2. alt-screen 滚动→箭头：已实现（terminalInput.ts:106 scroll-arrow 序列）
+> 3. 快捷键/修饰组合：terminalInput.ts 重写完成（28 行 → 110 行完整编码表）
+> 4. 断线重连状态事件：snapshot-first attach/reconnect 已进 terminal runtime
+> 5. OSC 133 注入：已实现（server/lib/terminal/shell-integration.js，zsh/bash wrapper + 扫描器，TerminalView 消费 command-finished）
+>
+> 从 gap-todo.md 挑选：每项 ≤ 半天工作量，均为 P0/P1 级差距
 > 前置条件：无（全部基于当前 HEAD，无依赖链）
 
 ## 批次总览

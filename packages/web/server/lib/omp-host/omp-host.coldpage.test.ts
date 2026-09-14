@@ -16,7 +16,7 @@ import {
 import type { ProjectedMessage } from './projection.ts';
 import { readSessionEventRows, readSessionScalars, readTranscriptMessagePage } from './cold-transcript-page.ts';
 
-// Parity matrix for the windowed cold reader (docs/PLAN.md §7.2/§7.3): the
+// Parity matrix for the windowed cold reader (docs/plans/omp-host-memory/plan.md §7.2/§7.3): the
 // streamed page must equal the full-materialization arm — real JSONL files,
 // real SDK loader + buildSessionContext as the reference. Both arms run the
 // same projection + divider-merge + pagination math the engine applies.

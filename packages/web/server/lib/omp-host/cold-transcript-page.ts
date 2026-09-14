@@ -30,7 +30,7 @@ import type {
 } from './projection.ts';
 
 /**
- * Windowed cold transcript reader (docs/PLAN.md §7.2).
+ * Windowed cold transcript reader (docs/plans/omp-host-memory/plan.md §7.2).
  *
  * The cold `getMessagesPage` used to `SessionManager.open` the whole JSONL —
  * parse every entry, project every message — then slice one page at the end.

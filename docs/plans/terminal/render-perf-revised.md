@@ -1,6 +1,6 @@
 # 终端渲染性能优化计划修订版
 
-> 本文件是 `PLAN-terminal-render-perf.md` 的独立修订版。原文件保留用于对照。
+> 本文件是 `render-perf.md` 的独立修订版。原文件保留用于对照。
 >
 > 范围：`references/ghostty-web` 的终端渲染、调度和 Wasm 读取路径，以及 `scripts/perf` 中用于验证该路径的生产构建性能场景。
 

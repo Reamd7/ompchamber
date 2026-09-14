@@ -14,7 +14,7 @@ omp agent 设置面重构(2026-08-22/23)已全部落地并推送;以下是剩余
 
 - [ ] 权限盾牌按钮、旧权限卡片链、question 卡片链
 - [ ] `AgentPermissionsEditor`(legacy agents 表单随之下线)
-- [ ] shell `!` 通道、wire 死事件消费链、`/command` 空端点
+- [ ] ~~shell `!` 通道~~（2026-09-14 核对：已转为正式功能下不了车——`398dcdde` 把 `!` bash 执行做成带流式 shell 卡片的产品面，从删除列车移除）、wire 死事件消费链、`/command` 空端点（仍在 endpoints.ts:899 返回 `[]`）
 - [ ] plan 实验残迹文件、BehaviorPage 旧路径、share 复核
 - [ ] wire `GET /agent` 的 build/plan 壳(07 章删除;omp 模式下 UI 已不消费)
 

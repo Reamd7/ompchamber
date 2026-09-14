@@ -11,7 +11,7 @@
 
 ## 以下为退役前的原始设计(2026-09-03,存档)
 
-状态:随批次 B 实施(计划见 docs/task-agent-progress-ui-plan.md 层 2 批次 B;B2 形态已裁决为侧板新标签页)。
+状态:随批次 B 实施(计划见 docs/plans/task-agent-progress/ui-plan.md 层 2 批次 B;B2 形态已裁决为侧板新标签页)。
 日期基线:2026-09-03(omp SDK 18.0.4)
 上游依据:04 章 §5.5(agent-runs 域)、§5.5.2(行操作门控先例);11 章(结构化读取面:on-demand 读取不进引导矩阵的先例)
 

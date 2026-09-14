@@ -62,7 +62,7 @@ export interface UsageInput {
    * (input+output+cacheRead+cacheWrite + orchestration). Emitted as the wire
    * `tokens.total` so the UI context meter prefers it over summing buckets
    * (OpenCode-wire precedent; TUI computes context from session accounting
-   * instead — see docs/omp-host-field-loss-fix-plan.md P7). */
+   * instead — see docs/plans/omp-host-field-loss/fix-plan.md P7). */
   totalTokens?: number;
   /** omp reports per-message cost as a number; the SDK usage object carries a cost breakdown. */
   cost?: number | { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; total?: number };

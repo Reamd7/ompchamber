@@ -2,6 +2,7 @@
 
 > 基线：2026-08-25 会话调研 `references/orca-terminal-research.md` + 本 worktree HEAD `f140c82c`
 > fork（`references/ghostty-web`，7 提交）已实现：鼠标上报 parity、focus 1004、触摸手势、Orca 式排版、font-bbox 基线
+> 进度（2026-09-14 复核）：第一批 5 项已全部落地，见 `batch1.md` 状态头
 
 ## 本项目定位与优先级依据
 
