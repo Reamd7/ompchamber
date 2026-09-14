@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat: the work status panel gains a Processes section.** Commands the agent runs now list the processes they spawned — live CPU and memory, output tails, and kill controls per process or the whole call — and a view-all dialog shows the full set at once; host processes no call can claim appear under "uncertain attribution" instead of inflating another call's tree.
+
 ## [1.31.0] - 2026-09-14
 
 - **Chat: `!` shell commands now work.** Typing `!` before a composer message quietly did nothing — the command now runs in the session's directory and streams its output into a card in the conversation. `!!` runs it without feeding output back to the model, and a bare `cd` is refused.

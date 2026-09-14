@@ -1,3 +1,7 @@
+## [Unreleased]
+
+- Chat: the work status panel gains a Processes section — commands the agent runs list the processes they spawned with live CPU/memory, output tails, and kill controls, plus a view-all dialog for the full set.
+
 ## [1.31.0] - 2026-09-14
 
 - Chat: `!` shell commands now work — prefixing a message with `!` runs the command in the session's directory and streams its output into a card in the conversation; `!!` keeps the output out of the model's context.
