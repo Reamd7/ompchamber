@@ -150,6 +150,25 @@ sync engine, and web server call; everything else answers 404.
   custom TS commands need a live session and stay absent). Gated by
   `commands.v1`; discovery failure degrades to the builtin-only list.
 - `domain-plugins.ts` (spec 09/OMP plugin parity) — `/api/omp/plugins` reads the SDK `PluginManager` and marketplace registries, exposes only sanitized metadata (never install paths), and `/api/omp/plugins/extensions/*` reads the profile-scoped `.omp/agent/extensions` files. Mutations return deferred-restart outcomes because extension discovery is session-start state.
+- `process-platform.ts` + `process-ledger.ts` + `domain-processes.ts` —
+  per-session process observability (plan `PLAN-session-process-monitor.md`).
+  Bash/eval run inside this host process, so every spawned process is a host
+  descendant; the SDK never reports pids, so `process-ledger.ts` reconstructs
+  ownership observationally: `tool_execution_*` events open/close invocation
+  windows, a 2s poller diffs the native descendant tree (pi-natives
+  `Process.children()` via the SDK's store path, never a new dependency), and
+  every row carries `attribution` (`window`/`argv`/`parent`/`job`/
+  `unattributed`) — ambiguous rows stay listed with `candidateSessionIds`
+  rather than being dropped. CPU/RSS come from per-pid platform readers
+  (Linux `/proc`, macOS `ps -p`, Windows `Get-Process`); enumeration or
+  sampling failures fabricate nothing — exits are marked only on observed
+  disappearance. `domain-processes.ts` serves `GET /api/omp/processes`
+  (directory snapshot), `GET /api/omp/processes/output` (bounded tail), and
+  `POST /api/omp/processes/{sessionID}/{key}` kill actions; `processes.v1`
+  gates the whole surface and `omp.processes.updated` carries the coalesced
+  revision bump. Honest limits: `setsid`/double-fork daemons reparent out of
+  the descendant tree and read as exited while alive; output produced after a
+  process detaches its fds is unreachable.
 - `event-dispositions.json` / `omp-event-registry.json` /
   `omp-bootstrap-matrix.json` — machine-checked contracts.
   `scripts/check-event-coverage.mjs` (repo root, `bun run check:events`)

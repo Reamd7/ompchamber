@@ -168,7 +168,7 @@ const crossChapterEvents = new Set([
   'omp.mode.changed', 'omp.goal.updated', 'omp.plan.review_requested', 'omp.plan.updated',
   'omp.chrome.updated',
   'omp.dialog.requested', 'omp.dialog.settled',
-  'omp.agents.updated', 'omp.jobs.updated', 'omp.tree.updated',
+  'omp.agents.updated', 'omp.jobs.updated', 'omp.tree.updated', 'omp.processes.updated',
   'omp.settings.updated', 'omp.queue.changed',
 ]);
 for (const name of registered) {

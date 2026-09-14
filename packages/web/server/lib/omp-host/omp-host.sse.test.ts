@@ -40,6 +40,7 @@ const mountSse = (): MountedSse => {
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
+      processDomain: { mount: () => {} },
       settingsStoreReady: async () => null,
       settingsStore: null,
       customAgents: new Map(),

@@ -107,6 +107,7 @@ which requests only providers enabled for this panel.
 | MCP | `useMcpStore` | connect/disconnect reuses the dropdown's actions |
 | Pinned messages | `getContextObligatoryMessages` + `state.part` | see below |
 | Todos | live `state.todo[sessionId]`, persisted fallback | live channel wins |
+| Processes | `useOmpProcessesStore` over `GET /api/omp/processes` (processes.v1), driven by `domains.processesRevision` | see below |
 
 ### Context usage has its own computation, on purpose
 
@@ -187,7 +188,7 @@ Ordering is by durability, not category:
    changes, PR, checks) and **Usage** — true for as long as the session is
    open. Usage sits here rather than lower down because a spent quota stops the
    work outright;
-2. **Subagents**, **Tasks** — what is happening right now;
+2. **Subagents**, **Tasks**, **Processes** — what is happening right now;
 3. **MCP**, **Pinned messages**, **Context sources** — supporting material.
 
 ## Switching it off
@@ -244,6 +245,30 @@ not read as two. Two deliberate differences:
 
 Rows truncate at this width, so each carries a delayed tooltip with the full
 task text.
+
+## Processes
+
+One row per tool invocation that produced OS processes — including the ones a
+session forgets to reap (`&`, nohup, detached descendants), which is the
+point of the section. The omp-host ledger (`server/lib/omp-host/
+process-ledger.ts`) owns attribution; the UI renders what it reports rather
+than re-deriving ownership:
+
+- Rows are keyed by invocation (`sessionID toolCallId`); unattributed roots
+  are keyed `proc:<pid>` and shown to every candidate session with an
+  "uncertain" pill — ambiguous ownership stays visible and killable, never
+  silently dropped.
+- The section is scoped to the current session: an entry matches when it is
+  owned by the session or lists it in `candidateSessionIds`.
+- Clicking a row opens `WorkStatusProcessDialog`: member pids with CPU/RSS,
+  the bounded output tail, and kill controls. The output endpoint is polled
+  only while the dialog is open — section rows ride snapshot revisions and
+  never fetch output themselves.
+- Kill is a two-tap arm (`killConfirm`) then `POST
+  /api/omp/processes/{sessionID}/{key}`; the ledger cancels the backing SDK
+  async job when the entry has one.
+- `processes.v1` gates the whole surface: capability off or native module
+  unavailable hides the section entirely.
 
 ## Collapsed Usage headline
 

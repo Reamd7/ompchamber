@@ -114,6 +114,10 @@ export const OMP_ENDPOINTS = {
   personas: '/api/omp/personas',
   persona: (name: string) => `/api/omp/personas/${encodeURIComponent(name)}`,
   agentRuns: '/api/omp/agent-runs',
+  processes: '/api/omp/processes',
+  processesOutput: '/api/omp/processes/output',
+  processAction: (sessionID: string, key: string) =>
+    `/api/omp/processes/${encodeURIComponent(sessionID)}/${encodeURIComponent(key)}`,
   jobs: '/api/omp/jobs',
   commands: '/api/omp/commands',
   providers: '/api/omp/providers',
@@ -2688,6 +2692,186 @@ export const createOmpAgentRunsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpAg
         OMP_ENDPOINTS.agentRuns,
         parseAgentRunsSnapshot,
         { query: { directory } },
+      );
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Processes API — per-session process observability (processes.v1).
+// `GET /api/omp/processes?directory=` is the authoritative snapshot; rows are
+// keyed by invocation (sessionID␠toolCallId) or `proc:<pid>` for unattributed
+// roots. Every row carries how it was attributed — the ledger's ownership is
+// best-effort, never silently dropped.
+// ---------------------------------------------------------------------------
+
+export const OMP_PROCESS_ATTRIBUTIONS = ['window', 'argv', 'parent', 'job', 'unattributed'] as const;
+export type OmpProcessAttribution = (typeof OMP_PROCESS_ATTRIBUTIONS)[number];
+
+/** One tracked OS process (server process-ledger OmpProcessMember). */
+export interface OmpProcessMember {
+  pid: number;
+  ppid: number;
+  argv: string;
+  cwd?: string;
+  state: 'running' | 'exited';
+  firstSeenAt: number;
+  exitedAt?: number;
+  rssBytes?: number;
+  cpuPercent?: number;
+  attribution: OmpProcessAttribution;
+  killedByUser?: boolean;
+}
+
+/** One row of the processes snapshot (server process-ledger OmpProcessEntry). */
+export interface OmpProcessEntry {
+  key: string;
+  sessionID: string | null;
+  /** Sessions owning an open window when an unattributed process appeared. */
+  candidateSessionIds?: string[];
+  kind: 'bash' | 'eval' | 'process';
+  command: string;
+  cwd?: string;
+  status: 'running' | 'exited' | 'killed' | 'failed';
+  startedAt: number;
+  endedAt?: number;
+  exitCode?: number | null;
+  jobId?: string;
+  attribution: OmpProcessAttribution | 'mixed';
+  liveCount: number;
+  totalRssBytes?: number;
+  totalCpuPercent?: number;
+  hasOutput: boolean;
+  processes: OmpProcessMember[];
+}
+
+export interface OmpProcessSnapshot {
+  revision: number;
+  generatedAt: number;
+  entries: OmpProcessEntry[];
+}
+
+export interface OmpProcessOutput {
+  key: string;
+  output: string;
+  truncated: boolean;
+  live: boolean;
+}
+
+export interface OmpProcessKillResult {
+  ok: boolean;
+  killed: number;
+  skipped: number[];
+}
+
+const ProcessMemberSchema = z.looseObject({
+  pid: z.number(),
+  ppid: z.number(),
+  argv: z.string(),
+  cwd: z.string().optional(),
+  state: z.enum(['running', 'exited']),
+  firstSeenAt: z.number(),
+  exitedAt: z.number().optional(),
+  rssBytes: z.number().optional(),
+  cpuPercent: z.number().optional(),
+  attribution: z.enum(OMP_PROCESS_ATTRIBUTIONS),
+  killedByUser: z.boolean().optional(),
+});
+
+const ProcessEntrySchema = z.looseObject({
+  key: z.string().min(1),
+  sessionID: z.string().nullable(),
+  candidateSessionIds: z.array(z.string()).optional(),
+  kind: z.enum(['bash', 'eval', 'process']),
+  command: z.string(),
+  cwd: z.string().optional(),
+  status: z.enum(['running', 'exited', 'killed', 'failed']),
+  startedAt: z.number(),
+  endedAt: z.number().optional(),
+  exitCode: z.number().nullable().optional(),
+  jobId: z.string().optional(),
+  attribution: z.enum([...OMP_PROCESS_ATTRIBUTIONS, 'mixed']),
+  liveCount: z.number(),
+  totalRssBytes: z.number().optional(),
+  totalCpuPercent: z.number().optional(),
+  hasOutput: z.boolean(),
+  processes: z.array(ProcessMemberSchema),
+});
+
+const ProcessSnapshotSchema = z.object({
+  revision: z.number(),
+  generatedAt: z.number(),
+  entries: z.array(ProcessEntrySchema),
+});
+
+const ProcessOutputSchema = z.object({
+  key: z.string(),
+  output: z.string(),
+  truncated: z.boolean(),
+  live: z.boolean(),
+});
+
+const ProcessKillResultSchema = z.object({
+  ok: z.boolean(),
+  killed: z.number(),
+  skipped: z.array(z.number()),
+});
+
+const parseProcessSnapshot = (value: unknown): OmpProcessSnapshot | null => {
+  const parsed = ProcessSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+const parseProcessOutput = (value: unknown): OmpProcessOutput | null => {
+  const parsed = ProcessOutputSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+const parseProcessKillResult = (value: unknown): OmpProcessKillResult | null => {
+  const parsed = ProcessKillResultSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+};
+
+export interface OmpProcessesAPI {
+  /**
+   * GET /api/omp/processes?directory=… — directory-scoped snapshot; callers
+   * filter entries by sessionID/candidateSessionIds. `unavailable` =
+   * processes.v1 off / old engine.
+   */
+  list(options: { directory: string }): Promise<OmpFetchJsonResult<OmpProcessSnapshot>>;
+  /** GET /api/omp/processes/output?directory=&key= — bounded output tail. */
+  output(options: { directory: string; key: string }): Promise<OmpFetchJsonResult<OmpProcessOutput>>;
+  /** POST /api/omp/processes/{sessionID}/{key} {kind:'kill', pid?}. */
+  kill(options: { sessionID: string; key: string; pid?: number }): Promise<OmpFetchJsonResult<OmpProcessKillResult>>;
+}
+
+export const createOmpProcessesAPI = (apiOptions: OmpJsonApiOptions = {}): OmpProcessesAPI => {
+  const fetchImpl = apiOptions.fetchImpl ?? runtimeFetch;
+  return {
+    list({ directory }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.processes,
+        parseProcessSnapshot,
+        { query: { directory } },
+      );
+    },
+    output({ directory, key }) {
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.processesOutput,
+        parseProcessOutput,
+        { query: { directory, key } },
+      );
+    },
+    kill({ sessionID, key, pid }) {
+      const body: { kind: string; pid?: number } = { kind: 'kill' };
+      if (pid !== undefined) body.pid = pid;
+      return ompFetchJson(
+        fetchImpl,
+        OMP_ENDPOINTS.processAction(sessionID, key),
+        parseProcessKillResult,
+        { method: 'POST', body: JSON.stringify(body) },
       );
     },
   };

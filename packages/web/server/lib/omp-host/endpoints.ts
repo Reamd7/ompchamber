@@ -1109,6 +1109,9 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   engine.dialogs.mount(route);
   registerModesDomainRoutes(route, engine.modesDomain, { features: ompFeatures() });
   engine.uriDomain.mount(route);
+  // Processes domain (PLAN-session-process-monitor.md): per-session process
+  // tracking over the engine's ledger.
+  engine.processDomain.mount(route);
   registerCommandsDomainRoutes(route, { features: ompFeatures(), liveCommandsFor: (directory) => engine.liveCommandsFor(directory) });
   registerChromeDomainRoutes(route, { chrome: engine.chrome, features: ompFeatures() });
   registerPluginsDomainRoutes(route, {

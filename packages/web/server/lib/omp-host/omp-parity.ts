@@ -58,6 +58,10 @@ export const ompFeatures = () => ({
   'uri.v1': true,
   'tree.v1': true,
   'agentRuns.v1': true,
+  // Session process monitor (PLAN-session-process-monitor.md): per-session
+  // process tracking, output tails and kill over the host's descendant tree.
+  // The domain self-gates to 501 while the native platform is unresolved.
+  'processes.v1': true,
   // 04: artifacts browse — host-level read-only listing of every session's
   // private local:// root (spec 04 §1 P2 item; endpoint /api/omp/artifacts).
   artifacts: true,

@@ -51,6 +51,13 @@
     },
     {
       "order": 7,
+      "domain": "processes",
+      "endpoints": [
+        "/api/omp/processes"
+      ]
+    },
+    {
+      "order": 8,
       "domain": "transcript",
       "endpoints": [
         "wire:/session/{id}/message",

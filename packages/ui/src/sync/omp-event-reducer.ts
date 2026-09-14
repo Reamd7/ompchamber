@@ -163,6 +163,10 @@ const AgentsUpdatedPayload = z.object({
   revision: z.number().optional(),
 }).loose();
 
+const ProcessesUpdatedPayload = z.object({
+  revision: z.number().optional(),
+}).loose();
+
 const QueueChangedPayload = z.object({
   version: z.number(),
 });
@@ -281,6 +285,8 @@ export interface OmpDomainTracking {
   lastEventId: number;
   /** agents snapshot revision (omp.agents.updated {revision}) — jump ⇒ refetch. */
   agentsRevision?: number;
+  /** processes snapshot revision (omp.processes.updated {revision}) — jump ⇒ refetch. */
+  processesRevision?: number;
   /** settings revision (omp.settings.updated {revision}) — jump ⇒ refetch. */
   settingsRevision?: number;
   settingsKeys?: string[];
@@ -793,6 +799,18 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         const known = draft.domains.agentsRevision;
         if (known !== undefined && payload.data.revision < known) return NO_CHANGE;
         draft.domains.agentsRevision = payload.data.revision;
+      }
+      draft.domains.lastEventId = envelope.id;
+      return { changed: true, effects };
+    }
+
+    case 'omp.processes.updated': {
+      const payload = ProcessesUpdatedPayload.safeParse(envelope.payload);
+      if (!payload.success) return drop(envelope);
+      if (payload.data.revision !== undefined) {
+        const known = draft.domains.processesRevision;
+        if (known !== undefined && payload.data.revision < known) return NO_CHANGE;
+        draft.domains.processesRevision = payload.data.revision;
       }
       draft.domains.lastEventId = envelope.id;
       return { changed: true, effects };

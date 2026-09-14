@@ -59,6 +59,9 @@ import {
 } from './domain-modes.ts';
 import type { PreparePlanReviewResult } from './domain-modes.ts';
 import { createDomainChrome } from './domain-chrome.ts';
+import { createProcessDomain } from './domain-processes.ts';
+import { ProcessLedger } from './process-ledger.ts';
+import { createProcessPlatform } from './process-platform.ts';
 import { errorText, errorCode, ompFeatures } from './omp-parity.ts';
 import { revealCommand } from './domain-plugins.ts';
 import {
@@ -77,6 +80,8 @@ import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
 import type { DomainChrome } from './domain-chrome.ts';
+import type { ProcessDomain } from './domain-processes.ts';
+import type { LedgerToolArgs, LedgerToolDetails, LedgerToolEnd } from './process-ledger.ts';
 import type { AgentsSnapshotEntry, DiskScanRow, UriDomain } from './domain-uri.ts';
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Idle-session sweep period (plan D2: 60s; the count gate is gone — quantity
@@ -337,6 +342,12 @@ export class OmpHostEngine {
   modesDomain: ModesDomain;
   chrome: DomainChrome;
   uriDomain: UriDomain;
+  /** Session process monitor (PLAN-session-process-monitor.md). The ledger
+   * needs the pi-natives Process API, which resolves asynchronously under
+   * isolated package layouts — null until `createProcessPlatform` lands or
+   * fails, in which case the domain keeps answering featureUnavailable. */
+  processLedger: ProcessLedger | null;
+  processDomain: ProcessDomain;
   bootError: unknown;
   bootPromise: Promise<void> | null;
   sweeper: ReturnType<typeof setInterval>;
@@ -572,6 +583,27 @@ export class OmpHostEngine {
         this.uriDomain?.aggregator.refresh();
       });
       this.uriDomain?.aggregator.refresh();
+    });
+    // Session process monitor: the domain mounts synchronously; the ledger
+    // lands when the platform adapter resolves pi-natives.
+    this.processLedger = null;
+    this.processDomain = createProcessDomain({
+      features: () => ompFeatures(),
+      ledger: () => this.processLedger
+    });
+    void createProcessPlatform().then((platform) => {
+      if (!platform || this.#closing) return;
+      this.processLedger = new ProcessLedger({
+        platform,
+        cpuCores: os.cpus().length,
+        runningJobIds: () => this.#runningAsyncJobIds(),
+        cancelJob: (jobId, sessionID) => this.#cancelAsyncJob(jobId, sessionID),
+        publishUpdate: (directory) => {
+          const ledger = this.processLedger;
+          if (!ledger) return;
+          this.ompBus.publish('omp.processes.updated', { revision: ledger.revision }, { directory, durable: true });
+        }
+      });
     });
     this.bootError = null;
     this.bootPromise = null;
@@ -2389,6 +2421,44 @@ export class OmpHostEngine {
     return out;
   }
 
+  /** Running async bash/eval job ids across all live sessions — the process
+   * ledger keeps those invocations' windows open so job-spawned processes
+   * still attribute. A subagent job's ownerId lives in its parent session's
+   * registry, but the id alone is all the ledger needs. */
+  #runningAsyncJobIds(): string[] {
+    const ids = new Set<string>();
+    for (const record of this.#live.snapshot()) {
+      if (record.state !== 'live' || !record.payload) continue;
+      const manager = record.payload.agentSession?.asyncJobManager;
+      if (!manager) continue;
+      for (const job of manager.getRunningJobs()) {
+        if (job.type === 'bash' || job.type === 'eval') ids.add(job.id);
+      }
+    }
+    return [...ids];
+  }
+
+  /** Cancel a managed job backing a killed ledger entry. The manager is a
+   * singleton attached to the first session (R12), so fall back to scanning
+   * live records when the entry's own session does not hold it. */
+  #cancelAsyncJob(jobId: string, sessionID: string): void {
+    for (const record of this.#live.snapshot()) {
+      if (record.sessionId !== sessionID) continue;
+      const manager = record.payload?.agentSession?.asyncJobManager;
+      if (manager?.getJob(jobId)) {
+        manager.cancel(jobId);
+        return;
+      }
+    }
+    for (const record of this.#live.snapshot()) {
+      const manager = record.payload?.agentSession?.asyncJobManager;
+      if (manager?.getJob(jobId)) {
+        manager.cancel(jobId);
+        return;
+      }
+    }
+  }
+
   /**
    * Full disposition of the SDK AgentSessionEvent union (spec 05 §5.1/§5.1.1,
    * master D2/D6): every one of the 24 members has an explicit case — wire
@@ -2497,6 +2567,15 @@ export class OmpHostEngine {
         hostSession.projector?.toolStarted(event.toolCallId, event.toolName, event.args, {
           ...(event.intent ? { title: event.intent } : {})
         });
+        this.processLedger?.onToolStart({
+          sessionID: sessionId,
+          directory,
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          // SAFETY: SDK declares bash/eval args as a typed bag; the ledger's
+          // LedgerToolArgs view only reads optional string fields.
+          args: (event.args ?? {}) as LedgerToolArgs
+        });
         return;
       }
       case 'tool_execution_update': {
@@ -2506,11 +2585,15 @@ export class OmpHostEngine {
         // live; other tools stay text/asyncState-only until a consumer needs
         // their partial details on the wire.
         const partial = typeof event.partialResult === 'string' ? undefined : event.partialResult;
+        const partialText = typeof event.partialResult === 'string' ? event.partialResult : (event.partialResult?.text ?? event.partialResult?.output);
         hostSession.projector?.toolPartial(event.toolCallId, {
-          text: typeof event.partialResult === 'string' ? event.partialResult : (event.partialResult?.text ?? event.partialResult?.output),
+          text: partialText,
           asyncState: event.partialResult?.details?.async?.state,
-          ...(event.toolName === 'task' && partial?.details !== undefined ? { details: partial.details } : {}),
+          ...(event.toolName === 'task' && partial?.details !== undefined ? { details: partial.details } : {})
         });
+        if (typeof partialText === 'string' && partialText) {
+          this.processLedger?.onToolUpdate({ sessionID: sessionId, directory, toolCallId: event.toolCallId, text: partialText });
+        }
         return;
       }
       case 'tool_execution_end': {
@@ -2518,6 +2601,18 @@ export class OmpHostEngine {
         // once so the transient part and the final finishAssistant projection
         // carry the same text output and structured details (spec 03 §5.4.1).
         const { content, text, details } = normalizeToolExecutionResult(event.result);
+        const endInput: LedgerToolEnd = {
+          sessionID: sessionId,
+          directory,
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          isError: Boolean(event.isError)
+        };
+        if (text) endInput.output = text;
+        // SAFETY: details is the SDK's declared result-details bag; the
+        // ledger only reads `details.async.jobId`.
+        if (details) endInput.details = details as LedgerToolDetails;
+        this.processLedger?.onToolEnd(endInput);
         hostSession.projector?.toolFinished(event.toolCallId, {
           output: text,
           error: event.isError ? text || 'Tool error' : undefined,
@@ -3810,6 +3905,7 @@ export class OmpHostEngine {
       // Settle-all is best-effort at shutdown.
     }
     this.uriDomain?.dispose?.();
+    this.processLedger?.dispose();
     try {
       await this.settingsStore?.disposeAll?.();
     } catch {

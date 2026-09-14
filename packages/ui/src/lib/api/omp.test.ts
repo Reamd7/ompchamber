@@ -8,6 +8,7 @@ import {
   createOmpEventsAPI,
   createOmpPersonasAPI,
   createOmpPluginsAPI,
+  createOmpProcessesAPI,
   createOmpSessionAPI,
   createOmpSettingsAPI,
   createOmpTreeAPI,
@@ -1120,5 +1121,117 @@ describe('createOmpDiagnosticsAPI — /api/omp/diagnostics', () => {
     // Missing the whole shape on an old-engine route is treated as
     // "surface absent" (invalidIsUnavailable), not a parse failure.
     expect(await malformed.get()).toEqual({ ok: false, unavailable: true });
+  });
+});
+
+describe('createOmpProcessesAPI (processes.v1)', () => {
+  const snapshotPayload = {
+    revision: 7,
+    generatedAt: 1234,
+    entries: [{
+      key: 'ses_1 call_1',
+      sessionID: 'ses_1',
+      kind: 'bash',
+      command: 'sleep 600 &',
+      status: 'running',
+      startedAt: 100,
+      attribution: 'window',
+      liveCount: 1,
+      totalRssBytes: 4096,
+      totalCpuPercent: 0.5,
+      hasOutput: true,
+      processes: [{
+        pid: 4242,
+        ppid: 1000,
+        argv: 'sleep 600',
+        state: 'running',
+        firstSeenAt: 100,
+        rssBytes: 4096,
+        cpuPercent: 0.5,
+        attribution: 'window',
+      }],
+    }, {
+      key: 'proc:9000',
+      sessionID: null,
+      candidateSessionIds: ['ses_1', 'ses_2'],
+      kind: 'process',
+      command: 'node server.js',
+      status: 'running',
+      startedAt: 200,
+      attribution: 'unattributed',
+      liveCount: 1,
+      hasOutput: false,
+      processes: [{
+        pid: 9000,
+        ppid: 1,
+        argv: 'node server.js',
+        state: 'running',
+        firstSeenAt: 200,
+        attribution: 'unattributed',
+      }],
+    }],
+  };
+
+  test('list passes the directory query and parses entries incl. unattributed roots', async () => {
+    const calls: Array<{ path: string; query?: Query }> = [];
+    const api = createOmpProcessesAPI({
+      fetchImpl: (async (path: string, init?: RequestInit & { query?: Query }) => {
+        calls.push({ path, query: init?.query });
+        return jsonResponse(200, snapshotPayload);
+      }) as unknown as typeof fetch,
+    });
+    const result = await api.list({ directory: '/repo' });
+    expect(calls[0]?.path).toBe('/api/omp/processes');
+    expect(calls[0]?.query?.directory).toBe('/repo');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.revision).toBe(7);
+      expect(result.data.entries).toHaveLength(2);
+      expect(result.data.entries[0]?.processes[0]?.pid).toBe(4242);
+      // Unattributed roots keep their candidate sessions — never dropped.
+      expect(result.data.entries[1]?.sessionID).toBeNull();
+      expect(result.data.entries[1]?.candidateSessionIds).toEqual(['ses_1', 'ses_2']);
+    }
+  });
+
+  test('output passes directory + key; 501 → unavailable', async () => {
+    const calls: Array<{ path: string; query?: Query }> = [];
+    const api = createOmpProcessesAPI({
+      fetchImpl: (async (path: string, init?: RequestInit & { query?: Query }) => {
+        calls.push({ path, query: init?.query });
+        return jsonResponse(200, { key: 'k', output: 'hello', truncated: false, live: true });
+      }) as unknown as typeof fetch,
+    });
+    const result = await api.output({ directory: '/repo', key: 'ses_1 call_1' });
+    expect(calls[0]?.path).toBe('/api/omp/processes/output');
+    expect(calls[0]?.query?.key).toBe('ses_1 call_1');
+    expect(result.ok && result.data.output).toBe('hello');
+
+    const off = createOmpProcessesAPI({
+      fetchImpl: (async () => jsonResponse(501, { error: 'feature-off' })) as unknown as typeof fetch,
+    });
+    expect(await off.output({ directory: '/repo', key: 'k' })).toEqual({ ok: false, unavailable: true });
+  });
+
+  test('kill posts the action route with the kind/pid body and encodes the key', async () => {
+    const calls: Array<{ path: string; method: string; body?: string }> = [];
+    const api = createOmpProcessesAPI({
+      fetchImpl: (async (path: string, init?: RequestInit) => {
+        calls.push({ path, method: init?.method ?? 'GET', body: init?.body as string | undefined });
+        return jsonResponse(200, { ok: true, killed: 1, skipped: [] });
+      }) as unknown as typeof fetch,
+    });
+    const result = await api.kill({ sessionID: 'ses_1', key: 'ses_1 call_1', pid: 4242 });
+    expect(calls[0]?.path).toBe(`/api/omp/processes/ses_1/${encodeURIComponent('ses_1 call_1')}`);
+    expect(calls[0]?.method).toBe('POST');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({ kind: 'kill', pid: 4242 });
+    expect(result.ok && result.data.killed).toBe(1);
+  });
+
+  test('malformed snapshot → failure result, never empty success', async () => {
+    const api = createOmpProcessesAPI({
+      fetchImpl: (async () => jsonResponse(200, { entries: 'nope' })) as unknown as typeof fetch,
+    });
+    expect(await api.list({ directory: '/repo' })).toEqual({ ok: false, unavailable: false });
   });
 });

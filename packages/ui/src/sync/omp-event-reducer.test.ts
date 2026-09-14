@@ -255,6 +255,13 @@ describe('applyOmpEvent — other-domain tracking + unknown types', () => {
     expect(draft.domains.agentsRevision).toBe(10);
   });
 
+  test('processes.updated tracks the highest revision only', () => {
+    const draft = state();
+    applyOmpEvent(draft, envelope({ id: 1, type: 'omp.processes.updated', payload: { revision: 10 } }));
+    expect(applyOmpEvent(draft, envelope({ id: 2, type: 'omp.processes.updated', payload: { revision: 9 } })).changed).toBe(false);
+    expect(draft.domains.processesRevision).toBe(10);
+  });
+
   test('queue.changed versions are monotonic per session', () => {
     const draft = state();
     applyOmpEvent(draft, envelope({ id: 1, type: 'omp.queue.changed', sessionID: 'ses_1', payload: { version: 3 } }));

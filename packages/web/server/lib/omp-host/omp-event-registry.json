@@ -14,6 +14,7 @@
     "omp.dialog.settled": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/dialogs"], "since": "1.0" },
     "omp.agents.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/agent-runs"], "since": "1.0" },
     "omp.jobs.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/jobs"], "since": "1.0", "gated": "jobs.v1" },
+    "omp.processes.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/processes"], "since": "1.0", "gated": "processes.v1" },
     "omp.tree.updated": { "durable": true, "scope": "directory", "snapshotEndpoints": ["/api/omp/sessions/{id}/tree"], "since": "1.0" },
     "omp.compaction.started": { "durable": false, "scope": "session", "snapshotEndpoints": [], "since": "1.0" },
     "omp.compaction.ended": { "durable": false, "scope": "session", "snapshotEndpoints": ["/api/omp/sessions/{id}/entries"], "since": "1.0" },
