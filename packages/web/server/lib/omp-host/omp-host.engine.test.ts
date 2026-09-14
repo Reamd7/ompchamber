@@ -394,6 +394,63 @@ describe('OmpHostEngine prompt dispatch', () => {
     expect(session.prompt).toHaveBeenCalledWith('after this turn', { images: [], streamingBehavior: 'followUp' });
   });
 
+  test('reports busy for the accepted-pre-dispatch window, then idle when no turn starts', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s2');
+    session.isStreaming = false;
+    const original = session.prompt;
+    // Park inside session.prompt — the shape of the SDK's image-describe
+    // fallback: dispatch work blocks before any agent_start event exists,
+    // and the UI reads "idle + unanswered user message" as a failed send.
+    let release: () => void = () => {};
+    let promptEntered = false;
+    session.prompt = mock(() => {
+      promptEntered = true;
+      return new Promise<boolean>((resolve) => { release = () => resolve(true); });
+    });
+    try {
+      const pending = engine.prompt({ sessionID: 's2', directory: '/repo', text: 'with image', model: undefined, agent: undefined, images: [{ data: 'QUJD', mimeType: 'image/png' }], delivery: undefined, messageID: undefined });
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (promptEntered) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      const busy = engine.bus.replay.filter(
+        (e) => e.envelope.type === 'session.status' && e.envelope.properties.sessionID === 's2',
+      );
+      // SAFETY: bus payloads are the engine's own emitted wire shapes.
+      expect((busy.at(-1)?.envelope.properties as { status?: { type?: string } } | undefined)?.status?.type).toBe('busy');
+      // The authoritative snapshot must agree: without record.inFlight a
+      // mid-window /session/status poll reports idle and the UI's resync
+      // lowers the event-set busy right back — which is what re-raised the
+      // "engine did not start a reply" banner during a long describe call.
+      const statuses = await engine.getSessionStatuses({ directory: '/repo' });
+      expect(statuses.s2?.type).toBe('busy');
+      release();
+      await pending;
+      const replay = engine.bus.replay;
+      const busyIdx = replay.findIndex((e) => e.envelope.type === 'session.status' && e.envelope.properties.sessionID === 's2');
+      const idleIdx = replay.findIndex((e) => e.envelope.type === 'session.idle' && e.envelope.properties.sessionID === 's2');
+      expect(busyIdx).toBeGreaterThanOrEqual(0);
+      expect(idleIdx).toBeGreaterThan(busyIdx);
+    } finally {
+      session.prompt = original;
+    }
+  });
+
+  test('emits no compensating idle when the dispatch left a turn running', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const session = sessionFor('s3');
+    session.isStreaming = true;
+    try {
+      await engine.prompt({ sessionID: 's3', directory: '/repo', text: 'mid turn', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+      expect(engine.bus.replay.some((e) => e.envelope.type === 'session.idle' && e.envelope.properties.sessionID === 's3')).toBe(false);
+      expect(engine.bus.replay.some((e) => e.envelope.type === 'session.status' && e.envelope.properties.sessionID === 's3')).toBe(true);
+    } finally {
+      session.isStreaming = false;
+    }
+  });
+
   test('getTodos projects the latest SDK TodoPhase via its `tasks` field', async () => {
     const engine = new OmpHostEngine({ agentDir });
     await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'plan', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
@@ -455,8 +512,11 @@ describe('OmpHostEngine prompt dispatch', () => {
 
   test('abort force-disposes a session whose teardown never settles and emits session.idle', async () => {
     const engine = new OmpHostEngine({ agentDir, abortTeardownTimeoutMs: 25 });
-    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'stuck turn' });
     const session = sessionFor('s2');
+    // A stuck turn is mid-stream: the dispatch window's compensating idle
+    // only fires when prompt() ended without a running turn.
+    session.isStreaming = true;
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'stuck turn' });
     // One signal-blind tool / never-settling post-prompt task: abort's own
     // teardown promise parks forever (pi-agent-session abort awaits it bare).
     session.abort = mock(() => new Promise(() => {}));
@@ -476,8 +536,11 @@ describe('OmpHostEngine prompt dispatch', () => {
 
   test('abort survives a rejecting teardown without escalating', async () => {
     const engine = new OmpHostEngine({ agentDir });
-    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm up' });
     const session = sessionFor('s1');
+    // Abort targets a running turn; a still-streaming session emits no
+    // dispatch-window idle for the warm-up prompt.
+    session.isStreaming = true;
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm up' });
     session.abort = mock(async () => {
       throw new Error('teardown blew up');
     });
@@ -500,6 +563,9 @@ describe('OmpHostEngine prompt dispatch', () => {
     // test exercised it).
     session.abort = mock(async () => {});
     session.dispose = mock(async () => {});
+    // The limbo state this test settles is "pi idle, engine busy": earlier
+    // tests share the fake and may leave isStreaming set.
+    session.isStreaming = false;
     const live = engine.liveRecord('s2')?.payload;
     if (!live) throw new Error('s2 missing');
     live.awaitingAsyncSince = Date.now();

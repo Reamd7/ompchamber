@@ -166,6 +166,40 @@ describe("applyDirectoryEvent", () => {
     expect(draft.part.msg_1).toEqual([serverText, optimisticFile])
   })
 
+  test("replaces a later optimistic file part after the head slot was reconciled", () => {
+    // Server echo parts arrive one at a time: once the text part takes slot 0,
+    // the head of the array already carries a sessionID — the still-pending
+    // optimistic file part must still dedupe, or an image attachment renders
+    // twice (orphaned optimistic part plus the server echo).
+    type PartFixture = {
+      id: string
+      type: "text" | "file"
+      sessionID?: string
+      text?: string
+      filename?: string
+      mime?: string
+    }
+    // SAFETY: fixtures carry exactly the wire Part fields the reducer reads;
+    // optimistic parts omit sessionID on purpose (client-generated ids).
+    const part = (overrides: PartFixture): Part => ({ messageID: "msg_1", ...overrides } as Part)
+    const optimisticText = part({ id: "prt_optimistic_text", type: "text", text: "hi" })
+    const optimisticFile = part({ id: "prt_optimistic_file", type: "file", filename: "a.png", mime: "image/png" })
+    const serverText = part({ id: "prt_server_text", sessionID: "ses_1", type: "text", text: "hi" })
+    const serverFile = part({ id: "prt_server_file", sessionID: "ses_1", type: "file", filename: "a.png", mime: "image/png" })
+    // SAFETY: envelope literal matches the message.part.updated contract.
+    const partUpdated = (p: Part): Event => ({ type: "message.part.updated", properties: { part: p } } as Event)
+    const draft = state({
+      // SAFETY: minimal Message fixture — the reducer only reads id/time here.
+      message: { ses_1: [{ id: "msg_1", sessionID: "ses_1", role: "user", time: { created: 1 } } as Message] },
+      part: { msg_1: [optimisticText, optimisticFile] },
+    })
+
+    applyDirectoryEvent(draft, partUpdated(serverText))
+    applyDirectoryEvent(draft, partUpdated(serverFile))
+
+    expect(draft.part.msg_1).toEqual([serverText, serverFile])
+  })
+
   test("returns typed materialization when delta arrives before parts", () => {
     const result = applyDirectoryEvent(state(), deltaEvent())
 

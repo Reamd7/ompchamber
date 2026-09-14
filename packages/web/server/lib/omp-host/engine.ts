@@ -44,7 +44,7 @@ import {
   splitModelSelector,
   paginateProjectedMessages,
 } from './projection.ts';
-import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMessageInput, WireIdMessageInput } from './projection.ts';
+import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMessageInput, WireIdMessageInput, UserProjectionOptions } from './projection.ts';
 import { createSettingsStore } from './domain-models.ts';
 import { createDomainDialogs } from './domain-dialogs.ts';
 import {
@@ -2803,7 +2803,10 @@ export class OmpHostEngine {
       if (live.directory !== normalizeDirectoryKey(directory)) continue;
       const stale = live.awaitingAsyncSince !== null && now - live.awaitingAsyncSince > AWAITING_ASYNC_TIMEOUT_MS;
       if (stale) live.awaitingAsyncSince = null;
-      statuses[id] = live.agentSession?.isStreaming || live.awaitingAsyncSince !== null ? { type: 'busy' } : { type: 'idle' };
+      // inFlight covers the accepted-but-not-yet-dispatching prompt window —
+      // the image-describe fallback for text-only models parks there for many
+      // seconds while the SDK reports nothing streaming.
+      statuses[id] = record.inFlight > 0 || live.agentSession?.isStreaming || live.awaitingAsyncSince !== null ? { type: 'busy' } : { type: 'idle' };
     }
     return statuses;
   }
@@ -2945,162 +2948,189 @@ export class OmpHostEngine {
     delivery?: string;
     messageID?: string;
   }): Promise<ProjectedMessage | null> {
-    await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
-    // Dual-write gate (plan §8.2): when the transcript changed externally in
-    // a way the live mirror cannot absorb (dirty rewrite) and the session is
-    // inactive, rebuild the writer from disk — bounded to one bounded retry,
-    // never during streaming/retry/compaction/async work, and always through
-    // the key's gate so no second writer can appear.
-    await this.#reloadIfDirty(sessionID, directoryKey);
-    const hostSession = await this.#materialize(sessionID, directoryKey);
-    if (!hostSession) return null;
-    const session = hostSession.agentSession;
-    if (!session) return null;
-    if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
-    const promptRecord = this.#live.byKey(hostSession.key);
-    if (promptRecord && promptRecord.state === 'live') {
-      // A prompt is a user-visible write: refresh the idle TTL. The turn's
-      // streaming lifetime is guarded by the SDK activity getters; the
-      // in-flight slot below covers only the synchronous dispatch window.
-      this.#live.touch(promptRecord);
-    }
+    // Accepted for dispatch: report busy immediately. Everything below —
+    // boot, dirty-transcript reload, materialize, the extension-UI init wait,
+    // and above all the image-describe fallback inside session.prompt for
+    // text-only models — can take many seconds while the session still reads
+    // idle, and the UI calls an unanswered user message on an idle session a
+    // failed send. The in-flight slot below additionally makes the
+    // authoritative /session/status snapshot agree, so a poll mid-window
+    // cannot lower the status back to idle; the finally hands the real state
+    // back when the call ends without a running turn.
+    this.bus.emit('session.status', { sessionID, status: { type: 'busy' } }, directoryKey);
+    let hostSession: HostSession | null = null;
+    let dispatchRecord: LiveRecord<HostSession> | null = null;
+    try {
+      await this.#boot();
+      // Dual-write gate (plan §8.2): when the transcript changed externally in
+      // a way the live mirror cannot absorb (dirty rewrite) and the session is
+      // inactive, rebuild the writer from disk — bounded to one bounded retry,
+      // never during streaming/retry/compaction/async work, and always through
+      // the key's gate so no second writer can appear.
+      await this.#reloadIfDirty(sessionID, directoryKey);
+      hostSession = await this.#materialize(sessionID, directoryKey);
+      if (!hostSession) return null;
+      const session = hostSession.agentSession;
+      if (!session) return null;
+      dispatchRecord = this.#live.byKey(hostSession.key);
+      if (dispatchRecord && dispatchRecord.state === 'live') {
+        // The synchronous dispatch window pins the record against the idle
+        // sweep and reports busy to the status snapshot for as long as the
+        // call sits in pre-dispatch work (image describe, extension init).
+        this.#live.beginUse(dispatchRecord);
+        // A prompt is a user-visible write: refresh the idle TTL. The turn's
+        // streaming lifetime is guarded by the SDK activity getters.
+        this.#live.touch(dispatchRecord);
+      }
+      if (hostSession.extensionUiPromise) await hostSession.extensionUiPromise;
 
-    // Model switching: resolve and apply when the requested selector differs.
-    if (model && (model.providerID || model.modelID)) {
-      const target = this.#resolveModel(model);
-      if (target && modelSelector(target) !== modelSelector(session.model)) {
-        await session.setModel(target).catch((error) => {
-          console.error('[omp-host] model switch failed:', errorText(error));
-        });
-        this.registry.update(directoryKey, sessionID, {
-          model: modelSelector(target)
+      // Model switching: resolve and apply when the requested selector differs.
+      if (model && (model.providerID || model.modelID)) {
+        const target = this.#resolveModel(model);
+        if (target && modelSelector(target) !== modelSelector(session.model)) {
+          await session.setModel(target).catch((error) => {
+            console.error('[omp-host] model switch failed:', errorText(error));
+          });
+          this.registry.update(directoryKey, sessionID, {
+            model: modelSelector(target)
+          });
+        }
+      }
+
+      const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
+      // Persona switch (02 §5.1 D-B3, R2-M3): explicit session-level switch —
+      // the wire `agent` parameter and registry meta normalize through
+      // personaKeyFor, so the deleted build/plan values and unset all mean
+      // "standard" and never trigger a rebuild. A switch to a persona that no
+      // longer exists is rejected before any state changes: the session keeps
+      // its current persona and the message is not dispatched.
+      const nextPersona = personaKeyFor(agent ?? meta?.persona ?? meta?.agent);
+      if (nextPersona !== 'standard' && !this.personas.has(nextPersona)) {
+        throw new ModeDomainError(404, {
+          error: 'persona-not-found',
+          name: nextPersona
         });
       }
-    }
+      if (nextPersona !== hostSession.currentPersona) {
+        // The persona shapes the session's system prompt and toolset at
+        // construction, so rebuild the AgentSession over the same transcript —
+        // through the gate: the old session must finish disposing before the
+        // replacement materializes (plan §3.4, no double writer).
+        const pinned = hostSession;
+        const personaRecord = this.#live.byKey(pinned.key);
+        await this.#live.withOperation(sessionKey(directoryKey, sessionID), async () => {
+          const record = this.#live.byKey(pinned.key);
+          if (record && record.state === 'live' && record.payload === pinned) {
+            this.#evictRecord(record, 'persona-rebuild', { emitIdle: false });
+          }
+        });
+        if (personaRecord) await this.#awaitDisposalBounded(personaRecord);
+        this.registry.update(directoryKey, sessionID, {
+          persona: nextPersona === 'standard' ? undefined : nextPersona,
+          agent: undefined
+        });
+        const rebuilt = await this.#materialize(sessionID, directoryKey);
+        if (!rebuilt) return null;
+        return this.prompt({
+          sessionID,
+          directory: directoryKey,
+          text,
+          model,
+          agent: nextPersona,
+          images,
+          delivery,
+          messageID
+        });
+      }
 
-    const meta = (this.registry.get(directoryKey, sessionID) ?? undefined);
-    // Persona switch (02 §5.1 D-B3, R2-M3): explicit session-level switch —
-    // the wire `agent` parameter and registry meta normalize through
-    // personaKeyFor, so the deleted build/plan values and unset all mean
-    // "standard" and never trigger a rebuild. A switch to a persona that no
-    // longer exists is rejected before any state changes: the session keeps
-    // its current persona and the message is not dispatched.
-    const nextPersona = personaKeyFor(agent ?? meta?.persona ?? meta?.agent);
-    if (nextPersona !== 'standard' && !this.personas.has(nextPersona)) {
-      throw new ModeDomainError(404, {
-        error: 'persona-not-found',
-        name: nextPersona
-      });
-    }
-    if (nextPersona !== hostSession.currentPersona) {
-      // The persona shapes the session's system prompt and toolset at
-      // construction, so rebuild the AgentSession over the same transcript —
-      // through the gate: the old session must finish disposing before the
-      // replacement materializes (plan §3.4, no double writer).
-      const personaRecord = this.#live.byKey(hostSession.key);
-      await this.#live.withOperation(sessionKey(directoryKey, sessionID), async () => {
-        const record = this.#live.byKey(hostSession.key);
-        if (record && record.state === 'live' && record.payload === hostSession) {
-          this.#evictRecord(record, 'persona-rebuild', { emitIdle: false });
-        }
-      });
-      if (personaRecord) await this.#awaitDisposalBounded(personaRecord);
-      this.registry.update(directoryKey, sessionID, {
-        persona: nextPersona === 'standard' ? undefined : nextPersona,
-        agent: undefined
-      });
-      const rebuilt = await this.#materialize(sessionID, directoryKey);
-      if (!rebuilt) return null;
-      return this.prompt({
-        sessionID,
-        directory: directoryKey,
-        text,
-        model,
-        agent: nextPersona,
-        images,
-        delivery,
-        messageID
-      });
-    }
-
-    const content = [];
-    if (typeof text === 'string' && text.length > 0) content.push({ type: 'text', text });
-    for (const image of images ?? []) {
-      content.push({
-        type: 'image',
-        data: image.data,
-        mimeType: image.mimeType || 'image/png'
-      });
-    }
-    const wire = projectUserMessage(
-      {
-        role: 'user',
-        content: content.length === 1 && content[0].type === 'text' ? content[0].text : content,
-        timestamp: Date.now()
-      },
-      {
+      const content = [];
+      if (text) content.push({ type: 'text', text });
+      for (const image of images ?? []) {
+        content.push({
+          type: 'image',
+          data: image.data,
+          mimeType: image.mimeType || 'image/png'
+        });
+      }
+      const wireOptions: UserProjectionOptions = {
         sessionID,
         agent: wireAgentFor(nextPersona),
         model: session.model,
         // Exact send-time snapshot: the effective level the turn runs with
         // (explicit pick, else the model's default) rides model.variant.
         thinkingLevel: this.#effectiveThinkingLevel(session),
-        ...(typeof messageID === 'string' && messageID ? { wireId: messageID } : {})
+      };
+      if (messageID) wireOptions.wireId = messageID;
+      const wire = projectUserMessage(
+        {
+          role: 'user',
+          content: content.length === 1 && content[0].type === 'text' ? content[0].text : content,
+          timestamp: Date.now()
+        },
+        wireOptions
+      );
+      hostSession.pendingUserWireId = messageID || null;
+      hostSession.lastUserWireId = wire.info.id;
+      this.bus.emit('message.updated', { sessionID, info: wire.info }, directoryKey);
+      for (const part of wire.parts) {
+        this.bus.emit('message.part.updated', { sessionID, part, time: Date.now() }, directoryKey);
       }
-    );
-    hostSession.pendingUserWireId = typeof messageID === 'string' && messageID ? messageID : null;
-    hostSession.lastUserWireId = wire.info.id;
-    this.bus.emit('message.updated', { sessionID, info: wire.info }, directoryKey);
-    for (const part of wire.parts) {
-      this.bus.emit('message.part.updated', { sessionID, part, time: Date.now() }, directoryKey);
-    }
 
-    if (!meta?.timeCreated) {
-      this.registry.update(directoryKey, sessionID, {
-        timeCreated: wire.info.time.created
-      });
-    }
-    // Title generation mirrors the TUI: attempted at submission time on every
-    // user message, while the turn runs. pi skips internally once the session
-    // is named and retries later messages when an attempt failed or the input
-    // was too low-signal to title. Slash commands never title in the TUI
-    // (commands are host-level there); guard them here too — an unguarded
-    // "/compact" once titled the session with the entire compaction summary.
-    if (!text.trimStart().startsWith('/')) {
-      session.maybeStartTitleGeneration(text);
-    }
+      if (!meta?.timeCreated) {
+        this.registry.update(directoryKey, sessionID, {
+          timeCreated: wire.info.time.created
+        });
+      }
+      // Title generation mirrors the TUI: attempted at submission time on every
+      // user message, while the turn runs. pi skips internally once the session
+      // is named and retries later messages when an attempt failed or the input
+      // was too low-signal to title. Slash commands never title in the TUI
+      // (commands are host-level there); guard them here too — an unguarded
+      // "/compact" once titled the session with the entire compaction summary.
+      if (!text.trimStart().startsWith('/')) {
+        session.maybeStartTitleGeneration(text);
+      }
 
-    const textOnly = content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : (text ?? '');
-    // SAFETY: filtered blocks are image parts; base64+mime is the wire form.
-    const imageContents = content.filter((block) => block.type === 'image') as Array<{ type: 'image'; data: string; mimeType: string }>;
-    // Dispatch mirrors the TUI input loop: every submission carries a
-    // streaming behavior so a live turn never rejects the prompt. steer
-    // injects into the running turn (the TUI's Enter-while-streaming);
-    // when idle, and routing through prompt() rather than steer() keeps
-    // "/" extension commands working mid-turn (steer() rejects them).
-    const streamingBehavior = delivery === 'queue' ? 'followUp' : 'steer';
-    // TUI/RPC parity (rpc-mode.ts tryRunRpcSkillCommand): a slash command
-    // naming a skill runs as a skill-prompt custom message so the transcript
-    // carries the invocation card; plain prompt() executes the command with
-    // no card at all.
-    if (imageContents.length === 0 && await this.#tryRunSkillCommand(hostSession, textOnly, streamingBehavior)) {
-      return wire;
-    }
-    const dispatchRecord = this.#live.byKey(hostSession.key);
-    if (dispatchRecord && dispatchRecord.state === 'live') this.#live.beginUse(dispatchRecord);
-    try {
+      const textOnly = content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : (text ?? '');
+      // SAFETY: filtered blocks are image parts; base64+mime is the wire form.
+      const imageContents = content.filter((block) => block.type === 'image') as Array<{ type: 'image'; data: string; mimeType: string }>;
+      // Dispatch mirrors the TUI input loop: every submission carries a
+      // streaming behavior so a live turn never rejects the prompt. steer
+      // injects into the running turn (the TUI's Enter-while-streaming);
+      // when idle, and routing through prompt() rather than steer() keeps
+      // "/" extension commands working mid-turn (steer() rejects them).
+      const streamingBehavior = delivery === 'queue' ? 'followUp' : 'steer';
+      // TUI/RPC parity (rpc-mode.ts tryRunRpcSkillCommand): a slash command
+      // naming a skill runs as a skill-prompt custom message so the transcript
+      // carries the invocation card; plain prompt() executes the command with
+      // no card at all.
+      if (imageContents.length === 0 && await this.#tryRunSkillCommand(hostSession, textOnly, streamingBehavior)) {
+        return wire;
+      }
       await session.prompt(textOnly, {
         images: imageContents,
         streamingBehavior
       });
+      return wire;
     } finally {
       // Terminal activity (streaming, async work) is read from the SDK
       // getters by the sweeper; the dispatch slot must never outlive the
       // dispatch itself — a lost agent_end must not pin the session forever.
       if (dispatchRecord && dispatchRecord.state === 'live') this.#live.endUse(dispatchRecord);
+      // The busy emit above covers the accepted-but-not-yet-dispatching
+      // window. When the call ended without a running turn — a thrown
+      // dispatch, a dropped prompt, a queued followUp on an idle session —
+      // hand the real state back so the session never sticks on busy. Read
+      // the CURRENT record's payload: a persona rebuild swaps it mid-call,
+      // and materialize may have produced nothing at all. Mirrors the
+      // getSessionStatuses predicate (post-endUse inFlight is already 0) so
+      // a limbo session awaiting an async ack does not get a spurious idle.
+      const current = hostSession ? this.#live.byKey(hostSession.key)?.payload : null;
+      if (!current || (!current.agentSession?.isStreaming && current.awaitingAsyncSince === null)) {
+        this.bus.emit('session.idle', { sessionID }, directoryKey);
+      }
     }
-    return wire;
   }
 
   /**

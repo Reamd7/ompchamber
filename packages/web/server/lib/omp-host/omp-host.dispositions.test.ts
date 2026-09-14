@@ -19,25 +19,35 @@ const sessionFiles = [{ id: 's1', path: path.join(sessionDir, 's1.jsonl') }];
 const listenersBySession = new Map();
 const fakeSessions = new Map();
 
-const makeFakeSession = (id: string) => ({
-  model: { provider: 'p1', id: 'current-model' },
-  isStreaming: false,
-  // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
-  messages: [] as Array<{ role?: string }>,
-  thinkingLevel: 'high',
-  subscribe(listener: (event: { type: string }) => void) {
-    listenersBySession.set(id, listener);
-    return () => listenersBySession.delete(id);
-  },
-  sessionManager: { onSessionNameChanged: (): void => {}, getSessionName: (): undefined => undefined },
-  getLastAssistantMessage: (): null => null,
-  setModel: async (): Promise<Record<string, never>> => ({}),
-  maybeStartTitleGeneration: () => {},
-  prompt: async (): Promise<boolean> => true,
-  skillsSettings: { enableSkillCommands: true },
-  skills: [{ name: 'find-skills', filePath: 'C:/Users/reamd/.agents/skills/find-skills/SKILL.md', baseDir: 'C:/Users/reamd/.agents/skills/find-skills' }],
-  promptCustomMessage: async () => true,
-});
+const makeFakeSession = (id: string) => {
+  const session = {
+    model: { provider: 'p1', id: 'current-model' },
+    isStreaming: false,
+    // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
+    messages: [] as Array<{ role?: string }>,
+    thinkingLevel: 'high',
+    subscribe(listener: (event: { type: string }) => void) {
+      listenersBySession.set(id, listener);
+      return () => listenersBySession.delete(id);
+    },
+    sessionManager: { onSessionNameChanged: (): void => {}, getSessionName: (): undefined => undefined },
+    getLastAssistantMessage: (): null => null,
+    setModel: async (): Promise<Record<string, never>> => ({}),
+    maybeStartTitleGeneration: () => {},
+    // A resolved prompt() means a turn was dispatched: it is streaming until
+    // the test emits agent_end. engine.prompt reports busy for the
+    // pre-dispatch window and only compensates with idle when this flag
+    // stayed off.
+    prompt: async (): Promise<boolean> => {
+      session.isStreaming = true;
+      return true;
+    },
+    skillsSettings: { enableSkillCommands: true },
+    skills: [{ name: 'find-skills', filePath: 'C:/Users/reamd/.agents/skills/find-skills/SKILL.md', baseDir: 'C:/Users/reamd/.agents/skills/find-skills' }],
+    promptCustomMessage: async () => true,
+  };
+  return session;
+};
 
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
@@ -136,7 +146,16 @@ const harness = async () => {
   // Engine wire-arg records destructure every member as required; omitted
   // optional fields are padded with `undefined` (identical destructured values).
   await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'seed', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
-  const emit = <T extends { type: string }>(event: T): void => { const fn = listenersBySession.get('s1'); if (fn) fn(event); };
+  const emit = <T extends { type: string }>(event: T): void => {
+    const fn = listenersBySession.get('s1');
+    if (fn) fn(event);
+    // A real agent_end means the pi turn ended — even when isTerminal=false
+    // (async resume pending, the engine keeps busy via awaitingAsyncSince).
+    if (event.type === 'agent_end') {
+      const session = fakeSessions.get('s1');
+      if (session) session.isStreaming = false;
+    }
+  };
   return {
     engine,
     emit,

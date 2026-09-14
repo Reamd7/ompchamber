@@ -196,6 +196,18 @@ sync engine, and web server call; everything else answers 404.
   (an `agent_end` `isTerminal=false` whose resume never came) and emits
   `session.idle` the same way; a genuine async resume re-raises busy via
   `agent_start`.
+- `engine.prompt` marks the live record in-flight (`#live.beginUse`) and
+  emits `session.status` busy as soon as the dispatch is accepted, before
+  boot/materialize/the user-message echo: SDK pre-dispatch work — the
+  image-describe fallback for text-only models above all — can take many
+  seconds while no `agent_start` exists and `session.isStreaming` is false,
+  and a user message sitting on an idle session is what the UI's
+  unanswered-send watchdog calls a failed send. `getSessionStatuses` counts
+  `record.inFlight` as busy too, so the authoritative `/session/status`
+  snapshot cannot lower the event-set status mid-window. When the call ends
+  without a running turn (`session.isStreaming` false — thrown dispatch,
+  dropped prompt, queued-but-idle followUp), a compensating `session.idle`
+  restores the real state so the session never sticks on busy.
 - Every emitted event carries the session's directory so `/event?directory=`
   scoping and the web server's hub routing stay correct.
 - Message history paging follows the OpenCode cursor contract:
@@ -207,7 +219,10 @@ sync engine, and web server call; everything else answers 404.
   from this contract.
 - Prompt bodies follow the wire contract's `parts` array
   (`SessionPromptAsyncData`): text parts join into the prompt text, `file`
-  parts decode from `data:` URLs into image inputs, agent mentions append
+  parts decode from `data:` URLs and classify by MIME — `image/*` (minus
+  `image/svg+xml`) becomes an image input, text-decodable payloads inline as
+  `<file>` blocks, and known-binary/undecodable content degrades to an
+  explicit omission note; agent mentions append
   when absent from the text, and `messageID` is echoed as the projected user
   message id so the client's optimistic message reconciles in place during
   the live turn. The legacy `{ prompt: { text, files } }` body is still

@@ -121,6 +121,7 @@ export interface WirePromptPart {
   text?: unknown;
   url?: unknown;
   name?: unknown;
+  filename?: unknown;
   mime?: string;
   prompt?: unknown;
   source?: WirePromptPartSource | null;
@@ -150,6 +151,92 @@ export interface PromptPayload {
 }
 
 /**
+ * Image MIME check for the prompt's image channel. `image/svg+xml` is XML
+ * text — providers reject it as an image payload, so it inlines as text.
+ */
+const isImageMime = (mimeType: string): boolean =>
+  mimeType.toLowerCase().startsWith('image/') && mimeType.toLowerCase() !== 'image/svg+xml';
+
+/**
+ * Attachment types whose bytes can never be inlined as text. Anything not on
+ * this list still has to pass the byte sniff before it inlines.
+ */
+const BINARY_ATTACHMENT_MIME =
+  /^(application\/(pdf|zip|x-[^/]+|gzip|msword|vnd\.|oasis\.)|audio\/|video\/|font\/)/i;
+
+const ATTACHMENT_TEXT_SAMPLE_BYTES = 4096;
+
+/**
+ * Same heuristic the UI's attachment pipeline applies (NUL → binary, >30%
+ * control bytes → binary), re-checked server-side so a mislabeled part never
+ * reaches the provider as an image.
+ */
+const looksLikeUtf8Text = (bytes: Buffer): boolean => {
+  const sample = bytes.subarray(0, ATTACHMENT_TEXT_SAMPLE_BYTES);
+  let control = 0;
+  for (const byte of sample) {
+    if (byte === 0) return false;
+    if (byte < 9 || (byte > 13 && byte < 32)) control += 1;
+  }
+  return control / Math.max(1, sample.length) <= 0.3;
+};
+
+/** Decoded data-URL file part: raw bytes plus the effective MIME type. */
+interface WireFilePayload {
+  bytes: Buffer;
+  mimeType: string;
+}
+
+const wireFileFromDataUrl = (url: string, fallbackMime: string | undefined): WireFilePayload | null => {
+  const comma = url.indexOf(',');
+  const meta = url.slice(5, comma === -1 ? url.length : comma);
+  const payload = url.slice(comma === -1 ? url.length : comma + 1);
+  const mimeType = meta.split(';')[0] || fallbackMime || 'application/octet-stream';
+  let bytes: Buffer;
+  if (/;base64$/i.test(meta)) {
+    bytes = Buffer.from(payload, 'base64');
+  } else {
+    // Non-base64 data URLs are percent-encoded UTF-8 (RFC 2397); malformed
+    // escapes keep the raw payload rather than failing the whole prompt.
+    let decoded = payload;
+    try {
+      decoded = decodeURIComponent(payload);
+    } catch {
+      // keep raw payload
+    }
+    bytes = Buffer.from(decoded, 'utf8');
+  }
+  return bytes.length > 0 ? { bytes, mimeType } : null;
+};
+
+const escapeFileAttr = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * Text-block form of a non-image attachment: decoded content inlined when it
+ * is decodable text, an explicit omission note otherwise. The note matters —
+ * silently dropping the block or pushing it into `images` is what made a
+ * `.txt`/`.pdf` attachment 400 against vision providers and then poison every
+ * subsequent turn by replaying the bad block from session history.
+ */
+const fileAttachmentText = (filename: string | undefined, mimeType: string, bytes: Buffer): string => {
+  const name = escapeFileAttr(filename && filename.length > 0 ? filename : 'attachment');
+  if (!BINARY_ATTACHMENT_MIME.test(mimeType) && looksLikeUtf8Text(bytes)) {
+    return `<file name="${name}" mime="${mimeType}">\n${bytes.toString('utf8')}\n</file>`;
+  }
+  return `<file name="${name}" mime="${mimeType}">[attachment omitted: binary content is not supported]</file>`;
+};
+
+/**
+ * Runtime string probe without `typeof` (anti-slop): returns the string
+ * unchanged, undefined for anything else — including typed-but-wrong runtime
+ * values in untrusted request JSON. Generic so callers can probe any declared
+ * field type; the tag check does the verification.
+ */
+const stringOf = <T,>(value: T): string | undefined =>
+  Object.prototype.toString.call(value) === '[object String]' ? String(value) : undefined;
+
+/**
  * Parse a prompt request body into the engine's prompt inputs.
  *
  * The wire contract sends `{ parts: [text|file|agent|subtask], messageID }`
@@ -157,38 +244,57 @@ export interface PromptPayload {
  * `{ prompt: { text, files } }` shape is still accepted for the synchronous
  * `/message` consumer. Dropping `parts` here persisted every user message
  * with an empty part list, which the UI hides after a reload.
+ *
+ * Only `image/*` file parts become image payloads: `session.prompt` forwards
+ * `images` to the provider verbatim, so a non-image part sent as an "image"
+ * hard-fails the request against vision models and leaves a poisoned block
+ * in session history. Text-decodable files inline as `<file>` blocks;
+ * binaries degrade to an explicit omission note.
  */
 export const promptPayloadFromWire = (body: WirePromptBody): PromptPayload => {
-  const messageID = typeof body?.messageID === 'string' && body.messageID ? body.messageID : undefined;
+  const messageID = stringOf(body?.messageID) || undefined;
   const parts = Array.isArray(body?.parts) ? body.parts : [];
   if (parts.length === 0) {
-    return {
-      text: body?.prompt?.text ?? '',
-      images: (body?.prompt?.files ?? [])
-        .filter((file): file is { data: string; mime?: string } => typeof file?.data === 'string')
-        .map((file) => ({ data: file.data, mimeType: file.mime })),
-      messageID,
-    };
+    const texts: string[] = [];
+    const images: PromptImage[] = [];
+    for (const file of body?.prompt?.files ?? []) {
+      const data = stringOf(file?.data);
+      if (!data) continue;
+      const mimeType = stringOf(file?.mime) || 'application/octet-stream';
+      if (isImageMime(mimeType)) {
+        images.push({ data, mimeType });
+      } else {
+        texts.push(fileAttachmentText(undefined, mimeType, Buffer.from(data, 'base64')));
+      }
+    }
+    const promptText = stringOf(body?.prompt?.text);
+    if (promptText) texts.unshift(promptText);
+    return { text: texts.join('\n\n'), images, messageID };
   }
   const texts: string[] = [];
   const images: PromptImage[] = [];
   for (const part of parts) {
-    if (part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
-      texts.push(part.text);
-    } else if (part.type === 'file' && typeof part.url === 'string' && part.url.startsWith('data:')) {
-      const comma = part.url.indexOf(',');
-      const meta = part.url.slice(5, comma === -1 ? part.url.length : comma);
-      const payload = part.url.slice(comma === -1 ? part.url.length : comma + 1);
-      const isBase64 = /;base64$/i.test(meta);
-      images.push({
-        data: isBase64 ? payload : Buffer.from(payload, 'utf8').toString('base64'),
-        mimeType: meta.split(';')[0] || part.mime || 'application/octet-stream',
-      });
-    } else if (part.type === 'agent' && typeof part.name === 'string' && part.name) {
-      const mention = part.source?.value ?? `@${part.name}`;
+    if (part.type === 'text') {
+      const text = stringOf(part.text);
+      if (text) texts.push(text);
+    } else if (part.type === 'file') {
+      const url = stringOf(part.url);
+      if (!url || !url.startsWith('data:')) continue;
+      const file = wireFileFromDataUrl(url, stringOf(part.mime));
+      if (!file) continue;
+      if (isImageMime(file.mimeType)) {
+        images.push({ data: file.bytes.toString('base64'), mimeType: file.mimeType });
+      } else {
+        texts.push(fileAttachmentText(stringOf(part.filename), file.mimeType, file.bytes));
+      }
+    } else if (part.type === 'agent') {
+      const name = stringOf(part.name);
+      if (!name) continue;
+      const mention = stringOf(part.source?.value) ?? `@${name}`;
       if (!texts.some((text) => text.includes(mention))) texts.push(mention);
-    } else if (part.type === 'subtask' && typeof part.prompt === 'string' && part.prompt) {
-      texts.push(part.prompt);
+    } else if (part.type === 'subtask') {
+      const prompt = stringOf(part.prompt);
+      if (prompt) texts.push(prompt);
     }
   }
   return { text: texts.join('\n\n'), images, messageID };
