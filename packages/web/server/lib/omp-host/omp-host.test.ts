@@ -743,9 +743,46 @@ describe('promptPayloadFromWire', () => {
 
   test('encodes non-base64 data URLs and falls back to the part mime type', () => {
     const payload = promptPayloadFromWire({
-      parts: [{ type: 'file', url: 'data:text/plain,aGVsbG8=' }],
+      parts: [{ type: 'file', url: 'data:image/png,iVBORw0K' }],
     });
-    expect(payload.images).toEqual([{ data: Buffer.from('aGVsbG8=', 'utf8').toString('base64'), mimeType: 'text/plain' }]);
+    expect(payload.images).toEqual([{ data: Buffer.from('iVBORw0K', 'utf8').toString('base64'), mimeType: 'image/png' }]);
+  });
+
+  test('inlines text file parts instead of sending them as images', () => {
+    const contents = Buffer.from('hello file contents', 'utf8').toString('base64');
+    const payload = promptPayloadFromWire({
+      parts: [
+        { type: 'text', text: 'read this file' },
+        { type: 'file', mime: 'text/plain', filename: 'note.txt', url: `data:text/plain;base64,${contents}` },
+      ],
+    });
+    expect(payload.images).toEqual([]);
+    expect(payload.text).toBe(
+      'read this file\n\n<file name="note.txt" mime="text/plain">\nhello file contents\n</file>',
+    );
+  });
+
+  test('replaces binary file parts with an explicit omission note', () => {
+    const pdf = Buffer.from('%PDF-1.7 binary-junk', 'utf8').toString('base64');
+    const payload = promptPayloadFromWire({
+      parts: [
+        { type: 'text', text: 'summarize' },
+        { type: 'file', mime: 'application/pdf', filename: 'report.pdf', url: `data:application/pdf;base64,${pdf}` },
+      ],
+    });
+    expect(payload.images).toEqual([]);
+    expect(payload.text).toBe(
+      'summarize\n\n<file name="report.pdf" mime="application/pdf">[attachment omitted: binary content is not supported]</file>',
+    );
+  });
+
+  test('treats image/svg+xml as text, not an image payload', () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>', 'utf8').toString('base64');
+    const payload = promptPayloadFromWire({
+      parts: [{ type: 'file', filename: 'icon.svg', url: `data:image/svg+xml;base64,${svg}` }],
+    });
+    expect(payload.images).toEqual([]);
+    expect(payload.text).toBe('<file name="icon.svg" mime="image/svg+xml">\n<svg xmlns="http://www.w3.org/2000/svg"/>\n</file>');
   });
 
   test('keeps the legacy prompt.text/files body working', () => {
