@@ -156,7 +156,11 @@ sync engine, and web server call; everything else answers 404.
   descendant; the SDK never reports pids, so `process-ledger.ts` reconstructs
   ownership observationally: `tool_execution_*` events open/close invocation
   windows, a 2s poller diffs the native descendant tree (pi-natives
-  `Process.children()` via the SDK's store path, never a new dependency), and
+  `Process.children()` on the addon instance the SDK already loaded, read
+  from the CommonJS cache — never a new dependency, and never
+  `require.resolve` against the SDK: Bun's standalone resolver spins forever
+  on that inside `bun build --compile` binaries launched outside a
+  node_modules tree, which is every packaged desktop start), and
   every row carries `attribution` (`window`/`argv`/`parent`/`job`/
   `unattributed`) — ambiguous rows stay listed with `candidateSessionIds`
   rather than being dropped. CPU/RSS come from per-pid platform readers

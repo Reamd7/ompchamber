@@ -1,13 +1,11 @@
 // OS process access for the session process monitor
 // (PLAN-session-process-monitor.md).
 //
-// Tree enumeration and termination ride pi-natives `Process`, resolved
-// through the SDK's dependency context: isolated package layouts keep
-// `@oh-my-pi/pi-natives` out of this package's specifier graph, but the
-// package directory sits next to `@oh-my-pi/pi-coding-agent` in every
-// supported install layout (bun `.bun` store scope dirs, npm hoisted
-// `node_modules/@oh-my-pi/*`). `omp-host-natives.js` resolves tool binaries
-// the same way.
+// Tree enumeration and termination ride pi-natives `Process`. Isolated
+// package layouts keep `@oh-my-pi/pi-natives` out of this package's
+// specifier graph, so the addon is not imported here: the embedded SDK loads
+// it at module-evaluation time, and this module reuses that resident
+// instance (see `findResidentNatives`).
 //
 // Resource numbers are NOT in the native surface, so each platform gets a
 // narrow per-pid stats reader: /proc files on Linux, one `ps` spawn on
@@ -15,11 +13,9 @@
 // pids the ledger already tracks — never a full process-table scan.
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,87 +71,36 @@ interface NativesModule {
   Process: NativeProcessCtor;
 }
 
+/** The addon file pi-natives' loader `require`s: `pi_natives.<platform>-<arch>[-variant].node`. */
+const NATIVE_ADDON_FILENAME = /[\\/]pi_natives\.[^\\/]+\.node$/;
+
 /**
- * Locate an installed package directory without relying on its exports map:
- * `resolve('<name>/package.json')` is exports-restricted for the scoped SDK
- * packages, so fall back to walking the resolver's node_modules roots —
- * direct links, bun's hoist root, and bun's `.bun/<scope+pkg@ver>` store
- * entries (same traversal as omp-host-natives.js `resolvePackageDir`).
+ * Find the pi_natives addon the embedded SDK already loaded into this process.
+ *
+ * `@oh-my-pi/pi-coding-agent` imports `@oh-my-pi/pi-natives` at module
+ * evaluation, and that loader `require`s the `.node` file by absolute path,
+ * so by the time the engine constructs the addon sits in the CommonJS cache.
+ * Reading it from there hands back the very instance the SDK uses (one
+ * dlopen, one Tokio runtime) in every runtime shape: workspace source,
+ * npm-installed source, and `bun build --compile` binaries.
+ *
+ * Resolving the package through `require.resolve` instead is not an option:
+ * pi-natives is exports-restricted, and inside a compiled binary Bun's
+ * standalone resolver spins forever on
+ * `require.resolve('@oh-my-pi/pi-coding-agent/package.json')` whenever cwd
+ * has no node_modules — which is every packaged desktop launch.
  */
-const resolvePackageDir = (requireHere: NodeRequire, name: string): string | null => {
-  try {
-    // Bun's require.resolve may return a file:// URL string instead of a
-    // filesystem path — normalize before path.dirname consumes it.
-    const resolved = requireHere.resolve(`${name}/package.json`);
-    return path.dirname(resolved.startsWith('file:') ? fileURLToPath(resolved) : resolved);
-  } catch {
-    // Exports-restricted or absent from the plain lookup paths.
-  }
-  const storePrefix = name.replace('/', '+') + '@';
-  for (const root of requireHere.resolve.paths(name) ?? []) {
-    for (const candidate of [path.join(root, name), path.join(root, '.bun', 'node_modules', name)]) {
-      if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
-    }
-    try {
-      for (const entry of fs.readdirSync(path.join(root, '.bun'))) {
-        if (!entry.startsWith(storePrefix)) continue;
-        const candidate = path.join(root, '.bun', entry, 'node_modules', name);
-        if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
-      }
-    } catch {
-      // Not a bun store root.
-    }
+const findResidentNatives = (): NativesModule | null => {
+  const cache = createRequire(import.meta.url).cache;
+  for (const filename of Object.keys(cache)) {
+    if (!NATIVE_ADDON_FILENAME.test(filename)) continue;
+    // SAFETY: the filename pins the pi_natives addon, whose export shape
+    // native/index.d.ts declares; the fromPid probe fails closed otherwise.
+    const mod = cache[filename]?.exports as NativesModule | undefined;
+    if (!mod?.Process.fromPid(process.pid)) continue;
+    return mod;
   }
   return null;
-};
-
-/** Directory candidates for `@oh-my-pi/pi-natives/native/index.js`. */
-const nativesEntryCandidates = (): string[] => {
-  const requireHere = createRequire(import.meta.url);
-  const candidates: string[] = [];
-  // Scoped sibling: every supported layout keeps both packages under the
-  // same `node_modules/@oh-my-pi/` scope directory. realpath first — the
-  // located dir may be a junction into the store scope that actually holds
-  // pi-natives (bun isolated layout).
-  const sdkDir = resolvePackageDir(requireHere, '@oh-my-pi/pi-coding-agent');
-  if (sdkDir) {
-    let realDir = sdkDir;
-    try {
-      realDir = fs.realpathSync(sdkDir);
-    } catch {
-      // Unresolved dir still yields a valid sibling candidate.
-    }
-    candidates.push(path.join(path.dirname(realDir), 'pi-natives', 'native', 'index.js'));
-  }
-  // Generic walk over the SDK's own resolution paths (npm nested layouts).
-  for (const dir of requireHere.resolve.paths('@oh-my-pi/pi-natives') ?? []) {
-    candidates.push(path.join(dir, '@oh-my-pi', 'pi-natives', 'native', 'index.js'));
-  }
-  return candidates;
-};
-
-let nativesPromise: Promise<NativesModule | null> | null = null;
-
-const loadNatives = (): Promise<NativesModule | null> => {
-  nativesPromise ??= (async (): Promise<NativesModule | null> => {
-    try {
-      for (const entry of nativesEntryCandidates()) {
-        if (!fs.existsSync(entry)) continue;
-        // SAFETY: pi-natives' native/index.js is its public native entry
-        // (exports-restricted, so specifiers cannot reach it); the module's
-        // shape is pinned by native/index.d.ts in the same directory, and the
-        // fromPid probe below fails closed when it isn't.
-        const mod = (await import(pathToFileURL(entry).href)) as NativesModule;
-        if (!mod.Process.fromPid(process.pid)) return null;
-        return mod;
-      }
-      return null;
-    } catch (error) {
-      console.warn('[omp-host] pi-natives unresolved; processes.v1 stays unavailable:', error);
-      return null;
-    }
-  })();
-  return nativesPromise;
 };
 
 // ---------------------------------------------------------------------------
@@ -287,13 +232,16 @@ const win32SampleStats = async (pids: number[]): Promise<Map<number, ProcStats>>
 // ---------------------------------------------------------------------------
 
 /**
- * Build the platform adapter, or null when pi-natives cannot be resolved
+ * Build the platform adapter, or null when no pi-natives addon is resident
  * (the engine then leaves the processes domain unmounted — capability
  * degradation instead of fabricated empty data).
  */
-export const createProcessPlatform = async (): Promise<ProcessPlatform | null> => {
-  const natives = await loadNatives();
-  if (!natives) return null;
+export const createProcessPlatform = (): ProcessPlatform | null => {
+  const natives = findResidentNatives();
+  if (!natives) {
+    console.warn('[omp-host] pi-natives addon not resident in this process; processes.v1 stays unavailable');
+    return null;
+  }
   const { Process } = natives;
 
   const platform = process.platform;
@@ -373,9 +321,4 @@ export const createProcessPlatform = async (): Promise<ProcessPlatform | null> =
     isAlive,
     terminate,
   };
-};
-
-/** Test seam. */
-export const __resetNativesForTests = (): void => {
-  nativesPromise = null;
 };

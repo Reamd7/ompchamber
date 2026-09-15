@@ -343,9 +343,9 @@ export class OmpHostEngine {
   chrome: DomainChrome;
   uriDomain: UriDomain;
   /** Session process monitor (PLAN-session-process-monitor.md). The ledger
-   * needs the pi-natives Process API, which resolves asynchronously under
-   * isolated package layouts — null until `createProcessPlatform` lands or
-   * fails, in which case the domain keeps answering featureUnavailable. */
+   * needs the pi-natives Process API the SDK already loaded; null when
+   * `createProcessPlatform` finds no resident addon, in which case the
+   * domain keeps answering featureUnavailable. */
   processLedger: ProcessLedger | null;
   processDomain: ProcessDomain;
   bootError: unknown;
@@ -584,26 +584,26 @@ export class OmpHostEngine {
       });
       this.uriDomain?.aggregator.refresh();
     });
-    // Session process monitor: the domain mounts synchronously; the ledger
-    // lands when the platform adapter resolves pi-natives.
-    this.processLedger = null;
+    // Session process monitor: the platform adapter reuses the pi-natives
+    // addon the SDK loaded at import time, so the ledger is ready before the
+    // first request; without a resident addon the domain stays unavailable.
+    const processPlatform = createProcessPlatform();
+    this.processLedger = processPlatform
+      ? new ProcessLedger({
+          platform: processPlatform,
+          cpuCores: os.cpus().length,
+          runningJobIds: () => this.#runningAsyncJobIds(),
+          cancelJob: (jobId, sessionID) => this.#cancelAsyncJob(jobId, sessionID),
+          publishUpdate: (directory) => {
+            const ledger = this.processLedger;
+            if (!ledger) return;
+            this.ompBus.publish('omp.processes.updated', { revision: ledger.revision }, { directory, durable: true });
+          }
+        })
+      : null;
     this.processDomain = createProcessDomain({
       features: () => ompFeatures(),
       ledger: () => this.processLedger
-    });
-    void createProcessPlatform().then((platform) => {
-      if (!platform || this.#closing) return;
-      this.processLedger = new ProcessLedger({
-        platform,
-        cpuCores: os.cpus().length,
-        runningJobIds: () => this.#runningAsyncJobIds(),
-        cancelJob: (jobId, sessionID) => this.#cancelAsyncJob(jobId, sessionID),
-        publishUpdate: (directory) => {
-          const ledger = this.processLedger;
-          if (!ledger) return;
-          this.ompBus.publish('omp.processes.updated', { revision: ledger.revision }, { directory, durable: true });
-        }
-      });
     });
     this.bootError = null;
     this.bootPromise = null;

@@ -5,6 +5,7 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,6 +44,11 @@ const healthCheckTimeoutMs = 30_000;
 const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
   stdio: ['ignore', 'ignore', 'pipe'],
   windowsHide: true,
+  // The desktop app launches the host with cwd at the user's home, far from
+  // any node_modules. Booting from the workspace instead let Bun's resolver
+  // find packages through cwd and hid a compiled-only startup hang (the
+  // 1.32.0 processes.v1 regression) behind a green verification.
+  cwd: os.tmpdir(),
   // The verification protocol below polls without credentials; an ambient
   // OPENCODE_SERVER_PASSWORD (e.g. packaging run inside the desktop app)
   // would 401 every probe until timeout. Verify the no-auth boot shape.
@@ -98,6 +104,17 @@ const waitForHealthy = async () => {
           return;
         }
         console.log(`[electron] omp host capabilities: ${Object.keys(caps.features).length} features`);
+        // processes.v1 mounts only when the engine found the pi-natives addon
+        // resident in the compiled process; a 501 here means the packaged
+        // host lost the session process monitor even though it serves.
+        const processes = await fetch(`http://127.0.0.1:${port}/omp/processes?directory=${encodeURIComponent(os.tmpdir())}`, {
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => null);
+        if (!processes?.ok) {
+          console.error(`[electron] omp host processes.v1 check failed: HTTP ${processes?.status ?? 'unreachable'}`);
+          finish(1);
+          return;
+        }
         console.log(`[electron] verified omp host ${mode}: ${binary}`);
         finish(0);
         return;
