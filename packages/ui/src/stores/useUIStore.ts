@@ -16,6 +16,15 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch' | 'commit' | 'pr';
 const contextPanelModeSchema = z.enum(['diff', 'walkthrough', 'file', 'localFile', 'context', 'plan', 'chat', 'browser', 'git', 'pr', 'linear', 'notes', 'terminal', 'timeline']);
 export type ContextPanelMode = z.infer<typeof contextPanelModeSchema>;
+
+// The file surface with no file open is only its tree, and keeps a width of
+// its own: closing the last file or hiding the editor returns the panel to it,
+// and showing a file restores the editor width stored under 'file'.
+const CONTEXT_PANEL_FILE_TREE_WIDTH_KEY = 'file-tree';
+type ContextPanelWidthKey = ContextPanelMode | typeof CONTEXT_PANEL_FILE_TREE_WIDTH_KEY;
+export const getContextPanelWidthKey = (mode: ContextPanelMode, showsEditor: boolean): ContextPanelWidthKey =>
+  mode === 'file' && !showsEditor ? CONTEXT_PANEL_FILE_TREE_WIDTH_KEY : mode;
+
 const persistedPanelWidthsSchema = z.object({
   widthByMode: z.record(z.string(), z.number().finite().optional().catch(undefined)).catch({}),
   widthFractionByMode: z.record(z.string(), z.number().positive().max(1).optional().catch(undefined)).catch({}),
@@ -99,6 +108,7 @@ type ContextPanelTab = {
 type ContextPanelTabDescriptor = {
   mode: ContextPanelMode;
   targetPath?: string | null;
+  targetDirectory?: string | null;
   projectPlanId?: string | null;
   projectPlanRef?: ProjectRef | null;
   dedupeKey?: string | null;
@@ -114,9 +124,12 @@ type ContextPanelDirectoryState = {
   expanded: boolean;
   tabs: ContextPanelTab[];
   activeTabId: string | null;
-  // Manual per-surface widths (px), populated only by user resize; surfaces
+// Manual per-surface widths (px), populated only by user resize; surfaces
   // without an entry fall back to their registry defaultWidthFraction.
-  widthByMode: Partial<Record<ContextPanelMode, number>>;
+  widthByMode: Partial<Record<ContextPanelWidthKey, number>>;
+  // Ratios captured when a user resizes a surface. These remain responsive
+  // across window sizes while widthByMode preserves older persisted values.
+  widthFractionByMode: Partial<Record<ContextPanelWidthKey, number>>;
   touchedAt: number;
 };
 
@@ -171,7 +184,7 @@ const isLegacyDefaultTemplates = (value: unknown): boolean => {
 };
 
 const CONTEXT_PANEL_DEFAULT_WIDTH = 380;
-const CONTEXT_PANEL_MIN_WIDTH = 380;
+const CONTEXT_PANEL_MIN_WIDTH = 320;
 const CONTEXT_PANEL_MAX_WIDTH = 1400;
 /** Per surface, not per panel: see clampContextPanelTabs. */
 const CONTEXT_PANEL_MAX_TABS = 12;
@@ -464,6 +477,7 @@ const touchContextPanelState = (prev?: ContextPanelDirectoryState): ContextPanel
     tabs: [],
     activeTabId: null,
     widthByMode: {},
+    widthFractionByMode: {},
     touchedAt: Date.now(),
   };
 };
@@ -548,6 +562,21 @@ const closeContextPanelTabs = (
   const nextSameModeTab = sameModeTabs.length > 0
     ? sameModeTabs.reduce((best, tab) => (tab.touchedAt >= best.touchedAt ? tab : best))
     : null;
+
+  // The file surface outlives its files: closing the last real file tab leaves
+  // the same empty editor placeholder the rail opens, so the surface falls
+  // back to its file tree instead of taking the whole panel down with it.
+  // Closing the placeholder itself still closes the surface.
+  if (activeMode === 'file' && !nextSameModeTab && closedTabs.some((tab) => tab.mode === 'file' && tab.targetPath)) {
+    const placeholder = createContextPanelTab({ mode: 'file' });
+    return {
+      ...current,
+      tabs: [...nextTabs, placeholder],
+      activeTabId: placeholder.id,
+      isOpen: current.isOpen,
+      touchedAt: Date.now(),
+    };
+  }
 
   return {
     ...current,
@@ -650,17 +679,15 @@ const sanitizeContextPanelByDirectory = (
 
     // Legacy single `width` values are intentionally dropped: widths are now
     // per-surface, seeded from registry defaults until the user resizes.
-    const widthByMode: Partial<Record<ContextPanelMode, number>> = {};
-    if (candidate.widthByMode && typeof candidate.widthByMode === 'object') {
-      for (const [mode, value] of Object.entries(candidate.widthByMode as Record<string, unknown>)) {
-        if (
-          (mode === 'diff' || mode === 'file' || mode === 'context' || mode === 'plan' || mode === 'chat' || mode === 'browser' || mode === 'git' || mode === 'pr' || mode === 'linear' || mode === 'notes' || mode === 'terminal' || mode === 'timeline')
-          && typeof value === 'number'
-          && Number.isFinite(value)
-        ) {
-          widthByMode[mode] = clampContextPanelWidth(value);
-        }
-      }
+    const widthByMode: Partial<Record<ContextPanelWidthKey, number>> = {};
+    const widthFractionByMode: Partial<Record<ContextPanelWidthKey, number>> = {};
+    const savedWidths = persistedPanelWidthsSchema.parse(rawState);
+    const widthKeys: ContextPanelWidthKey[] = [...contextPanelModeSchema.options, CONTEXT_PANEL_FILE_TREE_WIDTH_KEY];
+    for (const mode of widthKeys) {
+      const pixels = savedWidths.widthByMode[mode];
+      const fraction = savedWidths.widthFractionByMode[mode];
+      if (pixels !== undefined) widthByMode[mode] = clampContextPanelWidth(pixels);
+      if (fraction !== undefined) widthFractionByMode[mode] = fraction;
     }
 
     next[directory] = {
@@ -669,6 +696,7 @@ const sanitizeContextPanelByDirectory = (
       tabs: clampedTabs,
       activeTabId: resolveActiveContextPanelTabID(clampedTabs, resolvedActiveTabId),
       widthByMode,
+      widthFractionByMode,
       touchedAt: typeof candidate.touchedAt === 'number' && Number.isFinite(candidate.touchedAt)
         ? candidate.touchedAt
         : Date.now(),
@@ -709,6 +737,9 @@ interface UIStore {
       so surfaces added later appear for everyone. */
   contextRailHiddenSurfaces: string[];
   contextEditorTreeVisible: boolean;
+  /** Whether the file surface shows its editor while files are open; hiding
+      it leaves only the tree, with the file tabs kept open. */
+  contextEditorVisible: boolean;
   contextEditorTreeWidth: number;
   notesPanelHeight: number;
   /** Expanded collapsible sections of the in-chat work-status panel, by id. */
@@ -921,6 +952,7 @@ interface UIStore {
   setSidebarWidth: (width: number) => void;
   setContextRailOrder: (order: string[]) => void;
   toggleContextEditorTree: () => void;
+  toggleContextEditor: () => void;
   setContextEditorTreeWidth: (width: number) => void;
   openContextSurface: (directory: string, mode: ContextPanelMode) => void;
   openContextPanelTab: (directory: string, tab: ContextPanelTabDescriptor, options?: { reveal?: boolean }) => void;
@@ -938,7 +970,7 @@ interface UIStore {
   closeContextPanelTabs: (directory: string, tabIds: readonly string[]) => void;
   closeContextPanel: (directory: string) => void;
   toggleContextPanelExpanded: (directory: string) => void;
-  setContextPanelWidth: (directory: string, mode: ContextPanelMode, width: number) => void;
+  setContextPanelWidth: (directory: string, mode: ContextPanelWidthKey, width: number, availableWidth?: number) => void;
   setNotesPanelHeight: (height: number) => void;
   setWorkStatusSectionExpanded: (sectionId: string, expanded: boolean) => void;
   setWorkStatusScrollTop: (scrollTop: number) => void;
@@ -1132,6 +1164,7 @@ export const useUIStore = create<UIStore>()(
         contextRailOrder: [],
         contextRailHiddenSurfaces: [],
         contextEditorTreeVisible: true,
+        contextEditorVisible: true,
         contextEditorTreeWidth: 240,
         notesPanelHeight: 112,
         gitChangesViewMode: 'flat',
@@ -1337,8 +1370,18 @@ export const useUIStore = create<UIStore>()(
           set({ contextRailOrder: sanitized });
         },
 
+        // The editor and the tree can each be hidden, never both at once:
+        // hiding one while the other is hidden brings the other back.
         toggleContextEditorTree: () => {
-          set((state) => ({ contextEditorTreeVisible: !state.contextEditorTreeVisible }));
+          set((state) => (state.contextEditorTreeVisible && !state.contextEditorVisible
+            ? { contextEditorTreeVisible: false, contextEditorVisible: true }
+            : { contextEditorTreeVisible: !state.contextEditorTreeVisible }));
+        },
+
+        toggleContextEditor: () => {
+          set((state) => (state.contextEditorVisible && !state.contextEditorTreeVisible
+            ? { contextEditorVisible: false, contextEditorTreeVisible: true }
+            : { contextEditorVisible: !state.contextEditorVisible }));
         },
 
         setContextEditorTreeWidth: (width) => {
@@ -1367,6 +1410,12 @@ export const useUIStore = create<UIStore>()(
             return;
           }
 
+          // The file surface's entry point is its file tree: reopening it
+          // always lands on the tree even when it was last left toggled off.
+          if (mode === 'file' && !state.contextEditorTreeVisible) {
+            set({ contextEditorTreeVisible: true });
+          }
+
           const tabsOfMode = tabs.filter((tab) => tab.mode === mode);
           if (tabsOfMode.length > 0) {
             // `>=` so equal timestamps (same-millisecond opens) resolve to the
@@ -1392,6 +1441,17 @@ export const useUIStore = create<UIStore>()(
             return;
           }
 
+         const nextTab = tab.mode === 'terminal'
+            ? {
+                ...tab,
+                targetDirectory: (tab.targetDirectory ? normalizeContextPanelDirectoryKey(tab.targetDirectory) : null) === normalizedDirectory
+                  ? null
+                  : tab.targetDirectory ? normalizeContextPanelDirectoryKey(tab.targetDirectory) : null,
+              }
+            : tab;
+
+          // Revealing a real file shows it, even if the editor was hidden.
+          const showsFile = nextTab.mode === 'file' && Boolean(nextTab.targetPath) && options?.reveal !== false;
           set((state) => {
             const prev = state.contextPanelByDirectory[normalizedDirectory];
             const current = touchContextPanelState(prev);
@@ -1400,7 +1460,10 @@ export const useUIStore = create<UIStore>()(
               [normalizedDirectory]: upsertContextPanelTab(current, tab, options),
             };
 
-            return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
+            return {
+              contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20),
+              contextEditorVisible: showsFile || state.contextEditorVisible,
+            };
           });
         },
 
@@ -1527,12 +1590,16 @@ export const useUIStore = create<UIStore>()(
           set((state) => {
             const prev = state.contextPanelByDirectory[normalizedDirectory];
             const current = touchContextPanelState(prev);
-            if (!current.tabs.some((tab) => tab.id === normalizedTabID)) {
+            const targetTab = current.tabs.find((tab) => tab.id === normalizedTabID);
+            if (!targetTab) {
               return state;
             }
 
+            // Picking a file tab shows its editor, even if the editor was hidden.
+            const showsFile = targetTab.mode === 'file' && Boolean(targetTab.targetPath);
+
             if (current.activeTabId === normalizedTabID && current.isOpen) {
-              return state;
+              return showsFile ? { contextEditorVisible: true } : state;
             }
 
             const byDirectory = {
@@ -1548,7 +1615,10 @@ export const useUIStore = create<UIStore>()(
               },
             };
 
-            return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
+            return {
+              contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20),
+              contextEditorVisible: showsFile || state.contextEditorVisible,
+            };
           });
         },
 
@@ -1667,7 +1737,7 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        setContextPanelWidth: (directory, mode, width) => {
+        setContextPanelWidth: (directory, mode, width, availableWidth) => {
           const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
           if (!normalizedDirectory) {
             return;
@@ -1676,14 +1746,22 @@ export const useUIStore = create<UIStore>()(
           set((state) => {
             const prev = state.contextPanelByDirectory[normalizedDirectory];
             const current = touchContextPanelState(prev);
+            const clampedWidth = clampContextPanelWidth(width);
+            const widthFractionByMode = { ...current.widthFractionByMode };
+            if (availableWidth !== undefined && Number.isFinite(availableWidth) && availableWidth > 0) {
+              widthFractionByMode[mode] = Math.min(1, clampedWidth / availableWidth);
+            } else {
+              delete widthFractionByMode[mode];
+            }
             const byDirectory = {
               ...state.contextPanelByDirectory,
               [normalizedDirectory]: {
                 ...current,
                 widthByMode: {
                   ...current.widthByMode,
-                  [mode]: clampContextPanelWidth(width),
+                  [mode]: clampedWidth,
                 },
+                widthFractionByMode,
               },
             };
 
@@ -2937,6 +3015,7 @@ export const useUIStore = create<UIStore>()(
           contextRailOrder: state.contextRailOrder,
           contextRailHiddenSurfaces: state.contextRailHiddenSurfaces,
           contextEditorTreeVisible: state.contextEditorTreeVisible,
+          contextEditorVisible: state.contextEditorVisible,
           contextEditorTreeWidth: state.contextEditorTreeWidth,
           notesPanelHeight: state.notesPanelHeight,
           workStatusExpandedSections: state.workStatusExpandedSections,

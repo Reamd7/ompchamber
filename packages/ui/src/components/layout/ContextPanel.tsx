@@ -31,7 +31,7 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { useBrowserFaviconStore } from '@/stores/useBrowserFaviconStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
-import { useUIStore, type ContextPanelMode, type PendingDiffScope } from '@/stores/useUIStore';
+import { getContextPanelWidthKey, useUIStore, type ContextPanelMode, type PendingDiffScope } from '@/stores/useUIStore';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession, useDirectoryStore } from '@/sync/sync-context';
 import { ContextPanelContent } from './ContextSidebarTab';
@@ -284,8 +284,9 @@ const browserFaviconFor = (url: string, faviconByOrigin: Record<string, string>)
 const EDITOR_TREE_MIN_WIDTH = 200;
 const EDITOR_TREE_MAX_WIDTH = 480;
 // The editor surface's file-tree column: docked on the right, resizable from
-// its left edge, and animated open/closed like the app sidebars.
-const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
+// its left edge, and animated open/closed like the app sidebars. With `fill`
+// (no file open yet) it is the surface's whole content instead of a side column.
+const EditorTreeColumn: React.FC<{ visible: boolean; active: boolean; fill?: boolean }> = ({ visible, active, fill = false }) => {
   const { t } = useI18n();
   const width = useUIStore((state) => state.contextEditorTreeWidth);
   const setWidth = useUIStore((state) => state.setContextEditorTreeWidth);
@@ -367,10 +368,10 @@ const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
       ref={columnRef}
       className={cn(
         'relative h-full flex-shrink-0 overflow-hidden border-l border-border bg-background will-change-[width] motion-reduce:transition-none',
-        !visible && 'border-l-0',
+        (!visible || fill) && 'border-l-0',
       )}
       style={{
-        width: `${isResizing ? (liveWidthRef.current ?? appliedWidth) : appliedWidth}px`,
+        width: fill && visible ? '100%' : `${isResizing ? (liveWidthRef.current ?? appliedWidth) : appliedWidth}px`,
         ['--oc-editor-tree-width' as string]: `${isResizing ? (liveWidthRef.current ?? width) : width}px`,
         overflowX: 'clip',
         transitionProperty: isResizing ? 'none' : 'width',
@@ -379,7 +380,7 @@ const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
       }}
       aria-hidden={!visible}
     >
-      {visible && (
+      {visible && !fill && (
         <div
           className={cn(
             'absolute left-0 top-0 z-20 h-full w-[3px] cursor-col-resize transition-colors hover:bg-[var(--interactive-border)]/80',
@@ -400,7 +401,7 @@ const EditorTreeColumn: React.FC<{ visible: boolean }> = ({ visible }) => {
           isResizing && 'pointer-events-none',
           !visible && 'pointer-events-none select-none opacity-0'
         )}
-        style={{ width: 'var(--oc-editor-tree-width)' }}
+        style={{ width: fill ? '100%' : 'var(--oc-editor-tree-width)' }}
         aria-hidden={!visible}
       >
         <div className="flex h-7 shrink-0 items-center border-b border-border/40 px-1.5" role="tablist" aria-label={t('contextPanel.localFiles.scopeAria')}>
@@ -540,6 +541,8 @@ export const ContextPanel: React.FC = () => {
   const setSelectedFilePath = useFilesViewTabsStore((state) => state.setSelectedPath);
   const contextEditorTreeVisible = useUIStore((state) => state.contextEditorTreeVisible);
   const toggleContextEditorTree = useUIStore((state) => state.toggleContextEditorTree);
+  const contextEditorVisible = useUIStore((state) => state.contextEditorVisible);
+  const toggleContextEditor = useUIStore((state) => state.toggleContextEditor);
   const openNewContextBrowserTab = useUIStore((state) => state.openNewContextBrowserTab);
   const faviconByOrigin = useBrowserFaviconStore((state) => state.byOrigin);
   const allowPromptingSubagentSessions = useUIStore((state) => state.allowPromptingSubagentSessions);
@@ -550,13 +553,31 @@ export const ContextPanel: React.FC = () => {
   const isOpen = Boolean(panelState?.isOpen && activeTab);
   const isExpanded = Boolean(isOpen && panelState?.expanded);
   const [availablePanelAreaWidth, setAvailablePanelAreaWidth] = React.useState<number | null>(null);
+  const hasOpenEditorFile = React.useMemo(
+    () => tabs.some((tab) => tab.mode === 'file' && tab.targetPath),
+    [tabs],
+  );
+  // The editor column is shown for an open file unless the user hid it; the
+  // tree never hides alongside it, so a hidden tree forces the editor back.
+  const showsEditor = hasOpenEditorFile && (contextEditorVisible || !contextEditorTreeVisible);
   const activeModeForWidth = activeTab?.mode ?? null;
-  const manualWidth = activeModeForWidth ? panelState?.widthByMode?.[activeModeForWidth] : undefined;
+ const widthKey = activeModeForWidth ? getContextPanelWidthKey(activeModeForWidth, showsEditor) : null;
+  const manualWidth = widthKey ? panelState?.widthByMode?.[widthKey] : undefined;
+  const manualWidthFraction = widthKey ? panelState?.widthFractionByMode?.[widthKey] : undefined;
   const widthFraction = activeModeForWidth ? getContextSurfaceWidthFraction(activeModeForWidth) : 0.5;
   const widthFallbackBase = availablePanelAreaWidth
     ?? (typeof window !== 'undefined' ? window.innerWidth : CONTEXT_PANEL_DEFAULT_WIDTH * 2);
-  const width = clampWidth(manualWidth ?? Math.round(widthFraction * widthFallbackBase));
-  const chatSessionIDs = React.useMemo(() => {
+  const effectiveManualWidth = manualWidthFraction != null && availablePanelAreaWidth != null
+    ? Math.round(manualWidthFraction * availablePanelAreaWidth)
+    : manualWidth;
+  const width = clampWidth(effectiveManualWidth ?? Math.round(widthFraction * widthFallbackBase));
+
+  // Convert legacy pixel-only preferences to a ratio the first time the
+  // available area is known, so existing users also get responsive sizing.
+  React.useEffect(() => {
+    if (!directoryKey || !widthKey || manualWidthFraction != null || manualWidth == null || availablePanelAreaWidth == null) return;
+    setContextPanelWidth(directoryKey, widthKey, manualWidth, availablePanelAreaWidth);
+  }, [availablePanelAreaWidth, directoryKey, manualWidth, manualWidthFraction, setContextPanelWidth, widthKey]);  const chatSessionIDs = React.useMemo(() => {
     const ids: string[] = [];
     for (const tab of tabs) {
       if (tab.mode !== 'chat') continue;
@@ -660,6 +681,7 @@ export const ContextPanel: React.FC = () => {
     // Apply the final width once, letting the regular 200ms width transition
     // carry the panel to the release position.
     const finalWidth = clampWidthForDrag(resizingWidthRef.current ?? width);
+    const availableWidth = resizeAvailableWidthRef.current ?? undefined;
     resizingWidthRef.current = null;
     resizeAvailableWidthRef.current = null;
     if (resizeFollowTimerRef.current !== null) {
@@ -667,12 +689,12 @@ export const ContextPanel: React.FC = () => {
       resizeFollowTimerRef.current = null;
     }
     document.documentElement.style.cursor = '';
-    if (directoryKey && activeModeForWidth) {
-      setContextPanelWidth(directoryKey, activeModeForWidth, finalWidth);
+   if (directoryKey && widthKey) {
+      setContextPanelWidth(directoryKey, widthKey, finalWidth, availableWidth);
     }
     setIsResizing(false);
     activeResizePointerIDRef.current = null;
-  }, [activeModeForWidth, clampWidthForDrag, directoryKey, setContextPanelWidth, width]);
+  }, [clampWidthForDrag, directoryKey, setContextPanelWidth, widthKey, width]);
 
   // Window-level drag listeners: tracking the pointer via the 3px handle and
   // pointer capture is unreliable (capture can fail over iframes and a missed
@@ -1052,10 +1074,6 @@ export const ContextPanel: React.FC = () => {
     () => tabs.some((tab) => tab.mode === 'file'),
     [tabs],
   );
-  const hasOpenEditorFile = React.useMemo(
-    () => tabs.some((tab) => tab.mode === 'file' && tab.targetPath),
-    [tabs],
-  );
 
   const hasLocalFileTabs = React.useMemo(
     () => tabs.some((tab) => tab.mode === 'localFile'),
@@ -1159,6 +1177,20 @@ export const ContextPanel: React.FC = () => {
             aria-label={t('contextPanel.browser.newTab')}
           >
             <Icon name="add" className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+        {isFileTabActive && hasOpenEditorFile ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={toggleContextEditor}
+            className="h-7 w-7 p-0"
+            title={t('contextRail.editor.toggle')}
+            aria-label={t('contextRail.editor.toggle')}
+            aria-pressed={showsEditor}
+          >
+            <Icon name="layout-left" className="h-3.5 w-3.5" />
           </Button>
         ) : null}
         {isFileTabActive ? (
@@ -1290,33 +1322,21 @@ export const ContextPanel: React.FC = () => {
       <div className={cn('relative min-h-0 flex-1 overflow-hidden', isResizing && 'pointer-events-none')}>
         {hasFileTabs ? (
           <div className={cn('absolute inset-0 flex', isFileTabActive ? 'flex' : 'hidden')}>
-            <div className="h-full min-w-0 flex-1">
-              {hasOpenEditorFile ? (
-                <React.Suspense fallback={null}><FilesView mode="editor-only" /></React.Suspense>
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-                  <Icon name="file-code" className="h-12 w-12 text-muted-foreground/50" />
-                  <div className="typography-ui-header text-foreground">{t('contextPanel.editorEmpty.title')}</div>
-                  <div className="max-w-sm typography-micro text-muted-foreground">{t('contextPanel.editorEmpty.description')}</div>
-                </div>
-              )}
-            </div>
-            <EditorTreeColumn visible={contextEditorTreeVisible} />
-          </div>
-        ) : null}
-        {hasLocalFileTabs ? (
-          <div className={cn('absolute inset-0 flex', isLocalFileTabActive ? 'flex' : 'hidden')}>
-            <div className="h-full min-w-0 flex-1">
-              {activeTab?.mode === 'localFile' ? (
-                <LocalFilePreview
-                  directory={directoryKey}
-                  sessionID={getSessionIDFromLocalFileDedupeKey(activeTab.dedupeKey) ?? ''}
-                  fileRef={activeTab.targetPath}
-                />
-              ) : null}
-            </div>
-            <EditorTreeColumn visible={contextEditorTreeVisible} />
-          </div>
+           {hasOpenEditorFile || !contextEditorTreeVisible ? (
+              // Hidden rather than unmounted so a hidden editor keeps its state.
+              <div className={cn('h-full min-w-0 flex-1', hasOpenEditorFile && !showsEditor && 'hidden')}>
+                {hasOpenEditorFile ? (
+                  <React.Suspense fallback={null}><FilesView mode="editor-only" /></React.Suspense>
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+                    <Icon name="file-code" className="h-12 w-12 text-muted-foreground/50" />
+                    <div className="typography-ui-header text-foreground">{t('contextPanel.editorEmpty.title')}</div>
+                    <div className="max-w-sm typography-micro text-muted-foreground">{t('contextPanel.editorEmpty.description')}</div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+            <EditorTreeColumn visible={contextEditorTreeVisible} active={isOpen && isFileTabActive} fill={!showsEditor} />          </div>
         ) : null}
         {activeChatTab && activeChatSessionID && activeChatSrc ? (
           <iframe

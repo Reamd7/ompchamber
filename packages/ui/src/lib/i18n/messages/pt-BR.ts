@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'contextRail.editor.toggle': 'Alternar editor de arquivos',
   'sessions.sidebar.session.status.nextStep': 'Próximo passo: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'A pasta do projeto não existe ou está indisponível',
   'diffView.fileTree.showAsList': 'Visualização em lista',
@@ -1388,7 +1389,6 @@ export const dict: Record<I18nKey, string> = {
   'contextPanel.preview.proxyError': 'Não foi possível iniciar o proxy de prévia.',
   'contextPanel.preview.upstreamUnreachable': 'O servidor de desenvolvimento não está respondendo.',
   'contextPanel.preview.upstreamUnreachableHint': 'Verifique se o servidor de desenvolvimento ainda está em execução e tente novamente.',
-
   'terminalView.preview.open': 'Prévia',
   'terminalView.preview.openTitle': 'Abrir painel de prévia',
   'sidebarFilesTree.menu.rename': 'Renomear',

@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'contextRail.editor.toggle': 'Перемкнути редактор файлів',
   'sessions.sidebar.session.status.nextStep': 'Наступний крок: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'Папка проєкту відсутня або недоступна',
   'diffView.fileTree.showAsList': 'Списком',
@@ -1388,7 +1389,6 @@ export const dict: Record<I18nKey, string> = {
   'contextPanel.preview.proxyError': 'Не вдалося запустити проксі перегляду.',
   'contextPanel.preview.upstreamUnreachable': 'Сервер розробки не відповідає.',
   'contextPanel.preview.upstreamUnreachableHint': 'Переконайтеся, що сервер розробки все ще працює, і повторіть спробу.',
-
   'terminalView.preview.open': 'Перегляд',
   'terminalView.preview.openTitle': 'Відкрити панель перегляду',
   'sidebarFilesTree.menu.rename': 'Перейменувати',
