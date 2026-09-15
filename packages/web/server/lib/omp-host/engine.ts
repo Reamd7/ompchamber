@@ -3361,10 +3361,27 @@ export class OmpHostEngine {
       this.bus.emit('message.updated', { sessionID, info: running.info }, directoryKey);
       this.bus.emit('message.part.updated', { sessionID, part: running.parts[0], time: Date.now() }, directoryKey);
 
+      // The `!` route bypasses tool_execution_* events, so the process ledger
+      // gets its window explicitly — otherwise a `!`-spawned tree lands under
+      // an unattributed root instead of owning an invocation row.
+      const ledgerCallId = `bang:${liveId}`;
+      this.processLedger?.onToolStart({
+        sessionID,
+        directory: directoryKey,
+        toolCallId: ledgerCallId,
+        toolName: 'bash',
+        args: { command, cwd: directoryKey }
+      });
       let result: BashResult;
       try {
         result = await session.executeBash(command, (chunk) => {
           output += chunk;
+          this.processLedger?.onToolUpdate({
+            sessionID,
+            directory: directoryKey,
+            toolCallId: ledgerCallId,
+            text: chunk
+          });
           // Fresh part per emit: queued bus frames serialize lazily, so a
           // mutated part would smuggle later state into earlier events.
           this.bus.emit('message.part.updated', {
@@ -3374,6 +3391,15 @@ export class OmpHostEngine {
           }, directoryKey);
         }, { excludeFromContext: excludeFromContext === true, useUserShell: true });
       } catch (error) {
+        const ledgerEnd: LedgerToolEnd = {
+          sessionID,
+          directory: directoryKey,
+          toolCallId: ledgerCallId,
+          toolName: 'bash',
+          isError: true
+        };
+        if (output) ledgerEnd.output = output;
+        this.processLedger?.onToolEnd(ledgerEnd);
         // Settle the running card as an error so the row does not spin
         // forever, then propagate — the route answers 500.
         const failed = projectExecutionMessage(
@@ -3385,6 +3411,14 @@ export class OmpHostEngine {
         throw error;
       }
 
+      this.processLedger?.onToolEnd({
+        sessionID,
+        directory: directoryKey,
+        toolCallId: ledgerCallId,
+        toolName: 'bash',
+        output: result.output,
+        exitCode: result.exitCode ?? null
+      });
       // The SDK appends the bashExecution record before executeBash resolves —
       // except mid-turn (deferred to the pendingMessages flush at turn end) or
       // after a branch transition (detached destination writes only the old
@@ -3849,6 +3883,9 @@ export class OmpHostEngine {
         arrayBufferBytes: memory.arrayBuffers,
         rssBytes: memory.rss,
       },
+      // Counters-only monitor health (poll cadence, spawn volume, sampling
+      // failures) — null when processes.v1 never came up.
+      processLedger: this.processLedger ? this.processLedger.diagnostics() : null,
     };
   }
 

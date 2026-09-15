@@ -276,6 +276,19 @@ export const EngineMemorySection: React.FC = () => {
                   <span>{t('openCodeStatusDialog.memory.inFlightUnderflow')}</span>
                   <span className="tabular-nums">{sessions?.inFlightUnderflow ?? 0}</span>
                 </div>
+                {data.processLedger ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <span>{t('openCodeStatusDialog.monitor.processMonitor')}</span>
+                    <span className="tabular-nums">
+                      {t('openCodeStatusDialog.monitor.processMonitorValue', {
+                        live: data.processLedger.liveProcesses,
+                        windows: data.processLedger.openWindows,
+                        failures: data.processLedger.sampleFailures,
+                      })}
+                      {data.processLedger.statsStale ? ` · ${t('chat.workStatus.processes.statsStale')}` : ''}
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               <p className="text-muted-foreground/80">{t('openCodeStatusDialog.memory.estimateNote')}</p>

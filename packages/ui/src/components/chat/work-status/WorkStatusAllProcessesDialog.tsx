@@ -45,6 +45,9 @@ export const WorkStatusAllProcessesDialog: React.FC<Props> = ({ open, onOpenChan
         {entry.sessionID === null ? (
           <WorkStatusPill>{t('chat.workStatus.processes.uncertain')}</WorkStatusPill>
         ) : null}
+        {entry.statsStale ? (
+          <WorkStatusPill>{t('chat.workStatus.processes.statsStale')}</WorkStatusPill>
+        ) : null}
         <WorkStatusValue tone={entry.status === 'running' ? 'info' : entry.status === 'failed' ? 'error' : 'muted'}>
           {t(processStatusLabelKey[entry.status])}
         </WorkStatusValue>

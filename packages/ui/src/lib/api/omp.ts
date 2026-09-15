@@ -2741,6 +2741,8 @@ export interface OmpProcessEntry {
   liveCount: number;
   totalRssBytes?: number;
   totalCpuPercent?: number;
+  /** Consecutive sampling failures make reported stats unreliable. */
+  statsStale?: boolean;
   hasOutput: boolean;
   processes: OmpProcessMember[];
 }
@@ -2794,6 +2796,7 @@ const ProcessEntrySchema = z.looseObject({
   liveCount: z.number(),
   totalRssBytes: z.number().optional(),
   totalCpuPercent: z.number().optional(),
+  statsStale: z.boolean().optional(),
   hasOutput: z.boolean(),
   processes: z.array(ProcessMemberSchema),
 });
@@ -3253,6 +3256,18 @@ const OmpBusStatsSchema = z.object({
   subscribers: z.number(),
 });
 
+const OmpProcessLedgerDiagnosticsSchema = z.object({
+  pollCount: z.number(),
+  lastPollMs: z.number(),
+  spawnCount: z.number(),
+  trackedProcesses: z.number(),
+  liveProcesses: z.number(),
+  openWindows: z.number(),
+  sampleFailures: z.number(),
+  consecutiveFailures: z.number(),
+  statsStale: z.boolean(),
+});
+
 const OmpDiagnosticsSchema = z.object({
   wireBus: OmpBusStatsSchema,
   ompBus: OmpBusStatsSchema,
@@ -3276,6 +3291,8 @@ const OmpDiagnosticsSchema = z.object({
     arrayBufferBytes: z.number(),
     rssBytes: z.number(),
   }),
+  // Absent on engines that predate the monitor; null when processes.v1 is off.
+  processLedger: OmpProcessLedgerDiagnosticsSchema.nullable().optional(),
 });
 export type OmpDiagnostics = z.infer<typeof OmpDiagnosticsSchema>;
 export type OmpDiagnosticsSessionRow = z.infer<typeof OmpDiagnosticsSessionRowSchema>;

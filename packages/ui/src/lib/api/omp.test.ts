@@ -1139,6 +1139,7 @@ describe('createOmpProcessesAPI (processes.v1)', () => {
       liveCount: 1,
       totalRssBytes: 4096,
       totalCpuPercent: 0.5,
+      statsStale: true,
       hasOutput: true,
       processes: [{
         pid: 4242,
@@ -1188,6 +1189,7 @@ describe('createOmpProcessesAPI (processes.v1)', () => {
       expect(result.data.revision).toBe(7);
       expect(result.data.entries).toHaveLength(2);
       expect(result.data.entries[0]?.processes[0]?.pid).toBe(4242);
+      expect(result.data.entries[0]?.statsStale).toBe(true);
       // Unattributed roots keep their candidate sessions — never dropped.
       expect(result.data.entries[1]?.sessionID).toBeNull();
       expect(result.data.entries[1]?.candidateSessionIds).toEqual(['ses_1', 'ses_2']);

@@ -162,7 +162,9 @@ export const ProcessEntryDetail: React.FC<{ directory: string | null; entry: Omp
             ? t('chat.workStatus.processes.liveCount', { count: entry.liveCount })
             : t(processStatusLabelKey[entry.status])}
         </span>
-        {entry.liveCount > 0 ? (
+        {/* No whole-subtree kill on unattributed roots — they own foreign
+            infrastructure; per-pid kills above stay available. */}
+        {entry.liveCount > 0 && entry.sessionID !== null ? (
           <Button variant="destructive" size="xs" onClick={killAll}>
             {armed ? t('chat.workStatus.processes.killConfirm') : t('chat.workStatus.processes.killAll')}
           </Button>
@@ -186,6 +188,7 @@ export const WorkStatusProcessDialog: React.FC<Props> = ({ open, onOpenChange, d
           <DialogDescription>
             {t(processStatusLabelKey[entry.status])}
             {entry.sessionID === null ? ` · ${t('chat.workStatus.processes.uncertain')}` : ''}
+            {entry.statsStale ? ` · ${t('chat.workStatus.processes.statsStale')}` : ''}
           </DialogDescription>
         </DialogHeader>
         <ProcessEntryDetail directory={directory} entry={entry} />

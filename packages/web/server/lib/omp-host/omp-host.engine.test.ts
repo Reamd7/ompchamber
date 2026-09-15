@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { WireEventEnvelope } from './events.ts';
+import type { ProcessLedger } from './process-ledger.ts';
 
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-engine-test-'));
 const sessionDir = path.join(agentDir, 'sessions');
@@ -179,7 +180,28 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   BUILTIN_TOOLS: [] as string[],
 }));
 
+// The constructor's async platform probe must not install a real ledger
+// mid-test — `!` wiring tests substitute their own recording double.
+mock.module('./process-platform.ts', () => ({
+  createProcessPlatform: async () => null,
+}));
+
 const { OmpHostEngine } = await import('./engine.ts');
+type LedgerCallInput = { toolCallId?: string; toolName?: string; args?: { command?: string; cwd?: string }; text?: string; output?: string; exitCode?: number | null; isError?: boolean };
+type LedgerCall = { method: 'start' | 'update' | 'end'; input: LedgerCallInput };
+
+/** Recording double for the process-ledger seam — the engine only calls the
+ * three hooks (plus dispose at shutdown). */
+const recordingLedger = (calls: LedgerCall[]) => ({
+  onToolStart: (input: LedgerCallInput) => { calls.push({ method: 'start', input }); },
+  onToolUpdate: (input: LedgerCallInput) => { calls.push({ method: 'update', input }); },
+  onToolEnd: (input: LedgerCallInput) => { calls.push({ method: 'end', input }); },
+  dispose: () => {},
+});
+
+// SAFETY: same duck-typed-double shape the bash-route harness uses — the
+// partial satisfies only the ledger members the engine calls.
+const asLedgerDouble = <T,>(double: T): ProcessLedger => double as ProcessLedger;
 
 afterAll(() => {
   rmSync(agentDir, { recursive: true, force: true, maxRetries: 5 });
@@ -1083,5 +1105,55 @@ describe('OmpHostEngine executeBash (`!` local shell)', () => {
     const statuses = events.filter((event) => event.type === 'session.status' || event.type === 'session.idle');
     expect(statuses[0]?.properties.status).toEqual({ type: 'busy' });
     expect(statuses.at(-1)?.type).toBe('session.idle');
+  });
+
+  test('a `!` run opens and closes a process-ledger window around the bash call', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const calls: LedgerCall[] = [];
+    engine.processLedger = asLedgerDouble(recordingLedger(calls));
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    const record = bashRecord();
+    session.executeBash = mock(async (_command: string, onChunk?: (chunk: string) => void) => {
+      onChunk?.('part-1\n');
+      record.timestamp = Date.now();
+      session.messages.push(record);
+      return bashResult();
+    });
+
+    const outcome = await engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'pwd' });
+
+    expect(outcome.status).toBe('ok');
+    expect(calls[0]?.method).toBe('start');
+    expect(calls[0]?.input.toolName).toBe('bash');
+    expect(calls[0]?.input.args?.command).toBe('pwd');
+    const callId = calls[0]?.input.toolCallId;
+    expect(callId).toMatch(/^bang:/);
+    // One synthetic window id spans start → streamed chunks → end.
+    expect(new Set(calls.map((call) => call.input.toolCallId))).toEqual(new Set([callId]));
+    expect(calls.filter((call) => call.method === 'update').map((call) => call.input.text)).toEqual(['part-1\n']);
+    const end = calls.at(-1);
+    expect(end?.method).toBe('end');
+    expect(end?.input.output).toBe('/repo\n');
+    expect(end?.input.exitCode).toBe(0);
+  });
+
+  test('a thrown `!` dispatch closes the ledger window as an error', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const calls: LedgerCall[] = [];
+    engine.processLedger = asLedgerDouble(recordingLedger(calls));
+    const session = sessionFor('s1');
+    session.isStreaming = false;
+    session.messages = [];
+    session.executeBash = mock(async () => {
+      throw new Error('runner exploded');
+    });
+
+    await expect(engine.executeBash({ sessionID: 's1', directory: '/repo', command: 'pwd' })).rejects.toThrow('runner exploded');
+
+    const end = calls.at(-1);
+    expect(end?.method).toBe('end');
+    expect(end?.input.isError).toBe(true);
   });
 });

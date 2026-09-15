@@ -159,6 +159,9 @@ export const WorkStatusProcessesSection: React.FC<Props> = ({ sessionId, directo
                 {entry.sessionID === null ? (
                   <WorkStatusPill>{t('chat.workStatus.processes.uncertain')}</WorkStatusPill>
                 ) : null}
+                {entry.statsStale ? (
+                  <WorkStatusPill>{t('chat.workStatus.processes.statsStale')}</WorkStatusPill>
+                ) : null}
                 {entry.totalCpuPercent !== undefined ? (
                   <WorkStatusValue tone="muted">{formatProcessCpu(entry.totalCpuPercent)}</WorkStatusValue>
                 ) : null}
@@ -168,7 +171,10 @@ export const WorkStatusProcessesSection: React.FC<Props> = ({ sessionId, directo
                 <WorkStatusValue tone={statusTone(entry.status)}>
                   {t(processStatusLabelKey[entry.status])}
                 </WorkStatusValue>
-                {entry.liveCount > 0 ? (
+                {/* Unattributed roots own a whole foreign subtree (infra, dev
+                    servers) — a one-click row kill is too blunt there; the
+                    detail dialog still offers per-pid kills. */}
+                {entry.liveCount > 0 && entry.sessionID !== null ? (
                   <WorkStatusRowAction
                     tone="error"
                     ariaLabel={t('chat.workStatus.processes.killAll')}

@@ -260,13 +260,21 @@ than re-deriving ownership:
   silently dropped.
 - The section is scoped to the current session: an entry matches when it is
   owned by the session or lists it in `candidateSessionIds`.
+- Only running entries render as rows; ended entries live in the
+  all-processes dialog (header list icon) under a collapsed "N ended" group
+  for postmortem.
 - Clicking a row opens `WorkStatusProcessDialog`: member pids with CPU/RSS,
   the bounded output tail, and kill controls. The output endpoint is polled
   only while the dialog is open — section rows ride snapshot revisions and
   never fetch output themselves.
 - Kill is a two-tap arm (`killConfirm`) then `POST
   /api/omp/processes/{sessionID}/{key}`; the ledger cancels the backing SDK
-  async job when the entry has one.
+  async job when the entry has one. Unattributed roots own whole foreign
+  subtrees (infra, dev servers), so they get no one-click row/entry kill —
+  per-pid kills remain in the member table.
+- Entries carry `statsStale` while consecutive sampling failures make the
+  reported CPU/RSS unreliable — rows show a "stale stats" pill rather than
+  fabricating numbers.
 - `processes.v1` gates the whole surface: capability off or native module
   unavailable hides the section entirely.
 

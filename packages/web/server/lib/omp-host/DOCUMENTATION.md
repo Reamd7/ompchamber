@@ -155,18 +155,25 @@ sync engine, and web server call; everything else answers 404.
   Bash/eval run inside this host process, so every spawned process is a host
   descendant; the SDK never reports pids, so `process-ledger.ts` reconstructs
   ownership observationally: `tool_execution_*` events open/close invocation
-  windows, a 2s poller diffs the native descendant tree (pi-natives
+  windows, the `!` bash route opens its own synthetic window around
+  `session.executeBash` (`bang:`-prefixed call ids — it bypasses tool
+  events entirely, and without it `!`-spawned trees drift unattributed), a
+  2s poller diffs the native descendant tree (pi-natives
   `Process.children()` via the SDK's store path, never a new dependency), and
   every row carries `attribution` (`window`/`argv`/`parent`/`job`/
   `unattributed`) — ambiguous rows stay listed with `candidateSessionIds`
   rather than being dropped. CPU/RSS come from per-pid platform readers
   (Linux `/proc`, macOS `ps -p`, Windows `Get-Process`); enumeration or
   sampling failures fabricate nothing — exits are marked only on observed
-  disappearance. `domain-processes.ts` serves `GET /api/omp/processes`
+  disappearance, and consecutive failures mark live entries `statsStale`
+  while the stats reader backs off exponentially (capped at 30s) instead of
+  spinning a spawn storm. `domain-processes.ts` serves `GET /api/omp/processes`
   (directory snapshot), `GET /api/omp/processes/output` (bounded tail), and
   `POST /api/omp/processes/{sessionID}/{key}` kill actions; `processes.v1`
   gates the whole surface and `omp.processes.updated` carries the coalesced
-  revision bump. Honest limits: `setsid`/double-fork daemons reparent out of
+  revision bump. `ledger.diagnostics()` feeds a counters-only `processLedger`
+  section into `GET /omp/diagnostics` (poll cadence, spawn volume, sampling
+  failures). Honest limits: `setsid`/double-fork daemons reparent out of
   the descendant tree and read as exited while alive; output produced after a
   process detaches its fds is unreachable.
 - `event-dispositions.json` / `omp-event-registry.json` /

@@ -287,6 +287,78 @@ describe('ProcessLedger — kill', () => {
   });
 });
 
+describe('ProcessLedger — sampling health', () => {
+  // A platform whose stats reader fails under a flag, so consecutive-failure
+  // marking, the backoff gate, and recovery are all observable.
+  const setupUnhealthy = (tree: ProcInfo[], failing: { current: boolean }) => {
+    let clock = 10_000;
+    const calls = { sampleStats: 0 };
+    const platform: ProcessPlatform = {
+      enumerateTree: () => Promise.resolve(tree),
+      sampleStats: (pids) => {
+        calls.sampleStats += 1;
+        if (failing.current) return Promise.reject(new Error('sampler dead'));
+        return Promise.resolve(new Map(pids.map((pid) => [pid, { rssBytes: 4096 }])));
+      },
+      cwdOf: () => null,
+      isAlive: () => true,
+      terminate: () => Promise.resolve(true),
+    };
+    const ledger = new ProcessLedger({
+      platform,
+      now: () => clock,
+      setIntervalFn: () => ({}),
+      clearIntervalFn: () => {},
+      setTimeoutFn: () => ({}),
+      clearTimeoutFn: () => {},
+    });
+    return { ledger, calls, advance: (ms: number) => { clock += ms; } };
+  };
+
+  test('consecutive sampling failures mark live entries statsStale, success clears it', async () => {
+    const failing = { current: true };
+    const { ledger, calls, advance } = setupUnhealthy([proc(2001, HOST_PID, 'sleep 600')], failing);
+    startBash(ledger, SES_A, 'call_1', 'sleep 600');
+    await ledger.tick(); // failure 1 → backoff until +pollMs
+    await ledger.tick(); // still inside the backoff window: sampler not called
+    expect(calls.sampleStats).toBe(1);
+    advance(3000);
+    await ledger.tick(); // failure 2
+    expect(ledger.snapshot(DIR).entries[0]?.statsStale).toBeUndefined();
+    advance(5000);
+    await ledger.tick(); // failure 3 → stale
+    expect(ledger.snapshot(DIR).entries[0]?.statsStale).toBe(true);
+
+    failing.current = false;
+    advance(30_000); // past the +8s backoff
+    await ledger.tick();
+    const entry = ledger.snapshot(DIR).entries[0]!;
+    expect(entry.statsStale).toBeUndefined();
+    expect(entry.processes[0]?.rssBytes).toBe(4096);
+  });
+
+  test('diagnostics reports poll/spawn/failure counters', async () => {
+    const failing = { current: false };
+    const { ledger, advance } = setupUnhealthy([proc(2001, HOST_PID, 'sleep 600'), proc(2002, 2001, 'child --x')], failing);
+    startBash(ledger, SES_A, 'call_1', 'sleep 600');
+    await ledger.tick();
+    const d = ledger.diagnostics();
+    expect(d.pollCount).toBe(1);
+    expect(d.spawnCount).toBe(2);
+    expect(d.trackedProcesses).toBe(2);
+    expect(d.liveProcesses).toBe(2);
+    expect(d.openWindows).toBe(1);
+    expect(d.sampleFailures).toBe(0);
+    expect(d.consecutiveFailures).toBe(0);
+    expect(d.statsStale).toBe(false);
+
+    failing.current = true;
+    advance(1);
+    await ledger.tick();
+    expect(ledger.diagnostics().sampleFailures).toBe(1);
+  });
+});
+
 describe('ProcessLedger — transport', () => {
   test('changes coalesce into one publish per directory', async () => {
     const tree = [proc(2001, HOST_PID, 'sleep 5')];

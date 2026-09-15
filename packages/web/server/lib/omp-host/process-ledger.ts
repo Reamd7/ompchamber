@@ -61,6 +61,9 @@ export interface OmpProcessEntry {
   liveCount: number;
   totalRssBytes?: number;
   totalCpuPercent?: number;
+  /** True while consecutive enumeration/sampling failures make the reported
+   * stats unreliable — the UI marks the row rather than showing dead numbers. */
+  statsStale?: boolean;
   hasOutput: boolean;
   processes: OmpProcessMember[];
 }
@@ -179,6 +182,11 @@ const DEFAULT_TAIL_BYTES = 64 * 1024;
 const DEFAULT_MAX_INVOCATIONS = 50;
 const DEFAULT_COALESCE_MS = 400;
 const UNATTRIBUTED_PREFIX = 'proc:';
+// Sampling health: failures mark live entries `statsStale` once they persist,
+// and the stats reader backs off exponentially so a broken platform cannot
+// spin a powershell/proc spawn storm every poll tick.
+const STATS_STALE_FAILURES = 3;
+const STATS_BACKOFF_MAX_MS = 30_000;
 
 const TRACKED_TOOLS = new Set(['bash', 'eval']);
 
@@ -272,6 +280,15 @@ export class ProcessLedger {
   #publishTimer: LedgerTimerHandle | null = null;
   #tickPromise: Promise<void> | null = null;
   #disposed = false;
+  // Diagnostics counters (plan: "给 /omp/diagnostics 加 pollMs/pollCount/
+  // spawnCount 计数器实测") — O(1) reads, reset only on dispose.
+  #pollCount = 0;
+  #lastPollMs = 0;
+  #spawnCount = 0;
+  #sampleFailuresTotal = 0;
+  #consecutiveFailures = 0;
+  #statsStale = false;
+  #statsBackoffUntil = 0;
 
   constructor(deps: ProcessLedgerDeps) {
     this.#deps = deps;
@@ -389,19 +406,32 @@ export class ProcessLedger {
   }
 
   async #doTick(): Promise<void> {
-    const now = this.#now();
+    const startedAt = this.#now();
+    const now = startedAt;
     const runningJobs = this.#jobIdsRunning();
     if (!this.#hasWork(now, runningJobs)) return;
     let samples: ProcInfo[];
     try {
       samples = await this.#deps.platform.enumerateTree();
+      this.#pollCount += 1;
     } catch {
       // A failed enumeration pass must not fabricate exits; retry next tick.
+      // Persistent failure also makes every reported stat unreliable.
+      this.#noteFailure(now);
       return;
     }
     this.#diff(samples, now, runningJobs);
     await this.#sampleStats(now);
     this.#purge(now);
+    this.#lastPollMs = this.#now() - startedAt;
+  }
+
+  #noteFailure(now: number): void {
+    this.#consecutiveFailures += 1;
+    this.#sampleFailuresTotal += 1;
+    if (this.#consecutiveFailures >= STATS_STALE_FAILURES) this.#statsStale = true;
+    const shift = Math.min(this.#consecutiveFailures - 1, 8);
+    this.#statsBackoffUntil = now + Math.min(this.#pollMs * 2 ** shift, STATS_BACKOFF_MAX_MS);
   }
 
   #diff(samples: ProcInfo[], now: number, runningJobs: Set<string>): void {
@@ -525,17 +555,22 @@ export class ProcessLedger {
     };
     if (candidateSessionIds) proc.candidateSessionIds = candidateSessionIds;
     this.#procs.set(sample.pid, proc);
+    this.#spawnCount += 1;
   }
 
   async #sampleStats(now: number): Promise<void> {
+    if (now < this.#statsBackoffUntil) return;
     const live = [...this.#procs.values()].filter((proc) => !proc.exitedAt);
     if (live.length === 0) return;
     let stats: Map<number, ProcStats>;
     try {
       stats = await this.#deps.platform.sampleStats(live.map((proc) => proc.pid));
     } catch {
+      this.#noteFailure(now);
       return;
     }
+    this.#consecutiveFailures = 0;
+    this.#statsStale = false;
     for (const proc of live) {
       const sample = stats.get(proc.pid);
       if (!sample) continue;
@@ -687,6 +722,7 @@ export class ProcessLedger {
       if (inv.jobId) entry.jobId = inv.jobId;
       if (totals.rss !== undefined) entry.totalRssBytes = totals.rss;
       if (totals.cpu !== undefined) entry.totalCpuPercent = totals.cpu;
+      if (this.#statsStale && entry.liveCount > 0) entry.statsStale = true;
       entries.push(entry);
     }
     for (const proc of this.#procs.values()) {
@@ -710,6 +746,7 @@ export class ProcessLedger {
       if (proc.candidateSessionIds) entry.candidateSessionIds = proc.candidateSessionIds;
       if (totals.rss !== undefined) entry.totalRssBytes = totals.rss;
       if (totals.cpu !== undefined) entry.totalCpuPercent = totals.cpu;
+      if (this.#statsStale && entry.liveCount > 0) entry.statsStale = true;
       entries.push(entry);
     }
     entries.sort((a, b) => {
@@ -717,6 +754,31 @@ export class ProcessLedger {
       return rank(a) - rank(b) || b.startedAt - a.startedAt;
     });
     return { revision: this.#revision, generatedAt: now, entries };
+  }
+
+  /** Counters-only health view for `/omp/diagnostics` — no argv/payload. */
+  diagnostics() {
+    const now = this.#now();
+    const runningJobs = this.#jobIdsRunning();
+    let liveProcesses = 0;
+    for (const proc of this.#procs.values()) {
+      if (!proc.exitedAt) liveProcesses += 1;
+    }
+    let openWindows = 0;
+    for (const inv of this.#invocations.values()) {
+      if (this.#isOpen(inv, now, runningJobs)) openWindows += 1;
+    }
+    return {
+      pollCount: this.#pollCount,
+      lastPollMs: this.#lastPollMs,
+      spawnCount: this.#spawnCount,
+      trackedProcesses: this.#procs.size,
+      liveProcesses,
+      openWindows,
+      sampleFailures: this.#sampleFailuresTotal,
+      consecutiveFailures: this.#consecutiveFailures,
+      statsStale: this.#statsStale,
+    };
   }
 
   output(key: string): OmpProcessOutput | null {
