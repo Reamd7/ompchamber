@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-09-15
+
 - **Chat: the work status panel gains a Processes section.** Commands the agent runs now list the processes they spawned — live CPU and memory, output tails, and kill controls per process or the whole call — and a view-all dialog shows the full set at once; host processes no call can claim appear under "uncertain attribution" instead of inflating another call's tree.
 
 ## [1.31.0] - 2026-09-14

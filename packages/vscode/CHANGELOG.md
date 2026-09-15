@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.32.0] - 2026-09-15
+
 - Chat: the work status panel gains a Processes section — commands the agent runs list the processes they spawned with live CPU/memory, output tails, and kill controls, plus a view-all dialog for the full set.
 
 ## [1.31.0] - 2026-09-14
