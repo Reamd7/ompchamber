@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-09-15
+
+- **Desktop: packaged builds no longer hang on startup.** In v1.32.0 packaged apps the engine could hang before serving — the app reported "OpenCode port is not available" and a spinning engine process survived shutdown. The packaged host now starts reliably, and release verification boots it the same way the app does so the failure is caught before shipping.
+
 ## [1.32.0] - 2026-09-15
 
 - **Chat: the work status panel gains a Processes section.** Commands the agent runs now list the processes they spawned — live CPU and memory, output tails, and kill controls per process or the whole call — and a view-all dialog shows the full set at once; host processes no call can claim appear under "uncertain attribution" instead of inflating another call's tree.
