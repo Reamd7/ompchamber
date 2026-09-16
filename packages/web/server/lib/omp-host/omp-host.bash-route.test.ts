@@ -32,6 +32,7 @@ const mountBashRoute = (executeBash: (input: ExecuteBashInput) => Promise<Execut
       dialogs: { mount: () => {} },
       modesDomain: {},
       uriDomain: { mount: () => {} },
+      processDomain: { mount: () => {} },
       settingsStoreReady: async () => null,
       settingsStore: null,
       customAgents: new Map(),
