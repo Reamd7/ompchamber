@@ -300,6 +300,11 @@ describe('useUIStore openContextSurface', () => {
     expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
   });
 
+  test('opening the file surface shows the tree', () => {
+    useUIStore.getState().openContextSurface(directory, 'file');
+    expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
+  });
+
 
 
 
@@ -402,7 +407,7 @@ describe('useUIStore closeContextPanelTab surface stability', () => {
   test('closing the last file tab keeps the file surface on its empty editor tab', () => {
     useUIStore.getState().openContextPanelTab(directory, { mode: 'terminal' });
     useUIStore.getState().openContextFile(directory, '/repo/a.ts');
-
+   useUIStore.setState({ contextEditorTreeVisible: false });
     const stateBefore = useUIStore.getState().contextPanelByDirectory[directory];
     const fileTabId = stateBefore?.tabs.find((tab) => tab.mode === 'file')?.id;
     if (!fileTabId) throw new Error('expected a file tab');
@@ -414,7 +419,9 @@ describe('useUIStore closeContextPanelTab surface stability', () => {
     expect(activeTab?.mode).toBe('file');
     expect(activeTab?.targetPath).toBe(null);
     expect(state?.tabs.map((tab) => tab.mode)).toEqual(['terminal', 'file']);
-  });
+   expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
+    expect(state?.widthByMode).toEqual(stateBefore?.widthByMode);
+    expect(state?.widthFractionByMode).toEqual(stateBefore?.widthFractionByMode);  });
 
   test('closing the empty editor tab itself still closes the file surface', () => {
     useUIStore.getState().openContextSurface(directory, 'file');
@@ -464,6 +471,7 @@ describe('useUIStore closeContextPanelTabs bulk', () => {
     useUIStore.getState().openContextPanelTab(directory, { mode: 'terminal' });
     useUIStore.getState().openContextFile(directory, '/repo/a.ts');
     useUIStore.getState().openContextFile(directory, '/repo/b.ts');
+    useUIStore.setState({ contextEditorTreeVisible: false });
 
     const state0 = useUIStore.getState().contextPanelByDirectory[directory];
     const fileIds = state0?.tabs.filter((tab) => tab.mode === 'file').map((tab) => tab.id) ?? [];
@@ -475,7 +483,9 @@ describe('useUIStore closeContextPanelTabs bulk', () => {
     expect(activeTab?.mode).toBe('file');
     expect(activeTab?.targetPath).toBe(null);
     expect(state?.tabs.some((tab) => tab.mode === 'terminal')).toBe(true);
-  });
+   expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
+    expect(state?.widthByMode).toEqual(state0?.widthByMode);
+    expect(state?.widthFractionByMode).toEqual(state0?.widthFractionByMode);  });
 
   test('closing only inactive-mode tabs leaves the active tab and panel intact', () => {
     useUIStore.getState().openContextFile(directory, '/repo/a.ts');
@@ -595,8 +605,8 @@ describe('useUIStore per-surface panel widths', () => {
     } finally {
       useUIStore.persist.setOptions(originalPersistOptions);
     }
-  });});
-
+ });
+});
 describe('useUIStore contextRailOrder', () => {
   test('setContextRailOrder drops empty and duplicate ids', () => {
     useUIStore.getState().setContextRailOrder(['diff', 'diff', '', 'editor']);

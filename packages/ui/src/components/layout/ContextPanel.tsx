@@ -561,8 +561,7 @@ export const ContextPanel: React.FC = () => {
   // tree never hides alongside it, so a hidden tree forces the editor back.
   const showsEditor = hasOpenEditorFile && (contextEditorVisible || !contextEditorTreeVisible);
   const activeModeForWidth = activeTab?.mode ?? null;
- const widthKey = activeModeForWidth ? getContextPanelWidthKey(activeModeForWidth, showsEditor) : null;
-  const manualWidth = widthKey ? panelState?.widthByMode?.[widthKey] : undefined;
+ const widthKey = activeModeForWidth ? getContextPanelWidthKey(activeModeForWidth, showsEditor) : null;  const manualWidth = widthKey ? panelState?.widthByMode?.[widthKey] : undefined;
   const manualWidthFraction = widthKey ? panelState?.widthFractionByMode?.[widthKey] : undefined;
   const widthFraction = activeModeForWidth ? getContextSurfaceWidthFraction(activeModeForWidth) : 0.5;
   const widthFallbackBase = availablePanelAreaWidth
@@ -577,8 +576,8 @@ export const ContextPanel: React.FC = () => {
   React.useEffect(() => {
     if (!directoryKey || !widthKey || manualWidthFraction != null || manualWidth == null || availablePanelAreaWidth == null) return;
     setContextPanelWidth(directoryKey, widthKey, manualWidth, availablePanelAreaWidth);
-  }, [availablePanelAreaWidth, directoryKey, manualWidth, manualWidthFraction, setContextPanelWidth, widthKey]);  const chatSessionIDs = React.useMemo(() => {
-    const ids: string[] = [];
+ }, [availablePanelAreaWidth, directoryKey, manualWidth, manualWidthFraction, setContextPanelWidth, widthKey]);
+  const chatSessionIDs = React.useMemo(() => {    const ids: string[] = [];
     for (const tab of tabs) {
       if (tab.mode !== 'chat') continue;
       const sessionID = getSessionIDFromDedupeKey(tab.dedupeKey);
@@ -690,8 +689,7 @@ export const ContextPanel: React.FC = () => {
     }
     document.documentElement.style.cursor = '';
    if (directoryKey && widthKey) {
-      setContextPanelWidth(directoryKey, widthKey, finalWidth, availableWidth);
-    }
+      setContextPanelWidth(directoryKey, widthKey, finalWidth, availableWidth ?? undefined);    }
     setIsResizing(false);
     activeResizePointerIDRef.current = null;
   }, [clampWidthForDrag, directoryKey, setContextPanelWidth, widthKey, width]);
@@ -1075,11 +1073,6 @@ export const ContextPanel: React.FC = () => {
     [tabs],
   );
 
-  const hasLocalFileTabs = React.useMemo(
-    () => tabs.some((tab) => tab.mode === 'localFile'),
-    [tabs],
-  );
-  const isLocalFileTabActive = activeTab?.mode === 'localFile';
   const isFileTabActive = activeTab?.mode === 'file';
 
   const closeContextPanelTabs = useUIStore((state) => state.closeContextPanelTabs);
@@ -1336,8 +1329,8 @@ export const ContextPanel: React.FC = () => {
                 )}
               </div>
             ) : null}
-            <EditorTreeColumn visible={contextEditorTreeVisible} active={isOpen && isFileTabActive} fill={!showsEditor} />          </div>
-        ) : null}
+           <EditorTreeColumn visible={contextEditorTreeVisible} active={isOpen && isFileTabActive} fill={!showsEditor} />
+          </div>        ) : null}
         {activeChatTab && activeChatSessionID && activeChatSrc ? (
           <iframe
             key={activeChatTab.id}
@@ -1403,7 +1396,7 @@ export const ContextPanel: React.FC = () => {
             </React.Suspense>
           </div>
         ) : null}
-        {activeTab?.mode !== 'chat' && !isFileTabActive && !isLocalFileTabActive && activeTab?.mode !== 'browser' && activeTab?.mode !== 'diff' && activeTab?.mode !== 'terminal' && activeTab?.mode !== 'walkthrough' ? activeNonChatContent : null}
+        {activeTab?.mode !== 'chat' && !isFileTabActive && !isFileTabActive && activeTab?.mode !== 'browser' && activeTab?.mode !== 'diff' && activeTab?.mode !== 'terminal' && activeTab?.mode !== 'walkthrough' ? activeNonChatContent : null}
       </div>
       </div>
     </aside>

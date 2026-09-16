@@ -13,7 +13,7 @@
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 3/3 (3吸) |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 1/1 (0吸/1跳) |
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 7/7 (3吸/4跳) |
-| 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 2/4 (2吸) |
+| 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 3/4 (3吸) |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
@@ -110,7 +110,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 |---|---|---|---|---|
 | - [x] | `2d406f9f9` | feat(files): upload files from the folder menu and tree toolbar | `自身` | PORTED(FilesView 仅织入 upload 增量,preview 栈保留 fork) |
 | - [ ] | `8c9e08234` | feat(files): rich artifact previews and an agent file.open action | `服务端` |  |
-| - [ ] | `49bfdac7f` | feat(context-panel): integrate persistent file tree and editor toggle (#3590) | `自身` |  |
+| - [x] | `49bfdac7f` | feat(context-panel): integrate persistent file tree and editor toggle (#3590) | `自身` | PORTED(编辑器树持久化织入;terminal 单例用例依赖富 store 已裁剪) |
 | - [x] | `cf0904586` | feat(context-panel): keep file tree width and add editor toggle | `引擎耦合?` | PORTED(宽度键含 file-tree;min 宽对齐上游 320;terminal 目标用例依赖富 store 已裁) |
 
 ## - [ ] Mobile — 🟢 中高价值 / 自身能力

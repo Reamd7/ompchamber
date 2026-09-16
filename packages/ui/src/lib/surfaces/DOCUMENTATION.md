@@ -21,8 +21,8 @@ edge (`components/layout/ContextPanelRail.tsx`) and rendered by
   Every surface, including walkthrough, restores both values on reload.
   The file surface uses two width keys. It uses `file` when an editor shows,
   and `file-tree` when only the file tree shows (no file open, or editor
-  hidden). `getContextPanelWidthKey` selects the key.- Rail order is user-reorderable and persisted globally in
-  `useUIStore.contextRailOrder`; `sortContextSurfaces` applies it on top of the
+ hidden). `getContextPanelWidthKey` selects the key.
+- Rail order is user-reorderable and persisted globally in  `useUIStore.contextRailOrder`; `sortContextSurfaces` applies it on top of the
   registry's default order and appends any missing surfaces.
 - `getVisibleContextRailSurfaces` is the single visibility filter shared by the
   rail and the global surface-switch shortcut (`switch_context_surface` in

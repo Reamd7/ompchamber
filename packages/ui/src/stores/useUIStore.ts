@@ -16,7 +16,6 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch' | 'commit' | 'pr';
 const contextPanelModeSchema = z.enum(['diff', 'walkthrough', 'file', 'localFile', 'context', 'plan', 'chat', 'browser', 'git', 'pr', 'linear', 'notes', 'terminal', 'timeline']);
 export type ContextPanelMode = z.infer<typeof contextPanelModeSchema>;
-
 // The file surface with no file open is only its tree, and keeps a width of
 // its own: closing the last file or hiding the editor returns the panel to it,
 // and showing a file restores the editor width stored under 'file'.
@@ -29,7 +28,8 @@ const persistedPanelWidthsSchema = z.object({
   widthByMode: z.record(z.string(), z.number().finite().optional().catch(undefined)).catch({}),
   widthFractionByMode: z.record(z.string(), z.number().positive().max(1).optional().catch(undefined)).catch({}),
 });
-export type MermaidRenderingMode = 'svg' | 'ascii';export type UserMessageRenderingMode = 'markdown' | 'plain';
+export type MermaidRenderingMode = 'svg' | 'ascii';
+export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
 export type ActivityRenderMode = 'collapsed' | 'summary';
 export type SessionRetentionAction = 'archive' | 'delete';
@@ -124,7 +124,7 @@ type ContextPanelDirectoryState = {
   expanded: boolean;
   tabs: ContextPanelTab[];
   activeTabId: string | null;
-// Manual per-surface widths (px), populated only by user resize; surfaces
+  // Manual per-surface widths (px), populated only by user resize; surfaces
   // without an entry fall back to their registry defaultWidthFraction.
   widthByMode: Partial<Record<ContextPanelWidthKey, number>>;
   // Ratios captured when a user resizes a surface. These remain responsive
@@ -1675,12 +1675,18 @@ export const useUIStore = create<UIStore>()(
               return state;
             }
 
+            const next = closeContextPanelTabs(current, normalizedTabIds);
+            const activeTab = next.tabs.find((tab) => tab.id === next.activeTabId);
+            const returnedToTree = next.isOpen && activeTab?.mode === 'file' && !activeTab.targetPath;
             const byDirectory = {
               ...state.contextPanelByDirectory,
-              [normalizedDirectory]: closeContextPanelTabs(current, normalizedTabIds),
+              [normalizedDirectory]: next,
             };
 
-            return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
+            return {
+              contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20),
+              contextEditorTreeVisible: returnedToTree || state.contextEditorTreeVisible,
+            };
           });
 
           // Keep the editor's own open-file state in sync so closed files do not
