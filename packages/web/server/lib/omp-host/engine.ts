@@ -1526,8 +1526,13 @@ export class OmpHostEngine {
    * metadata reads only; no session materialization, no revival wiring.
    */
   async #rehydrateSubagentRefs(sessionFile: string): Promise<void> {
+    // Same invariant as the engine-wide subscription above: a
+    // minimal/embedded SDK surface may omit the process-global registry,
+    // and there is nothing to re-register into without it.
+    const globalRegistry = AgentRegistry.global?.();
+    if (!globalRegistry) return;
     try {
-      await registerPersistedSubagents(AgentRegistry.global(), sessionFile);
+      await registerPersistedSubagents(globalRegistry, sessionFile);
     } catch (error) {
       console.warn('[omp-host] subagent rehydration failed:', error instanceof Error ? error.message : String(error));
       return;

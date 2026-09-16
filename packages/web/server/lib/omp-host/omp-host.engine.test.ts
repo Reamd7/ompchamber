@@ -484,6 +484,20 @@ describe('consumption-time subagent rehydration (materialization)', () => {
     let removedSeen = false;
     const { promise: firstRegistered, resolve: onFirstRegistered } = Promise.withResolvers<void>();
     const { promise: reRegistered, resolve: onReRegistered } = Promise.withResolvers<void>();
+    // The re-registered ref's row re-publishes on omp.agents.updated only
+    // after the rehydrate path re-warms child ids (the UI's own signal). Gate
+    // on the removal so the first registration's publish cannot satisfy this
+    // wait.
+    const { promise: rowRepublished, resolve: onRow } = Promise.withResolvers<void>();
+    const stopBus = engine.ompBus.subscribeSince(Number.MAX_SAFE_INTEGER, (entry) => {
+      if (!removedSeen || entry.envelope.type !== 'omp.agents.updated') return;
+      // SAFETY: test fixture narrowing — omp.agents.updated payload rows are
+      // untyped on the envelope boundary; only the two asserted fields are read.
+      const rows = entry.envelope.payload as { agentRuns?: Array<{ agentId?: string; childSessionID?: string }> };
+      for (const candidate of rows.agentRuns ?? []) {
+        if (candidate.agentId === 'Regrow' && candidate.childSessionID === 'regrow-child-1') onRow();
+      }
+    }, { directory: '/repo' });
     const stopListen = globalRegistry.onChange((event) => {
       if (event.ref.id !== 'Regrow') return;
       if (event.type === 'removed') removedSeen = true;
@@ -502,12 +516,15 @@ describe('consumption-time subagent rehydration (materialization)', () => {
       // settle): the row would vanish mid-view without re-registration.
       globalRegistry.unregister('Regrow');
       expect(globalRegistry.get('Regrow')).toBeUndefined();
-      await Promise.race([reRegistered, guardAfter(3000)]);
+      await Promise.race([reRegistered, guardAfter(2000)]);
+      expect(globalRegistry.get('Regrow')).toBeTruthy();
+      await Promise.race([rowRepublished, guardAfter(3000)]);
       const row = engine.uriDomain?.aggregator.refresh().agentRuns.find((r) => r.agentId === 'Regrow');
       expect(row?.sessionID).toBe('s10');
       expect(row?.status).toBe('parked');
       expect(row?.childSessionID).toBe('regrow-child-1');
     } finally {
+      stopBus();
       stopListen();
       const index = sessionFiles.findIndex((entry) => entry.id === 's10');
       if (index >= 0) sessionFiles.splice(index, 1);
