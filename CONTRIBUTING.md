@@ -3,15 +3,19 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/Reamd7/ompchamber.git
-cd openchamber
+git clone --recurse-submodules https://github.com/Reamd7/OMPChamber
+cd OMPChamber
 bun install
 ```
 
 The terminal emulator (`ghostty-web`) is a git submodule tracking the
-`Reamd7/ghostty-web` fork's `terminal-enhancer` branch. `bun install`
-initializes it automatically via the root `preinstall` script; to pull the
-latest fork changes into the pin:
+`Reamd7/ghostty-web` fork's `terminal-enhancer` branch. Clone with
+`--recurse-submodules`, or run `git submodule update --init
+references/ghostty-web` before `bun install`: Bun resolves the workspace's
+`file:references/ghostty-web` dependency before lifecycle scripts run, so the
+root `preinstall` hook cannot rescue an empty checkout.
+
+To pull the latest fork changes into the pin:
 
 ```bash
 git submodule update --remote references/ghostty-web

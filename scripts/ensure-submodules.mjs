@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
- * Ensure the ghostty-web submodule is present before dependency resolution.
+ * Ensure the ghostty-web submodule is present before linking.
  *
  * The workspace depends on the vendored fork via `file:references/ghostty-web`.
- * On a fresh clone the submodule directory is empty, and `bun install` would
- * fail (or silently resolve nothing) before this hook runs — so `bun install`
- * must first trigger this via the root `preinstall` script. `git submodule
- * update --init` is idempotent: an already-initialized submodule is a no-op.
+ * Bun resolves `file:` dependencies before running lifecycle scripts, so this
+ * preinstall hook cannot rescue a fresh clone whose submodule is still empty;
+ * `bun install` fails first with "Could not find package.json". Fresh clones
+ * must init submodules before installing (see CONTRIBUTING.md). The hook still
+ * covers later runs: `git submodule update --init` is idempotent, and an
+ * already-initialized submodule is a no-op.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
