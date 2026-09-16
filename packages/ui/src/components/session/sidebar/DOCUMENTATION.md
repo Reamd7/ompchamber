@@ -49,6 +49,19 @@ project tree, with no Recent projection. VS Code excludes worktrees and managed
 Chats, while retaining its workspace-scoped grouped list and inline archived
 buckets.
 
+Both project display modes use `projects/CrossfadeZoneHeaders.tsx` for sticky
+zone headers. The live header keeps one portal host as it moves between its
+section placeholder and a stationary layer inside the native scroller,
+preserving its controls and menu state. Section and header resizing refresh
+cached boundaries; scrolling only compares those offsets
+and changes the DOM at a zone handoff. An inert, accessibility-hidden snapshot of
+the outgoing header fades over the incoming header for 150 ms. Reduced motion
+skips the fade. Project dragging temporarily returns headers to their sections
+without remounting controls. Reordering refreshes boundaries using layout offsets
+that exclude sortable transforms, so settling animations cannot leave stale
+header positions. The sidebar has no separate desktop-only top gradient or
+identity overlay.
+
 Directory demand always includes known project roots and worktrees. Visibility
 only changes priority. Row mounts must not start bootstrap work. Selection and
 activity subscriptions stay session-scoped so a structural list update does not

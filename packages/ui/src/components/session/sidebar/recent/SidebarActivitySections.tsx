@@ -11,6 +11,7 @@ import {
 } from '../sessions/sessionNodeItemUtils';
 import type { SessionNodeRenderExtras } from '../sessions/sessionNodeItemUtils';
 import { SessionTreeItem, type SessionTreeItemProps } from '../sessions/SessionTreeItem';
+import { CrossfadeZoneHeader } from '../projects/CrossfadeZoneHeaders';
 
 export type ActivityItem = {
   node: SessionNode;
@@ -242,9 +243,8 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
         }
 
         return (
-          <div key={section.key} className="relative space-y-1">
-            <div className={cn(
-              'relative group/chats',
+         <div key={section.key} className="relative">
+            <CrossfadeZoneHeader className={cn(              'relative group/chats',
               '-ml-2.5 -mr-2',
               stickyZoneHeaders && 'sticky top-0 z-20 bg-sidebar',
             )} data-sidebar-sticky-header={stickyZoneHeaders ? 'true' : undefined}>
@@ -272,7 +272,7 @@ export function SidebarActivitySections(props: Props): React.ReactNode {
                   <Icon name="add" className="h-4 w-4" />
                 </button>
               ) : null}
-            </div>
+            </CrossfadeZoneHeader>
             {!isCollapsed ? (
               <div className={cn('space-y-0.5')}>
                 {usesCustomRenderer ? props.renderChatsSection?.(section.items) : visibleItems.map(renderItem)}

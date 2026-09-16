@@ -12,7 +12,7 @@
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 5/5 (3吸/2跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 3/3 (3吸) |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 1/1 (0吸/1跳) |
-| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/7 |
+| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 1/7 (1吸/1跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 0/4 |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
@@ -99,7 +99,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 | - [ ] | `d06fdc407` | feat(sidebar): add a worktree sort setting, manual by default | `服务端` |  |
 | - [ ] | `65b3a5135` | feat(sidebar): mark sessions where the agent left a next step open | `服务端` |  |
 | - [ ] | `7ad4b2897` | feat(sidebar): add the Timeline view and a Grouped/Timeline switch | `服务端` |  |
-| - [ ] | `0d59ddf3c` | feat(sidebar): unify sticky headers with crossfade transitions | `自身` |  |
+| - [x] | `0d59ddf3c` | feat(sidebar): unify sticky headers with crossfade transitions | `自身` | PORTED(干净织入) |
 | - [ ] | `79a7da01c` | feat(sidebar): show running project actions by directory | `自身` | SKIP(互锁:依赖上游 terminal store 演进(execution 分配/reconcile),fork 终端栈重写) |
 
 ## - [ ] 文件/Context Panel — 🟢 高价值 / 自身能力
