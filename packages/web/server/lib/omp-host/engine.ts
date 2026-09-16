@@ -417,6 +417,16 @@ export class OmpHostEngine {
         });
       },
       onSessionUiDetached: ({ directory, sessionId }) => this.#detachDialogUi(directory, sessionId),
+      // Plan §4.2: every lease acquire (attach or heartbeat renew) refreshes
+      // the owning live record's idle TTL — "a viewer is attached" keeps the
+      // session resident, and the 30-minute clock only starts counting when
+      // the last holder leaves or its heartbeat lapses.
+      onLeaseAcquired: ({ directory, sessionId }) => {
+        const hostSession = this.#liveHostAnywhere(directory, sessionId);
+        if (!hostSession) return;
+        const record = this.#live.byKey(hostSession.key);
+        if (record && record.state === 'live') this.#live.touch(record);
+      },
       onDiagnostic: (note) => console.warn('[omp-host] dialog lifecycle:', note)
     });
     // Modes/plan/goal/personas/agent-definitions domain (spec 02).
@@ -2194,6 +2204,22 @@ export class OmpHostEngine {
         });
         this.bus.emit('session.updated', { sessionID: sessionId, info }, directoryKey);
       });
+      // Cold wire records carry no model until a switch writes the registry
+      // (the wire selector is registry → live): seed the registry once per
+      // materialization from the session's actual model, so after an idle
+      // eviction the session's row keeps reporting the model it runs instead
+      // of dropping the field (which left the UI's authoritative badge and
+      // switch-rollback target null). Seeding with the model the transcript
+      // already holds is a no-op for the SDK — it appends no model_change.
+      const liveModelSelector = modelSelector(session.model);
+      if (liveModelSelector && meta?.model !== liveModelSelector) {
+        this.registry.update(directoryKey, sessionId, { model: liveModelSelector });
+      }
+      // A warmed session flips client rows to live (with its model) instead
+      // of waiting for the next list refresh — `session.updated` replaces
+      // the stored record wholesale.
+      const warmInfo = this.#wireSessionFromLive(hostSession);
+      this.bus.emit('session.updated', { sessionID: sessionId, info: warmInfo }, directoryKey);
       return hostSession;
     } catch (error) {
       // Failure cleanup (plan §3.3): every installed resource is released

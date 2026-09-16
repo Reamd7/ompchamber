@@ -229,6 +229,33 @@ describe('LiveSessionRegistry lifecycle (plan §3.2-3.4)', () => {
     expect(h.engine.liveRecord('s1')?.state).toBe('live');
   });
 
+  test('lease heartbeats refresh the idle TTL — eviction counts from the last acquire (plan §4.2)', async () => {
+    const h = await createHarness();
+    await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm' });
+
+    // Stay attached far past the TTL: every acquire (attach or heartbeat
+    // renew) refreshes lastUsedAt, so the window restarts while viewed.
+    h.clock.now += 45 * 60_000;
+    h.engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's1', clientId: 'c1' });
+    h.clock.now += 10_000;
+    h.engine.dialogs.leases.acquire({ directory: '/repo', sessionId: 's1', clientId: 'c1' });
+
+    // The holder leaves 25 min after the last heartbeat: still inside the
+    // renewed window (pre-fix this evicted — lastUsedAt stayed at the
+    // pre-lease timestamp, so the next sweep tick reclaimed it).
+    h.engine.dialogs.leases.release({ directory: '/repo', sessionId: 's1', clientId: 'c1' });
+    h.clock.now += 25 * 60_000;
+    h.engine.sweepIdleSessionsNow();
+    await settle();
+    expect(h.engine.liveRecord('s1')?.state).toBe('live');
+
+    // Past 30 min since the last acquire the session is reclaimed.
+    h.clock.now += 6 * 60_000;
+    h.engine.sweepIdleSessionsNow();
+    await settle();
+    expect(h.engine.liveRecord('s1')).toBeNull();
+  });
+
   test('every SDK activity signal vetoes eviction', async () => {
     const flags: Array<keyof FixtureSession> = [
       'isStreaming',

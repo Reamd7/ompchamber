@@ -104,6 +104,10 @@ export interface UiLeaseTableOptions {
   cancel?: (handle: DialogTimerHandle) => void;
   onAttach?: ((info: LeaseInfo) => void) | null;
   onDetach?: ((info: LeaseInfo) => void) | null;
+  /** Fires after EVERY successful acquire (attach or heartbeat renew) — the
+   * engine's idle-TTL refresh signal (plan §4.2: lease heartbeats renew
+   * `lastUsedAt`), unlike onAttach which fires only on the 0→1 holder edge. */
+  onAcquired?: ((info: LeaseInfo) => void) | null;
 }
 
 /** Timer handle the schedule seam issues: the default setTimeout's
@@ -356,6 +360,9 @@ export interface DomainDialogsOptions {
   bus?: OmpEventBus | null;
   onSessionUiAttached?: ((info: SessionScope) => void) | null;
   onSessionUiDetached?: ((info: SessionScope) => void) | null;
+  /** Fires on every successful lease acquire (attach or heartbeat renew);
+   * the engine refreshes the session's idle TTL from it (plan §4.2). */
+  onLeaseAcquired?: ((info: SessionScope) => void) | null;
   onDiagnostic?: ((note: DialogDiagnosticNote) => void) | null;
   clock?: DomainDialogsClock | null;
   config?: DomainDialogsConfig;
@@ -432,6 +439,7 @@ export class UiLeaseTable {
   #cancel: (handle: DialogTimerHandle) => void;
   #onAttach: ((info: LeaseInfo) => void) | null;
   #onDetach: ((info: LeaseInfo) => void) | null;
+  #onAcquired: ((info: LeaseInfo) => void) | null;
   #leases: Map<string, LeaseRecord>;
   #sweepHandle: DialogTimerHandle | null;
 
@@ -443,6 +451,7 @@ export class UiLeaseTable {
     cancel = clearTimeout,
     onAttach = null,
     onDetach = null,
+    onAcquired = null,
   }: UiLeaseTableOptions = {}) {
     this.ttlMs = ttlMs;
     this.heartbeatIntervalMs = heartbeatIntervalMs;
@@ -451,6 +460,7 @@ export class UiLeaseTable {
     this.#cancel = cancel;
     this.#onAttach = onAttach;
     this.#onDetach = onDetach;
+    this.#onAcquired = onAcquired;
     /** @type {Map<string, { leaseId: string, directory: string, sessionId: string, holders: Map<string, number> }>} */
     this.#leases = new Map();
     this.#sweepHandle = null;
@@ -473,6 +483,7 @@ export class UiLeaseTable {
     lease.holders.set(clientId, this.#now() + this.ttlMs);
     this.#armSweep();
     if (attached) this.#onAttach?.(leaseInfo(lease));
+    this.#onAcquired?.(leaseInfo(lease));
     return {
       leaseId: lease.leaseId,
       expiresAt: lease.holders.get(clientId),
@@ -1500,6 +1511,7 @@ export const createDomainDialogs = ({
   bus = null,
   onSessionUiAttached = null,
   onSessionUiDetached = null,
+  onLeaseAcquired = null,
   onDiagnostic = null,
   clock = null,
   config = {},
@@ -1529,6 +1541,9 @@ export const createDomainDialogs = ({
     onDetach: ({ directory, sessionId }) => {
       registry.enterOrphanWindow({ directory, sessionId });
       onSessionUiDetached?.({ directory, sessionId });
+    },
+    onAcquired: ({ directory, sessionId }) => {
+      onLeaseAcquired?.({ directory, sessionId });
     },
   });
   /** @type {Map<string, DialogBridge>} one bridge per (directory, sessionId) */

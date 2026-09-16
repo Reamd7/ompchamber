@@ -9,8 +9,15 @@
  * embedder keeps its local optimistic apply; this hook owns the server
  * write, stale-completion guarding, and failure rollback to the last
  * authoritative session model (the omp.model.changed-fed badge).
+ *
+ * Persistence contract: the embedder's per-session selection is only a
+ * client-side cache. `onConfirmedModel` reports the selection the session
+ * actually ended up with — the requested pair after a successful switch,
+ * the authoritative model after a failure rollback — so the cache can only
+ * ever hold server-confirmed values. A pick whose write never reaches the
+ * engine (session exists but its directory cannot be resolved) is a
+ * failure with a toast, never a silent local-only change.
  */
-
 import React from 'react';
 import { toast } from 'sonner';
 
@@ -31,6 +38,17 @@ export interface UseOmpSessionModelSwitchArgs {
   applyLocalModel: (providerId: string, modelId: string) => void;
   /** Failure toast text. */
   changeFailedLabel: string;
+  /**
+   * Persist the server-confirmed selection: the requested pair on success,
+   * the authoritative model after a rollback. Called only once per settled
+   * switch attempt.
+   */
+  onConfirmedModel?: (providerId: string, modelId: string) => void;
+}
+
+interface PendingModel {
+  provider: string;
+  id: string;
 }
 
 export const useOmpSessionModelSwitch = ({
@@ -39,23 +57,49 @@ export const useOmpSessionModelSwitch = ({
   authoritativeModel,
   applyLocalModel,
   changeFailedLabel,
+  onConfirmedModel,
 }: UseOmpSessionModelSwitchArgs) => {
   const { ompModels } = useRuntimeAPIs();
   const epochRef = React.useRef(0);
+  const [pendingModel, setPendingModel] = React.useState<PendingModel | null>(null);
 
   // Read completion inputs at settle time so a locale switch or a newer
   // badge never serves stale strings/rollback targets to an old promise.
-  const completionRef = React.useRef({ applyLocalModel, changeFailedLabel, authoritativeModel });
-  completionRef.current = { applyLocalModel, changeFailedLabel, authoritativeModel };
+  const completionRef = React.useRef({ applyLocalModel, changeFailedLabel, authoritativeModel, onConfirmedModel });
+  completionRef.current = { applyLocalModel, changeFailedLabel, authoritativeModel, onConfirmedModel };
+  const settleAsFailure = React.useCallback((requested: PendingModel, options: { silent?: boolean } = {}) => {
+    const completion = completionRef.current;
+    if (!requested.provider || !requested.id) return;
+    // `unavailable` means the runtime dropped the feature mid-session —
+    // rollback still converges the local state, but a toast would claim a
+    // failure the user cannot act on.
+    if (!options.silent) toast.error(completion.changeFailedLabel);
+    const rollback = completion.authoritativeModel;
+    if (rollback && (rollback.provider !== requested.provider || rollback.id !== requested.id)) {
+      completion.applyLocalModel(rollback.provider, rollback.id);
+      completion.onConfirmedModel?.(rollback.provider, rollback.id);
+    }
+  }, []);
 
   const switchSessionModel = React.useCallback((providerId: string, modelId: string, thinkingLevel?: string) => {
     // Mirror of the prompt-omission gate (client.ts reads the same flag at
     // send time): wherever prompts stop carrying the model, the picker owns
     // the switch explicitly. Legacy runtimes keep the prompt-time path.
     if (!isOmpModelRolesEnabled()) return;
-    if (!sessionID || !directory || !providerId || !modelId) return;
+    // A draft has no session to switch — the local selection is the whole
+    // state and prompts carry it. Not a failure.
+    if (!sessionID) return;
+    if (!providerId || !modelId) return;
+    // A session whose directory cannot be resolved can never be switched
+    // server-side: fail loudly instead of leaving a local-only selection
+    // that silently diverges from the session.
+    if (!directory) {
+      settleAsFailure({ provider: providerId, id: modelId });
+      return;
+    }
 
     const epoch = ++epochRef.current;
+    setPendingModel({ provider: providerId, id: modelId });
     void ompModels.setSessionModel(
       sessionID,
       { providerID: providerId, modelID: modelId },
@@ -68,17 +112,14 @@ export const useOmpSessionModelSwitch = ({
     ).then((result) => {
       // A newer selection already owns the UI; this completion is stale.
       if (epoch !== epochRef.current) return;
-      if (result.ok) return;
-      const completion = completionRef.current;
-      if (!result.unavailable) {
-        toast.error(completion.changeFailedLabel);
+      setPendingModel(null);
+      if (result.ok) {
+        completionRef.current.onConfirmedModel?.(providerId, modelId);
+        return;
       }
-      const rollback = completion.authoritativeModel;
-      if (rollback && (rollback.provider !== providerId || rollback.id !== modelId)) {
-        completion.applyLocalModel(rollback.provider, rollback.id);
-      }
+      settleAsFailure({ provider: providerId, id: modelId }, { silent: result.unavailable });
     });
-  }, [directory, ompModels, sessionID]);
+  }, [directory, ompModels, sessionID, settleAsFailure]);
 
-  return { switchSessionModel };
+  return { switchSessionModel, pendingModel };
 };

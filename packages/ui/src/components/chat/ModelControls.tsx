@@ -61,6 +61,7 @@ import { useOmpSessionMode } from '@/hooks/useOmpSessionMode';
 import { useOmpSessionModelSwitch } from './useOmpSessionModelSwitch';
 import { useOmpSessionModelBadge, useOmpThinkingState } from '@/sync/useOmpSessionStore';
 import { createEnabledModelsMatcher } from '@/lib/omp/enabledModels';
+import { isOmpModelRolesEnabled } from '@/lib/omp/capabilityGate';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 
 type IconComponent = IconName;
@@ -753,7 +754,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     }, [currentSessionDirectory, currentSessionMessagesFromSync]);
 
     const tryApplyModelSelection = React.useCallback(
-        (providerId: string, modelId: string, agentName?: string): ModelApplyResult => {
+        (providerId: string, modelId: string, agentName?: string, options?: { persist?: boolean }): ModelApplyResult => {
             if (!providerId || !modelId) {
                 return 'model-missing';
             }
@@ -778,7 +779,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             setProvider(providerId);
             setModel(modelId);
 
-            if (currentSessionId) {
+            // Under omp model roles the pick paths pass persist: false —
+            // the session's model is server-owned, so only values the
+            // switch confirmed (onConfirmedModel) may enter the cache. An
+            // optimistically persisted pick the server rejects would linger
+            // as a selection the session never ran.
+            if (currentSessionId && options?.persist !== false) {
                 saveSessionModelSelection(currentSessionId, providerId, modelId);
                 if (agentName) {
                     saveAgentModelForSession(currentSessionId, agentName, providerId, modelId);
@@ -892,9 +898,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         setCurrentVariantOverride,
     ]);
 
-    const applyModelSelectionWithVariant = React.useCallback((providerId: string, modelId: string, variant: string | undefined, agentNameOverride?: string | null) => {
+    const applyModelSelectionWithVariant = React.useCallback((providerId: string, modelId: string, variant: string | undefined, agentNameOverride?: string | null, options?: { persist?: boolean }) => {
         const effectiveAgentName = agentNameOverride ?? resolveLiveAgentName() ?? undefined;
-        const result = tryApplyModelSelection(providerId, modelId, effectiveAgentName);
+        const result = tryApplyModelSelection(providerId, modelId, effectiveAgentName, options);
         if (result !== 'applied') {
             return result;
         }
@@ -909,14 +915,35 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // switch the session's model server-side (the /switch equivalent).
     // Local stores stay the optimistic face; omp.model.changed reconciles,
     // and a failed switch rolls the local selection back to the badge.
-    const { switchSessionModel: switchOmpSessionModel } = useOmpSessionModelSwitch({
+    // The persisted per-session selection only ever takes values the server
+    // confirmed (directly or via rollback), so it cannot silently diverge
+    // from the session's real model. Pick paths apply optimistically without
+    // persisting (persist: false) — this callback is the write.
+    const confirmSessionModelSelection = React.useCallback((providerId: string, modelId: string) => {
+        if (!currentSessionId) return;
+        saveSessionModelSelection(currentSessionId, providerId, modelId);
+        // Optimistic applies no longer record agent memory under model
+        // roles, so confirmation carries it too.
+        const agentName = resolveLiveAgentName();
+        if (agentName) saveAgentModelForSession(currentSessionId, agentName, providerId, modelId);
+    }, [currentSessionId, saveSessionModelSelection, saveAgentModelForSession, resolveLiveAgentName]);
+    // Rollback target while the badge has not reported yet (cold or
+    // unmaterialized session): the per-session cache, which under model
+    // roles only ever holds server-confirmed values. Without it a failed
+    // switch on a model-less session would keep the rejected pick on the
+    // chip — the bug this path exists to kill.
+    const confirmedSessionModel = currentSessionId ? getSessionModelSelection(currentSessionId) : null;
+    const { switchSessionModel: switchOmpSessionModel, pendingModel: ompSwitchPendingModel } = useOmpSessionModelSwitch({
         sessionID: currentSessionId ?? null,
         directory: ompPickerDirectory,
         authoritativeModel: ompSessionModel?.provider && ompSessionModel?.id
             ? { provider: ompSessionModel.provider, id: ompSessionModel.id }
-            : null,
+            : confirmedSessionModel
+                ? { provider: confirmedSessionModel.providerId, id: confirmedSessionModel.modelId }
+                : null,
         applyLocalModel: tryApplyModelSelection,
         changeFailedLabel: t('chat.modelControls.modelChangeFailed'),
+        onConfirmedModel: confirmSessionModelSelection,
     });
 
     const ompRoleSlotsLabels = React.useMemo<OmpRoleSlotsLabels>(() => ({
@@ -942,7 +969,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // assignments).
     const handleRoleSelect = React.useCallback((slot: OmpRoleSlot) => {
         if (!slot.model) return;
-        const result = applyModelSelectionWithVariant(slot.model.provider, slot.model.id, undefined);
+        const result = applyModelSelectionWithVariant(slot.model.provider, slot.model.id, undefined, undefined, { persist: !isOmpModelRolesEnabled() });
         if (result !== 'applied') {
             console.error('[ModelControls] Role model not available for selection:', { role: slot.id, model: slot.model });
             return;
@@ -1365,6 +1392,38 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         sync,
     ]);
 
+    // Authoritative convergence under model roles: the session's model is
+    // server-owned, so once the badge/wire reports it, a diverged local
+    // selection means the pick never landed server-side — adopt the
+    // session's model instead of preserving the stale selection (the chip
+    // used to keep showing a model the session never ran). Skipped while a
+    // switch is in flight so the optimistic pick is not clobbered by the
+    // pre-switch badge.
+    React.useEffect(() => {
+        if (!ompModelRoles.modelRolesEnabled || !currentSessionId || ompSwitchPendingModel) return;
+        const target = ompSessionModel;
+        if (!target?.provider || !target?.id || !contextHydrated || providers.length === 0) return;
+        const saved = getSessionModelSelection(currentSessionId);
+        const savedMatches = saved?.providerId === target.provider && saved?.modelId === target.id;
+        const chipMatches = currentProviderId === target.provider && currentModelId === target.id;
+        if (savedMatches && chipMatches) return;
+        if (!chipMatches) tryApplyModelSelection(target.provider, target.id);
+        if (!savedMatches) saveSessionModelSelection(currentSessionId, target.provider, target.id);
+    }, [
+        ompModelRoles.modelRolesEnabled,
+        currentSessionId,
+        ompSwitchPendingModel,
+        ompSessionModel?.provider,
+        ompSessionModel?.id,
+        contextHydrated,
+        providers.length,
+        currentProviderId,
+        currentModelId,
+        getSessionModelSelection,
+        saveSessionModelSelection,
+        tryApplyModelSelection,
+    ]);
+
     React.useEffect(() => {
         if (!contextHydrated) {
             return;
@@ -1593,9 +1652,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     ) => {
         try {
             const effectiveAgentName = options?.agentName ?? resolveLiveAgentName() ?? undefined;
+            // Model roles hand persistence to the switch's onConfirmedModel;
+            // legacy runtimes persist the pick directly (prompts carry it).
+            const persist = { persist: !isOmpModelRolesEnabled() };
             const result = options?.applyVariant
-                ? applyModelSelectionWithVariant(providerId, modelId, options.variant, effectiveAgentName)
-                : tryApplyModelSelection(providerId, modelId, effectiveAgentName);
+                ? applyModelSelectionWithVariant(providerId, modelId, options.variant, effectiveAgentName, persist)
+                : tryApplyModelSelection(providerId, modelId, effectiveAgentName, persist);
             if (result !== 'applied') {
                 if (result === 'provider-missing') {
                     console.error('[ModelControls] Provider not available for selection:', providerId);
@@ -1955,7 +2017,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         }
 
         const handleMobileModelApply = (providerId: string, modelId: string, variant: string | undefined) => {
-            const result = applyModelSelectionWithVariant(providerId, modelId, variant);
+            const result = applyModelSelectionWithVariant(providerId, modelId, variant, undefined, { persist: !isOmpModelRolesEnabled() });
             if (result !== 'applied') {
                 if (result === 'provider-missing') {
                     console.error('[ModelControls] Provider not available for selection:', providerId);
@@ -2308,7 +2370,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         };
 
         const handleSelect = (variant: string | undefined) => {
-            const result = applyModelSelectionWithVariant(targetProviderId, targetModelId, variant);
+            const result = applyModelSelectionWithVariant(targetProviderId, targetModelId, variant, undefined, { persist: !isOmpModelRolesEnabled() });
             if (result !== 'applied') {
                 return;
             }

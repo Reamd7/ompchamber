@@ -492,9 +492,32 @@ describe('OmpHostEngine prompt dispatch', () => {
 
   test('leaves the model unset so the SDK resolves the settings default', async () => {
     const engine = new OmpHostEngine({ agentDir });
+    // The shared temp registry carries state from earlier tests (a switch's
+    // selector, or the materialization backfill of the session's own model).
+    // This contract pins the never-materialized path: no selector → no model
+    // option, so the SDK resolves the settings default.
+    engine.registry.remove('/repo', 's1');
     await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'defaults', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
     const options = createdOptions.at(-1);
     expect(options?.model).toBeUndefined();
+  });
+
+  test('materialization backfills the registry model and publishes the warm record', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    engine.registry.remove('/repo', 's1');
+    await engine.prompt({ sessionID: 's1', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    // The session's own model seeds the registry so a later cold read (idle
+    // eviction) still reports a model instead of dropping the field.
+    expect(engine.registry.get('/repo', 's1')?.model).toBe('p1/current-model');
+    // The warm record reaches clients without waiting for a list refresh.
+    const warm = engine.bus.replay.filter(
+      (e) => e.envelope.type === 'session.updated' && e.envelope.properties.sessionID === 's1',
+    );
+    // SAFETY: bus payloads are the engine's own emitted wire shapes.
+    const models = warm.map(
+      (e) => (e.envelope.properties as { info?: { model?: { id: string; providerID: string } } } | undefined)?.info?.model,
+    );
+    expect(models).toContainEqual({ id: 'current-model', providerID: 'p1' });
   });
 
   test('abort forwards to the live agent session and reports unknown sessions as false', async () => {

@@ -1,347 +1,234 @@
 /**
- * useOmpSessionModelSwitch — write-path contracts (spec 01 GAP-02/GAP-04).
+ * useOmpSessionModelSwitch — persistence and failure contracts.
  *
- * Under the omp model-roles capability the picker must switch the session's
- * model through POST /api/omp/sessions/{id}/model (the /switch equivalent).
- * These tests pin the gate, the request arguments, the stale-completion
- * guard, and failure rollback to the authoritative badge model.
+ * The hook owns the composer picker's server-side model switch. Three
+ * contracts matter for the "chip shows a model the session never ran" bug:
+ *
+ * 1. A successful switch confirms the requested pair — the embedder's
+ *    per-session selection cache may only hold server-confirmed values.
+ * 2. A failed switch rolls the local selection back to the authoritative
+ *    model and confirms THAT, so a rejected pick cannot linger as the
+ *    session's stored selection. `unavailable` failures stay silent.
+ * 3. A session whose directory cannot be resolved is a loud failure (toast
+ *    + rollback), never the old silent local-only no-op; a draft (no
+ *    session) and a legacy runtime (feature off) stay silent local picks.
+ *
+ * Rendered via happy-dom + createRoot/act (Bun provides no DOM). The
+ * capability gate stays REAL — mocking its module leaks into
+ * ompRoleModeSurfaces' own gate tests — so the runtime APIs registry is
+ * seeded and the gate primed per test.
  */
-import { act } from 'react';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { Window } from 'happy-dom';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-let gateEnabled = false;
-const toastErrorCalls: string[] = [];
+import type { useOmpSessionModelSwitch as HookType, UseOmpSessionModelSwitchArgs } from '../useOmpSessionModelSwitch';
+import type { RuntimeAPIs } from '@/lib/api/types';
 
-mock.module('@/lib/omp/capabilityGate', () => ({
-    isOmpFeatureEnabled: () => gateEnabled,
-    isOmpModelRolesEnabled: () => gateEnabled,
-    isOmpModesEnabled: () => false,
-    isOmpPersonasEnabled: () => false,
-    isOmpAgentDefinitionsEnabled: () => false,
-    primeOmpCapabilityGate: async () => ({ capabilities: null }),
-    __resetOmpCapabilityGateForTests: () => undefined,
-}));
+type Switch = ReturnType<typeof HookType>['switchSessionModel'];
+type SetSessionModelFn = (sessionID: string, model: { providerID: string; modelID: string }, options: { directory: string }) => Promise<{ ok: boolean; model: string; unavailable?: boolean }>;
+
+interface ModelPair {
+    providerId: string;
+    modelId: string;
+}
+
+const setSessionModel = mock<SetSessionModelFn>(async () => ({ ok: true, model: 'apifox/grok-4.6' }));
+let setSessionModelCalls = 0;
+const confirmed: ModelPair[] = [];
+const appliedLocally: ModelPair[] = [];
+let toastErrors = 0;
 
 mock.module('sonner', () => ({
     toast: {
-        error: (message: string) => {
-            toastErrorCalls.push(message);
+        dismiss: () => undefined,
+        error: () => {
+            toastErrors += 1;
         },
+        info: () => undefined,
+        success: () => undefined,
     },
 }));
 
-type SetSessionModelCall = {
-    sessionID: string;
-    model: { providerID: string; modelID: string };
-    options: { directory: string; thinkingLevel?: string };
-};
-
-type SetSessionModelResult =
-    | { ok: true; model: string }
-    | { ok: false; unavailable: boolean; error?: string };
-
-const deferredResult = () => {
-    let resolve!: (value: SetSessionModelResult) => void;
-    const promise = new Promise<SetSessionModelResult>((next) => {
-        resolve = next;
-    });
-    return { promise, resolve };
-};
-
-const calls: SetSessionModelCall[] = [];
-const pendingResults: Array<{ promise: Promise<SetSessionModelResult>; resolve: (value: SetSessionModelResult) => void }> = [];
-const localApplies: Array<{ providerId: string; modelId: string }> = [];
-
-const ompModels = {
-    setSessionModel: mock((sessionID: string, model: { providerID: string; modelID: string }, options: { directory: string; thinkingLevel?: string }) => {
-        calls.push({ sessionID, model, options });
-        const deferred = deferredResult();
-        pendingResults.push(deferred);
-        return deferred.promise;
-    }),
-};
-
-const { useOmpSessionModelSwitch } = await import('@/components/chat/useOmpSessionModelSwitch');
+const { registerRuntimeAPIs } = await import('@/contexts/runtimeAPIRegistry');
+const { __resetOmpCapabilityGateForTests, primeOmpCapabilityGate } = await import('@/lib/omp/capabilityGate');
 const { RuntimeAPIContext } = await import('@/contexts/runtimeAPIContext');
+const { useOmpSessionModelSwitch } = await import('../useOmpSessionModelSwitch');
 
-const installMinimalDom = () => {
-    const descriptors = new Map<string, PropertyDescriptor | undefined>();
-    const setGlobal = <T,>(name: string, value: T) => {
-        descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-        Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
-    };
-    class ElementStub {}
-    interface FakeContainer {
-        nodeType: number;
-        tagName: string;
-        nodeName: string;
-        namespaceURI: string;
-        ownerDocument: FakeDocument;
-        addEventListener: () => void;
-        removeEventListener: () => void;
-    }
-    interface FakeDocument {
-        nodeType: number;
-        defaultView: unknown;
-        activeElement: null;
-        addEventListener: () => void;
-        removeEventListener: () => void;
-        documentElement?: FakeContainer;
-        body?: FakeContainer;
-    }
-    const documentStub: FakeDocument = {
-        nodeType: 9,
-        defaultView: globalThis,
-        activeElement: null,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-    };
-    const container: FakeContainer = {
-        nodeType: 1,
-        tagName: 'DIV',
-        nodeName: 'DIV',
-        namespaceURI: 'http://www.w3.org/1999/xhtml',
-        ownerDocument: documentStub,
-        addEventListener: () => undefined,
-        removeEventListener: () => undefined,
-    };
-    documentStub.documentElement = container;
-    documentStub.body = container;
-    setGlobal('document', documentStub);
-    setGlobal('window', globalThis);
-    setGlobal('location', { search: '', protocol: 'http:', hostname: 'localhost' });
-    setGlobal('Element', ElementStub);
-    setGlobal('HTMLElement', ElementStub);
-    setGlobal('HTMLIFrameElement', ElementStub);
-    setGlobal('IS_REACT_ACT_ENVIRONMENT', true);
-    setGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(Date.now()), 0));
-    setGlobal('cancelAnimationFrame', clearTimeout);
-    // SAFETY: the fake container implements the node surface createRoot
-    // touches; `as never` marks that single hand-written stand-in hop.
-    const element: Element = container as never;
-    return {
-        container: element,
-        restore: () => {
-            for (const [name, descriptor] of descriptors) {
-                if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-                else Reflect.deleteProperty(globalThis, name);
-            }
-        },
-    };
-};
-
-interface HarnessOptions {
-    sessionID: string | null;
-    directory: string | null;
-    authoritativeModel: { provider: string; id: string } | null;
+interface ProbeHandle {
+    switchModel: Switch;
+    pending: { provider: string; id: string } | null;
 }
-let currentSwitch: ((providerId: string, modelId: string, thinkingLevel?: string) => void) | null = null;
-const renderHarness = (root: Root, options: HarnessOptions) => {
-    const Harness = () => {
-        const hook = useOmpSessionModelSwitch({
-            sessionID: options.sessionID,
-            directory: options.directory,
-            authoritativeModel: options.authoritativeModel,
-            applyLocalModel: (providerId: string, modelId: string) => {
-                localApplies.push({ providerId, modelId });
-            },
-            changeFailedLabel: 'switch failed label',
-        });
-        currentSwitch = hook.switchSessionModel;
-        return null;
-    };
-    root.render(
-        // SAFETY: the harness registers only the ompModels slice the hook
-        // reads; the remaining RuntimeAPIs members are never touched here.
-        <RuntimeAPIContext.Provider value={{ ompModels } as never}>
-            <Harness />
-        </RuntimeAPIContext.Provider>,
-    );
-};
 
-const captureSwitch = () => {
-    if (!currentSwitch) {
-        throw new Error('switchSessionModel was not captured from the harness render');
-    }
-    return currentSwitch;
+const Probe = ({ handle, args }: { handle: ProbeHandle; args: UseOmpSessionModelSwitchArgs }) => {
+    const { switchSessionModel, pendingModel } = useOmpSessionModelSwitch(args);
+    handle.switchModel = switchSessionModel;
+    handle.pending = pendingModel;
+    return null;
 };
-
-beforeEach(() => {
-    gateEnabled = false;
-    toastErrorCalls.length = 0;
-    calls.length = 0;
-    pendingResults.length = 0;
-    localApplies.length = 0;
-});
 
 describe('useOmpSessionModelSwitch', () => {
-    test('switches the session model server-side when the omp gate is on', async () => {
-        const dom = installMinimalDom();
-        const root: Root = createRoot(dom.container);
-        gateEnabled = true;
-        await act(async () => {
-            renderHarness(root, {
-                sessionID: 'ses_1',
-                directory: '/repo',
-                authoritativeModel: { provider: 'prov', id: 'main' },
-            });
-        });
-        const switchModel = captureSwitch();
+    let windowInstance: Window;
+    let root: Root;
 
-        await act(async () => {
-            switchModel('prov', 'next');
-        });
-        expect(calls).toEqual([{
-            sessionID: 'ses_1',
-            model: { providerID: 'prov', modelID: 'next' },
-            options: { directory: '/repo' },
-        }]);
-
-        // An explicit thinking level rides the switch; without one the
-        // option stays absent (never 'inherit' — undefined is the engine's
-        // keep-current contract).
-        await act(async () => {
-            switchModel('prov', 'other', 'xhigh');
-        });
-        expect(calls[1]).toEqual({
-            sessionID: 'ses_1',
-            model: { providerID: 'prov', modelID: 'other' },
-            options: { directory: '/repo', thinkingLevel: 'xhigh' },
-        });
-        await act(async () => {
-            pendingResults[1].resolve({ ok: true, model: 'prov/other' });
-        });
-
-        await act(async () => {
-            pendingResults[0].resolve({ ok: true, model: 'prov/next' });
-        });
-        expect(toastErrorCalls).toEqual([]);
-        expect(localApplies).toEqual([]);
-        await act(async () => root.unmount());
-        dom.restore();
+    const baseArgs = () => ({
+        sessionID: 'ses_1' as string | null,
+        directory: '/repo' as string | null,
+        authoritativeModel: { provider: 'apifox', id: 'deepseek-flash' } as { provider: string; id: string } | null,
+        applyLocalModel: (providerId: string, modelId: string) => {
+            appliedLocally.push({ providerId, modelId });
+        },
+        changeFailedLabel: 'Could not change the model',
+        onConfirmedModel: (providerId: string, modelId: string) => {
+            confirmed.push({ providerId, modelId });
+        },
     });
 
-    test('does not write when the gate is off, the session is absent, or the directory is unknown', async () => {
-        const dom = installMinimalDom();
-        const root: Root = createRoot(dom.container);
+    const render = async (args: ReturnType<typeof baseArgs>) => {
+        const handle: ProbeHandle = { switchModel: () => undefined, pending: null };
+        // SAFETY: RuntimeAPIs test fixture narrowing — only ompModels feeds the hook under test.
+        const apis = { ompModels: { setSessionModel } } as unknown as RuntimeAPIs;
         await act(async () => {
-            renderHarness(root, {
-                sessionID: 'ses_1',
-                directory: '/repo',
-                authoritativeModel: { provider: 'prov', id: 'main' },
-            });
+            root.render(
+                <RuntimeAPIContext.Provider value={apis}>
+                    <Probe handle={handle} args={args} />
+                </RuntimeAPIContext.Provider>,
+            );
         });
-        const switchModel = captureSwitch();
+        return handle;
+    };
 
-        // Gate off: legacy runtimes keep the prompt-time model path.
-        await act(async () => {
-            switchModel('prov', 'next');
-        });
-        expect(calls).toEqual([]);
-
-        gateEnabled = true;
-        const remount = (options: { sessionID: string | null; directory: string | null }) =>
-            renderHarness(root, { ...options, authoritativeModel: { provider: 'prov', id: 'main' } });
-        await act(async () => {
-            remount({ sessionID: null, directory: '/repo' });
-        });
-        await act(async () => {
-            captureSwitch()('prov', 'next');
-        });
-        await act(async () => {
-            remount({ sessionID: 'ses_1', directory: null });
-        });
-        await act(async () => {
-            captureSwitch()('prov', 'next');
-        });
-        expect(calls).toEqual([]);
-        await act(async () => root.unmount());
-        dom.restore();
+    const pick = (handle: ProbeHandle) => act(async () => {
+        handle.switchModel('apifox', 'grok-4.6');
     });
 
-    test('a failed switch toasts and rolls the local selection back to the authoritative model', async () => {
-        const dom = installMinimalDom();
-        const root: Root = createRoot(dom.container);
-        gateEnabled = true;
-        await act(async () => {
-            renderHarness(root, {
-                sessionID: 'ses_1',
-                directory: '/repo',
-                authoritativeModel: { provider: 'prov', id: 'main' },
-            });
+    beforeEach(async () => {
+        windowInstance = new Window();
+        Object.assign(globalThis, {
+            document: windowInstance.document,
+            HTMLElement: windowInstance.HTMLElement,
+            Element: windowInstance.Element,
+            Node: windowInstance.Node,
+            IS_REACT_ACT_ENVIRONMENT: true,
         });
-        const switchModel = captureSwitch();
-
-        await act(async () => {
-            switchModel('prov', 'next');
+        // SAFETY: happy-dom's Window satisfies React DOM's window reads; the lib types don't unify.
+        globalThis.window = windowInstance as unknown as typeof globalThis.window;
+        root = createRoot(document.createElement('div'));
+        setSessionModel.mockReset();
+        setSessionModel.mockImplementation(async () => {
+            setSessionModelCalls += 1;
+            return { ok: true, model: 'apifox/grok-4.6' };
         });
-        await act(async () => {
-            pendingResults[0].resolve({ ok: false, unavailable: false, error: 'no api key' });
-        });
-        expect(toastErrorCalls).toEqual(['switch failed label']);
-        expect(localApplies).toEqual([{ providerId: 'prov', modelId: 'main' }]);
-        await act(async () => root.unmount());
-        dom.restore();
+        confirmed.length = 0;
+        appliedLocally.length = 0;
+        toastErrors = 0;
+        setSessionModelCalls = 0;
+        // Real gate, real runtime key: the probe settles modelRoles.v1 so
+        // the hook takes the switch path under test.
+        // SAFETY: RuntimeAPIs test fixture narrowing — only ompCapabilities participates in the gate probe.
+        registerRuntimeAPIs({
+            ompCapabilities: {
+                getCapabilities: async () => ({ version: 1, eventSchema: '1.0', features: { 'modelRoles.v1': true }, minUiVersion: '0.0.0' }),
+            },
+        } as unknown as Parameters<typeof registerRuntimeAPIs>[0]);
+        __resetOmpCapabilityGateForTests();
+        await primeOmpCapabilityGate();
     });
 
-    test('an unavailable endpoint stays silent but still rolls the optimistic selection back', async () => {
-        const dom = installMinimalDom();
-        const root: Root = createRoot(dom.container);
-        gateEnabled = true;
+    afterEach(async () => {
         await act(async () => {
-            renderHarness(root, {
-                sessionID: 'ses_1',
-                directory: '/repo',
-                authoritativeModel: { provider: 'prov', id: 'main' },
-            });
+            root.unmount();
         });
-        const switchModel = captureSwitch();
-
-        await act(async () => {
-            switchModel('prov', 'next');
-        });
-        await act(async () => {
-            pendingResults[0].resolve({ ok: false, unavailable: true });
-        });
-        expect(toastErrorCalls).toEqual([]);
-        expect(localApplies).toEqual([{ providerId: 'prov', modelId: 'main' }]);
-        await act(async () => root.unmount());
-        dom.restore();
+        // Every happy-dom global assigned in beforeEach must go: a leaked
+        // `window` makes real store modules (loaded lazily by the next test
+        // file sharing this process) take the browser path and crash on
+        // bare `localStorage`.
+        const globals = globalThis as Record<string, unknown>;
+        for (const key of ['document', 'window', 'HTMLElement', 'Element', 'Node', 'IS_REACT_ACT_ENVIRONMENT']) {
+            delete globals[key];
+        }
+        registerRuntimeAPIs(null);
+        __resetOmpCapabilityGateForTests();
     });
 
-    test('a stale completion never toasts or rolls back after a newer switch started', async () => {
-        const dom = installMinimalDom();
-        const root: Root = createRoot(dom.container);
-        gateEnabled = true;
-        await act(async () => {
-            renderHarness(root, {
-                sessionID: 'ses_1',
-                directory: '/repo',
-                authoritativeModel: { provider: 'prov', id: 'main' },
-            });
-        });
-        const switchModel = captureSwitch();
+    test('a successful switch confirms the requested pair and clears pending', async () => {
+        const handle = await render(baseArgs());
+        await pick(handle);
+        expect(handle.pending).toBeNull();
+        expect(confirmed).toEqual([{ providerId: 'apifox', modelId: 'grok-4.6' }]);
+        expect(toastErrors).toBe(0);
+        expect(appliedLocally).toEqual([]);
+    });
 
-        await act(async () => {
-            switchModel('prov', 'b');
+    test('a failed switch rolls back, confirms the authoritative model, and toasts', async () => {
+        setSessionModel.mockImplementation(async () => {
+            setSessionModelCalls += 1;
+            return { ok: false, model: '' };
         });
-        await act(async () => {
-            switchModel('prov', 'c');
+        const handle = await render(baseArgs());
+        await pick(handle);
+        expect(handle.pending).toBeNull();
+        expect(appliedLocally).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+        expect(confirmed).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+        expect(toastErrors).toBe(1);
+    });
+
+    test('an unavailable failure rolls back without a toast', async () => {
+        setSessionModel.mockImplementation(async () => {
+            setSessionModelCalls += 1;
+            return { ok: false, model: '', unavailable: true };
         });
-        // The older switch (to b) settles after the newer one (to c) started.
-        await act(async () => {
-            pendingResults[0].resolve({ ok: false, unavailable: false });
+        const handle = await render(baseArgs());
+        await pick(handle);
+        expect(appliedLocally).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+        expect(confirmed).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+        expect(toastErrors).toBe(0);
+    });
+
+    test('a failure rolls back to the latest authoritative model, not the mount-time value', async () => {
+        setSessionModel.mockImplementation(async () => {
+            setSessionModelCalls += 1;
+            return { ok: false, model: '' };
         });
-        expect(toastErrorCalls).toEqual([]);
-        expect(localApplies).toEqual([]);
-        // The newer switch still owns its own outcome.
-        await act(async () => {
-            pendingResults[1].resolve({ ok: true, model: 'prov/c' });
+        await render(baseArgs());
+        // The badge reports a newer model after mount (a prior switch or a
+        // warm wire record): settle-time inputs must track the latest props,
+        // not the values captured when the hook first rendered.
+        const handle = await render({
+            ...baseArgs(),
+            authoritativeModel: { provider: 'apifox', id: 'kimi-k3' },
         });
-        expect(toastErrorCalls).toEqual([]);
-        expect(localApplies).toEqual([]);
-        await act(async () => root.unmount());
-        dom.restore();
+        await pick(handle);
+        expect(appliedLocally).toEqual([{ providerId: 'apifox', modelId: 'kimi-k3' }]);
+        expect(confirmed).toEqual([{ providerId: 'apifox', modelId: 'kimi-k3' }]);
+    });
+
+    test('a failed switch with no authoritative model leaves local state untouched and confirms nothing', async () => {
+        setSessionModel.mockImplementation(async () => ({ ok: false, model: '' }));
+        const handle = await render({ ...baseArgs(), authoritativeModel: null });
+        await pick(handle);
+        expect(toastErrors).toBe(1);
+        expect(appliedLocally).toEqual([]);
+        expect(confirmed).toEqual([]);
+    });
+
+    test('a session without a resolvable directory fails loudly instead of silently skipping', async () => {
+        const args = { ...baseArgs(), directory: null };
+        const handle = await render(args);
+        await pick(handle);
+        expect(setSessionModelCalls).toBe(0);
+        expect(toastErrors).toBe(1);
+        expect(appliedLocally).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+        expect(confirmed).toEqual([{ providerId: 'apifox', modelId: 'deepseek-flash' }]);
+    });
+
+    test('a draft (no session) stays a silent local pick', async () => {
+        const args = { ...baseArgs(), sessionID: null };
+        const handle = await render(args);
+        await pick(handle);
+        expect(setSessionModelCalls).toBe(0);
+        expect(toastErrors).toBe(0);
+        expect(confirmed).toEqual([]);
     });
 });

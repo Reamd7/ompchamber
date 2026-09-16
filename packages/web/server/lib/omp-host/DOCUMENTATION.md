@@ -43,7 +43,13 @@ sync engine, and web server call; everything else answers 404.
   `initializeExtensions(..., { mode: 'json', uiContext })` helper and updates
   the tool context; a lease present before first materialization is applied
   directly before publishing the host session. This keeps both custom-command
-  dialogs and tool approvals interactive on the first turn.
+  dialogs and tool approvals interactive on the first turn. Every lease
+  acquire (attach or heartbeat renew) refreshes the owning record's
+  `lastUsedAt` (§4.2), so a session stays resident while viewed and the
+  30-minute idle clock counts from the last acquire once the viewer leaves.
+  Materialization seeds the registry's per-session `model` with the live
+  session's actual model and emits `session.updated` with the warm record,
+  so idle eviction cannot drop the model from a session's wire row.
 - `projection.ts` — pure omp→wire translation with deterministic ids;
   projects dividers (`compactionSummary`/`branchSummary`), execution roles
   (`bashExecution`/`pythonExecution`), `fileMention`, and streaming partial
