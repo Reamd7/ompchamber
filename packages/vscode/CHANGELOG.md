@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [1.32.2] - 2026-09-16
+
+- Chat: subagent runs stay listed and openable — finished runs no longer vanish from task cards and the work-status subagents list once the engine reclaims them, a fork shows the runs it inherited, and a run whose transcript is gone says so instead of a dead link.
+- Chat: a session you have open no longer idles out of memory while you're viewing it, and a session that does idle out keeps its model.
+- Chat: a failed model switch no longer leaves the composer on a model the session never ran — a pick sticks only once the engine confirms it.
+
 ## [1.32.0] - 2026-09-15
 
 - Chat: the work status panel gains a Processes section — commands the agent runs list the processes they spawned with live CPU/memory, output tails, and kill controls, plus a view-all dialog for the full set.

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.2] - 2026-09-16
+
+- **Chat: subagent runs stay visible and openable.** Finished runs no longer vanish from task cards and the work-status subagents list once the engine reclaims them internally — rows survive restarts and reattachment, a fork shows the subagent runs it inherited, and a run whose transcript is no longer available says so instead of a dead link.
+- Chat: a session you have open no longer idles out of memory while you're still viewing it, and a session that does idle out keeps its model in the session list.
+- Chat: a failed model switch no longer leaves the composer showing a model the session never ran — a pick sticks only once the engine confirms it, and rolls back otherwise.
+
 ## [1.32.1] - 2026-09-15
 
 - **Desktop: packaged builds no longer hang on startup.** In v1.32.0 packaged apps the engine could hang before serving — the app reported "OpenCode port is not available" and a spinning engine process survived shutdown. The packaged host now starts reliably, and release verification boots it the same way the app does so the failure is caught before shipping.
