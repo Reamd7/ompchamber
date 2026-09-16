@@ -121,8 +121,8 @@ describe("useProjectsStore default model and thinking level", () => {
   })
 
   test("persists and clears a project default agent", () => {
-    seed({ id: "project-a", path: "/repo" } as ProjectEntry)
-
+ seed({ id: "project-a", path: "/repo" } as ProjectEntry)
+   seed({ id: "project-a", path: "/repo" })
     useProjectsStore.getState().updateProjectMeta("project-a", { defaultAgent: "plan" })
     expect(useProjectsStore.getState().projects[0]?.defaultAgent).toBe("plan")
 
@@ -133,8 +133,7 @@ describe("useProjectsStore default model and thinking level", () => {
   test("sanitizes a project default agent from settings", () => {
     useProjectsStore.getState().synchronizeFromSettings({
       projects: [{ id: "project-a", path: "/repo", defaultAgent: "  plan  " }],
-    } as DesktopSettings)
-
+   })
     expect(useProjectsStore.getState().projects[0]?.defaultAgent).toBe("plan")
   })
 })

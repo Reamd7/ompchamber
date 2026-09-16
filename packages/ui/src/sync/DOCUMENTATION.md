@@ -64,6 +64,24 @@ The composer compares normalized attachment MIME types with the selected model's
 
 ## Session list rules
 
+pening a new draft applies its configured model identifier immediately, then
+reconciles after project config activation. That continuation belongs to the
+same runtime and draft object and yields to a manual choice made while loading.
+The config store owns default selection and discovery-gap behavior, documented
+in `packages/ui/src/stores/DOCUMENTATION.md`.
+
+Changing a draft's project or switching between Project and Chat applies the
+target's agent, model, and effort defaults immediately. Worktree refinement
+within the same project preserves manual choices. Activation continuations
+check the runtime, draft identity, target revision, and manual-selection state
+before applying defaults again.
+
+`selection-store.ts` persists runtime/session-keyed effort overrides alongside model and
+agent choices. Both a named effort and explicit `Default` survive reload, with
+the same 150-session persistence bound as the existing selections. Old payloads
+without effort entries remain valid; malformed effort entries grant no authority.
+Session deletion clears these entries. A saved effort choice precedes older
+message history so a reload cannot undo an unsent picker change.
 ### Layout-mounted session-list lifecycle
 
 `MainLayout` and `VSCodeLayout` each call `useSessionListSync({ isVSCode })` directly and unconditionally, outside Sidebar visibility, responsive, editor, settings, and compact-view branches. The hook selects the real topology inputs, publishes complete directory bootstrap demand through `ChildStoreManager`, refreshes topology additions (including all VS Code directories on its first mount), coalesces OpenChamber control events for 500ms, and supplies a memoized complete global active+archived input to authoritative cleanup. The root-level global poller owns the initial global refresh. MainLayout includes available worktrees; VS Code intentionally excludes them. Sidebar-local `session-created` worktree discovery is separate and full-app-only.

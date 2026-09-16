@@ -1549,7 +1549,6 @@ export const settingsDict = {
   'settings.providers.page.custom.field.apiKey.editInfo': 'Déjalo en blanco para conservar la credencial existente, o introduce una clave nueva / {env:VAR_NAME}.',
   'settings.providers.page.custom.field.apiKey.editPlaceholder': 'Déjalo en blanco para conservar la clave existente',
 
-
   'settings.providers.page.custom.models.title': 'Modelos',
   'settings.providers.page.custom.models.idLabel': 'ID del modelo',
   'settings.providers.page.custom.models.idPlaceholder': 'gpt-4o',

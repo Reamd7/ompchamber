@@ -1549,7 +1549,6 @@ export const settingsDict = {
   'settings.providers.page.custom.field.apiKey.editInfo': 'Залиште порожнім, щоб зберегти наявні облікові дані, або введіть новий ключ / {env:VAR_NAME}.',
   'settings.providers.page.custom.field.apiKey.editPlaceholder': 'Залиште порожнім, щоб зберегти наявний ключ',
 
-
   'settings.providers.page.custom.models.title': 'Моделі',
   'settings.providers.page.custom.models.idLabel': 'ID моделі',
   'settings.providers.page.custom.models.idPlaceholder': 'gpt-4o',

@@ -11,7 +11,7 @@ import {
   SETTINGS_SELECT_ROW_TRIGGER_CLASS,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
-import { useConfigStore } from '@/stores/useConfigStore';
+import { selectProvidersForDirectory, useConfigStore } from '@/stores/useConfigStore';
 import { modelVariantNames } from '@/lib/modelVariants';
 import { PROJECT_COLORS, PROJECT_ICONS, PROJECT_COLOR_MAP as COLOR_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -37,7 +37,7 @@ const formatVariantLabel = (variant: string): string => variant.charAt(0).toUppe
 export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ form }) => {
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
-  const providers = useConfigStore((state) => state.providers);
+   const providers = useConfigStore((state) => selectProvidersForDirectory(state, form.project?.path));
   const {
     name,
     setName,
@@ -113,7 +113,7 @@ export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ fo
           label={t('settings.projects.page.field.projectAgent')}
         >
           <AgentSelector
-            agentName={defaultAgent || ''}
+           directory={project.path}            agentName={defaultAgent || ''}
             onChange={(agentName) => setDefaultAgent(agentName || undefined)}
             filter={(agent) => isPrimaryMode(agent.mode)}
             className={SETTINGS_CUSTOM_TRIGGER_CLASS}
@@ -125,6 +125,7 @@ export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ fo
           label={t('settings.projects.page.field.projectModel')}
         >
           <ModelSelector
+            directory={project.path}
             providerId={parsedDefaultModel.providerId}
             modelId={parsedDefaultModel.modelId}
             onChange={handleDefaultModelChange}

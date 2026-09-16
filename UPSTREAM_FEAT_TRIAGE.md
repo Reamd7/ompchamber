@@ -10,7 +10,7 @@
 | Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 9/9 (9吸) |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 5/5 (2吸/3跳) |
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 5/5 (3吸/2跳) |
-| Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 2/3 (2吸) |
+| Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 3/3 (3吸) |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 0/1 |
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/7 |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 0/4 |
@@ -70,13 +70,13 @@ work-until-done(v2 SDK 标记)、归档清理、精确搜索、AI 重命名、�
 | - [x] | `0c7653c4c` | feat: rename sessions with AI using recent conversation turns | `自身` | PORTED(v2 SDK 类型换绑 v1 wire;runtime 事件名改 ompchamber: 前缀) |
 | - [x] | `3903bfad8` | feat(sessions): add exact ID search to sidebar and archive (#3428) | `自身` | PORTED(干净落地) |
 
-## - [ ] Worktree/项目 — 🟢 高价值 / 自身能力
+## - [x] Worktree/项目 — 🟢 高价值 / 自身能力
 
 创建前拉取远端、chats 目录迁移、缺目录标记——git/fs 层,server-rs 有对应实现。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `9934110cd` | feat(projects): integrate default agents and preserve model selections (#3291) | `服务端` |  |
+| - [x] | `9934110cd` | feat(projects): integrate default agents and preserve model selections (#3291) | `服务端` | PORTED(ModelControls variant 逻辑保留 fork 侧;variant 语义对齐上游 override=null=Default;i18n 键归位) |
 | - [x] | `9cb3a2d7f` | feat(worktrees): fetch remote source branch before worktree creation (#3296) | `服务端` | PORTED(服务端移植 server-rs worktrees.rs:--no-track/fetch 回退/显式 upstream 优先) |
 | - [x] | `d6bbbe9f4` | feat: add default agent to project settings | `服务端` | PORTED(cascade 织入 fork useConfigStore.cascade,内联副本删除;i18n 键归位 settings.projects.*) |
 

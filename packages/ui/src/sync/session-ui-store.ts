@@ -441,7 +441,7 @@ const resolveDirectoryKey = (session: Session): string | null => {
 const safeStorage = getDeferredSafeStorage()
 const DRAFT_TARGET_STORAGE_KEY = "oc.chatInput.lastDraftTarget"
 
-type PersistedDraftTarget = { projectId: string | null; directory: string | null }
+type PersistedDraftTarget = { projectId: string | null; directory: string | null; target?: "chat" | "project" }
 
 const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
   try {
@@ -588,6 +588,69 @@ const resolveSessionDirectory = (
 const activateConfigForDirectory = async (directory: string | null | undefined): Promise<void> => {
   await useConfigStore.getState().activateDirectory(normalizePath(directory))
 }
+
+const applyDraftTargetSelectionDefaults = (
+  draft: NewSessionDraftState,
+  availableWorktreesByProject: Map<string, WorktreeMetadata[]>,
+  selectedProjectOverride?: {
+    path?: string | null
+    defaultAgent?: string | null
+    defaultModel?: string | null
+    defaultVariant?: string | null
+  } | null,
+  previousDraft?: NewSessionDraftState,
+): void => {
+  if (!draft.open) return
+  const projects = useProjectsStore.getState().projects
+  const selectedProject = draft.target !== "project"
+    ? null
+    : (selectedProjectOverride
+      ?? (draft.selectedProjectId
+        ? projects.find((project) => project.id === draft.selectedProjectId) ?? null
+        : resolveDraftProjectForDirectory(
+          projects,
+          availableWorktreesByProject,
+          normalizePath(draft.directoryOverride ?? null),
+        )))
+
+  const configDirectory = normalizePath(selectedProject?.path ?? null)
+    ?? normalizePath(draft.directoryOverride ?? null)
+
+  if (previousDraft?.open && previousDraft.draftId === draft.draftId && previousDraft.target === draft.target) {
+    const previousProject = previousDraft.target !== 'project' ? null
+      : projects.find((project) => project.id === previousDraft.selectedProjectId)
+        ?? resolveDraftProjectForDirectory(projects, availableWorktreesByProject, normalizePath(previousDraft.directoryOverride ?? null))
+    const previousConfigDirectory = normalizePath(previousProject?.path ?? previousDraft.directoryOverride ?? null)
+    if (previousConfigDirectory === configDirectory) return
+  }
+
+  const runtimeKey = getRuntimeKey()
+  const revision = ++draftDefaultsRevision
+  const applyDefaults = () => {
+    const currentProject = selectedProject?.path
+      ? useProjectsStore.getState().projects.find((project) => normalizePath(project.path) === normalizePath(selectedProject.path))
+      : undefined
+    useConfigStore.getState().applyDefaultModelAgentSelection({
+      projectDefaultAgent: currentProject?.defaultAgent,
+      projectDefaultModel: currentProject?.defaultModel,
+      projectDefaultVariant: currentProject?.defaultVariant,
+    })
+  }
+  const activation = activateConfigForDirectory(configDirectory)
+  applyDefaults()
+  void activation.then(() => {
+    const current = useSessionUIStore.getState()
+    if (revision !== draftDefaultsRevision || getRuntimeKey() !== runtimeKey
+      || current.currentSessionId || !current.newSessionDraft.open
+      || current.newSessionDraft.draftId !== draft.draftId
+      || current.newSessionDraft.target !== draft.target
+      || current.newSessionDraft.selectedProjectId !== draft.selectedProjectId
+      || useConfigStore.getState().selectionSource === 'manual') return
+    applyDefaults()
+  })
+}
+
+let draftDefaultsRevision = 0
 
 const DEFAULT_DRAFT: NewSessionDraftState = {
   draftId: 0,
@@ -1297,7 +1360,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // — resolving defaults against it would wrongly fall back to opencode/big-pickle. Activate
     // the project's config instead so the default cascade matches app startup, then re-apply it
     // (a fresh draft must start from defaults, not inherit the previous session's selection).
-    const configDirectory = normalizePath(selectedProject?.path ?? null) ?? directory
+ const configDirectory = normalizePath(selectedProject?.path ?? null) ?? directory
     void activateConfigForDirectory(configDirectory).then(async () => {
       const ompDefaults = await resolveOmpDefaults(configDirectory)
       useConfigStore.getState().applyDefaultModelAgentSelection({
@@ -1309,7 +1372,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         projectDefaultVariant: selectedProject?.defaultVariant,
       })
     })
-
+   applyDraftTargetSelectionDefaults(nextDraft, availableWorktreesByProject, selectedProject)
     if (directory && directory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(directory)
     }
@@ -1412,8 +1475,17 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         },
       }
     })
-    void activateConfigForDirectory(nextDirectory)
+ void activateConfigForDirectory(nextDirectory)
+    applyDraftTargetSelectionDefaults(get().newSessionDraft, get().availableWorktreesByProject, undefined, previousDraft)
 
+    const nextDraft = get().newSessionDraft
+    // Persist the chosen draft target so reopening the composer restores the
+    // last side the user worked on.
+    persistDraftTarget({
+      projectId: nextDraft.target === "chat" ? null : nextDraft.selectedProjectId ?? null,
+      directory: normalizePath(nextDraft.directoryOverride ?? null),
+      target: nextDraft.target,
+    })
     if (nextDirectory && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(nextDirectory)
     }
@@ -1548,6 +1620,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   overrideNewSessionDraftTarget: (options) => {
+    const previousDraft = get().newSessionDraft
     let nextDirectory: string | null = null
     set((s) => {
       const nextDraft = { ...s.newSessionDraft, ...options }
@@ -1556,7 +1629,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       )
       return { newSessionDraft: nextDraft }
     })
-    void activateConfigForDirectory(nextDirectory)
+    applyDraftTargetSelectionDefaults(get().newSessionDraft, get().availableWorktreesByProject, undefined, previousDraft)
 
     if (nextDirectory && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(nextDirectory)

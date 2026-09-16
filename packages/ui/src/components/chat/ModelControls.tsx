@@ -1206,7 +1206,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             && getModelVariantOptions(latestLoadedUserChoice.providerID, latestLoadedUserChoice.modelID).includes(latestLoadedUserChoice.variant)
             ? latestLoadedUserChoice.variant
             : undefined;
-        const applyResult = applyModelSelectionWithVariant(
+       const restoreAgentName = latestLoadedUserChoice.agent || currentAgentName || undefined;
+        // A saved choice may be newer than the last sent message, including an
+        // explicit Default. Reloading history must not replace that choice.
+        const savedVariant = currentSessionId && restoreAgentName
+            ? getAgentModelVariantForSession(
+                currentSessionId,
+                restoreAgentName,
+                latestLoadedUserChoice.providerID,
+                latestLoadedUserChoice.modelID,
+            )
+            : undefined;
+        const restoredVariant = savedVariant !== undefined ? savedVariant : historicalVariant;        const applyResult = applyModelSelectionWithVariant(
             latestLoadedUserChoice.providerID,
             latestLoadedUserChoice.modelID,
             historicalVariant,
@@ -1283,9 +1294,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                         }
                         return 'resolved';
                     }
-                    if (result === 'provider-missing') {
-                        return 'waiting';
-                    }
+                    return 'waiting';
                 } else if (currentAgentName !== savedAgentName) {
                     setAgent(savedAgentName);
                 }
@@ -1299,9 +1308,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     }
                     return 'resolved';
                 }
-                if (result === 'provider-missing') {
-                    return 'waiting';
-                }
+                return 'waiting';
             }
 
             for (const agent of agents) {
@@ -1321,9 +1328,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                     }
                     return 'resolved';
                 }
-                if (result === 'provider-missing') {
-                    return 'waiting';
-                }
+                return 'waiting';
             }
 
             return 'continue';
@@ -1558,11 +1563,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         // user selection while drafting.
         if (!currentSessionId) {
             if (currentVariantSelection.override === undefined && !manualVariantSelectionRef.current) {
-                const desired = settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
+             const desired = settingsDefaultVariant && variantDomain.includes(settingsDefaultVariant)
                     ? settingsDefaultVariant
                     : undefined;
-                setCurrentVariantOverride(desired ?? null, desired);
-            }
+                setCurrentVariantOverride(desired ?? null, desired);            }
             return;
         }
 
