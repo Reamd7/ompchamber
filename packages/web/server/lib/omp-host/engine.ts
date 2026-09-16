@@ -17,6 +17,7 @@ import { discoverAgents, refreshAgentDiscovery } from '@oh-my-pi/pi-coding-agent
 import { getConfigDirs } from '@oh-my-pi/pi-coding-agent/config';
 import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
 import { isTodoPhase } from '@oh-my-pi/pi-coding-agent/tools/todo';
+import { registerPersistedSubagents } from '@oh-my-pi/pi-coding-agent/registry/persisted-agents';
 import { buildSkillPromptMessage, parseSkillInvocation } from '@oh-my-pi/pi-coding-agent/extensibility/skills';
 import { SKILL_PROMPT_MESSAGE_TYPE } from '@oh-my-pi/pi-coding-agent/session/messages';
 import { getSessionSlashCommands } from '@oh-my-pi/pi-coding-agent/extensibility/extensions/get-commands-handler';
@@ -357,6 +358,8 @@ export class OmpHostEngine {
   #diskRowsByDirectory = new Map<string, Array<DiskScanRow & { file: string }>>();
   /** In-flight directory scans (dedup). */
   #diskScanInFlight = new Map<string, Promise<void>>();
+  /** In-flight removed-run rehydrations per host session file (dedup). */
+  #rehydrateInFlight = new Set<string>();
   /**
    * Subagent transcript path -> the child's own sessionID, read once from the
    * jsonl header (the path layout `<ts>_<hostID>/<task>.jsonl` carries only
@@ -585,7 +588,17 @@ export class OmpHostEngine {
     // minimal/embedded SDK surface may omit it — per-session registries
     // still feed the aggregator on their own.
     const globalRegistry = AgentRegistry.global?.();
-    this.unsubscribeGlobalRegistry = globalRegistry?.onChange(() => {
+    this.unsubscribeGlobalRegistry = globalRegistry?.onChange((event) => {
+      // A newly registered run owns a fresh transcript: drop the one-shot
+      // disk-row cache for its directory so a later listing can discover it
+      // (status/activity churn must not trigger rescans). Rehydration
+      // registrations land here too, extending the same invalidation.
+      if (event.type === 'registered') this.#invalidateDiskRowsFor(event.ref.sessionFile);
+      // A run ref that just left the registry while its owning session is
+      // still live (idle-TTL park, one-shot settle, corpse reclaim) would
+      // drop its row mid-view: re-register it from the transcript so the
+      // viewer never sees it disappear.
+      if (event.type === 'removed' && event.ref.kind !== 'advisor') this.#rehydrateRemovedRun(event.ref.sessionFile);
       // Warm the childSessionID cache for new transcripts (one open per file),
       // then refresh: warmed rows re-publish with childSessionID set so the
       // UI drill-in can open the run's read-only session view.
@@ -1505,6 +1518,65 @@ export class OmpHostEngine {
     return this.#childSessionIdByFile.get(sessionFile);
   }
 
+  /**
+   * Re-register this session's settled subagent runs from their transcripts
+   * (SDK `registerPersistedSubagents`): the SDK reclaims refs on its own
+   * schedule (idle park, corpse reclaim), and consumers — agent-runs rows,
+   * child-session reads — must not depend on that schedule. Bounded streamed
+   * metadata reads only; no session materialization, no revival wiring.
+   */
+  async #rehydrateSubagentRefs(sessionFile: string): Promise<void> {
+    try {
+      await registerPersistedSubagents(AgentRegistry.global(), sessionFile);
+    } catch (error) {
+      console.warn('[omp-host] subagent rehydration failed:', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    // Warm child ids first so the refreshed rows carry childSessionID
+    // synchronously (projectAgentRun has no async surface).
+    await this.#warmChildSessionIds();
+    this.uriDomain?.aggregator.refresh();
+  }
+
+  /**
+   * Drop the disk-row cache for every live directory whose sessions root
+   * contains this transcript, so the next listing rescans and discovers it.
+   * Called on registry `registered` events — a new run means a new file the
+   * one-shot scan may have already missed.
+   */
+  #invalidateDiskRowsFor(sessionFile: string | null | undefined): void {
+    if (!sessionFile) return;
+    const file = path.resolve(sessionFile);
+    for (const directory of this.#live.liveDirectories()) {
+      const key = normalizeDirectoryKey(directory);
+      if (!this.#diskRowsByDirectory.has(key)) continue;
+      const root = path.resolve(this.#sessionDirFor(key));
+      if (isPathUnder(file, root)) this.#diskRowsByDirectory.delete(key);
+    }
+  }
+
+  /**
+   * Re-register a run whose ref just left the registry, but only while its
+   * owning session is live — a viewer is watching the row disappear. Nobody
+   * watching → the SDK's memory policy wins; the next materialization
+   * rehydrates. Coalesced per host session file so a settling batch triggers
+   * one pass. Re-registration is CAS-safe against a fresh spawn claiming the
+   * id (reclaimDeadCorpse handles the corpse the same way).
+   */
+  #rehydrateRemovedRun(runFile: string | null | undefined): void {
+    if (!runFile) return;
+    const artifactsDir = path.dirname(runFile);
+    const sessionId = sessionIDFromSessionFile(path.join(artifactsDir, 'x.jsonl'));
+    if (!sessionId) return;
+    if (!this.#live.snapshot().some((record) => record.state === 'live' && record.sessionId === sessionId)) return;
+    const hostFile = `${artifactsDir}.jsonl`;
+    if (this.#rehydrateInFlight.has(hostFile)) return;
+    this.#rehydrateInFlight.add(hostFile);
+    void this.#rehydrateSubagentRefs(hostFile).finally(() => {
+      this.#rehydrateInFlight.delete(hostFile);
+    });
+  }
+
   /** One-shot per directory: scan nested transcripts into cached rows. */
   async #ensureDiskRows(directoryKey: string): Promise<void> {
     if (!directoryKey || this.#diskRowsByDirectory.has(directoryKey)) return;
@@ -2220,6 +2292,13 @@ export class OmpHostEngine {
       // the stored record wholesale.
       const warmInfo = this.#wireSessionFromLive(hostSession);
       this.bus.emit('session.updated', { sessionID: sessionId, info: warmInfo }, directoryKey);
+      // Consumption-time rehydration (docs/plans/subagent-run-visibility): the
+      // SDK may have reclaimed this session's subagent refs (idle park, corpse
+      // reclaim) while the UI was away. Re-register them from the transcripts
+      // this session owns so agent-runs rows and child-session reads resolve
+      // for the viewer. Fire-and-forget: registration is CAS-safe against live
+      // refs and never blocks the materialization path.
+      void this.#rehydrateSubagentRefs(file.path);
       return hostSession;
     } catch (error) {
       // Failure cleanup (plan §3.3): every installed resource is released

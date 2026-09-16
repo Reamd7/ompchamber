@@ -50,6 +50,13 @@ sync engine, and web server call; everything else answers 404.
   Materialization seeds the registry's per-session `model` with the live
   session's actual model and emits `session.updated` with the warm record,
   so idle eviction cannot drop the model from a session's wire row.
+  Materialization also re-registers the session's settled subagent runs from
+  their transcripts (`registerPersistedSubagents`, fire-and-forget): the SDK
+  reclaims run refs on its own schedule (idle park, corpse reclaim), and
+  agent-runs rows plus child-session reads must not depend on it. Registry
+  `registered` events invalidate the per-directory disk-row cache so the
+  one-shot historical scan can discover transcripts written after its first
+  pass (docs/plans/subagent-run-visibility/plan.md, stage 0).
 - `projection.ts` — pure omp→wire translation with deterministic ids;
   projects dividers (`compactionSummary`/`branchSummary`), execution roles
   (`bashExecution`/`pythonExecution`), `fileMention`, and streaming partial

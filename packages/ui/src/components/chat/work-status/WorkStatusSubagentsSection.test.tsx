@@ -50,16 +50,25 @@ mock.module('@/stores/useOmpAgentRunsStore', () => ({
 }));
 
 
+let treeResult: { ok: true; data: { leafId: string | null; nodes: Array<{ id: string; parentId: string | null; title: string; time: { created: number; updated: number } }> } } | { ok: false; unavailable: boolean } = { ok: false, unavailable: true };
+
+mock.module('@/sync/sync-refs', () => ({
+  getSyncMessages: () => [],
+  getSyncParts: () => [],
+}));
+
 mock.module('@/sync/useOmpSessionStore', () => ({
   useOmpSessionStore: (selector: (state: { directories: Record<string, unknown> }) => unknown) =>
     selector({ directories: {} }),
 }));
 
 import { I18nProvider } from '@/lib/i18n';
-import { WorkStatusSubagentsSection } from './WorkStatusSubagentsSection';
+import { WorkStatusSubagentsSection, ancestorLineageOf, __clearSubagentLineageForTests, __setSubagentTreeSourceForTests, primeSubagentLineage } from './WorkStatusSubagentsSection';
 
 const childSession = (id: string, title: string): Session =>
   ({ id, title, parentID: 'ses_parent' } as Session);
+
+const node = (id: string, parentId: string | null) => ({ id, parentId, title: id, time: { created: 1, updated: 2 } });
 
 const render = (): string =>
   renderToStaticMarkup(
@@ -67,6 +76,71 @@ const render = (): string =>
       <WorkStatusSubagentsSection sessionId="ses_parent" directory="/repo" />
     </I18nProvider>,
   );
+
+describe('ancestorLineageOf (fork lineage walk)', () => {
+  const node = (id: string, parentId: string | null) => ({ id, parentId, title: id, time: { created: 1, updated: 2 } });
+
+  test('collects the ancestor chain oldest-last, stopping at the root', () => {
+    const lineage = ancestorLineageOf({ leafId: 'c', nodes: [node('c', 'b'), node('b', 'a'), node('a', null)] }, 'c');
+    expect([...lineage]).toEqual(['b', 'a']);
+  });
+
+  test('a parentId cycle terminates instead of looping', () => {
+    const lineage = ancestorLineageOf({ leafId: 'x', nodes: [node('x', 'y'), node('y', 'x')] }, 'x');
+    expect([...lineage]).toEqual(['y']);
+  });
+
+  test('a parent missing from the nodes list ends the walk', () => {
+    const lineage = ancestorLineageOf({ leafId: 'c', nodes: [node('c', 'ghost')] }, 'c');
+    expect([...lineage]).toEqual([]);
+  });
+});
+
+describe('WorkStatusSubagentsSection fork-lineage fallback (stage 1)', () => {
+  const ancestorRow = {
+    key: '/repo::ses_root::ControlMigration',
+    sessionID: 'ses_root',
+    directory: '/repo',
+    agentId: 'ControlMigration',
+    displayName: 'ControlMigration',
+    status: 'idle',
+    createdAt: 1,
+    lastActivity: 2,
+  };
+
+  beforeEach(() => {
+    __clearSubagentLineageForTests();
+    __setSubagentTreeSourceForTests(async () => treeResult);
+    liveSessions = [];
+    statuses = {};
+    legacyPermission = {};
+    legacyQuestions = {};
+    ompCounts = new Map();
+    agentRunsEnabled = true;
+    agentRunsRows = [ancestorRow];
+    treeResult = {
+      ok: true,
+      data: { leafId: 'ses_parent', nodes: [node('ses_parent', 'ses_root'), node('ses_root', null)] },
+    };
+  });
+
+  test('an ancestor-session row renders after the lineage is primed', async () => {
+    // Before the prime the section stays hidden: the row belongs to another
+    // session and no lineage is known.
+    expect(render()).not.toContain('ControlMigration');
+    const lineage = await primeSubagentLineage('ses_parent', '/repo');
+    expect([...lineage ?? []]).toEqual(['ses_root']);
+    // Prime caches per (directory, session): a second call is a cache hit.
+    expect(await primeSubagentLineage('ses_parent', '/repo')).toBe(lineage);
+    expect(render()).toContain('ControlMigration');
+  });
+
+  test('a failed tree fetch never adopts ancestor rows', async () => {
+    treeResult = { ok: false, unavailable: true };
+    expect(await primeSubagentLineage('ses_parent', '/repo')).toBeNull();
+    expect(render()).not.toContain('ControlMigration');
+  });
+});
 
 describe('WorkStatusSubagentsSection blocking badge (omp dialogs)', () => {
   beforeEach(() => {

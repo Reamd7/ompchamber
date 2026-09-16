@@ -3407,6 +3407,7 @@ export const dict = {
   'chat.workStatus.action.openAgentRun': 'Ouvrir l’exécution {name}',
   'chat.toolPart.taskAgent.openArtifact': 'Ouvrir l’artefact de sortie',
   'chat.toolPart.taskAgent.openRun': 'Ouvrir l’exécution',
+'chat.toolPart.taskAgent.runUnavailable': 'Journal d\'exécution indisponible',
   'chat.workStatus.section.usage': 'Utilisation',
   'chat.workStatus.goal.open': 'Gérer l’objectif',
   'chat.workStatus.goal.pause': 'Mettre en pause',

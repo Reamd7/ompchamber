@@ -311,3 +311,22 @@ export const formatAgentDuration = (durationMs: number): string => {
     const seconds = Math.round((durationMs % 60000) / 1000);
     return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 };
+
+/**
+ * Drill-in availability for one task-card run row: opening the run's
+ * read-only session needs both the run id (the wire record carried it) and
+ * the agent-runs registry row mapping it to a child session. Rows without
+ * either render an explicit unavailable state instead of a silently dead
+ * link (docs/plans/subagent-run-visibility stage 2).
+ */
+export type TaskRunOpenState =
+  | { open: true; runId: string }
+  | { open: false; runId: string | null };
+
+export const resolveTaskRunOpenState = (
+  runId: string | null | undefined,
+  childSessionIdByAgent: ReadonlyMap<string, string>,
+): TaskRunOpenState => {
+  if (runId && childSessionIdByAgent.has(runId)) return { open: true, runId };
+  return { open: false, runId: runId ?? null };
+};

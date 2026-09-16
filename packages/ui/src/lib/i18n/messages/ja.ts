@@ -3409,6 +3409,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openAgentRun': '実行 {name} を開く',
   'chat.toolPart.taskAgent.openArtifact': '出力アーティファクトを開く',
   'chat.toolPart.taskAgent.openRun': '実行を開く',
+'chat.toolPart.taskAgent.runUnavailable': '実行記録は利用できません',
   'chat.workStatus.section.usage': '使用量',
   'chat.workStatus.goal.open': '目標を管理',
   'chat.workStatus.goal.pause': '一時停止',

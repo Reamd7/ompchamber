@@ -3414,6 +3414,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openAgentRun': 'Otwórz uruchomienie {name}',
   'chat.toolPart.taskAgent.openArtifact': 'Otwórz artefakt wyjściowy',
   'chat.toolPart.taskAgent.openRun': 'Otwórz uruchomienie',
+'chat.toolPart.taskAgent.runUnavailable': 'Dziennik uruchomienia niedostępny',
   'chat.workStatus.section.usage': 'Zużycie',
   'chat.workStatus.goal.open': 'Zarządzaj celem',
   'chat.workStatus.goal.pause': 'Wstrzymaj',

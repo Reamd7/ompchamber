@@ -49,6 +49,7 @@ import {
     parseTaskMetadataBlock,
     prepareTaskToolOutput,
     readTaskAgentRows,
+    resolveTaskRunOpenState,
     readTaskSessionIdFromOutput,
     readTaskSessionIdFromRecord,
     type TaskAgentRow,
@@ -1045,11 +1046,13 @@ const areTaskAgentRowsRenderEqual = (prevRows: TaskAgentRow[], nextRows: TaskAge
 const TaskAgentRowItem = React.memo(({
     row,
     animateTailText,
+    childSessions,
     onOpenArtifact,
     onOpenRun,
 }: {
     row: TaskAgentRow;
     animateTailText: boolean;
+    childSessions: ReadonlyMap<string, string>;
     onOpenArtifact?: (outputPath: string) => void;
     onOpenRun?: (runId: string) => void;
 }) => {
@@ -1065,10 +1068,32 @@ const TaskAgentRowItem = React.memo(({
             : undefined;
     const artifactPath = typeof row.outputPath === 'string' ? row.outputPath : null;
     const runId = typeof row.runId === 'string' ? row.runId : null;
+    const openState = resolveTaskRunOpenState(runId, childSessions);
+    const openRow = (event: React.MouseEvent | React.KeyboardEvent) => {
+        if (!onOpenRun || !openState.open) return;
+        event.stopPropagation();
+        onOpenRun(openState.runId);
+    };
     const tailText = row.status === 'running' && typeof row.tailText === 'string' ? row.tailText : null;
     return (
         <ToolRevealOnMount animate={animateTailText} wipe>
-            <div data-run-id={runId ?? undefined} className="flex gap-2 items-center min-w-0 w-full">
+            <div
+                data-run-id={runId ?? undefined}
+                className={cn('flex gap-2 items-center min-w-0 w-full', openState.open && 'cursor-pointer')}
+                {...(openState.open
+                    ? {
+                        role: 'button',
+                        tabIndex: 0,
+                        'aria-label': t('chat.toolPart.taskAgent.openRun'),
+                        onClick: openRow,
+                        onPointerDown: (event: React.MouseEvent) => event.stopPropagation(),
+                        onKeyDown: (event: React.KeyboardEvent) => {
+                            if (event.key === 'Enter' || event.key === ' ') openRow(event);
+                        },
+                    }
+                    : {})}
+            >
+
                 <span
                     className={cn('flex-shrink-0 h-1.5 w-1.5 rounded-full', statusMeta.dotClass)}
                     title={t(statusMeta.labelKey)}
@@ -1123,13 +1148,13 @@ const TaskAgentRowItem = React.memo(({
                         <Icon name="attachment-2" className="h-3 w-3" />
                     </button>
                 ) : null}
-                {runId && onOpenRun ? (
+                {openState.open && onOpenRun ? (
                     <button
                         type="button"
                         className="flex-shrink-0 text-muted-foreground/60 transition-colors hover:text-primary"
                         onClick={(event) => {
                             event.stopPropagation();
-                            onOpenRun(runId);
+                            onOpenRun(openState.runId);
                         }}
                         onPointerDown={(event) => event.stopPropagation()}
                         aria-label={t('chat.toolPart.taskAgent.openRun')}
@@ -1137,7 +1162,15 @@ const TaskAgentRowItem = React.memo(({
                     >
                         <Icon name="external-link" className="h-3 w-3" />
                     </button>
-                ) : null}
+                ) : (
+                    <span
+                        className="flex-shrink-0 text-muted-foreground/30"
+                        aria-label={t('chat.toolPart.taskAgent.runUnavailable')}
+                        title={t('chat.toolPart.taskAgent.runUnavailable')}
+                    >
+                        <Icon name="external-link" className="h-3 w-3" />
+                    </span>
+                )}
             </div>
             {row.nested && row.nested.length > 0 ? (
                 <div className="ml-4 mt-0.5 flex flex-col gap-1 border-l border-border/80 pl-3">
@@ -1146,6 +1179,7 @@ const TaskAgentRowItem = React.memo(({
                             key={`nested:${nestedRow.key}`}
                             row={nestedRow}
                             animateTailText={animateTailText}
+                            childSessions={childSessions}
                             onOpenArtifact={onOpenArtifact}
                             onOpenRun={onOpenRun}
                         />
@@ -1156,6 +1190,7 @@ const TaskAgentRowItem = React.memo(({
     );
 }, (prev, next) => {
     return prev.animateTailText === next.animateTailText
+        && prev.childSessions === next.childSessions
         && prev.onOpenArtifact === next.onOpenArtifact
         && prev.onOpenRun === next.onOpenRun
         && getTaskAgentRowSignature(prev.row) === getTaskAgentRowSignature(next.row);
@@ -1169,12 +1204,14 @@ const TaskAgentRowsList = React.memo(({
     rows,
     isExpanded,
     animateTailText,
+    childSessions,
     onOpenArtifact,
     onOpenRun,
 }: {
     rows: TaskAgentRow[];
     isExpanded: boolean;
     animateTailText: boolean;
+    childSessions: ReadonlyMap<string, string>;
     onOpenArtifact?: (outputPath: string) => void;
     onOpenRun?: (runId: string) => void;
 }) => {
@@ -1185,7 +1222,7 @@ const TaskAgentRowsList = React.memo(({
     return (
         <div className="w-full min-w-0 space-y-1">
             {visibleRows.map((row) => (
-                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} onOpenArtifact={onOpenArtifact} onOpenRun={onOpenRun} />
+                <TaskAgentRowItem key={row.key} row={row} animateTailText={animateTailText} childSessions={childSessions} onOpenArtifact={onOpenArtifact} onOpenRun={onOpenRun} />
             ))}
             {hiddenCount > 0 ? (
                 <div className="typography-micro text-muted-foreground/70">
@@ -1197,6 +1234,7 @@ const TaskAgentRowsList = React.memo(({
 }, (prev, next) => {
     return prev.isExpanded === next.isExpanded
         && prev.animateTailText === next.animateTailText
+        && prev.childSessions === next.childSessions
         && prev.onOpenArtifact === next.onOpenArtifact
         && prev.onOpenRun === next.onOpenRun
         && areTaskAgentRowsRenderEqual(prev.rows, next.rows);
@@ -1348,6 +1386,7 @@ const TaskToolSummary: React.FC<{
                     rows={agentRows}
                     isExpanded={isExpanded}
                     animateTailText={animateTailText}
+                    childSessions={childSessionIdByAgent}
                     onOpenRun={(runId) => {
                         const childSessionID = childSessionIdByAgent.get(runId);
                         if (!childSessionID || !currentDirectory || !sessionId) return;

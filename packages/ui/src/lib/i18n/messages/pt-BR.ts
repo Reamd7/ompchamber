@@ -3410,6 +3410,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openAgentRun': 'Abrir execução {name}',
   'chat.toolPart.taskAgent.openArtifact': 'Abrir artefato de saída',
   'chat.toolPart.taskAgent.openRun': 'Abrir execução',
+'chat.toolPart.taskAgent.runUnavailable': 'Registro de execução indisponível',
   'chat.workStatus.section.usage': 'Uso',
   'chat.workStatus.goal.open': 'Gerenciar objetivo',
   'chat.workStatus.goal.pause': 'Pausar',

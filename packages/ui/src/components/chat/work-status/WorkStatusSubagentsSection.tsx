@@ -18,17 +18,92 @@ import { useOmpSessionStore } from '@/sync/useOmpSessionStore';
 import { WorkStatusCollapsibleSection, WorkStatusRow, WorkStatusValue } from './WorkStatusPrimitives';
 import { useReportWorkStatusPresence } from './presenceContext';
 import { useOmpPendingDialogSessions } from '@/sync/useOmpDialogStore';
-import type { OmpAgentRunRecord } from '@/lib/api/omp';
 import { formatCost } from './subagentCost';
 import { useSubagentCostRollup } from './useSubagentCostRollup';
 import { formatCompactTokenCount } from '../message/turnUsage';
 import type { State } from '@/sync/types';
+import { createOmpTreeAPI, type OmpAgentRunRecord, type OmpFetchJsonResult, type OmpSessionTreeSnapshot } from '@/lib/api/omp';
 
 type Props = {
   sessionId: string | null;
   directory: string | null;
 };
 const SECTION_ID = 'subagents';
+const treeApi = createOmpTreeAPI();
+
+/**
+ * Ancestor session ids of `sessionId` inside its fork tree. Forks inherit
+ * the artifacts directory of the session they forked from, so a run's
+ * agent-runs row is keyed to an ancestor session while its task card lives
+ * in the fork's transcript — this set is what lets the fork's panel adopt
+ * those rows. Cycle- and gap-tolerant: a malformed parentId chain yields
+ * whatever was collected before the break.
+ */
+export const ancestorLineageOf = (snapshot: OmpSessionTreeSnapshot, sessionId: string): Set<string> => {
+  const byId = new Map(snapshot.nodes.map((node) => [node.id, node]));
+  const lineage = new Set<string>();
+  const visited = new Set<string>([sessionId]);
+  let cursor = byId.get(sessionId);
+  while (cursor?.parentId) {
+    const parent = byId.get(cursor.parentId);
+    if (!parent || visited.has(parent.id)) break;
+    visited.add(parent.id);
+    lineage.add(parent.id);
+    cursor = parent;
+  }
+  return lineage;
+};
+
+/** Tree fetch source; overridable in tests (mock.module on the api module is
+ * not reliable for this import graph, so the seam lives here). */
+let fetchSessionTree: (sessionId: string, directory: string) =>
+  Promise<OmpFetchJsonResult<OmpSessionTreeSnapshot>> = (sessionId, directory) =>
+    treeApi.getSessionTree(sessionId, { directory });
+
+const lineageByKey = new Map<string, Set<string>>();
+const lineageInFlight = new Map<string, Promise<Set<string> | null>>();
+
+/**
+ * Fetch and cache the fork lineage once per (directory, session). Failures
+ * (tree.v1 off, transport, malformed payload) leave the cache unset so the
+ * section keeps its current-session-only behavior — never an authoritative
+ * "no ancestors" answer built from a failed read.
+ */
+export const primeSubagentLineage = (sessionId: string, directory: string): Promise<Set<string> | null> => {
+  const key = `${directory}\n${sessionId}`;
+  const cached = lineageByKey.get(key);
+  if (cached) return Promise.resolve(cached);
+  const existing = lineageInFlight.get(key);
+  if (existing) return existing;
+  const request = (async () => {
+    const result = await fetchSessionTree(sessionId, directory);
+    if (!result.ok) return null;
+    const lineage = ancestorLineageOf(result.data, sessionId);
+    if (lineage.size > 0) lineageByKey.set(key, lineage);
+    return lineage;
+  })().catch(() => null).finally(() => {
+    lineageInFlight.delete(key);
+  });
+  lineageInFlight.set(key, request);
+  return request;
+};
+
+/** Test seam: clears the lineage cache between cases (capabilityGate pattern). */
+export const __clearSubagentLineageForTests = (): void => {
+  lineageByKey.clear();
+  lineageInFlight.clear();
+};
+
+/** Test seam: replaces the tree fetch source. */
+export const __setSubagentTreeSourceForTests = (
+  source: (sessionId: string, directory: string) => Promise<OmpFetchJsonResult<OmpSessionTreeSnapshot>>,
+): void => {
+  fetchSessionTree = source;
+};
+
+/** Synchronous cache read; `primeSubagentLineage` fills it. */
+const subagentLineageOf = (sessionId: string, directory: string): Set<string> | null =>
+  lineageByKey.get(`${directory}\n${sessionId}`) ?? null;
 
 /**
  * Running subagents and, more importantly, their blockers: a dialog raised by
@@ -62,12 +137,41 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     });
   }, [loadAgentRuns, directory, eventRevision, snapshotRevision]);
 
-  const runs = React.useMemo(
+  const ownRuns = React.useMemo(
     () => (agentRunsEnabled && sessionId && agentRuns
       ? agentRuns.filter((row: OmpAgentRunRecord) => row.sessionID === sessionId && row.agentId !== 'Main')
       : []),
     [agentRunsEnabled, agentRuns, sessionId],
   );
+
+  // Fork fallback (docs/plans/subagent-run-visibility stage 1): a fork's
+  // inherited runs key their rows to ancestor sessions, so when this session
+  // has no rows of its own, adopt ancestor rows via the fork lineage. Only
+  // fetched on the empty branch — the common path never pays for the tree.
+  const [lineageRead, setLineageRead] = React.useState(0);
+  React.useEffect(() => {
+    if (!agentRunsEnabled || !sessionId || !directory || ownRuns.length > 0) return;
+    let cancelled = false;
+    void primeSubagentLineage(sessionId, directory).then((lineage) => {
+      if (!cancelled && lineage && lineage.size > 0) setLineageRead((count) => count + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentRunsEnabled, sessionId, directory, ownRuns.length]);
+  const lineage = React.useMemo(
+    () => (sessionId && directory ? subagentLineageOf(sessionId, directory) : null),
+    // lineageRead invalidates the memoized cache read after a prime lands.
+    [sessionId, directory, lineageRead],
+  );
+
+  const runs = React.useMemo(() => {
+    if (!agentRunsEnabled || !sessionId || !agentRuns) return [];
+    if (ownRuns.length > 0) return ownRuns;
+    if (!lineage) return [];
+    return agentRuns.filter((row: OmpAgentRunRecord) => lineage.has(row.sessionID) && row.agentId !== 'Main');
+  }, [agentRunsEnabled, agentRuns, sessionId, ownRuns, lineage]);
+
 
   const liveSessions = useAllLiveSessions();
   const statuses = useAllSessionStatuses();

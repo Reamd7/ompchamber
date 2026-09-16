@@ -3410,6 +3410,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openAgentRun': '打开运行 {name}',
   'chat.toolPart.taskAgent.openArtifact': '打开输出产物',
   'chat.toolPart.taskAgent.openRun': '打开运行',
+'chat.toolPart.taskAgent.runUnavailable': '运行记录不可用',
   'chat.workStatus.section.usage': '用量',
   'chat.workStatus.goal.open': '管理目标',
   'chat.workStatus.goal.pause': '暂停',

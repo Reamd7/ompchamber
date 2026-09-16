@@ -9,6 +9,7 @@ import {
     readTaskAgentRows,
     readTaskSessionIdFromRecord,
     readTaskSessionIdFromOutput,
+    resolveTaskRunOpenState,
 } from './taskToolModel';
 import { TOOL_OUTPUT_MAX_CHARS } from '../toolRenderers';
 
@@ -153,4 +154,21 @@ describe('taskToolModel', () => {
         expect(formatAgentDuration(5400)).toBe('5.4s');
         expect(formatAgentDuration(125_000)).toBe('2m05s');
     });
+});
+
+describe('resolveTaskRunOpenState (stage 2 drill-in availability)', () => {
+  const childSessions = new Map([['RunA', 'ses_child_a']]);
+
+  test('open when the registry maps the run id to a child session', () => {
+    expect(resolveTaskRunOpenState('RunA', childSessions)).toEqual({ open: true, runId: 'RunA' });
+  });
+
+  test('unavailable when the run id is known but no registry row carries it', () => {
+    expect(resolveTaskRunOpenState('RunB', childSessions)).toEqual({ open: false, runId: 'RunB' });
+  });
+
+  test('unavailable with a null run id when the wire record carried none', () => {
+    expect(resolveTaskRunOpenState(null, childSessions)).toEqual({ open: false, runId: null });
+    expect(resolveTaskRunOpenState(undefined, childSessions)).toEqual({ open: false, runId: null });
+  });
 });

@@ -5,6 +5,9 @@ import path from 'node:path';
 import type { WireEventEnvelope } from './events.ts';
 
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-engine-test-'));
+/** Failure guard only: resolves late so a missing signal fails the test
+ * instead of hanging it. The pass path awaits the real event above. */
+const guardAfter = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const sessionDir = path.join(agentDir, 'sessions');
 
 const sessionFiles = [
@@ -22,6 +25,28 @@ const fakeForkEntries = [
   { type: 'message', id: 'e4', parentId: 'e3', message: { role: 'assistant', timestamp: 4, content: 'reply 2' } },
 ];
 type ForkMutation = { op: string; leafId?: string; customType?: string; data?: unknown };
+/** Registry-event frame the stateful mock hands to engine subscribers. */
+type MockRegistryEvent = { type: string; ref: { id: string; sessionFile?: string } };
+/** Module-scope handles onto the mocked global registry instance, captured at
+ * construction — no type casts needed at the call sites. */
+let emitGlobalRegistryEvent: (event: MockRegistryEvent) => void = () => {};
+let clearGlobalRegistryRefs: () => void = () => {};
+/** Mock registry shapes: what the engine's projections and this file's
+ * assertions read off a rehydrated ref (SDK AgentRef subset). */
+type MockRegistryHistory = { metrics?: { tokens?: number }; outputPath?: string };
+type MockRegistryRef = {
+  id: string;
+  displayName?: string;
+  kind?: string;
+  parentId?: string;
+  status: string;
+  session: unknown;
+  sessionFile?: string;
+  activity?: string;
+  createdAt?: number;
+  lastActivity?: number;
+  history?: MockRegistryHistory;
+};
 type FakeSessionContext = { messages: unknown[] };
 
 const forkMutations: ForkMutation[] = [];
@@ -86,20 +111,59 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     static #instance: InstanceType<typeof this> | undefined;
     static global() {
       this.#instance ??= new this();
+      // Bind the module-scope handles to the singleton on every lookup: the
+      // engine also constructs per-session registries whose constructors must
+      // not steal them.
+      emitGlobalRegistryEvent = (event) => this.#instance!.#emit(event);
+      clearGlobalRegistryRefs = () => this.#instance!.#refs.clear();
       return this.#instance;
     }
+    // Stateful registry: the real registerPersistedSubagents drives it in the
+    // rehydration tests, so register/setHistory/emit must behave like the SDK's.
+    #refs = new Map<string, MockRegistryRef>();
+    #listeners = new Set<(event: { type: string; ref: unknown }) => void>();
     constructor() {
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       registries.push(this);
     }
     list() {
-      return [];
+      return [...this.#refs.values()];
     }
-    get() {
-      return undefined;
+    get(id: string) {
+      return this.#refs.get(id);
     }
-    onChange() {
-      return () => {};
+    register(input: Omit<MockRegistryRef, 'status' | 'session'> & Partial<Pick<MockRegistryRef, 'status' | 'session'>>) {
+      const ref: MockRegistryRef = { status: 'running', session: null, ...input };
+      this.#refs.set(ref.id, ref);
+      this.#emit({ type: 'registered', ref });
+      return ref;
+    }
+    setHistory(id: string, history: MockRegistryHistory, expectedSessionFile?: string) {
+      const ref = this.#refs.get(id);
+      if (!ref || (expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile)) return false;
+      ref.history = { ...(ref.history ?? {}), ...history };
+      this.#emit({ type: 'metadata_changed', ref });
+      return true;
+    }
+    unregister(id: string) {
+      const ref = this.#refs.get(id);
+      if (!ref) return false;
+      this.#refs.delete(id);
+      this.#emit({ type: 'removed', ref });
+      return true;
+    }
+    onChange(listener: (event: { type: string; ref: unknown }) => void) {
+      this.#listeners.add(listener);
+      return () => this.#listeners.delete(listener);
+    }
+    #emit(event: MockRegistryEvent) {
+      for (const listener of this.#listeners) {
+        try {
+          listener(event);
+        } catch {
+          // Stale engines from earlier tests must not break the emit loop.
+        }
+      }
     }
   },
   ModelRegistry: class {
@@ -335,6 +399,143 @@ describe('disk scan: historical run rows (restart persistence)', () => {
     expect(session?.title).toBe('BranchScout');
     const page = await engine.getMessagesPage({ sessionID: 'BranchScout', directory: '/repo' });
     expect(Array.isArray(page?.messages)).toBe(true);
+  });
+});
+
+describe('consumption-time subagent rehydration (materialization)', () => {
+  test('materializing a session re-registers settled runs with history and child ids', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    // Production artifacts layout: <root>/<ts>_<sessionID>/<Run>.jsonl next to
+    // the host transcript <root>/<ts>_<sessionID>.jsonl.
+    const artifactsDir = path.join(sessionDir, '2026-09-06T00-00-00-000Z_s9');
+    mkdirSync(artifactsDir, { recursive: true });
+    const weaverFile = path.join(artifactsDir, 'Weaver.jsonl');
+    writeFileSync(weaverFile, [
+      JSON.stringify({ type: 'session', id: 'weaver-child-1', parentId: null, timestamp: '2026-09-06T00:00:00.000Z' }),
+      JSON.stringify({ type: 'session_init', id: 'i2', parentId: 'weaver-child-1', task: 'Map the retry ladder and report', agent: 'scout', modelRole: 'smol', readOnly: true, timestamp: '2026-09-06T00:00:01.000Z' }),
+      JSON.stringify({ type: 'message', id: 'm3', parentId: 'i2', timestamp: '2026-09-06T00:01:00.000Z', message: { role: 'assistant', timestamp: '2026-09-06T00:01:00.000Z', content: [{ type: 'text', text: 'done' }], usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0.01 } }, provider: 'p1', model: 'm1', stopReason: 'stop' } }),
+    ].join('\n') + '\n');
+    writeFileSync(path.join(artifactsDir, 'Weaver.md'), '# Weaver output\n');
+    sessionFiles.push({ id: 's9', path: `${artifactsDir}.jsonl` });
+    // Rehydration is fire-and-forget off the materialization path. Subscribe
+    // before prompting, then await the real completion signal — the registry's
+    // metadata_changed event once Weaver's reconstructed history lands. The 2s
+    // race is a failure guard so a broken path fails instead of hanging.
+    const { promise: historyLanded, resolve: onHistory } = Promise.withResolvers<void>();
+    const stopListen = globalRegistry.onChange((event) => {
+      if (event.type === 'metadata_changed' && event.ref.id === 'Weaver') onHistory();
+    });
+    // The row reaches consumers through omp.agents.updated after the
+    // rehydration path warms child ids; await that publish (the UI's own
+    // signal), guarded so a broken path fails instead of hanging.
+    const { promise: rowPublished, resolve: onRow } = Promise.withResolvers<void>();
+    const stopBus = engine.ompBus.subscribeSince(Number.MAX_SAFE_INTEGER, (entry) => {
+      if (entry.envelope.type !== 'omp.agents.updated') return;
+      // SAFETY: test fixture narrowing — omp.agents.updated payload rows are
+      // untyped on the envelope boundary; only the two asserted fields are read.
+      const rows = entry.envelope.payload as { agentRuns?: Array<{ agentId?: string; childSessionID?: string }> };
+      for (const candidate of rows.agentRuns ?? []) {
+        if (candidate.agentId === 'Weaver' && candidate.childSessionID === 'weaver-child-1') onRow();
+      }
+    }, { directory: '/repo' });
+    try {
+      await engine.prompt({ sessionID: 's9', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+      await Promise.race([historyLanded, guardAfter(2000)]);
+      await Promise.race([rowPublished, guardAfter(3000)]);
+      const row = engine.uriDomain?.aggregator.refresh().agentRuns.find((r) => r.agentId === 'Weaver');
+      expect(row).toBeTruthy();
+      expect(row?.sessionID).toBe('s9');
+      expect(row?.directory).toBe('/repo');
+      expect(row?.status).toBe('parked');
+      expect(row?.childSessionID).toBe('weaver-child-1');
+      // SAFETY: test fixture narrowing — AgentRunHistory.metrics is unknown
+      // on the wire boundary; the fixture's reconstructed summary carries tokens.
+      const metrics = row?.history?.metrics as { tokens?: number } | undefined;
+      expect(metrics?.tokens).toBe(15);
+      // The drill-in target resolves through the re-registered ref — the read
+      // that 404'd when the SDK had reclaimed the run and the disk cache was
+      // stale.
+      const child = await engine.getSession({ sessionID: 'weaver-child-1', directory: '/repo' });
+      expect(child?.parentID).toBe('s9');
+    } finally {
+      stopListen();
+      stopBus();
+      const index = sessionFiles.findIndex((entry) => entry.id === 's9');
+      if (index >= 0) sessionFiles.splice(index, 1);
+      clearGlobalRegistryRefs();
+    }
+  });
+
+
+  test('a removed run ref is re-registered while its owning session is live', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    const { AgentRegistry } = await import('@oh-my-pi/pi-coding-agent');
+    const globalRegistry = AgentRegistry.global();
+    const artifactsDir = path.join(sessionDir, '2026-09-08T00-00-00-000Z_s10');
+    mkdirSync(artifactsDir, { recursive: true });
+    const regrowFile = path.join(artifactsDir, 'Regrow.jsonl');
+    writeFileSync(regrowFile, [
+      JSON.stringify({ type: 'session', id: 'regrow-child-1', parentId: null, timestamp: '2026-09-08T00:00:00.000Z' }),
+      JSON.stringify({ type: 'session_init', id: 'i2', parentId: 'regrow-child-1', task: 'Audit the probe ladder', agent: 'scout', readOnly: true, timestamp: '2026-09-08T00:00:01.000Z' }),
+    ].join('\n') + '\n');
+    sessionFiles.push({ id: 's10', path: `${artifactsDir}.jsonl` });
+    let removedSeen = false;
+    const { promise: firstRegistered, resolve: onFirstRegistered } = Promise.withResolvers<void>();
+    const { promise: reRegistered, resolve: onReRegistered } = Promise.withResolvers<void>();
+    const stopListen = globalRegistry.onChange((event) => {
+      if (event.ref.id !== 'Regrow') return;
+      if (event.type === 'removed') removedSeen = true;
+      if (event.type === 'registered') {
+        if (removedSeen) onReRegistered();
+        else onFirstRegistered();
+      }
+    });
+    try {
+      await engine.prompt({ sessionID: 's10', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+      // Materialization rehydration is fire-and-forget: await its registration
+      // before tearing the ref down.
+      await Promise.race([firstRegistered, guardAfter(2000)]);
+      expect(globalRegistry.get('Regrow')).toBeTruthy();
+      // The SDK settles and reclaims the ref (idle-TTL park, one-shot
+      // settle): the row would vanish mid-view without re-registration.
+      globalRegistry.unregister('Regrow');
+      expect(globalRegistry.get('Regrow')).toBeUndefined();
+      await Promise.race([reRegistered, guardAfter(3000)]);
+      const row = engine.uriDomain?.aggregator.refresh().agentRuns.find((r) => r.agentId === 'Regrow');
+      expect(row?.sessionID).toBe('s10');
+      expect(row?.status).toBe('parked');
+      expect(row?.childSessionID).toBe('regrow-child-1');
+    } finally {
+      stopListen();
+      const index = sessionFiles.findIndex((entry) => entry.id === 's10');
+      if (index >= 0) sessionFiles.splice(index, 1);
+      clearGlobalRegistryRefs();
+    }
+  });
+});
+
+describe('disk-row cache invalidation on new runs', () => {
+  test('a registry registered event drops the one-shot cache so late transcripts surface', async () => {
+    const engine = new OmpHostEngine({ agentDir });
+    // /repo must be a live directory for the invalidation mapping to apply.
+    await engine.prompt({ sessionID: 's2', directory: '/repo', text: 'warm', model: undefined, agent: undefined, images: undefined, delivery: undefined, messageID: undefined });
+    const subDir = path.join(sessionDir, '2026-09-07T00-00-00-000Z_s2');
+    mkdirSync(subDir, { recursive: true });
+    const primed = await engine.uriDomain?.aggregator.ensureDirectory('/repo');
+    expect(primed?.agentRuns.some((r) => r.agentId === 'LateRun')).toBe(false);
+    const lateFile = path.join(subDir, 'LateRun.jsonl');
+    writeFileSync(lateFile, JSON.stringify({ type: 'session', version: 3, id: 'LateRun', timestamp: '2026-09-07T00:00:00.000Z', cwd: '/repo' }) + '\n');
+    emitGlobalRegistryEvent({
+      type: 'registered',
+      ref: { id: 'LateRun', sessionFile: lateFile },
+    });
+    const rescanned = await engine.uriDomain?.aggregator.ensureDirectory('/repo');
+    const row = rescanned?.agentRuns.find((r) => r.agentId === 'LateRun');
+    expect(row?.status).toBe('historical');
+    expect(row?.sessionID).toBe('s2');
+    expect(row?.childSessionID).toBe('LateRun');
   });
 });
 

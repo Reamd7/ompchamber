@@ -3409,6 +3409,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.workStatus.action.openAgentRun': '실행 {name} 열기',
   'chat.toolPart.taskAgent.openArtifact': '출력 아티팩트 열기',
   'chat.toolPart.taskAgent.openRun': '실행 열기',
+'chat.toolPart.taskAgent.runUnavailable': '실행 기록을 사용할 수 없음',
   'chat.workStatus.section.usage': '사용량',
   'chat.workStatus.goal.open': '목표 관리',
   'chat.workStatus.goal.pause': '일시정지',

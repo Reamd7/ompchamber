@@ -3409,6 +3409,7 @@ export const dict = {
   'chat.workStatus.action.openAgentRun': 'Open run {name}',
   'chat.toolPart.taskAgent.openArtifact': 'Open output artifact',
   'chat.toolPart.taskAgent.openRun': 'Open run',
+'chat.toolPart.taskAgent.runUnavailable': 'Run record unavailable',
   'chat.workStatus.section.usage': 'Usage',
   'chat.workStatus.goal.open': 'Manage goal',
   'chat.workStatus.goal.pause': 'Pause',
