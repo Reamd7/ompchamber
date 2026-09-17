@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import type { OmpProcessEntry } from '@/lib/api/omp';
 import { ProcessEntryDetail } from './WorkStatusProcessDialog';
-import { processStatusLabelKey } from './WorkStatusProcessesSection';
+import { processStatusLabelKey } from './processFormatting';
 import { WorkStatusPill, WorkStatusValue } from './WorkStatusPrimitives';
 
 type Props = {

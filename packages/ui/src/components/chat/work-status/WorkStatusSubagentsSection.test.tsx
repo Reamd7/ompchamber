@@ -63,7 +63,8 @@ mock.module('@/sync/useOmpSessionStore', () => ({
 }));
 
 import { I18nProvider } from '@/lib/i18n';
-import { WorkStatusSubagentsSection, ancestorLineageOf, __clearSubagentLineageForTests, __setSubagentTreeSourceForTests, primeSubagentLineage } from './WorkStatusSubagentsSection';
+import { WorkStatusSubagentsSection } from './WorkStatusSubagentsSection';
+import { ancestorLineageOf, __clearSubagentLineageForTests, __setSubagentTreeSourceForTests, primeSubagentLineage } from './subagentLineage';
 
 const childSession = (id: string, title: string): Session =>
   ({ id, title, parentID: 'ses_parent' } as Session);

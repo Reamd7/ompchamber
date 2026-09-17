@@ -47,7 +47,8 @@ import {
     shouldPreserveManualModelOverride,
 } from '@/lib/messages/userModelChoice';
 import { getSyncParts } from '@/sync/sync-refs';
-import { OmpModeOptionList, OmpModeSelector, useOmpModeTransition, type OmpModeOption } from './OmpModeSelector';
+import { OmpModeOptionList, OmpModeSelector, type OmpModeOption } from './OmpModeSelector';
+import { useOmpModeTransition } from './useOmpModeTransition';
 import { OmpGoalSection } from './OmpGoalIndicator';
 import {
     OmpPersonaOptionList,

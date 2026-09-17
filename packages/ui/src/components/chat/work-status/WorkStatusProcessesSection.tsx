@@ -8,7 +8,7 @@ import {
   useOmpProcessesStore,
 } from '@/stores/useOmpProcessesStore';
 import type { OmpProcessEntry } from '@/lib/api/omp';
-import type { I18nKey } from '@/lib/i18n/messages/en';
+import { formatProcessBytes, formatProcessCpu, processStatusLabelKey } from './processFormatting';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/icon/Icon';
 import {
@@ -27,35 +27,12 @@ type Props = {
   directory: string | null;
 };
 const SECTION_ID = 'processes';
-
-export const formatProcessBytes = (bytes: number): string => {
-  if (!Number.isFinite(bytes) || bytes < 0) return '';
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'] as const;
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-};
-
-export const formatProcessCpu = (percent: number): string =>
-  `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
-
 const statusTone = (status: OmpProcessEntry['status']): 'default' | 'muted' | 'error' | 'info' => {
   if (status === 'running') return 'info';
   if (status === 'failed') return 'error';
   return 'muted';
 };
 
-export const processStatusLabelKey = {
-  running: 'chat.workStatus.processes.running',
-  exited: 'chat.workStatus.processes.exited',
-  killed: 'chat.workStatus.processes.killed',
-  failed: 'chat.workStatus.processes.failed',
-} satisfies Record<OmpProcessEntry['status'], I18nKey>;
 
 /**
  * Processes the session's bash/eval calls produced — including the ones that

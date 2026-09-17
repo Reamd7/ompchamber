@@ -6,7 +6,7 @@
  * to null) become roots instead of dangling references.
  */
 import { describe, expect, test } from 'bun:test';
-import { buildBranchRows } from '../SessionTreeDialog';
+import { buildBranchRows } from '../sessionTreeRows';
 import type { OmpSessionTreeNode } from '@/lib/api/omp';
 
 const node = (id: string, parentId: string | null, created: number): OmpSessionTreeNode => ({

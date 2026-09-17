@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog';
 import type { OmpProcessEntry, OmpProcessMember, OmpProcessOutput } from '@/lib/api/omp';
 import { useOmpProcessesStore } from '@/stores/useOmpProcessesStore';
-import { formatProcessBytes, formatProcessCpu, processStatusLabelKey } from './WorkStatusProcessesSection';
+import { formatProcessBytes, formatProcessCpu, processStatusLabelKey } from './processFormatting';
 
 type Props = {
   open: boolean;
