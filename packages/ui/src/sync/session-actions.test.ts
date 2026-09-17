@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, mock } from "bun:test"
 import type { PermissionRequest } from "@/types/permission"
 import type { QuestionRequest } from "@/types/question"
 
+
 // Mock SDK client that records permission.reply / question.reply calls
 const replyCalls: Array<{ method: string; params: Record<string, unknown> }> = []
 const scopedClientDirectories: string[] = []
@@ -1110,6 +1111,108 @@ describe("optimisticSend target directory", () => {
     expect(replyCalls.find((call) => call.method === "session.messages")?.params.limit).toBe(30)
     expect(targetStore.getState().message["session-confirmed"]?.[0]?.id).toBe(sentMessageID)
     expect(targetStore.getState().part[sentMessageID]?.[0]?.id).toBe("server-part")
+  })
+
+  // An ambiguous send failure whose confirmation refetch cannot prove
+  // acceptance rolls the optimistic user row back even though the server may
+  // have accepted the prompt. Streamed assistant rows stay anchored by
+  // parentID to the row the rollback removed, and the timeline drops rows it
+  // cannot anchor — a blank transcript until some later cold page load
+  // restores it. The rollback must therefore force an authoritative reload of
+  // the same session page right away.
+  test("forces an authoritative reload after an unconfirmed ambiguous send failure", async () => {
+    const targetStore = createStore({})
+    const childStores = createChildStores([["/target/project", targetStore]])
+    let optimisticRemove: OptimisticRemoveCall | null = null
+
+    const { optimisticSend, setActionRefs, setOptimisticRefs } = await import("./session-actions")
+    // Runtime import stays lazy like every other import here: bun's
+    // mock.module registrations in this file's body must run first.
+    const { SessionMessageLoader, setImperativeSessionMessageLoader } = await import("./session-message-loader")
+    // SAFETY: harness boundary — the mocked SDK answers session.messages, the
+    // one client surface these paths touch.
+    const sdkClient = mockSdk as never
+    const loader = new SessionMessageLoader(childStores, { sdk: sdkClient, runtimeKey: "session-actions-test" })
+    setImperativeSessionMessageLoader(loader)
+    setActionRefs(sdkClient, childStores, () => "/target/project")
+    setOptimisticRefs(
+      () => {},
+      (input) => {
+        optimisticRemove = input
+      },
+    )
+
+    try {
+      await expect(optimisticSend({
+        sessionId: "session-lost-anchor",
+        directory: "/target/project",
+        content: "hello",
+        providerID: "provider",
+        modelID: "model",
+        send: async () => {
+          // The confirmation refetch finds no record with the optimistic id,
+          // yet the page it returns carries the server's own user row — exactly
+          // what a reload must put back into the store.
+          sessionMessagesResult = {
+            data: [
+              { info: { id: "msg_serveruser", role: "user", sessionID: "session-lost-anchor", time: { created: 1 } } },
+              { info: { id: "msg_assistant", role: "assistant", sessionID: "session-lost-anchor", parentID: "msg_serveruser", time: { created: 2 } } },
+            ],
+          }
+          throw new TypeError("Failed to fetch")
+        },
+      })).rejects.toThrow("Failed to fetch")
+
+      // The forced reload is fired before the send rejects; await its commit
+      // through the store's own change signal rather than a timed sleep.
+      const anchorPresent = () => (targetStore.getState().message["session-lost-anchor"] ?? []).some((message) => message.id === "msg_serveruser")
+      if (!anchorPresent()) {
+        const { promise: anchorRestored, resolve: resolveAnchor } = Promise.withResolvers<void>()
+        const unsubscribe = targetStore.subscribe(() => {
+          if (anchorPresent()) resolveAnchor()
+        })
+        await anchorRestored.finally(unsubscribe)
+      }
+    } finally {
+      setImperativeSessionMessageLoader(null)
+    }
+
+    expect(optimisticRemove).not.toBeNull()
+    // Confirmation refetches use limit 30; the authoritative reload asks for
+    // the full initial page.
+    expect(replyCalls.filter((call) => call.method === "session.messages").map((call) => call.params.limit)).toContain(50)
+    const messages = targetStore.getState().message["session-lost-anchor"] ?? []
+    expect(messages.map((message) => message.id)).toContain("msg_serveruser")
+    const assistantRow = messages.find((message): message is Message & { parentID?: string } => message.id === "msg_assistant")
+    expect(assistantRow?.parentID).toBe("msg_serveruser")
+  })
+
+  test("keeps a definite send failure on the plain rollback path without reloading", async () => {
+    const targetStore = createStore({})
+    const childStores = createChildStores([["/target/project", targetStore]])
+
+    const { optimisticSend, setActionRefs, setOptimisticRefs } = await import("./session-actions")
+    // SAFETY: harness boundary — the mocked SDK answers no request on this
+    // path; the assertion below proves exactly that.
+    setActionRefs(mockSdk as never, childStores, () => "/target/project")
+    setOptimisticRefs(
+      () => {},
+      () => {},
+    )
+
+    const error = Object.assign(new Error("rejected"), { status: 400 })
+    await expect(optimisticSend({
+      sessionId: "session-definite",
+      directory: "/target/project",
+      content: "hello",
+      providerID: "provider",
+      modelID: "model",
+      send: async () => {
+        throw error
+      },
+    })).rejects.toThrow("rejected")
+
+    expect(replyCalls.filter((call) => call.method === "session.messages")).toEqual([])
   })
 
   // Relay tunnel aborts carry no HTTP status and no wording the text-matching

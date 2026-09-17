@@ -1625,6 +1625,25 @@ export async function optimisticSend(input: {
         [input.sessionId]: { type: "idle" as const },
       },
     })
+
+    // An ambiguous failure cannot prove the server rejected the prompt. When
+    // the host did accept it, the streamed assistant rows stay anchored (by
+    // parentID) to the user row just rolled back, and the timeline drops every
+    // one of them until a cold page load happens to restore the anchor. Drop
+    // this renderer's coverage claim and re-read the authoritative page so the
+    // canonical user row comes back now, not on the next session switch.
+    if (ambiguousFailure) {
+      invalidateSessionLoads(input.sessionId, [targetDirectory])
+      // `dir()` yields undefined in headless contexts; without a directory
+      // there is no loader target to reload and the invalidated coverage
+      // above already forces the next view onto a cold page read.
+      if (targetDirectory) {
+        void getImperativeSessionMessageLoader()?.ensure(
+          { directory: targetDirectory, sessionID: input.sessionId },
+          { force: true, reason: "navigation" },
+        )
+      }
+    }
     throw error
   }
 }
