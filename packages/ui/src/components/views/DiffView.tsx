@@ -1062,7 +1062,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
     const pendingScrollFrameRef = React.useRef<number | null>(null);
     const shouldPinAfterAlignRef = React.useRef(false);
     const visibleSyncFrameRef = React.useRef<number | null>(null);
-    const stackedStateScopeRef = React.useRef<string | null>(null);
+    const stackedStateInitializedRef = React.useRef(false);
     const lastScrollAnchorRef = React.useRef<DiffScrollAnchor | null>(null);
     const pendingScrollAnchorRestoreRef = React.useRef<DiffScrollAnchor | null>(null);
 
@@ -1373,9 +1373,16 @@ export const DiffView: React.FC<DiffViewProps> = ({
     React.useEffect(() => {
         const paths = changedFilePathsKey ? changedFilePathsKey.split('\0') : [];
         const pathSet = new Set(paths);
-        const scopeKey = `${effectiveDirectory ?? ''}:${activeDiffScope}:${stackedDefaultCollapsedAll ? 'collapsed' : 'default'}`;
-        const shouldInitialize = stackedStateScopeRef.current !== scopeKey;
-        stackedStateScopeRef.current = scopeKey;
+        // Defaults apply once, on the first non-empty file list. Every later
+        // run only prunes paths that disappeared. Directory and scope inputs
+        // settle asynchronously (worktree attachment, session directory
+        // reconciliation, nested-repo discovery), and re-initializing on that
+        // flip discarded the expansion the target file (or the user) had just
+        // established — the diff rendered for a moment and collapsed.
+        const shouldInitialize = !stackedStateInitializedRef.current && paths.length > 0;
+        if (paths.length > 0) {
+            stackedStateInitializedRef.current = true;
+        }
 
         setExpandedFiles((previous) => {
             if (shouldInitialize) {
@@ -1413,7 +1420,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
             }
             return changed ? next : previous;
         });
-    }, [activeDiffScope, changedFilePathsKey, effectiveDirectory, stackedDefaultCollapsedAll]);
+    }, [changedFilePathsKey, stackedDefaultCollapsedAll]);
 
     const syncVisibleStackedFiles = React.useCallback(() => {
         visibleSyncFrameRef.current = null;
