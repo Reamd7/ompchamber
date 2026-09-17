@@ -12,7 +12,15 @@ let questionReplyError: unknown | null = null
 let questionRejectError: unknown | null = null
 let permissionReplyError: unknown | null = null
 let sessionUpdateResult: { data?: unknown; error?: unknown; response?: { status?: number } } = {}
-let sessionMessagesResult: { data?: unknown; error?: unknown; response?: { status?: number } } = { data: [] }
+type SessionMessagesMockResult = {
+  data?: unknown
+  error?: unknown
+  response?: { status?: number; headers?: { get: (name: string) => string | null } }
+}
+let sessionMessagesResult: SessionMessagesMockResult = { data: [] }
+// Per-call answers for session.messages, consumed before sessionMessagesResult.
+// Tests that need a page sequence (cursor walks) queue results here.
+const sessionMessagesResultsQueue: SessionMessagesMockResult[] = []
 const sessionMessageRecords = new Map<string, Array<{ info: Message; parts: Part[] }>>()
 const failingRevertSessionIds = new Set<string>()
 let forkSessionResult = { id: "fork-1", directory: "/test/project", time: { created: 3 } }
@@ -67,7 +75,8 @@ const mockSdk = {
   session: {
     messages: mock((params: Record<string, unknown>) => {
       replyCalls.push({ method: "session.messages", params })
-      return Promise.resolve(sessionMessagesResult)
+      const queued = sessionMessagesResultsQueue.length > 0 ? sessionMessagesResultsQueue.shift() : sessionMessagesResult
+      return Promise.resolve(queued ?? sessionMessagesResult)
     }),
     revert: mock((params: Record<string, unknown>) => {
       replyCalls.push({ method: "session.revert", params })
@@ -1303,6 +1312,71 @@ describe("optimisticSend target directory", () => {
     expect(optimisticConfirm).toBe(null)
     expect(replyCalls.filter((call) => call.method === "session.messages").every((call) => call.params.limit === 30)).toBe(true)
     expect(targetStore.getState().session_status["session-missing"]?.type).toBe("idle")
+  })
+
+  // The user row of an accepted prompt can sit beyond the newest page when
+  // the turn streamed past it before the send response failed. Confirmation
+  // must follow the page's next-older cursor instead of re-reading the same
+  // newest window and answering "no" about a prompt the engine is answering.
+  test("confirms an accepted prompt whose user row scrolled past the newest window", async () => {
+    const targetStore = createStore({})
+    const childStores = createChildStores([["/target/project", targetStore]])
+    let optimisticRemove: OptimisticRemoveCall | null = null
+    let optimisticConfirm: OptimisticRemoveCall | null = null
+    let sentMessageID = ""
+
+    const { optimisticSend, setActionRefs, setOptimisticRefs } = await import("./session-actions")
+    // SAFETY: harness boundary — the mocked SDK answers session.messages with
+    // the queued page sequence below.
+    setActionRefs(mockSdk as never, childStores, () => "/target/project")
+    setOptimisticRefs(
+      () => {},
+      (input) => {
+        optimisticRemove = input
+      },
+      (input) => {
+        optimisticConfirm = input
+      },
+    )
+    try {
+      sessionMessagesResultsQueue.push(
+        {
+          data: [{ info: { id: "msg_newtail", role: "assistant", sessionID: "session-scrolled", time: { created: 3 } } }],
+          response: { headers: { get: (name: string) => (name === "x-next-cursor" ? "msg_pageboundary" : null) } },
+        },
+      )
+
+      await optimisticSend({
+        sessionId: "session-scrolled",
+        directory: "/target/project",
+        content: "hello",
+        providerID: "provider",
+        modelID: "model",
+        send: async (messageID) => {
+          sentMessageID = messageID
+          sessionMessagesResultsQueue.push({
+            data: [
+              { info: { id: messageID, role: "user", sessionID: "session-scrolled", time: { created: 1 } } },
+              { info: { id: "msg_assistant_old", role: "assistant", sessionID: "session-scrolled", parentID: messageID, time: { created: 2 } } },
+            ],
+            response: { headers: { get: () => null } },
+          })
+          throw new TypeError("Failed to fetch")
+        },
+      })
+    } finally {
+      sessionMessagesResultsQueue.length = 0
+    }
+
+    expect(optimisticRemove).toBe(null)
+    // SAFETY: the confirm callback assigns this value, but CFA still sees the
+    // null initializer here — restore the declared union before reading it.
+    expect((optimisticConfirm as OptimisticRemoveCall | null)?.messageID).toBe(sentMessageID)
+    const messageCalls = replyCalls.filter((call) => call.method === "session.messages").map((call) => call.params)
+    expect(messageCalls).toHaveLength(2)
+    expect(messageCalls[0]?.before).toBe(undefined)
+    expect(messageCalls[1]?.before).toBe("msg_pageboundary")
+    expect(targetStore.getState().message["session-scrolled"]?.map((message) => message.id)).toContain(sentMessageID)
   })
 })
 

@@ -51,7 +51,10 @@ const SEND_CONFIRMATION_REFETCH_LIMIT = 30
 // accepted prompt looked like a failed one and got re-sent — two AI responses
 // for one user message. Wait for the connection to actually come back (an
 // authoritative signal, not a blind sleep), then retry with backoff. A healthy
-// connection skips the wait and answers on the first attempt.
+// connection skips the wait and answers on the first attempt. The same budget
+// also bounds the backwards history walk in fetchRecentSendConfirmationRecords:
+// each attempt is one page, successful pages advance the next-older cursor, and
+// transport failures retry the same cursor with the backoff above.
 const SEND_CONFIRMATION_REFETCH_ATTEMPTS = 3
 const SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS = 250
 const SEND_CONFIRMATION_RECONNECT_TIMEOUT_MS = 3000
@@ -1660,21 +1663,40 @@ async function fetchRecentSendConfirmationRecords(
     await wait(SEND_CONFIRMATION_RECONNECT_POLL_MS)
   }
 
+  // The accepted user row can sit far back: when the send only fails after a
+  // long turn advanced, the newest page no longer contains it. Walk history
+  // with each page's next-older cursor instead of re-reading the same window,
+  // so a long turn cannot hide an accepted prompt. The attempt budget bounds
+  // history pages together with transport retries; past it, the rollback's
+  // forced reload takes over.
+  let before: string | undefined
+  let consecutiveFailures = 0
   for (let attempt = 0; attempt < SEND_CONFIRMATION_REFETCH_ATTEMPTS; attempt += 1) {
-    if (attempt > 0) await wait(SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS * 2 ** (attempt - 1))
+    if (consecutiveFailures > 0) {
+      await wait(SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS * 2 ** (consecutiveFailures - 1))
+    }
     try {
       const result = await sdk().session.messages({
         sessionID: sessionId,
         directory: directory ?? undefined,
         limit: SEND_CONFIRMATION_REFETCH_LIMIT,
+        before,
       })
+      // SAFETY: boundary — the response body is unknown-typed at this seam;
+      // the filter keeps only records with a usable info.id, which is the one
+      // field the caller reads off them.
       const records = (assertSdkSuccess(result, "session.messages") ?? [])
         .filter((record: { info?: { id?: string } }) => !!record?.info?.id) as Array<{ info: Message; parts?: Part[] }>
       if (records.some((record) => record.info.id === messageID)) {
         return records
       }
+      const nextCursor: string | undefined = result.response?.headers?.get?.("x-next-cursor") ?? undefined
+      if (!nextCursor || nextCursor === before) return null
+      before = nextCursor
+      consecutiveFailures = 0
     } catch {
       // Confirmation is best-effort; if it fails, keep the original send error path.
+      consecutiveFailures += 1
     }
   }
   return null
