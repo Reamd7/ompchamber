@@ -6,7 +6,10 @@ import tseslint from 'typescript-eslint'
 import { globalIgnores } from 'eslint/config'
 
 export default tseslint.config([
-  globalIgnores(['dist', '.openchamber', '.ompchamber']),
+  // Vendored verbatim from @opencode-ai/sdk (see the header in any file
+  // under gen/): lint findings there are upstream's, and any hand fix would
+  // be overwritten by the next vendor refresh.
+  globalIgnores(['dist', '.openchamber', '.ompchamber', '**/lib/opencode/wire/gen/**']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
