@@ -29,6 +29,12 @@ const GIT_NULL_REF = '0'.repeat(40);
 const WORKTREE_INDEX_LOCK_RETRY_DELAY_MS = 250;
 const WORKTREE_INDEX_LOCK_STALE_DELAY_MS = 750;
 
+// Patch stdout that clients parse must come from git's own diff engine: a
+// user's `diff.external` / GIT_EXTERNAL_DIFF (difftastic, delta, …) replaces
+// the patch with a human-facing format no patch parser can read, so the diff
+// surfaces would render an empty frame instead of failing.
+const NO_EXT_DIFF = '--no-ext-diff';
+
 const toBootstrapStateKey = (directory) => {
   const normalized = normalizeDirectoryPath(directory);
   if (!normalized) {
@@ -1344,9 +1350,9 @@ export async function getIntegrateConflictDetails(tmpDir) {
   const [status, unmerged, diff, meta, patch] = await Promise.all([
     runGitCommand(target, ['status', '--porcelain']),
     runGitCommand(target, ['diff', '--name-only', '--diff-filter=U']),
-    runGitCommand(target, ['diff']),
+    runGitCommand(target, ['diff', NO_EXT_DIFF]),
     runGitCommand(target, ['show', '--no-patch', '--pretty=fuller', 'CHERRY_PICK_HEAD']),
-    runGitCommand(target, ['show', 'CHERRY_PICK_HEAD']),
+    runGitCommand(target, ['show', NO_EXT_DIFF, 'CHERRY_PICK_HEAD']),
   ]);
 
   return {
@@ -2459,7 +2465,7 @@ export async function getDiff(directory, { path: filePath, staged = false, conte
   const { directoryPath, directoryGit, repoRoot, git } = await createRepositoryGitContext(directory);
 
   try {
-    const args = ['diff', '--no-color'];
+    const args = ['diff', '--no-color', NO_EXT_DIFF];
     const fileContext = filePath ? await resolveGitFileContext(directoryPath, directoryGit, filePath, repoRoot) : null;
 
     if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
@@ -2505,7 +2511,7 @@ export async function getDiff(directory, { path: filePath, staged = false, conte
         ].join('\n');
       }
 
-      const noIndexArgs = ['diff', '--no-color'];
+      const noIndexArgs = ['diff', '--no-color', NO_EXT_DIFF];
       if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
         noIndexArgs.push(`-U${Math.max(0, contextLines)}`);
       }
@@ -2577,7 +2583,7 @@ export async function getUntrackedDiffs(directory, filePaths = [], { concurrency
       const index = cursor++;
       try {
         const fileContext = await resolveGitFileContext(directoryPath, directoryGit, paths[index], repoRoot);
-        const args = ['diff', '--no-color'];
+        const args = ['diff', '--no-color', NO_EXT_DIFF];
         if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
           args.push(`-U${Math.max(0, contextLines)}`);
         }
@@ -2662,7 +2668,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
 
   await assertRangeRefsResolve(git, [resolvedBase, headRef]);
 
-  const args = ['diff', '--no-color'];
+  const args = ['diff', '--no-color', NO_EXT_DIFF];
   if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
     args.push(`-U${Math.max(0, contextLines)}`);
   }
@@ -5230,7 +5236,7 @@ export async function getConflictDetails(directory) {
       .filter(Boolean);
 
     // Get current diff
-    const diff = await git.raw(['diff']).catch(() => '');
+    const diff = await git.raw(['diff', NO_EXT_DIFF]).catch(() => '');
 
     // Detect operation type and get head info
     let operation = 'merge';

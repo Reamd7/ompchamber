@@ -143,6 +143,10 @@ The following functions are internal helpers used by exported functions:
 - A file with both staged and unstaged changes can appear in both UI sections. Staged rows request diffs with `staged: true`; unstaged rows request normal working-tree diffs.
 - The shared Git panel exposes explicit staging actions. Unstaged rows use `stageFile`, staged rows use `unstageFile`, and commits operate on the current staged index.
 - `stageFiles` remains supported for callers that need to stage a selected unstaged subset as part of commit. In that mode the server temporarily unstages unrelated index entries, stages `stageFiles`, commits from the index, then restores temporarily unstaged entries.
+
+### Patch output ignores the user's external diff driver
+- Every git invocation whose stdout is parsed as a patch (`getDiff`, `getRangeDiff`, `getUntrackedDiffs`, the conflict and cherry-pick patch reads) passes `--no-ext-diff`. A user-level `diff.external` or `GIT_EXTERNAL_DIFF` (difftastic, delta, …) replaces git's patch with a human-facing format, which the shared UI parses into zero hunks and paints as an empty diff frame — a wrong-empty result with no error shown.
+
 ### Worktree Create/Remove Response
 - `head`: HEAD commit SHA.
 - `name`: Worktree name.

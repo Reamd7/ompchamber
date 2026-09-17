@@ -335,6 +335,39 @@ describe('symlink diffs', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getDiff with a user-configured external diff driver
+// ---------------------------------------------------------------------------
+
+describe('getDiff under a diff.external driver', () => {
+  it('returns git\'s own patch instead of the driver output', async () => {
+    if (!canRunGit() || process.platform === 'win32') return;
+    const { tmpDir, git } = await createTempRepo();
+    await writeFile(tmpDir, 'file.txt', ORIGINAL_FILE);
+    await git.add('file.txt');
+    await git.commit('Initial');
+
+    // difftastic/delta configured as `diff.external` replace the patch with a
+    // human-facing format (path --- language, aligned line numbers). The diff
+    // surfaces parse patches, so that output must never reach them. Written
+    // through raw git: simple-git deliberately refuses to set this config.
+    const driverPath = path.join(tmpDir, 'fake-diff.sh');
+    await fs.promises.writeFile(
+      driverPath,
+      '#!/bin/sh\necho "file.txt --- Text"\necho "1 1 replaced by driver"\n',
+      { mode: 0o755 }
+    );
+    runGit(tmpDir, ['config', '--local', 'diff.external', driverPath]);
+
+    await writeFile(tmpDir, 'file.txt', EDITED_FILE);
+    const patch = await getDiff(tmpDir, { path: 'file.txt' });
+
+    expect(patch).toContain('diff --git a/file.txt b/file.txt');
+    expect(patch).toMatch(/^@@ /m);
+    expect(patch).not.toContain('replaced by driver');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getStatus
 // ---------------------------------------------------------------------------
 
