@@ -14,16 +14,14 @@ import { describe, expect, mock, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import type { OmpChromeState } from '@/sync/omp-event-reducer';
-import { createEmptyOmpDirectoryState } from '@/sync/omp-event-reducer';
 
 let fakeChrome: OmpChromeState = { widgets: {}, status: {} };
 
 mock.module('@/sync/useOmpSessionStore', () => ({
-  useOmpChromeState: (_directory: string) => fakeChrome,
+  useOmpChromeState: () => fakeChrome,
 }));
 
 const { OmpExtensionWidgetBar } = await import('../OmpExtensionWidgetBar');
-const { useOmpSessionStore } = await import('@/sync/useOmpSessionStore');
 const { I18nProvider } = await import('@/lib/i18n');
 
 

@@ -39,7 +39,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     terminalAppearanceRef.current = { themeMode: currentTheme.metadata.variant === 'light' ? 'light' : 'dark', terminalBackground: currentTheme.colors.surface.background, terminalForeground: currentTheme.colors.syntax.base.foreground };
     const { monoFont } = useFontPreferences();
     const terminalFontSize = useUIStore(state => state.terminalFontSize);
-    const setTerminalFontSize = useUIStore(state => state.setTerminalFontSize);
     const terminalShell = useUIStore(state => state.terminalShell);
     const terminalLoginShell = useUIStore(state => state.terminalLoginShells.includes(state.terminalShell));
     const { isMobile, isTablet, hasTouchOnlyPointer } = useDeviceInfo();
@@ -117,7 +116,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const terminalSessionId = activeTab?.terminalSessionId ?? null;
     const terminalLifecycle = activeTab?.lifecycle ?? 'idle';
     const [driverState, setDriverState] = React.useState<{ driverId: string | null; cols: number | null; rows: number | null } | null>(null);
-    const [implicitOwner, setImplicitOwner] = React.useState<string | null>(null);
+    const [, setImplicitOwner] = React.useState<string | null>(null);
     // Streaming output must not re-render this component: every chunks append
     // used to trigger React reconciliation plus Blink layout/paint
     // invalidation, and Blink's C++ rendering structures (PartitionAlloc)

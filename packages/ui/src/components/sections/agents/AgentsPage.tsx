@@ -97,7 +97,6 @@ const OverridePatternField: React.FC<{
   onApply: (value: string) => void;
   clearLabel: string;
 }> = ({ id, label, info, placeholder, value, saving, onChange, onApply, clearLabel }) => {
-  const { t } = useI18n();
   return (
     <SettingsFieldRow settingsItem={id} label={label} info={info}>
       <Input

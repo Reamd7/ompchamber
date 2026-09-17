@@ -26,7 +26,7 @@ import { describe, expect, mock, test } from 'bun:test';
 // ---------------------------------------------------------------------------
 
 let fakeCapabilities: Record<string, boolean> | null = { 'modelRoles.v1': true, 'modes.v1': true };
-let modelsResult: unknown = { ok: true, data: null };
+const modelsResult: unknown = { ok: true, data: null };
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: () => ({

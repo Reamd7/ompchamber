@@ -90,11 +90,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   // project the app was on last.
   const effectiveDirectory = useEffectiveDirectory();
   const commandsWithMetadata = useCommandsStore((s) => selectCommandsForDirectory(s, effectiveDirectory));
-  const loadCommandsForDirectory = useCommandsStore((s) => s.loadCommands);
   const skills = useSkillsStore((s) => selectSkillsForDirectory(s, effectiveDirectory));
-  const loadSkillsForDirectory = useSkillsStore((s) => s.loadSkills);
-  const refreshCommands = React.useCallback(() => loadCommandsForDirectory(effectiveDirectory), [effectiveDirectory, loadCommandsForDirectory]);
-  const refreshSkills = React.useCallback(() => loadSkillsForDirectory(effectiveDirectory), [effectiveDirectory, loadSkillsForDirectory]);
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const selectedIndexRef = React.useRef(0);
   const keyboardNavigationRef = React.useRef(false);

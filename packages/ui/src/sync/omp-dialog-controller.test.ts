@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import type { OmpDialogRespondResult, OmpDialogRespondResult as Respond, OmpDialogsAPI, OmpPendingDialog } from '@/lib/api/omp';
+import type { OmpDialogRespondResult as Respond, OmpDialogsAPI, OmpPendingDialog } from '@/lib/api/omp';
 import { createOmpDialogController, type OmpDialogController } from './omp-dialog-controller';
 import { useOmpDialogStore } from './useOmpDialogStore';
 

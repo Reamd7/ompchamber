@@ -64,7 +64,6 @@ export function parseOmpCustomMessage(info: Message, parts: Part[]): OmpCustomMe
 
   const metadata = (info as { metadata?: Record<string, unknown> }).metadata;
   const tokensBefore = typeof metadata?.tokensBefore === 'number' ? metadata.tokensBefore : undefined;
-  const fromId = typeof metadata?.fromId === 'string' ? metadata.fromId : undefined;
   const warning = typeof metadata?.warning === 'string' && metadata.warning.length > 0 ? metadata.warning : undefined;
   const mode = typeof metadata?.mode === 'string' && metadata.mode.length > 0 ? metadata.mode : undefined;
   const role = typeof metadata?.role === 'string' && metadata.role.length > 0 ? metadata.role : undefined;

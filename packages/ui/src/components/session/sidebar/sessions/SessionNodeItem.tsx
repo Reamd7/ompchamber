@@ -613,15 +613,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     toast.success(t('sessions.sidebar.session.export.success'));
     showSkippedSubtasksWarning(skippedSubtaskCount);
   }, [collectChildExports, loadExportRecords, node.children, resolvedSession.title, session.id, sessionDirectory, showSkippedSubtasksWarning, t]);
-  const handleExportSession = React.useCallback(async () => {
-    if (node.children.length > 0) {
-      setExportIncludeSubtasks(true);
-      setExportDialogOpen(true);
-      return;
-    }
-    await doExportSession(false);
-  }, [doExportSession, node.children.length]);
-
   const handleOpenMiniChatWindow = React.useCallback(() => {
     if (!sessionDirectory) return;
     void invokeDesktop('desktop_open_session_mini_chat_window', {

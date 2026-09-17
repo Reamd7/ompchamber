@@ -120,7 +120,7 @@ describe('createOmpEventsAPI.subscribeEvents', () => {
       return secondStream.response;
     }) as unknown as typeof fetch;
 
-    let settle_deliverAll: (() => void) | null = null; // eslint-disable-line
+    let settle_deliverAll: (() => void) | null = null;
   const delivered = new Promise<void>((resolve) => { settle_deliverAll = resolve; });
   const deliverAll = settle_deliverAll!;
     const api = createOmpEventsAPI({ fetchImpl });

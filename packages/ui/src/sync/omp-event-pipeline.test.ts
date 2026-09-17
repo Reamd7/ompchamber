@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { OmpCapabilities, OmpEventEnvelope, OmpStreamResyncPayload } from '@/lib/api/omp';
 import { createOmpEventPipeline } from './omp-event-pipeline';
-import { runOmpResync, type OmpResyncContext, type OmpResyncScope } from './omp-resync';
+import { runOmpResync, type OmpResyncContext } from './omp-resync';
 
 // ---------------------------------------------------------------------------
 // Pipeline test doubles
@@ -68,7 +68,6 @@ const mountPipeline = (harness: StreamHarness, resyncContext?: OmpResyncContext)
 
 describe('createOmpEventPipeline capability gate', () => {
   test('capabilities 404/missing → dormant: no subscription, no error', async () => {
-    const harness = createHarness({ capabilities: null });
     let subscribed = false;
     const pipeline = createOmpEventPipeline({
       ompCapabilities: { getCapabilities: async () => null },
@@ -271,7 +270,7 @@ describe('runOmpResync', () => {
     const requests: string[] = [];
     const context: OmpResyncContext = {
       ...trackContext(requests),
-      fetchOmpJson: async (path, query) => {
+      fetchOmpJson: async (path) => {
         requests.push(path);
         if (path === '/api/omp/settings') return { ok: false, unavailable: false };
         return { ok: false, unavailable: true };

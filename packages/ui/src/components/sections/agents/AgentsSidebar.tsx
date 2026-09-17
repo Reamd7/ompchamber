@@ -370,19 +370,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
     setRenameDialogAgent(null);
   };
 
-  const getAgentModeIcon = (mode?: string) => {
-    switch (mode) {
-      case 'primary':
-        return <Icon name="ai-agent" className="h-3 w-3 text-primary" />;
-      case 'all':
-        return <Icon name="ai-agent-fill" className="h-3 w-3 text-primary" />;
-      case 'subagent':
-        return <Icon name="robot" className="h-3 w-3 text-primary" />;
-      default:
-        return null;
-    }
-  };
-
   // Filter out hidden agents (internal agents like title, compaction, summary)
   const visibleAgents = agents.filter((agent) => !isAgentHidden(agent));
   const builtInAgents = visibleAgents.filter(isAgentBuiltIn);
@@ -477,7 +464,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
                       onRename={source !== 'bundled' ? () => handleOpenRenameDialog(agent) : undefined}
                       onDelete={source !== 'bundled' ? () => handleDeleteAgent(agent) : undefined}
                       onDuplicate={() => handleDuplicateAgent(agent)}
-                      getAgentModeIcon={getAgentModeIcon}
                       isMenuOpen={openMenuAgent === agent.name}
                       onMenuOpenChange={(open) => setOpenMenuAgent(open ? agent.name : null)}
                     />
@@ -505,7 +491,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
                     }}
                     onReset={() => handleResetAgent(agent)}
                     onDuplicate={() => handleDuplicateAgent(agent)}
-                    getAgentModeIcon={getAgentModeIcon}
                     isMenuOpen={openMenuAgent === agent.name}
                     onMenuOpenChange={(open) => setOpenMenuAgent(open ? agent.name : null)}
                   />
@@ -540,7 +525,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
                         onRename={() => handleOpenRenameDialog(agent)}
                         onDelete={() => handleDeleteAgent(agent)}
                         onDuplicate={() => handleDuplicateAgent(agent)}
-                        getAgentModeIcon={getAgentModeIcon}
                         isMenuOpen={openMenuAgent === agent.name}
                         onMenuOpenChange={(open) => setOpenMenuAgent(open ? agent.name : null)}
                       />
@@ -561,7 +545,6 @@ export const AgentsSidebar: React.FC<AgentsSidebarProps> = ({ onItemSelect }) =>
                     onRename={() => handleOpenRenameDialog(agent)}
                     onDelete={() => handleDeleteAgent(agent)}
                     onDuplicate={() => handleDuplicateAgent(agent)}
-                    getAgentModeIcon={getAgentModeIcon}
                     isMenuOpen={openMenuAgent === agent.name}
                     onMenuOpenChange={(open) => setOpenMenuAgent(open ? agent.name : null)}
                   />
@@ -651,7 +634,6 @@ interface AgentListItemProps {
   onReset?: () => void;
   onRename?: () => void;
   onDuplicate: () => void;
-  getAgentModeIcon: (mode?: string) => React.ReactNode;
   isMenuOpen: boolean;
   onMenuOpenChange: (open: boolean) => void;
 }
@@ -664,7 +646,6 @@ const AgentListItem: React.FC<AgentListItemProps> = ({
   onReset,
   onRename,
   onDuplicate,
-  getAgentModeIcon,
   isMenuOpen,
   onMenuOpenChange,
 }) => {

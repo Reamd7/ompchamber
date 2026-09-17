@@ -1672,9 +1672,8 @@ const waitForRetry = (signal: AbortSignal, ms: number): Promise<void> =>
       resolve();
       return;
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const onInterrupt = () => {
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
       if (typeof globalThis.window !== 'undefined') {
         globalThis.window.removeEventListener('online', onInterrupt);
       }
@@ -1689,7 +1688,7 @@ const waitForRetry = (signal: AbortSignal, ms: number): Promise<void> =>
         onInterrupt();
       }
     };
-    timer = setTimeout(onInterrupt, ms);
+    const timer = setTimeout(onInterrupt, ms);
     if (typeof globalThis.window !== 'undefined') {
       globalThis.window.addEventListener('online', onInterrupt, { once: true });
     }
@@ -1702,15 +1701,11 @@ const waitForRetry = (signal: AbortSignal, ms: number): Promise<void> =>
 export interface OmpEventsApiOptions {
   /** Injection seam for tests; production callers omit it. */
   fetchImpl?: typeof runtimeFetch;
-  now?: () => number;
   heartbeatTimeoutMs?: number;
 }
-
 export const createOmpEventsAPI = (options: OmpEventsApiOptions = {}): OmpEventsAPI => {
   const fetchImpl = options.fetchImpl ?? runtimeFetch;
-  const now = options.now ?? Date.now;
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
-
   const computeRetryDelay = (failures: number): number => {
     if (failures <= 0) return 0;
     if (isOffline()) return RETRY_BACKOFF_CAP_HIDDEN_OR_OFFLINE_MS;
@@ -2235,7 +2230,7 @@ export const createOmpDialogsAPI = (apiOptions: OmpJsonApiOptions = {}): OmpDial
     },
 
     async presented(directory, dialogId) {
-      const { unavailable, response, status, payload } = await post(OMP_ENDPOINTS.dialogPresented(dialogId), { directory });
+      const { unavailable, response, payload } = await post(OMP_ENDPOINTS.dialogPresented(dialogId), { directory });
       if (unavailable) return { ok: false, unavailable: true };
       if (response === undefined || !response.ok) return { ok: false, unavailable: false };
       const parsed = z.object({ presentedAt: z.number() }).safeParse(payload);

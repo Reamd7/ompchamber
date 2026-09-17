@@ -16,7 +16,6 @@ import { useMcpConfigStore } from '@/stores/useMcpConfigStore';
 import { useMcpStore } from '@/stores/useMcpStore';
 
 import { MobileChangesSurface } from './MobileChangesSurface';
-import { MobileFilesSurface } from './MobileFilesSurface';
 import { MobileFilesSurfaceRouter } from './MobileFilesSurfaceRouter';
 
 const DRAWER_ROOT_ID = 'mobile-surface-root';

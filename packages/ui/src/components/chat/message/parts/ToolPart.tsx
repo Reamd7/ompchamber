@@ -1255,7 +1255,7 @@ const TaskToolSummary: React.FC<{
     isActive?: boolean;
     onOpenArtifact?: (outputPath: string) => void;
     parentSessionId?: string;
-}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false, onOpenArtifact, parentSessionId }) => {
+}> = ({ entries, agentRows, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false, parentSessionId }) => {
     const { t } = useI18n();
     const currentDirectory = useEffectiveDirectory();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);

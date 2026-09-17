@@ -16,7 +16,6 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Radio } from '@/components/ui/radio';
 import { Icon } from '@/components/icon/Icon';
 import { useI18n } from '@/lib/i18n';
-import { toast } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import type { OmpPendingDialog, OmpAskQuestion } from '@/lib/api/omp';
 import { ompDialogController } from '@/sync/omp-dialog-controller';

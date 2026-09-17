@@ -15,7 +15,7 @@
 import React from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
-import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
+import { useI18n } from '@/lib/i18n';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore } from '@/stores/useUIStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
@@ -34,7 +34,6 @@ export const SessionFilesTree: React.FC<{ directory: string }> = ({ directory })
   const { ompArtifacts } = useRuntimeAPIs();
   const enabled = useOmpFeatureEnabled('artifacts');
   const openContextLocalFile = useUIStore((state) => state.openContextLocalFile);
-  const setContextTreeScope = useUIStore((state) => state.setContextTreeScope);
   // The tree follows the current session, not the directory alone: a session
   // in a worktree of this project still owns its own local:// root.
   const sessionId = useSessionUIStore((state) => state.currentSessionId);
@@ -84,17 +83,6 @@ export const SessionFilesTree: React.FC<{ directory: string }> = ({ directory })
       return next;
     });
   };
-
-  const formatTime = (value: number): string =>
-    value > 0
-      ? new Date(value).toLocaleString(getCurrentIntlLocale(), {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true,
-      })
-      : '';
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
