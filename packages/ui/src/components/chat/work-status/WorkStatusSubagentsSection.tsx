@@ -227,21 +227,26 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
 
   useReportWorkStatusPresence('subagents', children.length > 0 || runs.length > 0);
 
+  // Dispatch titles for the loaded window, newest-first (the card usually
+  // sits near the tail); one shared parts scan for every row. Declared
+  // unconditionally: this section renders its rows only while `agentRunsEnabled`
+  // and `runs.length > 0`, and a hook that appears only on that branch changes
+  // the hook count whenever the capability settles or the last run retires
+  // (React #300/#310).
+  const runTitleFor = React.useCallback(
+    (runId: string) => (sessionId
+      ? readTaskRunTitle(
+          (messageID) => getSyncParts(messageID, directory ?? undefined),
+          getSyncMessages(sessionId, directory ?? undefined).map((message) => message.id),
+          runId,
+        )
+      : null),
+    [directory, sessionId],
+  );
+
   if (agentRunsEnabled) {
     if (runs.length === 0) return null;
     const busyRuns = runs.filter((row) => row.status === 'running').length;
-    // Dispatch titles for the loaded window, newest-first (the card usually
-    // sits near the tail); one shared parts scan for every row.
-    const runTitleFor = React.useCallback(
-      (runId: string) => (sessionId
-        ? readTaskRunTitle(
-            (messageID) => getSyncParts(messageID, directory ?? undefined),
-            getSyncMessages(sessionId, directory ?? undefined).map((message) => message.id),
-            runId,
-          )
-        : null),
-      [directory, sessionId],
-    );
     return (
       <WorkStatusCollapsibleSection
         id={SECTION_ID}
