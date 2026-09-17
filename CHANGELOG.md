@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.3] - 2026-09-17
+
+- Server: running the engine embedded (no global agent registry) no longer logs a rehydration failure for every subagent row it restores.
+
 ## [1.32.2] - 2026-09-16
 
 - **Chat: subagent runs stay visible and openable.** Finished runs no longer vanish from task cards and the work-status subagents list once the engine reclaims them internally — rows survive restarts and reattachment, a fork shows the subagent runs it inherited, and a run whose transcript is no longer available says so instead of a dead link.
