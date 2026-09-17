@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.4] - 2026-09-17
+
+- **Chat: a send that fails ambiguously no longer risks re-sending your prompt.** The acceptance check read only the newest 30 messages, so a response failing late in a long turn judged the send rejected — your accepted message was rolled back and the same prompt queued again. The check now reads back through the session's history before deciding.
+- **Chat: the transcript no longer goes blank after such a rollback.** The reply streaming in was anchored to the removed message row, and the timeline dropped what it could not anchor; the session now reloads its messages right after a rollback so both rows return.
+- Chat: the work status panel no longer crashes when its subagent list settles or its last run retires.
+- Diff: in worktree sessions the Changes panel no longer collapses a diff it just expanded — the directory settles asynchronously and used to wipe the expansion state a beat after opening, so a target file's diff appeared for about a second and vanished; expansions now survive directory and scope changes.
+
 ## [1.32.3] - 2026-09-17
 
 - Server: running the engine embedded (no global agent registry) no longer logs a rehydration failure for every subagent row it restores.

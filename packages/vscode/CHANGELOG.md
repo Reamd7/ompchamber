@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [1.32.4] - 2026-09-17
+
+- **Chat: a send that fails ambiguously no longer risks re-sending your prompt.** The acceptance check read only the newest 30 messages, so a response failing late in a long turn judged the send rejected — your accepted message was rolled back and the same prompt queued again. The check now reads back through the session's history before deciding.
+- Chat: the transcript no longer goes blank after such a rollback — the session reloads its messages right away, so the removed message and its reply both return.
+- Chat: the work status panel no longer crashes when its subagent list settles or its last run retires.
+
 ## [1.32.2] - 2026-09-16
 
 - Chat: subagent runs stay listed and openable — finished runs no longer vanish from task cards and the work-status subagents list once the engine reclaims them, a fork shows the runs it inherited, and a run whose transcript is gone says so instead of a dead link.
