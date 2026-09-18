@@ -1,37 +1,32 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <filter id="iconShadow" x="-50%" y="-50%" width="200%" height="200%">
-      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-opacity="0.5" flood-color="#000000"/>
-    </filter>
-    <linearGradient id="bgGradient" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#303030"/>
-      <stop offset="100%" stop-color="#141414"/>
+    <linearGradient id="chassisGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fb923c"/>
+      <stop offset="0.55" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#e2600b"/>
     </linearGradient>
+    <linearGradient id="interiorGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a1a1a"/>
+      <stop offset="1" stop-color="#0a0a0a"/>
+    </linearGradient>
+    <radialGradient id="chamberGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f97316" stop-opacity="0.14"/>
+      <stop offset="0.6" stop-color="#f97316" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  
-  <!-- Icon with Apple standard padding (100px on each side) -->
-  <g transform="translate(100, 100)">
-    <!-- Background rounded square - 824x824 (Apple standard) - dark gradient -->
-    <rect x="0" y="0" width="824" height="824" rx="185" ry="185" fill="url(#bgGradient)" filter="url(#iconShadow)"/>
-    
-    <!-- OpenChamber logo centered - simplified for dock visibility -->
-    <g transform="translate(412, 412) scale(6.5)">
-      <!-- Left face - simplified, no grid cells -->
-      <path d="M0 0 L-41.568 -24 L-41.568 24 L0 48 Z" fill="white" fill-opacity="0.2" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-      <!-- Right face - simplified, no grid cells -->
-      <path d="M0 0 L41.568 -24 L41.568 24 L0 48 Z" fill="white" fill-opacity="0.35" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-      <!-- Top face - open -->
-      <path d="M0 -48 L-41.568 -24 L0 0 L41.568 -24 Z" fill="none" stroke="white" stroke-width="3" stroke-linejoin="round"/>
-      <!-- Oh my Pi mark on top face: π with plugin connector -->
-      <g transform="matrix(0.866, 0.5, -0.866, 0.5, 0, -24)">
-        <rect x="-30" y="-22.2" width="60" height="7.2" rx="1.4" fill="white"/>
-        <rect x="-21" y="-15" width="7.2" height="37.2" rx="1.4" fill="white"/>
-        <rect x="9" y="-15" width="7.2" height="27" rx="1.4" fill="white"/>
-        <path fill-rule="evenodd" clip-rule="evenodd" d="M8.5 6 H16.7 A1.9 1.9 0 0 1 18.6 7.9 V13.7 A1.9 1.9 0 0 1 16.7 15.6 H8.5 A1.9 1.9 0 0 1 6.6 13.7 V7.9 A1.9 1.9 0 0 1 8.5 6 Z M9.6 8.4 H11.4 V13.2 H9.6 Z M13.2 8.4 H15 V13.2 H13.2 Z" fill="#f97316"/>
-        <circle cx="-25.2" cy="-18.6" r="1.2" fill="#f97316" opacity="0.8"/>
-        <circle cx="25.2" cy="-18.6" r="1.2" fill="#f97316" opacity="0.8"/>
-      </g>
-    </g>
+  <rect x="0" y="0" width="1024" height="1024" rx="220" fill="url(#chassisGrad)"/>
+  <rect x="32" y="32" width="960" height="960" rx="190" fill="url(#interiorGrad)"/>
+  <circle cx="512" cy="505" r="400" fill="url(#chamberGlow)"/>
+  <rect x="32" y="32" width="960" height="960" rx="190" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="4"/>
+  <g id="omp-logo" transform="translate(512 512) scale(6.66) translate(-60 -45)">
+    <rect x="10" y="8" width="100" height="12" rx="2" fill="#fafafa"/>
+    <rect x="25" y="20" width="12" height="62" rx="2" fill="#fafafa"/>
+    <rect x="75" y="20" width="12" height="45" rx="2" fill="#fafafa"/>
+    <rect x="71" y="55" width="20" height="16" rx="3" fill="#f97316"/>
+    <rect x="76" y="59" width="3" height="8" rx="1" fill="#0d0d0d"/>
+    <rect x="82" y="59" width="3" height="8" rx="1" fill="#0d0d0d"/>
+    <circle cx="18" cy="14" r="2" fill="#f97316" opacity="0.8"/>
+    <circle cx="102" cy="14" r="2" fill="#f97316" opacity="0.8"/>
   </g>
 </svg>

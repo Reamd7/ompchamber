@@ -77,11 +77,8 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
   // Use VS Code CSS variables for proper theme integration
   // These variables are automatically provided by VS Code to webviews
   // 
-  // Logo geometry matches OMPChamberLogo.tsx:
-  // edge=48, cos30=0.866, sin30=0.5, centerY=50
-  // top=(50, 2), left=(8.432, 26), right=(91.568, 26), center=(50, 50)
-  // bottomLeft=(8.432, 74), bottomRight=(91.568, 74), bottom=(50, 98)
-  // topFaceCenterY = (2 + 26 + 50 + 26) / 4 = 26
+  // Logo mark matches OMPChamberLogo.tsx: the official Oh My Pi π with the orange
+  // plugin connector, centered in the 100×100 view box.
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -114,31 +111,20 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       opacity: 0;
       pointer-events: none;
     }
-    /* Glow pulse on the OpenCode mark on the cube's top face — signals loading without text. */
+    /* Glow pulse on the Oh My Pi mark — signals loading without text. */
     @keyframes oc-logo-glow {
       0%, 100% { filter: drop-shadow(0 0 0 transparent); }
       50% { filter: drop-shadow(0 0 4px var(--vscode-foreground)); }
     }
-    #initial-loading .logo-inner {
+    #initial-loading .logo {
       animation: oc-logo-glow 1.8s ease-in-out infinite;
     }
     @media (prefers-reduced-motion: reduce) {
-      #initial-loading .logo-inner { animation: none; }
+      #initial-loading .logo { animation: none; }
     }
     /* Logo colors use VS Code foreground color */
-    #initial-loading .logo-stroke {
-      stroke: var(--vscode-foreground);
-    }
-    #initial-loading .logo-fill {
-      fill: var(--vscode-foreground);
-      opacity: 0.15;
-    }
     #initial-loading .logo-fill-solid {
       fill: var(--vscode-foreground);
-    }
-    #initial-loading .logo-fill-dim {
-      fill: var(--vscode-foreground);
-      opacity: 0.4;
     }
     #initial-loading .status-text {
       font-size: 13px;
@@ -155,20 +141,17 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
   <title>OMPChamber</title>
 </head>
 <body>
-  <!-- Initial loading screen with simplified OMPChamber logo -->
+  <!-- Initial loading screen with the official Oh My Pi mark -->
   <div id="initial-loading">
     <svg class="logo" width="70" height="70" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- Left face -->
-      <path class="logo-fill logo-stroke" d="M50 50 L8.432 26 L8.432 74 L50 98 Z" stroke-width="2" stroke-linejoin="round"/>
-      <!-- Right face -->
-      <path class="logo-fill logo-stroke" d="M50 50 L91.568 26 L91.568 74 L50 98 Z" stroke-width="2" stroke-linejoin="round"/>
-      <!-- Top face (no fill, stroke only) -->
-      <path class="logo-stroke" d="M50 2 L8.432 26 L50 50 L91.568 26 Z" fill="none" stroke-width="2" stroke-linejoin="round"/>
-      
-      <!-- OpenCode logo on top face -->
-      <g class="logo-inner" transform="matrix(0.866, 0.5, -0.866, 0.5, 50, 26) scale(0.75)">
-        <path class="logo-fill-solid" fill-rule="evenodd" clip-rule="evenodd" d="M-16 -20 L16 -20 L16 20 L-16 20 Z M-8 -12 L-8 12 L8 12 L8 -12 Z"/>
-        <path class="logo-fill-dim" d="M-8 -4 L8 -4 L8 12 L-8 12 Z"/>
+      <!-- Official Oh My Pi mark: π bar + two legs + orange plugin connector -->
+      <g transform="translate(-2.8 10.4) scale(0.88)">
+        <rect class="logo-fill-solid" x="10" y="8" width="100" height="12" rx="2"/>
+        <rect class="logo-fill-solid" x="25" y="20" width="12" height="62" rx="2"/>
+        <rect class="logo-fill-solid" x="75" y="20" width="12" height="45" rx="2"/>
+        <path fill-rule="evenodd" clip-rule="evenodd" d="M74 55 H88 A3 3 0 0 1 91 58 V68 A3 3 0 0 1 88 71 H74 A3 3 0 0 1 71 68 V58 A3 3 0 0 1 74 55 Z M76 59 h3 v8 h-3 Z M82 59 h3 v8 h-3 Z" fill="#f97316"/>
+        <circle cx="18" cy="14" r="2" fill="#f97316" opacity="0.8"/>
+        <circle cx="102" cy="14" r="2" fill="#f97316" opacity="0.8"/>
       </g>
     </svg>
     <!-- Status text stays empty while things are fine; populated only on error. -->
