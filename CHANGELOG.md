@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.32.5] - 2026-09-18
+
+- Diff: a custom external diff tool configured in Git (`diff.external`, such as difftastic) no longer blanks the Changes panel — the tool's human-readable output replaced the patch Git normally prints, so the diff appeared for about a second and then vanished, and per-hunk stage/unstage/discard failed. Diffs are now always read from Git's own patch output.
+
 ## [1.32.4] - 2026-09-17
 
 - **Chat: a send that fails ambiguously no longer risks re-sending your prompt.** The acceptance check read only the newest 30 messages, so a response failing late in a long turn judged the send rejected — your accepted message was rolled back and the same prompt queued again. The check now reads back through the session's history before deciding.
