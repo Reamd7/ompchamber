@@ -39,7 +39,7 @@ import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { DiffViewToggle } from '@/components/chat/message/DiffViewToggle';
 import type { DiffViewMode } from '@/components/chat/message/types';
 import { ReviewFlowDialog, type ReviewFlowExecution } from '@/components/session/ReviewFlowDialog';
-import { PierreDiffViewer, type DiffHunkActions } from './PierreDiffViewer';
+import { PierreDiffViewer, type ContextExpansionRequest, type DiffHunkActions } from './PierreDiffViewer';
 import { HunkActions, type HunkBusyState, type HunkDiffAction } from './git/HunkActions';
 import { useDeviceInfo } from '@/lib/device';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
@@ -477,7 +477,9 @@ interface InlineDiffViewerProps {
   renderSideBySide: boolean;
   wrapLines: boolean;
   hunkActions?: DiffHunkActions;
-}
+  onExpandContextRequest?: (request: ContextExpansionRequest) => void;
+  pendingContextExpansion?: ContextExpansionRequest | null;
+  contextLoading?: boolean;}
 
 const InlineDiffViewer = React.memo<InlineDiffViewerProps>(({
   filePath,
@@ -485,7 +487,9 @@ const InlineDiffViewer = React.memo<InlineDiffViewerProps>(({
   renderSideBySide,
   wrapLines,
   hunkActions,
-}) => {
+  onExpandContextRequest,
+  pendingContextExpansion,
+  contextLoading,}) => {
   const language = React.useMemo(
     () => getLanguageFromExtension(filePath) || 'text',
     [filePath]
@@ -517,7 +521,9 @@ const InlineDiffViewer = React.memo<InlineDiffViewerProps>(({
         wrapLines={wrapLines}
         layout="inline"
         hunkActions={hunkActions}
-      />
+        onExpandContextRequest={onExpandContextRequest}
+        pendingContextExpansion={pendingContextExpansion}
+        contextLoading={contextLoading}      />
     </div>
   );
 });
@@ -638,6 +644,8 @@ interface MultiFileDiffEntryProps {
     readOnlyActions?: boolean;
     /** Hunk mutations require a live working/index diff, never a turn snapshot. */
     hunkActionsEnabled?: boolean;
+    /** Loads one file's full-context comparison entry on demand (branch/commit/PR). */
+    loadFullComparisonDiff?: (filePath: string) => Promise<ComparisonDiffResult>;
 }
 
 export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
@@ -655,12 +663,13 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     isOpeningInEditor = false,
     onOpenInEditor,
     staged = false,
-    loadFullFiles = false,
+    loadFullFiles: loadAllFullFiles = false,
     initialDiffData = null,
-    comparisonDiff,
+    comparisonDiff: rangeComparisonDiff,
     onRetryComparisonDiff,
     readOnlyActions = false,
     hunkActionsEnabled = false,
+    loadFullComparisonDiff,
 }) => {
     const { t } = useI18n();
     const { git } = useRuntimeAPIs();
@@ -674,6 +683,12 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     const setDiffFileLayout = useUIStore((state) => state.setDiffFileLayout);
 
     const [diffRetryNonce, setDiffRetryNonce] = React.useState(0);
+    // Range diffs (branch/commit/PR) are cached per range with 3-line context;
+    // the full-context copy for this one file lives here until the range entry changes.
+    const [fullComparisonDiff, setFullComparisonDiff] = React.useState<{ source: ComparisonDiffResult; result: ComparisonDiffResult } | null>(null);
+    const comparisonDiff = fullComparisonDiff !== null && fullComparisonDiff.source === rangeComparisonDiff ? fullComparisonDiff.result : rangeComparisonDiff;
+    const canLoadFullFile = Boolean(directory) && !initialDiffData && (!rangeComparisonDiff || Boolean(loadFullComparisonDiff));
+    const diffLoadFailure = comparisonDiff?.status === 'error' ? comparisonDiff : null;
     const [localDiffLoadError, setDiffLoadError] = React.useState<string | null>(null);
     const [isFetching, setIsLoading] = React.useState(false);
     const diffLoadError = comparisonDiff ? (comparisonDiff.status === 'error' ? comparisonDiff.message : null) : localDiffLoadError;
@@ -685,6 +700,27 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     const [forceRenderLarge, setForceRenderLarge] = React.useState(false);
     const [localDiffData, setLocalDiffData] = React.useState<DiffData | null>(null);
     const [stagedDiffData, setStagedDiffData] = React.useState<DiffData | null>(null);
+    // Set when the user expands collapsed context on the patch-only diff:
+    // this file alone switches to full contents, then replays the expansion.
+    const [contextExpansion, setContextExpansion] = React.useState<ContextExpansionRequest | null>(null);
+    const loadFullFiles = loadAllFullFiles || contextExpansion !== null;
+    React.useEffect(() => {
+        if (!contextExpansion || !loadFullComparisonDiff || !rangeComparisonDiff || rangeComparisonDiff.status !== 'ready') return;
+        if (fullComparisonDiff?.source === rangeComparisonDiff) return;
+        let cancelled = false;
+        void loadFullComparisonDiff(file.path).then((result) => {
+            if (cancelled) return;
+            if (result.status === 'error') {
+                toast.error(result.message);
+                setContextExpansion(null);
+                return;
+            }
+            setFullComparisonDiff({ source: rangeComparisonDiff, result });
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [contextExpansion, file.path, fullComparisonDiff, loadFullComparisonDiff, rangeComparisonDiff]);
     const lastDiffRequestRef = React.useRef<string | null>(null);
     const sectionRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -813,7 +849,8 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                 lastDiffRequestRef.current = null;
             }
         };
-    }, [actionPatch, hunkEligible, patchScope, comparisonDiff, desiredContextMode, diffData, diffDataMatchesContextMode, diffRetryNonce, directory, file.path, fileStatusKey, git, initialDiffData, isExpanded, isMounted, loadFullFiles, diffLoadError, setDiff, staged, t]);    const handleToggle = React.useCallback(() => {
+    }, [actionPatch, hunkEligible, patchScope, comparisonDiff, desiredContextMode, diffData, diffDataMatchesContextMode, diffRetryNonce, directory, file.path, fileStatusKey, git, initialDiffData, isExpanded, isMounted, loadFullFiles, diffLoadError, setDiff, staged, t]);
+    const handleToggle = React.useCallback(() => {
         handleOpenChange(!isExpanded);
         handleSelect();
     }, [handleOpenChange, handleSelect, isExpanded]);
@@ -1072,6 +1109,9 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
                                 renderSideBySide={renderSideBySide}
                                 wrapLines={wrapLines}
                                 hunkActions={diffHunkActions}
+                                onExpandContextRequest={canLoadFullFile ? setContextExpansion : undefined}
+                                pendingContextExpansion={contextExpansion}
+                                contextLoading={contextExpansion !== null && diffData.contextMode !== 'full' && !diffLoadFailure}
                             />
                             <div className="pointer-events-none absolute bottom-3 right-3 z-20">
                                 <div className="pointer-events-auto flex items-center gap-1.5">
@@ -2055,6 +2095,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                                     loadFullFiles={loadFullFiles && activeDiffScope !== 'pr'}
                                     readOnlyActions={activeDiffScope === 'branch' || activeDiffScope === 'commit' || activeDiffScope === 'pr'}
                                     hunkActionsEnabled={activeDiffScope === 'all' || activeDiffScope === 'working' || activeDiffScope === 'staged'}
+                                    loadFullComparisonDiff={loadFullComparisonDiff}
                                     comparisonDiff={activeDiffScope === 'branch' || activeDiffScope === 'commit' || activeDiffScope === 'pr'
                                         ? comparisonDiffData.get(file.path) ?? EMPTY_COMPARISON_DIFF
                                         : undefined}
