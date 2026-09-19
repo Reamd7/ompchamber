@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-09-19
+
+- **Brand: every product icon now carries the official Oh My Pi mark.** The in-app logo, the web favicon, PWA icons, and boot splash, the desktop app, taskbar, and tray icons, the mobile app's icons, splash screens, and home-screen widget, the VS Code extension's marketplace and title-bar icons, and the README badges all switch to the new mark together; Android's adaptive icon background moves to the brand orange.
+
 ## [1.32.5] - 2026-09-18
 
 - Diff: a custom external diff tool configured in Git (`diff.external`, such as difftastic) no longer blanks the Changes panel — the tool's human-readable output replaced the patch Git normally prints, so the diff appeared for about a second and then vanished, and per-hunk stage/unstage/discard failed. Diffs are now always read from Git's own patch output.

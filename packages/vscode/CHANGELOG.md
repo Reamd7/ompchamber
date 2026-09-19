@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [1.33.0] - 2026-09-19
+
+- The extension now shows the official Oh My Pi mark — the marketplace icon, the themed activity-bar and title-bar icons, and the webview's loading logo.
+
 ## [1.32.4] - 2026-09-17
 
 - **Chat: a send that fails ambiguously no longer risks re-sending your prompt.** The acceptance check read only the newest 30 messages, so a response failing late in a long turn judged the send rejected — your accepted message was rolled back and the same prompt queued again. The check now reads back through the session's history before deciding.
