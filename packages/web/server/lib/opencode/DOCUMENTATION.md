@@ -401,6 +401,8 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
   - Session message forwarder: `POST /api/session/:sessionId/message`
   - Interactive OAuth forwarder: `POST /api/provider/:providerID/oauth/callback`
     - Upstream blocks inside this call for the whole browser sign-in (device-code polling or a loopback redirect), so it is exempt from the ordinary request deadline and uses a 15-minute proxy timeout instead of `LONG_REQUEST_TIMEOUT_MS`. All other `/api/provider/*` routes, including `oauth/authorize`, keep the ordinary deadline.
+  - Turn-bound session forwarder: `POST /api/session/:id/{prompt,prompt_async,command,shell,summarize,init}`
+    - The engine answers these when the turn settles, not when it accepts the request (measured: a 7s turn returns its `prompt_async` POST at 6.97s). The ordinary deadline therefore reported `OpenCode upstream timed out` for prompts that were accepted and running, so these routes get a six-hour proxy timeout instead and no request deadline. Every other session route keeps the ordinary deadline.
   - Generic `/api/*` forwarding with hop-by-hop header filtering
   - Windows `/session` merge fallback path behavior
   - OpenCode readiness gate for proxied `/api` requests

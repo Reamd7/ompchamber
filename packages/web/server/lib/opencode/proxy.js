@@ -419,6 +419,27 @@ export const registerOpenCodeProxy = (app, deps) => {
   const isInteractiveOAuthCallback = (req) =>
     req.method === 'POST' && INTERACTIVE_OAUTH_PATH.test(req.path);
 
+  // An engine session turn answers its request when the *turn* settles, not
+  // when the engine accepts it. Measured against the managed engine: a 7s turn
+  // returned its `prompt_async` POST at 6.97s, and a 5-minute turn (the
+  // sharkly/tubeworm session) held the POST past the ordinary deadline. A turn
+  // has no bounded length, so the ordinary deadline reported "upstream timed
+  // out" for prompts the engine had already accepted and was running, which
+  // also told every caller the send failed.
+  //
+  // Six hours is not a turn bound: it only catches an engine that took the
+  // request and then went silent. The routes that run a turn are the ones that
+  // block; the rest of the session API stays on the ordinary deadline.
+  const TURN_BOUND_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+  const TURN_BOUND_SESSION_ACTIONS = new Set(['prompt', 'prompt_async', 'command', 'shell', 'summarize', 'init']);
+  const SESSION_ACTION_PATH = /^\/session\/[^/]+\/([^/?]+)\/?$/;
+
+  const isTurnBoundSessionRequest = (req) => {
+    if (req.method !== 'POST') return false;
+    const match = SESSION_ACTION_PATH.exec(req.path ?? '');
+    return match ? TURN_BOUND_SESSION_ACTIONS.has(match[1]) : false;
+  };
+
   const isProxyTimeoutError = (error) => {
     const code = typeof error?.code === 'string' ? error.code : '';
     const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
@@ -437,7 +458,7 @@ export const registerOpenCodeProxy = (app, deps) => {
   };
 
   const applyProxyResponseDeadline = (req, res, next) => {
-    if (isInteractiveOAuthCallback(req)) {
+    if (isInteractiveOAuthCallback(req) || isTurnBoundSessionRequest(req)) {
       return next();
     }
 
@@ -931,6 +952,7 @@ export const registerOpenCodeProxy = (app, deps) => {
 
   const apiProxy = createApiProxy(PROXY_REQUEST_TIMEOUT_MS);
   const interactiveOAuthProxy = createApiProxy(INTERACTIVE_OAUTH_TIMEOUT_MS);
+  const turnBoundProxy = createApiProxy(TURN_BOUND_TIMEOUT_MS);
 
   // Best-effort fallback for stale clients still sending symlink paths.
   // Settings and project selection normalize at source; this cached async path
@@ -953,5 +975,13 @@ export const registerOpenCodeProxy = (app, deps) => {
   // finishes authorization in the browser (up to OpenCode's 5-minute callback
   // timeout), so it needs the interactive-OAuth deadline, not the default one.
   app.post('/api/mcp/:name/auth/authenticate', interactiveOAuthProxy);
+  // Session turns: prompt, command, shell, and the like run until the agent
+  // stops, so they get the turn-bound deadline instead of the request one.
+  app.post('/api/session/:sessionID/:action', (req, res, next) => {
+    if (!TURN_BOUND_SESSION_ACTIONS.has(String(req.params.action))) {
+      return next();
+    }
+    return turnBoundProxy(req, res, next);
+  });
   app.use('/api', apiProxy);
 };

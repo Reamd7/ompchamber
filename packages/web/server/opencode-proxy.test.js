@@ -706,4 +706,89 @@ describe('OpenCode proxy SSE forwarding', () => {
 
     expect(response.status).toBe(504);
   });
+
+  it('does not apply the request deadline to a session prompt that answers at turn end', async () => {
+    const upstream = express();
+    // Stands in for the engine: the POST is answered when the turn settles, so
+    // a long turn outlives any request deadline. Measured live: a 7s turn
+    // returned its prompt_async POST at 6.97s.
+    upstream.post('/session/:sessionID/prompt_async', async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      res.json({ id: 'msg_1', role: 'user' });
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+    const externalBaseUrl = `http://127.0.0.1:${upstreamPort}`;
+
+    const app = express();
+    registerOpenCodeProxy(app, {
+      fs: {},
+      os: {},
+      path,
+      OPEN_CODE_READY_GRACE_MS: 0,
+      LONG_REQUEST_TIMEOUT_MS: 50,
+      getRuntime: () => ({
+        openCodePort: upstreamPort,
+        openCodeBaseUrl: externalBaseUrl,
+        isOpenCodeReady: true,
+        openCodeNotReadySince: 0,
+        isRestartingOpenCode: false,
+      }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `${externalBaseUrl}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+    });
+    proxyServer = await listen(app);
+    const proxyPort = proxyServer.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/api/session/ses_1/prompt_async`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ parts: [{ type: 'text', text: 'go' }] }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ id: 'msg_1' });
+  });
+
+  it('still applies the request deadline to session routes that do not run a turn', async () => {
+    const upstream = express();
+    upstream.post('/session/:sessionID/revert', (_req, _res) => {
+      // Leave the response open so the proxy timeout path is exercised.
+    });
+    upstreamServer = await listen(upstream);
+    const upstreamPort = upstreamServer.address().port;
+    const externalBaseUrl = `http://127.0.0.1:${upstreamPort}`;
+
+    const app = express();
+    registerOpenCodeProxy(app, {
+      fs: {},
+      os: {},
+      path,
+      OPEN_CODE_READY_GRACE_MS: 0,
+      LONG_REQUEST_TIMEOUT_MS: 50,
+      getRuntime: () => ({
+        openCodePort: upstreamPort,
+        openCodeBaseUrl: externalBaseUrl,
+        isOpenCodeReady: true,
+        openCodeNotReadySince: 0,
+        isRestartingOpenCode: false,
+      }),
+      getOpenCodeAuthHeaders: () => ({}),
+      buildOpenCodeUrl: (requestPath) => `${externalBaseUrl}${requestPath}`,
+      ensureOpenCodeApiPrefix: () => {},
+    });
+    proxyServer = await listen(app);
+    const proxyPort = proxyServer.address().port;
+
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/api/session/ses_1/revert`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messageID: 'msg_1' }),
+      signal: AbortSignal.timeout(2000),
+    });
+
+    expect(response.status).toBe(504);
+  });
 });
