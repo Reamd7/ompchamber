@@ -72,6 +72,7 @@ The composer compares normalized attachment MIME types with the selected model's
 
 `ChildStoreManager` is the single owner of directory bootstrap scheduling. Consumers publish demand; they must not start bootstrap from row mount effects.
 
+- Rendering never publishes. `ensureChild` runs during render (sidebar rows, `useDirectoryStore`), so it may only create/adopt the store; registry notifications are coalesced into a microtask, and `useDirectoryStore` issues its bootstrap request after commit. Bootstrap work started from a render would notify bootstrap subscribers and commit `bootstrapDirectory`'s first patch — both mid-render updates to other components' subscriptions.
 - The scheduler runs at most two directory bootstraps concurrently.
 - Selected session/current directory demand outranks active-project, expanded, visible, and background demand.
 - Demand is deduplicated by normalized directory and can be promoted while queued.

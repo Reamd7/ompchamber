@@ -48,7 +48,11 @@ describe('ChildStoreManager.subscribeAllSelected', () => {
     manager.disposeAll();
   });
 
-  test('notifies when the child-store registry changes', () => {
+  test('notifies when the child-store registry changes, after the render-path call returns', async () => {
+    // `ensureChild` runs during React render (sidebar rows, useDirectoryStore),
+    // so publishing the new store synchronously force-updates subscribers while
+    // React renders another component. The notification is coalesced into a
+    // microtask; subscribers re-read their snapshot when it lands.
     const manager = new ChildStoreManager();
     let notifications = 0;
     const unsubscribe = manager.subscribeAllSelected((state) => state.session, () => {
@@ -56,6 +60,9 @@ describe('ChildStoreManager.subscribeAllSelected', () => {
     });
 
     manager.ensureChild('/workspace', { bootstrap: false });
+    expect(notifications).toBe(0);
+
+    await settle();
     expect(notifications).toBe(1);
 
     unsubscribe();

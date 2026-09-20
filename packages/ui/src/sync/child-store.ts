@@ -290,6 +290,7 @@ export class ChildStoreManager {
   private readonly lifecycle = new Map<string, DirState>()
   private readonly pins = new Map<string, number>()
   private evictionScheduled = false
+  private registryNotificationScheduled = false
   private readonly disposers = new Map<string, () => void>()
   private readonly registrySubscribers = new Set<() => void>()
   private readonly bootstrapSubscribers = new Set<() => void>()
@@ -312,10 +313,29 @@ export class ChildStoreManager {
   private manualBootstrapDemandRevision = 0
   private disposed = false
 
+  /**
+   * Coalesced into one microtask pass so a render-path `ensureChild` cannot
+   * publish to subscribers mid-render.
+   *
+   * `ensureChild` runs during React render — once per sidebar row, once per
+   * `useDirectoryStore` consumer — and the first reference to a directory
+   * creates its store here. Notifying synchronously from that call force-
+   * updates every `subscribeAllSelected` / `subscribeRegistry` consumer while
+   * React is rendering a different component: "Cannot update a component while
+   * rendering a different component". Subscribers re-read their snapshot when
+   * notified, so delivering the change one microtask later is equivalent, and
+   * a render that mounts many directories now notifies once instead of once
+   * per directory.
+   */
   private notifyRegistrySubscribers() {
-    for (const subscriber of this.registrySubscribers) {
-      subscriber()
-    }
+    if (this.registryNotificationScheduled) return
+    this.registryNotificationScheduled = true
+    queueMicrotask(() => {
+      this.registryNotificationScheduled = false
+      for (const subscriber of this.registrySubscribers) {
+        subscriber()
+      }
+    })
   }
 
   private notifyBootstrapSubscribers() {

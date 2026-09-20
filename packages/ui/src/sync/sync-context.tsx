@@ -2945,12 +2945,29 @@ export function useDirectoryStore(
     runtime.currentDirectory.subscribe,
     () => directory ?? runtime.currentDirectory.get(),
   )
-  const store = runtime.childStores.ensureChild(dir, options)
+  const store = runtime.childStores.ensureChild(dir, { bootstrap: false })
 
+  const shouldBootstrap = options?.bootstrap ?? true
+  const priority = options?.priority
+  const reason = options?.reason
+  // The bootstrap request lives here, not in the render call above. Asking for
+  // one during render ran real work inside another component's render pass:
+  // `queueBootstrap` notifies bootstrap subscribers synchronously, and the pump
+  // invokes `onBootstrap`, whose first `bootstrapDirectory` commit lands before
+  // its first await. React reports both as updates to another component during
+  // render, and Strict Mode would issue the request twice.
   useEffect(() => {
-    runtime.childStores.pin(dir)
-    return () => runtime.childStores.unpin(dir)
-  }, [dir, runtime.childStores])
+    const childStores = runtime.childStores
+    childStores.pin(dir)
+    if (shouldBootstrap) {
+      childStores.requestBootstrap({
+        directory: dir,
+        priority: priority ?? "selected",
+        reason: reason ?? "action-demand",
+      })
+    }
+    return () => childStores.unpin(dir)
+  }, [dir, runtime.childStores, shouldBootstrap, priority, reason])
 
   return store
 }
