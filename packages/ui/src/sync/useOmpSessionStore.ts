@@ -175,40 +175,57 @@ export const useOmpSessionStore = create<OmpSessionStore>((set, get) => {
       if (runtimeKey !== get().runtimeKey) return [];
       const effects: OmpEventEffect[] = [];
       set((state) => {
+        const existing = state.directories[directory];
         // Empty-shape base then overlay: a legacy partial slice (pre-fix
         // seedSessionModel could write one) must not leak missing maps into
-        // the draft the reducer indexes.
-        const existing = { ...createEmptyOmpDirectoryState(), ...state.directories[directory] };
+        // the draft the reducer indexes. Cloning up front is unavoidable —
+        // the reducer mutates its argument, and its no-op decisions depend on
+        // the existing values.
         const draft: OmpDirectoryState = {
+          ...createEmptyOmpDirectoryState(),
           ...existing,
-          loaders: { ...existing.loaders },
-          superseded: { ...existing.superseded },
-          notes: { ...existing.notes },
-          customDetails: { ...existing.customDetails },
-          sessionModel: { ...existing.sessionModel },
-          fallback: { ...existing.fallback },
-          mode: { ...existing.mode },
-          goal: { ...existing.goal },
-          thinking: { ...existing.thinking },
-          retryTerminal: { ...existing.retryTerminal },
-          awaitingAsync: { ...existing.awaitingAsync },
-          ttsr: { ...existing.ttsr },
-          telemetry: { ...existing.telemetry },
+          loaders: { ...(existing?.loaders ?? {}) },
+          superseded: { ...(existing?.superseded ?? {}) },
+          notes: { ...(existing?.notes ?? {}) },
+          customDetails: { ...(existing?.customDetails ?? {}) },
+          goal: { ...(existing?.goal ?? {}) },
+          planReview: { ...(existing?.planReview ?? {}) },
+          thinking: { ...(existing?.thinking ?? {}) },
+          fallback: { ...(existing?.fallback ?? {}) },
+          mode: { ...(existing?.mode ?? {}) },
+          retryTerminal: { ...(existing?.retryTerminal ?? {}) },
+          awaitingAsync: { ...(existing?.awaitingAsync ?? {}) },
+          ttsr: { ...(existing?.ttsr ?? {}) },
+          telemetry: { ...(existing?.telemetry ?? {}) },
           chrome: {
-            widgets: { ...existing.chrome.widgets },
-            status: { ...existing.chrome.status },
+            widgets: { ...(existing?.chrome.widgets ?? {}) },
+            status: { ...(existing?.chrome.status ?? {}) },
           },
           domains: {
-            ...existing.domains,
-            queueVersionBySession: { ...existing.domains.queueVersionBySession },
+            ...(existing?.domains ?? createEmptyOmpDirectoryState().domains),
+            queueVersionBySession: { ...(existing?.domains.queueVersionBySession ?? {}) },
           },
         };
         const outcome = applyOmpEvent(draft, envelope);
         effects.push(...outcome.effects);
-        // Commit when state changed OR the id-gate high-water mark advanced
-        // (no-op and unknown frames still mark the envelope as consumed).
-        if (!outcome.changed && draft.lastAppliedEventId === existing.lastAppliedEventId) {
+        // Replayed frame below the high-water mark: already consumed, and
+        // the draft was mutated by nothing, so the slice stays identical.
+        if (!outcome.consumed) {
           return state;
+        }
+        if (!outcome.changed) {
+          // Consumed without a state change — only the id high-water mark
+          // moved. Patch that one field so every map keeps its identity and
+          // subscribers see no reference churn from a no-op frame. The slice
+          // still materializes for a directory that had none: the advanced
+          // mark must persist or the frame is re-consumed on next arrival.
+          const base = existing ?? createEmptyOmpDirectoryState();
+          return {
+            directories: {
+              ...state.directories,
+              [directory]: { ...base, lastAppliedEventId: draft.lastAppliedEventId },
+            },
+          };
         }
         return {
           directories: {

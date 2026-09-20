@@ -91,4 +91,36 @@ describe('useOmpSessionStore', () => {
     expect(slice.loaders.ses_2).toBe(undefined);
     expect(slice.mode.ses_1?.mode).toBe('goal');
   });
+
+  test('a consumed no-op frame keeps every map identity', () => {
+    reset();
+    const store = useOmpSessionStore.getState();
+    store.applyEvent('rt-test', '/repo', envelope(1, 'omp.mode.changed', 100, 'ses_1', { mode: 'goal' }));
+    const before = useOmpSessionStore.getState().directories['/repo']!;
+    // A duplicate/replayed mode frame changes nothing but is still consumed
+    // (its id is above a fresh gate, so the mark must advance).
+    store.applyEvent('rt-test', '/repo', envelope(2, 'omp.mode.changed', 100, 'ses_1', { mode: 'goal' }));
+    const after = useOmpSessionStore.getState().directories['/repo']!;
+    expect(after.lastAppliedEventId).toBe(2);
+    // Identity, not just equality: subscribers selecting `mode`/`goal`
+    // leaves must not re-render for a frame that stored nothing.
+    expect(after.mode).toBe(before.mode);
+    expect(after.goal).toBe(before.goal);
+    expect(after.thinking).toBe(before.thinking);
+    expect(after.telemetry).toBe(before.telemetry);
+    expect(after.chrome).toBe(before.chrome);
+  });
+
+  test('planReview state is isolated per frame, not shared across directories', () => {
+    reset();
+    const store = useOmpSessionStore.getState();
+    const review = { planFilePath: 'local://p.md', title: 'Plan', planExists: true };
+    store.applyEvent('rt-test', '/repo-a', envelope(1, 'omp.plan.review_requested', 100, 'ses_1', { details: review }));
+    const sliceA = useOmpSessionStore.getState().directories['/repo-a']!;
+    expect(sliceA.planReview.ses_1?.details).toEqual(review);
+    // A frame for another directory must not leak into the first slice.
+    store.applyEvent('rt-test', '/repo-b', envelope(2, 'omp.plan.review_requested', 100, 'ses_2', { details: null }));
+    const sliceAAfter = useOmpSessionStore.getState().directories['/repo-a']!;
+    expect(sliceAAfter.planReview.ses_1?.details).toEqual(review);
+  });
 });

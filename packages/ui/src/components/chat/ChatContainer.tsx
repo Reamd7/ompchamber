@@ -738,7 +738,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
         waitedSessionIdRef.current = liveSessionId && !liveSessionRenderable ? liveSessionId : null;
     }
     const targetSelection = holdPreviousTimeline ? shownSelectionRef.current : liveSelection;
-    const { sessionId: currentSessionId, directory: currentSessionDirectory } = React.useDeferredValue(targetSelection);
+    // Deferred per field, not per object: useDeferredValue compares with
+    // Object.is, so a wrapper object rebuilt every render would never be
+    // "equal" and would re-enter the deferred transition forever (React
+    // #185). Strings compare by value, and both fields always travel
+    // together, so the transition still lands in one commit.
+    const currentSessionId = React.useDeferredValue(targetSelection.sessionId);
+    const currentSessionDirectory = React.useDeferredValue(targetSelection.directory);
     shownSelectionRef.current = { sessionId: currentSessionId, directory: currentSessionDirectory };
     const revealWaited = Boolean(currentSessionId) && currentSessionId === waitedSessionIdRef.current;
 

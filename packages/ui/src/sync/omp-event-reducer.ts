@@ -380,11 +380,17 @@ export type OmpEventEffect =
 export interface OmpReducerOutcome {
   /** Whether `draft` mutated (store commits only on true). */
   changed: boolean;
+  /**
+   * Whether the id-gate high-water mark advanced. A frame can be consumed
+   * (counted, never replayed) without changing state — the store still has
+   * to persist the advanced mark, but must not hand out new map references.
+   */
+  consumed: boolean;
   /** Side effects for the pipeline to execute regardless of `changed`. */
   effects: OmpEventEffect[];
 }
 
-const NO_CHANGE: OmpReducerOutcome = { changed: false, effects: [] };
+const NO_CHANGE: OmpReducerOutcome = { changed: false, consumed: false, effects: [] };
 
 /** True when a volatile envelope is older than the state it would replace. */
 const isStaleVolatile = (stateTimestamp: number | undefined, envelope: OmpEventEnvelope): boolean =>
@@ -396,14 +402,13 @@ const requireSessionID = (envelope: OmpEventEnvelope): string | null =>
 /** Frame failed its payload schema — consumed (id gate advanced), no state change. */
 const drop = (envelope: OmpEventEnvelope): OmpReducerOutcome => {
   syncDebug.omp.droppedEvent(envelope.type, envelope.id);
-  return NO_CHANGE;
+  return { changed: false, consumed: true, effects: [] };
 };
 
 // ---------------------------------------------------------------------------
 // Reducer — mutates `draft` in place (one store transaction per directory),
 // mirroring applyDirectoryEvent's contract in event-reducer.ts.
 // ---------------------------------------------------------------------------
-
 export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelope): OmpReducerOutcome {
   // Id gate: a replayed/duplicated frame at or below the high-water mark was
   // already consumed. Ids form one global monotonic sequence, so per-directory
@@ -413,7 +418,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
     return NO_CHANGE;
   }
   draft.lastAppliedEventId = envelope.id;
-
+  const consumed = true;
   const sessionID = requireSessionID(envelope);
   const effects: OmpEventEffect[] = [];
 
@@ -423,7 +428,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = RetryStartedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const loaders = draft.loaders[sessionID] ?? {};
-      if (isStaleVolatile(loaders.retry?.startedAt, envelope)) return NO_CHANGE;
+      if (isStaleVolatile(loaders.retry?.startedAt, envelope)) return { changed: false, consumed, effects };
       draft.loaders[sessionID] = {
         ...loaders,
         retry: {
@@ -441,7 +446,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
           draft.superseded[supersededMessageID] = { since: envelope.createdAt };
         }
       }
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.retry.ended': {
@@ -451,7 +456,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const success = payload.data.success === true;
       const current = draft.loaders[sessionID];
       if (current?.retry && isStaleVolatile(current.retry.startedAt, envelope)) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       if (current?.retry) {
         draft.loaders[sessionID] = { ...current, retry: undefined };
@@ -488,7 +493,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         delete draft.retryTerminal[sessionID];
         mutated = true;
       }
-      return mutated ? { changed: true, effects } : NO_CHANGE;
+      return mutated ? { changed: true, consumed, effects } : { changed: false, consumed, effects };
     }
 
     case 'omp.compaction.started': {
@@ -496,7 +501,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = CompactionStartedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const loaders = draft.loaders[sessionID] ?? {};
-      if (isStaleVolatile(loaders.compaction?.startedAt, envelope)) return NO_CHANGE;
+      if (isStaleVolatile(loaders.compaction?.startedAt, envelope)) return { changed: false, consumed, effects };
       draft.loaders[sessionID] = {
         ...loaders,
         compaction: {
@@ -505,7 +510,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
           startedAt: envelope.createdAt,
         },
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.compaction.ended': {
@@ -514,10 +519,10 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       // only needs the loader.
       if (!CompactionEndedPayload.safeParse(envelope.payload).success) return drop(envelope);
       const loaders = draft.loaders[sessionID];
-      if (!loaders?.compaction) return NO_CHANGE;
-      if (isStaleVolatile(loaders.compaction.startedAt, envelope)) return NO_CHANGE;
+      if (!loaders?.compaction) return { changed: false, consumed, effects };
+      if (isStaleVolatile(loaders.compaction.startedAt, envelope)) return { changed: false, consumed, effects };
       draft.loaders[sessionID] = { ...loaders, compaction: undefined };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.custom.appended': {
@@ -528,7 +533,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       // display:false never builds a card on any path (spec 05 §5.8.2 T3).
       if (message.display === false) {
         syncDebug.omp.customHidden(message.wireMessageID, message.customType);
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       const next: OmpCustomDetails = {
         customType: message.customType,
@@ -546,10 +551,10 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         && existing.text === next.text
         && existing.details === next.details
       ) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       draft.customDetails[message.wireMessageID] = next;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.notice.raised': {
@@ -563,7 +568,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         ...(source !== undefined ? { source } : {}),
       });
       // Volatile by design: the toast is the whole surface; nothing stored.
-      return { changed: false, effects };
+      return { changed: false, consumed, effects };
     }
 
     case 'omp.model.changed': {
@@ -583,7 +588,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         && existing.thinkingLevel === thinkingLevel
         && existing.role === role
       ) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       draft.sessionModel[sessionID] = {
         ...(provider !== undefined && provider.length > 0 ? { provider } : {}),
@@ -592,7 +597,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         ...(role !== undefined && role.length > 0 ? { role } : {}),
         updatedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.fallback.applied': {
@@ -600,14 +605,14 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = FallbackAppliedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const existing = draft.fallback[sessionID];
-      if (existing?.active && isStaleVolatile(existing.updatedAt, envelope)) return NO_CHANGE;
+      if (existing?.active && isStaleVolatile(existing.updatedAt, envelope)) return { changed: false, consumed, effects };
       draft.fallback[sessionID] = {
         active: true,
         ...(payload.data.from !== undefined ? { from: payload.data.from } : {}),
         ...(payload.data.to !== undefined ? { to: payload.data.to } : {}),
         updatedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.fallback.succeeded': {
@@ -615,13 +620,13 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = FallbackSucceededPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const existing = draft.fallback[sessionID];
-      if (existing && !existing.active) return NO_CHANGE;
+      if (existing && !existing.active) return { changed: false, consumed, effects };
       draft.fallback[sessionID] = {
         active: false,
         ...(payload.data.model !== undefined ? { model: payload.data.model } : {}),
         updatedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.mode.changed': {
@@ -633,7 +638,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         && existing.mode === payload.data.mode
         && existing.data === payload.data.data;
       if (sameMode && draft.planReview[sessionID] === undefined) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       // Leaving plan mode settles/clears the review bridge (domain-modes
       // exitMode → bridge.clear) — a pending overlay is no longer actionable.
@@ -647,7 +652,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
           updatedAt: envelope.createdAt,
         };
       }
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.plan.review_requested': {
@@ -658,15 +663,15 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       // A newer proposal supersedes any pending one (bridge SUPERSEDED_RESULT
       // settles the older propose); details:null carries no review to show.
       if (payload.data.details === null) {
-        if (draft.planReview[sessionID] === undefined) return NO_CHANGE;
+        if (draft.planReview[sessionID] === undefined) return { changed: false, consumed, effects };
         delete draft.planReview[sessionID];
-        return { changed: true, effects };
+        return { changed: true, consumed, effects };
       }
       draft.planReview[sessionID] = {
         details: payload.data.details,
         requestedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
 
@@ -676,14 +681,14 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (!payload.success) return drop(envelope);
       const existing = draft.goal[sessionID];
       if (existing && existing.goal === payload.data.goal && existing.state === payload.data.state) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       draft.goal[sessionID] = {
         ...(payload.data.goal !== undefined ? { goal: payload.data.goal } : {}),
         ...(payload.data.state !== undefined ? { state: payload.data.state } : {}),
         updatedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.thinking.changed': {
@@ -705,7 +710,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         && existing.configured === configured
         && existing.resolved === resolved
       ) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       draft.thinking[sessionID] = {
         ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
@@ -713,18 +718,18 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         ...(resolved !== undefined ? { resolved } : {}),
         updatedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.session.settled': {
       if (!sessionID) return drop(envelope);
       if (!SessionSettledPayload.safeParse(envelope.payload).success) return drop(envelope);
-      if ((envelope.payload as { isTerminal?: unknown }).isTerminal !== false) return NO_CHANGE;
+      if ((envelope.payload as { isTerminal?: unknown }).isTerminal !== false) return { changed: false, consumed, effects };
       const existing = draft.awaitingAsync[sessionID];
-      if (existing && isStaleVolatile(existing.since, envelope)) return NO_CHANGE;
-      if (existing) return NO_CHANGE;
+      if (existing && isStaleVolatile(existing.since, envelope)) return { changed: false, consumed, effects };
+      if (existing) return { changed: false, consumed, effects };
       draft.awaitingAsync[sessionID] = { since: envelope.createdAt };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.ttsr.triggered': {
@@ -733,14 +738,14 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (!payload.success || payload.data.rules.length === 0) return drop(envelope);
       const rules = payload.data.rules.map((rule) => rule.name);
       const existing = draft.ttsr[sessionID];
-      if (existing && isStaleVolatile(existing.raisedAt, envelope)) return NO_CHANGE;
+      if (existing && isStaleVolatile(existing.raisedAt, envelope)) return { changed: false, consumed, effects };
       // Consecutive triggers merge into the previous warning block (TUI
       // event-controller semantics: merge into the last uncommitted block).
       draft.ttsr[sessionID] = {
         rules: [...(existing?.rules ?? []), ...rules],
         raisedAt: envelope.createdAt,
       };
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.usage.turn': {
@@ -758,7 +763,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         && current.durationMs === durationMs
         && current.timestamp === timestamp
       ) {
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       const nextTurns = [...turns];
       if (index >= 0) {
@@ -770,7 +775,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         }
       }
       draft.telemetry[sessionID] = nextTurns;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.settings.updated': {
@@ -779,7 +784,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const domains = draft.domains;
       if (domains.settingsRevision !== undefined && payload.data.revision <= domains.settingsRevision) {
         // Already-seen revision — renotification only, nothing to refetch.
-        return NO_CHANGE;
+        return { changed: false, consumed, effects };
       }
       domains.settingsRevision = payload.data.revision;
       domains.settingsKeys = payload.data.keys ?? [];
@@ -789,7 +794,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         keys: domains.settingsKeys,
         ...(payload.data.origin !== undefined ? { origin: payload.data.origin } : {}),
       });
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.agents.updated': {
@@ -797,11 +802,11 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (!payload.success) return drop(envelope);
       if (payload.data.revision !== undefined) {
         const known = draft.domains.agentsRevision;
-        if (known !== undefined && payload.data.revision < known) return NO_CHANGE;
+        if (known !== undefined && payload.data.revision < known) return { changed: false, consumed, effects };
         draft.domains.agentsRevision = payload.data.revision;
       }
       draft.domains.lastEventId = envelope.id;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.processes.updated': {
@@ -809,11 +814,11 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (!payload.success) return drop(envelope);
       if (payload.data.revision !== undefined) {
         const known = draft.domains.processesRevision;
-        if (known !== undefined && payload.data.revision < known) return NO_CHANGE;
+        if (known !== undefined && payload.data.revision < known) return { changed: false, consumed, effects };
         draft.domains.processesRevision = payload.data.revision;
       }
       draft.domains.lastEventId = envelope.id;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.queue.changed': {
@@ -821,10 +826,10 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const payload = QueueChangedPayload.safeParse(envelope.payload);
       if (!payload.success) return drop(envelope);
       const known = draft.domains.queueVersionBySession[sessionID];
-      if (known !== undefined && payload.data.version <= known) return NO_CHANGE;
+      if (known !== undefined && payload.data.version <= known) return { changed: false, consumed, effects };
       draft.domains.queueVersionBySession[sessionID] = payload.data.version;
       draft.domains.lastEventId = envelope.id;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.dialog.requested': {
@@ -833,7 +838,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (dialog === null) return drop(envelope);
       draft.domains.lastEventId = envelope.id;
       effects.push({ kind: 'dialog-requested', dialog });
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.chrome.updated': {
@@ -844,7 +849,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       const updatedAt = envelope.createdAt ?? 0;
       if (data.kind === 'widget') {
         if (!('lines' in data)) {
-          if (!(data.key in draft.chrome.widgets)) return NO_CHANGE;
+          if (!(data.key in draft.chrome.widgets)) return { changed: false, consumed, effects };
           delete draft.chrome.widgets[data.key];
         } else {
           const lines = data.lines;
@@ -855,7 +860,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
             && existing.sessionId === sessionId
             && existing.lines.join('\n') === lines.join('\n')
             && (existing.placement ?? '') === (placement ?? '')
-          ) return NO_CHANGE;
+          ) return { changed: false, consumed, effects };
           draft.chrome.widgets[data.key] = {
             key: data.key,
             lines,
@@ -866,18 +871,18 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
         }
       } else {
         if (!('text' in data)) {
-          if (!(data.key in draft.chrome.status)) return NO_CHANGE;
+          if (!(data.key in draft.chrome.status)) return { changed: false, consumed, effects };
           delete draft.chrome.status[data.key];
         } else {
           const existing = draft.chrome.status[data.key];
           if (existing && existing.sessionId === sessionId && existing.text === data.text) {
-            return NO_CHANGE;
+            return { changed: false, consumed, effects };
           }
           draft.chrome.status[data.key] = { key: data.key, text: data.text, sessionId, updatedAt };
         }
       }
       draft.domains.lastEventId = envelope.id;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     case 'omp.dialog.settled': {
@@ -889,7 +894,7 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
       if (!payload.success) return drop(envelope);
       draft.domains.lastEventId = envelope.id;
       effects.push({ kind: 'dialog-settled', ...payload.data });
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     // Surfaces land later — track the last event id per domain only.
@@ -897,14 +902,14 @@ export function applyOmpEvent(draft: OmpDirectoryState, envelope: OmpEventEnvelo
     case 'omp.tree.updated':
     case 'omp.plan.updated': {
       draft.domains.lastEventId = envelope.id;
-      return { changed: true, effects };
+      return { changed: true, consumed, effects };
     }
 
     default: {
       // Unknown type: minor-version addition (spec 05 §5.2.3) — ignore, never
       // error. syncDebug records it for diagnosis.
       syncDebug.omp.unknownEvent(envelope.type, envelope.id);
-      return NO_CHANGE;
+      return { changed: false, consumed, effects };
     }
   }
 }
