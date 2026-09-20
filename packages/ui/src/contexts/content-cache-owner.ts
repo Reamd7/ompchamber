@@ -5,6 +5,13 @@ const MAX_ENTRIES = 40;
 const MAX_BYTES = 20 * 1024 * 1024;
 type Entry = { content: string; path: string; sourcePath: string; size: number; mtimeMs: number; bytes: number };
 
+/** Live content-cache `FilesAPI` wrapper plus the API it wraps, for disposal and replacement. */
+export type ContentCachedFiles = {
+  files: FilesAPI;
+  source: FilesAPI;
+  dispose: () => void;
+};
+
 /**
  * Content-cached `FilesAPI.readFile` wrapper.
  *
@@ -12,8 +19,12 @@ type Entry = { content: string; path: string; sourcePath: string; size: number; 
  * Strict Mode remounts get a fresh owner. After `dispose()`, reads throw —
  * callers must not keep using a torn-down owner. Runtime endpoint switches
  * bump generation and clear the cache without deactivating the owner.
+ *
+ * `source` is the wrapped API. The owner is compared against the current
+ * `apis.files` through it — `files` is this wrapper, so it can never match the
+ * value the owner was built from.
  */
-export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; dispose: () => void } {
+export function createContentCachedFiles(files: FilesAPI): ContentCachedFiles {
   const cache = new Map<string, Entry>();
   let totalBytes = 0;
   let generation = 0;
@@ -136,6 +147,7 @@ export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; di
   });
   return {
     files: cachedFiles,
+    source: files,
     dispose: () => {
       active = false;
       generation += 1;
