@@ -218,6 +218,22 @@ status report (`buildOpenCodeStatusReport`, Ctrl/Cmd+Shift+L or
 `__opencodeDebug.statusReport()`) together with the managed OpenCode
 process's last error and stderr tail and the expected log file locations.
 
+## Stream liveness diagnostics
+
+`stream-health.ts` is the single-writer telemetry surface for the wire event
+pipeline. The pipeline records its lifecycle transitions (connecting,
+connected with transport, reconnecting with a reason), the last wire frame
+(events, controls, and heartbeats alike), delivered-event counts, and resync
+controls; `useUIStore.eventStreamStatus` mirrors the lifecycle for React
+surfaces and is set from the sync provider's pipeline callbacks. All of it
+appears in the status report's `Event stream:` lines, so a window that looks
+connected but shows stale content can be classified in one look: fresh frames
+with stale deliveries mean a live-but-deaf stream, both stale while the status
+says connected means the renderer is not executing (nothing is reaching the
+store), and both stale while reconnecting points at the server or network.
+The capability-gated omp pipeline is not instrumented; session truth rides
+the wire stream.
+
 ## Loading diagnostics
 
 Session loading instrumentation is disabled by default. Set `localStorage.openchamber_session_load_perf` to `"1"`, reproduce the interaction, then inspect `window.__openchamberSessionLoadPerformance.events`.

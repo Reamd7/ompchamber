@@ -57,6 +57,7 @@ import {
   processVSCodeReconciledPermissionAutoAccept,
 } from "./vscode-permission-auto-accept"
 import { useConfigStore } from "@/stores/useConfigStore"
+import { useUIStore } from "@/stores/useUIStore"
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { toast } from "@/components/ui"
@@ -2424,10 +2425,11 @@ export function SyncProvider(props: {
   // Event pipeline — created once per mount. No class, no start/stop.
   // Abort controller owned by the pipeline closure. Cleanup aborts + flushes.
   useEffect(() => {
+    useUIStore.getState().setEventStreamStatus("connecting")
     const pipeline = createEventPipeline({
       sdk: props.sdk,
       transport: messageStreamTransport,
-      routeDirectory: (directory, payload) => {
+      routeDirectory: (directory: string, payload) => {
         return resolveDirectoryFromRoutingIndex(routingIndex, directory, payload, childStores)
       },
       onEvents: (directory, payloads) => {
@@ -2462,6 +2464,7 @@ export function SyncProvider(props: {
           hasEverConnected: true,
           connectionPhase: "connected",
         })
+        useUIStore.getState().setEventStreamStatus("connected")
         const isFirstConnect = !pipelineHasConnectedRef.current
         pipelineHasConnectedRef.current = true
         if (isFirstConnect && !pipelineDisconnectedBeforeFirstConnectRef.current) {
@@ -2484,6 +2487,10 @@ export function SyncProvider(props: {
           connectionPhase: hasEverConnected ? "reconnecting" : "connecting",
           lastDisconnectReason: reason,
         })
+        useUIStore.getState().setEventStreamStatus(
+          hasEverConnected ? "reconnecting" : "connecting",
+          reason,
+        )
       },
       onResync: (reason, directory) => {
         // The server disavowed stream continuity (gap/restart control or a
@@ -2517,6 +2524,7 @@ export function SyncProvider(props: {
       if (pipelineReconnectRef.current === pipeline.reconnect) {
         pipelineReconnectRef.current = null
       }
+      useUIStore.getState().setEventStreamStatus("idle")
       pipeline.cleanup()
     }
   }, [props.sdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])

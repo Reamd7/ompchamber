@@ -19,6 +19,12 @@ import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from "@/lib/runt
 import { type RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
 import { openRuntimeWebSocket } from "@/lib/relay/runtime-socket"
 import { syncDebug } from "./debug"
+import {
+  markStreamEventsDelivered,
+  markStreamLifecycle,
+  markStreamResync,
+  markStreamWireFrame,
+} from "./stream-health"
 import { countSyncPerformance } from "./performance-diagnostics"
 
 const FLUSH_FRAME_MS = 33
@@ -351,6 +357,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     wsReadyTimeoutMs = DEFAULT_WS_READY_TIMEOUT_MS,
   } = input
+  markStreamLifecycle("connecting")
   const abort = new AbortController()
   let disconnected = false
   let lastEventId: string | undefined
@@ -417,12 +424,13 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     d.queue = d.buffer
     d.buffer = events
     d.queue.length = 0
-    d.sizes = []
+    d.sizes.length = 0
     sizes.length = 0
     d.bytes = 0
     d.coalesced.clear()
 
     d.last = Date.now()
+    markStreamEventsDelivered(events.length, d.last)
     syncDebug.pipeline.flush(events.length)
     for (let index = 0; index < events.length; index += 1) {
       countSyncPerformance("pipelineDeliveredEvents")
@@ -558,12 +566,12 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   let attemptAbortReason: AttemptAbortReason = null
   let consecutiveFailures = 0
   let backpressureUntil = 0
-
   const notifyDisconnected = (reason: string) => {
     if (disconnected) {
       return
     }
     disconnected = true
+    markStreamLifecycle("reconnecting", { reason })
     onDisconnect?.(reason)
   }
 
@@ -575,6 +583,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     // to be flipped positively; without this the send button throws
     // "Connection lost" until something else (HTTP health check) happens
     // to race a setState({isConnected: true}) through.
+    markStreamLifecycle("connected", { transport: activeTransport })
     onReconnect?.()
   }
 
@@ -596,6 +605,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
         // reconcile once per overflow episode instead of losing an unseen
         // directory's events silently (断流不是空状态).
         overflow.dirCapNotified = true
+        markStreamResync("queue-overflow")
         onResync?.("queue-overflow", routedDirectory)
       }
       return
@@ -618,6 +628,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       d.sizes.length = 0
       d.bytes = 0
       d.coalesced.clear()
+      markStreamResync("queue-overflow")
       onResync?.("queue-overflow", routedDirectory)
       if (eventBytes > MAX_QUEUED_BYTES_PER_DIRECTORY) {
         overflow.droppedEvents += 1
@@ -711,7 +722,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
 
   const resetHeartbeat = () => {
     lastEventAt = Date.now()
-    if (heartbeat) clearTimeout(heartbeat)
+    markStreamWireFrame(lastEventAt)
+    clearTimeout(heartbeat)
     heartbeat = setTimeout(() => {
       attemptAbortReason = `${activeTransport}_heartbeat_timeout`
       attempt?.abort()
@@ -736,6 +748,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           // into the next reconnect (plan §5.2).
           const id = typeof event.id === "string" ? event.id : ""
           lastEventId = id.length > 0 && id !== "0" ? id : undefined
+          markStreamResync("stream-resync")
           onResync?.("stream-resync")
           return
         }
@@ -946,8 +959,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           if (frame.epoch !== undefined && frame.epoch.length > 0) {
             serverEpoch = frame.epoch
           }
+          markStreamResync("stream-resync")
           onResync?.("stream-resync")
-          return
         }
 
         if (frame.type !== "event") {
@@ -1171,6 +1184,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       globalThis.window.removeEventListener("offline", onOffline)
     }
     abort.abort()
+    markStreamLifecycle("idle")
     flushAll()
     // Drop every directory timer and queue reference: cleanup must not leave
     // retention chains behind (plan §5.3.1).

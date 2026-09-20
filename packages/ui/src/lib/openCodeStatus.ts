@@ -1,5 +1,6 @@
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getSyncSessions } from '@/sync/sync-refs';
+import { getStreamHealth } from '@/sync/stream-health';
 import { useUIStore } from '@/stores/useUIStore';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { opencodeClient } from './opencode/client';
@@ -296,7 +297,28 @@ export const buildOpenCodeStatusReport = async (): Promise<string> => {
   lines.push(`OMPChamber version: ${appVersion}`);
   lines.push(`Runtime: ${origin || '(unknown)'} (api=${apiBase || '(unknown)'})`);
   lines.push(`Engine API base: ${opencodeClient.getBaseUrl()}`);
-  lines.push(`Event stream: ${eventStreamStatus}`);
+  const streamHealth = getStreamHealth();
+  const ageFrom = (at: number | null): string => {
+    if (at === null) return 'never';
+    return `${((now.getTime() - at) / 1000).toFixed(1)}s ago`;
+  };
+  lines.push(
+    `Event stream: ${eventStreamStatus} (transport ${streamHealth.transport ?? 'n/a'}, `
+    + `wire frame ${ageFrom(streamHealth.lastWireFrameAt)}, `
+    + `events delivered ${ageFrom(streamHealth.lastDeliveredEventsAt)} `
+    + `(${streamHealth.deliveredEvents} total))`,
+  );
+  if (streamHealth.lastResyncAt !== null) {
+    lines.push(
+      `Event stream resync: ${streamHealth.lastResyncReason ?? 'unknown'} ${ageFrom(streamHealth.lastResyncAt)} `
+      + `(${streamHealth.resyncs} total)`,
+    );
+  }
+  if (streamHealth.lastDisconnectAt !== null) {
+    lines.push(
+      `Event stream disconnect: ${streamHealth.lastDisconnectReason ?? 'unknown'} ${ageFrom(streamHealth.lastDisconnectAt)}`,
+    );
+  }
   lines.push(`Directory: ${directory || '(none)'}`);
   lines.push(`Platform: ${platform}`);
 
