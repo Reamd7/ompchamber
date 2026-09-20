@@ -126,7 +126,16 @@ jobs:
             if curl -sf --max-time 2 http://127.0.0.1:3941/global/health > /dev/null; then break; fi
             sleep 2
           done
-          curl -sf --max-time 2 http://127.0.0.1:3941/global/health
+          # A bare failure here says nothing about why the engine never served —
+          # host.log is the only record and was previously never printed, which
+          # left three consecutive releases failing with no diagnostic.
+          if ! curl -sf --max-time 2 http://127.0.0.1:3941/global/health; then
+            echo "--- host.log (engine smoke failure) ---"
+            cat "$RUNNER_TEMP/host.log" || echo "(host.log missing — the engine produced no output at all)"
+            echo "--- staged natives ---"
+            ls -la "$HOME"/.omp/natives/*/ 2>/dev/null || echo "(no natives staged)"
+            exit 1
+          fi
           pkill -f 'omp-host/host.js serve' || true
           echo "--- serve.log ---"; head -20 "$RUNNER_TEMP/serve.log"
 
