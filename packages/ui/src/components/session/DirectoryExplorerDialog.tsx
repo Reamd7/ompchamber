@@ -872,7 +872,12 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="flex w-full max-w-xl flex-col gap-0 overflow-hidden p-0 sm:max-h-[80vh]"
-        initialFocus={false}
+        // Land focus on the path input as part of opening. Base UI hides the
+        // background with aria-hidden once the dialog is modal, so leaving focus
+        // outside for even a frame puts it inside a hidden subtree: Chrome
+        // blocks the attribute and the composer editor keeps a focus ring it
+        // should not have.
+        initialFocus={inputRef}
       >
         <DialogHeader className="px-5 pb-2 pt-5">
           <div className="flex items-start justify-between gap-4">
