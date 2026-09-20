@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.34.0] - 2026-09-20
+
+- Dev: the engine status report (Ctrl/Cmd+Shift+L) now shows event-stream liveness — connection state with transport, ages of the last wire frame and last delivered events (with totals), and recent resyncs or disconnects — so a window that looks connected but shows stale content can be classified from the copied report.
 
 ## [1.33.0] - 2026-09-19
 
