@@ -716,34 +716,42 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
             {rows.map((row, index) => {
               const isActive = index === highlightedIndex;
               return (
-                <button
+                <div
                   key={row.value}
-                  ref={(node) => {
-                    if (node) {
-                      rowRefs.current.set(row.value, node);
-                    } else {
-                      rowRefs.current.delete(row.value);
-                    }
-                  }}
-                  type="button"
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => executeRow(row)}
                   className={cn(
-                    'flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+                    'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 transition-colors',
                     isActive && 'bg-interactive-selection text-interactive-selection-foreground',
                     !isActive && 'hover:bg-interactive-hover/50',
                     row.type === 'directory' && row.disabled && 'opacity-45'
                   )}
                 >
-                  {row.type === 'up' ? (
-                    <Icon name="arrow-left-s" className="h-4 w-4 flex-shrink-0 text-muted-foreground/80" />
-                  ) : (
-                    <Icon name="folder-6" className="h-4 w-4 flex-shrink-0 text-muted-foreground/80" />
-                  )}
-                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                    <span className="truncate typography-ui-label text-foreground">{row.name}</span>
-                  </span>
+                  {/* The row stays a button, but it cannot wrap the row actions:
+                      a button inside a button is invalid HTML, and React reports
+                      it as a hydration error. Layout lives on the wrapper, the
+                      click target on the row button. */}
+                  <button
+                    ref={(node) => {
+                      if (node) {
+                        rowRefs.current.set(row.value, node);
+                      } else {
+                        rowRefs.current.delete(row.value);
+                      }
+                    }}
+                    type="button"
+                    onMouseEnter={() => setHighlightedIndex(index)}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => executeRow(row)}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  >
+                    {row.type === 'up' ? (
+                      <Icon name="arrow-left-s" className="h-4 w-4 flex-shrink-0 text-muted-foreground/80" />
+                    ) : (
+                      <Icon name="folder-6" className="h-4 w-4 flex-shrink-0 text-muted-foreground/80" />
+                    )}
+                    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                      <span className="truncate typography-ui-label text-foreground">{row.name}</span>
+                    </span>
+                  </button>
                   {row.type === 'directory' && row.disabled ? (
                     <span className="rounded-full border border-border/60 px-2 py-0.5 typography-meta text-muted-foreground">
                       {t('directoryExplorerDialog.browse.addedBadge')}
@@ -775,7 +783,7 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
                       </button>
                     </>
                   ) : null}
-                </button>
+                </div>
               );
             })}
           </div>
