@@ -1,4 +1,7 @@
-## [Unreleased]
+## [1.34.1] - 2026-09-20
+
+- **Chat: a session stuck loading no longer freezes the panel.** While a session's messages were still on their way, switching between sessions drove the view into a render loop — React gave up after dozens of rounds and the panel stopped responding. Sessions that are ready still switch instantly.
+- Chat: the plan-review overlay no longer re-requests the plan on every frame during that loop, and the plan state it reads no longer lingers from an earlier session.
 
 ## [1.33.0] - 2026-09-19
 

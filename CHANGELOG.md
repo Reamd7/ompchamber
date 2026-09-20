@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.34.1] - 2026-09-20
+
+- **Chat: a session stuck loading no longer freezes the app.** While a session's messages were still on their way, switching between sessions drove the view into a render loop — React gave up after dozens of rounds and the interface stopped responding. Sessions that are ready still switch instantly.
+- Chat: the plan-review overlay no longer re-requests the plan on every frame during that loop, and the plan state it reads no longer lingers from an earlier session.
+- Desktop: the packaged app's event stream connects again after a reconnect. The desktop window loads over a custom origin, so resuming the stream sent a header the server had not cleared for it, and every reconnect died before reaching the server.
+
 ## [1.34.0] - 2026-09-20
 
 - Dev: the engine status report (Ctrl/Cmd+Shift+L) now shows event-stream liveness — connection state with transport, ages of the last wire frame and last delivered events (with totals), and recent resyncs or disconnects — so a window that looks connected but shows stale content can be classified from the copied report.
