@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.34.2] - 2026-09-20
+
+- Dev: the release pipeline now prints the engine's own log when the CLI smoke test fails, instead of exiting with a bare status code. Three releases failed the same engine check with no diagnostic; this run reports why.
+
 ## [1.34.1] - 2026-09-20
 
 - **Chat: a session stuck loading no longer freezes the app.** While a session's messages were still on their way, switching between sessions drove the view into a render loop — React gave up after dozens of rounds and the interface stopped responding. Sessions that are ready still switch instantly.
