@@ -118,9 +118,8 @@ export const OmpModeSelector: React.FC<OmpModeSelectorProps> = ({
     <div className="flex items-center gap-2 min-w-0" data-testid="omp-mode-selector">
       <DropdownMenu open={open} onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild>
-          <div
-            role="button"
-            tabIndex={0}
+          <button
+            type="button"
             aria-label={labels.ariaLabel}
             className={cn(
               'model-controls__mode-trigger flex cursor-pointer items-center gap-1.5 transition-colors min-w-0 hover:bg-transparent hover:opacity-70',
@@ -131,7 +130,7 @@ export const OmpModeSelector: React.FC<OmpModeSelectorProps> = ({
             <span className={cn('model-controls__mode-label font-medium min-w-0 truncate', textClass)}>
               {labelForMode(effective)}
             </span>
-          </div>
+          </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(200px,calc(100vw-2rem))] p-0 flex flex-col">
           <div className="typography-ui-header px-3 pt-2 pb-1 font-semibold text-foreground">{labels.title}</div>

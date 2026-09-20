@@ -169,7 +169,9 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
             ) : (
                 <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                        <div className={cn(
+                        <button
+                            type="button"
+                            className={cn(
                             dropdownTriggerVariants({ size: 'sm' }),
                             'w-fit cursor-pointer',
                             className
@@ -179,7 +181,7 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
                                 {agentName || t('settings.commands.agentSelector.notSelected')}
                             </span>
                             <Icon name="arrow-down-s" className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
-                        </div>
+                        </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent className="max-w-[300px]" portalToBody={dropdownPortalToBody}>
                         <DropdownMenuItem

@@ -102,9 +102,8 @@ export const OmpPersonaSelector: React.FC<OmpPersonaSelectorProps> = ({
     <div className="flex items-center gap-2 min-w-0" data-testid="omp-persona-selector">
       <DropdownMenu open={open} onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild>
-          <div
-            role="button"
-            tabIndex={0}
+          <button
+            type="button"
             aria-label={labels.ariaLabel}
             className={cn(
               'model-controls__persona-trigger flex cursor-pointer items-center gap-1.5 transition-colors min-w-0 hover:bg-transparent hover:opacity-70',
@@ -115,7 +114,7 @@ export const OmpPersonaSelector: React.FC<OmpPersonaSelectorProps> = ({
             <span className={cn('model-controls__persona-label font-medium min-w-0 truncate', textClass)}>
               {selectedOption?.label ?? (selected || labels.standard)}
             </span>
-          </div>
+          </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" alignOffset={-40} className="w-[min(240px,calc(100vw-2rem))] p-0 flex flex-col">
           <div className="typography-ui-header px-3 pt-2 pb-1 font-semibold text-foreground">{labels.title}</div>

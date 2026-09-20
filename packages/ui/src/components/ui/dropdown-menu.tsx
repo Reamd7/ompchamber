@@ -80,6 +80,13 @@ function DropdownMenu({
   )
 }
 
+/**
+ * Base UI defaults `nativeButton` to true, so the element this ends up
+ * rendering must be a real `<button>`. A `div`/`span` target drops native
+ * button semantics and Base UI reports it in the console. When the trigger
+ * needs row/flex layout, wrap a full-width `<button type="button">` instead of
+ * styling a container.
+ */
 function DropdownMenuTrigger({
   asChild,
   children,
