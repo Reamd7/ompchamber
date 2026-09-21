@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.34.4] - 2026-09-21
+
+- Dev: the published CLI now pins the embedded engine (`@oh-my-pi/pi-coding-agent`) to an exact version. The previous range resolved to a newer upstream release that had removed an export the engine host imports, so the engine never booted on a fresh CLI install and the v1.34.3 release shipped without CLI tarballs; desktop builds install from the lockfile and were unaffected.
+
 ## [1.34.3] - 2026-09-21
 
 - **A v1.34.2 regression could crash the app on launch with React's "Maximum update depth exceeded".** The fix that ended one render loop started another: the file-cache owner setup re-triggered itself on every mount until React gave up. It now re-runs only when the underlying files API actually changes, and directory bootstrap no longer publishes store updates during render.
