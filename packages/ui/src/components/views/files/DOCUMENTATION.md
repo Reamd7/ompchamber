@@ -73,8 +73,7 @@ An agent can ask for a file to be shown (`file.open` on the managed
 `ContextPanel` answers it with `openContextFile`, `MobileApp` additionally
 opens the files drawer. VS Code has no shared file viewer and no managed
 tool, so the event never reaches it.
-
-## Uploads
+ Uploads
 
 `useFileTreeUpload` owns uploads for both trees: `FilesView` (including
 mobile) and `SidebarFilesTree`. Files arrive through desktop drag-and-drop or

@@ -723,6 +723,36 @@ export function isSvgFile(filePath: string): boolean {
   return filePath.toLowerCase().endsWith('.svg');
 }
 
+// Playable in a browser media element: the viewer plays these instead of
+// offering a download. What a runtime's engine cannot decode (an HEVC .mov,
+// a .mkv) still opens; the element reports the failure and the viewer says so.
+const AUDIO_EXTENSIONS = ['mp3', 'm4a', 'aac', 'wav', 'flac', 'ogg', 'oga', 'opus', 'weba'];
+const VIDEO_EXTENSIONS = ['mp4', 'm4v', 'webm', 'mov', 'ogv', 'mkv'];
+const FONT_EXTENSIONS = ['ttf', 'otf', 'woff', 'woff2'];
+
+export function isAudioFile(filePath: string): boolean {
+  return AUDIO_EXTENSIONS.includes(getFileExtension(filePath));
+}
+
+export function isVideoFile(filePath: string): boolean {
+  return VIDEO_EXTENSIONS.includes(getFileExtension(filePath));
+}
+
+export function isFontFile(filePath: string): boolean {
+  return FONT_EXTENSIONS.includes(getFileExtension(filePath));
+}
+
+/** Comma- or tab-separated text the viewer can lay out as a table. */
+export function isDelimitedTableFile(filePath: string): boolean {
+  const ext = getFileExtension(filePath);
+  return ext === 'csv' || ext === 'tsv';
+}
+
+export function isMermaidFile(filePath: string): boolean {
+  const ext = getFileExtension(filePath);
+  return ext === 'mmd' || ext === 'mermaid';
+}
+
 /** Known non-text extensions that must not be opened or saved as UTF-8 text. */
 const BINARY_FILE_EXTENSIONS = new Set([
   // Documents / office
@@ -733,9 +763,9 @@ const BINARY_FILE_EXTENSIONS = new Set([
   // Images (svg is text and is excluded via isSvgFile)
   ...IMAGE_EXTENSIONS.filter((ext) => ext !== 'svg'),
   // Audio / video
-  'mp3', 'mp4', 'm4a', 'aac', 'flac', 'ogg', 'wav', 'wma', 'avi', 'mov', 'mkv', 'webm', 'wmv',
+  ...AUDIO_EXTENSIONS, ...VIDEO_EXTENSIONS, 'wma', 'avi', 'wmv',
   // Fonts
-  'ttf', 'otf', 'woff', 'woff2', 'eot',
+  ...FONT_EXTENSIONS, 'eot',
   // Native / bytecode
   'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'o', 'a', 'lib', 'wasm', 'node',
   // Databases / locks / misc binary

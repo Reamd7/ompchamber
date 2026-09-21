@@ -38,6 +38,7 @@ import { ContextPanelContent } from './ContextSidebarTab';
 import { BrowserPane } from '@/components/browser/BrowserPane';
 import { browserUrlLabel } from '@/lib/browser/url';
 import { registerBrowserOpener } from '@/lib/browser/controlClient';
+import { subscribeOmpchamberEvents } from '@/lib/openchamberEvents';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { getActiveRelayDescriptor } from '@/lib/relay/runtime-tunnel';
@@ -537,6 +538,16 @@ export const ContextPanel: React.FC = () => {
     if (!effectiveDirectory) return;
     return registerBrowserOpener((url) => openContextBrowser(effectiveDirectory, url));
   }, [effectiveDirectory, openContextBrowser]);
+  // The agent asked for a file to be shown. It opens in front of whatever tab
+  // the user had, on purpose: the agent is pointing at a result, and the prior
+  // tab is one click away.
+  const openContextFile = useUIStore((state) => state.openContextFile);
+  React.useEffect(() => subscribeOmpchamberEvents((event) => {
+    if (event.type !== 'file-open-request') return;
+    const directory = event.directory ?? effectiveDirectory;
+    if (!directory) return;
+    openContextFile(directory, event.path);
+  }), [effectiveDirectory, openContextFile]);
   const reorderContextPanelTabs = useUIStore((state) => state.reorderContextPanelTabs);
   const setSelectedFilePath = useFilesViewTabsStore((state) => state.setSelectedPath);
   const contextEditorTreeVisible = useUIStore((state) => state.contextEditorTreeVisible);

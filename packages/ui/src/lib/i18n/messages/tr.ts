@@ -1,4 +1,6 @@
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  ...fileArtifactsI18n.tr,
   'sessions.sidebar.project.folderMissing': 'Proje klasörü bulunamıyor veya kullanılamıyor',
   'settings.behavior.page.section.worktrees': 'Worktree\'ler',
   'settings.behavior.page.worktreeFetchSource.enable': 'Worktree oluşturmadan önce uzak depodan fetch et',
@@ -2690,8 +2692,7 @@ export const dict = {
   'contextPanel.linear.toast.closeFailed': 'Issue kapatılamadı',
   'contextPanel.linear.toast.workspaceSwitched': 'Linear çalışma alanı değiştirildi',
   'contextPanel.linear.toast.workspaceSwitchFailed': 'Linear çalışma alanı değiştirilemedi',
-  'contextPanel.linear.error.noCompletedState': 'Bu ekibin tamamlandı durumu yok',
-  'terminalView.actions.attachSelection': 'Seçili çıktıyı ekle',
+  'contextPanel.linear.error.noCompletedState': 'Bu ekibin tamamlandı durumu yok',  'terminalView.actions.attachSelection': 'Seçili çıktıyı ekle',
   'terminalView.actions.restart': 'Terminali yeniden başlat',
   'terminalView.actions.takeControl': 'Boyutun kontrolünü al',
   'terminalView.actions.releaseControl': 'Boyut kontrolünü bırak',

@@ -1,8 +1,10 @@
 import { settingsDict } from './en.settings';
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  ...fileArtifactsI18n.en,
   'sessions.sidebar.project.folderMissing': 'Project folder is missing or unavailable',
   'sessions.aiRename.action': 'Rename with AI',
   'sessions.aiRename.generating': 'Generating session title...',

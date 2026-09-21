@@ -1,6 +1,7 @@
 import React from 'react';
 
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
+import { subscribeOmpchamberEvents } from '@/lib/openchamberEvents';
 import { MobileAppUpdateToast } from '@/components/update/MobileAppUpdateToast';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { Button } from '@/components/ui/button';
@@ -174,6 +175,16 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
     setWorkspaceTab('files');
     setWorkspaceOpen(true);
   }, []);
+
+  // The agent asked for a file to be shown: open the files drawer and stage
+  // the path the way a chat file link does, so the surface routes to it.
+  React.useEffect(() => subscribeOmpchamberEvents((event) => {
+    if (event.type !== 'file-open-request') return;
+    const directory = event.directory ?? useDirectoryStore.getState().currentDirectory;
+    if (!directory) return;
+    useUIStore.getState().openContextFile(directory, event.path);
+    openFilesSurface();
+  }), [openFilesSurface]);
 
   const openChangesSurface = React.useCallback((diff: { path: string; staged: boolean } | null = null) => {
     setPendingChangesDiff(diff);

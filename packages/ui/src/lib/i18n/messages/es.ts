@@ -1,9 +1,11 @@
 import type { I18nKey } from './en';
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 import { settingsDict } from './es.settings';
 import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  ...fileArtifactsI18n.es,
   'sidebarFilesTree.menu.uploadFiles': 'Subir archivos',
   'sidebarFilesTree.actions.uploadFilesTitle': 'Subir archivos',
   'contextRail.editor.toggle': 'Alternar editor de archivos',

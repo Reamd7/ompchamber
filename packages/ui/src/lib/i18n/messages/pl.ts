@@ -1,9 +1,11 @@
 import type { I18nKey } from './en';
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 import { settingsDict } from './pl.settings';
 import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  ...fileArtifactsI18n.pl,
   'sessions.sidebar.project.folderMissing': 'Folder projektu nie istnieje lub jest niedostępny',
   'sessions.aiRename.action': 'Zmień nazwę z AI',
   'sessions.aiRename.generating': 'Generowanie tytułu sesji...',

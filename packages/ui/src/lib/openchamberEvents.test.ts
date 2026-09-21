@@ -111,4 +111,29 @@ describe('ompchamber events', () => {
     ]);
     unsubscribe();
   });
+
+  test('dispatches an agent file-open request and drops one without a path', async () => {
+    const { subscribeOmpchamberEvents } = await import('./openchamberEvents');
+    const events: unknown[] = [];
+    const unsubscribe = subscribeOmpchamberEvents((event) => events.push(event));
+    const source = MockEventSource.instances[0];
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: 'ompchamber:file-open-request',
+        properties: { path: '/repo/out/report.csv', directory: '/repo', sessionId: null },
+      }),
+    });
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: 'ompchamber:file-open-request',
+        properties: { directory: '/repo', sessionId: 'ses_1' },
+      }),
+    });
+
+    expect(events).toEqual([
+      { type: 'file-open-request', path: '/repo/out/report.csv', directory: '/repo', sessionId: null },
+    ]);
+    unsubscribe();
+  });
 });

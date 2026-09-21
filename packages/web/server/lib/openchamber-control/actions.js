@@ -37,6 +37,7 @@ export const OMPCHAMBER_CONTROL_ACTION_DEFINITIONS = Object.freeze([
   { action: 'schedule.run', title: 'Run a scheduled task', description: 'Run taskId; scope with projectId or directory' },
   { action: 'schedule.delete', title: 'Delete a scheduled task', description: 'Delete taskId; scope with projectId or directory' },
   { action: 'schedule.toggle', title: 'Enable or disable a scheduled task', description: 'Enable or disable taskId; requires the disabled boolean' },
+  { action: 'file.open', title: 'Show a file to the user', description: 'Open path in the user\'s file panel, in front of whatever they had open, so they can look at a result you produced: a screenshot, report, CSV, recording, or generated page. Relative to the session directory. Use it only when seeing the file moves the work forward, not for every file you touch' },
 ]);
 
 /** 控制动作名数组（内部派生自定义表）。 */

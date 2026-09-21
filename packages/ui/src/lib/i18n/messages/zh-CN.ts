@@ -1,9 +1,11 @@
 import type { I18nKey } from './en';
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 import { settingsDict } from './zh-CN.settings';
 import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  ...fileArtifactsI18n['zh-CN'],
   'sessions.sidebar.project.folderMissing': '项目文件夹不存在或不可用',
   'sessions.aiRename.action': '使用 AI 重命名',
   'sessions.aiRename.generating': '正在生成会话标题...',

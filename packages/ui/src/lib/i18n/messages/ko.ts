@@ -1,9 +1,11 @@
 import type { I18nKey } from './en';
+import { fileArtifactsI18n } from './file-artifacts.i18n';
 import { settingsDict } from './ko.settings';
 import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  ...fileArtifactsI18n.ko,
   'sessions.sidebar.project.folderMissing': '프로젝트 폴더가 없거나 사용할 수 없습니다',
   'sessions.aiRename.action': 'AI로 이름 변경',
   'sessions.aiRename.generating': '세션 제목 생성 중...',

@@ -1156,7 +1156,7 @@ export const useConfigStore = create<ConfigStore>()(
                 settingsAutoCreateWorktree: false,
                 settingsWorktreeFetchSource: true,
                 settingsGitmojiEnabled: false,
-                settingsDefaultFileViewerPreview: false,
+                settingsDefaultFileViewerPreview: true,
                 settingsZenModel: undefined,
                 settingsMessageStreamTransport: 'auto',
                 // Voice provider preference - load from localStorage or default to 'browser'
@@ -2003,7 +2003,7 @@ export const useConfigStore = create<ConfigStore>()(
                             settingsDefaultAgent: edited ? state.settingsDefaultAgent : defaults.defaultAgent,
                             settingsAutoCreateWorktree: defaults.autoCreateWorktree ?? false,
                             settingsGitmojiEnabled: defaults.gitmojiEnabled ?? false,
-                            settingsDefaultFileViewerPreview: defaults.defaultFileViewerPreview ?? false,
+                            settingsDefaultFileViewerPreview: defaults.defaultFileViewerPreview ?? true,
                             settingsZenModel: defaults.zenModel,
                             settingsMessageStreamTransport: defaults.messageStreamTransport ?? state.settingsMessageStreamTransport,
                             sttProvider: defaults.sttProvider ?? state.sttProvider,
