@@ -1,3 +1,9 @@
+## [1.34.3] - 2026-09-21
+
+- **Chat: the panel no longer fails to open with React's "Maximum update depth exceeded".** A v1.34.2 regression made the file-cache owner setup re-trigger itself on every mount until React gave up; it now re-runs only when the underlying files API actually changes, and directory bootstrap no longer publishes updates during render.
+- Chat: dropdown triggers — the composer's model, thinking-level, and agent pickers, the omp mode and persona chips, and the thinking pill — are real buttons now: Enter/Space activates them, and the console warnings about missing button semantics are gone.
+- Chat: the directory picker no longer logs a hydration error when it opens, and its path input takes focus as the dialog opens instead of leaving focus in the composer.
+
 ## [1.34.1] - 2026-09-20
 
 - **Chat: a session stuck loading no longer freezes the panel.** While a session's messages were still on their way, switching between sessions drove the view into a render loop — React gave up after dozens of rounds and the panel stopped responding. Sessions that are ready still switch instantly.

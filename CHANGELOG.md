@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.34.3] - 2026-09-21
+
+- **A v1.34.2 regression could crash the app on launch with React's "Maximum update depth exceeded".** The fix that ended one render loop started another: the file-cache owner setup re-triggered itself on every mount until React gave up. It now re-runs only when the underlying files API actually changes, and directory bootstrap no longer publishes store updates during render.
+- **Server: long agent turns no longer report as failed sends.** A prompt is answered when the turn finishes, so any turn past about four minutes hit the proxy deadline — the app reported "OpenCode upstream timed out" while the engine kept working, and the scheduled-task runner, which treats a failed response as a send that never happened, could start a duplicate run. Turn-running requests now wait up to six hours before being declared dead; every other request keeps its ordinary deadline.
+- Chat: dropdown triggers — the composer's model, thinking-level, variant, and agent pickers, the omp mode and persona chips, the agents-page model picker, the commands-page agent picker, and the thinking pill — are real buttons now, so keyboard Enter/Space activates them and the console warnings about missing button semantics are gone.
+- Sessions: the directory picker no longer logs a hydration error every time it opens (row actions sat nested inside the row's own button), and its path input takes focus as the dialog opens, so the first keystrokes land in the path field instead of the composer.
+
 ## [1.34.2] - 2026-09-20
 
 - Dev: the release pipeline now prints the engine's own log when the CLI smoke test fails, instead of exiting with a bare status code. Three releases failed the same engine check with no diagnostic; this run reports why.
