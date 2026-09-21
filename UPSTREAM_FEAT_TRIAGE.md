@@ -7,7 +7,7 @@
 
 | 功能线 | 提交数 | v2 | 引擎 | 服务端 | 价值 | 进度 |
 |---|---|---|---|---|---|---|
-| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 4/9 (4吸) |
+| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 5/9 (5吸) |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 0/5 |
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 1/5 (0吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
@@ -38,7 +38,7 @@
 |---|---|---|---|---|
 | - [ ] | `85be91762` | feat(git): make the changes tree read as a tree | `自身` |  |
 | - [ ] | `7c5637ab7` | feat(diff): add a file tree mode with one file open at a time | `服务端` |  |
-| - [ ] | `1938b9c5f` | feat(diff): expand collapsed context in pull request comparisons | `服务端` |  |
+| - [x] | `1938b9c5f` | feat(diff): expand collapsed context in pull request comparisons | `服务端` | PORTED(服务端移植 server-rs:pr-file 路由) |
 | - [ ] | `c469a40bf` | feat(review): inherit permission auto-accept in new review sessions | `自身` |  |
 | - [ ] | `d5fbd86e9` | feat(diff): show a loading state on collapsed-context separators | `自身` |  |
 | - [x] | `bb7bededf` | feat(git): review published pull request diffs in Changes | `服务端` | PORTED(服务端移植 server-rs:pr-diff 路由/跨仓 PR source) |

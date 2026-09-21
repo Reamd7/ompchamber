@@ -272,6 +272,21 @@ pub type PrDiffFn = Arc<
         + Sync,
 >;
 
+/// PR 单文件两侧内容的接缝（`getPullRequestFileContents`）：参数为
+/// directory、PR 号、跨仓 sourceRepo、path、previousPath、status。
+pub type PrFileContentsFn = Arc<
+    dyn Fn(
+            String,
+            i64,
+            Option<SourceRepo>,
+            String,
+            Option<String>,
+            String,
+        ) -> BoxFuture<Result<Value, WalkthroughError>>
+        + Send
+        + Sync,
+>;
+
 /// `loadSourceSections`: resolve a source into diff sections plus the source's
 /// pass-through metadata.
 /// 中文补充：git/PR 接缝错误映射为 500；空 patch 产生空 section 列表。

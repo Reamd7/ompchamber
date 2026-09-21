@@ -29,6 +29,7 @@ pub fn routes(service: Arc<WalkthroughService>) -> Router {
         .route("/api/walkthrough/progress", get(progress))
         .route("/api/walkthrough/cancel", post(cancel))
         .route("/api/walkthrough/pr-diff", get(pr_diff))
+        .route("/api/walkthrough/pr-file", get(pr_file))
         .with_state(service)
 }
 
@@ -134,6 +135,60 @@ async fn pr_diff(
             patch,
         )
             .into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+/// GET /api/walkthrough/pr-file：PR 单文件两侧内容（original/modified）。
+/// directory/source(pr kind)/path 缺失均 400；status 缺省 M。
+async fn pr_file(
+    State(service): State<Arc<WalkthroughService>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let directory = query.get("directory").map(|v| v.trim().to_string()).unwrap_or_default();
+    if directory.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "directory parameter is required" })),
+        )
+            .into_response();
+    }
+    let source = match super::sources::parse_source(read_source(query.get("source")).as_ref()) {
+        Ok(source) => source,
+        Err(error) => return error.into_response(),
+    };
+    let super::sources::Source::Pr { number, source_repo } = source else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "A pull request source is required" })),
+        )
+            .into_response();
+    };
+    let path = query.get("path").map(|v| v.trim().to_string()).unwrap_or_default();
+    if path.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "path parameter is required" })),
+        )
+            .into_response();
+    }
+    let previous_path = query
+        .get("previousPath")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let status = query.get("status").cloned().unwrap_or_else(|| "M".to_string());
+    match service
+        .get_pull_request_file_contents(
+            &directory,
+            number,
+            source_repo,
+            &path,
+            previous_path.as_deref(),
+            &status,
+        )
+        .await
+    {
+        Ok(value) => Json(value).into_response(),
         Err(error) => error.into_response(),
     }
 }
