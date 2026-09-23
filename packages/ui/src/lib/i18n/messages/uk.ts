@@ -4,6 +4,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sidebarFilesTree.menu.uploadFiles': 'Завантажити файли',
+  'sidebarFilesTree.actions.uploadFilesTitle': 'Завантажити файли',
   'contextRail.editor.toggle': 'Перемкнути редактор файлів',
   'sessions.sidebar.session.status.nextStep': 'Наступний крок: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'Папка проєкту відсутня або недоступна',
@@ -1617,8 +1619,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.actions.disableLineWrap': 'Вимкнути перенос рядків',
   'diffView.actions.enableLineWrap': 'Увімкнути перенос рядків',
   'diffView.actions.openFileInEditorAtChange': 'Відкрити цей файл у редакторі на зміні',
-  'diffView.actions.openFileAtFirstChangedLine': 'Відкрити цей файл у першому зміненому рядку',
-  'diffView.actions.review': 'Ревʼю',
+  'diffView.actions.openFileAtFirstChangedLine': 'Відкрити цей файл у першому зміненому рядку',  'diffView.actions.review': 'Ревʼю',
   'diffView.actions.reviewAria': 'Поревʼювати зміни',
   'diffView.reviewDialog.title': 'Ревʼю змін',
   'diffView.reviewDialog.description': 'Запустити окрему сесію ревʼю для поточних змін.',

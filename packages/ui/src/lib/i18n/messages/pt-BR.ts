@@ -4,6 +4,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sidebarFilesTree.menu.uploadFiles': 'Enviar arquivos',
+  'sidebarFilesTree.actions.uploadFilesTitle': 'Enviar arquivos',
   'contextRail.editor.toggle': 'Alternar editor de arquivos',
   'sessions.sidebar.session.status.nextStep': 'Próximo passo: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'A pasta do projeto não existe ou está indisponível',
@@ -1617,8 +1619,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.actions.disableLineWrap': 'Desativar ajuste de linha',
   'diffView.actions.enableLineWrap': 'Ativar ajuste de linha',
   'diffView.actions.openFileInEditorAtChange': 'Abrir este arquivo no editor nesta alteração',
-  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este arquivo na primeira linha alterada',
-  'diffView.actions.review': 'Revisar',
+  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este arquivo na primeira linha alterada',  'diffView.actions.review': 'Revisar',
   'diffView.actions.reviewAria': 'Revisar alterações',
   'diffView.reviewDialog.title': 'Revisar alterações',
   'diffView.reviewDialog.description': 'Inicia uma sessão de revisão separada para as alterações atuais.',

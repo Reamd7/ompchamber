@@ -34,7 +34,10 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useGitStatus } from '@/stores/useGitStore';
+import { useGitStatus, useGitStore } from '@/stores/useGitStore';
+import { DirectoryRequests } from '@/components/views/files/directoryRequests';
+import { areDirectoryNodesEqual } from '@/components/views/files/fileTreeStatus';
+import { useFileTreeUpload } from '@/components/views/files/useFileTreeUpload';
 import { useDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { useFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { copyTextToClipboard } from '@/lib/clipboard';
@@ -43,8 +46,6 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { getContextFileOpenFailureMessage, validateContextFileOpen } from '@/lib/contextFileOpenGuard';
-import { isFilesystemError } from '@/lib/api/files-errors';
-import { notifyFileContentInvalidated } from '@/lib/fileContentInvalidation';
 import { isBrowserClientRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 import { recordFileTreeDragStart, shouldTreatFileTreeDragEndAsClick } from './fileTreeDragClick';
@@ -56,17 +57,6 @@ type FileNode = {
   extension?: string;
   relativePath?: string;
 };
-
-type UploadConflicts = {
-  directory: string;
-  files: File[];
-  runtimeKey: string;
-  workspaceRoot: string;
-};
-
-type UploadOutcome = 'uploaded' | 'conflict' | 'failed';
-
-const MAX_PARALLEL_UPLOADS = 3;
 
 const hasExternalFiles = (dataTransfer: DataTransfer): boolean => (
   Array.from(dataTransfer.types).includes('Files')
@@ -81,14 +71,6 @@ const getExternalFiles = (dataTransfer: DataTransfer): File[] => {
     const file = item.getAsFile();
     return file ? [file] : [];
   });
-};
-
-const getUploadName = (file: File): string | null => {
-  const name = file.name;
-  if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-    return null;
-  }
-  return name;
 };
 
 const sortNodes = (items: FileNode[]) =>
@@ -263,6 +245,7 @@ interface FileRowProps {
   onOpenDialog: (type: 'createFile' | 'createFolder' | 'rename' | 'delete', data: { path: string; name?: string; type?: 'file' | 'directory' }) => void;
   onSetDropTarget: (path: string | null) => void;
   onDropFiles: (directory: string, dataTransfer: DataTransfer) => void;
+  onPickFiles: (directory: string) => void;
 }
 
 const FileRow: React.FC<FileRowProps> = ({
@@ -283,6 +266,7 @@ const FileRow: React.FC<FileRowProps> = ({
   onOpenDialog,
   onSetDropTarget,
   onDropFiles,
+  onPickFiles,
 }) => {
   const { t } = useI18n();
   const isDir = node.type === 'directory';
@@ -290,7 +274,8 @@ const FileRow: React.FC<FileRowProps> = ({
   const { canRename, canCreateFile, canCreateFolder, canDelete, canReveal } = permissions;
   const canDownload = !isDir && Boolean(downloadFile);
   const canRevealPath = canReveal && !isBrowserClient;
-  const hasMenuActions = canRename || canCreateFile || canCreateFolder || canDelete || canDownload || canRevealPath;
+  const canUploadHere = isDir && canUpload;
+  const hasMenuActions = canRename || canCreateFile || canCreateFolder || canUploadHere || canDelete || canDownload || canRevealPath;
 
   // Menu open state is local to each row so opening a menu in one row
   // never re-renders its siblings. Previously this state lived on the
@@ -359,7 +344,7 @@ const FileRow: React.FC<FileRowProps> = ({
           <Icon name="folder-received" className="mr-2 h-4 w-4" /> {t(getRevealLabelKey())}
         </Item>
       )}
-      {isDir && (canCreateFile || canCreateFolder) && (
+      {isDir && (canCreateFile || canCreateFolder || canUploadHere) && (
         <>
           <Separator />
           {canCreateFile && (
@@ -370,6 +355,11 @@ const FileRow: React.FC<FileRowProps> = ({
           {canCreateFolder && (
             <Item onClick={(e: React.MouseEvent) => { e.stopPropagation(); onOpenDialog('createFolder', node); }}>
               <Icon name="folder-add" className="mr-2 h-4 w-4" /> {t('sidebarFilesTree.menu.newFolder')}
+            </Item>
+          )}
+          {canUploadHere && (
+            <Item onClick={(e: React.MouseEvent) => { e.stopPropagation(); onPickFiles(node.path); }}>
+              <Icon name="upload-2" className="mr-2 h-4 w-4" /> {t('sidebarFilesTree.menu.uploadFiles')}
             </Item>
           )}
         </>
@@ -528,6 +518,7 @@ const areFileRowPropsEqual = (prev: FileRowProps, next: FileRowProps): boolean =
   && prev.onOpenDialog === next.onOpenDialog
   && prev.onSetDropTarget === next.onSetDropTarget
   && prev.onDropFiles === next.onDropFiles
+  && prev.onPickFiles === next.onPickFiles
 );
 
 const MemoizedFileRow = React.memo(FileRow, areFileRowPropsEqual);
@@ -552,11 +543,6 @@ export const SidebarFilesTree: React.FC = () => {
   const [searchResults, setSearchResults] = React.useState<FileNode[]>([]);
   const [searching, setSearching] = React.useState(false);
   const [dropTarget, setDropTarget] = React.useState<string | null>(null);
-  const [isUploading, setIsUploading] = React.useState(false);
-  const [uploadConflicts, setUploadConflicts] = React.useState<UploadConflicts | null>(null);
-  const uploadingRef = React.useRef(false);
-  const rootRef = React.useRef(root);
-  rootRef.current = root;
 
   const [childrenByDir, setChildrenByDir] = React.useState<Record<string, FileNode[]>>({});
   const [loadErrorsByDir, setLoadErrorsByDir] = React.useState<Record<string, string>>({});
@@ -571,7 +557,6 @@ export const SidebarFilesTree: React.FC = () => {
   // of blanking out and re-listing every directory.
   React.useEffect(() => {
     setDropTarget(null);
-    setUploadConflicts(null);
     if (!root) {
       setChildrenByDir({});
       setLoadErrorsByDir({});
@@ -660,7 +645,6 @@ export const SidebarFilesTree: React.FC = () => {
   const canRename = Boolean(files.rename);
   const canDelete = Boolean(files.delete);
   const canReveal = Boolean(files.revealPath);
-  const canUpload = Boolean(files.uploadFile);
 
   const fileRowPermissions = React.useMemo(
     () => ({ canRename, canCreateFile, canCreateFolder, canDelete, canReveal }),
@@ -1026,97 +1010,29 @@ export const SidebarFilesTree: React.FC = () => {
     }
   }, [loadDirectory, root, toggleExpandedPath]);
 
-  const uploadDroppedFiles = React.useCallback(async (
-    directory: string,
-    droppedFiles: File[],
-    overwrite = false,
-  ) => {
-    const uploadFile = files.uploadFile;
-    if (!uploadFile || droppedFiles.length === 0 || uploadingRef.current || !root) return;
-
-    const operationRoot = root;
-    const operationRuntime = getRuntimeKey();
-    uploadingRef.current = true;
-    setIsUploading(true);
-    setDropTarget(directory);
-    if (overwrite) setUploadConflicts(null);
-
-    const outcomes: UploadOutcome[] = [];
-    for (let index = 0; index < droppedFiles.length; index += MAX_PARALLEL_UPLOADS) {
-      const batch = droppedFiles.slice(index, index + MAX_PARALLEL_UPLOADS);
-      const batchOutcomes = await Promise.all(batch.map(async (file): Promise<UploadOutcome> => {
-        const name = getUploadName(file);
-        if (!name || getRuntimeKey() !== operationRuntime) return 'failed';
-
-        try {
-          const result = await uploadFile(normalizePath(`${directory}/${name}`), file, {
-            directory: operationRoot,
-            overwrite,
-          });
-          return result.success ? 'uploaded' : 'failed';
-        } catch (error) {
-          if (!overwrite && isFilesystemError(error) && error.reason === 'already-exists') {
-            return 'conflict';
-          }
-          return 'failed';
-        }
-      }));
-      outcomes.push(...batchOutcomes);
-    }
-
-    const uploadedCount = outcomes.filter((outcome) => outcome === 'uploaded').length;
-    const failedCount = outcomes.filter((outcome) => outcome === 'failed').length;
-    const conflictingFiles = droppedFiles.filter((_, index) => outcomes[index] === 'conflict');
-    const uploadedPaths = droppedFiles.flatMap((file, index) => {
-      const name = getUploadName(file);
-      return outcomes[index] === 'uploaded' && name
-        ? [normalizePath(`${directory}/${name}`)]
-        : [];
-    });
-    const isCurrentDestination = rootRef.current === operationRoot && getRuntimeKey() === operationRuntime;
-
-    try {
-      if (uploadedPaths.length > 0) {
-        notifyFileContentInvalidated({ runtimeKey: operationRuntime, paths: uploadedPaths });
-      }
-      if (uploadedCount > 0 && isCurrentDestination) {
-        await refreshDirectory(directory);
-      }
-      if (uploadedCount > 0) {
-        toast.success(t(conflictingFiles.length > 0
-          ? 'sidebarFilesTree.toast.uploadedWithoutConflicts'
-          : 'sidebarFilesTree.toast.uploaded'));
-      }
-      if (failedCount > 0) {
-        toast.error(t('sidebarFilesTree.toast.uploadFailed'));
-      }
-      if (conflictingFiles.length > 0 && isCurrentDestination) {
-        setUploadConflicts({
-          directory,
-          files: conflictingFiles,
-          runtimeKey: operationRuntime,
-          workspaceRoot: operationRoot,
-        });
-      }
-    } finally {
-      uploadingRef.current = false;
-      setIsUploading(false);
-      setDropTarget(null);
-    }
-  }, [files.uploadFile, refreshDirectory, root, t]);
+  const {
+    canUpload,
+    uploadingDirectory,
+    uploadFiles,
+    pickFiles,
+    uploadElements,
+  } = useFileTreeUpload({ root, refreshDirectory });
+  const isUploading = uploadingDirectory !== null;
+  const dropIndicatorTarget = uploadingDirectory ?? dropTarget;
 
   const handleDropFiles = React.useCallback((directory: string, dataTransfer: DataTransfer) => {
     const droppedFiles = getExternalFiles(dataTransfer);
     if (droppedFiles.length === 0) return;
-    void uploadDroppedFiles(directory, droppedFiles);
-  }, [uploadDroppedFiles]);
+    setDropTarget(null);
+    void uploadFiles(directory, droppedFiles);
+  }, [uploadFiles]);
 
   const handleRootDragOver = React.useCallback((event: React.DragEvent) => {
-    if (!canUpload || uploadingRef.current || !root || !hasExternalFiles(event.dataTransfer)) return;
+    if (!canUpload || isUploading || !root || !hasExternalFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'copy';
     setDropTarget(root);
-  }, [canUpload, root]);
+  }, [canUpload, isUploading, root]);
 
   const handleRootDragLeave = React.useCallback((event: React.DragEvent) => {
     if (!hasExternalFiles(event.dataTransfer)) return;
@@ -1125,10 +1041,10 @@ export const SidebarFilesTree: React.FC = () => {
   }, []);
 
   const handleRootDrop = React.useCallback((event: React.DragEvent) => {
-    if (!canUpload || uploadingRef.current || !root || !hasExternalFiles(event.dataTransfer)) return;
+    if (!canUpload || isUploading || !root || !hasExternalFiles(event.dataTransfer)) return;
     event.preventDefault();
     handleDropFiles(root, event.dataTransfer);
-  }, [canUpload, handleDropFiles, root]);
+  }, [canUpload, handleDropFiles, isUploading, root]);
 
   // --- Dialog submit (matching FilesView) ---
 
@@ -1289,7 +1205,7 @@ export const SidebarFilesTree: React.FC = () => {
             isBrowserClient={isBrowserClient}
             status={!isDir ? getFileStatus(node.path) : undefined}
             badge={isDir ? getFolderBadge(node.path) : undefined}
-            isDropTarget={isDir && dropTarget === node.path}
+            isDropTarget={isDir && dropIndicatorTarget === node.path}
             canUpload={canUpload && !isUploading}
             permissions={fileRowPermissions}
             downloadFile={files.downloadFile}
@@ -1299,6 +1215,7 @@ export const SidebarFilesTree: React.FC = () => {
             onOpenDialog={handleOpenDialog}
             onSetDropTarget={setDropTarget}
             onDropFiles={handleDropFiles}
+            onPickFiles={pickFiles}
           />
           {isDir && isExpanded && (
             <ul className="flex flex-col gap-1 ml-3 pl-3 border-l border-border/40 relative">
@@ -1321,7 +1238,7 @@ export const SidebarFilesTree: React.FC = () => {
 
   const hasTree = Boolean(root && childrenByDir[root]);
   const rootLoadError = root ? loadErrorsByDir[root] : null;
-  const dropTargetLabel = dropTarget ? getDropTargetLabel(root, dropTarget) : '';
+  const dropTargetLabel = dropIndicatorTarget ? getDropTargetLabel(root, dropIndicatorTarget) : '';
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -1363,6 +1280,26 @@ export const SidebarFilesTree: React.FC = () => {
               </span>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>{t('sidebarFilesTree.actions.newFolderTitle')}</TooltipContent>
+          </Tooltip>
+        )}
+        {canUpload && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="inline-flex flex-shrink-0">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => pickFiles(root)}
+                  disabled={!root || isUploading}
+                  className="h-8 w-8 p-0 flex-shrink-0"
+                  title={t('sidebarFilesTree.actions.uploadFilesTitle')}
+                  aria-label={t('sidebarFilesTree.actions.uploadFilesTitle')}
+                >
+                  <Icon name="upload-2" className="h-4 w-4" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6}>{t('sidebarFilesTree.actions.uploadFilesTitle')}</TooltipContent>
           </Tooltip>
         )}
         <Tooltip>
@@ -1423,7 +1360,7 @@ export const SidebarFilesTree: React.FC = () => {
       <div className="relative flex-1 min-h-0">
         <ScrollableOverlay
           outerClassName="h-full min-h-0"
-          className={cn('p-2', dropTarget === root && 'bg-interactive-selection/10')}
+          className={cn('p-2', dropIndicatorTarget === root && 'bg-interactive-selection/10')}
           onDragEnter={handleRootDragOver}
           onDragOver={handleRootDragOver}
           onDragLeave={handleRootDragLeave}
@@ -1489,7 +1426,7 @@ export const SidebarFilesTree: React.FC = () => {
           )}
         </ul>
         </ScrollableOverlay>
-        {dropTarget ? (
+        {dropIndicatorTarget ? (
           <div className="pointer-events-none absolute left-2 right-2 top-2 z-50 flex items-center gap-2 rounded-md border border-primary bg-background/95 px-2 py-1.5 shadow-sm">
             <Icon name={isUploading ? 'loader-4' : 'folder-received'} className={cn('size-4 flex-shrink-0', isUploading && 'animate-spin')} />
             <span className="min-w-0 truncate typography-meta" title={dropTargetLabel}>
@@ -1499,41 +1436,7 @@ export const SidebarFilesTree: React.FC = () => {
         ) : null}
       </div>
 
-      <Dialog open={Boolean(uploadConflicts)} onOpenChange={(open: boolean) => !open && setUploadConflicts(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('sidebarFilesTree.dialog.uploadConflicts.title')}</DialogTitle>
-            <DialogDescription>
-              {t('sidebarFilesTree.dialog.uploadConflicts.description', { path: uploadConflicts?.directory ?? '' })}
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollableOverlay outerClassName="max-h-52" className="flex flex-col gap-1 pr-2">
-            {uploadConflicts?.files.map((file, index) => (
-              <div key={`${file.name}-${file.size}-${index}`} className="truncate rounded-md bg-muted px-2 py-1 typography-meta" title={file.name}>
-                {file.name}
-              </div>
-            ))}
-          </ScrollableOverlay>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadConflicts(null)} disabled={isUploading}>
-              {t('sidebarFilesTree.dialog.cancel')}
-            </Button>
-            <Button
-              onClick={() => {
-                if (!uploadConflicts) return;
-                if (uploadConflicts.runtimeKey !== getRuntimeKey() || uploadConflicts.workspaceRoot !== root) {
-                  setUploadConflicts(null);
-                  return;
-                }
-                void uploadDroppedFiles(uploadConflicts.directory, uploadConflicts.files, true);
-              }}
-              disabled={isUploading}
-            >
-              {t('sidebarFilesTree.dialog.uploadConflicts.replace')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {uploadElements}
 
       {/* CRUD dialogs (matching FilesView) */}
       <Dialog open={!!activeDialog} onOpenChange={(open) => !open && setActiveDialog(null)}>
