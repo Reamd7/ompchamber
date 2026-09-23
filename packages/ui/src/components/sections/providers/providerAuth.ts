@@ -1,3 +1,13 @@
+import type { ConnectionInfo, IntegrationInfo, IntegrationKeyMethod, IntegrationOAuthMethod } from '@/lib/opencode/wire';
+
+
+export type ProviderIntegration = IntegrationInfo;
+
+export const findIntegrationForProvider = (
+  integrations: readonly IntegrationInfo[],
+  providerId: string,
+): IntegrationInfo | undefined => integrations.find((integration) => integration.id === providerId);
+
 export interface AuthMethod {
   type?: string;
   name?: string;
@@ -28,6 +38,57 @@ export const normalizeAuthType = (method: AuthMethod): string => {
   return raw.toLowerCase();
 };
 
+/**
+ * OpenCode Go bills through the OpenCode Console, so it signs in through the
+ * Console's `opencode` integration; its own integration only accepts a
+ * service-account key. OpenCode's own connect dialog makes the same mapping.
+ * Returns the integration whose OAuth methods sign a provider in.
+ */
+export const getSignInIntegrationId = (providerId: string): string =>
+  providerId === 'opencode-go' ? 'opencode' : providerId;
+
+/**
+ * Connections that give a provider credentials: its own, plus the sign-in
+ * integration's when the provider signs in elsewhere.
+ */
+export const getProviderConnections = (
+  integrations: readonly IntegrationInfo[],
+  providerId: string,
+): ConnectionInfo[] | undefined => {
+  const own = findIntegrationForProvider(integrations, providerId)?.connections;
+  const signInId = getSignInIntegrationId(providerId);
+  if (signInId === providerId) return own;
+  const signIn = findIntegrationForProvider(integrations, signInId)?.connections;
+  if (!own && !signIn) return undefined;
+  return [...(own ?? []), ...(signIn ?? [])];
+};
+
+export const getOAuthMethods = (
+  integration: IntegrationInfo | undefined,
+): IntegrationOAuthMethod[] =>
+  (integration?.methods ?? []).filter((method): method is IntegrationOAuthMethod => method.type === 'oauth');
+
+export const getKeyMethod = (
+  integration: IntegrationInfo | undefined,
+): IntegrationKeyMethod | undefined =>
+  (integration?.methods ?? []).find((method): method is IntegrationKeyMethod => method.type === 'key');
+/**
+ * Show the API key form when the provider declares API auth, or when auth
+ * methods are still unknown (empty). OAuth-only providers must not get an
+ * API key prompt.
+ */
+export const shouldShowApiKeyAuth = (methods: AuthMethod[]): boolean => {
+  if (methods.length === 0) {
+    return true;
+  }
+  return methods.some((method) => normalizeAuthType(method) === 'api');
+};
+
+export const getOAuthAuthMethods = (methods: AuthMethod[]): OAuthAuthMethodEntry[] =>
+  methods
+    .map((method, methodIndex) => ({ method, methodIndex }))
+    .filter(({ method }) => normalizeAuthType(method) === 'oauth');
+
 export const parseAuthPayload = (payload: unknown): Record<string, AuthMethod[]> => {
   if (!isRecord(payload)) {
     return {};
@@ -46,17 +107,8 @@ export const parseAuthPayload = (payload: unknown): Record<string, AuthMethod[]>
  * methods are still unknown (empty). OAuth-only providers must not get an
  * API key prompt.
  */
-export const shouldShowApiKeyAuth = (methods: AuthMethod[]): boolean => {
-  if (methods.length === 0) {
-    return true;
-  }
-  return methods.some((method) => normalizeAuthType(method) === 'api');
-};
-
-export const getOAuthAuthMethods = (methods: AuthMethod[]): OAuthAuthMethodEntry[] =>
-  methods
-    .map((method, methodIndex) => ({ method, methodIndex }))
-    .filter(({ method }) => normalizeAuthType(method) === 'oauth');
+export const getCredentialConnections = (connections: readonly ConnectionInfo[] | undefined): ConnectionInfo[] =>
+  (connections ?? []).filter((connection) => connection.type === 'credential');
 
 export const requiresOpenCodeRestartAfterOAuth = (providerId: string): boolean =>
   providerId !== 'claude-code';
@@ -81,6 +133,8 @@ export interface ProviderCredentialInput {
    * "Credentials missing" even when fully configured.
    */
   envDeclared?: boolean;
+  /** OpenCode Console/connection credentials (integration connections). */
+  connections?: readonly ConnectionInfo[] | undefined;
 }
 
 /**
@@ -90,6 +144,9 @@ export interface ProviderCredentialInput {
  */
 export const providerHasCredentials = (input: ProviderCredentialInput): boolean => {
   if (typeof input.key === 'string' && input.key.trim().length > 0) {
+    return true;
+  }
+  if ((input.connections ?? []).some((connection) => connection.type === 'credential')) {
     return true;
   }
   if (typeof input.optionsApiKey === 'string' && input.optionsApiKey.trim().length > 0) {

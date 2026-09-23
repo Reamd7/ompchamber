@@ -19,7 +19,7 @@
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
 | Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 7/7 (1吸/2跳/4半) |
-| Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 0/5 |
+| Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 1/5 (1吸) |
 | 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
 | MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
 | 权限/安全 | 1 | 1 | 0 | 1 | 🟡 中价值 / 引擎+服务端 | 1/1 (0吸/1跳) |
@@ -199,7 +199,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 |---|---|---|---|---|
 | - [ ] | `0b936476e` | feat(routing): answer Jev through OpenRouter and Vercel AI Gateway | `服务端` |  |
 | - [ ] | `9aeb6fe93` | feat(providers): configure reasoning levels for custom provider models | `服务端` |  |
-| - [ ] | `800b2aee9` | feat(providers): sign in to OpenCode Go through the Console | `自身` |  |
+| - [x] | `800b2aee9` | feat(providers): sign in to OpenCode Go through the Console | `自身` | PORTED(wire 类型换绑 v1;Console sign-in 映射织入 fork providerAuth/ProvidersPage) |
 | - [ ] | `48ce6028d` | feat(routing): keep Auto across restarts and offer it as the session default | `引擎耦合?` `服务端` |  |
 | - [ ] | `ec95fe2e0` | feat(routing): route prompts to a model per task and hold risky auto-accepted actions | `引擎耦合?` `服务端` |  |
 
