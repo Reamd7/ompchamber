@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.providers.page.custom.models.variantsLabel': 'Рівні міркування',
+  'settings.providers.page.custom.models.variantsInfo': 'Необов’язково. Рівні зусилля через кому, які приймає endpoint, наприклад low, medium, high. Кожен стає варіантом, який можна вибрати в перемикачі моделей.',
+  'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
   'settings.behavior.page.section.worktrees': 'Worktree',
   'settings.behavior.page.worktreeFetchSource.enable': 'Отримувати зміни з віддаленого перед створенням worktree',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'Отримати зміни з віддаленого репозиторію перед створенням worktree',
@@ -1602,7 +1605,6 @@ export const settingsDict = {
   'settings.providers.page.auth.connected': 'Підключено',
   'settings.providers.page.auth.incomplete': 'Облікові дані відсутні',
   'settings.providers.page.auth.incompleteHint': '· Додайте API-ключ або {env:VAR} перед використанням цього провайдера в чаті',
-
 
   'settings.providers.page.auth.useReconnectHint': '· Скористайтеся повторним підключенням, щоб оновити облікові дані',
   'settings.providers.page.connectionDetails.title': 'Деталі підключення',

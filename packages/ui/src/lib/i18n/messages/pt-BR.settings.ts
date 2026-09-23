@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.providers.page.custom.models.variantsLabel': 'Níveis de raciocínio',
+  'settings.providers.page.custom.models.variantsInfo': 'Opcional. Níveis de esforço aceitos pelo endpoint, separados por vírgula, por exemplo low, medium, high. Cada um vira uma variante que você pode escolher no seletor de modelo.',
+  'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
   'settings.behavior.page.section.worktrees': 'Worktrees',
   'settings.behavior.page.worktreeFetchSource.enable': 'Buscar do remoto antes de criar worktrees',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'Buscar alterações do remoto antes de criar worktrees',
@@ -1602,7 +1605,6 @@ export const settingsDict = {
   'settings.providers.page.auth.connected': 'Conectado',
   'settings.providers.page.auth.incomplete': 'Credenciais ausentes',
   'settings.providers.page.auth.incompleteHint': '· Adicione uma chave de API ou {env:VAR} antes de usar este provedor no chat',
-
 
   'settings.providers.page.auth.useReconnectHint': '· Usar Reconnect para atualizar credenciais',
   'settings.providers.page.connectionDetails.title': 'Detalhes de conexão',

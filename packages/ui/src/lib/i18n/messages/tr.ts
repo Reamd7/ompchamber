@@ -1,5 +1,10 @@
 import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  'settings.providers.page.quotaCredentials.usageToken': 'Kullanım API anahtarı',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Bu komutu terminalinizde çalıştırın, ardından anahtarı aşağıya yapıştırın. Yalnızca LLM kredi kullanımını okuyabilir ve 30 gün sonra sona erer.',
+  'settings.providers.page.custom.models.variantsInfo': 'Optional. Comma-separated effort levels the endpoint accepts, e.g. low, medium, high. Each one becomes a variant you can pick in the model selector.',
+  'settings.providers.page.custom.models.variantsLabel': 'Reasoning levels',
+  'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
   'sessions.sidebar.session.work.markDone': 'Tamamlandı olarak işaretle',
   'sessions.sidebar.session.work.track': 'Devam eden iş olarak izle',
   'mobile.sessions.activeProjectAria': 'Active project',

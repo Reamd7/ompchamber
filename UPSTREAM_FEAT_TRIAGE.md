@@ -198,7 +198,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
 | - [ ] | `0b936476e` | feat(routing): answer Jev through OpenRouter and Vercel AI Gateway | `服务端` |  |
-| - [ ] | `9aeb6fe93` | feat(providers): configure reasoning levels for custom provider models | `服务端` |  |
+| - [x] | `9aeb6fe93` | feat(providers): configure reasoning levels for custom provider models | `服务端` | PORTED(v2 provider 读取织入 fork 配置形状 npm/options;i18n 全 locale 补齐) |
 | - [x] | `800b2aee9` | feat(providers): sign in to OpenCode Go through the Console | `自身` | PORTED(wire 类型换绑 v1;Console sign-in 映射织入 fork providerAuth/ProvidersPage) |
 | - [ ] | `48ce6028d` | feat(routing): keep Auto across restarts and offer it as the session default | `引擎耦合?` `服务端` |  |
 | - [ ] | `ec95fe2e0` | feat(routing): route prompts to a model per task and hold risky auto-accepted actions | `引擎耦合?` `服务端` |  |
