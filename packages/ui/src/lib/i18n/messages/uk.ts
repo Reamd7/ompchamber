@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.session.status.nextStep': 'Наступний крок: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'Папка проєкту відсутня або недоступна',
   'diffView.fileTree.showAsList': 'Списком',
   'diffView.fileTree.showAsTree': 'Деревом',
@@ -833,8 +834,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.commit.selectFilesHint': 'Виберіть файли в розділі «Зміни», щоб увімкнути коміт.',
   'gitView.commit.stageFilesHint': 'Додайте файли до індексу, щоб увімкнути коміт.',
   'gitView.commit.title': 'Коміт',
-  'gitView.common.cancel': 'Скасувати',  'gitView.branch.switchBlockedNotice': 'Є незакомічені зміни — перед перемиканням спершу буде крок «закомітити або скасувати».',
-  'gitView.branch.unpushedSingle': '1 незапушений коміт',
+  'gitView.common.cancel': 'Скасувати',  'gitView.branch.switchBlockedNotice': 'Є незакомічені зміни — перед перемиканням спершу буде крок «закомітити або скасувати».',  'gitView.branch.unpushedSingle': '1 незапушений коміт',
   'gitView.branch.unpushedPlural': 'Незапушені коміти: {count}',
   'gitView.branch.recentBranches': 'Нещодавні гілки',
   'gitView.dirtySwitch.title': 'Незакомічені зміни',

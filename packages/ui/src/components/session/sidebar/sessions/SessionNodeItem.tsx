@@ -42,6 +42,7 @@ import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore'
 import { useI18n } from '@/lib/i18n';
 import { useShiftKeyHeld } from '@/hooks/useShiftKeyHeld';
 import { getSessionGoal } from '@/lib/sessionGoalMetadata';
+import { getOpenSessionSuggestion } from '@/lib/sessionAssistMetadata';
 import { sessionGoalStatusColor, sessionGoalStatusLabelKey } from '@/lib/sessionGoalPresentation';
 import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
@@ -475,7 +476,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const worktreeLoadSequenceRef = React.useRef(0);
   const sessionPermissions = useSessionPermissions(session.id, sessionDirectory ?? undefined, { bootstrap: false });
   const sessionGoal = getSessionGoal(resolvedSession);
-  // omp host wire extras: `live` = non-cold residency state, transcriptBytes =
+// omp host wire extras: `live` = non-cold residency state, transcriptBytes =
   // the session's memory-cost proxy (transcript file size, not a heap reading).
   const residency = session as SessionResidencyFields;
   const residentGlyph = residency.live ? (
@@ -498,6 +499,20 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
       />
     </span>
   ) : null;
+  const sessionSuggestionEnabled = useUIStore((state) => state.sessionSuggestionEnabled);
+  // The agent stopped with requested work still open: the assist wrote a next
+  // message for it. The open chat shows it in the composer instead.
+  const openSuggestion = sessionSuggestionEnabled && !isStreaming && !isActive
+    ? getOpenSessionSuggestion(resolvedSession)
+    : null;
+  const nextStepLabel = openSuggestion
+    ? t('sessions.sidebar.session.status.nextStep', { suggestion: openSuggestion })
+    : '';
+  const nextStepBadge = (className?: string) => (openSuggestion ? (
+    <span className={cn('inline-flex flex-shrink-0 items-center text-status-info', className)} title={nextStepLabel} aria-label={nextStepLabel}>
+      <Icon name="pencil-ai-2" className="h-3 w-3" />
+    </span>
+  ) : null);
   const sessionGoalGlyph = sessionGoal ? (
     // SAFETY: sessionGoalStatusLabelKey contains an i18n key for every SessionGoalStatus.
     <span
@@ -1470,6 +1485,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
                           </span>
                         </div>
                       ) : null}
+                      {nextStepBadge(badgeVisibilityClass)}
                       {pendingPermissionCount > 0 ? (
                         <span className={cn('inline-flex items-center gap-1 rounded bg-destructive/10 px-1 py-0.5 text-[0.7rem] text-destructive flex-shrink-0', badgeVisibilityClass)} title={t('sessions.sidebar.session.status.permissionRequired')} aria-label={t('sessions.sidebar.session.status.permissionRequired')}>
                           <Icon name="shield" className="h-3 w-3" />

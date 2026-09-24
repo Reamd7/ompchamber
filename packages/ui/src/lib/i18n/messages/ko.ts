@@ -626,6 +626,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.confirm': '내보내기',
   'sessions.sidebar.session.status.active': '활성 세션',
   'sessions.sidebar.session.status.unread': '읽지 않은 업데이트',
+  'sessions.sidebar.session.status.nextStep': '다음 단계: {suggestion}',
   'sessions.sidebar.session.status.pinned': '고정된 세션',
   'sessions.sidebar.session.status.resident': '메모리에 상주',
   'sessions.sidebar.session.status.residentWithSize': '메모리에 상주 · 트랜스크립트 ~{size}',

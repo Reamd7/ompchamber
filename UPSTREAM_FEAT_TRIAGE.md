@@ -12,7 +12,7 @@
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 5/5 (3吸/2跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 3/3 (3吸) |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 1/1 (0吸/1跳) |
-| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 2/7 (2吸/1跳) |
+| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 7/7 (3吸/4跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 0/4 |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
@@ -88,17 +88,17 @@ ghostty-web→仓内 libghostty-vt 适配器:消灭 fork 的 references/ghostty-
 |---|---|---|---|---|
 | - [ ] | `e5c2c81bf` | feat(terminal): replace ghostty-web with an in-repo libghostty-vt adapter | `服务端` | SKIP(互锁:fork 终端栈已重写(sequence/revision 重放+viewport driver),上游适配器需整套 store/transport 替换,另立项) |
 
-## - [ ] Sidebar/Timeline — 🟢 高价值 / 自身能力
+## - [x] Sidebar/Timeline — 🟢 高价值 / 自身能力
 
 Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork sidebar 有本地改动需小量适配。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `a8b1e93dd` | feat(sidebar): show the session's provider logo on timeline rows | `自身` |  |
+| - [ ] | `a8b1e93dd` | feat(sidebar): show the session's provider logo on timeline rows | `自身` | SKIP(互锁:SessionTimelineRowBody 属 7ad4 Timeline 视图) |
 | - [x] | `38ea51fce` | feat(sidebar): mark projects whose folder is missing | `自身` | PORTED(SortableProjectItem 补 projectDirectory prop) |
-| - [ ] | `d06fdc407` | feat(sidebar): add a worktree sort setting, manual by default | `服务端` |  |
-| - [ ] | `65b3a5135` | feat(sidebar): mark sessions where the agent left a next step open | `服务端` |  |
-| - [ ] | `7ad4b2897` | feat(sidebar): add the Timeline view and a Grouped/Timeline switch | `服务端` |  |
+| - [ ] | `d06fdc407` | feat(sidebar): add a worktree sort setting, manual by default | `服务端` | SKIP(互锁:构建于 7ad4 Timeline UI 之上) |
+| - [x] | `65b3a5135` | feat(sidebar): mark sessions where the agent left a next step open | `服务端` | PORTED(wire time.idle 可选字段;元数据命名空间对齐 ompchamber) |
+| - [ ] | `7ad4b2897` | feat(sidebar): add the Timeline view and a Grouped/Timeline switch | `服务端` | SKIP(互锁:Timeline 视图依赖 rowModel/headerPresentation 中间架构,fork sidebar 分叉) |
 | - [x] | `0d59ddf3c` | feat(sidebar): unify sticky headers with crossfade transitions | `自身` | PORTED(干净织入) |
 | - [ ] | `79a7da01c` | feat(sidebar): show running project actions by directory | `自身` | SKIP(互锁:依赖上游 terminal store 演进(execution 分配/reconcile),fork 终端栈重写) |
 

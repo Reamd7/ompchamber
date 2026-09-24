@@ -455,6 +455,7 @@ export const dict = {
   'sessions.sidebar.session.export.dialog.confirm': 'Exporter',
   'sessions.sidebar.session.status.active': 'Session active',
   'sessions.sidebar.session.status.unread': 'Mises à jour non lues',
+  'sessions.sidebar.session.status.nextStep': 'Prochaine étape : {suggestion}',
   'sessions.sidebar.session.status.pinned': 'Session épinglée',
   'sessions.sidebar.session.status.resident': 'Résidente en mémoire',
   'sessions.sidebar.session.status.residentWithSize': 'Résidente en mémoire · transcript ~{size}',

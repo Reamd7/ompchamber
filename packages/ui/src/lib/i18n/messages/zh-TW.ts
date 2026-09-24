@@ -639,6 +639,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.confirm': '匯出',
   'sessions.sidebar.session.status.active': '會話活躍中',
   'sessions.sidebar.session.status.unread': '有未讀更新',
+  'sessions.sidebar.session.status.nextStep': '下一步：{suggestion}',
   'sessions.sidebar.session.status.pinned': '已釘選會話',
   'sessions.sidebar.session.status.resident': '常駐記憶體',
   'sessions.sidebar.session.status.residentWithSize': '常駐記憶體 · transcript ~{size}',

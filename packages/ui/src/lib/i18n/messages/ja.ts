@@ -626,6 +626,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.export.dialog.confirm': 'エクスポート',
   'sessions.sidebar.session.status.active': 'セッションアクティブ',
   'sessions.sidebar.session.status.unread': '未読の更新',
+  'sessions.sidebar.session.status.nextStep': '次のステップ: {suggestion}',
   'sessions.sidebar.session.status.pinned': 'ピン留めされたセッション',
   'sessions.sidebar.session.status.resident': 'メモリに常駐',
   'sessions.sidebar.session.status.residentWithSize': 'メモリに常駐 · トランスクリプト ~{size}',

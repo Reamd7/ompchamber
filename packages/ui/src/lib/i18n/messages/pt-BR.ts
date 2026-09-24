@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.session.status.nextStep': 'Próximo passo: {suggestion}',
   'sessions.sidebar.project.folderMissing': 'A pasta do projeto não existe ou está indisponível',
   'diffView.fileTree.showAsList': 'Visualização em lista',
   'diffView.fileTree.showAsTree': 'Visualização em árvore',
@@ -833,8 +834,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.commit.selectFilesHint': 'Selecione arquivos em Alterações para habilitar o commit.',
   'gitView.commit.stageFilesHint': 'Adicione arquivos ao stage para habilitar o commit.',
   'gitView.commit.title': 'Commit',
-  'gitView.common.cancel': 'Cancelar',  'gitView.branch.switchBlockedNotice': 'Alterações sem commit — antes de trocar, será oferecido commit ou reversão.',
-  'gitView.branch.unpushedSingle': '1 commit sem push',
+  'gitView.common.cancel': 'Cancelar',  'gitView.branch.switchBlockedNotice': 'Alterações sem commit — antes de trocar, será oferecido commit ou reversão.',  'gitView.branch.unpushedSingle': '1 commit sem push',
   'gitView.branch.unpushedPlural': '{count} commits sem push',
   'gitView.branch.recentBranches': 'Branches recentes',
   'gitView.dirtySwitch.title': 'Alterações sem commit',

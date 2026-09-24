@@ -34,3 +34,17 @@ export function getSessionAssist(session: Session | null | undefined): SessionAs
     generatedAt: typeof assist.generatedAt === 'number' ? assist.generatedAt : 0,
   };
 }
+
+/**
+ * The suggested next message for a session row that has no message store
+ * loaded. OpenCode stamps `time.idle` when a turn ends, and the assist is
+ * generated after that quiet turn end, so a later turn (the user sent another
+ * message) moves `idle` past `generatedAt` and retires the suggestion even
+ * though its metadata is never cleared. Callers still hide it while a turn runs.
+ */
+export function getOpenSessionSuggestion(session: Session | null | undefined): string | null {
+  const assist = getSessionAssist(session);
+  if (!assist?.suggestion) return null;
+  const idleAt = session?.time?.idle ?? 0;
+  return assist.generatedAt >= idleAt ? assist.suggestion : null;
+}
