@@ -4,6 +4,11 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'diffView.fileTree.showAsList': 'Visualização em lista',
+  'diffView.fileTree.showAsTree': 'Visualização em árvore',
+  'diffView.fileTree.collapseDirectoryAria': 'Recolher {path}',
+  'diffView.fileTree.expandDirectoryAria': 'Expandir {path}',
+  'diffView.fileTree.resize': 'Redimensionar árvore de arquivos',
   'commitComparison.mode': 'Commit',
   'pullRequestComparison.select': 'Selecionar pull request',
   'commitComparison.select': 'Selecionar commit',
@@ -1606,8 +1611,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.actions.disableLineWrap': 'Desativar ajuste de linha',
   'diffView.actions.enableLineWrap': 'Ativar ajuste de linha',
   'diffView.actions.openFileInEditorAtChange': 'Abrir este arquivo no editor nesta alteração',
-  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este arquivo na primeira linha alterada',
-  'diffView.actions.review': 'Revisar',
+  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este arquivo na primeira linha alterada',  'diffView.actions.review': 'Revisar',
   'diffView.actions.reviewAria': 'Revisar alterações',
   'diffView.reviewDialog.title': 'Revisar alterações',
   'diffView.reviewDialog.description': 'Inicia uma sessão de revisão separada para as alterações atuais.',

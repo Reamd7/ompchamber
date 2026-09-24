@@ -822,6 +822,9 @@ interface UIStore {
   diffLayoutPreference: 'dynamic' | 'inline' | 'side-by-side';
   diffFileLayout: Record<string, 'inline' | 'side-by-side'>;
   diffWrapLines: boolean;
+  diffFileListMode: 'flat' | 'tree';
+  /** Width of the diff view's file tree column, in pixels. */
+  diffFileTreeWidth: number;
   /** Width of the walkthrough table of contents, in pixels. */
   walkthroughTocWidth: number;
   gitChangesViewMode: 'flat' | 'tree';
@@ -1037,6 +1040,8 @@ interface UIStore {
   /** Open one local:// file of a session as a read-only context-panel tab. */
   openContextLocalFile: (directory: string, sessionID: string, ref: string) => void;
   setContextTreeScope: (directory: string, scope: 'workspace' | 'session') => void;
+  setDiffFileListMode: (mode: 'flat' | 'tree') => void;
+  setDiffFileTreeWidth: (width: number) => void;
   setWalkthroughTocWidth: (width: number) => void;
   setGitChangesViewMode: (mode: 'flat' | 'tree') => void;
   setLinearIssueListStatus: (status: LinearIssueListStatus) => void;
@@ -1202,6 +1207,8 @@ export const useUIStore = create<UIStore>()(
         diffLayoutPreference: 'inline',
         diffFileLayout: {},
         diffWrapLines: false,
+        diffFileListMode: 'flat',
+        diffFileTreeWidth: 240,
         walkthroughTocWidth: 224,
         linearIssueListStatus: 'all',
         linearIssueListAssignee: 'any',
@@ -2116,6 +2123,14 @@ export const useUIStore = create<UIStore>()(
           }));
         },
 
+        setDiffFileListMode: (mode) => {
+          set({ diffFileListMode: mode });
+        },
+
+        setDiffFileTreeWidth: (width) => {
+          set({ diffFileTreeWidth: Math.round(width) });
+        },
+
         setDiffWrapLines: (wrap) => {
           set({ diffWrapLines: wrap });
         },
@@ -2957,6 +2972,8 @@ export const useUIStore = create<UIStore>()(
           recentEfforts: state.recentEfforts,
           diffLayoutPreference: state.diffLayoutPreference,
           diffWrapLines: state.diffWrapLines,
+          diffFileListMode: state.diffFileListMode,
+          diffFileTreeWidth: state.diffFileTreeWidth,
           walkthroughTocWidth: state.walkthroughTocWidth,
           gitChangesViewMode: state.gitChangesViewMode,
           linearIssueListStatus: state.linearIssueListStatus,

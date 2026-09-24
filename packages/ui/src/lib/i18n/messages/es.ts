@@ -4,6 +4,11 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'diffView.fileTree.showAsList': 'Vista de lista',
+  'diffView.fileTree.showAsTree': 'Vista de árbol',
+  'diffView.fileTree.collapseDirectoryAria': 'Contraer {path}',
+  'diffView.fileTree.expandDirectoryAria': 'Expandir {path}',
+  'diffView.fileTree.resize': 'Cambiar el ancho del árbol de archivos',
   'commitComparison.mode': 'Commit',
   'pullRequestComparison.select': 'Seleccionar solicitud de incorporación',
   'commitComparison.select': 'Seleccionar commit',
@@ -1377,7 +1382,6 @@ export const dict: Record<I18nKey, string> = {
   'contextPanel.preview.proxyError': 'No se pudo iniciar el proxy de vista previa.',
   'contextPanel.preview.upstreamUnreachable': 'El servidor de desarrollo no responde.',
   'contextPanel.preview.upstreamUnreachableHint': 'Verifica que tu servidor de desarrollo siga en ejecución y vuelve a intentarlo.',
-
   'terminalView.preview.open': 'Vista previa',
   'terminalView.preview.openTitle': 'Abrir panel de vista previa',
   'sidebarFilesTree.menu.rename': 'Cambiar nombre',
@@ -1606,8 +1610,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.actions.disableLineWrap': 'Desactivar ajuste de línea',
   'diffView.actions.enableLineWrap': 'Activar ajuste de línea',
   'diffView.actions.openFileInEditorAtChange': 'Abrir este archivo en el editor en el cambio',
-  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este archivo en la primera línea modificada',
-  'diffView.actions.review': 'Revisar',
+  'diffView.actions.openFileAtFirstChangedLine': 'Abrir este archivo en la primera línea modificada',  'diffView.actions.review': 'Revisar',
   'diffView.actions.reviewAria': 'Revisar cambios',
   'diffView.reviewDialog.title': 'Revisar cambios',
   'diffView.reviewDialog.description': 'Inicia una sesión de revisión separada para los cambios actuales.',

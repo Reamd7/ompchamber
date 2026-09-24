@@ -4,6 +4,11 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'diffView.fileTree.showAsList': 'Списком',
+  'diffView.fileTree.showAsTree': 'Деревом',
+  'diffView.fileTree.collapseDirectoryAria': 'Згорнути {path}',
+  'diffView.fileTree.expandDirectoryAria': 'Розгорнути {path}',
+  'diffView.fileTree.resize': 'Змінити ширину дерева файлів',
   'commitComparison.mode': 'Коміт',
   'pullRequestComparison.select': 'Виберіть пул-реквест',
   'commitComparison.select': 'Вибрати коміт',
@@ -1606,8 +1611,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.actions.disableLineWrap': 'Вимкнути перенос рядків',
   'diffView.actions.enableLineWrap': 'Увімкнути перенос рядків',
   'diffView.actions.openFileInEditorAtChange': 'Відкрити цей файл у редакторі на зміні',
-  'diffView.actions.openFileAtFirstChangedLine': 'Відкрити цей файл у першому зміненому рядку',
-  'diffView.actions.review': 'Ревʼю',
+  'diffView.actions.openFileAtFirstChangedLine': 'Відкрити цей файл у першому зміненому рядку',  'diffView.actions.review': 'Ревʼю',
   'diffView.actions.reviewAria': 'Поревʼювати зміни',
   'diffView.reviewDialog.title': 'Ревʼю змін',
   'diffView.reviewDialog.description': 'Запустити окрему сесію ревʼю для поточних змін.',
