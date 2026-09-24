@@ -7,7 +7,7 @@
 
 | 功能线 | 提交数 | v2 | 引擎 | 服务端 | 价值 | 进度 |
 |---|---|---|---|---|---|---|
-| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 8/9 (8吸) |
+| Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 9/9 (9吸) |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 0/5 |
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 1/5 (0吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
@@ -30,13 +30,13 @@
 | OpenCode 2 迁移 | 2 | 2 | 0 | 2 | ⚫ OC2 依赖(不可用) | 2/2 (0吸/2跳) |
 | 其他 | 27 | 4 | 5 | 7 | 🟡 杂项 / 逐条判定 | 5/27 (1吸/4跳) |
 
-## - [ ] Git/Diff 增强 — 🟢 高价值 / 自身能力
+## - [x] Git/Diff 增强 — 🟢 高价值 / 自身能力
 
 逐 hunk 操作、diff 文件树、PR 审阅——git 服务在 fork 有 server-rs 完整实现,5 提交含服务端需对照移植。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `85be91762` | feat(git): make the changes tree read as a tree | `自身` |  |
+| - [x] | `85be91762` | feat(git): make the changes tree read as a tree | `自身` | PORTED(干净落地) |
 | - [x] | `7c5637ab7` | feat(diff): add a file tree mode with one file open at a time | `服务端` | PORTED(设置键走 fork 本地 persist,registry 文件按 fork 架构不引入) |
 | - [x] | `1938b9c5f` | feat(diff): expand collapsed context in pull request comparisons | `服务端` | PORTED(服务端移植 server-rs:pr-file 路由) |
 | - [x] | `c469a40bf` | feat(review): inherit permission auto-accept in new review sessions | `自身` | PORTED(干净落地) |
