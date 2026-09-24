@@ -196,7 +196,7 @@ const ChatSectionContent: React.FC = () => {
                 'expandedTools',
                 'collapsibleUserMessages',
                 'stickyUserHeader',
-                ...(!isVSCode ? ['promptNavigatorEnabled' as const] : []),
+                'promptNavigatorEnabled',
                 'wideChatLayout',
                 'codeBlockLineWrap',
                 'splitAssistantMessageActions',
