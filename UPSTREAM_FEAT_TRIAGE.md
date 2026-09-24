@@ -308,7 +308,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `60d836c48` | feat(settings): redesign providers as a card grid with account switching | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `15e51be9e` | feat(settings): add a manual Restart OpenCode action | `自身` |  |
 | - [ ] | `fe2ec474f` | feat(about): separate OpenChamber and OpenCode updates on About | `服务端` |  |
-| - [ ] | `8dcc61279` | feat(ui): add /fork, runtime hints for plugin agents, and About in the mobile app | `自身` |  |
+| - [x] | `8dcc61279` | feat(ui): add /fork, runtime hints for plugin agents, and About in the mobile app | `自身` | PORTED(/fork 命令保留 fork forkSession 语义;forkFromMessage/forkAfterMessage 织入 wire 3 参;AgentsPage 织入 runtime hints;i18n 全 locale 补齐) |
 | - [ ] | `f99fe1fd6` | feat(memory): tell every session when to save and deliver it everywhere | `引擎耦合?` `服务端` |  |
 | - [ ] | `0c4fbe362` | feat: add start session action to empty sidebar groups | `自身` | SKIP(互锁:依赖 7ad4 Timeline/rowModel 架构,已跳过) |
 | - [ ] | `fafbd50bc` | feat(settings): searchable theme picker, tighter dropdowns, stable scroll gutter | `自身` |  |

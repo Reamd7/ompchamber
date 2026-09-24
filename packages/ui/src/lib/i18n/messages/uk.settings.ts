@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.agents.page.runtimeProvided.note': 'Надається OpenCode або плагіном і не має власного файлу конфігурації. Сірі підказки показують поточні значення; усе, що ви введете, збережеться як перевизначення.',
   'settings.openchamber.opencodeCli.restart.restartFailed': 'Не вдалося перезапустити OpenCode.',
   'settings.openchamber.opencodeCli.actions.restart': 'Перезапустити OpenCode',
   'settings.openchamber.opencodeCli.restart.external': 'Цей OpenCode запущено поза OpenChamber. Перезапустіть його там, де запускали.',
@@ -942,8 +943,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Не вдалося встановити навички',
   'settings.skills.catalog.page.mode.manual': 'Вручну',
   'settings.skills.catalog.page.mode.external': 'зовнішній',
-  'settings.skills.catalog.page.title': 'Каталог навичок',  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',
-  'settings.skills.catalog.page.section.sources': 'Джерела',
+  'settings.skills.catalog.page.title': 'Каталог навичок',  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',  'settings.skills.catalog.page.section.sources': 'Джерела',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Пошук скілів у всіх джерелах…',
   'settings.skills.catalog.page.search.clear': 'Очистити пошук',
   'settings.skills.catalog.page.source.skillsCount': 'Скілів: {count}',

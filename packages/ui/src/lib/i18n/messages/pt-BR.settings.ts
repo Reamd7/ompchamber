@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.agents.page.runtimeProvided.note': 'Fornecido pelo OpenCode ou por um plugin, sem arquivo de configuração próprio. As dicas em cinza mostram os valores atuais; o que você digitar é salvo como uma substituição.',
   'settings.openchamber.opencodeCli.restart.restartFailed': 'Não foi possível reiniciar o OpenCode.',
   'settings.openchamber.opencodeCli.actions.restart': 'Reiniciar OpenCode',
   'settings.openchamber.opencodeCli.restart.external': 'Este OpenCode foi iniciado fora do OpenChamber. Reinicie-o onde você o iniciou.',
@@ -942,8 +943,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Não foi possível instalar as habilidades',
   'settings.skills.catalog.page.mode.manual': 'Manual',
   'settings.skills.catalog.page.mode.external': 'Externo',
-  'settings.skills.catalog.page.title': 'Catálogo de habilidades',  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',
-  'settings.skills.catalog.page.section.sources': 'Fontes',
+  'settings.skills.catalog.page.title': 'Catálogo de habilidades',  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',  'settings.skills.catalog.page.section.sources': 'Fontes',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Pesquisar skills em todas as fontes…',
   'settings.skills.catalog.page.search.clear': 'Limpar pesquisa',
   'settings.skills.catalog.page.source.skillsCount': 'Skills: {count}',

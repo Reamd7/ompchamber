@@ -640,6 +640,7 @@ export const settingsDict = {
   'settings.agents.page.field.agentNamePlaceholder': 'agent-name',
   'settings.agents.page.field.scopePlaceholder': 'スコープ',
   'settings.agents.page.field.descriptionPlaceholder': 'この Agent は何をしますか？',
+  'settings.agents.page.runtimeProvided.note': 'OpenCode またはプラグインが提供しており、独自の設定ファイルはありません。グレーのヒントは現在の値です。入力した内容は上書きとして保存されます。',
   'settings.agents.page.field.mode': 'モード',
   'settings.agents.page.field.modeTooltip': 'プライマリと Subagent の表示設定',
   'settings.agents.page.field.overrideModel': 'モデルを上書き',

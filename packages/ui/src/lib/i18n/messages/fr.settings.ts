@@ -525,6 +525,7 @@ export const settingsDict = {
   'settings.agents.page.field.agentNamePlaceholder': 'nom-agent',
   'settings.agents.page.field.scopePlaceholder': 'Portée',
   'settings.agents.page.field.descriptionPlaceholder': 'Que fait cet agent ?',
+  'settings.agents.page.runtimeProvided.note': 'Fourni par OpenCode ou un plugin, sans fichier de configuration propre. Les indications grisées montrent ses valeurs actuelles ; ce que vous saisissez est enregistré comme surcharge.',
   'settings.agents.page.field.mode': 'Mode',
   'settings.agents.page.field.modeTooltip': 'Visibilité principale et sous-agent',
   'settings.agents.page.field.overrideModel': 'Remplacer le modèle',

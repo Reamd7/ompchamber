@@ -2,6 +2,7 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.agents.page.runtimeProvided.note': 'Proporcionado por OpenCode o un plugin, sin archivo de configuración propio. Las pistas en gris muestran sus valores actuales; lo que escribas se guarda como una anulación.',
   'settings.openchamber.opencodeCli.restart.restartFailed': 'No se pudo reiniciar OpenCode.',
   'settings.openchamber.opencodeCli.actions.restart': 'Reiniciar OpenCode',
   'settings.openchamber.opencodeCli.restart.external': 'Este OpenCode se inició fuera de OpenChamber. Reinícialo donde lo iniciaste.',
@@ -639,8 +640,7 @@ export const settingsDict = {
   'settings.agents.page.permissions.addCustomRule': 'Añadir regla personalizada',
   'settings.agents.page.permissions.permissionPlaceholder': 'Permiso...',
   'settings.agents.page.permissions.patternPlaceholder': 'Patrón (ej. *)',
-  'settings.page.behavior.title': 'Comportamiento',
-  'settings.page.behavior.description': 'Guía cómo responde el agente.',
+  'settings.page.behavior.title': 'Comportamiento',  'settings.page.behavior.description': 'Guía cómo responde el agente.',
   'settings.behavior.page.title': 'Comportamiento',
   'settings.behavior.page.warning.title': 'Las reglas globales se combinan con las reglas del proyecto',
   'settings.behavior.page.warning.description': 'Los cambios realizados aquí actualizan el archivo AGENTS.md global. El agente también incluye cualquier AGENTS.md a nivel de proyecto cuando existe.',

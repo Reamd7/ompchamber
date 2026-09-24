@@ -607,6 +607,7 @@ export const settingsDict = {
   'settings.agents.page.field.agentNamePlaceholder': 'agent-name (예: code-reviewer)',
   'settings.agents.page.field.scopePlaceholder': '범위',
   'settings.agents.page.field.descriptionPlaceholder': '이 에이전트는 어떤 작업을 하나요?',
+  'settings.agents.page.runtimeProvided.note': 'OpenCode 또는 플러그인이 제공하며 자체 설정 파일이 없습니다. 회색 힌트는 현재 값을 보여 주며, 입력한 내용은 재정의로 저장됩니다.',
   'settings.agents.page.field.mode': '모드',
   'settings.agents.page.field.modeTooltip': '주 에이전트/보조 에이전트로 표시할지 선택합니다',
   'settings.agents.page.field.overrideModel': '모델 오버라이드',

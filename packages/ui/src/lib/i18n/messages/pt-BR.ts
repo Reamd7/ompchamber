@@ -5,6 +5,10 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'settings.agents.page.runtimeProvided.note': 'Values here come from the runtime (built-in defaults or plugin-injected agents) and are only shown as hints.',
+  'chat.chatInput.toast.forkNothingToFork': 'Ainda não há o que bifurcar: nenhuma resposta foi concluída nesta sessão',
+  'chat.chatInput.toast.forkSendFailed': 'Bifurcada, mas a mensagem não foi enviada. Ela voltou para o editor.',
+  'chat.chatInput.toast.forkFailed': 'Não foi possível bifurcar a sessão',
   'chat.chatInput.draftPicker.noProjectsFound': 'Nenhum projeto encontrado.',
   'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
   'commandPalette.item.restartOpenCode': 'Reiniciar OpenCode',
@@ -1973,6 +1977,7 @@ export const dict: Record<I18nKey, string> = {
   "aboutDialog.versionLabel": "Versão {version}",
   "aboutDialog.openChamberVersionLabel": "Versão do OpenChamber {version}",
   "aboutDialog.openCodeVersionLabel": "Versão do OpenCode {version}",
+  "aboutDialog.appVersionLabel": "Versão do app {version}",
   "aboutDialog.actions.copyDiagnostics": "Copiar diagnósticos",
   "aboutDialog.actions.preparingDiagnostics": "Preparando diagnósticos...",
   "aboutDialog.actions.diagnosticsCopied": "Diagnósticos copiados",
@@ -2293,8 +2298,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.container.returnToParent.aria': 'Voltar para a sessão principal',
   'chat.container.returnToParent.titleNamed': 'Voltar para: {title}',
   'chat.container.returnToParent.title': 'Voltar para a sessão principal',
-  'chat.container.returnToParent.label': 'Principal',
-  'chat.btw.destroyAria': 'Destruir esta sessão btw',
+  'chat.container.returnToParent.label': 'Principal',  'chat.btw.destroyAria': 'Destruir esta sessão btw',
   'chat.btw.titleFallback': 'sessão btw',
   'chat.btw.mainComposerPlaceholder': 'Pergunte nesta sessão btw…',
   'chat.btw.loading': 'Iniciando sessão btw…',
@@ -3381,8 +3385,7 @@ export const dict: Record<I18nKey, string> = {
   'quota.window.chat': 'Chat Requests',
   'quota.window.completions': 'Completions',
   'quota.window.premiumInteractions': 'Créditos de IA',  'chat.workStatus.ariaLabel': 'Status do trabalho',  'chat.workStatus.context.label': 'Contexto',
-  'chat.workStatus.cost.breakdown': 'Sessão {session} · Subagentes {subagents}',  'chat.workStatus.git.changedFileSingle': '{count} arquivo alterado',
-  'chat.workStatus.git.changedFilePlural': '{count} arquivos alterados',
+  'chat.workStatus.cost.breakdown': 'Sessão {session} · Subagentes {subagents}',  'chat.workStatus.git.changedFileSingle': '{count} arquivo alterado',  'chat.workStatus.git.changedFilePlural': '{count} arquivos alterados',
   'chat.workStatus.pr.untitled': 'Pull request sem título',
   'chat.workStatus.pr.draft': 'Rascunho',
   'chat.workStatus.pr.checks': 'Verificações',

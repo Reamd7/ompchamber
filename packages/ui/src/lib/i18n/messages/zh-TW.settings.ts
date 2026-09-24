@@ -604,6 +604,7 @@ export const settingsDict = {
   'settings.agents.page.field.agentNamePlaceholder': 'agent-name',
   'settings.agents.page.field.scopePlaceholder': '作用域',
   'settings.agents.page.field.descriptionPlaceholder': '這個 agent 的作用是什麼？',
+  'settings.agents.page.runtimeProvided.note': '由 OpenCode 或外掛提供，沒有自己的設定檔。灰色提示顯示目前的值；你輸入的內容會儲存為覆寫。',
   'settings.agents.page.field.mode': '模式',
   'settings.agents.page.field.modeTooltip': 'Primary 與 Subagent 可見性',
   'settings.agents.page.field.overrideModel': '覆寫模型',

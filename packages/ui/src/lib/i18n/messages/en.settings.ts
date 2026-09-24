@@ -638,6 +638,7 @@ export const settingsDict = {
   'settings.agents.page.field.agentNamePlaceholder': 'agent-name',
   'settings.agents.page.field.scopePlaceholder': 'Scope',
   'settings.agents.page.field.descriptionPlaceholder': 'What does this agent do?',
+  'settings.agents.page.runtimeProvided.note': 'Provided by OpenCode or a plugin, with no config file of its own. Greyed hints show its current values; anything you enter is saved as an override.',
   'settings.agents.page.field.mode': 'Mode',
   'settings.agents.page.field.modeTooltip': 'Primary vs Subagent visibility',
   'settings.agents.page.field.overrideModel': 'Override Model',

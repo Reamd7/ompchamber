@@ -342,9 +342,9 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
 
   useNativeAndroidBackButton(handleNativeBack);
 
-  // Server updates are actionable from a browser (hosted mobile) but not from
-  // the Capacitor shell — the native app updates through the store, and the
-  // server it CONNECTS to is updated elsewhere.
+  // The footer update item follows the shared update store, which in the
+  // Capacitor shell tracks the app build (store updates), not the server. The
+  // native app reaches server updates through Settings → About instead.
   const showUpdateItem = !showCapacitorOnlyFeatures
     && updateAvailable
     && (updateRuntimeType === 'desktop' || updateRuntimeType === 'web');
@@ -612,11 +612,9 @@ const MobileShell: React.FC<{ onActiveConnectionDeleted: () => void }> = ({ onAc
                 isWindowed
                 initialMobileStage={settingsInitialMobileStage}
                 registerBackHandler={registerSettingsBackHandler}
-                // About exists for server updates — meaningful in a browser
-                // (hosted mobile), not in the Capacitor shell (store updates).
-                visiblePageSlugs={MOBILE_SETTINGS_PAGES.filter(
-                  (page) => !(showCapacitorOnlyFeatures && page === 'about'),
-                )}
+                // About is shown in the native app too: there it checks and
+                // installs updates of the connected server (AboutSettings).
+                visiblePageSlugs={[...MOBILE_SETTINGS_PAGES]}
                 onClose={closeSurface}
               />
             </ErrorBoundary>

@@ -57,6 +57,7 @@ export const settingsDict = {
   'settings.agents.page.field.clearTemperatureAria': 'Wyczyść nadpisanie temperatury',
   'settings.agents.page.field.clearTopPAria': 'Wyczyść nadpisanie Top P',
   'settings.agents.page.field.descriptionPlaceholder': 'Co robi ten agent?',
+  'settings.agents.page.runtimeProvided.note': 'Dostarczony przez OpenCode lub wtyczkę, bez własnego pliku konfiguracji. Szare podpowiedzi pokazują bieżące wartości; to, co wpiszesz, zostanie zapisane jako nadpisanie.',
   'settings.agents.page.field.mode': 'Tryb',
   'settings.agents.page.field.modeTooltip': 'Widoczność: Główny vs Podagent',
   'settings.agents.page.field.overrideModel': 'Nadpisz model',
