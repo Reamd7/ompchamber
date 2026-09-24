@@ -39,6 +39,7 @@ import type { Session } from '@/lib/opencode/wire'
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { formatShortcutForDisplay, getEffectiveShortcutCombo, shortcutRegistry } from '@/lib/shortcuts';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
+import { restartOpenCodeWithFeedback } from '@/lib/restartOpenCode';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
 import { SETTINGS_PAGE_METADATA, type SettingsRuntimeContext } from '@/lib/settings/metadata';
 
@@ -351,6 +352,18 @@ export const CommandPalette: React.FC = () => {
         }),
       },
     );
+    if (!isVSCodeRuntime()) {
+      list.push({
+        id: 'restart-opencode',
+        secondary: true,
+        title: t('commandPalette.item.restartOpenCode'),
+        icon: <Icon name="restart" className="mr-2 h-4 w-4" />,
+        searchText: t('commandPalette.item.restartOpenCode'),
+        onSelect: run(() => {
+          void restartOpenCodeWithFeedback(t);
+        }),
+      });
+    }
     list.push({
       id: 'toggle-memory-debug',
       secondary: true,

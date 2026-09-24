@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': '重启 OpenCode',
   'sessions.sidebar.session.work.markDone': '标记为完成',
   'sessions.sidebar.session.work.track': '作为进行中跟踪',
   'mobile.sessions.activeProjectAria': 'Active project',
@@ -2764,8 +2766,7 @@ export const dict: Record<I18nKey, string> = {
   'commandPalette.item.toggleTerminal': '切换终端',
   'commandPalette.item.cycleTheme': '轮换主题',
   'commandPalette.item.showOpenCodeStatus': '显示引擎状态',
-  'commandPalette.item.toggleMemoryDebug': '切换调试面板',
-  'commandPalette.item.pinSession': '固定或取消固定会话',
+  'commandPalette.item.toggleMemoryDebug': '切换调试面板',  'commandPalette.item.pinSession': '固定或取消固定会话',
   'commandPalette.item.copySessionId': '复制会话 ID',
   'commandPalette.item.openMultiRun': '打开多任务启动器',
   'commandPalette.item.openArchive': '打开已归档会话',

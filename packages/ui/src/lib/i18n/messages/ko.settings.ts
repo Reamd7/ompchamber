@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode를 다시 시작하지 못했습니다.',
+  'settings.openchamber.opencodeCli.actions.restart': 'OpenCode 다시 시작',
+  'settings.openchamber.opencodeCli.restart.external': '이 OpenCode는 OpenChamber 외부에서 시작되었습니다. 시작한 곳에서 다시 시작하세요.',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '워크트리',
   'settings.behavior.page.worktreeFetchSource.enable': '워크트리를 만들기 전에 원격에서 가져오기',
@@ -1068,8 +1071,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': '에이전트가 OMPChamber 브라우저 패널에서 페이지를 확인하고 조작할 수 있습니다. URL 열기, 내용 읽기, 클릭, 입력, 스크롤, 모바일과 데스크톱 레이아웃 전환이 가능합니다. 각 세션에 작은 도구 설명이 추가됩니다. OpenCode를 다시 시작하면 적용됩니다.',
   'settings.ompchamber.tools.field.agentMemoryTool': '에이전트 메모리 도구',
   'settings.ompchamber.tools.field.agentMemoryToolAria': '에이전트 메모리 도구',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': '에이전트가 배운 내용을 세션 간에 유지하도록 합니다. 저장소는 두 개로, 사용자에 대한 사실과 각 프로젝트에 대한 사실입니다. 세션에는 저장된 제목이 전달되어 관련 항목을 에이전트가 읽을 수 있습니다. 끄면 도구와 메모리 탭, 세션 색인이 모두 사라집니다. OpenCode를 다시 시작한 뒤 적용됩니다.',
-  'settings.mcp.sidebar.title': 'MCP 서버',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': '에이전트가 배운 내용을 세션 간에 유지하도록 합니다. 저장소는 두 개로, 사용자에 대한 사실과 각 프로젝트에 대한 사실입니다. 세션에는 저장된 제목이 전달되어 관련 항목을 에이전트가 읽을 수 있습니다. 끄면 도구와 메모리 탭, 세션 색인이 모두 사라집니다. OpenCode를 다시 시작한 뒤 적용됩니다.',  'settings.mcp.sidebar.title': 'MCP 서버',
   'settings.mcp.sidebar.total': '총 {count}개',
   'settings.mcp.sidebar.actions.refreshStatusAria': 'MCP 상태 새로고침',
   'settings.mcp.sidebar.actions.refreshStatusTitle': 'MCP 상태 새로고침',

@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': 'OpenCode 다시 시작',
   'sessions.sidebar.session.work.markDone': '완료로 표시',
   'sessions.sidebar.session.work.track': '작업 중으로 추적',
   'mobile.sessions.activeProjectAria': 'Active project',
@@ -2798,8 +2800,7 @@ export const dict: Record<I18nKey, string> = {
   'commandPalette.item.toggleTerminal': '토글 터미널',
   'commandPalette.item.cycleTheme': '테마 순환',
   'commandPalette.item.showOpenCodeStatus': 'OpenCode 상태 표시',
-  'commandPalette.item.toggleMemoryDebug': '디버그 패널 토글',
-  'commandPalette.item.pinSession': '세션 고정 또는 고정 해제',
+  'commandPalette.item.toggleMemoryDebug': '디버그 패널 토글',  'commandPalette.item.pinSession': '세션 고정 또는 고정 해제',
   'commandPalette.item.copySessionId': '세션 ID 복사',
   'commandPalette.item.openMultiRun': '멀티 런 런처 열기',
   'commandPalette.item.openArchive': '보관된 세션 열기',

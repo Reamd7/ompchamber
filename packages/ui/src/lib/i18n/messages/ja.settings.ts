@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode を再起動できませんでした。',
+  'settings.openchamber.opencodeCli.actions.restart': 'OpenCode を再起動',
+  'settings.openchamber.opencodeCli.restart.external': 'この OpenCode は OpenChamber の外部で起動されています。起動した場所で再起動してください。',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'ワークツリー',
   'settings.behavior.page.worktreeFetchSource.enable': 'ワークツリー作成前にリモートから取得',
@@ -1101,8 +1104,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': 'エージェントが OMPChamber のブラウザーパネルでページを確認し操作できるようにします。URL を開く、内容を読む、クリック、入力、スクロール、モバイルとデスクトップのレイアウト切り替えが可能です。各セッションに小さなツール説明が追加されます。OpenCode の再起動後に適用されます。',
   'settings.ompchamber.tools.field.agentMemoryTool': 'エージェントメモリツール',
   'settings.ompchamber.tools.field.agentMemoryToolAria': 'エージェントメモリツール',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'エージェントが学んだことをセッションをまたいで保持できるようにします。保存先は 2 つで、ユーザーについての事実と、各プロジェクトについての事実です。セッションには保存済みのタイトルが渡され、関連する項目をエージェントが読み出せます。オフにするとツール、メモリタブ、セッションインデックスがすべてなくなります。OpenCode の再起動後に反映されます。',
-  'settings.mcp.sidebar.title': 'MCP サーバー',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'エージェントが学んだことをセッションをまたいで保持できるようにします。保存先は 2 つで、ユーザーについての事実と、各プロジェクトについての事実です。セッションには保存済みのタイトルが渡され、関連する項目をエージェントが読み出せます。オフにするとツール、メモリタブ、セッションインデックスがすべてなくなります。OpenCode の再起動後に反映されます。',  'settings.mcp.sidebar.title': 'MCP サーバー',
   'settings.mcp.sidebar.total': '合計 {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': 'MCP ステータスを更新',
   'settings.mcp.sidebar.actions.refreshStatusTitle': 'MCP ステータスを更新',

@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Couldn\'t restart OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Restart OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'This OpenCode was started outside OpenChamber. Restart it where you started it.',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'Worktrees',
   'settings.behavior.page.worktreeFetchSource.enable': 'Fetch remote before creating worktrees',
@@ -1099,8 +1102,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': 'Let agents look at and interact with the page in OMPChamber\\\'s browser panel: open a URL, read the page, click, type, scroll, and switch between mobile and desktop layouts. Adds a small tool description to each session. Applies after OpenCode restarts.',
   'settings.ompchamber.tools.field.agentMemoryTool': 'Agent memory tool',
   'settings.ompchamber.tools.field.agentMemoryToolAria': 'Agent memory tool',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Let agents keep what they learn across sessions, in two stores: what is true about you, and what is true about each project. Sessions are given the stored titles so the agent can read an entry when it is relevant. Turning this off removes the tool, the Memory tab, and the session index. Applies after OpenCode restarts.',
-  'settings.mcp.sidebar.title': 'MCP Servers',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Let agents keep what they learn across sessions, in two stores: what is true about you, and what is true about each project. Sessions are given the stored titles so the agent can read an entry when it is relevant. Turning this off removes the tool, the Memory tab, and the session index. Applies after OpenCode restarts.',  'settings.mcp.sidebar.title': 'MCP Servers',
   'settings.mcp.sidebar.total': 'Total {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': 'Refresh MCP status',
   'settings.mcp.sidebar.actions.refreshStatusTitle': 'Refresh MCP status',

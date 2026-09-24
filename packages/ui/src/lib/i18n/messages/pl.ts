@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': 'Uruchom ponownie OpenCode',
   'sessions.sidebar.session.work.markDone': 'Oznacz jako gotowe',
   'sessions.sidebar.session.work.track': 'Śledź jako w toku',
   'mobile.sessions.activeProjectAria': 'Active project',
@@ -1603,8 +1605,7 @@ export const dict: Record<I18nKey, string> = {
   'commandPalette.item.toggleTerminal': 'Przełącz terminal',
   'commandPalette.item.cycleTheme': 'Przełącz motyw',
   'commandPalette.item.showOpenCodeStatus': 'Pokaż status OpenCode',
-  'commandPalette.item.toggleMemoryDebug': 'Przełącz panel debugowania',
-  'commandPalette.item.pinSession': 'Przypnij lub odepnij sesję',
+  'commandPalette.item.toggleMemoryDebug': 'Przełącz panel debugowania',  'commandPalette.item.pinSession': 'Przypnij lub odepnij sesję',
   'commandPalette.item.copySessionId': 'Kopiuj ID sesji',
   'commandPalette.item.openMultiRun': 'Otwórz panel multi-run',
   'commandPalette.item.openArchive': 'Otwórz zarchiwizowane sesje',

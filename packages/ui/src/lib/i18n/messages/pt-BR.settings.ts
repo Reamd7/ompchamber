@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Não foi possível reiniciar o OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Reiniciar OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Este OpenCode foi iniciado fora do OpenChamber. Reinicie-o onde você o iniciou.',
   'settings.providers.page.custom.models.variantsLabel': 'Níveis de raciocínio',
   'settings.providers.page.custom.models.variantsInfo': 'Opcional. Níveis de esforço aceitos pelo endpoint, separados por vírgula, por exemplo low, medium, high. Cada um vira uma variante que você pode escolher no seletor de modelo.',
   'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
@@ -1086,8 +1089,7 @@ export const settingsDict = {
   'settings.mcp.sidebar.deleteDialog.descriptionPrefix': 'Tem certeza de que deseja excluir \\"{name}\\"? Isso o removerá de',
   'settings.mcp.sidebar.toast.deleteFailed': 'Não foi possível excluir o servidor MCP',
   'settings.mcp.sidebar.toast.serverDeleted': 'Servidor MCP \\"{name}\\" excluído',
-  'settings.mcp.sidebar.toast.refreshListIfStale': 'Atualize a lista de MCP se a interface parecer desatualizada.',  'settings.plugins.sidebar.title': 'Plugins',
-  'settings.plugins.sidebar.total': 'Total: {count}',
+  'settings.mcp.sidebar.toast.refreshListIfStale': 'Atualize a lista de MCP se a interface parecer desatualizada.',  'settings.plugins.sidebar.title': 'Plugins',  'settings.plugins.sidebar.total': 'Total: {count}',
   'settings.plugins.sidebar.actions.addTitle': 'Adicionar plugin',
   'settings.plugins.sidebar.actions.deleting': 'Excluindo…',
   'settings.plugins.sidebar.empty.title': 'Nenhum plugin configurado',

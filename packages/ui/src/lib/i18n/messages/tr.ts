@@ -1,5 +1,7 @@
 import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': 'OpenCode\'u yeniden başlat',
   'settings.providers.page.quotaCredentials.usageToken': 'Kullanım API anahtarı',
   'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Bu komutu terminalinizde çalıştırın, ardından anahtarı aşağıya yapıştırın. Yalnızca LLM kredi kullanımını okuyabilir ve 30 gün sonra sona erer.',
   'settings.providers.page.custom.models.variantsInfo': 'Optional. Comma-separated effort levels the endpoint accepts, e.g. low, medium, high. Each one becomes a variant you can pick in the model selector.',
@@ -6252,5 +6254,4 @@ export const dict = {
   'contextPanel.timeline.kind.model_change': 'Model değişikliği',
   'contextPanel.timeline.kind.mode_change': 'Mod değişikliği',
   'contextPanel.timeline.kind.ttsr_injection': 'Kural enjeksiyonu',
-  'contextPanel.timeline.kind.retry_recovery': 'Yeniden deneme',
-};
+  'contextPanel.timeline.kind.retry_recovery': 'Yeniden deneme',};

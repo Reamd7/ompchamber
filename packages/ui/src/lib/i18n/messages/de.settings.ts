@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'OpenCode konnte nicht neu gestartet werden.',
+  'settings.openchamber.opencodeCli.actions.restart': 'OpenCode neu starten',
+  'settings.openchamber.opencodeCli.restart.external': 'Dieses OpenCode wurde außerhalb von OpenChamber gestartet. Starte es dort neu, wo du es gestartet hast.',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'Worktrees',
   'settings.behavior.page.worktreeFetchSource.enable': 'Remote vor dem Erstellen von Worktrees abrufen',
@@ -1041,8 +1044,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': 'Lässt Agenten die Seite im Browser-Panel von OMPChamber ansehen und bedienen: eine URL öffnen, den Inhalt lesen, klicken, tippen, scrollen und zwischen mobiler und Desktop-Ansicht wechseln. Fügt jeder Sitzung eine kleine Werkzeugbeschreibung hinzu. Gilt nach einem Neustart von OpenCode.',
   'settings.ompchamber.tools.field.agentMemoryTool': 'Agenten-Gedächtniswerkzeug',
   'settings.ompchamber.tools.field.agentMemoryToolAria': 'Agenten-Gedächtniswerkzeug',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Lässt Agenten Gelerntes über Sitzungen hinweg behalten, in zwei Speichern: was über Sie zutrifft und was über das jeweilige Projekt zutrifft. Sitzungen erhalten die gespeicherten Titel, damit der Agent bei Bedarf einen Eintrag lesen kann. Beim Ausschalten entfallen Werkzeug, Gedächtnis-Tab und Sitzungsindex. Gilt nach einem Neustart von OpenCode.',
-  'settings.mcp.sidebar.title': 'MCP-Server',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Lässt Agenten Gelerntes über Sitzungen hinweg behalten, in zwei Speichern: was über Sie zutrifft und was über das jeweilige Projekt zutrifft. Sitzungen erhalten die gespeicherten Titel, damit der Agent bei Bedarf einen Eintrag lesen kann. Beim Ausschalten entfallen Werkzeug, Gedächtnis-Tab und Sitzungsindex. Gilt nach einem Neustart von OpenCode.',  'settings.mcp.sidebar.title': 'MCP-Server',
   'settings.mcp.sidebar.total': 'Gesamt {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': 'MCP-Status aktualisieren',
   'settings.mcp.sidebar.actions.refreshStatusTitle': 'MCP-Status aktualisieren',

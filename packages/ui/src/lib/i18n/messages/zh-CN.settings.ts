@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': '无法重启 OpenCode。',
+  'settings.openchamber.opencodeCli.actions.restart': '重启 OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': '此 OpenCode 是在 OpenChamber 之外启动的。请在启动它的地方重启。',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '工作树',
   'settings.behavior.page.worktreeFetchSource.enable': '创建工作树前先从远程获取',
@@ -1068,8 +1071,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': '让智能体在 OMPChamber 浏览器面板中查看并操作页面：打开网址、读取内容、点击、输入、滚动，以及在移动端与桌面端布局之间切换。会为每个会话添加少量工具说明。在 OpenCode 重启后生效。',
   'settings.ompchamber.tools.field.agentMemoryTool': '智能体记忆工具',
   'settings.ompchamber.tools.field.agentMemoryToolAria': '智能体记忆工具',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': '让智能体把学到的内容跨会话保留下来，分为两个存储：关于你的事实，以及关于每个项目的事实。会话会收到已存条目的标题，智能体可在相关时读取具体内容。关闭后将同时移除该工具、记忆标签页和会话索引。重启 OpenCode 后生效。',
-  'settings.mcp.sidebar.title': 'MCP 服务器',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': '让智能体把学到的内容跨会话保留下来，分为两个存储：关于你的事实，以及关于每个项目的事实。会话会收到已存条目的标题，智能体可在相关时读取具体内容。关闭后将同时移除该工具、记忆标签页和会话索引。重启 OpenCode 后生效。',  'settings.mcp.sidebar.title': 'MCP 服务器',
   'settings.mcp.sidebar.total': '总计 {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': '刷新 MCP 状态',
   'settings.mcp.sidebar.actions.refreshStatusTitle': '刷新 MCP 状态',

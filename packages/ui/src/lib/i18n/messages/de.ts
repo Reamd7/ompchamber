@@ -4,6 +4,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': 'OpenCode neu starten',
   'sessions.sidebar.session.work.markDone': 'Als erledigt markieren',
   'sessions.sidebar.session.work.track': 'Als in Arbeit verfolgen',
   'mobile.sessions.activeProjectAria': 'Active project',
@@ -2567,8 +2569,7 @@ export const dict = {
   'commandPalette.item.toggleTerminal': 'Terminal umschalten',
   'commandPalette.item.cycleTheme': 'Thema wechseln',
   'commandPalette.item.showOpenCodeStatus': 'OpenCode-Status anzeigen',
-  'commandPalette.item.toggleMemoryDebug': 'Debug-Panel umschalten',
-  'commandPalette.item.pinSession': 'Sitzung anheften oder lösen',
+  'commandPalette.item.toggleMemoryDebug': 'Debug-Panel umschalten',  'commandPalette.item.pinSession': 'Sitzung anheften oder lösen',
   'commandPalette.item.copySessionId': 'Sitzungs-ID kopieren',
   'commandPalette.item.openMultiRun': 'Multi-Run-Launcher öffnen',
   'commandPalette.item.openArchive': 'Archivierte Sitzungen öffnen',

@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Nie udało się ponownie uruchomić OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Uruchom ponownie OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Ten OpenCode został uruchomiony poza OpenChamber. Uruchom go ponownie tam, gdzie go uruchomiono.',
   'settings.behavior.page.section.worktrees': 'Drzewa pracy',
   'settings.behavior.page.worktreeFetchSource.enable': 'Pobierz zmiany ze zdalnego przed utworzeniem drzew pracy',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'Pobierz zmiany ze zdalnego repozytorium przed utworzeniem drzew pracy',
@@ -884,8 +887,7 @@ export const settingsDict = {
   'settings.openchamber.keyboardShortcuts.action.open_timeline_dialog.label': 'Otwórz oś czasu rozmowy',
   'settings.ompchamber.keyboardShortcuts.action.open_timeline_dialog.label': 'Otwórz oś czasu rozmowy',
   'settings.openchamber.keyboardShortcuts.action.toggle_dictation.label': 'Wprowadzanie głosowe',
-  'settings.ompchamber.keyboardShortcuts.action.toggle_dictation.label': 'Wprowadzanie głosowe',
-  'settings.openchamber.sessionRetention.field.retentionPeriodAria': 'Okres przechowywania w dniach',
+  'settings.ompchamber.keyboardShortcuts.action.toggle_dictation.label': 'Wprowadzanie głosowe',  'settings.openchamber.sessionRetention.field.retentionPeriodAria': 'Okres przechowywania w dniach',
   'settings.openchamber.visual.field.largeTextPaste': 'Wklejanie dużego tekstu',
   'settings.ompchamber.visual.field.largeTextPaste': 'Wklejanie dużego tekstu',
   'settings.openchamber.visual.field.largeTextPasteHint': 'Przy wklejaniu ponad około 2000 znaków lub 25 wierszy wybierz, czy dołączyć tekst jako plik, wkleić go w treści, czy pytać za każdym razem.',

@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': '無法重新啟動 OpenCode。',
+  'settings.openchamber.opencodeCli.actions.restart': '重新啟動 OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': '此 OpenCode 是在 OpenChamber 之外啟動的。請在啟動它的地方重新啟動。',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': '工作樹',
   'settings.behavior.page.worktreeFetchSource.enable': '建立工作樹前先從遠端擷取',
@@ -1042,8 +1045,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': '讓代理在 OMPChamber 瀏覽器面板中檢視並操作頁面：開啟網址、讀取內容、點擊、輸入、捲動，以及在行動版與桌面版版面之間切換。會為每個工作階段加入少量工具說明。在 OpenCode 重新啟動後生效。',
   'settings.ompchamber.tools.field.agentMemoryTool': '智慧代理記憶工具',
   'settings.ompchamber.tools.field.agentMemoryToolAria': '智慧代理記憶工具',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': '讓代理把學到的內容跨工作階段保留下來，分為兩個儲存區：關於你的事實，以及關於每個專案的事實。工作階段會收到已儲存項目的標題，代理可在相關時讀取內容。關閉後會一併移除該工具、記憶分頁與工作階段索引。重新啟動 OpenCode 後生效。',
-  'settings.mcp.sidebar.title': 'MCP 伺服器',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': '讓代理把學到的內容跨工作階段保留下來，分為兩個儲存區：關於你的事實，以及關於每個專案的事實。工作階段會收到已儲存項目的標題，代理可在相關時讀取內容。關閉後會一併移除該工具、記憶分頁與工作階段索引。重新啟動 OpenCode 後生效。',  'settings.mcp.sidebar.title': 'MCP 伺服器',
   'settings.mcp.sidebar.total': '總計 {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': '重新整理 MCP 狀態',
   'settings.mcp.sidebar.actions.refreshStatusTitle': '重新整理 MCP 狀態',

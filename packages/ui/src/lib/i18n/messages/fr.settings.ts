@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Impossible de redémarrer OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Redémarrer OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Cet OpenCode a été lancé en dehors d\'OpenChamber. Redémarrez-le là où vous l\'avez lancé.',
   'settings.view.actions.openSectionList': 'Open section list',
   'settings.behavior.page.section.worktrees': 'Worktrees',
   'settings.behavior.page.worktreeFetchSource.enable': 'Récupérer le dépôt distant avant de créer des worktrees',
@@ -986,8 +989,7 @@ export const settingsDict = {
   'settings.ompchamber.tools.field.agentWebToolInfo': 'Laissez les agents consulter la page dans le panneau navigateur d’OMPChamber et interagir avec elle : ouvrir une URL, lire le contenu, cliquer, saisir du texte, faire défiler et basculer entre les mises en page mobile et bureau. Ajoute une courte description d’outil à chaque session. Appliqué après le redémarrage d’OpenCode.',
   'settings.ompchamber.tools.field.agentMemoryTool': 'Outil de mémoire de l’agent',
   'settings.ompchamber.tools.field.agentMemoryToolAria': 'Outil de mémoire de l’agent',
-  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Permet aux agents de conserver ce qu’ils apprennent d’une session à l’autre, dans deux stockages : ce qui est vrai à votre sujet et ce qui est vrai pour chaque projet. Les sessions reçoivent les titres enregistrés afin que l’agent puisse lire une entrée pertinente. La désactivation retire l’outil, l’onglet Mémoire et l’index de session. Appliqué après le redémarrage d’OpenCode.',
-  'settings.mcp.sidebar.title': 'Serveurs MCP',
+  'settings.ompchamber.tools.field.agentMemoryToolInfo': 'Permet aux agents de conserver ce qu’ils apprennent d’une session à l’autre, dans deux stockages : ce qui est vrai à votre sujet et ce qui est vrai pour chaque projet. Les sessions reçoivent les titres enregistrés afin que l’agent puisse lire une entrée pertinente. La désactivation retire l’outil, l’onglet Mémoire et l’index de session. Appliqué après le redémarrage d’OpenCode.',  'settings.mcp.sidebar.title': 'Serveurs MCP',
   'settings.mcp.sidebar.total': 'Total {count}',
   'settings.mcp.sidebar.actions.refreshStatusAria': 'Actualiser le statut du MCP',
   'settings.mcp.sidebar.actions.refreshStatusTitle': 'Actualiser le statut du MCP',

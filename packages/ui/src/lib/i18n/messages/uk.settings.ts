@@ -2,6 +2,9 @@ import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
 
 export const settingsDict = {
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Не вдалося перезапустити OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Перезапустити OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Цей OpenCode запущено поза OpenChamber. Перезапустіть його там, де запускали.',
   'settings.providers.page.custom.models.variantsLabel': 'Рівні міркування',
   'settings.providers.page.custom.models.variantsInfo': 'Необов’язково. Рівні зусилля через кому, які приймає endpoint, наприклад low, medium, high. Кожен стає варіантом, який можна вибрати в перемикачі моделей.',
   'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
@@ -1086,8 +1089,7 @@ export const settingsDict = {
   'settings.mcp.sidebar.deleteDialog.descriptionPrefix': 'Ви впевнені, що хочете видалити \\"{name}\\"? Це видалить його з',
   'settings.mcp.sidebar.toast.deleteFailed': 'Не вдалося видалити сервер MCP',
   'settings.mcp.sidebar.toast.serverDeleted': 'MCP сервер \\"{name}\\" видалено',
-  'settings.mcp.sidebar.toast.refreshListIfStale': 'Оновити список MCP, якщо інтерфейс користувача виглядає застарілим.',  'settings.plugins.sidebar.title': 'Плагіни',
-  'settings.plugins.sidebar.total': 'Усього: {count}',
+  'settings.mcp.sidebar.toast.refreshListIfStale': 'Оновити список MCP, якщо інтерфейс користувача виглядає застарілим.',  'settings.plugins.sidebar.title': 'Плагіни',  'settings.plugins.sidebar.total': 'Усього: {count}',
   'settings.plugins.sidebar.actions.addTitle': 'Додати плагін',
   'settings.plugins.sidebar.actions.deleting': 'Видалення…',
   'settings.plugins.sidebar.empty.title': 'Плагіни не налаштовано',

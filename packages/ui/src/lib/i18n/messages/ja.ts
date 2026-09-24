@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'settings.openchamber.opencodeCli.actions.restartingOpenCode': 'Restarting OpenCode…',
+  'commandPalette.item.restartOpenCode': 'OpenCode を再起動',
   'sessions.sidebar.session.work.markDone': '完了にする',
   'sessions.sidebar.session.work.track': '作業中として追跡',
   'mobile.sessions.activeProjectAria': 'Active project',
@@ -2797,8 +2799,7 @@ export const dict: Record<I18nKey, string> = {
   'commandPalette.item.toggleTerminal': 'ターミナルの切り替え',
   'commandPalette.item.cycleTheme': 'テーマを順に切替',
   'commandPalette.item.showOpenCodeStatus': 'OpenCode のステータスを表示',
-  'commandPalette.item.toggleMemoryDebug': 'デバッグパネルの切替',
-  'commandPalette.item.pinSession': 'セッションをピン留め/解除',
+  'commandPalette.item.toggleMemoryDebug': 'デバッグパネルの切替',  'commandPalette.item.pinSession': 'セッションをピン留め/解除',
   'commandPalette.item.copySessionId': 'セッションIDをコピー',
   'commandPalette.item.openMultiRun': 'マルチラン起動画面を開く',
   'commandPalette.item.openArchive': 'アーカイブ済みセッションを開く',
