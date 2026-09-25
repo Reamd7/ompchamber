@@ -252,6 +252,7 @@ function SessionProjectScrollerComponent(props: Props): React.ReactNode {
                   projectColor={project.color}
                   projectIconImage={project.iconImage}
                   projectIconBackground={project.iconBackground}
+                  projectDirectory={project.normalizedPath}
                   isCollapsed={isCollapsed}
                   isRepo={Boolean(isRepo)}
                   hideDirectoryControls={view.hideDirectoryControls}

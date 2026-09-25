@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.project.folderMissing': 'La carpeta del proyecto no existe o no está disponible',
   'diffView.fileTree.showAsList': 'Vista de lista',
   'diffView.fileTree.showAsTree': 'Vista de árbol',
   'diffView.fileTree.collapseDirectoryAria': 'Contraer {path}',
@@ -832,8 +833,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.commit.selectFilesHint': 'Selecciona archivos en Cambios para habilitar el commit.',
   'gitView.commit.stageFilesHint': 'Prepara archivos para habilitar el commit.',
   'gitView.commit.title': 'Commit',
-  'gitView.common.cancel': 'Cancelar',
-  'gitView.branch.switchBlockedNotice': 'Cambios sin confirmar: antes de cambiar de rama se ofrece confirmar o revertir.',
+  'gitView.common.cancel': 'Cancelar',  'gitView.branch.switchBlockedNotice': 'Cambios sin confirmar: antes de cambiar de rama se ofrece confirmar o revertir.',
   'gitView.branch.unpushedSingle': '1 commit sin push',
   'gitView.branch.unpushedPlural': '{count} commits sin push',
   'gitView.branch.recentBranches': 'Ramas recientes',

@@ -16,6 +16,7 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { useI18n } from '@/lib/i18n';
 import { CrossfadeZoneHeader } from './CrossfadeZoneHeaders';
+import { useProjectFolderMissing } from './useProjectFolderMissing';
 
 export type SortableDragHandleProps = {
   listeners: ReturnType<typeof useSortable>['listeners'];
@@ -25,6 +26,7 @@ export type SortableDragHandleProps = {
 type ProjectIdentityProps = {
   id: string;
   projectLabel: string;
+  projectDirectory?: string;
   projectIcon?: string;
   projectColor?: string;
   projectIconImage?: { mime: string; updatedAt: number; source: 'custom' | 'auto' };
@@ -153,9 +155,12 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   setOpenSidebarMenuKey,
   projectPickerOptions,
   onProjectSelect,
+  projectDirectory,
 }) => {
   const { t } = useI18n();
-  const stickyZoneHeaders = useSessionDisplayStore((state) => state.stickyZoneHeaders);
+  const folderMissing = useProjectFolderMissing(projectDirectory);
+  // Project headers only exist in the projects view, which always pins them.
+  const stickyZoneHeaders = true;
   const {
     attributes,
     listeners,
@@ -321,6 +326,15 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                       isCollapsed={isCollapsed}
                       alwaysShowActions={alwaysShowActions}
                     />
+                    {folderMissing ? (
+                      <span
+                        className="inline-flex flex-shrink-0 items-center text-status-warning"
+                        title={t('sessions.sidebar.project.folderMissing')}
+                        aria-label={t('sessions.sidebar.project.folderMissing')}
+                      >
+                        <Icon name="alert" className="h-3 w-3" />
+                      </span>
+                    ) : null}
                     {statusIndicator ? (
                       <span className="ml-1 inline-flex flex-shrink-0 items-center">{statusIndicator}</span>
                     ) : null}

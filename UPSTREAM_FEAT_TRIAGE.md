@@ -12,7 +12,7 @@
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 5/5 (3吸/2跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 3/3 (3吸) |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 1/1 (0吸/1跳) |
-| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 1/7 (1吸/1跳) |
+| Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 2/7 (2吸/1跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 0/4 |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
@@ -95,7 +95,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
 | - [ ] | `a8b1e93dd` | feat(sidebar): show the session's provider logo on timeline rows | `自身` |  |
-| - [ ] | `38ea51fce` | feat(sidebar): mark projects whose folder is missing | `自身` |  |
+| - [x] | `38ea51fce` | feat(sidebar): mark projects whose folder is missing | `自身` | PORTED(SortableProjectItem 补 projectDirectory prop) |
 | - [ ] | `d06fdc407` | feat(sidebar): add a worktree sort setting, manual by default | `服务端` |  |
 | - [ ] | `65b3a5135` | feat(sidebar): mark sessions where the agent left a next step open | `服务端` |  |
 | - [ ] | `7ad4b2897` | feat(sidebar): add the Timeline view and a Grouped/Timeline switch | `服务端` |  |

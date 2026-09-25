@@ -3,6 +3,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'sessions.sidebar.project.folderMissing': 'Projektordner fehlt oder ist nicht verfügbar',
   'sessions.aiRename.action': 'Mit KI umbenennen',
   'sessions.aiRename.generating': 'Sitzungstitel wird generiert...',
   'sessions.aiRename.checking': 'Abgeschlossene Antworten werden geprüft...',

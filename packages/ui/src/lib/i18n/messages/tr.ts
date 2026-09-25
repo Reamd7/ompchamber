@@ -1,4 +1,5 @@
 export const dict = {
+  'sessions.sidebar.project.folderMissing': 'Proje klasörü bulunamıyor veya kullanılamıyor',
   'settings.behavior.page.section.worktrees': 'Worktree\'ler',
   'settings.behavior.page.worktreeFetchSource.enable': 'Worktree oluşturmadan önce uzak depodan fetch et',
   'settings.behavior.page.worktreeFetchSource.enableAria': 'Worktree oluşturmadan önce uzak depodan değişiklikleri fetch et',

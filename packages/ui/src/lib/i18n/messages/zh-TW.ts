@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.project.folderMissing': '專案資料夾不存在或無法使用',
   'sessions.aiRename.action': '使用 AI 重新命名',
   'sessions.aiRename.generating': '正在產生工作階段標題...',
   'sessions.aiRename.checking': '正在檢查已完成的對話回合...',
