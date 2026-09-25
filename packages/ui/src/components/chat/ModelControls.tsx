@@ -1262,6 +1262,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             const savedAgentName = currentSessionId
                 ? useSelectionStore.getState().getSessionAgentSelection(currentSessionId)
                 : null;
+            // Under omp model roles the session's model is server-owned: the
+            // convergence effect below adopts the badge model, and re-applying
+            // a locally persisted selection here fights it — the two effects
+            // ping-pong the chip and can exceed React's nested-update limit.
+            // Restore only the agent name; the model converges server-side.
+            if (ompModelRoles.modelRolesEnabled) {
+                if (savedAgentName && currentAgentName !== savedAgentName) {
+                    setAgent(savedAgentName);
+                }
+                return savedAgentName ? 'resolved' : 'continue';
+            }
             if (savedAgentName) {
                 const savedModel = getAgentModelForSession(currentSessionId, savedAgentName);
                 if (savedModel) {
@@ -1354,7 +1365,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 setAgent(fallbackAgent.name);
             }
 
-            if (fallbackAgent.model?.providerID && fallbackAgent.model?.modelID) {
+            // Model roles: the session model is server-owned; applying the
+            // fallback agent's model here would fight the badge convergence.
+            if (!ompModelRoles.modelRolesEnabled && fallbackAgent.model?.providerID && fallbackAgent.model?.modelID) {
                 tryApplyModelSelection(fallbackAgent.model.providerID, fallbackAgent.model.modelID, fallbackAgent.name);
             }
         };
@@ -1387,6 +1400,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         getAgentModelForSession,
         setAgent,
         tryApplyModelSelection,
+        ompModelRoles.modelRolesEnabled,
         saveSessionAgentSelection,
         contextHydrated,
         providers,
