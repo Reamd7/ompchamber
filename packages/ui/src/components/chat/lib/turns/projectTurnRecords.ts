@@ -332,6 +332,19 @@ export const projectTurnRecords = (
         }
     });
 
+    // A transcript whose every assistant row lost its anchoring user row has
+    // nothing to group and nothing to render: the chat column goes blank with
+    // no error. The anchoring row can go missing for reasons outside this
+    // projection — a rolled-back optimistic send, a store holding only the
+    // tail streamed live after a reconnect. Dropping the rows is meant to keep
+    // a *partial* loss from painting a bare assistant row, so it stays the rule
+    // whenever anything else renders; with nothing left to show, showing the
+    // rows we have is strictly better than showing none, and grouping returns
+    // by itself once the anchor is back.
+    if (turns.length === 0 && ungroupedMessageIds.size === 0 && messages.length > 0) {
+        messages.forEach((message) => ungroupedMessageIds.add(message.info.id));
+    }
+
     return {
         ...projection,
         ungroupedMessageIds,

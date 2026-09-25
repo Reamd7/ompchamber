@@ -68,14 +68,29 @@ describe('projectTurnRecords', () => {
         expect(projection.indexes.messageToTurnId.has('a2')).toBe(false);
     });
 
-    test('does not render orphan assistant messages as standalone ungrouped entries', () => {
+    test('renders an anchor-less assistant transcript as ungrouped instead of blank', () => {
+        // The anchoring user row can be missing for reasons outside this
+        // projection: a rolled-back optimistic send, or a store holding only
+        // the tail that streamed live after a reconnect. Dropping the rows
+        // keeps a *partial* loss from painting bare assistant rows, but with
+        // nothing left to render it would leave the chat column blank.
         const assistant = createMessageEntry({ id: 'a1', role: 'assistant', parentID: 'missing-user', createdAt: 1 });
 
         const projection = projectTurnRecords([assistant]);
 
         expect(projection.turns).toHaveLength(0);
-        expect(projection.ungroupedMessageIds.has('a1')).toBe(false);
-        expect(projection.indexes.messageToTurnId.has('a1')).toBe(false);
+        expect(projection.ungroupedMessageIds.has('a1')).toBe(true);
+    });
+
+    test('still drops orphan assistant rows while an anchored turn renders', () => {
+        const user = createMessageEntry({ id: 'u1', role: 'user', createdAt: 1 });
+        const assistant = createMessageEntry({ id: 'a1', role: 'assistant', parentID: 'u1', createdAt: 2 });
+        const orphan = createMessageEntry({ id: 'a2', role: 'assistant', parentID: 'missing-user', createdAt: 3 });
+
+        const projection = projectTurnRecords([user, assistant, orphan]);
+
+        expect(projection.turns).toHaveLength(1);
+        expect(projection.ungroupedMessageIds.has('a2')).toBe(false);
     });
 
     test('keeps non-assistant orphan messages available as ungrouped entries', () => {

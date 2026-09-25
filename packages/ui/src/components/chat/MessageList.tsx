@@ -6,6 +6,7 @@ import ChatMessage from './ChatMessage';
 import { areOptionalRenderRelevantMessagesEqual, areRelevantTurnGroupingContextsEqual, areRenderRelevantMessagesEqual } from './message/renderCompare';
 import TurnItem from './components/TurnItem';
 import type { ChatMessageEntry, TurnRecord, TurnGroupingContext } from './lib/turns/types';
+import { useTimelineWindowRecovery } from './hooks/useTimelineWindowRecovery';
 import { useTurnRecords } from './hooks/useTurnRecords';
 import { applyRetryOverlay } from './lib/turns/applyRetryOverlay';
 import { buildLiveStreamingEntry } from './lib/turns/streamingTailEntry';
@@ -1178,6 +1179,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     sessionKey,
     messages,
     sessionIsWorking = false,
+    isLoadingOlder,
     activeStreamingMessageId = null,
     activeStreamingPhase = null,
     retryOverlay = null,
@@ -1418,14 +1420,26 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     // there is no small-list DOM path to transition out of, which is what used
     // to remount the history subtree mid-prepend.
     const listRef = React.useRef<LegendListRef | null>(null);
-    const handleRegisterList = React.useCallback((list: LegendListRef | null) => {
-        listRef.current = list;
-        registerList?.(list);
-    }, [registerList]);
 
     const allEntries = React.useMemo(() => {
         return trailingStreamingEntry ? [...historyEntries, trailingStreamingEntry] : historyEntries;
     }, [historyEntries, trailingStreamingEntry]);
+
+    // The list can settle with an empty window after a long jump or a
+    // measurement reset, and nothing re-fills it until the next data change.
+    const { attachScrollNode } = useTimelineWindowRecovery({
+        listRef,
+        sessionKey,
+        entryCount: allEntries.length,
+        enabled: !isLoadingOlder,
+    });
+
+    const handleRegisterList = React.useCallback((list: LegendListRef | null) => {
+        listRef.current = list;
+        const node = list?.getScrollableNode();
+        attachScrollNode(node instanceof HTMLElement ? node : null);
+        registerList?.(list);
+    }, [attachScrollNode, registerList]);
 
     // Stable identities: these reach the list, where a changing callback would
     // re-render every mounted row.
