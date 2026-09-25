@@ -638,6 +638,7 @@ export const SidebarFilesTree: React.FC = () => {
   const setSelectedPath = useFilesViewTabsStore((state) => state.setSelectedPath);
   const addOpenPath = useFilesViewTabsStore((state) => state.addOpenPath);
   const removeOpenPathsByPrefix = useFilesViewTabsStore((state) => state.removeOpenPathsByPrefix);
+  const removeExpandedPathsByPrefix = useFilesViewTabsStore((state) => state.removeExpandedPathsByPrefix);
   const toggleExpandedPath = useFilesViewTabsStore((state) => state.toggleExpandedPath);
   const collapseAllExpandedPaths = useFilesViewTabsStore((state) => state.collapseAllExpandedPaths);
   const contextTabs = useUIStore((state) => (root ? (state.contextPanelByDirectory[root]?.tabs ?? EMPTY_CONTEXT_TABS) : EMPTY_CONTEXT_TABS));
@@ -739,16 +740,28 @@ export const SidebarFilesTree: React.FC = () => {
     } catch (error) {
       if (isCancelled?.()) return;
       const message = error instanceof Error ? error.message : String(error ?? '');
-      console.error('Failed to load sidebar directory:', error);
-      setLoadErrorsByDir((prev) => ({
-        ...prev,
-        [normalizedDir]: message,
-      }));
+      // A stale persisted expansion can point at a deleted directory; drop it
+      // like FilesView does instead of erroring on every refresh.
+      if (message === 'Directory not found' && root && normalizedDir !== root) {
+        removeExpandedPathsByPrefix(root, normalizedDir);
+        setLoadErrorsByDir((prev) => {
+          if (!prev[normalizedDir]) return prev;
+          const next = { ...prev };
+          delete next[normalizedDir];
+          return next;
+        });
+      } else {
+        console.error('Failed to load sidebar directory:', error);
+        setLoadErrorsByDir((prev) => ({
+          ...prev,
+          [normalizedDir]: message,
+        }));
+      }
     } finally {
       inFlightDirsRef.current = new Set(inFlightDirsRef.current);
       inFlightDirsRef.current.delete(normalizedDir);
     }
-  }, [files, mapDirectoryEntries]);
+  }, [files, mapDirectoryEntries, removeExpandedPathsByPrefix, root]);
 
   const refreshRoot = React.useCallback(async () => {
     if (!root) return;

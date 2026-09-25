@@ -103,6 +103,16 @@ export const parseFileReference = (value: string): ParsedFileReference | null =>
         return null;
     }
 
+    // A scheme-qualified string (`https://…`, `ftp://…`) is a URL, not a
+    // filesystem reference: resolving it against a directory probes
+    // `<dir>/https:/…` paths and pollutes the persisted file tree. `file:`
+    // URLs are converted to paths by `localPathFromFileUrl` before reaching
+    // this parser. Windows drive paths (`C:/…`) keep their single-letter
+    // prefix and are not scheme-like.
+    if (/^[a-z][a-z0-9+.-]{1,}:\//i.test(trimmed)) {
+        return null;
+    }
+
     const semicolonIndex = trimmed.indexOf(';');
     const withoutSemicolonSuffix = semicolonIndex >= 0
         ? trimPathCandidate(trimmed.slice(0, semicolonIndex))

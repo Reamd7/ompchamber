@@ -77,7 +77,16 @@ const isPathWithinRoot = (path: string, root: string): boolean => {
   return comparablePath === comparableRoot || comparablePath.startsWith(`${comparableRoot}/`);
 };
 
-const sanitizeByRoot = (input: unknown): Record<string, RootTabsState> => {
+// A URL resolved as a relative path survives as a scheme segment:
+// `resolve(dir, 'https://api.github.com/x')` → `dir/https:/api.github.com/x`.
+// Persisting such a path makes the file tree probe nonexistent paths on every
+// session open. Scheme segments carry 2+ letters before the colon, so Windows
+// drive roots (`C:`) stay valid.
+const isPlausibleTreePath = (value: string): boolean => {
+  return !value.split('/').some((segment) => /^[a-z][a-z0-9+.-]{1,}:$/i.test(segment));
+};
+
+export const sanitizeByRoot = (input: unknown): Record<string, RootTabsState> => {
   if (!input || typeof input !== 'object') {
     return {};
   }
@@ -102,7 +111,7 @@ const sanitizeByRoot = (input: unknown): Record<string, RootTabsState> => {
       ? Array.from(new Set(state.openPaths
         .filter((value): value is string => typeof value === 'string')
         .map((value) => normalizePath(value))
-        .filter((value) => value.length <= MAX_PATH_LENGTH && isPathWithinRoot(value, root))))
+        .filter((value) => value.length <= MAX_PATH_LENGTH && isPathWithinRoot(value, root) && isPlausibleTreePath(value))))
         .slice(-MAX_OPEN_PATHS_PER_ROOT)
       : [];
 
@@ -110,7 +119,7 @@ const sanitizeByRoot = (input: unknown): Record<string, RootTabsState> => {
       ? Array.from(new Set(state.expandedPaths
         .filter((value): value is string => typeof value === 'string')
         .map((value) => normalizePath(value))
-        .filter((value) => value.length <= MAX_PATH_LENGTH && isPathWithinRoot(value, root))))
+        .filter((value) => value.length <= MAX_PATH_LENGTH && isPathWithinRoot(value, root) && isPlausibleTreePath(value))))
         .slice(-MAX_EXPANDED_PATHS_PER_ROOT)
       : [];
 
@@ -118,7 +127,7 @@ const sanitizeByRoot = (input: unknown): Record<string, RootTabsState> => {
       ? normalizePath(state.selectedPath)
       : null;
 
-    const selectedPath = selectedPathCandidate && isPathWithinRoot(selectedPathCandidate, root)
+    const selectedPath = selectedPathCandidate && isPathWithinRoot(selectedPathCandidate, root) && isPlausibleTreePath(selectedPathCandidate)
       ? selectedPathCandidate
       : (openPaths[0] ?? null);
 
@@ -198,7 +207,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
         addOpenPath: (root, path, options) => {
           const normalizedRoot = normalizePath((root || '').trim());
           const normalizedPath = normalizePath((path || '').trim());
-          if (!normalizedRoot || !normalizedPath || (!options?.allowOutsideRoot && !isPathWithinRoot(normalizedPath, normalizedRoot))) {
+          if (!normalizedRoot || !normalizedPath || !isPlausibleTreePath(normalizedPath) || (!options?.allowOutsideRoot && !isPathWithinRoot(normalizedPath, normalizedRoot))) {
             return;
           }
 
@@ -342,7 +351,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
         setSelectedPath: (root, path, options) => {
           const normalizedRoot = normalizePath((root || '').trim());
           const normalizedPath = path ? normalizePath(path.trim()) : null;
-          if (!normalizedRoot || (normalizedPath && !options?.allowOutsideRoot && !isPathWithinRoot(normalizedPath, normalizedRoot))) {
+          if (!normalizedRoot || (normalizedPath && (!isPlausibleTreePath(normalizedPath) || (!options?.allowOutsideRoot && !isPathWithinRoot(normalizedPath, normalizedRoot))))) {
             return;
           }
 
@@ -391,7 +400,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
         toggleExpandedPath: (root, path) => {
           const normalizedRoot = normalizePath((root || '').trim());
           const normalizedPath = normalizePath((path || '').trim());
-          if (!normalizedRoot || !normalizedPath || !isPathWithinRoot(normalizedPath, normalizedRoot)) {
+          if (!normalizedRoot || !normalizedPath || !isPlausibleTreePath(normalizedPath) || !isPathWithinRoot(normalizedPath, normalizedRoot)) {
             return;
           }
 
@@ -444,7 +453,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
         expandPath: (root, path) => {
           const normalizedRoot = normalizePath((root || '').trim());
           const normalizedPath = normalizePath((path || '').trim());
-          if (!normalizedRoot || !normalizedPath || !isPathWithinRoot(normalizedPath, normalizedRoot)) {
+          if (!normalizedRoot || !normalizedPath || !isPlausibleTreePath(normalizedPath) || !isPathWithinRoot(normalizedPath, normalizedRoot)) {
             return;
           }
 
@@ -476,7 +485,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
 
           const normalizedPaths = paths
             .map((p) => normalizePath((p || '').trim()))
-            .filter((p) => p && isPathWithinRoot(p, normalizedRoot));
+            .filter((p) => p && isPathWithinRoot(p, normalizedRoot) && isPlausibleTreePath(p));
           if (normalizedPaths.length === 0) {
             return;
           }

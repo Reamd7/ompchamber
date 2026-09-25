@@ -448,6 +448,16 @@ describe('parseFileReference', () => {
         });
     });
 
+    test('rejects scheme-qualified URLs instead of treating them as paths', () => {
+        // `https://api.github.com/...` resolved against a directory would
+        // probe `<dir>/https:/api.github.com/...` and pollute the persisted
+        // file tree.
+        expect(parse('https://api.github.com/repos/ventoy/Ventoy/releases/latest')).toBeNull();
+        expect(parse('http://localhost:5173/a.ts:12')).toBeNull();
+        expect(parse('ftp://example.com/file.txt')).toBeNull();
+        expect(parse('file:/etc/hosts')).toBeNull();
+    });
+
     test('preserves line:col form (does not interpret as range)', () => {
         expect(parse('src/foo.ts:42:8')).toEqual({ path: 'src/foo.ts', line: 42, column: 8 });
     });

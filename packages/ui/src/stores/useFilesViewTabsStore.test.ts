@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { useFilesViewTabsStore } from './useFilesViewTabsStore';
+import { sanitizeByRoot, useFilesViewTabsStore } from './useFilesViewTabsStore';
 
 describe('useFilesViewTabsStore', () => {
   beforeEach(() => {
@@ -72,5 +72,46 @@ describe('useFilesViewTabsStore', () => {
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
     useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-b');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/b.ts']);
+  });
+
+  test('rejects URL-scheme paths at the write boundary', () => {
+    const root = '/repo';
+    const store = useFilesViewTabsStore.getState();
+
+    // A URL resolved as a relative path survives as `https:` segment; writing
+    // it would make the tree probe nonexistent paths on every session open.
+    store.addOpenPath(root, '/repo/https:/api.github.com/repos');
+    store.expandPaths(root, ['/repo/src', '/repo/https:/api.github.com/repos']);
+    store.setSelectedPath(root, '/repo/https:/api.github.com/repos');
+    store.toggleExpandedPath(root, '/repo/https:/api.github.com');
+
+    const state = useFilesViewTabsStore.getState().byRoot[root];
+    expect(state?.openPaths).toEqual([]);
+    expect(state?.expandedPaths).toEqual(['/repo/src']);
+    expect(state?.selectedPath).toBeNull();
+  });
+
+  test('sanitizeByRoot drops persisted URL-scheme paths and keeps drive roots', () => {
+    const sanitized = sanitizeByRoot({
+      '/repo': {
+        openPaths: ['/repo/a.ts', '/repo/https:/api.github.com/x'],
+        selectedPath: '/repo/https:/api.github.com/x',
+        expandedPaths: ['/repo/src', '/repo/https:'],
+        touchedAt: Date.now(),
+      },
+      'C:/Repo': {
+        openPaths: ['C:/Repo/src/a.ts'],
+        selectedPath: 'C:/Repo/src/a.ts',
+        expandedPaths: ['C:/Repo/src'],
+        touchedAt: Date.now(),
+      },
+    });
+
+    expect(sanitized['/repo']?.openPaths).toEqual(['/repo/a.ts']);
+    expect(sanitized['/repo']?.selectedPath).toBe('/repo/a.ts');
+    expect(sanitized['/repo']?.expandedPaths).toEqual(['/repo/src']);
+    expect(sanitized['C:/Repo']?.openPaths).toEqual(['C:/Repo/src/a.ts']);
+    expect(sanitized['C:/Repo']?.selectedPath).toBe('C:/Repo/src/a.ts');
+    expect(sanitized['C:/Repo']?.expandedPaths).toEqual(['C:/Repo/src']);
   });
 });
