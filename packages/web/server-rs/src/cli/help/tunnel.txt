@@ -1,0 +1,78 @@
+
+ Tunnel Lifecycle Commands
+
+USAGE:
+  ompchamber tunnel <SUBCOMMAND> [OPTIONS]
+
+SUBCOMMANDS:
+  help        Show this tunnel help
+  providers   Show available tunnel providers and capabilities
+  ready       Check tunnel readiness for a provider
+  doctor      Run deep tunnel diagnostics
+  status      Show tunnel status
+  start       Start a tunnel
+  stop        Stop active tunnel (keep server running)
+  profile     Manage saved managed-remote profiles
+
+COMMON OPTIONS:
+  -p, --port              Target OMPChamber instance port
+  --host                  Bind address when auto-starting an instance
+  --lan                   Bind to 0.0.0.0 when auto-starting an instance
+  --ui-password [password] Protect browser UI when auto-starting an instance (generates one when omitted)
+  --api-only              Start API routes only when auto-starting an instance
+  --json                  Output machine-readable JSON
+  --all                   Apply to all running instances (doctor default, stop)
+
+START OPTIONS:
+  --provider <id>         Tunnel provider id (default: cloudflare)
+  --mode <id>             Tunnel mode (default: quick)
+  --profile <name>        Start tunnel from saved profile name
+  --config [path]         Managed-local config path (optional)
+  --token <token>         Managed-remote token (visible in process list)
+  --token-file <path>     Read token from file (recommended)
+  --token-stdin           Read token from stdin
+  --hostname <hostname>   Managed-remote hostname
+  --connect-ttl <value>   Connect-link TTL (e.g. 30m, 24h, 1d)
+  --session-ttl <value>   Session TTL (e.g. 8h, 24h, 1d)
+  --qr                    Print QR code for resulting tunnel URL
+  --no-qr                 Disable QR output
+  --dry-run               Validate inputs without applying changes
+
+OUTPUT OPTIONS:
+  --show-secrets          Show full tokens in output (default: redacted)
+  --plain                 Disable colors and decorations
+  -q, --quiet             Suppress non-essential output
+  --json                  Output machine-readable JSON
+
+BEHAVIOR NOTES:
+  - One active tunnel per OMPChamber instance.
+  - Starting a different mode/provider replaces the current tunnel and revokes old connect links/sessions.
+  - Connect links are one-time; generating a new link revokes the previous unused link.
+
+PROFILE USAGE:
+  ompchamber tunnel profile list [--provider <id>] [--json]
+  ompchamber tunnel profile show --name <name> [--provider <id>] [--json]
+  ompchamber tunnel profile add --provider <id> --mode managed-remote --name <name> --hostname <host> --token <token> [--force] [--json]
+  ompchamber tunnel profile add --provider <id> --mode managed-remote --name <name> --hostname <host> --token-file <path> [--force] [--json]
+  ompchamber tunnel profile remove --name <name> [--provider <id>] [--json]
+
+SHELL COMPLETION:
+  ompchamber tunnel completion bash   Generate Bash completion script
+  ompchamber tunnel completion zsh    Generate Zsh completion script
+  ompchamber tunnel completion fish   Generate Fish completion script
+
+EXAMPLES:
+  ompchamber tunnel providers
+  ompchamber tunnel ready --provider cloudflare
+  ompchamber tunnel doctor --provider cloudflare
+  ompchamber tunnel status
+  ompchamber tunnel start --qr
+  ompchamber tunnel start --profile prod-main
+  ompchamber tunnel start --provider cloudflare --mode managed-remote --token-file ~/.secrets/cf-token --hostname app.example.com
+  ompchamber tunnel start --provider cloudflare --mode managed-local --config ~/.cloudflared/config.yml
+  ompchamber tunnel start --dry-run --provider cloudflare --mode managed-remote --token-file ~/.secrets/cf-token --hostname app.example.com
+  echo "$TOKEN" | ompchamber tunnel profile add --provider cloudflare --mode managed-remote --name prod-main --hostname app.example.com --token-stdin
+  ompchamber tunnel profile list --provider cloudflare
+  ompchamber tunnel profile list --json --show-secrets
+  ompchamber tunnel stop --port 3000
+

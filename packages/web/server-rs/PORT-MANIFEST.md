@@ -1,8 +1,9 @@
 # Rust Port Manifest — `packages/web/server` → `packages/web/server-rs`
 
-Scope: the OpenChamber web server (Node/Express JS) ported to Rust (axum/tokio).
-Out of scope by decision: `lib/omp-host/**` (stays TypeScript under Bun, spawned as a
-managed child by `src/engine.rs`) and `packages/web/bin/**` (CLI layer — not ported).
+Scope: the OpenChamber web server (Node/Express JS) ported to Rust (axum/tokio),
+including the `packages/web/bin` CLI layer (see the CLI section below).
+Out of scope: `lib/omp-host/**` only (stays TypeScript under Bun, spawned as a
+managed child by `src/engine.rs`).
 
 Current volume: ~180k lines of Rust across 65 modules; 2227 unit tests green (1 ignored: documented relay live-peer test).
 Latest full-crate run: 2227 passed / 0 failed; clippy 0 errors; live smoke all-surface 200 (update-check, relay status, VAPID, tts/dictation status, manifest, proxy, SSE) + ENGINE_REAPED;
@@ -77,6 +78,36 @@ Status: ✅ ported · 🧩 partial (gaps noted) · ⏳ pending
 - ~213 style-level clippy warnings (collapsible-if etc.) across modules.
 - Local STT/TTS native engines need a sherpa-onnx Rust binding decision.
 - engine_env env-snapshot integration into engine.rs spawn (module ready).
+
+## CLI layer (ported)
+
+`src/cli/` — the full `packages/web/bin` surface now lives in the Rust binary
+(`ompchamber-server [command]`), default command `serve`:
+
+- Foundation: `mod.rs` (async dispatch, CliError/exit codes 0-5, OutputMode
+  human/JSON/quiet, compose_app), `args.rs` (full parseArgs table + positional
+  command surface + removed-flag errors + byte-identical help text),
+  `paths.rs`/`process.rs` (data/logs/run dirs, pid+instance registry,
+  cmdline identity, tree termination), `network.rs` (serve host/password
+  resolution incl --ui-password generation + exposure assertion),
+  `serve.rs` (daemon spawn-self + foreground in-process, health-poll
+  readiness, pid/instance writes, human/JSON/quiet output),
+  `server_main.rs` (foreground boot extracted from the old main).
+- Commands: stop/restart (lifecycle.rs), status/logs/schedule/session/models/
+  projects/control + completions (misc.rs), tunnel 9-subcommand group
+  (tunnel.rs: profiles+legacy migration, doctor/start/stop/ready/status,
+  token resolution incl stdin/file), startup enable/disable/status
+  (launchd/systemd/schtasks + env snapshot, startup.rs), update +
+  connect-url with pairing-link generation (update_connect.rs).
+- Verified: 2362 tests / 0 failed (135 new CLI tests); help/version/control/
+  schedule/session/models/projects/startup/tunnel/connect-url outputs are
+  BYTE-IDENTICAL to `node bin/cli.js`; end-to-end smoke: serve daemon (human
+  +JSON), status (3 modes), logs tail, stop/--all, restart, schedule/models
+  against a live instance, startup status (launchd), tunnel providers/
+  profile, completion, connect-url auto-start + real pairing payload.
+- Known gaps: QR rendering prints URL + stderr note (no qrcode-terminal
+  crate); no interactive clack prompts (flag-driven paths, matching the JS
+  non-TTY behavior); JSON key order alphabetical (serde) vs insertion (JS).
 
 ## API parity (JS vs Rust)
 

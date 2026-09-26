@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use crate::context::RouterContext;
 
 /// Engine runtime resolution snapshot (`getOpenCodeResolutionSnapshot` shape).
+#[derive(Clone)]
 pub(crate) struct EngineResolution {
     /// `resolvedOpencodeBinary` (the omp-host runtime, usually `bun`).
     pub resolved: Option<PathBuf>,
@@ -33,7 +34,17 @@ pub(crate) struct EngineResolution {
 }
 
 impl EngineResolution {
+    /// JS semantics: the binary-resolution snapshot lives in module-level
+    /// variables resolved once (env-runtime `resolvedOpencodeBinary` etc.) —
+    /// /health and the resolution route read the CACHED values, they do not
+    /// re-scan PATH per request.
     pub(crate) fn resolve() -> Self {
+        static CACHED: std::sync::LazyLock<EngineResolution> =
+            std::sync::LazyLock::new(EngineResolution::resolve_uncached);
+        (*CACHED).clone()
+    }
+
+    fn resolve_uncached() -> Self {
         let (resolved, source) = resolve_omp_host_runtime(
             std::env::var("OMPCHAMBER_OMP_HOST_RUNTIME").ok().as_deref(),
             std::env::var("OPENCODE_BINARY").ok().as_deref(),

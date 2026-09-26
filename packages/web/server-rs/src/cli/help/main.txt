@@ -1,0 +1,56 @@
+ OMPChamber - Web interface for the OpenCode AI coding agent
+
+USAGE:
+  ompchamber [COMMAND] [OPTIONS]
+
+COMMANDS:
+  serve          Start the web server (daemon default)
+  stop           Stop running instance(s)
+  restart        Stop and start the server
+  status         Show server status
+  schedule       Manage scheduled tasks
+  session        Create, inspect, and read OMPChamber sessions
+  models         Show default and favorite models
+  projects       Show configured projects and IDs
+  control        Show OMPChamber control-plane commands
+  tunnel         Tunnel lifecycle commands
+  startup        Manage launch at system startup
+  logs           Tail OMPChamber logs
+  connect-url    Generate URL/QR for connecting another client
+  update         Check for and install updates
+
+OPTIONS:
+  -p, --port              Web server port (default: 3000)
+  --host                  Bind address (default: 127.0.0.1)
+  --hostname              Alias for --host outside tunnel commands
+  --lan                   Bind to 0.0.0.0 for LAN access
+  --server <url>          Public/server URL for connect-url links
+  --relay                 connect-url: also include the end-to-end-encrypted relay transport
+  --ui-password [password] Protect browser UI with a password (generates one when omitted)
+  --api-only              Start API routes only, without serving browser UI assets
+  --foreground            Run server in foreground (use with systemd/process managers)
+  --no-daemon             Alias for --foreground
+  -h, --help              Show help
+  -v, --version           Show version
+
+ENVIRONMENT:
+  OMPCHAMBER_HOST             Bind address (e.g. 0.0.0.0 for all interfaces)
+  OMPCHAMBER_UI_PASSWORD      Alternative to --ui-password flag
+  OMPCHAMBER_API_ONLY         Set to true/1 to start API routes only
+  OMPCHAMBER_DATA_DIR         Override OMPChamber data directory
+  OPENCODE_HOST               External OpenCode server base URL, e.g. http://hostname:4096
+  OPENCODE_PORT               Port of external OpenCode server to connect to
+  OPENCODE_SKIP_START          Skip starting OpenCode, use external server
+  OMPCHAMBER_OPENCODE_HOSTNAME  Bind hostname for managed OpenCode server (default: 127.0.0.1)
+
+EXAMPLES:
+  ompchamber                    # Start in daemon mode on default port 3000 (or free port)
+  ompchamber --port 8080        # Start on port 8080 (daemon)
+  ompchamber --lan --port 3002  # Start on LAN at 0.0.0.0:3002
+  ompchamber serve --foreground # Start in foreground (for systemd Type=simple)
+  ompchamber connect-url --port 3000 --qr
+  ompchamber connect-url --server https://ompchamber.example.com
+  ompchamber control           # Show control-plane commands for agents/scripts
+  ompchamber startup enable     # Start OMPChamber at user login
+  ompchamber tunnel help        # Show tunnel lifecycle help
+  ompchamber logs               # Follow logs for latest running instance

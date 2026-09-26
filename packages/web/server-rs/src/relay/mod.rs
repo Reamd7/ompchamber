@@ -21,15 +21,15 @@
 //!
 //! Routes: `GET/POST /api/ompchamber/relay/{status,enable,disable}`.
 
-mod e2ee;
-mod host_client;
-mod host_lock;
-mod identity;
-mod routes;
-mod service;
-mod signing_key;
-mod tunnel_codec;
-mod tunnel_host;
+pub(crate) mod e2ee;
+pub(crate) mod host_client;
+pub(crate) mod host_lock;
+pub(crate) mod identity;
+pub(crate) mod routes;
+pub(crate) mod service;
+pub(crate) mod signing_key;
+pub(crate) mod tunnel_codec;
+pub(crate) mod tunnel_host;
 
 #[cfg(test)]
 mod tests;
@@ -38,14 +38,23 @@ use crate::context::RouterContext;
 
 /// The relay identity's stable server id (get_or_create, same store the JS
 /// relay service uses). Exposed for /health and /api/version parity.
+/// Derived once per process — the JS caches this on the relay service
+/// instance; deriving per request would read settings + run P-256 math on
+/// every /health.
 pub async fn server_id(ctx: &RouterContext) -> Option<String> {
-    let store = crate::settings::store(ctx);
-    let runtime = identity::RelayIdentityRuntime::new(store, identity::system_clock());
-    runtime
-        .get_relay_identity()
+    static CACHED: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+    CACHED
+        .get_or_init(|| async {
+            let store = crate::settings::store(ctx);
+            let runtime = identity::RelayIdentityRuntime::new(store, identity::system_clock());
+            runtime
+                .get_relay_identity()
+                .await
+                .ok()
+                .map(|identity| identity.server_id.clone())
+        })
         .await
-        .ok()
-        .map(|identity| identity.server_id.clone())
+        .clone()
 }
 
 pub fn router(ctx: RouterContext) -> axum::Router {

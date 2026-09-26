@@ -11,6 +11,7 @@
 pub mod agent_memory;
 pub mod agent_tool;
 pub mod browser_control;
+pub mod cli;
 pub mod client_auth;
 pub mod config;
 pub mod context;

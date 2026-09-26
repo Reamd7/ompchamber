@@ -1,0 +1,44 @@
+# Bash completion for ompchamber tunnel
+# Add to ~/.bashrc: eval "$(ompchamber tunnel completion bash)"
+_ompchamber_tunnel() {
+  local cur prev commands tunnel_commands profile_commands common_flags start_flags
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    commands="serve stop restart status schedule session models projects tunnel logs update"
+  tunnel_commands="help providers ready doctor status start stop profile completion"
+  profile_commands="list show add remove"
+  common_flags="--port --foreground --no-daemon --json --all --help --version --plain --quiet"
+  start_flags="--provider --mode --profile --config --token --token-file --token-stdin --hostname --connect-ttl --session-ttl --qr --no-qr --dry-run --show-secrets"
+
+  if [[ ${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+    return 0
+  fi
+
+  if [[ "${COMP_WORDS[1]}" == "tunnel" ]]; then
+    if [[ ${COMP_CWORD} -eq 2 ]]; then
+      COMPREPLY=( $(compgen -W "${tunnel_commands}" -- "${cur}") )
+      return 0
+    fi
+    if [[ "${COMP_WORDS[2]}" == "profile" && ${COMP_CWORD} -eq 3 ]]; then
+      COMPREPLY=( $(compgen -W "${profile_commands}" -- "${cur}") )
+      return 0
+    fi
+    if [[ "${COMP_WORDS[2]}" == "completion" && ${COMP_CWORD} -eq 3 ]]; then
+      COMPREPLY=( $(compgen -W "bash zsh fish" -- "${cur}") )
+      return 0
+    fi
+    if [[ "${COMP_WORDS[2]}" == "start" ]]; then
+      COMPREPLY=( $(compgen -W "${start_flags} ${common_flags}" -- "${cur}") )
+      return 0
+    fi
+    COMPREPLY=( $(compgen -W "${common_flags}" -- "${cur}") )
+    return 0
+  fi
+
+  COMPREPLY=( $(compgen -W "${common_flags}" -- "${cur}") )
+  return 0
+}
+complete -F _ompchamber_tunnel ompchamber

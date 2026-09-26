@@ -1,0 +1,65 @@
+#compdef ompchamber
+# Zsh completion for ompchamber tunnel
+# Add to ~/.zshrc: eval "$(ompchamber tunnel completion zsh)"
+
+_ompchamber() {
+  local -a commands tunnel_commands profile_commands
+
+  commands=(
+    'serve:Start the web server'
+    'stop:Stop running instance(s)'
+    'restart:Stop and start the server'
+    'status:Show server status'
+    'schedule:Manage scheduled tasks'
+    'session:Create sessions'
+    'models:Show default and favorite models'
+    'projects:Show configured projects and IDs'
+    'tunnel:Tunnel lifecycle commands'
+    'logs:Tail OMPChamber logs'
+    'update:Check for and install updates'
+  )
+
+  tunnel_commands=(
+    'help:Show tunnel help'
+    'providers:Show available providers'
+    'ready:Check tunnel readiness'
+    'doctor:Run tunnel diagnostics'
+    'status:Show tunnel status'
+    'start:Start a tunnel'
+    'stop:Stop active tunnel'
+    'profile:Manage saved profiles'
+    'completion:Generate shell completion'
+  )
+
+  profile_commands=(
+    'list:List profiles'
+    'show:Show profile details'
+    'add:Add a profile'
+    'remove:Remove a profile'
+  )
+
+  _arguments -C \
+    '1:command:->command' \
+    '*::arg:->args'
+
+  case $state in
+    command)
+      _describe 'command' commands
+      ;;
+    args)
+      case $words[1] in
+        tunnel)
+          if (( CURRENT == 2 )); then
+            _describe 'tunnel command' tunnel_commands
+          elif [[ $words[2] == "profile" ]] && (( CURRENT == 3 )); then
+            _describe 'profile action' profile_commands
+          elif [[ $words[2] == "completion" ]] && (( CURRENT == 3 )); then
+            _values 'shell' bash zsh fish
+          fi
+          ;;
+      esac
+      ;;
+  esac
+}
+
+compdef _ompchamber ompchamber
