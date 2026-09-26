@@ -540,6 +540,9 @@ pub(crate) async fn write_file_private(path: &std::path::Path, bytes: &[u8]) -> 
             .open(path)
             .await?;
         file.write_all(bytes).await?;
+        // tokio buffers writes; flush so same-process readers never see a
+        // truncated file.
+        file.flush().await?;
         let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await;
     }
     #[cfg(not(unix))]

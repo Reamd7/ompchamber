@@ -190,7 +190,7 @@ fn health_snapshot(ctx: &RouterContext, snapshot: &serde_json::Value) -> serde_j
         // engine connection, not TLS.
         "openCodeSecureConnection": ctx.engine.auth_header().is_some(),
         // auth-state-runtime password source is not surfaced by EngineState yet.
-        "openCodeAuthSource": serde_json::Value::Null,
+        "openCodeAuthSource": ctx.engine.auth_source().map(serde_json::Value::from),
         "openCodeApiPrefix": "",
         "openCodeApiPrefixDetected": true,
         "isOpenCodeReady": ready,
@@ -207,7 +207,7 @@ fn health_snapshot(ctx: &RouterContext, snapshot: &serde_json::Value) -> serde_j
         "opencodeLaunchArgs": resolution.launch_args,
         "opencodeLaunchWrapperType": resolution.launch_wrapper_type,
         "nodeBinaryResolved": resolution.node_display(),
-        "bunBinaryResolved": resolution.bun_display(),
+        "bunBinaryResolved": crate::engine_env::EnvRuntime::shared().resolved_bun_binary(),
         "desktopNotifyEnabled": desktop_notify_enabled(),
         "planModeExperimentalEnabled": plan_mode_experimental_enabled(),
         "apiOnly": ctx.config.api_only,
@@ -218,15 +218,19 @@ fn health_snapshot(ctx: &RouterContext, snapshot: &serde_json::Value) -> serde_j
 /// engine snapshot (`mode`/`ready`/`baseUrl`/`lastError`/`lastLaunch`).
 async fn health(State(ctx): State<RouterContext>) -> Response {
     let snapshot = ctx.engine.snapshot();
-    let body = serde_json::json!({
+    let server_id = crate::relay::server_id(&ctx).await;
+    let mut body = serde_json::json!({
         "status": "ok",
         "timestamp": iso_utc_from_unix_millis(now_unix_millis()),
         "ompchamberVersion": ompchamber_version(),
         "runtime": runtime_name(),
         "compatibility": compatibility(),
-        "engine": snapshot.clone(),
     });
-    let mut body = body;
+    if let Some(server_id) = server_id {
+        if let Some(map) = body.as_object_mut() {
+            map.insert("serverId".to_string(), serde_json::json!(server_id));
+        }
+    }
     if let Some(map) = body.as_object_mut()
         && let Some(fields) = health_snapshot(&ctx, &snapshot).as_object()
     {
@@ -238,18 +242,21 @@ async fn health(State(ctx): State<RouterContext>) -> Response {
 }
 
 /// `GET /api/version`.
-async fn api_version() -> Response {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ok",
-            "ompchamberVersion": ompchamber_version(),
-            "runtime": runtime_name(),
-            "startedAt": started_at_iso(),
-            "compatibility": compatibility(),
-        })),
-    )
-        .into_response()
+async fn api_version(State(ctx): State<RouterContext>) -> Response {
+    let server_id = crate::relay::server_id(&ctx).await;
+    let mut body = serde_json::json!({
+        "status": "ok",
+        "ompchamberVersion": ompchamber_version(),
+        "runtime": runtime_name(),
+        "startedAt": started_at_iso(),
+        "compatibility": compatibility(),
+    });
+    if let Some(server_id) = server_id {
+        if let Some(map) = body.as_object_mut() {
+            map.insert("serverId".to_string(), serde_json::json!(server_id));
+        }
+    }
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 /// `GET /api/system/info`.
@@ -702,10 +709,9 @@ mod tests {
             body["planModeExperimentalEnabled"],
             plan_mode_experimental_enabled()
         );
-        // Richer engine state from ctx.engine.snapshot().
-        assert_eq!(body["engine"]["mode"], "external");
-        assert_eq!(body["engine"]["ready"], true);
-        assert_eq!(body["engine"]["baseUrl"], "http://127.0.0.1:45678");
+        // JS /health carries no `engine` object — engine state reaches the
+        // snapshot through the flat fields above and launch diagnostics.
+        assert!(body.get("engine").is_none());
     }
 
     #[tokio::test]

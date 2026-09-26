@@ -306,6 +306,32 @@ pub struct EnvRuntime {
 }
 
 impl EnvRuntime {
+    /// Process-wide runtime (index.js module-level state).
+    pub fn shared() -> &'static EnvRuntime {
+        static SHARED: std::sync::LazyLock<EnvRuntime> = std::sync::LazyLock::new(EnvRuntime::new);
+        &SHARED
+    }
+
+    /// Number of env overrides currently applied (login-shell snapshot keys
+    /// plus the ARGV0 delete).
+    pub fn shell_env_key_count(&self) -> usize {
+        self.lock_overrides()
+            .values()
+            .filter(|value| value.is_some())
+            .count()
+    }
+
+    /// JS `resolvedBunBinary` state: only `ensureBunCliEnv` sets it (the shim
+    /// runtime paths); the plain managed omp-host launch never does.
+    pub fn resolved_bun_binary(&self) -> Option<String> {
+        self.lock_state().resolved_bun_binary.clone()
+    }
+
+    /// JS `resolvedNodeBinary` state: only `ensureNodeCliEnv` sets it.
+    pub fn resolved_node_binary(&self) -> Option<String> {
+        self.lock_state().resolved_node_binary.clone()
+    }
+
     /// Production runtime with real seams.
     pub fn new() -> Self {
         Self::with_seams(

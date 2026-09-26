@@ -1258,12 +1258,22 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   const runHealthCheckCycle = async (source) => {
-    if (!state.openCodeProcess || state.isShuttingDown || state.isRestartingOpenCode) return;
+    // Probe whenever there is something to probe: the spawned child handle,
+    // or (after a missed startup health window left the handle unset) a
+    // managed engine still listening on the recorded port.
+    const hasProbeTarget = Boolean(state.openCodeProcess)
+      || (Boolean(state.openCodePort) && !state.isExternalOpenCode);
+    if (!hasProbeTarget || state.isShuttingDown || state.isRestartingOpenCode) return;
     if (healthCheckCyclePromise) return healthCheckCyclePromise;
 
     healthCheckCyclePromise = (async () => {
       const healthResult = await probeOpenCodeHealth();
       if (!healthResult.healthy) {
+        if (!state.openCodeProcess) {
+          // No child handle (missed startup window): recovery is adoption
+          // only — never restart an engine whose liveness we cannot judge.
+          return;
+        }
         if (!isManagedOpenCodeProcessAlive()) {
           console.log(`[lifecycle] ${source} health check: OpenCode process exited, restarting...`);
           consecutiveHealthFailures = 0;
@@ -1303,6 +1313,17 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         );
       } else {
         resetHealthFailureState();
+        // Recovery: a healthy managed engine must clear a missed startup
+        // window — without this, isOpenCodeReady stays false forever and the
+        // /api readiness gate 503s a serving engine.
+        if (!state.isOpenCodeReady && !state.isExternalOpenCode) {
+          state.isOpenCodeReady = true;
+          state.openCodeNotReadySince = 0;
+          state.lastOpenCodeError = null;
+          state.lastOpenCodeHealthFailure = null;
+          console.log(`[lifecycle] ${source} health check: engine healthy, marking OpenCode ready`);
+          syncToHmrState();
+        }
       }
     })().finally(() => {
       healthCheckCyclePromise = null;

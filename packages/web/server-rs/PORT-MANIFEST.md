@@ -78,6 +78,37 @@ Status: ✅ ported · 🧩 partial (gaps noted) · ⏳ pending
 - Local STT/TTS native engines need a sherpa-onnx Rust binding decision.
 - engine_env env-snapshot integration into engine.rs spawn (module ready).
 
+## API parity (JS vs Rust)
+
+`scripts/run-parity.sh` boots BOTH servers (node server/index.js on :3100,
+the Rust binary on :3101) with identical seeded state + UI password, logs in
+on both, and diffs every endpoint (status + normalized JSON):
+**56/56 identical** (stage 1 static/config 30, stage 2 engine/fs/git 24,
+stage 3 SSE 2). `scripts/api-diff.py` normalizes volatile fields
+(timestamps, ports, pids, UUIDs, epochs, per-boot argv) and carries
+documented equal-treatment rules: ULP-level float tolerance (upstream
+models.dev cache drift) and dev-server entries owned by the parity pair.
+
+The JS cold-boot readiness gap is FIXED on both sides (not normalized away):
+lifecycle.js `runHealthCheckCycle` now marks a healthy managed engine ready
+(no-handle paths are adoption-only, never restart-triggering), and the Rust
+health monitor mirrors the recovery. Cold-boot parity (no engine pre-warm,
+PARITY_NO_WARM=1) passes 56/56 with /api/event streaming on both sides.
+
+Also fixed during verification: a real cross-process visibility bug —
+tokio::fs::File buffers writes and flushes on background drop, so
+agent-tool plugin / settings.json / remote-clients.json writes could be
+observed empty by same-process std::fs readers; all three now flush
+explicitly (this was the ~1/15 flaky agent_tool test).
+
+Parity fixes landed during verification: /health `engine` object removed
+(JS has none), relay serverId surfaced in /health + /api/version, lazy
+bun/node resolution semantics, omp-host path/binary/cwd/shell-env/path-count
+launch diagnostics fields, git identity via proper `config --null --get-all`
+parsing, branch listing row trim + `->` symref skip, fs list entry sort,
+fs project-directory settings root honoring OMPCHAMBER_DATA_DIR, browser
+control express-shaped 404 on wrong methods.
+
 ## Verification
 
 - `cargo build` clean; `cargo test --lib` → 1808+ passed (tunnels 7 failures in

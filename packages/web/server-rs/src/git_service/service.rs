@@ -387,12 +387,10 @@ impl GitService {
 
     /// JS `getConfig(key, scope)` → last configured value.
     pub async fn get_config(&self, cwd: &Path, key: &str, scope: &str) -> Option<String> {
+        // simple-git getConfig: `config --<scope> --null --get-all <key>`;
+        // the last configured value wins.
         let mut args = vec!["config".to_string(), format!("--{}", scope)];
-        args.extend(
-            ["--null", "--show-origin", "--get-all", key]
-                .iter()
-                .map(|s| s.to_string()),
-        );
+        args.extend(["--null", "--get-all", key].iter().map(|s| s.to_string()));
         let output = self.run_strings(cwd, &args).await;
         parse_config_null_value(&output.stdout)
     }
@@ -1567,17 +1565,13 @@ fn relative_path_string(root: &Path, target: &Path) -> String {
 }
 
 pub(crate) fn parse_config_null_value(stdout: &str) -> Option<String> {
-    let mut value: Option<String> = None;
-    for chunk in stdout.split('\0') {
-        if chunk.trim().is_empty() {
-            continue;
-        }
-        match chunk.split_once('\n') {
-            Some((_, rest)) => value = Some(rest.to_string()),
-            None => continue,
-        }
-    }
-    value
+    // `--null --get-all` emits value\0value\0…; the last configured value
+    // wins. An empty final value is an empty string (caller maps to null).
+    stdout
+        .split('\0')
+        .filter(|chunk| !chunk.is_empty())
+        .next_back()
+        .map(|value| value.to_string())
 }
 
 pub(crate) fn parse_ahead_behind_counts(value: &str) -> Option<(i64, i64)> {

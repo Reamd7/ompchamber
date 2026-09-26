@@ -3124,7 +3124,9 @@ struct BranchSummaryParsed {
 fn parse_branch_summary(stdout: &str) -> BranchSummaryParsed {
     let mut parsed = BranchSummaryParsed::default();
     for line in stdout.lines() {
-        let trimmed = line.trim_end();
+        // simple-git trims each row before parsing; `branch -v` pads
+        // non-current branches with leading spaces.
+        let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -3172,12 +3174,16 @@ fn parse_branch_summary(stdout: &str) -> BranchSummaryParsed {
             );
             continue;
         }
-        // `name hash label`
-        let mut parts = rest.splitn(3, ' ');
+        // `name hash label` — simple-git splits on /\s+/ (padded columns).
+        let mut parts = rest.split_whitespace();
         let name = parts.next().unwrap_or("").to_string();
         let commit = parts.next().unwrap_or("").to_string();
-        let label = parts.next().unwrap_or("").trim().to_string();
+        let label = parts.collect::<Vec<_>>().join(" ");
         if name.is_empty() {
+            continue;
+        }
+        // `remotes/origin/HEAD -> origin/main` symref row: simple-git skips it.
+        if commit == "->" {
             continue;
         }
         if marker == "*" {

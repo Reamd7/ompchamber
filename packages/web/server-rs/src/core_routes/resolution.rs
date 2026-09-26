@@ -38,14 +38,15 @@ impl EngineResolution {
             std::env::var("OMPCHAMBER_OMP_HOST_RUNTIME").ok().as_deref(),
             std::env::var("OPENCODE_BINARY").ok().as_deref(),
         );
-        let node = resolve_node_binary(
-            std::env::var("NODE_BINARY").ok().as_deref(),
-            std::env::var("OMPCHAMBER_NODE_BINARY").ok().as_deref(),
-        );
-        let bun = resolve_bun_binary(
-            std::env::var("BUN_BINARY").ok().as_deref(),
-            std::env::var("OMPCHAMBER_BUN_BINARY").ok().as_deref(),
-        );
+        // JS reports the lazy `resolvedNodeBinary` state (shim paths only).
+        let node = crate::engine_env::EnvRuntime::shared()
+            .resolved_node_binary()
+            .map(PathBuf::from);
+        // JS reports the lazy `resolvedBunBinary` state (only the shim-runtime
+        // paths populate it), never an eager PATH lookup.
+        let bun = crate::engine_env::EnvRuntime::shared()
+            .resolved_bun_binary()
+            .map(PathBuf::from);
         let (launch_binary, launch_args, launch_wrapper_type) = resolved
             .as_deref()
             .map(managed_launch_spec)

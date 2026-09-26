@@ -36,6 +36,18 @@ mod tests;
 
 use crate::context::RouterContext;
 
+/// The relay identity's stable server id (get_or_create, same store the JS
+/// relay service uses). Exposed for /health and /api/version parity.
+pub async fn server_id(ctx: &RouterContext) -> Option<String> {
+    let store = crate::settings::store(ctx);
+    let runtime = identity::RelayIdentityRuntime::new(store, identity::system_clock());
+    runtime
+        .get_relay_identity()
+        .await
+        .ok()
+        .map(|identity| identity.server_id.clone())
+}
+
 pub fn router(ctx: RouterContext) -> axum::Router {
     routes::router_with(routes::ModuleState {
         service: service::service(&ctx),

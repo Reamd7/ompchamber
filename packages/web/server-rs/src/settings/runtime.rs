@@ -1562,7 +1562,12 @@ async fn write_file_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
             .mode(0o600)
             .open(path)
             .await?;
+        // tokio::fs::File buffers internally and flushes from a background
+        // task on drop — same-process std::fs readers (fs workspace
+        // resolution reads settings.json synchronously) must not observe a
+        // truncated/empty file after persist returns.
         file.write_all(bytes).await?;
+        file.flush().await?;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
     #[cfg(not(unix))]

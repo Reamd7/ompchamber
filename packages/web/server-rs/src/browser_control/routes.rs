@@ -17,7 +17,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
@@ -37,6 +37,27 @@ struct ModuleState {
     broker: Arc<BrowserControlBroker>,
 }
 
+/// Express's default unmatched-method page (verbatim) for GET on POST-only
+/// paths — express answers 404, never 405.
+async fn express_404_get(
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    use axum::http::{StatusCode, header};
+    use axum::response::IntoResponse;
+    // The JS /api mount answers unmatched methods with its JSON 404, path
+    // stripped of the /api prefix.
+    let stripped = uri.path().strip_prefix("/api").unwrap_or(uri.path());
+    (
+        StatusCode::NOT_FOUND,
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        axum::Json(serde_json::json!({
+            "name": "UnknownError",
+            "data": { "message": format!("Not found: GET {stripped}") }
+        })),
+    )
+        .into_response()
+}
+
 /// `registerBrowserControlRoutes(app, { broker })` — composition entry for
 /// main.rs: the caller owns the broker (shared with the `openchamber_web`
 /// tool service, exactly as index.js threads one instance into both).
@@ -44,11 +65,17 @@ pub fn router_shared(ctx: RouterContext, broker: Arc<BrowserControlBroker>) -> R
     Router::new()
         .route(
             "/api/browser-control/claim",
-            post(claim).layer(DefaultBodyLimit::max(CLAIM_BODY_LIMIT_BYTES)),
+            // Express has no GET route: unmatched methods fall through to the
+            // express 404, not axum's 405. Mirror the express default page.
+            get(express_404_get)
+                .post(claim)
+                .layer(DefaultBodyLimit::max(CLAIM_BODY_LIMIT_BYTES)),
         )
         .route(
             "/api/browser-control/result",
-            post(result).layer(DefaultBodyLimit::max(RESULT_BODY_LIMIT_BYTES)),
+            get(express_404_get)
+                .post(result)
+                .layer(DefaultBodyLimit::max(RESULT_BODY_LIMIT_BYTES)),
         )
         // `/api` requests pass through `requireApiAuth` before any route.
         .route_layer(crate::ui_auth::middleware(ctx))

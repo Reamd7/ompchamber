@@ -1321,6 +1321,9 @@ pub async fn list(
         }
         entries.push((name, is_directory, is_file, is_symbolic_link));
     }
+    // Node's readdir returns name-sorted dirents on macOS; the JS list route
+    // relies on that order. Sort to match the observable sequence.
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let ignored_paths = if respect_gitignore {
         run_check_ignore(&resolved_path, &entries, state.git_check_ignore_timeout_ms).await

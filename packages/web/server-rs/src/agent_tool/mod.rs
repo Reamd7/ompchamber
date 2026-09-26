@@ -427,6 +427,10 @@ async fn write_plugin_file(path: &std::path::Path, contents: &str) -> std::io::R
             .open(path)
             .await?;
         file.write_all(contents.as_bytes()).await?;
+        // tokio::fs::File buffers writes internally and flushes from a
+        // background task on drop — without an explicit flush a same-process
+        // std::fs reader can observe an empty file after prepare returns.
+        file.flush().await?;
     }
     #[cfg(not(unix))]
     {

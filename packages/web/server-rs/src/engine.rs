@@ -43,12 +43,25 @@ fn crate_dir() -> PathBuf {
 /// `<web package>/server/lib/omp-host/host.ts` — the TS entry stays in place;
 /// only Bun may run it.
 pub fn omp_host_entry() -> PathBuf {
-    crate_dir()
+    // Lexically cleaned so launch diagnostics carry the same path the JS
+    // server reports (no `server-rs/..` segment).
+    let raw = crate_dir()
         .join("..")
         .join("server")
         .join("lib")
         .join("omp-host")
-        .join("host.ts")
+        .join("host.ts");
+    let mut clean = PathBuf::new();
+    for component in raw.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => clean.push(other.as_os_str()),
+        }
+    }
+    clean
 }
 
 fn host_binary_name() -> &'static str {
@@ -127,14 +140,13 @@ fn resolve_runtime_binary() -> anyhow::Result<(PathBuf, &'static str)> {
             return Ok((path, "env"));
         }
     }
-    // The Rust server is never the Bun process; resolve `bun` from PATH.
-    search_path_for("bun")
-        .map(|found| (found, "path"))
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "bun runtime not found on PATH (required to launch the omp host from source)"
-            )
-        })
+    if search_path_for("bun").is_some() {
+        Ok((PathBuf::from("bun"), "path"))
+    } else {
+        Err(anyhow::anyhow!(
+            "bun runtime not found on PATH (required to launch the omp host from source)"
+        ))
+    }
 }
 
 fn search_path_for(binary: &str) -> Option<PathBuf> {
@@ -224,6 +236,7 @@ pub struct EngineState {
     ready: watch::Sender<bool>,
     child: tokio::sync::Mutex<Option<Child>>,
     child_pid: RwLock<Option<u32>>,
+    user_provided_password: bool,
     shutting_down: std::sync::atomic::AtomicBool,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub last_error: RwLock<Option<String>>,
@@ -238,6 +251,20 @@ impl EngineState {
 
     pub fn mode(&self) -> EngineModeKind {
         self.mode
+    }
+
+    /// auth-state-runtime `openCodeAuthSource`: "user-env" when
+    /// OPENCODE_SERVER_PASSWORD came from the environment, "generated" when
+    /// we minted one for the managed engine.
+    pub fn auth_source(&self) -> Option<&'static str> {
+        match self.mode {
+            EngineModeKind::Managed => Some(if self.user_provided_password {
+                "user-env"
+            } else {
+                "generated"
+            }),
+            EngineModeKind::External => None,
+        }
     }
 
     pub fn is_ready(&self) -> bool {
@@ -290,6 +317,14 @@ impl EngineState {
         self.ready.send_replace(true);
     }
 
+    /// Store the engine URL while keeping readiness CLOSED (JS cold-boot
+    /// miss: `isOpenCodeReady` stays false, but the port/URL are known).
+    fn set_gated(&self, base_url: String) {
+        if let Ok(mut guard) = self.base_url.write() {
+            *guard = Some(base_url);
+        }
+    }
+
     fn set_not_ready(&self) {
         self.ready.send_replace(false);
         if let Ok(mut guard) = self.base_url.write() {
@@ -307,6 +342,7 @@ impl EngineState {
             ready: watch::Sender::new(true),
             child: tokio::sync::Mutex::new(None),
             child_pid: RwLock::new(None),
+            user_provided_password: false,
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             last_error: RwLock::new(None),
@@ -334,13 +370,26 @@ impl EngineState {
         }
         // Auth password: user-provided or generated (auth-state-runtime
         // `ensureLocalOpenCodeServerPassword`).
+        let user_provided_password = std::env::var("OPENCODE_SERVER_PASSWORD")
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
         let password = std::env::var("OPENCODE_SERVER_PASSWORD")
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(generate_password);
 
-        let mut envs: HashMap<String, String> = std::env::vars().collect();
+        let env_runtime = crate::engine_env::EnvRuntime::shared();
+        env_runtime.apply_login_shell_env_snapshot().await;
+        // lifecycle.js: `shellEnvKeysCount: Object.keys(shellEnv).length` —
+        // the snapshot's total size, not the merged-override count.
+        let shell_env_keys_count = env_runtime
+            .get_login_shell_env_snapshot()
+            .await
+            .map(|snapshot| snapshot.len())
+            .unwrap_or(0);
+        let mut envs: HashMap<String, String> = env_runtime.effective_env();
         let existing_path = envs.get("PATH").cloned().unwrap_or_default();
         envs.insert("OPENCODE_SERVER_PASSWORD".to_string(), password.clone());
         let mut envs = crate::provider_env_aliases::apply_provider_env_aliases(&envs);
@@ -353,10 +402,22 @@ impl EngineState {
             "launchedAt": utc_timestamp(),
             "binary": spec.binary.to_string_lossy(),
             "args": spec.args,
-            "cwd": std::env::current_dir().ok(),
+            "cwd": engine_working_directory(),
             "hostname": hostname,
             "port": port,
             "runtimeSource": spec.source,
+            "sourceBinary": spec.binary.to_string_lossy(),
+            "wrapperType": serde_json::Value::Null,
+            "hasShellEnv": shell_env_keys_count > 0,
+            "shellEnvKeysCount": shell_env_keys_count,
+            "pathEntryCount": envs
+                .get("PATH")
+                .map(|path| {
+                    path.split(if cfg!(windows) { ';' } else { ':' })
+                        .filter(|entry| !entry.is_empty())
+                        .count()
+                })
+                .unwrap_or(0),
         });
         tracing::info!("[omp-host] Launching managed engine {}", launch_info);
 
@@ -364,7 +425,7 @@ impl EngineState {
         command
             .args(&spec.args)
             .envs(&envs)
-            .current_dir(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+            .current_dir(engine_working_directory())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -402,6 +463,7 @@ impl EngineState {
             ready: watch::Sender::new(false),
             child: tokio::sync::Mutex::new(Some(child)),
             child_pid: RwLock::new(pid_for_state),
+            user_provided_password: user_provided_password,
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             last_error: RwLock::new(None),
@@ -443,8 +505,51 @@ impl EngineState {
             .unwrap_or_else(|e| e.into_inner())
             .push(stderr_task);
 
-        state.set_ready(Some(url.clone()));
-        tracing::info!("[omp-host] Managed engine ready at {}", url);
+        // lifecycle.js flips `isOpenCodeReady` only when `/global/health`
+        // answers healthy within the startup window (waitForReady, 10s) —
+        // NOT at the listening line. The /api/* proxy gate keys on that
+        // flag, so a slow cold engine stays gated on both servers.
+        let mut request = state.http.get(format!("{url}/global/health"));
+        if let Some(auth) = state.auth_header() {
+            request = request.header("authorization", auth);
+        }
+        let health_ok = 'health: {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match request
+                    .try_clone()
+                    .unwrap_or_else(|| request.try_clone().expect("cloneable request"))
+                    .timeout(Duration::from_secs(3))
+                    .send()
+                    .await
+                {
+                    Ok(response) if response.status().is_success() => {
+                        let body = response.text().await.unwrap_or_default();
+                        if serde_json::from_str::<serde_json::Value>(&body)
+                            .ok()
+                            .and_then(|body| body.get("healthy").and_then(|v| v.as_bool()))
+                            == Some(true)
+                        {
+                            break 'health true;
+                        }
+                    }
+                    _ => {}
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    break 'health false;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        };
+        if health_ok {
+            state.set_ready(Some(url.clone()));
+            tracing::info!("[omp-host] Managed engine ready at {}", url);
+        } else {
+            // Mirror the JS: the child stays up and serves, readiness stays
+            // closed, and the /api gate 503s with the restarting body.
+            state.set_gated(url.clone());
+            tracing::warn!("[omp-host] engine missed the startup health window; /api gated");
+        }
 
         state.spawn_exit_watcher();
         Ok(state)
@@ -481,8 +586,6 @@ impl EngineState {
             .push(task);
     }
 
-    /// Periodic upstream health probe; logs transitions and records failures
-    /// for /health.
     pub fn spawn_health_monitor(self: &Arc<Self>) {
         let state = Arc::clone(self);
         let task = tokio::spawn(async move {
@@ -500,6 +603,21 @@ impl EngineState {
                         tracing::warn!("[omp-host] engine health check failed");
                     }
                     was_healthy = Some(healthy);
+                }
+                // Recovery parity with lifecycle.js: a healthy managed
+                // engine clears a missed startup health window — otherwise
+                // readiness stays false forever and the /api gate 503s a
+                // serving engine.
+                if healthy
+                    && state.mode() == EngineModeKind::Managed
+                    && !state.is_ready()
+                    && state.base_url().is_some()
+                {
+                    let base_url = state.base_url();
+                    state.set_ready(base_url);
+                    tracing::info!(
+                        "[omp-host] engine healthy, marking ready (startup window recovery)"
+                    );
                 }
             }
         });
@@ -668,6 +786,18 @@ fn parse_listening_url(line: &str) -> Option<String> {
         .split_whitespace()
         .find(|t| t.starts_with("http://") || t.starts_with("https://"))
         .map(String::from)
+}
+
+/// hmr-state-runtime `getInitialOpenCodeWorkingDirectory`:
+/// `OMPCHAMBER_OPENCODE_CWD` (trimmed) or the user's home directory.
+fn engine_working_directory() -> PathBuf {
+    std::env::var("OMPCHAMBER_OPENCODE_CWD")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(crate::config::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn pick_free_port(hostname: &str) -> anyhow::Result<u16> {

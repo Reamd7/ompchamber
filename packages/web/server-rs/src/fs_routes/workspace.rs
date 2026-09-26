@@ -476,7 +476,16 @@ async fn validate_directory_path(candidate: &str) -> Result<(PathBuf, PathBuf), 
 }
 
 fn read_settings_document() -> serde_json::Value {
-    let path = user_config_root().join("settings.json");
+    // The JS chain reads settings through the settings runtime (honors
+    // OMPCHAMBER_DATA_DIR); only workspace *admission* uses the hardcoded
+    // ~/.config/ompchamber root.
+    let root = std::env::var("OMPCHAMBER_DATA_DIR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(user_config_root);
+    let path = root.join("settings.json");
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
