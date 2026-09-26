@@ -95,7 +95,14 @@ struct StdioSink;
 
 impl OutputSink for StdioSink {
     fn print_json(&mut self, value: &serde_json::Value) {
-        print_json(value);
+        // JS printJson injects status:"ok" first when absent.
+        let mut owned = value.clone();
+        if let Some(map) = owned.as_object_mut() {
+            if !map.contains_key("status") {
+                map.shift_insert(0, "status".to_string(), serde_json::json!("ok"));
+            }
+        }
+        print_json(&owned);
     }
     fn stdout_line(&mut self, line: &str) {
         println!("{line}");

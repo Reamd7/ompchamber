@@ -839,6 +839,8 @@ fn startup_result_json(result: &StartupResult) -> serde_json::Value {
         "supported": result.supported,
         "platform": result.platform,
         "enabled": result.enabled,
+        // commands-startup.js always emits active (null when unknown).
+        "active": serde_json::Value::Null,
     });
     if let Some(active) = result.active {
         value["active"] = serde_json::json!(active);
@@ -874,12 +876,20 @@ fn startup_quiet_line(result: &StartupResult) -> String {
 
 /// clack human output as plain lines: title, status lines, outro.
 fn startup_human_lines(result: &StartupResult) -> Vec<String> {
-    let mut lines = vec!["OMPChamber Startup".to_string()];
+    let mut lines = vec![
+        crate::cli::ui::intro_line("OMPChamber Startup")
+            .trim_end_matches('\n')
+            .to_string(),
+    ];
     let push_status = |message: String, detail: Option<String>, lines: &mut Vec<String>| {
-        lines.push(message);
+        // logStatus: `│\n●  message` then detail as `│  detail` (bar + 2sp).
+        let mut block = crate::cli::ui::info_line(&message)
+            .trim_end_matches('\n')
+            .to_string();
         if let Some(detail) = detail {
-            lines.push(format!("  {detail}"));
+            block.push_str(&format!("\n{}{detail}", crate::cli::ui::bar_line()));
         }
+        lines.push(block.trim_end_matches('\n').to_string());
     };
     push_status(
         format!(
@@ -894,8 +904,14 @@ fn startup_human_lines(result: &StartupResult) -> Vec<String> {
         &mut lines,
     );
     if let Some(state) = &result.active_state {
-        // logStatus(active ? 'success' : state === 'failed' ? 'error' : 'warning', `service ${state}`)
-        lines.push(format!("service {state}"));
+        let rendered = if result.active == Some(true) {
+            crate::cli::ui::success_line(&format!("service {state}"))
+        } else if state == "failed" {
+            crate::cli::ui::error_line(&format!("service {state}"))
+        } else {
+            crate::cli::ui::warn_line(&format!("service {state}"))
+        };
+        lines.push(rendered.trim_end_matches('\n').to_string());
     }
     if result.action == "enable" {
         push_status(
@@ -904,11 +920,14 @@ fn startup_human_lines(result: &StartupResult) -> Vec<String> {
             &mut lines,
         );
     }
-    lines.push(if result.action == "status" {
-        "status complete".to_string()
+    // clack outro tail is `message\n\n`; println adds the final newline, so
+    // keep exactly one trailing \n in the pushed line.
+    let tail = if result.action == "status" {
+        crate::cli::ui::outro_line("status complete")
     } else {
-        format!("{} complete", result.action)
-    });
+        crate::cli::ui::outro_line(&format!("{} complete", result.action))
+    };
+    lines.push(tail.trim_end_matches('\n').to_string() + "\n");
     lines
 }
 
@@ -972,7 +991,16 @@ pub(crate) fn startup_command_with(
     validate_startup_result(&result)?;
 
     match mode {
-        OutputMode::Json => super::print_json(&startup_result_json(&result)),
+        OutputMode::Json => {
+            // JS printJson injects status:"ok" first when absent.
+            let mut value = startup_result_json(&result);
+            if let Some(map) = value.as_object_mut() {
+                if !map.contains_key("status") {
+                    map.shift_insert(0, "status".to_string(), serde_json::json!("ok"));
+                }
+            }
+            super::print_json(&value)
+        }
         OutputMode::Quiet => println!("{}", startup_quiet_line(&result)),
         OutputMode::Human => {
             for line in startup_human_lines(&result) {
@@ -1403,9 +1431,11 @@ mod tests {
                 && status.service_path.is_none()
         );
         let json = startup_result_json(&status.with_action("status"));
+        // commands-startup.js always emits active (null when unknown) — the
+        // JSON contract pins the key's presence, not its absence.
         assert!(
-            json.get("active").is_none(),
-            "unsupported status has no active key"
+            json.get("active") == Some(&serde_json::Value::Null),
+            "unsupported status carries active:null"
         );
         assert!(json["servicePath"].is_null());
     }
@@ -1640,15 +1670,20 @@ mod tests {
         result.action = "enable".to_string();
         result.enabled = true;
         let lines = startup_human_lines(&result);
-        assert_eq!(lines[0], "OMPChamber Startup");
-        assert_eq!(lines[1], "startup enabled");
-        assert_eq!(
-            lines[2],
-            "  /tmp/x/Library/LaunchAgents/dev.ompchamber.web.plist"
+        // clack frames: intro bar, info block with bar-prefixed detail.
+        assert_eq!(lines[0], "\u{250C}  OMPChamber Startup");
+        assert!(lines[1].starts_with("\u{2502}\n\u{25CF}  startup enabled"));
+        assert!(
+            lines[1].contains("\u{2502}  /tmp/x/Library/LaunchAgents/dev.ompchamber.web.plist"),
+            "detail bar line: {}",
+            lines[1]
         );
-        assert_eq!(lines[3], "service command");
-        assert_eq!(lines[4], "  ompchamber serve --foreground");
-        assert_eq!(lines[5], "enable complete");
+        assert!(lines[2].contains("service command"));
+        assert!(lines[2].contains("ompchamber serve --foreground"));
+        assert_eq!(
+            lines.last().unwrap(),
+            "\u{2502}\n\u{2514}  enable complete\n"
+        );
 
         let mut linux = get_startup_status(
             &FakeRunner::default(),
@@ -1659,10 +1694,17 @@ mod tests {
         linux.active = Some(true);
         linux.active_state = Some("active".to_string());
         let lines = startup_human_lines(&linux);
-        assert_eq!(lines[1], "startup enabled"); // FakeRunner answers is-enabled with success
-        assert_eq!(lines[2], "  /tmp/x/.config/systemd/user/ompchamber.service");
-        assert_eq!(lines[3], "service active");
-        assert_eq!(lines.last().unwrap(), "status complete");
+        assert!(lines[1].contains("startup enabled")); // FakeRunner answers is-enabled with success
+        assert!(
+            lines[1].contains("\u{2502}  /tmp/x/.config/systemd/user/ompchamber.service"),
+            "detail bar line: {}",
+            lines[1]
+        );
+        assert!(lines[2].contains("service active"));
+        assert_eq!(
+            lines.last().unwrap(),
+            "\u{2502}\n\u{2514}  status complete\n"
+        );
     }
 
     #[test]

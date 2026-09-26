@@ -809,12 +809,11 @@ mod tests {
         );
         map.insert("tools".into(), json!(["write", "edit"]));
         let text = stringify_yaml(&map);
-        // serde_json maps are BTreeMaps, so emission order is alphabetical
-        // (JS yaml.stringify preserves insertion order; the round-trip value
-        // equality is what the frontmatter contract needs).
+        // serde_json preserve_order keeps insertion order — matching JS
+        // yaml.stringify's emission order exactly.
         assert_eq!(
             text,
-            "description: My build agent\nflag: true\nmodel: openai/gpt-5\nnothing: null\npermission:\n  edit:\n    commit: true\n  webfetch: deny\ntemperature: 0.7\ntools:\n  - write\n  - edit\n"
+            "description: My build agent\nmodel: openai/gpt-5\ntemperature: 0.7\nflag: true\nnothing: null\npermission:\n  edit:\n    commit: true\n  webfetch: deny\ntools:\n  - write\n  - edit\n"
         );
         let reparsed = parse_map(&text);
         assert_eq!(Value::Object(reparsed), Value::Object(map));

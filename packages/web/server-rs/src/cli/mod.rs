@@ -11,6 +11,7 @@ pub mod serve;
 pub mod server_main;
 pub mod startup;
 pub mod tunnel;
+pub mod ui;
 pub mod update_connect;
 
 /// `bin/lib/cli-errors.js` EXIT_CODE.
@@ -154,18 +155,28 @@ async fn run_parsed(parsed: args::Parsed) -> i32 {
         "control" => misc::control_command(&parsed, options),
         "completion" => args::completion_command(&parsed, &options),
         other => {
+            // cli.js: unknown command → USAGE_ERROR with closest-match hint.
+            const KNOWN: [&str; 13] = [
+                "serve", "stop", "restart", "status", "schedule", "session", "models", "projects",
+                "control", "tunnel", "startup", "logs", "update",
+            ];
+            let suggestion = find_closest_match(other, &KNOWN);
+            let hint = suggestion
+                .map(|s| format!(" Did you mean '{s}'?"))
+                .unwrap_or_default();
             return match mode {
                 OutputMode::Json => {
                     print_json(&serde_json::json!({
                         "status": "error",
-                        "error": { "message": format!("Unknown command: {other}") }
+                        "error": { "message": format!("Unknown command '{other}'.{hint}") },
+                        "messages": [{ "level": "info", "code": "USAGE_HELP", "message": "Use --help to see available commands" }]
                     }));
-                    1
+                    USAGE_ERROR.0
                 }
                 _ => {
-                    eprintln!("Unknown command: {other}");
-                    args::show_help_hint(&other);
-                    1
+                    eprintln!("Error: Unknown command '{other}'.{hint}");
+                    eprintln!("Use --help to see available commands");
+                    USAGE_ERROR.0
                 }
             };
         }
@@ -250,3 +261,36 @@ pub fn compose_app(
 /// mutation — parallel suites race data-dir resolution to the wrong fixture.
 #[cfg(test)]
 pub(crate) static TEST_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// cli-args.js `findClosestMatch`: levenshtein distance <= 3, case-insensitive.
+fn find_closest_match(input: &str, candidates: &[&'static str]) -> Option<&'static str> {
+    fn levenshtein(a: &str, b: &str) -> usize {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        let mut dp: Vec<usize> = (0..=b.len()).collect();
+        for (i, ca) in a.iter().enumerate() {
+            let mut prev = dp[0];
+            dp[0] = i + 1;
+            for (j, cb) in b.iter().enumerate() {
+                let temp = dp[j + 1];
+                dp[j + 1] = (dp[j] + 1)
+                    .min(dp[j + 1] + 1)
+                    .min(prev + usize::from(ca != cb));
+                prev = temp;
+            }
+        }
+        dp[b.len()]
+    }
+    if input.is_empty() {
+        return None;
+    }
+    let normalized = input.to_lowercase();
+    let mut best: Option<(usize, &str)> = None;
+    for candidate in candidates {
+        let distance = levenshtein(&normalized, &candidate.to_lowercase());
+        if distance < best.map(|(d, _)| d).unwrap_or(4) {
+            best = Some((distance, candidate));
+        }
+    }
+    best.filter(|(d, _)| *d <= 3).map(|(_, c)| c)
+}

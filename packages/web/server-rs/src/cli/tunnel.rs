@@ -1559,18 +1559,43 @@ async fn resolve_tunnel_providers(
 /// `printJson` (cli-output.js): injects `status: "ok"` when absent.
 fn emit_json(mut value: serde_json::Value) {
     if let Some(object) = value.as_object_mut() {
-        object
-            .entry("status".to_string())
-            .or_insert_with(|| serde_json::json!("ok"));
+        if !object.contains_key("status") {
+            object.shift_insert(0, "status".to_string(), serde_json::json!("ok"));
+        }
     }
     print_json(&value);
 }
 
-/// `logStatus`/intro/outro rendered as plain lines (port convention).
+/// `logStatus` with clack frames (cli::ui).
 fn log_status(message: &str, detail: Option<&str>) {
-    println!("{message}");
+    super::ui::info(message);
     if let Some(detail) = detail.filter(|d| !d.is_empty()) {
+        // detail rides inside the same info block (logStatus joins with \n)
         println!("{detail}");
+    }
+}
+
+fn clack_intro(title: &str) {
+    super::ui::intro(title);
+}
+
+fn clack_outro(text: &str) {
+    super::ui::outro(text);
+}
+
+fn gray_bar() -> String {
+    if super::ui::tty_enabled() {
+        "\x1b[90m│\x1b[0m".to_string()
+    } else {
+        "│".to_string()
+    }
+}
+
+fn step_glyph() -> String {
+    if super::ui::tty_enabled() {
+        "\x1b[90m◇\x1b[0m".to_string()
+    } else {
+        "◇".to_string()
     }
 }
 
@@ -1805,7 +1830,7 @@ fn handle_tunnel_profile_subcommand(
                 }
             }
             OutputMode::Human => {
-                println!("Tunnel Profiles");
+                clack_intro("Tunnel Profiles");
                 for profile in &profiles {
                     log_status(
                         &format!("{} ({}/{})", profile.name, profile.provider, profile.mode),
@@ -1816,7 +1841,7 @@ fn handle_tunnel_profile_subcommand(
                         )),
                     );
                 }
-                println!("{} profile(s)", profiles.len());
+                clack_outro(&format!("{} profile(s)", profiles.len()));
             }
         }
         return Ok(());
@@ -2101,7 +2126,7 @@ async fn providers_command(options: &Options) -> Result<(), CliError> {
             }
         }
         OutputMode::Human => {
-            println!("Tunnel Providers");
+            clack_intro("Tunnel Providers");
             for provider in &providers {
                 let provider_modes = provider
                     .get("modes")
@@ -2113,11 +2138,13 @@ async fn providers_command(options: &Options) -> Result<(), CliError> {
                     .and_then(serde_json::Value::as_str)
                     .filter(|v| !v.is_empty())
                     .unwrap_or("unknown");
-                println!(
+                // logStatus('info', provider header) + per-mode log.message
+                // steps with `◇ key — label` + indented requirements.
+                super::ui::success(&format!(
                     "{} — {} mode(s)",
                     format_provider_with_icon(Some(provider_id)),
                     provider_modes.len()
-                );
+                ));
                 for tunnel_mode in &provider_modes {
                     let key = tunnel_mode
                         .get("key")
@@ -2128,11 +2155,15 @@ async fn providers_command(options: &Options) -> Result<(), CliError> {
                         .and_then(serde_json::Value::as_str)
                         .filter(|v| !v.is_empty())
                         .unwrap_or(key);
-                    println!("{key} — {label}");
-                    println!("  requires: {}", format_mode_requirements(tunnel_mode));
+                    println!("{}\n{}  {key} — {label}", gray_bar(), step_glyph());
+                    println!(
+                        "{}    requires: {}",
+                        gray_bar(),
+                        format_mode_requirements(tunnel_mode)
+                    );
                 }
             }
-            println!("{} provider(s)", providers.len());
+            clack_outro(&format!("{} provider(s)", providers.len()));
         }
     }
     Ok(())

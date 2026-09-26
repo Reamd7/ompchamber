@@ -91,7 +91,8 @@ mod tests {
     fn encodes_control_frames_with_control_tag_prefix() {
         let frame = create_terminal_ws_control_frame(&json!({ "t": "write", "d": "hi" }));
         assert_eq!(frame[0], TERMINAL_WS_CONTROL_TAG_JSON);
-        assert_eq!(&frame[1..], br#"{"d":"hi","t":"write"}"#.as_slice());
+        // preserve_order keeps insertion order (matches the JS JSON.stringify).
+        assert_eq!(&frame[1..], br#"{"t":"write","d":"hi"}"#.as_slice());
     }
 
     #[test]

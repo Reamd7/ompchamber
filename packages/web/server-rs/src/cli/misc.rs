@@ -182,26 +182,29 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 // ── clack output adapters (`cli-output.js` subset) ─────────────────────
-// Divergence from the JS (documented): @clack/prompts renders frames and
-// status glyphs on a TTY; this port follows the plain-text human output the
-// rest of the Rust CLI layer already uses (see `serve.rs`).
+// clack-compatible rendering (byte-matches @clack/prompts 1.7 captured
+// output — see cli::ui for the glyph/ANSI contract).
+/// JS printJson injects `status: "ok"` FIRST when absent (cli-output.js).
+fn status_first_json(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(map) = value.as_object_mut() {
+        if !map.contains_key("status") {
+            map.shift_insert(0, "status".to_string(), serde_json::json!("ok"));
+        }
+    }
+    value
+}
 
 fn clack_intro(title: &str) {
-    println!("{title}");
+    super::ui::intro(title);
 }
 
 fn clack_outro(text: &str) {
-    println!("{text}");
+    super::ui::outro(text);
 }
 
-fn log_status(_status: &str, message: &str, detail: Option<&str>) {
-    match detail {
-        Some(detail) => {
-            println!("{message}");
-            println!("  {detail}");
-        }
-        None => println!("{message}"),
-    }
+fn log_status(status: &str, message: &str, detail: Option<&str>) {
+    // ui::log_status joins detail into the block with the bar prefix.
+    super::ui::log_status(status, message, detail);
 }
 
 // ── system info / health probes (`cli-http.js` subset) ─────────────────
@@ -678,14 +681,14 @@ pub fn status_command(_parsed: &Parsed, options: Options) -> Result<(), CliError
 
     match OutputMode::from_options(&options) {
         OutputMode::Json => {
-            print_json(&serde_json::json!({
+            print_json(&status_first_json(serde_json::json!({
                 "state": if running_count > 0 { "running" } else { "stopped" },
                 "runningCount": running_count,
                 "instances": instances
                     .iter()
                     .map(status_entry_json)
                     .collect::<Vec<_>>(),
-            }));
+            })));
         }
         OutputMode::Quiet if running_count == 0 => println!("stopped"),
         OutputMode::Quiet => {
@@ -939,7 +942,7 @@ pub fn logs_command(_parsed: &Parsed, options: Options) -> Result<(), CliError> 
                 GENERAL_ERROR,
             ));
         }
-        print_json(&log_entries_json(&targets, line_count));
+        print_json(&log_entries_json(&targets, line_count)); // logs JSON: JS emits entries[] (no status injection)
         return Ok(());
     }
 
@@ -1410,7 +1413,9 @@ fn format_schedule(schedule: &serde_json::Value) -> String {
 fn output_tasks(options: &Options, tasks: &serde_json::Value) {
     let normalized_tasks = tasks.as_array().cloned().unwrap_or_default();
     if options.json {
-        print_json(&serde_json::json!({ "tasks": normalized_tasks }));
+        print_json(&status_first_json(
+            serde_json::json!({ "tasks": normalized_tasks }),
+        ));
         return;
     }
     if options.quiet {
@@ -1493,7 +1498,7 @@ pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
         let body =
             request_control_action(port, "schedule.status", &serde_json::json!({}), &options)?;
         if options.json {
-            print_json(&body);
+            print_json(&status_first_json(body.clone()));
             return Ok(());
         }
         let enabled_count = field(&body, "enabledScheduledTasksCount");
@@ -1596,10 +1601,10 @@ pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
         )?;
         let task = field(&body, "task");
         if options.json {
-            print_json(&serde_json::json!({
+            print_json(&status_first_json(serde_json::json!({
                 "task": task,
                 "created": field(&body, "created") == &serde_json::Value::Bool(true),
-            }));
+            })));
             return Ok(());
         }
         if options.quiet {
@@ -1682,7 +1687,9 @@ pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
                 .cloned()
                 .filter(|tasks| tasks.is_array())
                 .unwrap_or_else(|| serde_json::json!([]));
-            print_json(&serde_json::json!({ "deleted": true, "tasks": tasks }));
+            print_json(&status_first_json(
+                serde_json::json!({ "deleted": true, "tasks": tasks }),
+            ));
             return Ok(());
         }
         if options.quiet {
@@ -1709,7 +1716,9 @@ pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
         )?;
         let task = field(&body, "task");
         if options.json {
-            print_json(&serde_json::json!({ "task": task, "enabled": enabled }));
+            print_json(&status_first_json(
+                serde_json::json!({ "task": task, "enabled": enabled }),
+            ));
             return Ok(());
         }
         if options.quiet {
@@ -2088,7 +2097,7 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
             .cloned()
             .unwrap_or_default();
         if options.json {
-            print_json(&body);
+            print_json(&status_first_json(body.clone()));
             return Ok(());
         }
         if sessions.is_empty() {
@@ -2111,7 +2120,7 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
             &options,
         )?;
         if options.json {
-            print_json(&result);
+            print_json(&status_first_json(result.clone()));
             return Ok(());
         }
         let status_type = value_str(field(&result, "sessionStatus"), "type").unwrap_or_default();
@@ -2186,7 +2195,7 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
             .cloned()
             .unwrap_or_default();
         if options.json {
-            print_json(&result);
+            print_json(&status_first_json(result.clone()));
             return Ok(());
         }
         if messages.is_empty() {
@@ -2233,7 +2242,7 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
         )?;
         let last_assistant_message = field(&result, "lastAssistantMessage");
         if options.json {
-            print_json(&result);
+            print_json(&status_first_json(result.clone()));
             return Ok(());
         }
         if options.quiet {
@@ -2306,7 +2315,7 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
     let last_assistant_message = field(&result, "lastAssistantMessage");
 
     if options.json {
-        print_json(&result);
+        print_json(&status_first_json(result.clone()));
         return Ok(());
     }
     if options.quiet {
@@ -2437,7 +2446,7 @@ pub fn models_command(parsed: &Parsed, options: Options) -> Result<(), CliError>
     let result = request_control_action(port, "models.list", &serde_json::json!({}), &options)?;
 
     if options.json {
-        print_json(&result);
+        print_json(&status_first_json(result.clone()));
         return Ok(());
     }
     print!("{}", format_models_output(&result));
@@ -2485,7 +2494,9 @@ pub fn projects_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
         .cloned()
         .unwrap_or_default();
     if options.json {
-        print_json(&serde_json::json!({ "projects": projects }));
+        print_json(&status_first_json(
+            serde_json::json!({ "projects": projects }),
+        ));
         return Ok(());
     }
     if projects.is_empty() {
