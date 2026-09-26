@@ -1,0 +1,1558 @@
+//! Route + service tests mirroring `openchamber-sessions/routes.test.js`:
+//! a trait-level fake engine (the JS `local-engine-client` mock + fetch
+//! mock) drives the route shapes, ordering, and error mapping; a spawned
+//! HTTP fake engine exercises the production wiring (URLs, headers, goal
+//! PATCH) through `HttpEngineClient`.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::extract::Request;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Json};
+use serde_json::{Map, Value, json};
+use tower::ServiceExt;
+
+use crate::config::{EngineConfig, ServerConfig};
+use crate::context::RouterContext;
+use crate::engine::EngineState;
+use crate::hub::EventHub;
+
+use super::client::{
+    BoxFut, EngineClient, EngineReply, SessionCommandParams, encode_uri_component,
+};
+use super::routes::{self, SessionState};
+use super::service::{GoalCall, SessionDeps, SessionService, WorktreeOps};
+
+type Log = Arc<Mutex<Vec<String>>>;
+
+fn log_push(log: &Log, entry: &str) {
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(entry.to_string());
+}
+
+fn log_position(log: &Log, entry: &str) -> Option<usize> {
+    log.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .position(|item| item == entry)
+}
+
+fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    value.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn temp_dir(label: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "ompchamber-ocs-{label}-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
+}
+
+// ---------------------------------------------------------------------------
+// Fake engine (JS: the local-engine-client mock + selection-input fetch mock)
+// ---------------------------------------------------------------------------
+
+struct FakeEngineState {
+    existing_messages: Vec<Value>,
+    dispatched_seq: usize,
+    land_prompts: bool,
+    commands: Vec<Value>,
+    command_error: Option<String>,
+    prompt_error: Option<String>,
+}
+
+#[derive(Clone)]
+struct FakeEngine {
+    log: Log,
+    state: Arc<Mutex<FakeEngineState>>,
+    messages_calls: Arc<Mutex<Vec<(String, String, u32)>>>,
+    fork_calls: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
+    command_calls: Arc<Mutex<Vec<SessionCommandParams>>>,
+    fetch_calls: Arc<Mutex<Vec<String>>>,
+    create_session_calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    prompt_payloads: Arc<Mutex<Vec<(String, String, Value)>>>,
+}
+
+impl FakeEngine {
+    fn new(log: Log) -> Self {
+        Self {
+            log,
+            state: Arc::new(Mutex::new(FakeEngineState {
+                existing_messages: Vec::new(),
+                dispatched_seq: 0,
+                land_prompts: true,
+                commands: Vec::new(),
+                command_error: None,
+                prompt_error: None,
+            })),
+            messages_calls: Arc::new(Mutex::new(Vec::new())),
+            fork_calls: Arc::new(Mutex::new(Vec::new())),
+            command_calls: Arc::new(Mutex::new(Vec::new())),
+            fetch_calls: Arc::new(Mutex::new(Vec::new())),
+            create_session_calls: Arc::new(Mutex::new(Vec::new())),
+            prompt_payloads: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn set_existing_messages(&self, messages: Vec<Value>) {
+        lock(&self.state).existing_messages = messages;
+    }
+
+    fn set_commands(&self, commands: Vec<Value>) {
+        lock(&self.state).commands = commands;
+    }
+
+    fn set_command_error(&self, error: &str) {
+        lock(&self.state).command_error = Some(error.to_string());
+    }
+
+    fn set_prompt_error(&self, error: &str) {
+        lock(&self.state).prompt_error = Some(error.to_string());
+    }
+
+    fn set_land_prompts(&self, land: bool) {
+        lock(&self.state).land_prompts = land;
+    }
+
+    /// `selectionInputResponse`: the providers/agents/config bodies every
+    /// prompt-dispatching fetch mock must answer.
+    fn selection_response(path: &str) -> Option<Value> {
+        if path.starts_with("/config/providers") {
+            return Some(json!({
+                "providers": [
+                    { "id": "openai", "models": [{ "id": "gpt-5.5", "variants": { "high": {} } }] },
+                    { "id": "anthropic", "models": [{ "id": "claude-sonnet-5", "variants": { "high": {} } }] },
+                ],
+            }));
+        }
+        if path.starts_with("/agent") {
+            return Some(json!([
+                { "name": "build", "mode": "primary" },
+                { "name": "plan", "mode": "primary" },
+                { "name": "reviewer", "mode": "subagent" },
+            ]));
+        }
+        if path.starts_with("/config") {
+            return Some(json!({}));
+        }
+        None
+    }
+}
+
+impl EngineClient for FakeEngine {
+    fn session_messages(
+        &self,
+        session_id: &str,
+        directory: &str,
+        limit: u32,
+    ) -> BoxFut<'_, Result<EngineReply, String>> {
+        lock(&self.messages_calls).push((session_id.to_string(), directory.to_string(), limit));
+        log_push(&self.log, &format!("engine.messages:{session_id}"));
+        let messages = {
+            let mut state = lock(&self.state);
+            let mut messages = state.existing_messages.clone();
+            if state.land_prompts {
+                state.dispatched_seq += 1;
+                let seq = state.dispatched_seq;
+                messages.push(json!({
+                    "info": {
+                        "id": format!("msg_dispatched_{seq}"),
+                        "role": "user",
+                        "time": { "created": 1000 + seq },
+                    },
+                }));
+            }
+            messages
+        };
+        Box::pin(async move { Ok(EngineReply::ok(Value::Array(messages))) })
+    }
+
+    fn session_fork(
+        &self,
+        session_id: &str,
+        directory: &str,
+        message_id: Option<&str>,
+    ) -> BoxFut<'_, Result<EngineReply, String>> {
+        lock(&self.fork_calls).push((
+            session_id.to_string(),
+            directory.to_string(),
+            message_id.map(String::from),
+        ));
+        log_push(&self.log, "engine.session_fork");
+        Box::pin(async move {
+            Ok(EngineReply::ok(
+                json!({ "id": "ses_fork", "title": "Forked session" }),
+            ))
+        })
+    }
+
+    fn session_command(
+        &self,
+        _session_id: &str,
+        params: &SessionCommandParams,
+    ) -> BoxFut<'_, Result<EngineReply, String>> {
+        lock(&self.command_calls).push(params.clone());
+        log_push(&self.log, "engine.session_command");
+        let error = lock(&self.state).command_error.clone();
+        Box::pin(async move {
+            match error {
+                Some(error) => Err(error),
+                None => Ok(EngineReply::ok(json!({}))),
+            }
+        })
+    }
+
+    fn command_list(&self, _directory: &str) -> BoxFut<'_, Result<EngineReply, String>> {
+        log_push(&self.log, "engine.command_list");
+        let commands = lock(&self.state).commands.clone();
+        Box::pin(async move { Ok(EngineReply::ok(Value::Array(commands))) })
+    }
+
+    fn fetch_json(&self, path: &str, _directory: &str, fallback: Value) -> BoxFut<'_, Value> {
+        lock(&self.fetch_calls).push(path.to_string());
+        log_push(&self.log, &format!("engine.fetch_json:{path}"));
+        let body = Self::selection_response(path).unwrap_or(fallback);
+        Box::pin(async move { body })
+    }
+
+    fn create_session(
+        &self,
+        directory: &str,
+        title: Option<&str>,
+    ) -> BoxFut<'_, Result<String, String>> {
+        lock(&self.create_session_calls).push((directory.to_string(), title.map(String::from)));
+        log_push(&self.log, "engine.create_session");
+        Box::pin(async move { Ok("ses_123".to_string()) })
+    }
+
+    fn prompt_async(
+        &self,
+        session_id: &str,
+        directory: &str,
+        payload: &Value,
+    ) -> BoxFut<'_, Result<(), String>> {
+        lock(&self.prompt_payloads).push((
+            session_id.to_string(),
+            directory.to_string(),
+            payload.clone(),
+        ));
+        log_push(&self.log, "engine.prompt_async");
+        let error = lock(&self.state).prompt_error.clone();
+        Box::pin(async move {
+            match error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fake worktrees (JS: the `git/index.js` mock)
+// ---------------------------------------------------------------------------
+
+struct FakeWorktrees {
+    log: Log,
+    record: Value,
+    create_calls: Arc<Mutex<Vec<(String, Value)>>>,
+    statuses: Arc<Mutex<Vec<Value>>>,
+}
+
+impl WorktreeOps for FakeWorktrees {
+    fn create(&self, directory: &str, input: &Value) -> BoxFut<'_, Result<Value, String>> {
+        lock(&self.create_calls).push((directory.to_string(), input.clone()));
+        log_push(&self.log, "worktree.create");
+        let record = self.record.clone();
+        Box::pin(async move { Ok(record) })
+    }
+
+    fn bootstrap_status(&self, _directory: &str) -> BoxFut<'_, Result<Value, String>> {
+        log_push(&self.log, "worktree.status");
+        // JS test harness: `statuses.shift() || last`.
+        let status = {
+            let mut statuses = lock(&self.statuses);
+            if !statuses.is_empty() {
+                statuses.remove(0)
+            } else {
+                json!({ "status": "ready", "phase": "setup-ready", "error": null })
+            }
+        };
+        Box::pin(async move { Ok(status) })
+    }
+}
+// Harness (JS: `createApp`)
+// ---------------------------------------------------------------------------
+
+struct Harness {
+    router: Router,
+    log: Log,
+    engine: FakeEngine,
+    worktree_statuses: Arc<Mutex<Vec<Value>>>,
+    create_worktree_calls: Arc<Mutex<Vec<(String, Value)>>>,
+    goal_calls: Arc<Mutex<Vec<GoalCall>>>,
+    events: Arc<Mutex<Vec<Value>>>,
+}
+
+fn harness() -> Harness {
+    harness_with(json!({ "projects": [{ "id": "proj_1", "path": "/repo/app" }] }))
+}
+
+fn harness_with(settings: Value) -> Harness {
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let engine = FakeEngine::new(Arc::clone(&log));
+    let worktree_statuses: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let create_worktree_calls: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
+    let worktrees: Arc<dyn WorktreeOps> = Arc::new(FakeWorktrees {
+        log: Arc::clone(&log),
+        record: json!({
+            "head": "abc123",
+            "name": "side-task",
+            "branch": "ompchamber/side-task",
+            "path": "/repo/worktrees/side-task",
+        }),
+        create_calls: Arc::clone(&create_worktree_calls),
+        statuses: Arc::clone(&worktree_statuses),
+    });
+    let settings = Arc::new(Mutex::new(
+        settings.as_object().cloned().unwrap_or_default(),
+    ));
+    let goal_calls: Arc<Mutex<Vec<GoalCall>>> = Arc::new(Mutex::new(Vec::new()));
+    let events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let read_settings = {
+        let settings = Arc::clone(&settings);
+        Arc::new(move || {
+            let settings = Arc::clone(&settings);
+            Box::pin(async move { lock(&settings).clone() }) as BoxFut<'static, Map<String, Value>>
+        })
+    };
+    let create_goal = {
+        let log = Arc::clone(&log);
+        let goal_calls = Arc::clone(&goal_calls);
+        Arc::new(move |call: GoalCall| {
+            log_push(&log, "goal");
+            lock(&goal_calls).push(call);
+            Box::pin(async { Ok(()) }) as BoxFut<'static, Result<(), String>>
+        })
+    };
+    let emit = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: &Value| {
+            lock(&events).push(event.clone());
+        })
+    };
+
+    let deps = SessionDeps {
+        client: Arc::new(engine.clone()) as Arc<dyn EngineClient>,
+        read_settings,
+        sanitize_projects: Arc::new(|projects: &Value| {
+            projects.as_array().cloned().unwrap_or_default()
+        }),
+        validate_directory: Arc::new(|directory: &str| {
+            let directory = directory.to_string();
+            Box::pin(async move { Ok(directory) }) as BoxFut<'static, Result<String, String>>
+        }),
+        wait_ready: Arc::new(|| Box::pin(async { Ok(()) }) as BoxFut<'static, Result<(), String>>),
+        worktrees,
+        create_goal,
+        emit_session_created: emit,
+    };
+    let router = routes::routes().with_state(SessionState {
+        service: Arc::new(SessionService::new(deps)),
+    });
+    Harness {
+        router,
+        log,
+        engine,
+        worktree_statuses,
+        create_worktree_calls,
+        goal_calls,
+        events,
+    }
+}
+
+async fn post(router: &Router, uri: &str, body: &Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    let response = router.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+const CREATE_URI: &str = "/api/ompchamber/sessions";
+
+// ---------------------------------------------------------------------------
+// Route tests (JS parity)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn creates_a_session_for_a_directory() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "title": "Side task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sessionId"], "ses_123");
+    assert_eq!(body["directory"], "/repo/app");
+    assert_eq!(body["promptDispatched"], false);
+    assert_eq!(body["dispatchedAsCommand"], false);
+    assert!(body.get("model").is_none());
+    let create_calls = lock(&h.engine.create_session_calls);
+    assert_eq!(create_calls.len(), 1);
+    assert_eq!(
+        create_calls[0],
+        ("/repo/app".to_string(), Some("Side task".to_string()))
+    );
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn emits_session_created_event_after_creating_session() {
+    let h = harness();
+    let (status, _) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "title": "Side task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = lock(&h.events);
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event["sessionID"], "ses_123");
+    assert_eq!(event["directory"], "/repo/app");
+    assert_eq!(event["title"], "Side task");
+    assert_eq!(event["promptDispatched"], false);
+    assert_eq!(event["dispatchedAsCommand"], false);
+    assert!(event["createdAt"].is_u64());
+}
+
+#[tokio::test]
+async fn resolves_default_model_and_agent_when_prompt_omits_them() {
+    let h = harness_with(json!({
+        "defaultModel": "openai/gpt-5.5",
+        "defaultAgent": "build",
+        "projects": [{ "id": "proj_1", "path": "/repo/app" }],
+    }));
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "prompt": "Run this" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["model"],
+        json!({ "providerID": "openai", "modelID": "gpt-5.5" })
+    );
+    assert_eq!(body["agent"], "build");
+    assert!(
+        lock(&h.engine.fetch_calls)
+            .iter()
+            .any(|path| path.starts_with("/config/providers")),
+        "selection inputs must be fetched"
+    );
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        payloads[0].2["model"],
+        json!({ "providerID": "openai", "modelID": "gpt-5.5" })
+    );
+    assert_eq!(payloads[0].2["agent"], "build");
+}
+
+#[tokio::test]
+async fn dispatches_initial_prompt_when_model_is_provided() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "prompt": "Run this", "model": "openai/gpt-5.5" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sessionId"], "ses_123");
+    assert_eq!(body["promptDispatched"], true);
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].0, "ses_123");
+    assert_eq!(payloads[0].1, "/repo/app");
+    // No agent requested and none configured in settings: the default
+    // selection picks the first primary agent.
+    assert_eq!(payloads[0].2["agent"], "build");
+}
+
+#[tokio::test]
+async fn creates_goal_metadata_before_dispatching_the_initial_goal_prompt() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Finish and verify the migration",
+            "model": "openai/gpt-5.5",
+            "goal": true,
+            "goalTokenBudget": 200000,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let goal_calls = lock(&h.goal_calls);
+    assert_eq!(goal_calls.len(), 1);
+    assert_eq!(goal_calls[0].session_id, "ses_123");
+    assert_eq!(goal_calls[0].directory, "/repo/app");
+    assert_eq!(goal_calls[0].objective, "Finish and verify the migration");
+    assert_eq!(goal_calls[0].token_budget, Some(200000));
+    assert_eq!(goal_calls[0].provider_id, "openai");
+    assert_eq!(goal_calls[0].model_id, "gpt-5.5");
+    drop(goal_calls);
+
+    let goal_at = log_position(&h.log, "goal").expect("goal call");
+    let prompt_at = log_position(&h.log, "engine.prompt_async").expect("prompt");
+    assert!(
+        goal_at < prompt_at,
+        "goal metadata must exist before dispatch"
+    );
+
+    let payloads = lock(&h.engine.prompt_payloads);
+    let parts = payloads[0].2["parts"].as_array().expect("parts");
+    assert_eq!(parts.len(), 2);
+    assert_eq!(
+        parts[0],
+        json!({ "type": "text", "text": "Finish and verify the migration" })
+    );
+    assert_eq!(parts[1]["type"], "text");
+    assert_eq!(parts[1]["synthetic"], true);
+    let intro = parts[1]["text"].as_str().expect("intro text");
+    assert!(intro.contains("Goal mode is active"));
+    assert!(intro.contains("200000 tokens"));
+    drop(payloads);
+
+    assert_eq!(body["goalEnabled"], true);
+    assert_eq!(body["goalTokenBudget"], 200000);
+    assert_eq!(body["promptDispatched"], true);
+}
+
+#[tokio::test]
+async fn rejects_invalid_goal_requests_before_creating_a_session() {
+    let h = harness();
+    let cases = [
+        (
+            json!({ "directory": "/repo/app", "goal": true }),
+            "prompt is required when goal is enabled",
+        ),
+        (
+            json!({ "directory": "/repo/app", "prompt": "Run", "goalTokenBudget": 200000 }),
+            "goalTokenBudget requires goal",
+        ),
+        (
+            json!({ "directory": "/repo/app", "prompt": "Run", "goal": true, "goalTokenBudget": 999 }),
+            "goalTokenBudget must be an integer from 1000 to 100000000",
+        ),
+    ];
+    for (payload, message) in cases {
+        let (status, body) = post(&h.router, CREATE_URI, &payload).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+        assert_eq!(body, json!({ "error": message }));
+    }
+    assert!(lock(&h.log).is_empty(), "no engine contact allowed");
+}
+
+#[tokio::test]
+async fn creates_a_worktree_before_creating_a_session() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "worktree": { "name": "side-task", "branchName": "ompchamber/side-task", "startRef": "main" },
+            "setUpstream": false,
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let create_calls = lock(&h.create_worktree_calls);
+    assert_eq!(create_calls.len(), 1);
+    assert_eq!(create_calls[0].0, "/repo/app");
+    assert_eq!(
+        create_calls[0].1,
+        json!({
+            "mode": "new",
+            "name": "side-task",
+            "branchName": "ompchamber/side-task",
+            "startRef": "main",
+            "setUpstream": false,
+        })
+    );
+    drop(create_calls);
+    assert_eq!(body["directory"], "/repo/worktrees/side-task");
+    assert_eq!(body["worktree"]["path"], "/repo/worktrees/side-task");
+    let engine_creates = lock(&h.engine.create_session_calls);
+    assert_eq!(engine_creates.len(), 1);
+    assert_eq!(engine_creates[0].0, "/repo/worktrees/side-task");
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].1, "/repo/worktrees/side-task");
+}
+
+#[tokio::test]
+async fn waits_for_the_worktree_bootstrap_before_creating_the_session() {
+    let h = harness();
+    let mut statuses = lock(&h.worktree_statuses);
+    statuses.extend([
+        json!({ "status": "pending", "phase": "directory-created", "error": null, "updatedAt": 1 }),
+        json!({ "status": "pending", "phase": "git-ready", "error": null, "updatedAt": 2 }),
+        json!({ "status": "ready", "phase": "setup-ready", "error": null, "updatedAt": 3 }),
+    ]);
+    drop(statuses);
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "worktree": { "name": "side-task" },
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["promptDispatched"], true);
+
+    let log = lock(&h.log);
+    let first_status = log
+        .iter()
+        .position(|entry| entry == "worktree.status")
+        .expect("bootstrap poll");
+    let create_at = log
+        .iter()
+        .position(|entry| entry == "engine.create_session")
+        .expect("session create");
+    let prompt_at = log
+        .iter()
+        .position(|entry| entry == "engine.prompt_async")
+        .expect("prompt");
+    drop(log);
+    assert!(
+        first_status < create_at,
+        "bootstrap waits gate the session create"
+    );
+    assert!(create_at < prompt_at);
+}
+
+#[tokio::test]
+async fn fails_the_create_when_the_worktree_bootstrap_failed() {
+    let h = harness();
+    let mut statuses = lock(&h.worktree_statuses);
+    statuses.push(json!({
+        "status": "failed",
+        "phase": "directory-created",
+        "error": "branch already exists",
+        "updatedAt": 4,
+    }));
+    drop(statuses);
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "worktree": { "name": "side-task" },
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        body,
+        json!({ "error": "Worktree bootstrap failed: branch already exists" })
+    );
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn sends_a_goal_prompt_to_an_existing_session_after_creating_goal_metadata() {
+    let h = harness();
+    h.engine.set_existing_messages(vec![json!({
+        "info": { "id": "msg_before", "role": "assistant", "time": { "created": 10, "completed": 20 } },
+    })]);
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Apply and verify the review feedback",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "variant": "high",
+            "goal": true,
+            "goalTokenBudget": 200000,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["action"], "send");
+    assert_eq!(body["sessionId"], "ses_source");
+    assert_eq!(body["directory"], "/repo/app");
+    assert_eq!(body["promptDispatched"], true);
+    assert_eq!(body["goalEnabled"], true);
+    assert_eq!(body["baselineAssistantMessageId"], "msg_before");
+
+    let goal_calls = lock(&h.goal_calls);
+    assert_eq!(goal_calls.len(), 1);
+    assert_eq!(goal_calls[0].session_id, "ses_source");
+    assert_eq!(goal_calls[0].directory, "/repo/app");
+    assert_eq!(
+        goal_calls[0].objective,
+        "Apply and verify the review feedback"
+    );
+    drop(goal_calls);
+    let goal_at = log_position(&h.log, "goal").expect("goal");
+    let prompt_at = log_position(&h.log, "engine.prompt_async").expect("prompt");
+    assert!(goal_at < prompt_at);
+
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].0, "ses_source");
+    assert_eq!(payloads[0].2["variant"], "high");
+}
+
+#[tokio::test]
+async fn uses_the_expanded_slash_command_template_as_the_goal_objective() {
+    let h = harness();
+    h.engine.set_commands(vec![json!({
+        "name": "issue--to-pr",
+        "template": "Take $ARGUMENTS from issue through a verified pull request. Confirm the PR covers $ARGUMENTS.",
+    })]);
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "/issue--to-pr LIN-123",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "goal": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let goal_calls = lock(&h.goal_calls);
+    assert_eq!(goal_calls.len(), 1);
+    assert_eq!(
+        goal_calls[0].objective,
+        "Take LIN-123 from issue through a verified pull request. Confirm the PR covers LIN-123."
+    );
+    drop(goal_calls);
+
+    let command_calls = lock(&h.engine.command_calls);
+    assert_eq!(command_calls.len(), 1);
+    assert_eq!(command_calls[0].command, "issue--to-pr");
+    assert_eq!(command_calls[0].arguments, "LIN-123");
+    drop(command_calls);
+
+    let goal_at = log_position(&h.log, "goal").expect("goal");
+    let command_at = log_position(&h.log, "engine.session_command").expect("command");
+    assert!(goal_at < command_at);
+    assert_eq!(body["goalEnabled"], true);
+    assert_eq!(body["dispatchedAsCommand"], true);
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn reuses_the_previous_session_selection_when_send_omits_selection() {
+    let h = harness();
+    h.engine.set_existing_messages(vec![
+        json!({
+            "info": {
+                "id": "msg_user",
+                "role": "user",
+                "agent": "plan",
+                "model": { "providerID": "anthropic", "modelID": "claude-sonnet-5", "variant": "high" },
+                "time": { "created": 5 },
+            },
+        }),
+        json!({
+            "info": { "id": "msg_before", "role": "assistant", "time": { "created": 10, "completed": 20 } },
+        }),
+    ]);
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({ "directory": "/repo/app", "prompt": "Continue where you left off" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["action"], "send");
+    assert_eq!(body["sessionId"], "ses_source");
+    assert_eq!(
+        body["model"],
+        json!({ "providerID": "anthropic", "modelID": "claude-sonnet-5" })
+    );
+    assert_eq!(body["agent"], "plan");
+    assert_eq!(body["variant"], "high");
+    assert_eq!(body["promptDispatched"], true);
+
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        payloads[0].2["model"],
+        json!({ "providerID": "anthropic", "modelID": "claude-sonnet-5" })
+    );
+    assert_eq!(payloads[0].2["agent"], "plan");
+    assert_eq!(payloads[0].2["variant"], "high");
+    drop(payloads);
+    // The default-selection inputs must not be consulted.
+    assert!(
+        lock(&h.engine.fetch_calls).is_empty(),
+        "selection endpoints must stay untouched"
+    );
+}
+
+#[tokio::test]
+async fn forks_from_a_message_dispatches_the_prompt_and_emits_the_new_session() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/fork",
+        &json!({
+            "directory": "/repo/app",
+            "messageId": "msg_branch_point",
+            "prompt": "Try the alternative implementation",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "variant": "high",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let fork_calls = lock(&h.engine.fork_calls);
+    assert_eq!(fork_calls.len(), 1);
+    assert_eq!(
+        fork_calls[0],
+        (
+            "ses_source".to_string(),
+            "/repo/app".to_string(),
+            Some("msg_branch_point".to_string())
+        )
+    );
+    drop(fork_calls);
+
+    assert_eq!(body["action"], "fork");
+    assert_eq!(body["sourceSessionId"], "ses_source");
+    assert_eq!(body["sessionId"], "ses_fork");
+    assert_eq!(body["directory"], "/repo/app");
+    assert_eq!(body["promptDispatched"], true);
+    assert_eq!(body["title"], "Forked session");
+
+    let messages_calls = lock(&h.engine.messages_calls);
+    assert!(
+        messages_calls
+            .iter()
+            .any(|(session, _, limit)| session == "ses_fork" && *limit == 100),
+        "baseline + landed lookups target the fork: {messages_calls:?}"
+    );
+    drop(messages_calls);
+
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].0, "ses_fork");
+    assert_eq!(payloads[0].1, "/repo/app");
+    drop(payloads);
+
+    let events = lock(&h.events);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["sessionID"], "ses_fork");
+    assert_eq!(events[0]["sourceSessionID"], "ses_source");
+    assert_eq!(events[0]["directory"], "/repo/app");
+    assert_eq!(events[0]["promptDispatched"], true);
+}
+
+#[tokio::test]
+async fn rejects_send_and_fork_without_a_prompt_before_calling_the_engine() {
+    let h = harness();
+    for uri in [
+        "/api/ompchamber/sessions/ses_source/send",
+        "/api/ompchamber/sessions/ses_source/fork",
+    ] {
+        let (status, body) = post(&h.router, uri, &json!({ "directory": "/repo/app" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({ "error": "prompt is required" }));
+    }
+    assert!(lock(&h.log).is_empty());
+    assert!(lock(&h.engine.fork_calls).is_empty());
+}
+
+#[tokio::test]
+async fn reports_the_forked_session_when_prompt_dispatch_fails() {
+    let h = harness();
+    h.engine
+        .set_prompt_error("prompt_async failed (500): dispatch failed");
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/fork",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Try another approach",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "variant": "high",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["partial"], true);
+    assert_eq!(body["partialAction"], "fork-created");
+    assert_eq!(body["sessionId"], "ses_fork");
+    assert_eq!(body["directory"], "/repo/app");
+    assert_eq!(body["error"], "prompt_async failed (500): dispatch failed");
+}
+
+#[tokio::test]
+async fn reports_goal_configured_partial_when_dispatch_fails_after_goal_creation() {
+    let h = harness();
+    h.engine
+        .set_prompt_error("prompt_async failed (500): dispatch failed");
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Apply the review feedback",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "goal": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["partial"], true);
+    assert_eq!(body["partialAction"], "goal-configured");
+    assert_eq!(body["sessionId"], "ses_source");
+    assert_eq!(body["directory"], "/repo/app");
+}
+
+#[tokio::test]
+async fn does_not_apply_a_default_variant_to_an_explicitly_requested_model() {
+    let h = harness_with(json!({
+        "defaultModel": "openai/gpt-5.5",
+        "defaultVariant": "high",
+        "projects": [{ "id": "proj_1", "path": "/repo/app" }],
+    }));
+    let (status, _) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Continue",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let payloads = lock(&h.engine.prompt_payloads);
+    assert_eq!(payloads.len(), 1);
+    assert!(
+        payloads[0].2.get("variant").is_none(),
+        "explicit model must not inherit the settings default variant: {}",
+        payloads[0].2
+    );
+}
+
+#[tokio::test]
+async fn rejects_an_unknown_agent_before_creating_a_session_or_worktree() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Run this",
+            "agent": "not-an-agent",
+            "worktree": { "name": "side-task" },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({ "error": "Unknown agent 'not-an-agent' for /repo/app" })
+    );
+    assert!(lock(&h.create_worktree_calls).is_empty());
+    assert!(lock(&h.engine.create_session_calls).is_empty());
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn rejects_a_subagent_selection() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+            "agent": "reviewer",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({ "error": "Agent 'reviewer' is a subagent and cannot receive a prompt directly" })
+    );
+}
+
+#[tokio::test]
+async fn rejects_an_unknown_model_and_an_unknown_variant_before_dispatching() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "prompt": "Run this", "model": "openai/gpt-nope" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({ "error": "Unknown model 'openai/gpt-nope' for /repo/app" })
+    );
+
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+            "variant": "ultra",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({ "error": "Unknown variant 'ultra' for model 'openai/gpt-5.5'" })
+    );
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn rejects_unknown_project_and_resolves_project_directories() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "projectId": "proj_nope", "prompt": "Run this" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body, json!({ "error": "Project not found" }));
+
+    let (status, body) = post(&h.router, CREATE_URI, &json!({ "projectId": "proj_1" })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["directory"], "/repo/app");
+    assert_eq!(body["projectId"], "proj_1");
+}
+
+#[tokio::test]
+async fn reports_prompt_dispatched_false_when_the_prompt_never_lands() {
+    let h = harness();
+    h.engine.set_land_prompts(false);
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "prompt": "Run this", "model": "openai/gpt-5.5" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sessionId"], "ses_123");
+    assert_eq!(body["promptDispatched"], false);
+    assert_eq!(
+        body["promptError"],
+        "OpenCode accepted the prompt but it never appeared in the session"
+    );
+}
+
+#[tokio::test]
+async fn does_not_retry_a_failed_slash_command_as_a_normal_prompt() {
+    let h = harness();
+    h.engine.set_commands(vec![json!({ "name": "review" })]);
+    h.engine.set_command_error("command response failed");
+    let (status, body) = post(
+        &h.router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": "/repo/app",
+            "prompt": "/review fix this",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "variant": "high",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body, json!({ "error": "command response failed" }));
+    assert_eq!(lock(&h.engine.command_calls).len(), 1);
+    assert!(lock(&h.engine.prompt_payloads).is_empty());
+}
+
+#[tokio::test]
+async fn worktree_requires_a_name_when_provided() {
+    let h = harness();
+    let (status, body) = post(
+        &h.router,
+        CREATE_URI,
+        &json!({ "directory": "/repo/app", "worktree": { "branchName": "x" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({ "error": "worktree.name is required when worktree is provided" })
+    );
+    assert!(lock(&h.create_worktree_calls).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Production wiring over a spawned fake engine (JS: the global fetch mock)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+struct RecordedCall {
+    method: String,
+    path: String,
+    directory_header: Option<String>,
+    authorization: Option<String>,
+    content_type: Option<String>,
+    body: Value,
+}
+
+#[derive(Default)]
+struct EngineRecorder {
+    calls: Mutex<Vec<RecordedCall>>,
+}
+
+impl EngineRecorder {
+    fn find(&self, method: &str, prefix: &str) -> Option<RecordedCall> {
+        lock(&self.calls)
+            .iter()
+            .find(|call| call.method == method && call.path.starts_with(prefix))
+            .cloned()
+    }
+
+    fn has_prompt_async(&self, session_id: &str) -> bool {
+        lock(&self.calls).iter().any(|call| {
+            call.method == "POST"
+                && call.path.starts_with(&format!("/session/{session_id}/"))
+                && request_path_only(&call.path).ends_with("/prompt_async")
+        })
+    }
+}
+
+fn form_encode(value: &str) -> String {
+    url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("directory", value)
+        .finish()
+}
+
+fn request_path_only(path: &str) -> String {
+    path.split('?').next().unwrap_or(path).to_string()
+}
+
+async fn spawn_fake_engine() -> (String, Arc<EngineRecorder>) {
+    let recorder = Arc::new(EngineRecorder::default());
+    let state_recorder = Arc::clone(&recorder);
+    let app = Router::new().fallback(move |request: Request<Body>| {
+        let recorder = Arc::clone(&state_recorder);
+        async move {
+            let method = request.method().to_string();
+            let path = request
+                .uri()
+                .path_and_query()
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            let headers = request.headers().clone();
+            let bytes = to_bytes(request.into_body(), usize::MAX)
+                .await
+                .unwrap_or_default();
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            lock(&recorder.calls).push(RecordedCall {
+                method: method.clone(),
+                path: path.clone(),
+                directory_header: headers
+                    .get("x-opencode-directory")
+                    .and_then(|value| value.to_str().ok())
+                    .map(String::from),
+                authorization: headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .map(String::from),
+                content_type: headers
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
+                    .map(String::from),
+                body: body.clone(),
+            });
+
+            let path_only = request_path_only(&path);
+            let session_id = path_only
+                .strip_prefix("/session/")
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or_default()
+                .to_string();
+            match (method.as_str(), path_only.as_str()) {
+                ("POST", "/session") => Json(json!({ "id": "ses_123" })).into_response(),
+                ("POST", p) if p.ends_with("/prompt_async") => {
+                    (StatusCode::NO_CONTENT, "").into_response()
+                }
+                ("POST", p) if p.ends_with("/command") => Json(json!({})).into_response(),
+                ("POST", p) if p.ends_with("/fork") => {
+                    Json(json!({ "id": "ses_fork", "title": "Forked session" })).into_response()
+                }
+                ("GET", p) if p.ends_with("/message") => {
+                    let messages = if recorder.has_prompt_async(&session_id) {
+                        json!([{ "info": { "id": "msg_landed", "role": "user", "time": { "created": 9 } } }])
+                    } else {
+                        json!([])
+                    };
+                    Json(messages).into_response()
+                }
+                ("GET", "/config/providers") => Json(json!({
+                    "providers": [
+                        { "id": "openai", "models": [{ "id": "gpt-5.5", "variants": { "high": {} } }] },
+                    ],
+                }))
+                .into_response(),
+                ("GET", "/agent") => {
+                    Json(json!([{ "name": "build", "mode": "primary" }])).into_response()
+                }
+                ("GET", "/config") => Json(json!({})).into_response(),
+                ("GET", "/command") => Json(json!([])).into_response(),
+                ("PATCH", p) if p.starts_with("/session/") => Json(json!({})).into_response(),
+                _ => (StatusCode::NOT_FOUND, "").into_response(),
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (format!("http://{addr}"), recorder)
+}
+
+fn production_router(data_dir: &Path, base_url: &str) -> Router {
+    let config = ServerConfig {
+        port: 0,
+        host: None,
+        lan: false,
+        ui_password: None,
+        api_only: false,
+        data_dir: data_dir.to_path_buf(),
+        dist_dir: data_dir.join("dist"),
+        tunnel: Default::default(),
+        engine: EngineConfig::External {
+            base_url: base_url.to_string(),
+        },
+    };
+    let ctx = RouterContext {
+        config: Arc::new(config),
+        engine: EngineState::external(base_url.to_string(), Some("test-password".to_string())),
+        hub: EventHub::new(),
+    };
+    super::router(ctx)
+}
+
+fn expected_auth() -> String {
+    use base64::Engine;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("opencode:test-password")
+    )
+}
+
+#[tokio::test]
+async fn http_client_posts_session_create_with_directory_query_and_headers() {
+    let data_dir = temp_dir("http-create");
+    let project_dir = data_dir.join("repo").join("app");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let directory = canonical.to_string_lossy().to_string();
+    let (base_url, recorder) = spawn_fake_engine().await;
+    let router = production_router(&data_dir, &base_url);
+
+    let (status, body) = post(
+        &router,
+        CREATE_URI,
+        &json!({ "directory": directory, "title": "Side task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sessionId"], "ses_123");
+    assert_eq!(body["directory"], directory);
+
+    let call = recorder
+        .find("POST", "/session?")
+        .expect("session create call");
+    assert_eq!(call.path, format!("/session?{}", form_encode(&directory)));
+    assert_eq!(
+        call.authorization.as_deref(),
+        Some(expected_auth().as_str())
+    );
+    assert_eq!(
+        call.directory_header.as_deref(),
+        Some(encode_uri_component(&directory).as_str())
+    );
+    assert_eq!(call.content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        call.body,
+        json!({ "directory": directory, "title": "Side task" })
+    );
+}
+
+#[tokio::test]
+async fn production_validation_requires_a_directory() {
+    let data_dir = temp_dir("http-nodefault");
+    let (base_url, _recorder) = spawn_fake_engine().await;
+    let router = production_router(&data_dir, &base_url);
+    let (status, body) = post(&router, CREATE_URI, &json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, json!({ "error": "Directory parameter is required" }));
+
+    let (status, body) = post(
+        &router,
+        CREATE_URI,
+        &json!({ "directory": data_dir.join("does-not-exist").to_string_lossy() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body, json!({ "error": "Directory not found" }));
+}
+
+#[tokio::test]
+async fn http_client_percent_encodes_the_directory_header_for_non_ascii_paths() {
+    let data_dir = temp_dir("http-unicode");
+    let project_dir = data_dir.join("Masaüstü").join("projeler");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let directory = canonical.to_string_lossy().to_string();
+    let (base_url, recorder) = spawn_fake_engine().await;
+    let router = production_router(&data_dir, &base_url);
+
+    let (status, _) = post(
+        &router,
+        CREATE_URI,
+        &json!({ "directory": directory, "title": "Side task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let call = recorder
+        .find("POST", "/session?")
+        .expect("session create call");
+    assert_eq!(
+        call.directory_header.as_deref(),
+        Some(encode_uri_component(&directory).as_str())
+    );
+}
+
+#[tokio::test]
+async fn http_client_dispatches_prompt_async_with_the_engine_url_shape() {
+    let data_dir = temp_dir("http-prompt");
+    let project_dir = data_dir.join("repo").join("app");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let directory = canonical.to_string_lossy().to_string();
+    let (base_url, recorder) = spawn_fake_engine().await;
+    let router = production_router(&data_dir, &base_url);
+
+    let (status, body) = post(
+        &router,
+        "/api/ompchamber/sessions/ses_source/send",
+        &json!({
+            "directory": directory,
+            "prompt": "Run this",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["promptDispatched"], true);
+
+    let call = recorder
+        .find("POST", "/session/ses_source/prompt_async")
+        .expect("prompt_async call");
+    assert_eq!(
+        call.path,
+        format!(
+            "/session/ses_source/prompt_async?{}",
+            form_encode(&directory)
+        )
+    );
+    assert_eq!(
+        call.authorization.as_deref(),
+        Some(expected_auth().as_str())
+    );
+    assert_eq!(
+        call.directory_header.as_deref(),
+        Some(encode_uri_component(&directory).as_str())
+    );
+    assert_eq!(
+        call.body["model"],
+        json!({ "providerID": "openai", "modelID": "gpt-5.5" })
+    );
+    assert_eq!(call.body["agent"], "build");
+    assert_eq!(
+        call.body["parts"],
+        json!([{ "type": "text", "text": "Run this" }])
+    );
+
+    // Selection validation consulted the engine config endpoints.
+    assert!(
+        recorder.find("GET", "/config/providers?").is_some(),
+        "selection inputs fetched over HTTP"
+    );
+}
+
+#[tokio::test]
+async fn production_goal_creator_writes_the_objective_file_and_patches_metadata() {
+    let data_dir = temp_dir("http-goal");
+    let project_dir = data_dir.join("repo").join("app");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let directory = canonical.to_string_lossy().to_string();
+    let (base_url, recorder) = spawn_fake_engine().await;
+    let router = production_router(&data_dir, &base_url);
+
+    let (status, body) = post(
+        &router,
+        CREATE_URI,
+        &json!({
+            "directory": directory,
+            "prompt": "Finish and verify the migration",
+            "model": "openai/gpt-5.5",
+            "agent": "build",
+            "goal": true,
+            "goalTokenBudget": 200000,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["goalEnabled"], true);
+    assert_eq!(body["promptDispatched"], true);
+
+    let patch = recorder
+        .find("PATCH", "/session/ses_123")
+        .expect("goal patch");
+    assert_eq!(
+        patch.path,
+        format!(
+            "/session/ses_123?directory={}",
+            encode_uri_component(&directory)
+        )
+    );
+    let goal = &patch.body["metadata"]["ompchamber"]["goal"];
+    assert_eq!(goal["status"], "active");
+    assert_eq!(goal["tokenBudget"], 200000);
+    // The objective fits the inline budget, so it went to the file.
+    assert_eq!(goal["objectiveFile"], true);
+    assert_eq!(goal["objective"], "");
+
+    // The goal PATCH precedes the prompt dispatch.
+    let calls = lock(&recorder.calls);
+    let patch_at = calls
+        .iter()
+        .position(|call| call.method == "PATCH")
+        .expect("patch index");
+    let prompt_at = calls
+        .iter()
+        .position(|call| call.method == "POST" && call.path.contains("/prompt_async"))
+        .expect("prompt index");
+    assert!(patch_at < prompt_at);
+}
+
+#[tokio::test]
+async fn hub_receives_the_session_created_wire_frame() {
+    let data_dir = temp_dir("http-emit");
+    let project_dir = data_dir.join("repo").join("app");
+    std::fs::create_dir_all(&project_dir).expect("project dir");
+    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let directory = canonical.to_string_lossy().to_string();
+
+    let hub = EventHub::new();
+    let (base_url, _recorder) = spawn_fake_engine().await;
+    let config = ServerConfig {
+        port: 0,
+        host: None,
+        lan: false,
+        ui_password: None,
+        api_only: false,
+        data_dir: data_dir.clone(),
+        dist_dir: data_dir.join("dist"),
+        tunnel: Default::default(),
+        engine: EngineConfig::External {
+            base_url: base_url.clone(),
+        },
+    };
+    let ctx = RouterContext {
+        config: Arc::new(config),
+        engine: EngineState::external(base_url, Some("test-password".to_string())),
+        hub: Arc::clone(&hub),
+    };
+    let mut frames = hub.subscribe();
+    let router = super::router(ctx);
+
+    let (status, _) = post(
+        &router,
+        CREATE_URI,
+        &json!({ "directory": directory, "title": "Side task" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let frame = frames.recv().await.expect("hub frame");
+    assert_eq!(frame.event, "ompchamber:session-created");
+    let payload: Map<String, Value> = serde_json::from_str(&frame.data).expect("frame json");
+    assert_eq!(payload["type"], "ompchamber:session-created");
+    let properties = &payload["properties"];
+    assert_eq!(properties["sessionId"], "ses_123");
+    assert_eq!(properties["directory"], directory);
+    assert_eq!(properties["title"], "Side task");
+    assert_eq!(properties["promptDispatched"], false);
+    assert_eq!(properties["dispatchedAsCommand"], false);
+    assert!(properties["createdAt"].is_u64());
+    assert!(properties.get("projectId").is_none());
+}
