@@ -1,18 +1,27 @@
+/**
+ * GitHub 仓库元数据（github-meta.js）测试：stars 与 pushed_at 解析、失败
+ * 降级为 null、失败负缓存避免重复请求，以及仓库去重。fetch 以全局 mock
+ * 替换，每个用例使用独立临时数据目录。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { clearGitHubMetaCache, fetchGitHubRepoMetas } from './github-meta.js';
 
+/** 保存真实 fetch，afterEach 中恢复。 */
 const originalFetch = globalThis.fetch;
 
+/** 每个用例独立的临时数据目录（设为 OMPCHAMBER_DATA_DIR）。 */
 let tempDataDir;
 
+// 每个用例前：新建临时数据目录并让磁盘缓存指向它。
 beforeEach(() => {
   tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'github-meta-test-'));
   process.env.OMPCHAMBER_DATA_DIR = tempDataDir;
 });
 
+// 每个用例后：还原 fetch 与环境变量、清空模块缓存并删除临时目录。
 afterEach(() => {
   delete process.env.OMPCHAMBER_DATA_DIR;
   globalThis.fetch = originalFetch;
@@ -21,6 +30,7 @@ afterEach(() => {
   fs.rmSync(tempDataDir, { recursive: true, force: true });
 });
 
+/** fetchGitHubRepoMetas：成功解析、失败降级、负缓存与去重。 */
 describe('fetchGitHubRepoMetas', () => {
   it('returns stars and pushed_at from the GitHub API', async () => {
     const fetchMock = vi.fn(async () => new Response(

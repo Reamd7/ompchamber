@@ -8,6 +8,15 @@
 // OPENCODE_SERVER_PASSWORD for HTTP Basic auth, exactly as it did for
 // `opencode serve`. Readiness is signaled by the same stdout line the
 // OpenCode server printed, so existing wait-for-ready logic keeps working.
+/**
+ * omp 宿主入口：由内嵌 @oh-my-pi/pi-coding-agent 引擎支撑的
+ * OpenCode 兼容 HTTP+SSE 服务器。
+ *
+ * 启动形态镜像被替换的托管 OpenCode server：
+ * `bun host.js serve --hostname 127.0.0.1 --port 3902`。生成方沿用
+ * OPENCODE_SERVER_PASSWORD 做 HTTP Basic 认证，并用与
+ * `opencode serve` 相同的 stdout 就绪行，兼容既有等待逻辑。
+ */
 
 import path from 'node:path';
 import { errorText } from './omp-parity.ts';
@@ -18,8 +27,11 @@ import { SessionBusyError } from './live-registry.ts';
 import { registerEndpoints } from './endpoints.ts';
 import type { EndpointOptions, RouteHandler, RouteMount } from './endpoints.ts';
 
+/** 对外上报的宿主版本串（GET /version 等处使用）。 */
 const HOST_VERSION = 'ompchamber-omp-host/1.0.0';
 
+/** 解析 CLI 参数：命令（默认 serve）与 --hostname/--port（支持
+ *  `--x v` 与 `--x=v` 两种形态）。 */
 const parseArgs = (argv: string[]) => {
   const args = { command: argv[0] ?? 'serve', hostname: '127.0.0.1', port: 0 };
   for (let i = 1; i < argv.length; i += 1) {
@@ -32,16 +44,23 @@ const parseArgs = (argv: string[]) => {
   return args;
 };
 
+/** 当前模块目录（ESM 下替代 CJS 的 __dirname）。 */
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Options for startOmpHost (CLI serve args / embedded engine injection). */
 export interface StartOmpHostOptions {
+  /** 监听主机名；默认 127.0.0.1。 */
   hostname?: string;
+  /** 监听端口；默认 0（由系统分配）。 */
   port?: number;
   /** Pre-built engine; defaults to a fresh OmpHostEngine. */
   engine?: OmpHostEngine;
 }
 
+/** 启动 omp 宿主：构建（或复用注入的）引擎、装配 Basic 认证、把
+ *  `{param}` 模式编译成正则路由表并挂载全部端点，最后 Bun.serve
+ *  监听（idleTimeout 255s 保 SSE 长连）。返回 server/baseUrl/engine
+ *  与 close()（先关引擎再停服务器）。 */
 export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }: StartOmpHostOptions = {}) => {
   const hostEngine = engine ?? new OmpHostEngine();
 
@@ -50,6 +69,7 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
     ? 'Basic ' + Buffer.from(`opencode:${password}`).toString('base64')
     : null;
   const routes: { method: string; regex: RegExp; names: string[]; handler: RouteHandler }[] = [];
+  /** RouteMount 实现：把 `/x/{id}` 模式编译为带命名捕获组的正则并登记。 */
   const route: RouteMount = (method, pattern, handler) => {
     const names: string[] = [];
     const regex = new RegExp(
@@ -134,6 +154,7 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
     server,
     baseUrl,
     engine: hostEngine,
+    /** 优雅关停：先 shutdown 引擎（释放 live 会话）再断开所有连接。 */
     async close() {
       await hostEngine.shutdown();
       server.stop(true);
@@ -141,6 +162,7 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
   };
 };
 
+/** 是否作为脚本直接执行（Bun 的 import.meta.main；CJS 兼容回退 false）。 */
 const isMain = import.meta.main ?? false;
 if (isMain) {
   const argv = process.argv.slice(2);

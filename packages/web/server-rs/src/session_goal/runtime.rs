@@ -17,6 +17,15 @@
 //! Purely event-driven like session-assist: no polling, no backfill, no
 //! session scans. Only sessions that emit events while the server runs ever
 //! tick.
+//!
+//! 中文说明：会话目标（session goal）是挂在会话元数据
+//! `metadata.ompchamber.goal` 上、可自我延续的持久化目标。目标 active 期间，
+//! 服务器在每次 busy→idle 迁移后结算 token 用量、让小模型审计进度
+//! （continue / complete / blocked），并据此以 continuation prompt 重新驱动
+//! 会话自身的模型，或让目标落定。循环完全由后端驱动——UI 断开也照常运行。
+//! 终止权在小模型审计与硬性停机条件（turn 出错、token 预算、自动续跑上限）
+//! 手中；小模型不可用时仍能靠预算与续跑上限终止。与 session-assist 一样
+//! 纯事件驱动：无轮询、无回填、无全量扫描，只有运行期间发事件的会话会推进。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -30,29 +39,46 @@ use serde_json::{Map, Value, json};
 use crate::engine::EngineState;
 use crate::session_goal::objectives::{GOAL_OBJECTIVE_CHAR_LIMIT, chars_take, read_objective};
 
+/// idle 事件后的静默等待窗口：等满 15 秒确认会话真正静止才执行 tick，
+/// 吸收连发的状态抖动，避免重复审计。
 pub const IDLE_QUIET_MS: u64 = 15_000;
 /// A goal set while the session is already idle should kick off promptly.
+/// 会话本就 idle 时新设的目标应尽快启动：kickoff 静默窗口仅 3 秒。
 pub const KICKOFF_QUIET_MS: u64 = 3_000;
 /// An explicit Resume should nudge immediately — the tick's quiescence check
 /// already bails if the session turns out to be busy. The tiny delay only
 /// coalesces duplicate session.updated events.
+/// 显式 Resume 应立即轻推——tick 内的静止性检查本就会在会话实际繁忙时
+/// 退出；250ms 的小延迟只为合并重复的 session.updated 事件。
 pub const RESUME_KICKOFF_MS: u64 = 250;
+/// 每次引擎 HTTP 请求的超时（对应 JS 版的 AbortSignal.timeout(10_000)）。
 const FETCH_TIMEOUT_MS: u64 = 10_000;
+/// tick 拉取近期消息的条数上限（/session/{id}/message?limit=）。
 pub const MESSAGE_FETCH_LIMIT: usize = 40;
+/// 送入审计/转录的单条消息文本的字符截断上限。
 pub const TRANSCRIPT_PART_CHAR_LIMIT: usize = 6_000;
+/// goal.note 与审计 note 的字符上限（截断后持久化）。
 pub const NOTE_CHAR_LIMIT: usize = 280;
+/// statusReason 的字符上限（截断后持久化）。
 pub const REASON_CHAR_LIMIT: usize = 200;
 /// Hard safety cap on auto-continuations per goal id. The audit and markers
 /// are the intended stop conditions; this only prevents a runaway loop.
+/// 每个目标 id 的自动续跑硬上限：审计与标记才是正常停机条件，
+/// 此值只兜底防失控循环。
 pub const MAX_AUTO_TURNS: u64 = 20;
 /// Auditor must call the same blocker this many consecutive ticks before the
 /// goal settles as blocked — a one-off snag must not end the goal.
+/// 审计连续给出 blocked 判定的次数门槛：满 3 次才落定 blocked，
+/// 单次卡壳不得终结目标。
 pub const BLOCKED_STREAK_LIMIT: u64 = 3;
 /// Consecutive audit failures tolerated before the goal stops: one transient
 /// hiccup allows a single unaudited continuation; a dead small model must not
 /// drive the loop blind all the way to the turn cap.
+/// 连续审计失败的容忍度：首次失败放行一次无审计续跑，第二次即停——
+/// 小模型已死时不能盲跑到续跑上限。
 pub const AUDIT_FAIL_LIMIT: u64 = 2;
 
+/// 合法目标状态集合；解析时未知状态一律视为无效目标。
 const GOAL_STATUSES: [&str; 5] = ["active", "paused", "blocked", "budgetLimited", "complete"];
 
 // ---------------------------------------------------------------------------
@@ -61,19 +87,27 @@ const GOAL_STATUSES: [&str; 5] = ["active", "paused", "blocked", "budgetLimited"
 
 /// Error carrying the upstream HTTP status (JS attaches `error.status`); 502
 /// for transport failures, 503 when the engine has no base URL yet.
+/// 引擎请求失败错误：transport 失败映射 502，引擎尚无 base URL 映射 503，
+/// 其余携带上游状态码。
 #[derive(Debug, thiserror::Error)]
 #[error("OpenCode request failed ({status})")]
 pub struct EngineRequestError {
+    /// 上游 HTTP 状态码（或 502/503 的映射结果）。
     pub status: u16,
 }
 
+/// fetch seam 返回的 boxed future：解析出的 JSON 或引擎错误。
 pub type FetchFuture = Pin<Box<dyn Future<Output = Result<Value, EngineRequestError>> + Send>>;
 /// `(fetch_path, directory, method, body)` — `fetch_path` may carry a query
 /// string; the implementation appends `directory` like `openCodeFetch`.
+/// 引擎访问 seam 的函数签名；测试以同签名假实现注入。
 pub type Fetch = Arc<dyn Fn(&str, Option<&str>, &str, Option<&Value>) -> FetchFuture + Send + Sync>;
 
 /// Production fetch through the managed engine's HTTP client. JS:
 /// `buildOpenCodeUrl` + `getOpenCodeAuthHeaders` + `AbortSignal.timeout`.
+/// 生产实现：经托管引擎的 HTTP client 请求——拼接 base URL、附加
+/// directory 查询参数、注入 authorization 头、10 秒超时；非 2xx 报
+/// 带状态码的错误，响应体解析失败回退为 Null（与 JS 版 catch 语义一致）。
 pub fn engine_fetch(engine: Arc<EngineState>) -> Fetch {
     Arc::new(
         move |path: &str, directory: Option<&str>, method: &str, body: Option<&Value>| {
@@ -136,34 +170,52 @@ pub fn engine_fetch(engine: Arc<EngineState>) -> Fetch {
 /// `restrictToPreferredProvider: true` policy (conversation content must never
 /// leave the session's own provider unless the user explicitly picked a small
 /// model).
+/// 一次小模型审计的请求参数（对应 JS 版 generateSmallModelText 调用）。
 pub struct AuditRequest {
+    /// 用户消息：目标 + 最新一轮回复 + 语言样例。
     pub prompt: String,
+    /// 审计系统提示词（build_audit_system_prompt 的产物）。
     pub system: String,
+    /// 会话目录（按目录解析 provider 配置）。
     pub directory: String,
+    /// 沿用的 provider id（取自最后一条 assistant 消息）。
     pub preferred_provider_id: Option<String>,
+    /// 沿用的 model id（取自最后一条 assistant 消息）。
     pub preferred_model_id: Option<String>,
 }
 
+/// 小模型审计的输出：原始生成文本 + 实际使用的 provider/model。
 pub struct AuditOutput {
+    /// 模型原始输出文本（内含待抽取的 verdict JSON）。
     pub text: String,
+    /// 实际生成所用 provider（写入 evaluationProviderID）。
     pub provider_id: Option<String>,
+    /// 实际生成所用 model（写入 evaluationModelID）。
     pub model_id: Option<String>,
 }
 
+/// 审计调用错误：Unavailable 表示小模型未就绪（静默降级），
+/// Failed 表示瞬态失败（记 warn 日志）。
 #[derive(Debug)]
 pub enum AuditError {
     /// No authenticated small model (service import failure / 404) — silent.
+    /// 无已认证小模型（service 导入失败 / 404）——静默处理。
     Unavailable,
     /// Transient failure — logged like the JS non-404 branch.
+    /// 瞬态失败——按 JS 版非 404 分支记日志。
     Failed(String),
 }
 
+/// 审计 seam 的 boxed future 类型。
 pub type AuditFuture = Pin<Box<dyn Future<Output = Result<AuditOutput, AuditError>> + Send>>;
+/// 审计服务签名：生产接小模型，测试注入假实现。
 pub type AuditService = Arc<dyn Fn(AuditRequest) -> AuditFuture + Send + Sync>;
 
 /// The small-model module is not ported yet: audits report unavailability and
 /// the goal loop degrades to the JS dead-small-model path (one unaudited
 /// continuation, then `blocked` "progress audit unavailable").
+/// 小模型模块移植前的占位审计服务：恒返回 Unavailable，使目标循环
+/// 走"小模型已死"的降级路径（一次无审计续跑后 blocked）。
 pub fn unavailable_audit() -> AuditService {
     Arc::new(|_request: AuditRequest| Box::pin(async { Err(AuditError::Unavailable) }))
 }
@@ -177,12 +229,17 @@ pub fn unavailable_audit() -> AuditService {
 /// minimal honest core: the notifyOnCompletion settings gate plus a hub
 /// broadcast of the `ompchamber:notification` payload; desktop and web-push
 /// fanout land with the notifications module port.
+/// 目标落定通知 seam：参数为 (sessionId, directory, status, goal)；
+/// 生产默认实现为 hub_notifier（设置开关 + hub 广播）。
 pub type GoalNotifier = Arc<dyn Fn(&str, &str, &str, &GoalMetadata) + Send + Sync>;
 
+/// 功能开关 seam：返回 sessionGoal 功能当前是否启用。
 pub type IsEnabled = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// JS `isSessionGoalEnabled`: `settings.sessionGoalEnabled !== false`, default
 /// enabled when settings cannot be read.
+/// 生产开关实现：读 data-dir 下 settings.json，sessionGoalEnabled
+/// 显式为 false 才关闭；读不到或解析失败一律默认开启。
 pub fn settings_is_enabled(data_dir: PathBuf) -> IsEnabled {
     Arc::new(move || {
         let Ok(raw) = std::fs::read_to_string(data_dir.join("settings.json")) else {
@@ -195,6 +252,10 @@ pub fn settings_is_enabled(data_dir: PathBuf) -> IsEnabled {
     })
 }
 
+/// 生产通知实现：受 notifyOnCompletion 门控（文件缺失→通知，损坏→跳过，
+/// 显式 false→跳过）；按 status 选标题（完成/预算耗尽/受阻），正文优先
+/// 取 statusReason（排除固定文案），截断 240 字符后以
+/// ompchamber:notification 事件广播到 hub（桌面与推送扇出随通知模块补齐）。
 pub fn hub_notifier(hub: Arc<crate::hub::EventHub>, data_dir: PathBuf) -> GoalNotifier {
     Arc::new(
         move |session_id: &str, directory: &str, status: &str, goal: &GoalMetadata| {
@@ -256,28 +317,49 @@ pub fn hub_notifier(hub: Arc<crate::hub::EventHub>, data_dir: PathBuf) -> GoalNo
 // Goal payload (metadata.ompchamber.goal)
 // ---------------------------------------------------------------------------
 
+/// 归一化后的目标载荷（metadata.ompchamber.goal）：解析时补默认值、
+/// 截断文本并校验状态；写回时经 to_json 恢复 JS 版字段命名。
 #[derive(Debug, Clone, PartialEq)]
 pub struct GoalMetadata {
+    /// 目标唯一 id；merge-write 时据此比对目标是否已被替换。
     pub id: String,
+    /// 内联目标文本（文件目标可为空，运行时再从文件读取）。
     pub objective: String,
+    /// 为 true 表示目标文本存在按 session id 命名的文件里（可在线编辑）。
     pub objective_file: bool,
+    /// 目标状态（GOAL_STATUSES 之一）。
     pub status: String,
+    /// token 预算上限（正有限数向下取整）；None 表示未设预算。
     pub token_budget: Option<u64>,
+    /// 目标已消耗 token（相对 baseline 的累计快照，单调不减）。
     pub tokens_used: u64,
+    /// 基线：目标创建前最后一轮的 token 快照（中途设目标不计历史）。
     pub tokens_baseline: u64,
+    /// 压缩(compaction)分段已结算入账的 token。
     pub tokens_committed: u64,
+    /// 已使用的自动续跑次数（对 MAX_AUTO_TURNS 计数）。
     pub turns_used: u64,
+    /// 审计连续 blocked 判定的连击数。
     pub blocked_streak: u64,
+    /// 连续审计失败次数。
     pub audit_fail_streak: u64,
+    /// 最近一次审计/落定的进度备注（≤280 字符）。
     pub note: String,
+    /// 状态成因文案（≤200 字符）；"resumed" 等哨兵值参与流程判断。
     pub status_reason: String,
+    /// 完成审计所用的 provider id。
     pub evaluation_provider_id: String,
+    /// 完成审计所用的 model id。
     pub evaluation_model_id: String,
+    /// 已入账的最后一条 assistant 消息 id（增量结算游标）。
     pub last_accounted_message_id: String,
+    /// 创建时间（epoch 毫秒，f64 原样保留，可为负）。
     pub created_at: f64,
+    /// 最后更新时间（每次 merge-write 刷新为当前时间）。
     pub updated_at: f64,
 }
 
+/// 把 JSON 值解析为正有限数并向下取整为 u64；非数值或非正返回 None。
 fn positive_floor(value: Option<&Value>) -> Option<u64> {
     value
         .and_then(Value::as_f64)
@@ -285,12 +367,14 @@ fn positive_floor(value: Option<&Value>) -> Option<u64> {
         .map(|n| n.floor() as u64)
 }
 
+/// 计数器字段的解析：positive_floor 不满足时按 0 处理。
 fn counter_floor(value: Option<&Value>) -> u64 {
     positive_floor(value).unwrap_or(0)
 }
 
 /// JS: `Number.isFinite(goal.createdAt) ? goal.createdAt : 0` — numbers stay
 /// verbatim (they may be fractional or negative in hostile metadata).
+/// 有限性过滤的数值解析，失败取 0（时间戳字段用，数值本身原样保留）。
 fn finite_number(value: Option<&Value>) -> f64 {
     value
         .and_then(Value::as_f64)
@@ -300,6 +384,7 @@ fn finite_number(value: Option<&Value>) -> f64 {
 
 /// Serialize an f64 as a JSON integer when it is integral (JS `JSON.stringify`
 /// emits `1`, not `1.0`).
+/// f64 转 JSON 数值：整值序列化为整数，与 JS JSON.stringify 一致（1 而非 1.0）。
 fn number_value(value: f64) -> Value {
     if value.is_finite() && value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         Value::from(value as i64)
@@ -313,6 +398,8 @@ fn number_value(value: f64) -> Value {
 /// JS: `parseGoalMetadata` — normalize + validate the stored goal payload.
 /// Returns `None` unless the payload is a goal worth acting on (id + known
 /// status + inline objective or file flag).
+/// 解析并归一化会话内的 goal 载荷：缺 id、状态未知、既无内联目标又无
+/// objectiveFile 标志时返回 None（不是值得跟进的目标）；文本字段按各自上限截断。
 pub fn parse_goal_metadata(session: &Value) -> Option<GoalMetadata> {
     let goal = session.get("metadata")?.get("ompchamber")?.get("goal")?;
     if !goal.is_object() {
@@ -378,8 +465,10 @@ pub fn parse_goal_metadata(session: &Value) -> Option<GoalMetadata> {
     })
 }
 
+/// GoalMetadata 的序列化实现。
 impl GoalMetadata {
     /// Full normalized payload exactly as `writeGoal` re-stores it.
+    /// 输出与 JS 版 writeGoal 完全一致的字段命名与取值。
     pub fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -408,6 +497,7 @@ impl GoalMetadata {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+/// 当前 epoch 毫秒（f64；时钟异常时取 0）。
 fn now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -415,10 +505,12 @@ fn now_ms() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// 去首尾空白后按字符数截断（note/reason 等自由文本的统一入口）。
 pub fn clamp_text(value: &str, limit: usize) -> String {
     chars_take(value.trim(), limit)
 }
 
+/// 转义 &、<、>：目标文本嵌入 continuation prompt 的 XML 标签时防注入。
 fn escape_xml_text(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -427,6 +519,8 @@ fn escape_xml_text(value: &str) -> String {
 }
 
 /// JS: `buildContinuationPrompt`.
+/// 构建续跑提示词：objective 经 XML 转义包裹，附 token 预算用量、
+/// 续跑次数与续跑规则（完成判定从严、禁止谎报完成/受阻等）。
 pub fn build_continuation_prompt(goal: &GoalMetadata) -> String {
     let budget_lines: Vec<String> = match goal.token_budget {
         Some(budget) => {
@@ -466,6 +560,8 @@ pub fn build_continuation_prompt(goal: &GoalMetadata) -> String {
 }
 
 /// JS: `buildAuditSystemPrompt`.
+/// 审计员的系统提示词：只回一个 verdict/note 的 JSON 对象，
+/// 含 complete/blocked 的判定规则与语言跟随约束。
 pub fn build_audit_system_prompt() -> String {
     [
         "You audit progress of a coding agent working toward a user-defined goal. Based on the objective and the latest exchange, return exactly one JSON object and nothing else — no prose, no markdown, no code fences.",
@@ -485,6 +581,7 @@ pub fn build_audit_system_prompt() -> String {
 // can leak a different language despite the instruction): if the note uses a
 // script absent from the objective and the agent's reply, drop the note but
 // keep the verdict.
+/// 语言守卫用的文字系统区间表：西里尔、CJK、天城文、阿拉伯文。
 const SCRIPT_RANGES: [&[(char, char)]; 4] = [
     &[('\u{0400}', '\u{04FF}')], // Cyrillic
     &[
@@ -496,11 +593,14 @@ const SCRIPT_RANGES: [&[(char, char)]; 4] = [
     &[('\u{0600}', '\u{06FF}')], // Arabic
 ];
 
+/// 文本中是否含有任一指定 (lo, hi) 字符区间的字符。
 fn text_in_ranges(text: &str, ranges: &[(char, char)]) -> bool {
     text.chars()
         .any(|c| ranges.iter().any(|&(lo, hi)| c >= lo && c <= hi))
 }
 
+/// 判断 note 是否使用了 objective 与 agent 回复中均未出现的文字系统
+/// （语言幻觉守卫：命中则丢弃 note、保留 verdict）。
 pub fn has_script_mismatch(text: &str, input_text: &str) -> bool {
     SCRIPT_RANGES
         .iter()
@@ -509,6 +609,8 @@ pub fn has_script_mismatch(text: &str, input_text: &str) -> bool {
 
 /// JS: `extractJsonObject` — first `{`, longest-parseable `{...}` suffix scan
 /// (models wrap JSON in prose), fenced blocks preferred.
+/// 从模型输出抽取首个可解析的 JSON 对象：优先 fenced 块，
+/// 否则从首个 { 起做最长可解析后缀扫描（模型常把 JSON 包在散文里）。
 pub fn extract_json_object(text: &str) -> Option<Value> {
     let candidate = extract_fenced(text).unwrap_or(text).trim();
     let start = candidate.find('{')?;
@@ -528,6 +630,7 @@ pub fn extract_json_object(text: &str) -> Option<Value> {
 }
 
 /// `/```(?:json)?\s*([\s\S]*?)```/i` — content of the first fenced block.
+/// 提取第一个 ``` / ```json 围栏块的内容；无围栏返回 None。
 fn extract_fenced(text: &str) -> Option<&str> {
     let start = text.find("```")?;
     let rest = &text[start + 3..];
@@ -545,13 +648,18 @@ fn extract_fenced(text: &str) -> Option<&str> {
 // Event payload extraction
 // ---------------------------------------------------------------------------
 
+/// session.status 事件的精简提取结果。
 pub struct SessionStatusEvent {
+    /// 会话 id（非空，已去除首尾空白）。
     pub session_id: String,
+    /// 状态类型（idle/busy/retry 等；为空视为无效事件）。
     pub status_type: String,
+    /// 事件携带的目录（可为空串，调用方回退 directoryHint）。
     pub directory: String,
 }
 
 /// JS: `extractSessionStatus`.
+/// 从 session.status 载荷提取事件三要素；type 不符或结构缺失时返回 None。
 pub fn extract_session_status(payload: &Value) -> Option<SessionStatusEvent> {
     if payload.get("type").and_then(Value::as_str) != Some("session.status") {
         return None;
@@ -595,6 +703,8 @@ pub fn extract_session_status(payload: &Value) -> Option<SessionStatusEvent> {
 
 /// JS: `extractAbortedAssistant` — a user abort lands as an assistant message
 /// carrying MessageAbortedError. Returns the session id.
+/// 识别用户中止：message.updated 且 assistant 消息的 error.name 为
+/// MessageAbortedError；返回该会话 id。
 pub fn extract_aborted_assistant(payload: &Value) -> Option<String> {
     if payload.get("type").and_then(Value::as_str) != Some("message.updated") {
         return None;
@@ -617,14 +727,20 @@ pub fn extract_aborted_assistant(payload: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// session.updated 事件的提取结果。
 pub struct SessionUpdateEvent {
+    /// 会话 id（非空）。
     pub session_id: String,
+    /// 会话目录（可为空串）。
     pub directory: String,
+    /// 会话当前目标（载荷不含或无效目标时为 None）。
     pub goal: Option<GoalMetadata>,
+    /// 父会话 id；非空表示这是子会话（kickoff 判定要求顶层会话）。
     pub parent_id: String,
 }
 
 /// JS: `extractSessionUpdate`.
+/// 从 session.updated 载荷提取会话信息（id/目录/父 id）与内嵌目标。
 pub fn extract_session_update(payload: &Value) -> Option<SessionUpdateEvent> {
     if payload.get("type").and_then(Value::as_str) != Some("session.updated") {
         return None;
@@ -657,20 +773,25 @@ pub fn extract_session_update(payload: &Value) -> Option<SessionUpdateEvent> {
 // Message helpers
 // ---------------------------------------------------------------------------
 
+/// msg_info 缺字段时的兜底单例，避免每条消息都分配新的 Null。
 static NULL_VALUE: Value = Value::Null;
 
+/// 取 message.info；缺失时返回静态 Null（后续读取全部落空，语义安全）。
 fn msg_info(message: &Value) -> &Value {
     message.get("info").unwrap_or(&NULL_VALUE)
 }
 
+/// 取 info 顶层的字符串字段。
 fn info_str<'a>(info: &'a Value, key: &str) -> Option<&'a str> {
     info.get(key).and_then(Value::as_str)
 }
 
+/// 消息角色（user / assistant）。
 fn info_role(info: &Value) -> Option<&str> {
     info_str(info, "role")
 }
 
+/// info.time.completed 的数值（未完成或缺失为 0.0）。
 fn time_completed(info: &Value) -> f64 {
     info.get("time")
         .and_then(|time| time.get("completed"))
@@ -678,16 +799,19 @@ fn time_completed(info: &Value) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// 是否为压缩摘要消息（summary 严格等于 true）。
 fn summary_true(info: &Value) -> bool {
     info.get("summary") == Some(&Value::Bool(true))
 }
 
+/// info.error.name（如 MessageAbortedError、RateLimitExceeded）。
 fn error_name(info: &Value) -> Option<&str> {
     info.get("error")
         .and_then(|error| error.get("name"))
         .and_then(Value::as_str)
 }
 
+/// JS 真值语义：null/undefined、false、0、NaN、空字符串为假，其余为真。
 fn js_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
@@ -698,10 +822,12 @@ fn js_truthy(value: Option<&Value>) -> bool {
     }
 }
 
+/// info.error 是否按 JS 真值语义存在。
 fn error_truthy(info: &Value) -> bool {
     js_truthy(info.get("error"))
 }
 
+/// info.error 是否为真值的对象或数组（assistant turn 失败的判定条件）。
 fn error_is_object(info: &Value) -> bool {
     match info.get("error") {
         Some(value @ (Value::Object(_) | Value::Array(_))) => js_truthy(Some(value)),
@@ -710,6 +836,8 @@ fn error_is_object(info: &Value) -> bool {
 }
 
 /// JS: `messagePartsToText`.
+/// 把消息的 text parts 拼接为单段文本：跳过非 text 与空段，以换行连接，
+/// 最终按 TRANSCRIPT_PART_CHAR_LIMIT 截断。
 pub fn message_parts_to_text(message: Option<&Value>) -> String {
     let mut out = String::new();
     if let Some(parts) = message
@@ -741,6 +869,8 @@ pub fn message_parts_to_text(message: Option<&Value>) -> String {
 /// turn's cache.read carries everything already paid for in earlier turns, so
 /// the accumulated cost of a run is simply the LATEST message's
 /// input + cache.read + output — a snapshot, not a sum across messages.
+/// 单条消息的 token 快照：input + output + cache.read（各自取 max(0.0)
+/// 修正负值/NaN）；tokens 非对象时为 0。
 pub fn message_token_total(info: &Value) -> f64 {
     let Some(tokens) = info.get("tokens").filter(|t| t.is_object()) else {
         return 0.0;
@@ -767,6 +897,7 @@ pub fn message_token_total(info: &Value) -> f64 {
     input + output + cached_read
 }
 
+/// 会话状态是否仍在工作（busy 或 retry）。
 fn is_working_status(status: Option<&Value>) -> bool {
     matches!(
         status.and_then(|s| s.get("type")).and_then(Value::as_str),
@@ -774,6 +905,7 @@ fn is_working_status(status: Option<&Value>) -> bool {
     )
 }
 
+/// 正有限数向下取整为 u64；0、负数、NaN、Infinity 一律归 0。
 fn floor_u64(value: f64) -> u64 {
     if value.is_finite() && value > 0.0 {
         value.floor() as u64
@@ -789,23 +921,39 @@ fn floor_u64(value: f64) -> u64 {
 /// A partial overwrite applied over a FRESH goal read — mirrors the
 /// `mutate(currentGoal)` closures. `None` fields keep the current value;
 /// `turns_used_increment` adds to the fresh value.
+/// 叠加在"新鲜读到的目标"之上的部分覆写（对应 JS 版 mutate(currentGoal)
+/// 闭包）：None 字段保留现值，turns_used_increment 在现值上累加。
 #[derive(Default)]
 pub struct GoalPatch {
+    /// 覆写状态；None 保留现值。
     pub status: Option<String>,
+    /// 覆写状态成因（写入前截断至 REASON_CHAR_LIMIT）。
     pub status_reason: Option<String>,
+    /// 覆设备注（写入前截断至 NOTE_CHAR_LIMIT）。
     pub note: Option<String>,
+    /// 覆写 blocked 连击数。
     pub blocked_streak: Option<u64>,
+    /// 覆写审计失败连击数。
     pub audit_fail_streak: Option<u64>,
+    /// 覆写已用 token。
     pub tokens_used: Option<u64>,
+    /// 覆写基线 token。
     pub tokens_baseline: Option<u64>,
+    /// 覆写已入账（分段结算）token。
     pub tokens_committed: Option<u64>,
+    /// 覆写入账游标消息 id。
     pub last_accounted_message_id: Option<String>,
+    /// 覆写审计 provider。
     pub evaluation_provider_id: Option<String>,
+    /// 覆写审计 model。
     pub evaluation_model_id: Option<String>,
+    /// 续跑次数增量（saturating 加到现值上）。
     pub turns_used_increment: Option<u64>,
 }
 
+/// GoalPatch 的合并应用逻辑。
 impl GoalPatch {
+    /// 把补丁应用到 current 上并刷新 updatedAt = now，返回新的 GoalMetadata。
     fn apply_to(&self, current: &GoalMetadata, now: f64) -> GoalMetadata {
         let mut next = current.clone();
         if let Some(status) = &self.status {
@@ -849,21 +997,36 @@ impl GoalPatch {
     }
 }
 
+/// 目标落定（settle）参数：终态、成因文案与随落的记账/审计字段。
 struct SettleOptions {
+    /// 终态（blocked / budgetLimited / complete）。
     status: &'static str,
+    /// 落定成因（写入 statusReason）。
     status_reason: String,
+    /// 随落备注（None 则不覆写）。
     note: Option<String>,
+    /// 落定时写入的 token 用量。
     tokens_used: Option<u64>,
+    /// 落定时写入的基线。
     tokens_baseline: Option<u64>,
+    /// 落定时写入的已入账量。
     tokens_committed: Option<u64>,
+    /// 落定时写入的入账游标。
     last_accounted_message_id: Option<String>,
+    /// 完成审计所用 provider（空则不覆写）。
     evaluation_provider_id: Option<String>,
+    /// 完成审计所用 model（空则不覆写）。
     evaluation_model_id: Option<String>,
 }
+/// 一次成功审计的判定结果。
 struct AuditVerdict {
+    /// 裁决：continue / complete / blocked（已归一为小写）。
     verdict: String,
+    /// 进度备注（已截断并通过语言守卫）。
     note: String,
+    /// 出审计的 provider id。
     evaluation_provider_id: String,
+    /// 出审计的 model id。
     evaluation_model_id: String,
 }
 
@@ -871,44 +1034,74 @@ struct AuditVerdict {
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// 每会话一个的定时器槽位：seq 防陈旧回调节点误删，handle 可中止任务。
 struct TimerSlot {
+    /// 装载序号；只有同 seq 的回调才允许移除槽位（旧定时器不得误删新定时器）。
     seq: u64,
+    /// tokio 任务句柄，clear_timer 时 abort。
     handle: tokio::task::JoinHandle<()>,
     /// Set when the callback has fired; a fired slot is treated as absent
     /// (JS deletes the map entry at callback start).
+    /// 回调已触发标记；已触发的槽位视为不存在。
     fired: Arc<AtomicBool>,
 }
 
+/// 运行时的可变状态：锁保护的定时器表、in-flight 集合与停止标志。
 struct RuntimeInner {
+    /// session_id → TimerSlot 的当前装载表。
     timers: Mutex<HashMap<String, TimerSlot>>,
+    /// 正在执行 tick / pause 的会话集合（防重入）。
     inflight: Mutex<HashSet<String>>,
+    /// stop() 置位后：不再处理事件、不再执行已装载的回调。
     stopped: AtomicBool,
+    /// 定时器装载计数器（单调递增，供 seq 比对）。
     seq: AtomicU64,
 }
 
+/// 事件驱动的目标运行时：定时器 + in-flight 防重入 + 注入的四个 seam
+/// （引擎访问、审计、通知、开关）。
 pub struct SessionGoalRuntime {
+    /// 定时器与防重入等可变状态。
     inner: RuntimeInner,
+    /// 引擎访问 seam。
     fetch: Fetch,
+    /// 小模型审计 seam。
     audit: AuditService,
+    /// 目标落定通知 seam。
     notifier: GoalNotifier,
+    /// 功能开关 seam。
     is_enabled: IsEnabled,
+    /// 数据目录（读 objective 文件与 settings.json）。
     data_dir: PathBuf,
+    /// idle 事件的静默窗口毫秒数。
     idle_quiet_ms: u64,
+    /// kickoff 路径的静默窗口毫秒数。
     kickoff_quiet_ms: u64,
+    /// 自动续跑次数上限（测试可覆盖）。
     max_auto_turns: u64,
 }
 
+/// 构造参数：四个注入 seam + 数据目录与窗口/上限配置。
 pub struct SessionGoalRuntimeOptions {
+    /// 引擎访问 seam（生产用 engine_fetch）。
     pub fetch: Fetch,
+    /// 审计服务（生产接小模型，未移植前用 unavailable_audit）。
     pub audit: AuditService,
+    /// 落定通知（生产用 hub_notifier）。
     pub notifier: GoalNotifier,
+    /// 功能开关（生产用 settings_is_enabled）。
     pub is_enabled: IsEnabled,
+    /// 数据目录。
     pub data_dir: PathBuf,
+    /// idle 静默窗口毫秒数。
     pub idle_quiet_ms: u64,
+    /// kickoff 静默窗口毫秒数。
     pub kickoff_quiet_ms: u64,
+    /// 自动续跑次数上限。
     pub max_auto_turns: u64,
 }
 
+/// 把四个记账字段打包为 Some(...) 四元组，供 GoalPatch 直接消费。
 #[allow(clippy::type_complexity)]
 fn accounting_fields(
     tokens_used: u64,
@@ -924,11 +1117,14 @@ fn accounting_fields(
     )
 }
 
+/// 获取 Mutex 守卫；锁中毒时恢复数据继续用（into_inner），避免毒化传播。
 fn lock_map<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 目标运行时主体：引擎读写、审计裁决、定时器管理与事件入口。
 impl SessionGoalRuntime {
+    /// 以给定选项构造运行时（Arc 包装：定时器任务需要共享所有权）。
     pub fn new(options: SessionGoalRuntimeOptions) -> Arc<Self> {
         Arc::new(Self {
             inner: RuntimeInner {
@@ -948,6 +1144,7 @@ impl SessionGoalRuntime {
         })
     }
 
+    /// 经注入的 fetch seam 发起一次引擎请求。
     async fn open_code_fetch(
         &self,
         path: &str,
@@ -958,6 +1155,7 @@ impl SessionGoalRuntime {
         (self.fetch)(path, directory, method, body).await
     }
 
+    /// 拉取会话最近 MESSAGE_FETCH_LIMIT 条消息；失败或非数组返回 None。
     async fn fetch_recent_messages(&self, session_id: &str, directory: &str) -> Option<Vec<Value>> {
         let path = format!(
             "/session/{}/message?limit={}",
@@ -973,6 +1171,7 @@ impl SessionGoalRuntime {
         }
     }
 
+    /// 拉取目录下全部会话的实时状态表；失败返回 None（tick 会重装静默窗重试）。
     async fn fetch_session_statuses(&self, directory: &str) -> Option<Map<String, Value>> {
         match self
             .open_code_fetch("/session/status", Some(directory), "GET", None)
@@ -983,6 +1182,7 @@ impl SessionGoalRuntime {
         }
     }
 
+    /// 拉取会话的子会话列表；失败或非数组返回 None。
     async fn fetch_session_children(
         &self,
         session_id: &str,
@@ -1002,6 +1202,9 @@ impl SessionGoalRuntime {
     /// metadata writes (assist payloads, dismissals, UI goal edits) survive.
     /// Returns the written goal, or `None` when the stored goal no longer
     /// matches the expected id (user replaced/cleared it while we worked).
+    /// merge-write：先新鲜读取会话，目标 id 匹配才应用补丁并 PATCH 回写，
+    /// 使并发的其它元数据写入（assist 载荷、dismiss、UI 编辑）得以存活；
+    /// 目标已被替换/清除时返回 Ok(None)。
     async fn write_goal(
         &self,
         session_id: &str,
@@ -1038,6 +1241,8 @@ impl SessionGoalRuntime {
         Ok(Some(next))
     }
 
+    /// 把目标落定为终态：清零连击后写回补丁、记 info 日志并触发通知；
+    /// 写回落空（目标已变更）时静默跳过通知。
     async fn settle_goal(
         &self,
         session_id: &str,
@@ -1087,6 +1292,8 @@ impl SessionGoalRuntime {
         Ok(())
     }
 
+    /// 调小模型审计最新一轮回复：构造带语言样例的提示、抽取 verdict JSON、
+    /// 做语言守卫清洗 note；审计不可用、失败或解析失败均返回 None。
     async fn run_audit(
         &self,
         goal: &GoalMetadata,
@@ -1163,6 +1370,8 @@ impl SessionGoalRuntime {
         })
     }
 
+    /// 用最后一条 assistant 的 provider/model/agent 组装续跑请求并发送到
+    /// prompt_async；缺少 provider/model 时返回错误（无从续跑）。
     async fn send_continuation(
         &self,
         session_id: &str,
@@ -1199,6 +1408,11 @@ impl SessionGoalRuntime {
     /// One goal-loop iteration. JS: `tick`. Errors (engine call failures in
     /// the write paths) propagate to the timer wrapper which logs them, exactly
     /// like the JS `tick().catch` in `armTimer`.
+    /// 单次目标循环迭代（JS 版 tick）：开关检查 → 读会话并排除子会话与
+    /// 非 active 目标 → 读文件目标 → 静止性与子会话复查 → 拉消息 → token
+    /// 结算（分段处理压缩摘要，单调不减）→ 依次检查终态（中止暂停、turn
+    /// 出错受阻、预算越线、续跑上限）→ 小模型审计裁决 → 先记账落盘、
+    /// 再校验消息尾未移动后发送续跑。写路径错误上抛，由定时器包装记日志。
     pub async fn tick(self: &Arc<Self>, session_id: &str, directory: &str) -> anyhow::Result<()> {
         if !(self.is_enabled)() {
             return Ok(());
@@ -1761,6 +1975,7 @@ impl SessionGoalRuntime {
     // Event entrypoint + timers
     // -----------------------------------------------------------------------
 
+    /// 移除并中止会话当前装载的定时器（若有）。
     fn clear_timer(&self, session_id: &str) {
         let mut timers = lock_map(&self.inner.timers);
         if let Some(slot) = timers.remove(session_id) {
@@ -1768,6 +1983,7 @@ impl SessionGoalRuntime {
         }
     }
 
+    /// 会话是否仍有未触发的定时器。
     fn has_timer(&self, session_id: &str) -> bool {
         let timers = lock_map(&self.inner.timers);
         timers
@@ -1775,10 +1991,13 @@ impl SessionGoalRuntime {
             .is_some_and(|slot| !slot.fired.load(Ordering::SeqCst))
     }
 
+    /// 会话是否正处于 tick / pause 执行中。
     fn inflight_contains(&self, session_id: &str) -> bool {
         lock_map(&self.inner.inflight).contains(session_id)
     }
 
+    /// （重）装载静默定时器：先清旧的；安静期结束后按 seq 自检、跳过已
+    /// 停止或 in-flight 的会话，然后置 in-flight 执行 tick（错误仅记日志）。
     fn arm_timer(self: &Arc<Self>, session_id: &str, directory: &str, quiet_ms: u64) {
         self.clear_timer(session_id);
         let seq = self.inner.seq.fetch_add(1, Ordering::SeqCst);
@@ -1815,6 +2034,8 @@ impl SessionGoalRuntime {
     /// explicit "stop". Messages the user sends afterwards leave the paused
     /// goal alone; Resume re-arms the loop (and kicks off immediately on an
     /// idle session).
+    /// 中止事件的即时暂停路径：赶在任何 idle tick 抢发续跑之前，把 active
+    /// 目标写成 paused；读会话失败也静默（tick 侧还有兜底暂停）。
     async fn pause_after_abort(&self, session_id: &str, directory: &str) -> anyhow::Result<()> {
         let path = format!("/session/{}", encode_uri_component(session_id));
         let session = match self
@@ -1850,6 +2071,10 @@ impl SessionGoalRuntime {
 
     /// JS: `processPayload(payload, directoryHint)` — synchronous entrypoint
     /// fed from the global SSE hub subscription.
+    /// SSE 事件的同步入口：中止 assistant → 立即暂停；session.status 的
+    /// idle → 装载静默定时器、其它状态 → 清除定时器；session.updated →
+    /// kickoff 判定（顶层会话、active、新目标或 Resume、且无定时器不
+    /// in-flight 时按 RESUME_KICKOFF_MS / kickoff 窗口装载）。
     pub fn process_payload(self: &Arc<Self>, payload: &Value, directory_hint: &str) {
         if self.inner.stopped.load(Ordering::SeqCst) {
             return;
@@ -1913,6 +2138,7 @@ impl SessionGoalRuntime {
     }
 
     /// JS: `stop`.
+    /// 停止运行时：置停止标志并中止全部已装载的定时器任务。
     pub fn stop(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
         let mut timers = lock_map(&self.inner.timers);
@@ -1924,6 +2150,8 @@ impl SessionGoalRuntime {
 
 /// JS `encodeURIComponent` (RFC 3986 unreserved + JS extras literal). Local
 /// copy of `fs_routes::paths::encode_uri_component` (that module is private).
+/// JS encodeURIComponent 的本地等价实现（RFC 3986 unreserved + JS 额外
+/// 保留字符不转义）；因 fs_routes::paths 模块为私有而复制一份。
 fn encode_uri_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for &byte in value.as_bytes() {
@@ -1941,16 +2169,22 @@ fn encode_uri_component(value: &str) -> String {
     out
 }
 
+/// 运行时行为契约测试：以 FakeEngine 假引擎与队列化假审计驱动 tick 状态机、
+/// 事件入口（process_payload）与 token 结算分段逻辑。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session_goal::objectives::write_objective;
     use serde_json::json;
 
+    /// 测试用父会话 id。
     const SESSION_ID: &str = "ses_parent";
+    /// 测试用子会话 id。
     const CHILD_ID: &str = "ses_child";
+    /// 测试用工作目录。
     const DIRECTORY: &str = "/workspace";
 
+    /// 创建带 tag + 进程号 + 纳秒后缀的唯一临时目录。
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-session-goal-runtime-{tag}-{}-{}",
@@ -1966,26 +2200,39 @@ mod tests {
 
     // -- Fake engine --------------------------------------------------------
 
+    /// 假引擎记录的一次请求（路径 + 方法 + 可选请求体）。
     #[derive(Clone, Debug)]
     struct RecordedRequest {
+        /// 请求路径（含查询串）。
         path: String,
+        /// HTTP 方法。
         method: String,
+        /// 请求体（无则为 None）。
         body: Option<Value>,
     }
 
+    /// 内存假引擎：按路径分发夹具数据、合并 metadata PATCH，并按序记录全部请求。
     struct FakeEngine {
+        /// 已发出的请求记录（按调用顺序）。
         requests: Mutex<Vec<RecordedRequest>>,
+        /// GET/PATCH /session/{id} 使用的会话对象（PATCH 会就地合并目标）。
         session: Mutex<Value>,
         /// `Err(status)` forces a status-fetch failure (JS 503 test).
+        /// /session/status 的应答；Err(status) 模拟状态读取失败（对应 JS 版 503 用例）。
         statuses: Mutex<Result<Value, u16>>,
+        /// 子会话列表。
         children: Mutex<Value>,
+        /// 近期消息列表。
         messages: Mutex<Value>,
         /// When set, the /session/status handler swaps the stored goal id
         /// before answering — emulates a user replacing the goal mid-tick.
+        /// 置位后在 status 查询时偷换存储的目标 id，模拟 tick 途中用户替换目标。
         swap_goal_on_status: AtomicBool,
     }
 
+    /// 假引擎的访问器与 Fetch 适配。
     impl FakeEngine {
+        /// 用四份夹具（会话/状态/子会话/消息）构建假引擎。
         fn new(session: Value, statuses: Value, children: Value, messages: Value) -> Arc<Self> {
             Arc::new(Self {
                 requests: Mutex::new(Vec::new()),
@@ -1997,6 +2244,7 @@ mod tests {
             })
         }
 
+        /// 已记录请求的 (path, method) 序列，用于断言请求顺序与次数。
         fn paths(&self) -> Vec<(String, String)> {
             lock_map(&self.requests)
                 .iter()
@@ -2004,6 +2252,7 @@ mod tests {
                 .collect()
         }
 
+        /// 过滤出全部 PATCH 请求体（目标写回记录）。
         fn patches(&self) -> Vec<Value> {
             lock_map(&self.requests)
                 .iter()
@@ -2012,6 +2261,7 @@ mod tests {
                 .collect()
         }
 
+        /// 过滤出全部 POST 请求体（续跑请求）。
         fn posts(&self) -> Vec<Value> {
             lock_map(&self.requests)
                 .iter()
@@ -2020,6 +2270,8 @@ mod tests {
                 .collect()
         }
 
+        /// 生成接进运行时的 Fetch：断言 directory 已挂载，按路由返回夹具数据，
+        /// 并像真实引擎一样合并 metadata PATCH。
         fn fetch(self: &Arc<Self>) -> Fetch {
             let engine = Arc::clone(self);
             Arc::new(
@@ -2105,7 +2357,9 @@ mod tests {
         }
     }
 
+    /// 测试辅助 impl：由状态码构造 EngineRequestError。
     impl EngineRequestError {
+        /// 把 u16 包装成引擎请求错误。
         fn from_status(status: u16) -> Self {
             Self { status }
         }
@@ -2113,6 +2367,7 @@ mod tests {
 
     // -- Fixtures -----------------------------------------------------------
 
+    /// 构造目标载荷；overrides 的键值逐字段覆盖默认值。
     fn goal_fixture(overrides: Value) -> Value {
         let mut goal = json!({
             "id": "goal_1",
@@ -2142,6 +2397,8 @@ mod tests {
         goal
     }
 
+    /// 构造带目标与保留字段（other.keep，用于验证 merge-write 不误伤
+    /// 其它元数据命名空间）的会话对象。
     fn session_fixture(goal: &Value) -> Value {
         json!({
             "id": SESSION_ID,
@@ -2150,6 +2407,7 @@ mod tests {
         })
     }
 
+    /// 构造 assistant 消息；overrides 覆盖 info 内的字段（如 error、summary、tokens）。
     fn assistant_fixture(id: &str, overrides: Value) -> Value {
         let mut message = json!({
             "info": {
@@ -2175,6 +2433,7 @@ mod tests {
         message
     }
 
+    /// 标准两段消息：一条 user + 一条已完成的 assistant（快照 2 token）。
     fn standard_messages() -> Value {
         json!([
             { "info": { "id": "msg_user", "role": "user", "sessionID": SESSION_ID } },
@@ -2183,6 +2442,8 @@ mod tests {
     }
 
     /// (verdict, note) pairs; `("unavailable", _)` reports Err(Unavailable).
+    /// 队列化假审计：按序弹出 (verdict, note) 应答并记录每次请求；
+    /// verdict 为 "unavailable" 时映射 Err(Unavailable)。
     fn audit_service(
         verdicts: Vec<(&'static str, &'static str)>,
     ) -> (AuditService, Arc<Mutex<Vec<AuditRequest>>>) {
@@ -2212,6 +2473,7 @@ mod tests {
         (service, calls)
     }
 
+    /// 捕获 (sessionId, status, statusReason) 的假落定通知器。
     fn capture_notifier() -> (GoalNotifier, Arc<Mutex<Vec<(String, String, String)>>>) {
         let settles = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&settles);
@@ -2227,6 +2489,7 @@ mod tests {
         (notifier, settles)
     }
 
+    /// 用假引擎 + 10ms 静默窗口构建运行时（测试无需真实等待）。
     fn make_runtime(
         engine: &Arc<FakeEngine>,
         audit: AuditService,
@@ -2245,6 +2508,7 @@ mod tests {
         })
     }
 
+    /// 标准测试环境：假引擎 + continue 审计 + 捕获通知的运行时组合。
     fn standard_setup(goal_overrides: Value) -> (Arc<FakeEngine>, Arc<SessionGoalRuntime>) {
         let engine = FakeEngine::new(
             session_fixture(&goal_fixture(goal_overrides)),
@@ -2258,6 +2522,7 @@ mod tests {
         (engine, runtime)
     }
 
+    /// 以 2ms 间隔轮询谓词直至为真或超时的异步等待。
     async fn wait_for(timeout_ms: u64, predicate: impl Fn() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
@@ -2270,6 +2535,7 @@ mod tests {
 
     // -- Pure helpers -------------------------------------------------------
 
+    /// 契约：解析会归一化各字段；预算/状态/目标文本的非法组合一律返回 None。
     #[test]
     fn parse_goal_metadata_normalizes_and_validates() {
         let goal = parse_goal_metadata(&session_fixture(&goal_fixture(json!({})))).expect("goal");
@@ -2320,6 +2586,7 @@ mod tests {
         assert!(parse_goal_metadata(&json!({ "id": SESSION_ID })).is_none());
     }
 
+    /// 契约：to_json 输出完整归一化字段，且整值序列化为整数（无 .0 后缀）。
     #[test]
     fn goal_metadata_json_carries_the_full_normalized_payload() {
         let goal = parse_goal_metadata(&session_fixture(&goal_fixture(
@@ -2335,6 +2602,7 @@ mod tests {
         assert_eq!(payload["createdAt"].to_string(), "1");
     }
 
+    /// 契约：裸 JSON、fenced 块与散文包裹的 JSON 均可抽出 verdict；非对象输出失败。
     #[test]
     fn extract_json_object_handles_fenced_and_prose_wrapped_output() {
         assert_eq!(
@@ -2356,6 +2624,7 @@ mod tests {
         assert_eq!(extract_json_object("[1,2,3]"), None);
     }
 
+    /// 契约：note 使用 objective 与回复中均未出现的文字系统时判定为语言错配。
     #[test]
     fn script_mismatch_drops_notes_in_foreign_scripts() {
         assert!(has_script_mismatch(
@@ -2369,6 +2638,7 @@ mod tests {
         assert!(has_script_mismatch("Готово", "mixed 完了 objective"));
     }
 
+    /// 契约：续跑提示包含预算明细、续跑计数与 XML 转义；无预算时不出现余量行。
     #[test]
     fn continuation_prompt_budget_and_escape_shape() {
         let with_budget = GoalMetadata {
@@ -2400,6 +2670,8 @@ mod tests {
 
     // -- Tick state machine -------------------------------------------------
 
+    /// 契约：审计判 complete 时落定 complete——note 与审计模型落盘、连击清零、
+    /// 不再续跑且触发通知，其它元数据命名空间原样保留。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_settles_complete_on_audit_complete_verdict() {
         let engine = FakeEngine::new(
@@ -2441,6 +2713,8 @@ mod tests {
         );
     }
 
+    /// 契约：审计判 continue 时先记账（turnsUsed/tokensUsed/入账游标）再 POST
+    /// 续跑，并沿用最后一条 assistant 的 provider/model/agent。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_continues_on_continue_verdict_with_prompt_payload() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2478,6 +2752,7 @@ mod tests {
         assert!(text.contains("Auto-continuations used: 2 of 20."));
     }
 
+    /// 契约：token 预算已越线时跳过审计，直接落定 budgetLimited 且不续跑。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_settles_budget_limited_before_the_audit() {
         // The fixture turn's snapshot is 2 tokens (1 input + 1 output) — a
@@ -2511,6 +2786,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：续跑次数达到上限时落定 blocked（auto-continuation limit reached）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_settles_blocked_at_the_auto_continuation_cap() {
         let (engine, runtime) = standard_setup(json!({ "turnsUsed": MAX_AUTO_TURNS }));
@@ -2523,6 +2799,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：消息尾部是被中止的 assistant 时跳过审计，目标暂停（paused after abort）且不续跑。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_pauses_after_a_user_abort() {
         let engine = FakeEngine::new(
@@ -2553,6 +2830,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：assistant turn 出错（error 为对象）时落定 blocked，并以错误名作为成因。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tick_blocks_on_assistant_turn_error() {
         let engine = FakeEngine::new(
@@ -2579,6 +2857,7 @@ mod tests {
         assert_eq!(written["statusReason"], "RateLimitExceeded");
     }
 
+    /// 契约：显式 Resume 越过中止尾——不审计、立即续跑并计数。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn resumed_goal_skips_audit_over_an_aborted_tail_and_nudges() {
         let engine = FakeEngine::new(
@@ -2613,6 +2892,7 @@ mod tests {
         assert_eq!(patches[0]["metadata"]["ompchamber"]["goal"]["turnsUsed"], 2);
     }
 
+    /// 契约：blocked 判定需连续三次——前两次只累计 streak 并继续，第三次落定并沿用审计 note。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocked_verdict_needs_three_consecutive_strikes() {
         // Strike 1/2 keeps the goal running with blockedStreak recorded.
@@ -2663,6 +2943,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：审计不可用容忍一次（无审计续跑、streak 记 1），连续第二次即落定 blocked。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unavailable_audit_tolerated_once_then_blocks() {
         // First failure: continue unaudited, streak 1.
@@ -2716,6 +2997,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：子会话与非 active 目标在读取会话后即止步，不再发出后续请求。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn subagent_sessions_and_inactive_goals_are_skipped() {
         let engine = FakeEngine::new(
@@ -2745,6 +3027,8 @@ mod tests {
         );
     }
 
+    /// 契约：文件目标每 tick 重新读文件驱动提示词；缺文件时回退内联目标，
+    /// 两者皆无则静候不动（不写不发）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn objective_file_is_read_fresh_with_inline_fallback() {
         // File-backed objective: the file text drives the continuation prompt.
@@ -2825,6 +3109,7 @@ mod tests {
 
     // -- Live activity gate (runtime.test.js) -------------------------------
 
+    /// 契约：静默窗内父会话转 busy 时本轮止步，等待下一次 idle 事件重新装载。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waits_for_next_parent_idle_when_parent_resumed_during_quiet_window() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2849,6 +3134,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 契约：直接子会话仍在工作时不审计，等子会话结果注入父会话的下一个周期。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn waits_for_parent_result_cycle_while_a_direct_child_is_working() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2872,6 +3158,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 契约：实时状态读取失败时重装静默窗重试，请求序列成对重复出现。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retries_the_quiet_window_when_live_status_cannot_be_read() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2900,6 +3187,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 契约：idle 事件不带 directory 时回退使用 SSE 信封携带的目录提示。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn idle_event_without_directory_uses_the_envelope_hint() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2920,6 +3208,7 @@ mod tests {
 
     // -- Event entrypoint ---------------------------------------------------
 
+    /// 契约：全新目标（turnsUsed=0）的 session.updated 事件足以装载 kickoff 定时器。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn kickoff_path_arms_on_a_fresh_session_updated_event() {
         let (engine, runtime) = standard_setup(json!({ "turnsUsed": 0 }));
@@ -2942,6 +3231,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 契约：中止事件即时把 active 目标写成 paused，不等 idle tick。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn abort_event_pauses_the_active_goal_immediately() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2968,6 +3258,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 契约：busy 状态清除已装载的定时器；stop() 之后 idle 事件不再产生任何 tick。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn busy_status_clears_the_timer_and_stop_prevents_ticks() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -2995,6 +3286,7 @@ mod tests {
 
     // -- Token accounting ---------------------------------------------------
 
+    /// 契约：基线取目标创建前最后一轮的 token 快照，用量为最新快照减去基线。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn token_accounting_uses_a_pre_goal_baseline_and_latest_snapshot() {
         let messages = json!([
@@ -3025,6 +3317,7 @@ mod tests {
         assert_eq!(written["lastAccountedMessageID"], "msg_0002");
     }
 
+    /// 契约：压缩摘要消息把当前分段结算进 tokensCommitted，并把新分段基线归零。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn compaction_summary_closes_the_segment_and_resets_the_baseline() {
         let messages = json!([
@@ -3066,6 +3359,7 @@ mod tests {
         );
     }
 
+    /// 契约：tick 途中目标被替换时 merge-write 落空——不写任何 PATCH、不发送续跑。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_write_guard_drops_the_continuation_when_the_goal_changed() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -3083,6 +3377,7 @@ mod tests {
         );
     }
 
+    /// 契约：消息尾部是用户消息（会话即将转忙）时本轮放弃，等下一次 idle 再来。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn trailing_user_message_defers_the_tick() {
         let (engine, runtime) = standard_setup(json!({}));
@@ -3097,6 +3392,7 @@ mod tests {
         assert!(engine.posts().is_empty());
     }
 
+    /// 契约：功能开关关闭时 tick 在发出任何引擎请求之前直接返回。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn disabled_setting_stops_the_loop_before_any_fetch() {
         let (engine, _) = standard_setup(json!({}));

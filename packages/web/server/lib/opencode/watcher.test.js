@@ -1,8 +1,20 @@
+/**
+ * watcher.js OpenCode 全局事件监听运行时的单元测试（vitest）。
+ *
+ * 用桩 fetch 返回可配置的 SSE 响应流（createSseResponse），覆盖：等待
+ * OpenCode 就绪后订阅 /global/event 并解包转发 payload；上游停滞超时后带
+ * Last-Event-ID 重连；注入共享全局事件 hub 时复用 hub 的上游连接而不自建；
+ * 以及 watcher 停止时只退订自身、不停掉共享 hub。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createGlobalMessageStreamHub } from '../event-stream/global-hub.js';
 import { createOpenCodeWatcherRuntime } from './watcher.js';
 
+/**
+ * 构造模拟的 fetch SSE 响应对象：按顺序返回 blocks 中的字符串块；耗尽后
+ * 默认结束流，holdOpen 为 true 时挂起直到 signal 中止（模拟停滞的上游）。
+ */
 function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -38,6 +50,7 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   };
 }
 
+// 套件：OpenCode watcher 的就绪等待、SSE 解包转发、断流重连与共享 hub 行为。
 describe('createOpenCodeWatcherRuntime', () => {
   afterEach(() => {
     vi.restoreAllMocks();

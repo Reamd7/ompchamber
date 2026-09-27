@@ -1,16 +1,29 @@
+/**
+ * managed-process-registry 测试套件：验证进程识别启发式——
+ * commandIdentifiesOurServer 匹配 omp-host（编译版与源码启动）及遗留
+ * opencode 命令行并绑定注册端口，windowsImageLooksLikeEngine 识别
+ * tasklist CSV 行；以及 win32 平台下 reapOrphanedProcesses 对孤儿引擎
+ * 的收割与对无关进程的保守跳过。
+ */
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/** 被测导出：进程识别启发式与注册表工厂（动态导入以配合测试加载顺序）。 */
 const { commandIdentifiesOurServer, windowsImageLooksLikeEngine, createManagedProcessRegistry } =
   await import('./managed-process-registry.js');
 
+// 每个用例后还原 vi.spyOn 打的桩（如 process.kill）。
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// 进程识别主套件。
 describe('managed process identification', () => {
+  // 中文补充：reaper 曾只匹配 opencode；此后托管引擎一直是 omp host
+  // （omp-host.exe 或 .../lib/omp-host/host.ts serve），导致孤儿收割长期
+  // 失效——泄漏的引擎从未被杀掉。
   // The reaper once matched only `opencode`; the managed engine has been the
   // omp host (`omp-host.exe` / `.../lib/omp-host/host.ts serve`) ever since,
   // which made orphan reaping dead code — leaked engines were never killed.
@@ -49,6 +62,7 @@ describe('managed process identification', () => {
     });
   });
 
+  // windowsImageLooksLikeEngine：tasklist CSV 行的镜像识别。
   describe('windowsImageLooksLikeEngine', () => {
     it('accepts tasklist CSV rows for our binaries', () => {
       expect(windowsImageLooksLikeEngine('"omp-host.exe","1234","Console","1","84,532 K"')).toBe(true);
@@ -63,7 +77,9 @@ describe('managed process identification', () => {
   });
 });
 
+// reapOrphanedProcesses 的 win32 分支（其它平台整体跳过）。
 describe('reapOrphanedProcesses (win32 branch)', () => {
+  // 仅在 win32 运行、其它平台降级为 it.skip 的用例包装器。
   const runOnWindows = process.platform === 'win32' ? it : it.skip;
 
   runOnWindows('reaps a dead-owner omp-host.exe orphan and prunes its entry', async () => {

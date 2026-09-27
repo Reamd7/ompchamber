@@ -1,32 +1,54 @@
+/**
+ * OMPChamber 会话路由（routes.js）的测试套件。
+ *
+ * 用 supertest 驱动真实 express app + vi.mock 掉的引擎客户端/git/worktree，
+ * 并按 URL 桩化 globalThis.fetch，覆盖：会话创建（含非 ASCII 目录 header、
+ * 局部 JSON 解析、session-created 事件）、缺省模型/agent 解析、goal 元数
+ * 据先于派发、worktree 建立与引导等待、send/fork 的选择复用与基线、
+ * 无效输入在任何 OpenCode 副作用之前被拒，以及部分结果（partial）报告。
+ */
 import express from 'express';
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** createWorktree 桩：固定返回 side-task worktree 的信息。 */
 const createWorktreeMock = vi.fn(async () => ({
   head: 'abc123',
   name: 'side-task',
   branch: 'ompchamber/side-task',
   path: '/repo/worktrees/side-task',
 }));
+/** getWorktreeBootstrapStatus 桩：默认立即就绪（setup-ready）。 */
 const getWorktreeBootstrapStatusMock = vi.fn(async () => ({
   status: 'ready',
   phase: 'setup-ready',
   error: null,
   updatedAt: Date.now(),
 }));
+/** 引擎端 session.create 桩：固定返回 ses_123。 */
 const sessionCreateMock = vi.fn(async () => ({ data: { id: 'ses_123' } }));
+/** 引擎端 session.fork 桩：固定返回带标题的 ses_fork。 */
 const sessionForkMock = vi.fn(async () => ({ data: { id: 'ses_fork', title: 'Forked session' } }));
+/** 引擎端 session.messages 桩：默认由 beforeEach 换成"记录派发"行为。 */
 const sessionMessagesMock = vi.fn(async () => ({ data: [] }));
 
+// 用例预置的既有消息（setSessionMessages 写入）。
 let existingSessionMessages = [];
+// 已"落盘"的派发 user 消息序号，用于生成递增 id。
 let dispatchedUserMessageSeq = 0;
 
 // The service confirms a prompt landed by watching for a new user message, so
 // the default mock behaves like OpenCode recording each dispatched prompt.
+// 中文补充：服务靠观察新的 user 消息确认 prompt 落盘，故默认桩模拟
+// OpenCode 把每次派发的 prompt 都记录进会话。
 const setSessionMessages = (messages) => {
   existingSessionMessages = messages;
 };
 
+/**
+ * session.messages 的默认实现：在预置消息之后追加一条新的 user 消息，
+ * 模拟一次 prompt 派发被 OpenCode 记录（waitForPromptLanded 的证据源）。
+ */
 const recordedSessionMessages = async () => {
   dispatchedUserMessageSeq += 1;
   return {
@@ -45,6 +67,8 @@ const recordedSessionMessages = async () => {
 
 // Selection inputs are fetched whenever a request names a model, agent, or
 // variant, so every prompt-dispatching fetch mock must answer them.
+// 中文补充：只要请求点名了 model、agent 或 variant 就会拉取选择输入，
+// 因此每个会派发 prompt 的 fetch 桩都必须应答这三个端点。
 const selectionInputResponse = (url) => {
   const text = String(url);
   if (text.includes('/config/providers')) {
@@ -64,13 +88,19 @@ const selectionInputResponse = (url) => {
   if (text.includes('/config')) return { ok: true, json: async () => ({}) };
   return null;
 };
+/** 引擎端 session.command 桩：slash 命令派发成功路径。 */
 const sessionCommandMock = vi.fn(async () => ({ data: {} }));
+/** 引擎端 command.list 桩：默认没有任何命令。 */
 const commandListMock = vi.fn(async () => ({ data: [] }));
+// 经 globalThis 暴露给 vi.mock 工厂（工厂在模块作用域执行，拿不到本地变量）。
 globalThis.__ompchamberCreateWorktreeMock = createWorktreeMock;
+// 同上：worktree 引导状态查询桩的 globalThis 桥。
 globalThis.__ompchamberGetWorktreeBootstrapStatusMock = getWorktreeBootstrapStatusMock;
 
+// 被测路由注册函数；beforeAll 里动态 import 以配合 vi.mock 的提升时机。
 let registerOMPChamberSessionRoutes;
 
+// 引擎客户端整桩替换：session.create/fork/messages/command 与 command.list。
 vi.mock('../opencode/local-engine-client.js', () => ({
   createLocalEngineClient: () => ({
     session: {
@@ -85,11 +115,17 @@ vi.mock('../opencode/local-engine-client.js', () => ({
   }),
 }));
 
+// git 模块桩：转发到 globalThis 上的两个 mock，便于用例改写实现。
 vi.mock('../git/index.js', () => ({
   createWorktree: (...args) => globalThis.__ompchamberCreateWorktreeMock(...args),
   getWorktreeBootstrapStatus: (...args) => globalThis.__ompchamberGetWorktreeBootstrapStatusMock(...args),
 }));
 
+/**
+ * 构造注册了会话路由的 express app；overrides 替换任意依赖，options.
+ * globalJson=false 时不挂全局 JSON 中间件（验证路由自带 body 解析）。
+ * calls 供用例记录副作用。
+ */
 const createApp = (overrides = {}, options = {}) => {
   const app = express();
   if (options.globalJson !== false) {
@@ -108,11 +144,14 @@ const createApp = (overrides = {}, options = {}) => {
   return { app, calls };
 };
 
+// 会话路由契约：创建/发送/分叉端到端行为，见各用例断言。
 describe('ompchamber session routes', () => {
+  // 动态导入被测模块，确保 vi.mock 已生效。
   beforeAll(async () => {
     ({ registerOMPChamberSessionRoutes } = await import('./routes.js'));
   });
 
+  // 每个用例前重置全部桩并恢复默认实现（消息桩重新模拟"记录派发"）。
   beforeEach(() => {
     createWorktreeMock.mockClear();
     getWorktreeBootstrapStatusMock.mockClear();

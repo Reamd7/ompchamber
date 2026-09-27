@@ -6,6 +6,13 @@
 //! writes `settings.json` directly (atomic temp+rename, `0600`, unknown-field
 //! preserving) for exactly the three keys the route touches:
 //! `projects`, `activeProjectId`, `lastDirectory`.
+//! opencode/routes.js 的 `POST /api/opencode/directory`，依赖
+//! project-directory-runtime.js 的所需子集（validateDirectoryPath、
+//! resolveDirectoryCandidate）与最小可用的 settings 持久化
+//! （settings-runtime.js 的读写形态）。正式 settings 运行时归 settings
+//! 模块移植；落地前这里直接读写 `settings.json`（临时文件 + rename
+//! 原子写、0600 权限、保留未知字段），且只触碰路由涉及的三个键：
+//! `projects`、`activeProjectId`、`lastDirectory`。
 
 use std::path::{Component, Path, PathBuf};
 
@@ -21,6 +28,8 @@ use crate::error::AppError;
 
 /// Lenient JSON body read: a blank/absent body is `{}` (Express leaves
 /// `req.body` undefined for non-JSON requests); a malformed JSON body is 400.
+/// 宽松读取 JSON 请求体：空白/缺省体视为 `{}`（Express 对非 JSON 请求
+/// 把 req.body 留空）；非法 JSON 映射为 400。
 pub(crate) async fn read_json_body(request: Request) -> Result<Value, AppError> {
     let bytes = axum::body::to_bytes(request.into_body(), 64 * 1024 * 1024)
         .await
@@ -34,6 +43,8 @@ pub(crate) async fn read_json_body(request: Request) -> Result<Value, AppError> 
 
 /// `normalizeDirectoryPath` (settings-normalization-runtime.js): trim, strip
 /// wrapping quotes, expand a leading `~`.
+/// settings-normalization-runtime.js 的 `normalizeDirectoryPath`：trim、
+/// 剥掉成对的包裹引号、展开开头的 `~`。
 pub(crate) fn normalize_directory_path(value: &str) -> String {
     let mut trimmed = value.trim();
     if trimmed.len() >= 2
@@ -62,6 +73,8 @@ pub(crate) fn normalize_directory_path(value: &str) -> String {
 
 /// `path.resolve` — absolute against the cwd with lexical `.`/`..`
 /// normalization (no symlink resolution).
+/// `path.resolve` 的等价实现：相对路径基于 cwd，词法归一 `.`/`..`
+/// 段（不解析符号链接）。
 pub(crate) fn lexical_resolve(path: &str) -> PathBuf {
     let raw = Path::new(path);
     let absolute = if raw.is_absolute() {
@@ -84,6 +97,8 @@ pub(crate) fn lexical_resolve(path: &str) -> PathBuf {
 
 /// `createProjectIdFromPath` (projects/project-id.js): `path_` +
 /// base64url(normalized path).
+/// projects/project-id.js 的 `createProjectIdFromPath`：反斜杠折算为
+/// `/`、去掉尾部斜杠后输出 `path_` + base64url(路径)。
 pub(crate) fn create_project_id_from_path(project_path: &str) -> String {
     let normalized = project_path.replace('\\', "/");
     let normalized = normalized.trim_end_matches('/').to_string();
@@ -102,16 +117,22 @@ pub(crate) fn create_project_id_from_path(project_path: &str) -> String {
     )
 }
 
+/// validate_directory_path 的成功结果。
 #[derive(Debug)]
 pub struct ValidatedDirectory {
     /// Canonical (realpath) directory — what gets persisted.
+    /// 规范（realpath）目录——持久化使用的最终形态。
     pub directory: PathBuf,
     /// Pre-realpath candidate the caller asked for.
+    /// 调用方原始请求（realpath 之前）的词法解析结果。
     pub requested_directory: PathBuf,
 }
 
 /// `validateDirectoryPath` (project-directory-runtime.js): required, must be an
 /// existing directory; returns the realpath.
+/// project-directory-runtime.js 的 `validateDirectoryPath`：路径必填且
+/// 必须是已存在的目录，成功时返回 realpath；错误消息与 JS 逐字对齐
+/// （not found / permission denied / not a directory）。
 pub fn validate_directory_path(candidate: &str) -> Result<ValidatedDirectory, String> {
     let normalized = normalize_directory_path(candidate);
     if normalized.is_empty() {
@@ -143,6 +164,9 @@ pub fn validate_directory_path(candidate: &str) -> Result<ValidatedDirectory, St
 
 /// `normalizePathForPersistence` subset: resolve to the canonical path when it
 /// exists, falling back to the lexical resolution (matches `safeRealpathSync`).
+/// `normalizePathForPersistence` 子集：路径存在则取 canonical 形态，
+/// 否则回退词法解析（对齐 `safeRealpathSync`）；Windows 下统一反斜杠
+/// 并大写盘符。
 fn normalize_path_for_persistence(raw: &str) -> String {
     let normalized = normalize_directory_path(raw);
     if normalized.is_empty() {
@@ -158,6 +182,7 @@ fn normalize_path_for_persistence(raw: &str) -> String {
     }
 }
 
+/// Windows 盘符小写时转为大写（`c:\x` → `C:\x`），其余原样返回。
 fn uppercase_drive_letter(path: &str) -> String {
     let bytes = path.as_bytes();
     if bytes.len() >= 2 && bytes[0].is_ascii_lowercase() && bytes[1] == b':' {
@@ -170,6 +195,7 @@ fn uppercase_drive_letter(path: &str) -> String {
     }
 }
 
+/// 取 JSON 字符串字段：trim 后非空返回 Some，否则 None。
 fn non_empty_trimmed(value: Option<&Value>) -> Option<String> {
     value
         .and_then(|value| value.as_str())
@@ -177,6 +203,7 @@ fn non_empty_trimmed(value: Option<&Value>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+/// 取 JSON 数值字段：有限且非负才返回 Some。
 fn finite_non_negative_number(value: Option<&Value>) -> Option<f64> {
     let number = value.and_then(|value| value.as_f64())?;
     if number.is_finite() && number >= 0.0 {
@@ -188,6 +215,8 @@ fn finite_non_negative_number(value: Option<&Value>) -> Option<f64> {
 
 /// JS `Date.now()` timestamps serialize as integers — keep integral values
 /// integral instead of rendering `123.0`.
+/// JS `Date.now()` 时间戳序列化为整数——整值保持整数，避免渲染成
+/// `123.0`。
 fn timestamp_json_number(value: f64) -> Value {
     if value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_992.0 {
         Value::from(value as i64)
@@ -201,6 +230,9 @@ fn timestamp_json_number(value: f64) -> Value {
 /// `sanitizeProjects` (settings-normalization-runtime.js): normalize ids/paths,
 /// drop entries without both, dedupe by id and path, keep the known optional
 /// fields in their documented shape.
+/// settings-normalization-runtime.js 的 `sanitizeProjects`：归一
+/// id/path，缺任一即丢弃，按 id 与 path 去重，已知可选字段按文档形态
+/// 保留，未知字段剔除。
 pub(crate) fn sanitize_projects(input: Option<&Value>) -> Vec<Value> {
     let Some(entries) = input.and_then(|value| value.as_array()) else {
         return Vec::new();
@@ -302,6 +334,9 @@ pub(crate) fn sanitize_projects(input: Option<&Value>) -> Vec<Value> {
 /// `validateProjectEntries` (settings-runtime.js): drop entries whose path is
 /// missing or not a directory; permission/transient fs errors KEEP the entry
 /// rather than silently losing it from the user's list.
+/// settings-runtime.js 的 `validateProjectEntries`：丢弃 path 缺失或
+/// 不是目录的条目；权限/瞬时 fs 错误则保留条目，避免用户的列表被
+/// 静默清空。
 fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
     projects
         .iter()
@@ -331,6 +366,8 @@ fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
         .collect()
 }
 /// `readSettingsFromDisk` (lenient): every failure maps to `{}`.
+/// `readSettingsFromDisk`（宽松语义）：读取失败、解析失败或非对象都
+/// 归一为空对象。
 pub(crate) fn read_settings(settings_path: &Path) -> Map<String, Value> {
     std::fs::read_to_string(settings_path)
         .ok()
@@ -344,6 +381,9 @@ pub(crate) fn read_settings(settings_path: &Path) -> Map<String, Value> {
 
 /// `writeSettingsToDisk`: mkdir `0700`, atomic tmp+rename, `0600` file mode,
 /// 2-space pretty JSON like `JSON.stringify(settings, null, 2)`.
+/// `writeSettingsToDisk`：mkdir 0700、临时文件 + rename 原子写、0600
+/// 文件权限、两空格缩进的 pretty JSON（同 JSON.stringify(settings,
+/// null, 2)）；rename 失败时清理临时文件。
 pub(crate) fn write_settings(
     settings_path: &Path,
     settings: &Map<String, Value>,
@@ -386,11 +426,15 @@ use crate::os_compat::PermissionsExt;
     rename_result
 }
 
+/// 该 data 目录下 settings.json 的路径。
 fn settings_path(ctx: &RouterContext) -> PathBuf {
     ctx.config.data_dir.join("settings.json")
 }
 
 /// `POST /api/opencode/directory`.
+/// `POST /api/opencode/directory`：校验路径（可选先递归创建目录）→
+/// 更新 projects/activeProjectId/lastDirectory → 原子写盘 → 返回完整
+/// settings；校验失败 400、建目录或写盘失败 500。
 pub(crate) async fn set_directory(State(ctx): State<RouterContext>, request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -505,6 +549,7 @@ pub(crate) async fn set_directory(State(ctx): State<RouterContext>, request: Req
         .into_response()
 }
 
+/// directory 路由与路径工具的测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +559,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request as HttpRequest};
 
+/// 以 JSON body POST /api/opencode/directory 并返回 (状态码, body)。
     async fn post_directory(ctx: crate::context::RouterContext, body: &str) -> (StatusCode, Value) {
         let request = HttpRequest::builder()
             .method(Method::POST)
@@ -524,6 +570,7 @@ mod tests {
         json_response(router(ctx), request).await
     }
 
+/// 验证路径归一：剥引号、展开 `~`、纯空白返回空串。
     #[test]
     fn normalize_directory_path_expands_quotes_and_home() {
         assert_eq!(normalize_directory_path("  '/tmp/x' "), "/tmp/x");
@@ -540,6 +587,7 @@ mod tests {
         assert_eq!(normalize_directory_path("/plain/path"), "/plain/path");
     }
 
+/// 验证词法解析消化 `.`/`..` 段并基于 cwd 补全相对路径。
     #[test]
     fn lexical_resolve_normalizes_relative_segments() {
         let base = std::env::current_dir().expect("cwd");
@@ -551,6 +599,8 @@ mod tests {
         );
     }
 
+/// 验证项目 id 是归一路径的 base64url 编码（预置期望值，防止实现
+/// 回声）。
     #[test]
     fn project_id_is_base64url_of_normalized_path() {
         // base64url("/projects/one") — precomputed so the test pins the
@@ -576,6 +626,8 @@ mod tests {
         );
     }
 
+/// 验证目录校验的错误消息与 JS 逐字一致，成功时返回 realpath 与
+/// 原始请求路径。
     #[test]
     fn validate_directory_path_errors_match_js_shapes() {
         let root = temp_dir("validate");
@@ -609,6 +661,7 @@ mod tests {
         assert_eq!(validated.requested_directory, dir);
     }
 
+/// 验证 sanitize_projects 的去重、未知字段剔除与可选字段保留行为。
     #[test]
     fn sanitize_projects_dedupes_and_preserves_known_fields() {
         let input = serde_json::json!([
@@ -639,6 +692,8 @@ mod tests {
         assert!(sanitize_projects(Some(&Value::Null)).is_empty());
     }
 
+/// 验证缺失/空白路径的请求在激活前被 400 拦截（错误消息与路由守卫
+/// 一致）。
     #[tokio::test]
     async fn directory_route_validates_before_activating() {
         let data_dir = temp_dir("dir-route-missing");
@@ -674,6 +729,8 @@ mod tests {
         assert_eq!(body, serde_json::json!({ "error": "Path is required" }));
     }
 
+/// 验证激活已有目录会新建/复用项目条目并写盘，重复激活不产生重复
+/// 条目。
     #[tokio::test]
     async fn directory_route_activates_existing_project_and_persists_settings() {
         let data_dir = temp_dir("dir-route-activate");
@@ -737,6 +794,7 @@ mod tests {
         );
     }
 
+/// 验证 create:true 先递归创建目录再激活。
     #[tokio::test]
     async fn directory_route_create_flag_makes_missing_directory() {
         let data_dir = temp_dir("dir-route-create");
@@ -764,6 +822,7 @@ mod tests {
         );
     }
 
+/// 验证写盘保留 settings.json 中的未知字段，且失效的项目条目被剔除。
     #[tokio::test]
     async fn directory_route_preserves_unknown_settings_fields() {
         let data_dir = temp_dir("dir-route-preserve");

@@ -7,6 +7,14 @@
 // transcript without materializing an agent; the first prompt (or any live
 // operation) materializes a full AgentSession whose event stream is projected
 // into wire events on the host bus.
+/**
+ * omp 引擎管理器（模块级说明）：把 @oh-my-pi/pi-coding-agent 的会话嵌入到
+ * OpenCode 兼容的 wire 协议表面之后。每个 OMPChamber 会话 id 对应一个
+ * HostSession；转录落在 omp SessionManager 的 JSONL 文件（目录由 cwd 推导），
+ * OMPChamber 特有元数据存放在 sidecar 注册表。冷读直接投影持久化转录、
+ * 不物化 agent；首次 prompt（或任何 live 操作）才物化完整 AgentSession，
+ * 其事件流被投影为宿主总线上的 wire 事件。
+ */
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -84,31 +92,39 @@ import type { DomainChrome } from './domain-chrome.ts';
 import type { ProcessDomain } from './domain-processes.ts';
 import type { LedgerToolArgs, LedgerToolDetails, LedgerToolEnd } from './process-ledger.ts';
 import type { AgentsSnapshotEntry, DiskScanRow, UriDomain } from './domain-uri.ts';
+/** 空闲会话的存活上限（30 分钟）：live 记录静默超过该时长即成为逐出候选。 */
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // Idle-session sweep period (plan D2: 60s; the count gate is gone — quantity
 // is not a memory bound, idle lifetime is).
+/** 空闲清扫周期（plan D2：60s；数量门槛已移除——数量不是内存上界，空闲时长才是）。 */
 const IDLE_SWEEP_INTERVAL_MS = 60_000;
 // Drain budget for a single eviction's agentSession.dispose (SDK default is
 // 5s; allow headroom for flush) and the global shutdown deadline for all
 // disposals combined (plan §3.4).
+/** 单次逐出 agentSession.dispose 的排空预算（SDK 默认 5s，此处留出 flush 余量）。 */
 const EVICT_DRAIN_TIMEOUT_MS = 8_000;
+/** shutdown 时全部 dispose 合计的全局截止时限（plan §3.4）。 */
 const SHUTDOWN_DISPOSE_DEADLINE_MS = 10_000;
 // Failed-tombstone recovery (plan §3.4): a transient dispose failure
 // (Windows file lock, AV scan) must not 409 the session until a restart.
 // The sweeper retries the retained re-dispose closure past a cooldown, up
 // to a bounded total attempt count.
+/** 失败墓碑的重试冷却（plan §3.4）：瞬时 dispose 失败（Windows 文件锁、杀毒扫描）在冷却期满并低于最大尝试次数前不得让会话持续 409。 */
 const FAILED_DISPOSE_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+/** 失败墓碑的最大重试次数：超过后保持隔离直到进程重启。 */
 const FAILED_DISPOSE_MAX_ATTEMPTS = 3;
 
 // Bound on how long engine.abort waits for AgentSession.abort's teardown
 // (post-prompt drain + agent idle). The pi drain has no internal timeout on
 // the abort path (dispose caps it at 5s; abort does not), so one signal-blind
 // tool or never-settling post-prompt task would park the stop request forever.
+/** engine.abort 等待 AgentSession.abort 收尾（post-prompt 排空与 agent 空闲）的上限：pi 的排空在 abort 路径上没有内置超时（dispose 有 5s 上限而 abort 没有），单个对信号无响应的工具会永远挂住 Stop 请求。 */
 const ABORT_TEARDOWN_TIMEOUT_MS = 10_000;
 // SAFETY: single boundary cast — DialogBridge is the deliberate web
 // degradation of the SDK's ExtensionUIContext (stub theme; custom()
 // resolves void instead of the generic T). The extension runner only
 // consumes the web-capable subset at runtime.
+/** SAFETY 单点边界转换：DialogBridge 是 SDK ExtensionUIContext 在 web 场景的有意降级（stub 主题、custom() 返回 void 而非泛型 T）；扩展运行时只消费 web 可用的子集。 */
 const asExtensionUiContext = <T,>(bridge: T): ExtensionUIContext | undefined =>
   bridge as ExtensionUIContext | undefined;
 
@@ -116,11 +132,14 @@ const asExtensionUiContext = <T,>(bridge: T): ExtensionUIContext | undefined =>
  * Session-level persona key (02 §5.1 D-B3): unset and the deleted
  * build/plan pair map to the standard session; any other name is a persona.
  */
+/** 会话级 persona 键（02 §5.1 D-B3）：未设置与已删除的 build、plan 一对都归一为 standard 会话；其它名字即 persona。 */
 const personaKeyFor = (name: string | undefined): string => (!name || name === 'build' || name === 'plan' ? 'standard' : name);
 
 /** Wire `agent` projection: the standard session keeps the legacy 'build' id. */
+/** wire agent 投影：standard 会话保留旧的 'build' id。 */
 const wireAgentFor = (personaKey: string): string => (personaKey === 'standard' ? 'build' : personaKey);
 
+/** 提取消息内容的纯文本：字符串直接返回；内容块数组只拼接 type 为 text 的块（其余如图片忽略），非数组返回空串。 */
 const textOfContent = (content: ProjectedContentInput | null | undefined): string => {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -130,37 +149,58 @@ const textOfContent = (content: ProjectedContentInput | null | undefined): strin
     .join('');
 };
 
+/** 把 {provider, id} 模型引用序列化为 provider/id 选择器字符串；空引用返回 undefined。 */
 const modelSelector = (model: { provider: string; id: string } | null | undefined): string | undefined => (model ? `${model.provider}/${model.id}` : undefined);
 
 /** Persona record (spec 02 §5.2): mirrored into the personas sidecar. */
+/** Persona 记录（spec 02 §5.2）：镜像持久化到 personas sidecar。 */
 interface Persona {
+  /** persona 名称（同时作为 personas Map 的键）。 */
   name: string;
+  /** 展示用描述。 */
   description?: string;
+  /** 构造会话时覆盖顶层 system prompt 的提示词。 */
   systemPrompt?: string;
+  /** persona 允许的工具名白名单；缺省表示不覆盖工具集。 */
   tools?: string[];
 }
 
+/** SDK AgentSession 的类型别名，便于在 engine 内与宿主侧包装区分。 */
 type SdkAgentSession = AgentSession;
+/** createAgentSession 返回的 setToolUIContext 句柄类型（UI 租约注入 SDK 的入口）。 */
 type SdkSetToolUIContext = CreateAgentSessionResult['setToolUIContext'];
 
 /** Plugin discovery snapshot frozen at session materialization (plugins.v1). */
+/** 会话物化时冻结的插件发现快照（plugins.v1）。 */
 interface AppliedPluginsSnapshot {
+  /** 快照生成时间（毫秒时间戳）。 */
   appliedAt: number;
+  /** 该会话绑定的扩展模块路径（已 resolve 为绝对路径）。 */
   extensionPaths: string[];
+  /** 生效中的插件名称列表。 */
   pluginNames: string[];
 }
 
 /** Engine-side record for one live omp-host session id. */
+/** 一个 live omp-host 会话 id 在引擎侧的完整宿主记录。 */
 interface HostSession {
   /** Registry key (`directory\0sessionID`) — lifecycle lookups go through it. */
+  /** 注册表键（目录与 sessionID 以 NUL 连接）——生命周期查找都经由它。 */
   key: string;
+  /** omp 会话 id。 */
   sessionId: string;
+  /** 会话所属的项目目录键（normalizeDirectoryKey 之后）。 */
   directory: string;
+  /** SDK AgentSession 实例；null 表示尚未物化或已被逐出。 */
   agentSession: SdkAgentSession | null;
+  /** createAgentSession 的结果句柄（此处只保留 setToolUIContext 供 UI 租约注入）。 */
   sdkResult: Pick<CreateAgentSessionResult, 'setToolUIContext'>;
 
+  /** 当前生效的 persona key（'standard' 表示无 persona）。 */
   currentPersona: string;
+  /** 当前 assistant 轮的流式投影器；轮结束后保留以承接异步任务更新。 */
   projector: StreamProjector | null;
+  /** 待匹配的客户端回显用户消息 wire id：message_start 时与规范公式 id 建立映射。 */
   pendingUserWireId: string | null;
   /**
    * Client-echoed user wire ids (canonical → client messageID, plan phase 5
@@ -168,6 +208,7 @@ interface HostSession {
    * session instead of accumulating process-wide. Assistant ids need no
    * entry — the stable formula makes live and cold ids identical.
    */
+  /** 客户端回显的用户 wire id 映射（规范 id 到客户端 messageID，plan phase 5 紧凑映射）：作用域限于本 live 记录，随会话消亡而非进程级累积。assistant id 无需条目——稳定公式使 live 与冷 id 天然一致。 */
   wireIdEchoes: Map<string, string>;
   /**
    * Deferred `!` echo bridges (executeBash): a mid-turn bash record defers to
@@ -176,85 +217,132 @@ interface HostSession {
    * #wireIdResolver call drains it once the record lands, registering the
    * canonical → live echo so cold projections keep emitting the live row id.
    */
+  /** 延迟注册的 `!` 回显桥（executeBash）：轮中的 bash 记录延迟到 SDK 的 pendingMessages flush，派发结算时还不在 session.messages。每项携带派发时 live id；记录落地后由下一次 #wireIdResolver 调用排空并注册规范 id 到 live 回显的映射，冷投影得以持续发出 live 行 id。 */
   pendingShellEchoes?: Array<{ liveId: string; command: string; started: number; output: string; exitCode: number | undefined; cancelled: boolean }>;
+  /** 最近一条用户侧消息的 wire id（assistant 消息的 parentID 锚点）。 */
   lastUserWireId: string | null;
+  /** tail-sync 已同步过的条目键集合（role、customType、timestamp），保证幂等。 */
   syncedEntryKeys?: Set<string>;
+  /** 最近一条已结算 assistant 消息的 wire id（retry、fallback 事件的连接键）。 */
   lastAssistantWireId: string | null;
+  /** 进入"等待异步恢复"状态的时间戳；null 表示不在等待（agent_end 的 isTerminal 为 false 时置位）。 */
   awaitingAsyncSince: number | null;
+  /** 本会话私有的 AgentRegistry 实例（SDK 进程级全局 registry 只允许一个 Main agent，而本宿主并发嵌入多个顶层会话）。 */
   agentRegistry: AgentRegistry;
   /** Cross-turn finalized tool parts — async-job task updates revive them. */
+  /** 跨轮次的已结算工具部件——异步任务的 task 更新会复活它们。 */
   finalToolParts: Map<string, { id: string; messageID: string; toolName: string }>;
+  /** 扩展 UI 是否已完成 initializeExtensions。 */
   extensionUiInitialized: boolean;
+  /** 进行中的 initializeExtensions Promise；null 表示没有进行中的初始化。 */
   extensionUiPromise: Promise<unknown> | null;
+  /** plan 模式的 proposal handler 是否已挂到 SDK 会话。 */
   planHandlerAttached: boolean;
+  /** 物化时冻结的插件应用快照；null 表示快照未生成或失败。 */
   appliedPlugins: AppliedPluginsSnapshot | null;
   /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
+  /** 本轮的工具结果配对表（tool_execution_end 到 message_end 结算）。 */
   turnToolResults?: Map<string, { content?: unknown; isError?: boolean; timestamp?: number }> | null;
+  /** SDK 会话事件订阅的退订函数。 */
   unsubscribe?: () => void;
   /** Agent-registry event subscription feeding the agent-runs aggregator. */
+  /** 供给 agent-runs 聚合器的 agent 注册表事件订阅退订函数。 */
   unsubscribeAgentRegistry?: () => void;
   /** onSessionNameChanged unsubscribe (plan §3.3.2 — never leak the callback). */
+  /** onSessionNameChanged 的退订函数（plan §3.3.2——绝不泄漏回调）。 */
   nameUnsubscribe?: () => void;
   /** Transcript identity at materialize; dual-write detection (plan §8). */
+  /** 物化时的转录身份签名；双写检测用（plan §8）。 */
   fileSignature: FileSignature | null;
 }
 
 /** The SessionManager surface #infoFromManager reads (SDK SessionManager). */
+/** #infoFromManager 读取的 SessionManager 表面（SDK SessionManager 的结构子集）。 */
 type SessionManagerLike = {
+  /** 读取转录头部（含 timestamp），用于取创建时间。 */
   getHeader(): { timestamp?: string } | null | undefined;
+  /** 读取全部条目（含 timestamp），用于取最后修改时间。 */
   getEntries(): Array<{ timestamp?: string }> | null | undefined;
+  /** 读取会话 id。 */
   getSessionId(): string;
+  /** 读取录制时的工作目录。 */
   getCwd(): string | undefined;
+  /** 读取会话标题。 */
   getSessionName(): string | undefined;
 };
 
 /** #tailSyncTranscript result: wire ids emitted this pass + divider anchor. */
+/** #tailSyncTranscript 的结果：本轮投影出的 wire id 行列表 + 最近一次 compaction 分隔锚点。 */
 interface TailSyncTail {
+  /** 本轮投影出的消息行（wire id 与角色；wire id 可能为 null）。 */
   projected: Array<{ wireId: string | null; role: string }>;
+  /** 最近一条 compactionSummary 分隔消息的 wire id；无则 null。 */
   lastCompactionId: string | null;
 }
 
 /** Wire `Session` record as projected by #wireSession (vendored contract's
  * fields, server-side copy; `revert` is attached only by the revert flow). */
+/** wire 协议的 Session 记录（#wireSession 投影的服务端副本；revert 字段仅在 revert 流程中挂载）。 */
 interface WireSessionRecord {
+  /** 会话 id（omp sessionID）。 */
   id: string;
+  /** URL slug——与 id 相同（OpenCode 兼容字段）。 */
   slug: string;
+  /** 目录派生的项目 id（prj_ 前缀 + sha256 前 20 位）。 */
   projectID: string;
+  /** 会话所属目录（已归一化）。 */
   directory: string;
+  /** subagent 父会话 id；仅 subagent 会话携带。 */
   parentID?: string;
   /** Fork lineage (§5.4): wire parentID stays subagent-only; a user fork
    * must remain a normal promptable session in the shared UI. */
+  /** fork 谱系（§5.4）：wire parentID 保持仅 subagent 语义；用户 fork 必须仍是共享 UI 中可正常 prompt 的会话。 */
   forkParentID?: string;
+  /** 会话标题；缺省为 'Untitled'。 */
   title: string;
+  /** persona 对应的 wire agent 标识（standard 会话省略该字段）。 */
   agent?: string;
+  /** 会话当前模型（providerID/modelID 拆分形式）；未解析时省略。 */
   model?: { id: string; providerID: string };
+  /** sidecar 中的自定义元数据键值对。 */
   metadata?: Record<string, SessionMetadataValue>;
+  /** 创建/更新/归档时间戳（毫秒）。 */
   time: { created: number; updated: number; archived?: number };
+  /** revert 状态（保留边界消息 id）；仅 revert 流程填充。 */
   revert?: { messageID: string };
   /**
    * Live-registry state when a non-cold record exists; absent = cold
    * (no writer, no entries mirror in memory). 'failed' is the quarantine
    * tombstone — the SDK object is still held pending retry.
    */
+  /** 存在非冷记录时的 live 注册表状态；缺席即冷（无写方、内存无条目镜像）。'failed' 是隔离墓碑——SDK 对象仍被持有等待重试。 */
   live?: LiveSessionState;
   /**
    * Transcript bytes — the honest proxy for a session's memory cost
    * (measured heap ≈ 1.3× the jsonl size): `fileSignature.size` for live
    * records, the SessionManager.list size for cold ones.
    */
+  /** 转录字节数——会话内存成本的诚实代理（实测堆占用约为 jsonl 大小的 1.3 倍）：live 记录取 fileSignature.size，冷记录取 SessionManager.list 的 size。 */
   transcriptBytes?: number;
 }
 /** The SessionInfo fields the wire projection reads. Synthesized rows
  * (registry-only, live-only) provide exactly these; full SDK SessionInfos
  * are structurally assignable. `created`/`modified` tolerate Date-or-string
  * because cold reads hand through transcript timestamps unparsed. */
+/** wire 投影读取的 SessionInfo 字段子集：合成行（仅注册表、仅 live）恰好提供这些字段，完整 SDK SessionInfo 结构上可赋值。created/modified 兼容 Date 或字符串——冷读直接透传未解析的转录时间戳。 */
 interface SessionListInfo {
+  /** 会话 id。 */
   id: string;
+  /** 转录记录的工作目录。 */
   cwd: string;
+  /** 会话标题（可能未设置）。 */
   title?: string;
+  /** 创建时间（Date 或 ISO 字符串）。 */
   created: Date | string;
+  /** 最后修改时间（Date 或 ISO 字符串）。 */
   modified: Date | string;
   /** Transcript file bytes when the listing knows them (SessionManager.list). */
+  /** 列表已知时的转录文件字节数（SessionManager.list 提供）。 */
   size?: number;
 }
 
@@ -263,6 +351,7 @@ interface SessionListInfo {
  * (SDK artifacts layout). Returns the owning session id, or undefined for
  * layouts that do not carry one (in-memory runs, unexpected shapes).
  */
+/** 从 subagent 会话文件路径解析出宿主会话 id：SDK artifacts 布局为 sessionsRoot 下的 <ts>_<sessionID>/<agent>.jsonl；路径形态不含 id（内存运行、异常布局）时返回 undefined。 */
 const sessionIDFromSessionFile = (sessionFile: string | null | undefined): string | undefined => {
   if (sessionFile === null || sessionFile === undefined || sessionFile.length === 0) return undefined;
   const dirName = path.basename(path.dirname(sessionFile));
@@ -273,6 +362,7 @@ const sessionIDFromSessionFile = (sessionFile: string | null | undefined): strin
 };
 
 /** Case-insensitive on win32 (sessions roots arrive with mixed separators). */
+/** 判断 candidate 是否位于 root 之下（不含 root 本身）；win32 上先小写化再比较，兼容混合分隔符的 sessions 根路径。 */
 const isPathUnder = (candidate: string, root: string): boolean => {
   const relative = path.relative(root, candidate);
   if (relative === '') return false;
@@ -286,7 +376,9 @@ const isPathUnder = (candidate: string, root: string): boolean => {
  * a directory and must stay bounded — the session header rides one of the
  * first lines (a title entry may precede it).
  */
+/** 头部探测窗口大小（256 KiB）：子会话 id 扫描会触碰目录下每个嵌套转录，必须保持有界。 */
 const CHILD_ID_PROBE_BYTES = 262144;
+/** 只读转录文件的前若干行解析 type 为 session 的条目得到会话 id（头部通常在最初几行，标题行可能先行）；探测窗口内未命中返回 undefined。 */
 const readSessionHeaderId = async (sessionFile: string): Promise<string | undefined> => {
   const handle = await fs.promises.open(sessionFile, 'r').catch(() => null);
   if (!handle) return undefined;
@@ -314,69 +406,113 @@ const readSessionHeaderId = async (sessionFile: string): Promise<string | undefi
   }
 };
 
+/**
+ * omp 宿主引擎：管理 wire 协议会话表面与嵌入式 omp AgentSession 之间的
+ * 全部生命周期——惰性物化、空闲逐出、SDK 事件到双轨道事件的投影、
+ * settings/dialogs/modes/chrome/URI/进程等领域对象的装配，以及 shutdown
+ * 时的有界排空。
+ */
 export class OmpHostEngine {
+  /** live 会话注册表：以目录与 sessionID 拼接为键的宿主记录及其生命周期状态机。 */
   #live: LiveSessionRegistry<HostSession>;
   /** True once shutdown started: new writers are rejected (plan §3.4). */
+  /** shutdown 已开始为 true：拒绝新的写方（plan §3.4）。 */
   #closing = false;
   /** Test seams: monotonic TTL clock + agent factory (defaults: real SDK). */
+  /** 单调 TTL 时钟（默认 performance.now；测试可注入替身）。 */
   #now: () => number;
+  /** agent 工厂接缝（默认 SDK createAgentSession；生命周期测试可注入替身）。 */
   #createAgentSessionImpl: typeof createAgentSession;
   /** Bound on unknown-event diagnostic keys (plan §6: no unbounded key set). */
+  /** 未知事件诊断键的数量上限（plan §6：键集合必须有界）。 */
   static #UNKNOWN_EVENT_KEYS_MAX = 64;
   /** Cap on per-session diagnostic rows — data-proportional but bounded. */
+  /** 每会话诊断行数上限——随数据增长但有界。 */
   static #DIAGNOSTIC_SESSION_ROWS_MAX = 256;
 
+  /** SDK 认证存储（#boot 时发现）；boot 完成前为 null。 */
   authStorage: AuthStorage | null;
+  /** 模型注册表（#boot 时创建并刷新）；boot 完成前为 null。 */
   modelRegistry: ModelRegistry | null;
+  /** 会话元数据 sidecar 注册表：存放标题、persona、模型选择器等 OMPChamber 特有元数据。 */
   registry: SessionMetaRegistry;
+  /** OpenCode 兼容的 wire 事件总线。 */
   bus: WireEventBus;
   /** omp-native event channel (spec 05 §5.2, master D6-R1 single authority). */
+  /** omp 原生事件通道（spec 05 §5.2，master D6-R1 单一权威）。 */
   ompBus: OmpEventBus;
   /** Personas (OC-original optional layer, spec 02 §5.2/R12). */
+  /** persona 表（OC 特有可选层，spec 02 §5.2/R12）；持久化为注册表根目录下的 JSON。 */
   personas: Map<string, Persona>;
   /** Per-directory keyed Settings store (spec 06 §5.1, master R6). */
+  /** 按目录键控的 Settings 存储（spec 06 §5.1，master R6）；boot 失败时降级为 null。 */
   settingsStore: SettingsStore | null;
   // Approval/ask dialog domain (spec 03, master R10/R11/R13). Lease-driven
   // hasUI: unattended sessions never hold a lease → SDK fail-closed.
+  /** 审批/ask 对话领域（spec 03，master R10/R11/R13）。租约驱动 hasUI：无人值守会话不持租约，SDK fail-closed。 */
   dialogs: DialogsDomain;
   // Modes/plan/goal/personas/agent-definitions domain (spec 02).
+  /** modes/plan/goal/personas/agent 定义领域（spec 02）。 */
   modesDomain: ModesDomain;
+  /** 扩展 chrome 表领域（spec 09 §5）：字符串载荷的 widget/status 投影。 */
   chrome: DomainChrome;
+  /** URI 桥/会话树/agent-runs/jobs 领域（spec 04）。 */
   uriDomain: UriDomain;
   /** Session process monitor (PLAN-session-process-monitor.md). The ledger
    * needs the pi-natives Process API the SDK already loaded; null when
    * `createProcessPlatform` finds no resident addon, in which case the
    * domain keeps answering featureUnavailable. */
+  /** 会话进程监视器（PLAN-session-process-monitor.md）。台账需要 SDK 已加载的 pi-natives Process API；createProcessPlatform 找不到常驻 addon 时为 null，领域层持续回答 featureUnavailable。 */
   processLedger: ProcessLedger | null;
+  /** 进程领域（对外查询表面），包装 processLedger 并叠加特性门控。 */
   processDomain: ProcessDomain;
+  /** #boot 的失败原因；成功引导后为 null。 */
   bootError: unknown;
+  /** #boot 的去重 Promise；未启动或失败清空后为 null。 */
   bootPromise: Promise<void> | null;
+  /** 空闲清扫定时器（IDLE_SWEEP_INTERVAL_MS 周期；已 unref 不阻塞进程退出）。 */
   sweeper: ReturnType<typeof setInterval>;
   /** Engine-wide subscription to the SDK's process-global agent registry. */
+  /** 引擎级订阅 SDK 进程级 agent 注册表（跨会话 subagent ref 的来源）。 */
   unsubscribeGlobalRegistry: (() => void) | null = null;
   /** Per-directory historical run rows (nested transcript scan), one shot. */
+  /** 每目录的历史运行行（嵌套转录扫描结果），一次性缓存。 */
   #diskRowsByDirectory = new Map<string, Array<DiskScanRow & { file: string }>>();
   /** In-flight directory scans (dedup). */
+  /** 进行中的目录扫描（并发去重表）。 */
   #diskScanInFlight = new Map<string, Promise<void>>();
   /** In-flight removed-run rehydrations per host session file (dedup). */
+  /** 每宿主会话文件进行中的"被移除运行"再水化（去重集合）。 */
   #rehydrateInFlight = new Set<string>();
   /**
    * Subagent transcript path -> the child's own sessionID, read once from the
    * jsonl header (the path layout `<ts>_<hostID>/<task>.jsonl` carries only
    * the host id). Identity is immutable, so the cache never invalidates.
    */
+  /** subagent 转录路径到子会话自身 sessionID 的缓存（从 jsonl 头读一次；身份不可变故永不失效）。 */
   #childSessionIdByFile = new Map<string, string>();
   /** In-flight #warmChildSessionIds run (dedup). */
+  /** 进行中的 #warmChildSessionIds 运行（去重）。 */
   #childSessionIdWarm: Promise<void> | null = null;
   /** Lazily-created counters for AgentSessionEvent members with no manifest case. */
+  /** 无 manifest 对应的 AgentSessionEvent 成员的惰性计数器。 */
   unknownEventCounts: Map<string, number> | undefined;
   /** How long abort() waits for the agent teardown before force-disposing. */
+  /** abort() 等待 agent 收尾的时长，超时则强制 dispose（测试可注入）。 */
   abortTeardownTimeoutMs: number;
   /** Single-eviction SDK drain budget (test injectable, plan §3.4). */
+  /** 单次逐出的 SDK 排空预算（测试可注入，plan §3.4）。 */
   evictDrainTimeoutMs: number;
   /** Global shutdown deadline across all disposals (test injectable). */
+  /** shutdown 全部 dispose 合计的全局截止（测试可注入）。 */
   shutdownDisposeDeadlineMs: number;
 
+  /**
+   * 构造引擎并装配全部领域对象。同步完成——settings、dialogs、modes、
+   * chrome、URI、进程等领域工厂都是同步的，端点挂载不等待 #boot；空闲
+   * 清扫定时器随之启动并 unref。可选参数均为测试接缝：时钟、agent 工厂
+   * 与各超时预算。
+   */
   constructor({
     agentDir,
     abortTeardownTimeoutMs,
@@ -633,6 +769,12 @@ export class OmpHostEngine {
     this.sweeper = setInterval(() => this.#sweepIdleSessions(), IDLE_SWEEP_INTERVAL_MS);
     this.sweeper.unref?.();
   }
+  /**
+   * 一次性引导（幂等，bootPromise 去重）：发现认证存储、创建并刷新模型
+   * 注册表、加载 personas、执行 sidecar 到 omp agent 的迁移（失败不阻塞）、
+   * 创建按目录的 Settings 存储（失败降级为 null）。失败记录 bootError、
+   * 清空 bootPromise 并抛出，下一个调用者可重试。
+   */
   async #boot() {
     if (this.bootPromise) return this.bootPromise;
     this.bootPromise = (async () => {
@@ -672,6 +814,12 @@ export class OmpHostEngine {
     return this.bootPromise;
   }
 
+  /**
+   * 为会话设置或清除对话 UI 上下文：hasUI 为 true 时构造 dialogs 领域的
+   * uiContext（挂 chrome 桥），并保证扩展运行时只初始化一次（首次挂 UI 时
+   * initializeExtensions，此后复用）；hasUI 为 false 时传 undefined。最后经
+   * #applyToolUiContext 把上下文注入 SDK。
+   */
   async #setDialogUiContext(hostSession: HostSession, directory: string, sessionId: string, hasUI: boolean) {
     const uiContext = hasUI
       ? this.dialogs.uiContextFor(directory, sessionId, {
@@ -713,18 +861,21 @@ export class OmpHostEngine {
    * lazy materialization pulls the session in instead of dropping the
    * extension UI initialization on the floor.
    */
+  /** 租约挂载/卸载映射到 SDK 工具 UI 上下文（R13：租约是 hasUI 权威）。UI 租约即一次会话访问：领先于惰性物化的挂载会把会话拉进来，而不是丢掉扩展 UI 初始化。 */
   #applyToolUiContext(sdkResult: Pick<CreateAgentSessionResult, 'setToolUIContext'> | undefined, uiContext: ReturnType<typeof asExtensionUiContext>, hasUI: boolean): void {
     // SAFETY: web degradation seam — undefined means "no UI bridge" and
     // pairs with hasUI=false; the SDK member accepts it at runtime.
     (sdkResult?.setToolUIContext as ((uiContext: ExtensionUIContext | undefined, hasUI: boolean) => void) | undefined)?.(uiContext, hasUI);
   }
 
+  /** 租约获得时挂 UI：找不到 live 记录则先物化会话，再设置 UI 上下文。 */
   async #attachDialogUi(directory: string, sessionId: string) {
     const hostSession = this.#liveHostAnywhere(directory, sessionId) ?? (await this.#materialize(sessionId, directory));
     if (!hostSession) return;
     await this.#setDialogUiContext(hostSession, directory, sessionId, true);
   }
 
+  /** 租约失去时卸 UI：向 SDK 传 undefined 与 hasUI=false；会话可能已被 dispose，吞掉异常。 */
   #detachDialogUi(directory: string, sessionId: string) {
     const hostSession = this.#liveHostAnywhere(directory, sessionId);
     if (!hostSession) return;
@@ -739,6 +890,7 @@ export class OmpHostEngine {
    * Plan mode ↔ xd://propose bridge (spec 02 §5.5): entering plan attaches
    * the review bridge; any other mode clears the handler.
    */
+  /** plan 模式与 xd://propose 的桥（spec 02 §5.5）：进入 plan 模式挂评审桥；其它模式清除 handler。 */
   #syncPlanProposalHandler(hostSession: HostSession, mode: string) {
     const session = hostSession?.agentSession;
     if (!session?.setPlanProposalHandler) return;
@@ -767,10 +919,12 @@ export class OmpHostEngine {
     }
   }
 
+  /** personas 持久化 JSON 的路径（注册表根目录下的 ompchamber-personas.json）。 */
   #personasConfigPath() {
     return path.join(this.registry.registryRoot, 'ompchamber-personas.json');
   }
 
+  /** 从 sidecar JSON 加载 personas 到内存 Map；文件不存在或损坏时静默保持为空。 */
   #loadPersonas() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.#personasConfigPath(), 'utf8'));
@@ -782,12 +936,14 @@ export class OmpHostEngine {
     }
   }
 
+  /** 把内存中的 personas 全量写回 sidecar JSON（先确保注册表根目录存在）。 */
   savePersonas() {
     fs.mkdirSync(this.registry.registryRoot, { recursive: true });
     fs.writeFileSync(this.#personasConfigPath(), JSON.stringify({ personas: [...this.personas.values()] }, null, 2));
   }
 
   /** Public settings-store accessor for endpoint handlers. */
+  /** 端点处理器使用的 settings 存储访问器：等待 #boot 完成后返回 store（降级 boot 时为 null）。 */
   async settingsStoreReady() {
     await this.#boot();
     return this.settingsStore;
@@ -798,6 +954,7 @@ export class OmpHostEngine {
    * pi-utils getConfigDirs with source '.omp'). Falls back to the derived
    * path when config dirs are unavailable.
    */
+  /** omp 用户级 agents 目录（SDK 发现顺序 ~/.omp/agent/agents，getConfigDirs 的 '.omp' 来源）；配置目录不可用时回退到推导路径。 */
   #userAgentsDir() {
     try {
       const entry = getConfigDirs('agents', { project: false }).find((dir) => dir?.source === '.omp' && typeof dir?.path === 'string');
@@ -815,6 +972,7 @@ export class OmpHostEngine {
    * existing `meta.agent` sessions keep resolving. Runs before the request
    * surface opens; any failure keeps the sidecar for an idempotent retry.
    */
+  /** 一次性 sidecar 到 omp 的迁移（02 §6.2）：把每条 ompchamber-agents.json 记录写成用户级 worker .md（frontmatter 描述/工具、正文 prompt）并镜像一个 persona，使既有 meta.agent 会话继续解析。在请求表面打开前运行；任何失败保留 sidecar 以便幂等重试。 */
   async #migrateAgentsSidecar() {
     const sidecarPath = path.join(this.registry.registryRoot, 'ompchamber-agents.json');
     const userAgentsDir = this.#userAgentsDir();
@@ -875,6 +1033,7 @@ export class OmpHostEngine {
    * every SDK activity signal INSIDE the per-key gate, with no unprotected
    * await between the checks and beginDispose.
    */
+  /** 空闲回收器（plan §4）：超过 TTL 的 live 记录均为候选（没有 live 数量门槛）；逐出决策在每键门内重读全部守卫（状态、TTL、inFlight、租约、待处理对话、SDK 活动信号）后做出，检查与 beginDispose 之间没有未受保护的 await。同时按冷却期重试 failed 墓碑的 dispose，并做周期性 token 清扫。 */
   #sweepIdleSessions() {
     const now = this.#now();
     for (const record of this.#live.snapshot()) {
@@ -920,6 +1079,7 @@ export class OmpHostEngine {
    * tombstone with nothing retained simply releases; a settle failure
    * re-tombs with a bumped attempt count.
    */
+  /** 隔离记录的有界重 dispose（plan §3.4 恢复规则）：重新进入 evicting（键对写方保持关闭），再脱离门运行保留的 retryDispose 闭包——与 #evictRecord 一致，挂死的排空不会占用门。无保留闭包的墓碑直接释放；结算失败则重新入墓并累加尝试次数。 */
   async #retryFailedDispose(record: LiveRecord<HostSession>): Promise<void> {
     if (!this.#live.retryEvict(record)) return;
     const retry = record.retryDispose;
@@ -942,11 +1102,13 @@ export class OmpHostEngine {
   }
 
   /** Interval target; public so the lifecycle tests drive it deterministically. */
+  /** 定时器目标函数的公开包装：生命周期测试用它确定性地驱动清扫。 */
   sweepIdleSessionsNow() {
     this.#sweepIdleSessions();
   }
 
   /** Full activity guard set (plan §4.1) read from the live SDK session. */
+  /** 从 live SDK 会话读取的完整活动守卫集合（plan §4.1）：流式、中止、重试、压缩、交接、bash、eval、待处理消息、post-prompt 工作、排队消息、待处理异步、待处理对话框、UI 租约——任一命中即活跃（不可逐出）。 */
   #recordIsActive(record: LiveRecord<HostSession>): boolean {
     const hostSession = record.payload;
     if (!hostSession) return false;
@@ -989,6 +1151,7 @@ export class OmpHostEngine {
    * #evictRecord before the disposal promise exists, which would strand an
    * evicting record that can never finish.
    */
+  /** 拆掉记录的宿主侧句柄：订阅、领域句柄、UI。每个释放独立结算（plan §3.3 步骤 6）：抛错的 unsubscribe 不得跳过其余拆解，更不得在 dispose promise 出现前中止 #evictRecord——那会搁浅一条永远无法完成的 evicting 记录。 */
   #releaseHostHandles(hostSession: HostSession): void {
     const failures: string[] = [];
     const attempt = (release: () => void) => {
@@ -1024,6 +1187,7 @@ export class OmpHostEngine {
     }
   }
 
+  /** 解析会话的 artifacts 目录：live 会话优先其 SessionManager 的当前值；否则从冷转录文件路径推导，找不到文件时返回 null。 */
   async #artifactsDirFor(sessionId: string, directoryKey: string) {
     const manager = this.#liveHostAnywhere(directoryKey, sessionId)?.agentSession?.sessionManager;
     const liveDir = manager?.getArtifactsDir?.();
@@ -1033,6 +1197,7 @@ export class OmpHostEngine {
   }
 
   /** Release per-directory host state when the directory goes quiet (plan §6). */
+  /** 目录静默（无任何 live 记录）时释放按目录的宿主状态：chrome 目录句柄与 sidecar 元数据内存缓存——磁盘仍是权威，下次访问重新加载。 */
   #maybeReleaseDirectoryState(directory: string): void {
     if (this.#live.liveDirectories().has(normalizeDirectoryKey(directory))) return;
     this.chrome?.releaseDirectory?.(directory);
@@ -1051,6 +1216,7 @@ export class OmpHostEngine {
    * long — to await the returned promise; awaiting it inside a gate body
    * would let a never-settling disposal occupy the gate forever.
    */
+  /** 逐出一条 live 记录（plan §3.4）。必须在记录的操作门内运行。顺序：beginDispose（同步，先于首个 await）→ 宿主拆解 → session.idle 事件 → 唯一的已保存 dispose promise。宿主侧转换是同步的：返回时记录已是 evicting、句柄已拆、SDK dispose 在后台运行；是否等待、等多久由调用方决定。 */
   #evictRecord(
     record: LiveRecord<HostSession>,
     reason: string,
@@ -1118,6 +1284,7 @@ export class OmpHostEngine {
    * `live` flip to absent (cold) without waiting for a list refresh —
    * `session.updated` replaces the stored record wholesale.
    */
+  /** 记录离开注册表后，持有该会话行的客户端无需等列表刷新即可看到 live 字段翻转为缺席（冷）——session.updated 会整体替换已存储的记录。 */
   #emitColdSessionUpdated(record: LiveRecord<HostSession>) {
     // A dispose that settled late must not clobber a newer live record for
     // the same id — directory moves and prompt-time rematerialization both
@@ -1146,6 +1313,7 @@ export class OmpHostEngine {
   }
 
   /** Bounded wait for a record's disposal (never parks on a hung drain). */
+  /** 有界等待记录的 dispose 结算（超时为 2 倍排空预算），绝不挂在无限排空上；结算后清掉定时器避免拖住事件循环。 */
   #awaitDisposalBounded(record: LiveRecord<HostSession>): Promise<'disposed' | 'failed' | 'timeout'> {
     const disposal = record.disposePromise ?? Promise.resolve('disposed' as const);
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1164,6 +1332,7 @@ export class OmpHostEngine {
    * Directory-keyed live lookup (plan §3.2): the requested directory must
    * own the record. Cross-directory same-id records never satisfy each other.
    */
+  /** 按目录键的 live 查找（plan §3.2）：请求目录必须拥有该记录；跨目录同 id 记录互不满足。 */
   #liveHost(directory: string | null | undefined, sessionId: string): HostSession | null {
     if (!directory) return null;
     return this.#live.getLive(directory, sessionId)?.payload ?? null;
@@ -1176,6 +1345,7 @@ export class OmpHostEngine {
    * fallback returns the unique live record and refuses the ambiguous
    * two-directories case instead of guessing (plan §3.2).
    */
+  /** 调用方目录可能与拥有目录不同时的 live 查找（getSession/updateSession 语义：live 会话拥有其注册表行并优先应答）。先精确键命中；退化为仅按 id 返回唯一 live 记录，两目录歧义时返回 null 而不是猜测。 */
   #liveHostAnywhere(directory: string | null | undefined, sessionId: string): HostSession | null {
     const keyed = this.#liveHost(directory, sessionId);
     if (keyed) return keyed;
@@ -1183,16 +1353,19 @@ export class OmpHostEngine {
     return byId && byId.state === 'live' ? byId.payload : null;
   }
 
+  /** 由 cwd 推导该项目的 sessions 根目录（SDK SessionManager 布局，可指定 agentDir）。 */
   #sessionDirFor(cwd: string) {
     return SessionManager.getDefaultSessionDir(cwd, this.registry.agentDir);
   }
 
+  /** 目录键派生稳定项目 id：sha256 前 20 位十六进制加 prj_ 前缀。 */
   #projectId(directoryKey: string) {
     const hash = crypto.createHash('sha256').update(directoryKey).digest('hex');
     return `prj_${hash.slice(0, 20)}`;
   }
   /** Bounded walk depth for #listLocalFiles — local:// roots are shallow
    *  (plans, handoff notes, scratch); anything deeper is a runaway, not data. */
+  /** #listLocalFiles 的目录行走深度上限——local:// 根很浅（plans、handoff、scratch）；更深的层级是失控而不是数据。 */
   static #LOCAL_WALK_MAX_DEPTH = 8;
 
   /**
@@ -1201,6 +1374,7 @@ export class OmpHostEngine {
    * an absent root is authoritative empty. Pure stat walk — no content
    * leaves this method; refs are '/'-joined relatives, never absolute paths.
    */
+  /** 只读列出某会话 local:// 根下的文件行（artifacts 浏览，spec 04）。会话对该目录未知返回 null；根不存在是权威的空集。纯 stat 行走——任何内容都不离开本方法；ref 为以 '/' 连接的相对路径，绝不泄漏绝对路径。 */
   async #listLocalFiles(sessionId: string, directoryKey: string) {
     const artifactsDir = await this.#artifactsDirFor(sessionId, directoryKey);
     if (!artifactsDir) return null;
@@ -1247,6 +1421,7 @@ export class OmpHostEngine {
   /**
    * Wire Session record for an omp SessionInfo + registry metadata.
    */
+  /** 把 omp SessionInfo 与注册表元数据投影为 wire Session 记录：合并 live 状态、persona、模型（live 会话实际模型优先于 sidecar 投影）与转录字节数。 */
   #wireSession(info: SessionListInfo, directoryKey: string, meta: SessionMeta | undefined, live?: HostSession | undefined): WireSessionRecord {
     // Any non-cold record (materializing through failed tombstone) means the
     // transcript still occupies memory; absent record = cold.
@@ -1290,6 +1465,7 @@ export class OmpHostEngine {
     };
   }
 
+  /** 列出一个目录的会话（wire 记录）：磁盘转录加上仅注册表会话（转录被外部清理时仍列出，保留删除/归档簿记）。subagent 运行不进入列表——只读下钻走 getSession/getMessagesPage 的 subagent 解析。 */
   async listSessions({ directory }: { directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1328,6 +1504,7 @@ export class OmpHostEngine {
   }
 
 
+  /** 跨所有目录列出会话，按目录键分组返回 Map；archived=false 时过滤已归档行。 */
   async listAllSessions({ archived }: { archived?: boolean } = {}) {
     await this.#boot();
     const infos = await SessionManager.listAll();
@@ -1343,6 +1520,7 @@ export class OmpHostEngine {
     return byDirectory;
   }
 
+  /** 创建空会话：落一个空转录文件、写入注册表元数据（标题、父会话、persona、模型选择器），广播 session.created 并返回 wire 记录。 */
   async createSession({ directory, title, parentID, agent, model }: { directory?: string; title?: string; parentID?: string; agent?: string; model?: { providerID?: string; modelID?: string } }) {
     await this.#boot();
     const cwd = normalizeDirectoryKey(directory);
@@ -1376,6 +1554,7 @@ export class OmpHostEngine {
     return session;
   }
 
+  /** 读取单个会话的 wire 记录：live 优先；其次头部标量流式冷读；再次冷 manager 全量兜底（无效头部时保留重写/铸造行为）；最后尝试 subagent 转录的只读解析（挂 parentID 使 UI 视为不可 prompt 的子会话）。全部未命中返回 null。 */
   async getSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1430,6 +1609,7 @@ export class OmpHostEngine {
     return null;
   }
 
+  /** 从 SessionManager 提取 SessionListInfo：头部时间戳为创建时间、最后一条条目时间戳为修改时间，缺失时以当前时间或创建时间兜底。 */
   #infoFromManager(manager: SessionManagerLike, filePath: string, directoryKey: string) {
     const header = manager.getHeader();
     const entries = manager.getEntries() ?? [];
@@ -1445,6 +1625,7 @@ export class OmpHostEngine {
     };
   }
 
+  /** 在目录键的 sessions 根下列出转录并按 sessionID 精确匹配；命中返回 {path, dir}，未命中返回 null。 */
   async #findSessionFile(sessionID: string, directoryKey: string) {
     const dir = this.#sessionDirFor(directoryKey);
     const infos = await SessionManager.list(directoryKey, dir);
@@ -1460,6 +1641,7 @@ export class OmpHostEngine {
    * use this — update/delete/materialize/fork keep host-only semantics via
    * #findSessionFile.
    */
+  /** 按子会话自身的 sessionID 解析 subagent 转录文件。作用域：转录必须位于 directoryKey 的 sessions 根下，且仅读路径可用——更新/删除/物化/fork 保持仅宿主语义（走 #findSessionFile）。 */
   async #findSubagentSessionFile(sessionID: string, directoryKey: string) {
     const root = path.resolve(this.#sessionDirFor(directoryKey));
     for (const ref of AgentRegistry.global?.().list() ?? []) {
@@ -1481,6 +1663,7 @@ export class OmpHostEngine {
     return null;
   }
 
+  /** 读取（并缓存）subagent 转录头部的子会话 id：缓存命中直接返回，否则读文件头并写入缓存。 */
   async #childSessionIdFor(sessionFile: string): Promise<string | undefined> {
     const cached = this.#childSessionIdByFile.get(sessionFile);
     if (cached) return cached;
@@ -1494,6 +1677,7 @@ export class OmpHostEngine {
    * synchronously (projectAgentRun has no async surface). One open per file,
    * ever; a refresh follows so warmed rows re-publish.
    */
+  /** 为 live 目录下全部全局注册表转录预热 childSessionID 缓存，使 agent-runs 行能同步携带 childSessionID（projectAgentRun 无异步表面）。每文件只 open 一次；随后 refresh 让预热行重新发布。 */
   #warmChildSessionIds(): Promise<void> {
     this.#childSessionIdWarm ??= (async () => {
       const roots = [...this.#live.liveDirectories()].map((directory) =>
@@ -1513,6 +1697,7 @@ export class OmpHostEngine {
   }
 
   /** Sync cache read for snapshot projection (agentsSnapshot rows). */
+  /** 快照投影（agentsSnapshot 行）用的同步缓存读；未命中返回 undefined，不触发 IO。 */
   #childSessionIdCached(sessionFile: string | null | undefined): string | undefined {
     if (!sessionFile) return undefined;
     return this.#childSessionIdByFile.get(sessionFile);
@@ -1525,6 +1710,7 @@ export class OmpHostEngine {
    * child-session reads — must not depend on that schedule. Bounded streamed
    * metadata reads only; no session materialization, no revival wiring.
    */
+  /** 从转录重新注册本会话已结算的 subagent 运行（SDK registerPersistedSubagents）：SDK 按自己的节奏回收 ref（空闲停泊、尸体回收），而 agent-runs 行、子会话读取等消费者不能依赖那个节奏。仅有界的流式元数据读取；不物化会话、不接线复活。 */
   async #rehydrateSubagentRefs(sessionFile: string): Promise<void> {
     // Same invariant as the engine-wide subscription above: a
     // minimal/embedded SDK surface may omit the process-global registry,
@@ -1549,6 +1735,7 @@ export class OmpHostEngine {
    * Called on registry `registered` events — a new run means a new file the
    * one-shot scan may have already missed.
    */
+  /** 作废 sessions 根包含该转录的所有 live 目录的磁盘行缓存，使下次列表重扫时能发现它。注册表 registered 事件时调用——新运行意味着一次性扫描可能已错过的新文件。 */
   #invalidateDiskRowsFor(sessionFile: string | null | undefined): void {
     if (!sessionFile) return;
     const file = path.resolve(sessionFile);
@@ -1568,6 +1755,7 @@ export class OmpHostEngine {
    * one pass. Re-registration is CAS-safe against a fresh spawn claiming the
    * id (reclaimDeadCorpse handles the corpse the same way).
    */
+  /** 重新注册刚离开注册表、但其宿主会话仍 live 的运行——有观看者正在看这行消失。无人观看时尊重 SDK 内存策略，下次物化再水化。按宿主会话文件合并去重；重注册对抢占同一 id 的新 spawn 是 CAS 安全的。 */
   #rehydrateRemovedRun(runFile: string | null | undefined): void {
     if (!runFile) return;
     const artifactsDir = path.dirname(runFile);
@@ -1583,6 +1771,7 @@ export class OmpHostEngine {
   }
 
   /** One-shot per directory: scan nested transcripts into cached rows. */
+  /** 每目录一次性的嵌套转录扫描：已有缓存则复用、进行中扫描则等待，否则扫描并把结果写入缓存。 */
   async #ensureDiskRows(directoryKey: string): Promise<void> {
     if (!directoryKey || this.#diskRowsByDirectory.has(directoryKey)) return;
     const inFlight = this.#diskScanInFlight.get(directoryKey);
@@ -1602,6 +1791,7 @@ export class OmpHostEngine {
    * directory's sessions root (`<ts>_<hostID>/<task>.jsonl`). Host transcripts
    * live at the top level and never match; registry rows win over these.
    */
+  /** 一个目录的历史运行行：sessions 根下每个嵌套转录（<ts>_<hostID>/<task>.jsonl 布局）。顶层宿主转录永不匹配；注册表行优先于这些行。目录未知返回 null（不缓存任何内容）。 */
   async #scanDiskRows(directoryKey: string): Promise<Array<DiskScanRow & { file: string }> | null> {
     const root = this.#sessionDirFor(directoryKey);
     let entries: import('node:fs').Dirent[];
@@ -1647,6 +1837,7 @@ export class OmpHostEngine {
     return rows;
   }
 
+  /** 更新会话元数据（标题、metadata、归档时间）：live 会话按其拥有目录写回并同步 SDK 会话名；冷会话要求目录确实拥有转录或注册表行，否则返回 null 拒绝（避免制造幻影注册表行）。成功后广播 session.updated。 */
   async updateSession({ sessionID, directory, title, metadata, timeArchived }: { sessionID: string; directory?: string; title?: string; metadata?: Record<string, SessionMetadataValue>; timeArchived?: number }) {
     await this.#boot();
     const live = this.#liveHostAnywhere(directory, sessionID);
@@ -1708,6 +1899,7 @@ export class OmpHostEngine {
    * conflict), `'released'` once the eviction handoff is accepted — the
    * post-dispose `session.updated` flips client rows to cold.
    */
+  /** 手动释放空闲常驻会话——内存监视器的 release 动作。无可常驻返回 'cold'（幂等 no-op）；仍有工作或 UI 租约返回 'active'（调用方作为冲突呈现）；逐出交接被接受返回 'released'（dispose 后的 session.updated 把客户端行翻为冷）。 */
   async releaseSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1734,6 +1926,7 @@ export class OmpHostEngine {
     return outcome;
   }
 
+  /** 删除会话：整个变更串行在拥有键的门内——先取响应快照，再逐出 live 记录、有界等待 dispose（失败或超时以可重试的 SessionBusyError 拒绝）、释放领域句柄、删注册表行、强制删除转录文件。完成后广播 session.deleted。 */
   async deleteSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1780,6 +1973,7 @@ export class OmpHostEngine {
     this.bus.emit('session.deleted', { sessionID }, fromKey);
     return info;
   }
+  /** 从 live 宿主记录直接组装 wire Session 记录：标题优先 SDK 会话名，时间取注册表元数据兜底当前时间。 */
   #wireSessionFromLive(live: HostSession) {
     const meta = this.registry.get(live.directory, live.sessionId);
     const agentSession = live.agentSession;
@@ -1799,6 +1993,7 @@ export class OmpHostEngine {
   }
 
   /** Cold message projection from the persisted transcript. */
+  /** 持久化转录的冷消息投影（#projectedMessages 的公开包装）。 */
   async getMessages({ sessionID, directory }: { sessionID: string; directory?: string }) {
     return this.#projectedMessages(sessionID, directory);
   }
@@ -1808,6 +2003,7 @@ export class OmpHostEngine {
    * limit/before window over the full projection and reports the
    * next-older cursor (see paginateProjectedMessages).
    */
+  /** 消息历史路由的分页冷投影：优先窗口化流式冷读（不物化整份转录），再在全量投影上应用 limit/before 窗口并报告 next-older 游标（见 paginateProjectedMessages）。 */
   async getMessagesPage({ sessionID, directory, limit, before }: { sessionID: string; directory?: string; limit?: number; before?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1857,6 +2053,7 @@ export class OmpHostEngine {
     if (!projected) return null;
     return paginateProjectedMessages(projected, { limit, before });
   }
+  /** 消息投影核心：文件转录（transcript:true）是显示真相（保留压缩前历史与分隔条目），仅当 live 镜像至少与文件一样完整且无脏外部改写时才读 live 列表；无文件时退化为 live 列表或 subagent 转录；全部未命中返回 null。 */
   async #projectedMessages(sessionID: string, directory: string | null | undefined) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -1957,6 +2154,7 @@ export class OmpHostEngine {
    * divider projection rejects (init bookkeeping without a role tag) are
    * skipped, keeping deterministic ids stable across re-projections.
    */
+  /** 把轮次事件分隔条（模型/模式切换）按转录位置插入投影会话：插在创建时间不早于条目时间戳的首条消息之前，否则追加到末尾。被分隔投影拒绝的条目（无角色标签的 init 簿记）跳过，保持确定性 id 跨投影稳定。 */
   #mergeTurnEventDividers(projected: ProjectedMessage[], entries: readonly SessionEntry[], sessionID: string) {
     const dividers = [];
     for (const entry of entries) {
@@ -1977,6 +2175,7 @@ export class OmpHostEngine {
    * pick when set, else the model's configured default (inherit), else
    * unknown (models without a thinking surface).
    */
+  /** 一轮实际运行的思考级别：会话显式选择优先，其次模型配置默认（inherit），再否则未知（无思考面的模型）。 */
   #effectiveThinkingLevel(session: AgentSession) {
     if (session.thinkingLevel !== undefined && session.thinkingLevel !== null) {
       return session.thinkingLevel;
@@ -1998,6 +2197,7 @@ export class OmpHostEngine {
    * map stays empty for normal turns. `!` execution records map their
    * canonical execution id to the dispatch-time live id (see executeBash).
    */
+  /** 本进程内 live 会话投影的回显解析器（plan phase 5 紧凑映射）：规范 id 映射到客户端已见的 id。用户条目把规范公式 id 映到回显的客户端 messageID；assistant 条目仅存在于 SDK 罕见的时间戳重写路径；`!` 执行记录把规范执行 id 映到派发时的 live id（见 executeBash）。 */
   #wireIdResolver(directoryKey: string, sessionID: string) {
     const live = this.#liveHostAnywhere(directoryKey, sessionID);
     if (live?.pendingShellEchoes?.length) {
@@ -2055,6 +2255,7 @@ export class OmpHostEngine {
    * last resort so the payload stays joinable-shaped even when nothing
    * matches.
    */
+  /** retry 更新的 wire 连接键（P4 字段丢失计划）：把 persistenceKey 的时间戳段解析回 live assistant 消息并推导其 wire id（与流式投影器发出的稳定公式 id 一致）；退化为最近结算的 assistant wire id（TUI 的 FIFO 类比），最后才用原始键——保证载荷始终可连接成形。 */
   #retryWireIdFor(hostSession: HostSession, update: { entryId?: string; persistenceKey?: string }): string {
     const key = update.persistenceKey ?? update.entryId ?? '';
     const timestamp = Number.parseInt(key.split(':')[1] ?? '', 10);
@@ -2068,6 +2269,7 @@ export class OmpHostEngine {
     return hostSession.lastAssistantWireId ?? key;
   }
 
+  /** 把 wire 模型选择器解析为 SDK 可用模型：先按 provider/id 精确匹配，再退化为仅按 id；不可用时返回 undefined。 */
   #resolveModel(selector: { providerID?: string; modelID?: string } | undefined) {
     if (!selector) return undefined;
     const available = this.#sdkModels();
@@ -2083,11 +2285,13 @@ export class OmpHostEngine {
    * a quarantined (failed) or shutting-down key rejects with a retryable
    * SessionBusyError instead of silently building a second writer.
    */
+  /** 物化（或加入）某键的 live 会话（plan §3.2/§3.3）：在每键操作门内运行，并发调用者串行、后来者加入新提交的记录。evicting 记录有界等待后恰重试一次；隔离（failed）或正在关闭的键以可重试的 SessionBusyError 拒绝，绝不悄悄造出第二个写方。 */
   async #materialize(sessionId: string, directoryKey: string): Promise<HostSession | null> {
     const key = sessionKey(directoryKey, sessionId);
     return this.#live.withOperation(key, () => this.#materializeGated(sessionId, directoryKey));
   }
 
+  /** #materialize 的门内主体：处理 evicting 的有界等待与单次重试、closing 拒绝，然后 beginMaterialize → #materializeNow → commit/fail；失败路径释放目录状态并把原始错误抛回。 */
   async #materializeGated(sessionId: string, directoryKey: string): Promise<HostSession | null> {
     await this.#boot();
     for (let attempt = 0; ; attempt += 1) {
@@ -2149,6 +2353,7 @@ export class OmpHostEngine {
    * exactly once (plan §3.3): event unsubscribe, name unsubscribe,
    * agentSession.dispose, temporary-manager close, and the domain handles.
    */
+  /** 构建一个 live 会话。在键的门内、materializing 记录打开时运行。首个 await 之后的每一步都被 try/finally 守护，每个已安装资源恰好释放一次（plan §3.3）：事件退订、名称退订、agentSession.dispose、临时 manager 关闭、领域句柄。 */
   async #materializeNow(
     sessionId: string,
     directoryKey: string,
@@ -2340,6 +2545,7 @@ export class OmpHostEngine {
    * and return exactly what the session just bound. Failures degrade to null
    * — never block session setup on the settings projection.
    */
+  /** 新物化会话的发现集快照（plugins.v1）：紧跟 createAgentSession 执行——此时 SDK 发现缓存是热的，返回的正是该会话刚绑定的集合。失败降级为 null，绝不因设置投影阻塞会话建立。 */
   async #snapshotAppliedPlugins(directoryKey: string) {
     try {
       const { discoverExtensionPaths } = await import('@oh-my-pi/pi-coding-agent/extensibility/extensions');
@@ -2358,6 +2564,7 @@ export class OmpHostEngine {
   }
 
   /** Live per-session plugin application snapshots (plugins.v1 projection). */
+  /** live 会话的插件应用快照列表（plugins.v1 投影）：仅返回 agentSession 与快照俱在的记录。 */
   appliedPluginsSnapshots(): Array<{ sessionId: string; directory: string } & AppliedPluginsSnapshot> {
     return this.#live
       .snapshot()
@@ -2379,6 +2586,7 @@ export class OmpHostEngine {
    * commands on every live session of that directory. TS extension module
    * bindings stay frozen (sessions rebind at next materialization).
    */
+  /** 热重载某目录 live 会话的插件状态（plugins.v1）：镜像 omp 的 /reload-plugins——作废进程级发现缓存、重新发布 task/agent 定义、刷新该目录每个 live 会话的 skills 与 slash 命令。TS 扩展模块绑定保持冻结（会话在下次物化时重绑）。 */
   async reloadAppliedPlugins(directory: string | null, sessionId: string | null = null) {
     const directoryKey = normalizeDirectoryKey(directory ?? process.cwd());
     let projectRegistryPath = null;
@@ -2417,6 +2625,7 @@ export class OmpHostEngine {
    * omp-native publish helper (spec 05 §5.2.1 envelope; master D6-R1 single
    * channel). Payload never carries directory/sessionID.
    */
+  /** omp 原生发布助手（spec 05 §5.2.1 信封；master D6-R1 单通道）：目录与会话 id 由事件作用域携带，载荷本身永不包含它们。 */
   #ompPublish<P extends object>(hostSession: HostSession, type: string, payload: P | null | undefined, { durable }: { durable?: boolean } = {}) {
     return this.ompBus.publish(type, payload, {
       directory: hostSession.directory,
@@ -2431,6 +2640,7 @@ export class OmpHostEngine {
    * messages emit only the omp event (UI won't build a card; cold projection
    * drops them too — double guard, 05 §5.8.2 T3).
    */
+  /** 在双轨道上投影并发出一条 live custom/hook 消息（spec 05 §5.1 行 9）：wire 轨道发 message.updated 与 parts，omp 轨道发 durable 的 omp.custom.appended。display:false 只发 omp 事件（UI 不建卡；冷投影也会丢弃——双重守卫，05 §5.8.2 T3）。返回投影后的 wire 消息 id。 */
   #emitCustomLive(hostSession: HostSession, message: CustomMessage | HookMessage) {
     const { sessionId, directory } = hostSession;
     const projected = projectCustomMessage(message, {
@@ -2471,6 +2681,7 @@ export class OmpHostEngine {
    * live without a refetch (spec 05 §5.5). Idempotent per (role,type,ts).
    * @returns {{ projected: Array<{wireId: string, role: string}>, lastCompactionId: string | null }}
    */
+  /** 尾部同步：投影没有专属 SDK 事件的转录角色（带外注入的 custom、压缩/分支分隔条），让它们无需重取即可 live 呈现（spec 05 §5.5）。按（role、customType、timestamp）幂等。 */
   #tailSyncTranscript(hostSession: HostSession) {
     const session = hostSession.agentSession;
     const out: TailSyncTail = { projected: [], lastCompactionId: null };
@@ -2535,6 +2746,7 @@ export class OmpHostEngine {
    * ledger keeps those invocations' windows open so job-spawned processes
    * still attribute. A subagent job's ownerId lives in its parent session's
    * registry, but the id alone is all the ledger needs. */
+  /** 汇总全部 live 会话中运行中的异步 bash/eval 任务 id——进程台账要保持这些调用的窗口开着，任务派生的进程才能正确归属；台账只需要 id 本身。 */
   #runningAsyncJobIds(): string[] {
     const ids = new Set<string>();
     for (const record of this.#live.snapshot()) {
@@ -2551,6 +2763,7 @@ export class OmpHostEngine {
   /** Cancel a managed job backing a killed ledger entry. The manager is a
    * singleton attached to the first session (R12), so fall back to scanning
    * live records when the entry's own session does not hold it. */
+  /** 取消被杀台账项背后的受管任务：asyncJobManager 是挂在首个会话上的单例（R12），因此条目自己的会话不持有该任务时，回退扫描全部 live 记录。 */
   #cancelAsyncJob(jobId: string, sessionID: string): void {
     for (const record of this.#live.snapshot()) {
       if (record.sessionId !== sessionID) continue;
@@ -2575,6 +2788,12 @@ export class OmpHostEngine {
    * track, omp track, dual, or a justified intentional-ignore. The trailing
    * default is defense-in-depth only; scripts/check-event-coverage.mjs is
    * the real CI guard against unregistered SDK additions.
+   */
+  /**
+   * SDK AgentSessionEvent 联合的完整分派（spec 05 §5.1/§5.1.1，master
+   * D2/D6）：24 个成员每个都有显式分支——wire 轨道、omp 轨道、双轨，或有
+   * 理由的故意忽略。末尾 default 只是纵深防御；scripts/check-event-coverage.mjs
+   * 才是防止 SDK 新增成员漏配的真正 CI 守卫。
    */
   #handleEngineEvent(hostSession: HostSession, event: AgentSessionEvent) {
     // Late-event guard (plan §3.4): after eviction begins, events may still
@@ -3044,6 +3263,7 @@ export class OmpHostEngine {
     }
   }
 
+  /** 目录内各 live 会话的状态快照：inFlight（已接受未派发窗口）、流式、等待异步任一命中即 busy，否则 idle；超过 10 分钟未恢复的 awaitingAsync 视为陈旧并清除，避免永久 busy。 */
   async getSessionStatuses({ directory }: { directory?: string }) {
     await this.#boot();
     const AWAITING_ASYNC_TIMEOUT_MS = 10 * 60 * 1000;
@@ -3065,6 +3285,7 @@ export class OmpHostEngine {
   }
 
   /** Structured customType inventory for the omp transcript read (05 §5.2.1). */
+  /** omp 转录读取的结构化 customType 清单（05 §5.2.1）：把会话全部可见 custom/hook 消息（display:false 除外）投影为含 wireMessageID、customType、text 等字段的结构化行。 */
   async getCustomMessages({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;
@@ -3086,6 +3307,7 @@ export class OmpHostEngine {
     return out;
   }
 
+  /** 会话级用量遥测：每个 assistant 消息一行——稳定公式 id、时间戳、input/output/cache 读写与合计 token、ttft/时长，全部从冷转录上下文读取。 */
   async getTelemetry({ sessionID, directory }: { sessionID: string; directory?: string }) {
     const context = await this.#transcriptContext(sessionID, directory);
     if (!context) return null;
@@ -3116,6 +3338,7 @@ export class OmpHostEngine {
    * Structured session entries (05 §5.2.1): compaction dividers, branch
    * summaries, model/mode changes, ttsr injections, retry recovery notes.
    */
+  /** 结构化会话条目（05 §5.2.1）：压缩分隔、分支摘要、模型/模式变更、ttsr 注入、retry 恢复注记。优先单次流式扫描（plan §7.2），null 才退回冷 manager 全量；retry_recovery 行从转录上下文补充。 */
   async getEntries({ sessionID, directory, kinds }: { sessionID: string; directory?: string; kinds?: string[] }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3174,6 +3397,7 @@ export class OmpHostEngine {
     return out;
   }
 
+  /** 打开冷 manager 构建 transcript:true 的会话上下文（含压缩前完整历史）；会话文件未知返回 null。 */
   async #transcriptContext(sessionID: string, directory: string | null | undefined) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3182,6 +3406,14 @@ export class OmpHostEngine {
     return withColdManager(file.path, (manager) => manager.buildSessionContext({ transcript: true }));
   }
 
+  /**
+   * 发送一轮对话：接受派发即报 busy（boot/脏重载/物化/扩展 UI 等待可能耗时
+   * 数秒），必要时先做脏转录重载与模型切换；persona 变更会经门逐出并以新
+   * persona 重建会话后递归重派发。用户消息先投影上总线，再按 TUI 输入循环
+   * 语义派发——streamingBehavior 为 steer（注入运行中的轮）或 followUp
+   * （排队）；斜杠 skill 命令改走 skill-prompt custom 消息。finally 归还
+   * 派发槽，仅当没有流式/等待异步时补发 session.idle。
+   */
   async prompt({
     sessionID,
     directory,
@@ -3406,6 +3638,14 @@ export class OmpHostEngine {
    * the echo then registers lazily the first time the record appears in the
    * session's messages (see #wireIdResolver).
    */
+  /**
+   * `!` 本地 shell 执行（07 §3.2 / GAP-G05）：经会话自己的 BashRunner 运行
+   * 命令（与 TUI 的 `!` 输入同一原语），结果持久化为 bashExecution 转录
+   * 记录。唯一分歧是 `cd`——TUI 的会话 cwd 迁移会重键本宿主钉死在拥有目录
+   * 上的会话，故直接拒绝。运行行以派发时 live wire id 立即发出；结算时把
+   * 记录的规范 id 回显桥接到它，后续投影持续发出客户端已有的行；轮中派发
+   * 延迟到 pendingMessages flush 后由 #wireIdResolver 懒注册回显。
+   */
   async executeBash({
     sessionID,
     directory,
@@ -3571,6 +3811,7 @@ export class OmpHostEngine {
    * steer/queue semantics instead, and "absolute freshness" stays best-effort
    * (plan D6).
    */
+  /** 有界脏重载（plan §8.2）：对照物化时签名分类转录外部改动；dirty 且全部活动守卫安静时在键的门内逐出，让调用方的 #materialize 从磁盘重建。流式/重试/压缩/持异步工作期间绝不重载——那些轮保持 steer/queue 语义，绝对新鲜度保持尽力而为（plan D6）。 */
   async #reloadIfDirty(sessionID: string, directoryKey: string): Promise<void> {
     const record = this.#live.get(directoryKey, sessionID);
     if (!record || record.state !== 'live' || !record.payload) return;
@@ -3598,6 +3839,7 @@ export class OmpHostEngine {
    * plain prompt. Returns false when the text is not a skill command so the
    * normal dispatch proceeds.
    */
+  /** rpc-mode tryRunRpcSkillCommand 的镜像：文本是已知 skill 的斜杠调用且 skill 命令已启用时，改发 skill-prompt custom 消息（展示卡、user 归因）而非普通 prompt；否则返回 false 让正常派发继续。 */
   async #tryRunSkillCommand(hostSession: HostSession, text: string, streamingBehavior: "steer" | "followUp") {
     const session = hostSession.agentSession;
     if (!session?.skillsSettings?.enableSkillCommands) return false;
@@ -3627,6 +3869,7 @@ export class OmpHostEngine {
    * degrades to a thinking-level-only change (`setThinkingLevel`) — the
    * in-session thinking slot applies through the same endpoint.
    */
+  /** 不发轮的会话级模型切换（spec 01 GAP-02/GAP-04：prompt 不携带模型，换模型是显式 setModel）：与 prompt 时相同的解析与注册表簿记。GAP-06：目标与当前模型相同时退化为仅改思考级别——'inherit' 是 OMPChamber 的清除哨兵，映射为 SDK 的 undefined。 */
   async setSessionModel({ sessionID, directory, model, thinkingLevel }: { sessionID: string; directory?: string; model?: { providerID?: string; modelID?: string }; thinkingLevel?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3668,6 +3911,13 @@ export class OmpHostEngine {
     };
   }
 
+  /**
+   * 停止会话：有界等待 AgentSession.abort 的收尾（pi 的 abort 路径没有内置
+   * 超时，单个无响应工具会永远挂住 Stop 请求）；正常结算时若引擎层的
+   * awaitingAsync limbo 仍 busy，则权威地落定 idle。收尾卡死则强制 dispose
+   * （pi 会留下 abortInProgress 且不再接受输入），下一次 prompt 从持久化
+   * 转录重建 live 会话。
+   */
   async abort({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const live = this.#liveHostAnywhere(directory, sessionID);
@@ -3736,6 +3986,7 @@ export class OmpHostEngine {
     return true;
   }
 
+  /** 触发会话压缩（compact）：会话不存在或未物化返回 false。 */
   async summarize({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3745,6 +3996,12 @@ export class OmpHostEngine {
     return true;
   }
 
+  /**
+   * 从现有转录 fork 新会话：可选 messageID 作为边界（TUI /branch 语义——
+   * 所选用户消息及其后内容离开活动路径，边界以不可见 marker 条目固化）；
+   * 无边界则保留完整转录（/fork 语义）。fork 谱系写入 forkParentID（而非
+   * wire parentID），继承标题/persona/模型并广播 session.created。
+   */
   async fork({ sessionID, directory, messageID }: { sessionID: string; directory: string; messageID?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3814,6 +4071,7 @@ export class OmpHostEngine {
    * Revert: move the transcript's active branch so `messageID` becomes the
    * last retained message. Records the previous leaf for unrevert.
    */
+  /** 回退：移动转录的活动分支使 messageID 成为最后保留的消息；前一个叶子 id 记入注册表供 unrevert 使用。 */
   async revert({ sessionID, directory, messageID }: { sessionID: string; directory?: string; messageID: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3846,6 +4104,7 @@ export class OmpHostEngine {
    * extension factory runs at session creation, so any live session for the
    * directory is a valid source.
    */
+  /** 某目录 live 会话的扩展命令（09 §5.4 发现缺口）：headless AvailableCommandsSession 没有 extension runner，pi.registerCommand 命令只存在于已物化会话；扩展工厂在会话创建时运行，该目录任一 live 会话都是有效来源。 */
   liveCommandsFor(directory: string | null) {
     const directoryKey = normalizeDirectoryKey(directory);
     for (const hostSession of this.#live.snapshot().map((record) => record.payload).filter((payload): payload is HostSession => payload !== null)) {
@@ -3868,6 +4127,7 @@ export class OmpHostEngine {
     return Promise.resolve([]);
   }
 
+  /** 撤销回退：用注册表记录的 previousLeaf 恢复活动分支（无记录则 resetLeaf 到物理叶子），清除 revert 元数据并广播 session.updated。 */
   async unrevert({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3891,6 +4151,7 @@ export class OmpHostEngine {
     return session;
   }
 
+  /** 读取会话当前 todo 列表：取 SDK TodoPhase 最新阶段的 tasks（SDK 18+ 字段名），缺省补 status/priority。 */
   async getTodos({ sessionID, directory }: { sessionID: string; directory?: string }) {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
@@ -3924,6 +4185,7 @@ export class OmpHostEngine {
    * zeros, so they are deliberately absent. Child processes are covered by
    * the external sampler scripts/perf/process-tree-sample.mjs instead.
    */
+  /** 仅计数器的流诊断（docs/plan.md §9.1 phase 0 切片）：只返回尺寸与估计——绝不返回转录、载荷、路径或凭据。bytes 字段是总线声明的序列化估计（UTF-16 单位）而非 JS 堆测量；process.* 是 Node memoryUsage 计数器；随数据增长的计数显式标注（plan §6）。 */
   getStreamDiagnostics() {
     const memory = process.memoryUsage();
     const now = this.#live.now();
@@ -3970,6 +4232,12 @@ export class OmpHostEngine {
    * failed, still blocking new writers — instead of being cleared and
    * masquerading as released. `sessions.clear()` before these steps was not
    * a shutdown.
+   */
+  /**
+   * 优雅关停（plan §3.4）：关闭 intake，在每个键的门内同步 beginDispose 全部
+   * live 记录，再在单一全局截止下等待全部 dispose。截止时仍未结算的记录保持
+   * 隔离——可观察的 failed、仍阻止新写方——而不是清掉伪装成已释放。最后
+   * 尽力释放各领域与设置存储。
    */
   async shutdown() {
     this.#closing = true;
@@ -4024,12 +4292,14 @@ export class OmpHostEngine {
   }
 
   /** SDK model rows (registry-backed); the typed read view for projections. */
+  /** SDK 模型行（注册表支撑）；投影消费的类型化读取视图。 */
   availableModels(): RegistryModel[] {
     // SAFETY: SDK Model is a structural superset of RegistryModel
     // (nullable size fields are admitted on the read view).
     return this.#sdkModels() as RegistryModel[];
   }
 
+  /** 模型注册表的原始可用模型列表；注册表未就绪时为空数组。 */
   #sdkModels() {
     return this.modelRegistry?.getAvailable() ?? [];
   }
@@ -4041,6 +4311,7 @@ export class OmpHostEngine {
    * domain calls this after writing models.yml so GUI edits are live without
    * a host restart.
    */
+  /** 从磁盘重载模型（builtin + 自定义 models.yml）：静态输入在 ModelRegistry 内部做 mtime 检查，无变化即 no-op。'offline' 跳过网络发现——provider CRUD 领域写完 models.yml 后调用它，GUI 编辑无需重启即生效。 */
   async refreshModels() {
     await this.#boot();
     if (!this.modelRegistry) return;
@@ -4048,10 +4319,12 @@ export class OmpHostEngine {
   }
 
   /** Public boot barrier for endpoint handlers that need registry state. */
+  /** 端点处理器使用的公开 boot 屏障：等待引擎引导（认证/模型/设置）完成。 */
   async ready() {
     await this.#boot();
   }
 
+  /** 目录键到项目 id 的公开访问器（归一化后走 #projectId）。 */
   projectIdFor(directoryKey: string) {
     return this.#projectId(normalizeDirectoryKey(directoryKey));
   }
@@ -4063,6 +4336,12 @@ export class OmpHostEngine {
    * old cold-path opened a second writable manager while a live writer held
    * the same file (plan §3.4). Ownership transfers cold; the next prompt in
    * the destination materializes fresh.
+   */
+  /**
+   * 把会话移动到另一项目目录：经 omp SessionManager.moveTo 迁移转录并迁移
+   * sidecar 元数据。live 会话先在拥有键的门内逐出（有界等待）——旧冷路径
+   * 会在 live 写方持有同一文件时打开第二个可写 manager（plan §3.4）。
+   * 所有权冷转移；目标目录的下一次 prompt 重新物化。
    */
   async moveSession({ sessionID, destination }: { sessionID: string; destination: string }) {
     await this.#boot();
@@ -4107,6 +4386,7 @@ export class OmpHostEngine {
     return session;
   }
 
+  /** 定位会话的拥有目录：live 记录直接读；同 id 在两个目录 live 时返回 null（拒绝猜测）；否则全目录列表查找，未找到返回 null。 */
   async #locateDirectory(sessionID: string) {
     const record = this.#live.bySessionId(sessionID);
     if (record === undefined) return null; // same id live in two directories — refuse to guess
@@ -4119,12 +4399,14 @@ export class OmpHostEngine {
   }
 
   /** Unique live payload by id (null-ambiguous on two-directory duplicates). */
+  /** 按 id 取唯一 live 载荷；同 id 两目录并存（歧义）时返回 null。 */
   #liveHostById(sessionId: string): HostSession | null {
     const record = this.#live.bySessionId(sessionId);
     return record && record.state === 'live' ? record.payload : null;
   }
 
   /** Test/diagnostics view: live record access by id. */
+  /** 测试/诊断视图：按 id（可带目录）访问 live 记录本体。 */
   liveRecord(sessionId: string, directory?: string): LiveRecord<HostSession> | null {
     if (directory) return this.#live.get(directory, sessionId);
     const record = this.#live.bySessionId(sessionId);

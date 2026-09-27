@@ -6,26 +6,42 @@
 //!
 //! JSONC layers that fail to parse read as `{}` (JS `readConfigLayer` catches
 //! the INVALID_JSONC error and logs); everything else is a hard error.
+//!
+//! 中文说明：`server/lib/opencode/shared.js` 配置层读取器的最小移植——只覆盖
+//! small-model 消费的面：readConfigLayers / readConfig（user ← project ← custom
+//! 深合并，JSONC）、isPlainObject，以及每层的来源路径（用于把相对 {file:…} 引用
+//! 解析回声明它的那一层）。解析失败的 JSONC 层读作 {}（对应 JS 捕获 INVALID_JSONC
+//! 后打日志的容错）；其余情况均为硬错误。
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+/// 三层配置的读取结果：各层内容、深合并后的最终配置，以及每层实际来自的文件路径。
 #[derive(Debug, Clone, Default)]
 pub struct ConfigLayers {
+    /// 用户层内容。
     pub user_config: Value,
+    /// 项目层内容。
     pub project_config: Value,
+    /// OPENCODE_CONFIG 自定义层内容。
     pub custom_config: Value,
+    /// user ← project ← custom 深合并后的最终配置。
     pub merged: Value,
+    /// 用户层文件路径（恒为 Some：不存在时回退到首选路径）。
     pub user_path: Option<PathBuf>,
+    /// 项目层文件路径；无有效 working_directory 时为 None。
     pub project_path: Option<PathBuf>,
+    /// 自定义层路径；OPENCODE_CONFIG 未设置或为空时为 None。
     pub custom_path: Option<PathBuf>,
 }
 
+/// 是否为 JSON 对象（对应 JS 的 plain object 判断）。
 pub fn is_plain_object(value: &Value) -> bool {
     value.as_object().is_some()
 }
 
+/// OpenCode 配置目录 ~/.config/opencode；无 home 时用相对路径占位。
 fn opencode_config_dir() -> PathBuf {
     crate::config::home_dir()
         .map(|home| home.join(".config").join("opencode"))
@@ -33,6 +49,7 @@ fn opencode_config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".config/opencode"))
 }
 
+/// 用户层候选文件列表（config.json、opencode.json、opencode.jsonc）。
 fn user_config_candidates() -> Vec<PathBuf> {
     let dir = opencode_config_dir();
     vec![
@@ -42,6 +59,7 @@ fn user_config_candidates() -> Vec<PathBuf> {
     ]
 }
 
+/// 项目层候选文件列表（根目录与 .opencode/ 下的 json/jsonc）。
 fn project_config_candidates(working_directory: &Path) -> Vec<PathBuf> {
     vec![
         working_directory.join("opencode.json"),
@@ -51,6 +69,7 @@ fn project_config_candidates(working_directory: &Path) -> Vec<PathBuf> {
     ]
 }
 
+/// 首个存在的用户层候选路径；全部不存在时回退到 config.json。
 fn primary_user_config_path() -> PathBuf {
     user_config_candidates()
         .into_iter()
@@ -58,6 +77,7 @@ fn primary_user_config_path() -> PathBuf {
         .unwrap_or_else(|| opencode_config_dir().join("config.json"))
 }
 
+/// 首个存在的项目层候选；全都不存在时返回第一个候选（读取时自然得到 {}，与 JS 一致）。
 fn project_config_path(working_directory: &Path) -> Option<PathBuf> {
     let candidates = project_config_candidates(working_directory);
     candidates
@@ -68,6 +88,7 @@ fn project_config_path(working_directory: &Path) -> Option<PathBuf> {
         .or_else(|| candidates.into_iter().next())
 }
 
+/// 解析 OPENCODE_CONFIG：去空白；相对路径基于进程当前目录；未设置或为空返回 None。
 fn custom_config_path() -> Option<PathBuf> {
     std::env::var("OPENCODE_CONFIG")
         .ok()
@@ -87,6 +108,9 @@ fn custom_config_path() -> Option<PathBuf> {
 /// `readConfigFile`: missing/blank → `{}`; JSONC parse of non-object or
 /// invalid content reads as an empty layer (mirroring `readConfigLayer`'s
 /// INVALID_JSONC containment for this module's needs).
+///
+/// 中文补充：任何读不出的情况（缺失、IO 错误、空白、解析失败、非对象）都收敛为
+/// 空对象层；坏文件仅打 warn 日志，不影响其余层。
 fn read_config_layer_file(path: Option<&Path>) -> Value {
     let Some(path) = path else {
         return Value::Object(Map::new());
@@ -119,6 +143,8 @@ fn read_config_layer_file(path: Option<&Path>) -> Value {
 }
 
 /// `mergeConfigs`: plain objects deep-merge; any non-object override replaces.
+///
+/// 中文补充：双方都是对象时按键深合并，否则 over 整体替换 base。
 pub fn merge_configs(base: &Value, over: &Value) -> Value {
     let (Some(base_map), Some(over_map)) = (base.as_object(), over.as_object()) else {
         return over.clone();
@@ -137,8 +163,11 @@ pub fn merge_configs(base: &Value, over: &Value) -> Value {
 }
 
 /// Injectable seam (the JS tests mock `../opencode/shared.js` wholesale).
+///
+/// 中文补充：按工作目录读取配置层的可注入闭包（JS 测试整体 mock shared.js）。
 pub type ConfigReader = std::sync::Arc<dyn Fn(Option<&str>) -> ConfigLayers + Send + Sync>;
 
+/// 定位三层文件、逐层读取并按 user ← project ← custom 深合并；路径随内容一并返回。
 pub fn read_config_layers(working_directory: Option<&str>) -> ConfigLayers {
     let user_path = primary_user_config_path();
     let project_path = working_directory
@@ -166,20 +195,25 @@ pub fn read_config_layers(working_directory: Option<&str>) -> ConfigLayers {
     }
 }
 
+/// 只取合并结果的便捷入口。
 pub fn read_config(working_directory: Option<&str>) -> Value {
     read_config_layers(working_directory).merged
 }
 
 /// Production filesystem reader.
+///
+/// 中文补充：直接转发到 read_config_layers 的生产实现。
 pub fn fs_config_reader() -> ConfigReader {
     std::sync::Arc::new(|working_directory: Option<&str>| read_config_layers(working_directory))
 }
 
+/// 深合并语义与 JSONC 各层读取/容错的行为测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证对象按键深合并、标量与 null 整体替换、新增键透传。
     #[test]
     fn merge_deep_merges_objects_and_replaces_scalars() {
         let base = json!({ "a": { "x": 1, "y": 2 }, "b": "keep", "c": 1 });
@@ -190,6 +224,7 @@ mod tests {
         );
     }
 
+    /// 验证 override 为非对象时整棵子树被替换而非合并。
     #[test]
     fn non_object_override_replaces_whole_branch() {
         assert_eq!(
@@ -198,6 +233,7 @@ mod tests {
         );
     }
 
+    /// 验证带注释与尾随逗号的 JSONC 项目层能正确解析并进入合并结果。
     #[test]
     fn jsonc_layers_parse_with_comments_and_trailing_commas() {
         let dir =
@@ -217,6 +253,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证损坏的项目层读作空对象，不污染其余层的合并结果。
     #[test]
     fn invalid_layer_reads_as_empty() {
         let dir =

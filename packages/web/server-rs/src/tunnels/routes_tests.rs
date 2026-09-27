@@ -1,5 +1,10 @@
 //! Route tests for `routes.rs` (JS precedent: routes.js handler shapes and
 //! the dev-tunnel runtime contract from dev-tunnel/tunnel.test.js).
+//!
+//! 中文说明：routes.rs 各 handler 的行为契约测试——用 FakeProvider 驱动
+//! 真实 Router，断言 check/doctor/providers/status/start/stop/
+//! managed-remote-token 的响应形状与错误映射，并覆盖 dev-tunnel 的
+//! preflight 校验与端到端字节透传。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,19 +35,32 @@ use super::*;
 // Fake provider
 // ---------------------------------------------------------------------------
 
+/// 测试用假 provider：以原子计数记录 start/stop 次数，返回固定 URL 与
+/// 元数据，不依赖真实 CLI 或网络。
 struct FakeProvider {
+    /// provider 标识（cloudflare / ngrok）。
     id: &'static str,
+    /// check_availability 报告的可用性。
     available: bool,
+    /// 支持模式的静态描述表。
     modes: &'static [ModeDescriptor],
+    /// start 成功后返回的公网 URL。
     url: Option<String>,
+    /// Some 时 start 直接以该消息失败。
     start_error: Option<String>,
+    /// start 被调用的次数（原子计数）。
     started: AtomicUsize,
+    /// stop 被调用的次数（原子计数）。
     stopped: AtomicUsize,
+    /// get_metadata 返回的固定 JSON。
     metadata: Value,
 }
 
+/// 预置的 cloudflare / ngrok 构造器。
 impl FakeProvider {
+    /// 构造带 quick / managed-remote / managed-local 三种模式的 cloudflare 假 provider。
     fn cloudflare() -> Arc<Self> {
+        // cloudflare 的全量模式描述表。
         static MODES: [ModeDescriptor; 3] = [
             ModeDescriptor {
                 key: TUNNEL_MODE_QUICK,
@@ -81,7 +99,9 @@ impl FakeProvider {
         })
     }
 
+    /// 构造仅支持 quick 模式的 ngrok 假 provider。
     fn ngrok() -> Arc<Self> {
+        // ngrok 只有 quick 模式。
         static MODES: [ModeDescriptor; 1] = [ModeDescriptor {
             key: TUNNEL_MODE_QUICK,
             label: "Quick Tunnel",
@@ -103,19 +123,24 @@ impl FakeProvider {
     }
 }
 
+/// TunnelProvider trait 的假实现：能力、诊断、启停全部走内存数据。
 impl TunnelProvider for FakeProvider {
+    /// 返回静态 provider 标识。
     fn id(&self) -> &'static str {
         self.id
     }
 
+    /// 输出由 provider id 与模式列表组成的能力 JSON。
     fn capabilities_json(&self) -> Value {
         json!({ "provider": self.id, "modes": self.modes.iter().map(|mode| mode.to_json()).collect::<Vec<_>>() })
     }
 
+    /// 返回静态模式描述表。
     fn mode_descriptors(&self) -> &'static [ModeDescriptor] {
         self.modes
     }
 
+    /// 按可用标志返回版本、依赖名、安装命令与安装页等可用性信息。
     fn check_availability(&self) -> BoxFuture<'static, AvailabilityInfo> {
         let available = self.available;
         let id = self.id;
@@ -136,6 +161,7 @@ impl TunnelProvider for FakeProvider {
         })
     }
 
+    /// 返回固定的 providerChecks 与三种模式均 ready 的诊断结果。
     fn diagnose(&self, _request: DiagnoseRequest) -> BoxFuture<'static, Value> {
         Box::pin(async {
             json!({
@@ -154,6 +180,8 @@ impl TunnelProvider for FakeProvider {
         })
     }
 
+    /// 累加 start 计数后返回假 TunnelController（固定 URL 与 resolved
+    /// hostname）；start_error 置位时返回 Raw 失败。
     fn start(
         &self,
         request: TunnelStartRequest,
@@ -178,10 +206,12 @@ impl TunnelProvider for FakeProvider {
         })
     }
 
+    /// 仅累加 stop 计数。
     fn stop(&self, _controller: &TunnelController) {
         self.stopped.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// 返回固定元数据 JSON。
     fn get_metadata(&self, _controller: Option<&TunnelController>) -> Value {
         self.metadata.clone()
     }
@@ -191,6 +221,7 @@ impl TunnelProvider for FakeProvider {
 // State builder
 // ---------------------------------------------------------------------------
 
+/// 构造带临时 data_dir 的 RouterContext，保证各测试之间完全隔离。
 fn test_context() -> RouterContext {
     let data_dir = std::env::temp_dir().join(format!(
         "tunnels-routes-{}-{}",
@@ -221,11 +252,14 @@ fn test_context() -> RouterContext {
     }
 }
 
+/// 快捷构造：无鉴权、静态端口发现的 ModuleState。
 fn build_state(providers: Vec<Arc<dyn TunnelProvider>>, allowed_ports: Vec<u16>) -> ModuleState {
     let discover = discover_for(allowed_ports);
     build_state_full(providers, Vec::new(), false, discover)
 }
 
+/// 完整构造：注册给定 provider，装配 service 与 dev 状态、临时设置和
+/// 托管配置；active_port 固定为 3000，默认鉴权闭包恒返回 Session。
 fn build_state_full(
     providers: Vec<Arc<dyn TunnelProvider>>,
     allowed_ports: Vec<u16>,
@@ -286,6 +320,7 @@ fn build_state_full(
     }
 }
 
+/// 生成始终报告给定端口列表的发现闭包。
 fn discover_for(ports: Vec<u16>) -> DiscoverFn {
     Arc::new(move || {
         let ports = ports.clone();
@@ -293,6 +328,7 @@ fn discover_for(ports: Vec<u16>) -> DiscoverFn {
     })
 }
 
+/// 构造带可选 JSON body 的 HTTP 请求（自动设置 Content-Type/Length）。
 fn request_json(method: &str, uri: &str, body: Option<&Value>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(body) = body {
@@ -306,6 +342,7 @@ fn request_json(method: &str, uri: &str, body: Option<&Value>) -> Request<Body> 
     }
 }
 
+/// 对 Router 单发请求并读取响应，返回 (状态码, 解析后的 JSON；空响应体为 null)。
 async fn send(router: &axum::Router, request: Request<Body>) -> (StatusCode, Value) {
     let response = router.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -324,6 +361,7 @@ async fn send(router: &axum::Router, request: Request<Body>) -> (StatusCode, Val
 // Routes
 // ---------------------------------------------------------------------------
 
+/// providers 端点按注册顺序返回全部 provider 的能力列表。
 #[tokio::test]
 async fn providers_lists_capabilities() {
     let state = build_state(
@@ -343,6 +381,7 @@ async fn providers_lists_capabilities() {
     assert_eq!(providers[1]["provider"], "ngrok");
 }
 
+/// check 端点透传可用性、版本与安装指引信息。
 #[tokio::test]
 async fn check_reports_availability_and_install_info() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -366,6 +405,7 @@ async fn check_reports_availability_and_install_info() {
     assert!(body["installUrl"].is_string());
 }
 
+/// check 遇到未注册 provider 时返回 200 + 全 null 形状（不抛 500）。
 #[tokio::test]
 async fn check_unknown_provider_returns_null_shape() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -385,6 +425,7 @@ async fn check_unknown_provider_returns_null_shape() {
     assert!(body["platform"].is_string());
 }
 
+/// doctor 端点返回 providerChecks 与全部模式的诊断结果。
 #[tokio::test]
 async fn doctor_returns_provider_checks_and_modes() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -405,6 +446,7 @@ async fn doctor_returns_provider_checks_and_modes() {
     assert_eq!(body["modes"].as_array().unwrap().len(), 3);
 }
 
+/// doctor 的 mode 过滤只保留匹配项，未知 mode 返回 400 mode_unsupported。
 #[tokio::test]
 async fn doctor_filters_modes_and_rejects_unknown_modes() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -441,6 +483,7 @@ async fn doctor_filters_modes_and_rejects_unknown_modes() {
     );
 }
 
+/// doctor 的 POST body 中 tokenProvided 标志被接受（响应 200）。
 #[tokio::test]
 async fn doctor_post_uses_body_token_flags() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -457,6 +500,7 @@ async fn doctor_post_uses_body_token_flags() {
     assert_eq!(status, StatusCode::OK);
 }
 
+/// 无活跃隧道时 status 返回 active=false 的完整默认形状与默认 TTL 配置。
 #[tokio::test]
 async fn status_inactive_shape() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -482,6 +526,7 @@ async fn status_inactive_shape() {
     assert_eq!(body["activeSessions"], json!([]));
 }
 
+/// 有活跃隧道时 status 即时同步 TunnelAuth 的 tunnel id 与 host。
 #[tokio::test]
 async fn status_active_syncs_tunnel_auth_state() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -509,6 +554,7 @@ async fn status_active_syncs_tunnel_auth_state() {
     assert!(state.auth.active_tunnel_id().is_some());
 }
 
+/// start 成功返回完整响应形状，connectUrl 携带 t= 参数且 bootstrap token 立即可用。
 #[tokio::test]
 async fn start_returns_full_response_with_connect_url() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -549,6 +595,7 @@ async fn start_returns_full_response_with_connect_url() {
     assert!(state.auth.bootstrap_status().has_bootstrap_token);
 }
 
+/// start 替换隧道时吊销旧 bootstrap token 并使旧会话失效（inactive / tunnel-revoked）。
 #[tokio::test]
 async fn start_replaces_tunnel_and_revokes_connect_links() {
     let state = build_state(
@@ -612,6 +659,7 @@ async fn start_replaces_tunnel_and_revokes_connect_links() {
     assert_eq!(session.inactive_reason.as_deref(), Some("tunnel-revoked"));
 }
 
+/// start 对未注册 provider 与未知 mode 返回 422 及对应错误码。
 #[tokio::test]
 async fn start_rejects_unknown_provider_and_mode() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -645,6 +693,7 @@ async fn start_rejects_unknown_provider_and_mode() {
     assert_eq!(body["error"], "Unsupported tunnel mode: wat");
 }
 
+/// managed-remote 模式缺 token 时返回 422 validation_error。
 #[tokio::test]
 async fn start_requires_managed_remote_fields() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -663,6 +712,7 @@ async fn start_requires_managed_remote_fields() {
     assert_eq!(body["error"], "Managed remote tunnel token is required");
 }
 
+/// managed-remote 启动会持久化 token（可按 preset id 或 hostname 解析）并回显 hostname。
 #[tokio::test]
 async fn start_managed_remote_persists_token_and_reports_hostname() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -707,6 +757,7 @@ async fn start_managed_remote_persists_token_and_reports_hostname() {
     );
 }
 
+/// stop 吊销 bootstrap token、停止进程并清空状态；重复 stop 计数为 0。
 #[tokio::test]
 async fn stop_reports_revocations_and_clears_state() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -744,6 +795,7 @@ async fn stop_reports_revocations_and_clears_state() {
     assert_eq!(body["revokedBootstrapCount"], 0);
 }
 
+/// managed-remote-token PUT 缺字段返回 400，完整写入后返回 preset id 列表。
 #[tokio::test]
 async fn managed_remote_token_put_validates_and_persists() {
     let state = build_state(vec![FakeProvider::cloudflare()], vec![]);
@@ -791,6 +843,7 @@ async fn managed_remote_token_put_validates_and_persists() {
 // Dev tunnel
 // ---------------------------------------------------------------------------
 
+/// 构造带请求头的 http::request::Parts（preflight 单测的入参形态）。
 fn parts_for(uri: &str, headers: &[(&str, &str)]) -> axum::http::request::Parts {
     let mut builder = Request::builder().uri(uri);
     for (name, value) in headers {
@@ -800,6 +853,7 @@ fn parts_for(uri: &str, headers: &[(&str, &str)]) -> axum::http::request::Parts 
     request.into_parts().0
 }
 
+/// is_dev_tunnel_path 只认领 /api/dev-tunnel 路径。
 #[tokio::test]
 async fn dev_tunnel_path_matching() {
     assert!(is_dev_tunnel_path("/api/dev-tunnel?port=5173"));
@@ -807,6 +861,7 @@ async fn dev_tunnel_path_matching() {
     assert!(!is_dev_tunnel_path(""));
 }
 
+/// preflight 拒绝非法端口（400）与未发现端口（403），发现列表内的端口放行。
 #[tokio::test]
 async fn dev_tunnel_preflight_rejects_invalid_and_disallowed_ports() {
     let state = build_state(vec![], vec![5173]);
@@ -830,6 +885,7 @@ async fn dev_tunnel_preflight_rejects_invalid_and_disallowed_ports() {
     assert!(result.is_err());
 }
 
+/// 并发 socket 达上限（64）时 preflight 返回 503。
 #[tokio::test]
 async fn dev_tunnel_preflight_enforces_concurrency_cap() {
     let state = build_state(vec![], vec![5173]);
@@ -840,6 +896,7 @@ async fn dev_tunnel_preflight_enforces_concurrency_cap() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+/// 无 Origin 头时仅 bearer 凭据可用：会话凭据 403，未认证 401。
 #[tokio::test]
 async fn dev_tunnel_preflight_requires_client_auth_without_origin() {
     let discover: DiscoverFn =
@@ -865,6 +922,7 @@ async fn dev_tunnel_preflight_requires_client_auth_without_origin() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// 带 Origin 的会话请求受 origin 白名单约束，跨源来源返回 403。
 #[tokio::test]
 async fn dev_tunnel_preflight_checks_origin_for_browsers() {
     let discover: DiscoverFn =
@@ -885,6 +943,7 @@ async fn dev_tunnel_preflight_checks_origin_for_browsers() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+/// 端到端：TCP dev server ↔ host runtime ↔ client 双向透传字节，重复 open 复用同一监听器。
 #[tokio::test]
 async fn dev_tunnel_end_to_end_pipes_bytes_unmodified() {
     // JS tunnel.test.js 'serves the dev server through a local port,
@@ -962,6 +1021,7 @@ async fn dev_tunnel_end_to_end_pipes_bytes_unmodified() {
     assert!(client.list().is_empty());
 }
 
+/// client.open 对零端口、空 base URL、非 http(s) scheme 返回显式错误且不建立任何隧道。
 #[tokio::test]
 async fn dev_tunnel_client_rejects_bad_input() {
     let client = DevTunnelClient::new();
@@ -985,6 +1045,7 @@ async fn dev_tunnel_client_rejects_bad_input() {
     assert!(client.list().is_empty());
 }
 
+/// client.open 拒绝 https base URL，返回 wss 不支持的固定错误消息。
 #[tokio::test]
 async fn dev_tunnel_client_rejects_wss_with_explicit_message() {
     let client = DevTunnelClient::new();
@@ -996,6 +1057,7 @@ async fn dev_tunnel_client_rejects_wss_with_explicit_message() {
     assert!(client.list().is_empty());
 }
 
+/// 对手写假 WS 服务器验证客户端编解码：握手 accept key 校验 + 二进制帧掩码回显。
 #[tokio::test]
 async fn dev_tunnel_client_protocol_frames_against_fake_ws_server() {
     // A hand-rolled WS server: completes the handshake (valid accept key) and
@@ -1082,10 +1144,12 @@ async fn dev_tunnel_client_protocol_frames_against_fake_ws_server() {
     server.abort();
 }
 
+/// 测试可见的 SHA-1 直通（经 test_exports 转发）。
 fn sha1_public(data: &[u8]) -> [u8; 20] {
     super::super::dev_tunnel::test_exports::sha1_for_tests(data)
 }
 
+/// 从裸 TCP socket 读一帧 (opcode, payload)，支持扩展长度与掩码解码；IO 失败返回 None。
 async fn read_frame_raw(socket: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u8>)> {
     use tokio::io::AsyncReadExt;
     let mut header = [0u8; 2];
@@ -1126,11 +1190,13 @@ async fn read_frame_raw(socket: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u
 }
 
 // Unused imports kept for the e2e test when ws features settle.
+/// 保留 ws Message import 的死代码垫片（e2e 特性稳定后使用）。
 #[allow(dead_code)]
 fn touch_ws_types(message: Message) -> Message {
     message
 }
 
+/// 保留 WebSocket sink 操作的死代码垫片。
 #[allow(dead_code)]
 async fn touch_sink(socket: axum::extract::ws::WebSocket) {
     let (mut sender, _receiver) = socket.split();

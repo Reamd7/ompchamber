@@ -1,3 +1,8 @@
+/**
+ * bind-host 安全分类测试套件：验证回环白名单（含 127.0.0.0/8 任意地址、
+ * [::1] 括号形式、IPv4-mapped 形式）与暴露判定（通配、LAN、IPv6 本地、
+ * 主机名、空串）的边界，以及开发服务器标记只认显式环境变量。
+ */
 import { describe, expect, it } from 'vitest';
 import {
   isLoopbackBindHost,
@@ -5,6 +10,7 @@ import {
   isDevelopmentServer,
 } from './bind-host.js';
 
+/** 回环 / 暴露两类互逆判定与 OMPCHAMBER_DEV_SERVER 标记识别验证。 */
 describe('bind host exposure classification', () => {
   it('allows only proven loopback bind hosts without authentication', () => {
     for (const host of ['localhost', '127.0.0.1', '127.25.1.2', '::1', '[::1]', '::ffff:127.0.0.1']) {

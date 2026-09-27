@@ -1,3 +1,9 @@
+/**
+ * 【测试套件】loops（`.agents/loops` 中的 loop 定义文件）：frontmatter/body 到
+ * 定时任务定义的解析映射、字段缺省与校验（discoverLoops 的项目/用户两级作用域、
+ * 向上扫描 worktree 根、同名 shadow、坏文件不阻塞好文件、原始文件列举）。
+ * 全部基于临时目录中的真实文件系统。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -5,6 +11,7 @@ import path from 'path';
 import { mkdtemp, rm, writeFile, mkdir } from 'fs/promises';
 import { parseLoopDefinition, discoverLoops, discoverLoopFiles } from './loops.js';
 
+/** 在系统临时目录建一个带 .git 的临时项目，返回 { projectPath, cleanup }；cleanup 递归删除整个临时根。 */
 const createProject = async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-loops-'));
   const projectPath = path.join(tempRoot, 'repo');
@@ -18,12 +25,14 @@ const createProject = async () => {
   };
 };
 
+/** 在项目的 .agents/loops 下写入一个 loop 定义文件（自动建目录）。 */
 const writeLoop = async (projectPath, fileName, content) => {
   const dir = path.join(projectPath, '.agents', 'loops');
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, fileName), content, 'utf8');
 };
 
+// describe：parseLoopDefinition —— frontmatter 与正文到任务定义形状的映射及非法输入的拒绝。
 describe('parseLoopDefinition', () => {
   it('maps frontmatter and body to the scheduled-task definition shape', async () => {
     const { projectPath, cleanup } = await createProject();
@@ -210,6 +219,7 @@ Run.
   });
 });
 
+// describe：discoverLoops —— 项目/worktree 祖先目录与用户 ~/.agents/loops 两级作用域的发现与解析。
 describe('discoverLoops', () => {
   it('discovers project loops and parses them', async () => {
     const { projectPath, cleanup } = await createProject();

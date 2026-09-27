@@ -1,3 +1,9 @@
+/**
+ * Kimi for Coding 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，验证周用量百分比在
+ * used/remaining 字段各种出现组合下的推导、未配置分支以及 API 错误透传。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +16,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 构造最小可用的 fetch Response 替身：默认 200 + JSON 体，可被 init 覆盖。 */
 const mockResponse = (body, init = {}) => ({
   ok: true,
   status: 200,
@@ -17,6 +24,7 @@ const mockResponse = (body, init = {}) => ({
   ...init,
 });
 
+/** Kimi provider 的窗口组装、凭据缺失与错误映射行为。 */
 describe('Kimi for Coding quota provider', () => {
   it('computes weekly usedPercent from the used field (live API shape, no remaining field)', async () => {
     // Captured from GET https://api.kimi.com/coding/v1/usages — the weekly

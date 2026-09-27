@@ -10,16 +10,27 @@ import type { RouteHandler } from './endpoints.ts';
 // behavior (card events, echo bridging, deferred records) is covered in
 // omp-host.engine.test.ts.
 
+/**
+ * `POST /omp/sessions/{id}/bash` 路由测试 —— OpenChamber 自有的 `!`
+ * 本地执行面（07 §3.2）：校验请求、转发 engine.executeBash 并映射
+ * 判别联合结果；引擎自身行为（卡片事件、echo 桥接、延迟记录）由
+ * omp-host.engine.test.ts 覆盖。
+ */
+
+/** 鸭子类型的引擎替身转换：只装被挂载路由会触碰的成员。 */
 // SAFETY: endpoint tests install only the members the mounted routes call;
 // the double is a duck-typed partial, not a full engine.
 const asEngineDouble = <T,>(double: T): OmpHostEngine => double as OmpHostEngine;
 
+/** executeBash 的最小输入形状（sessionID + 目录 + 命令 + 上下文开关）。 */
 type ExecuteBashInput = { sessionID: string; directory?: string; command: string; excludeFromContext?: boolean };
+/** executeBash 的判别联合结果：ok / refused / notFound 三态。 */
 type ExecuteBashOutcome =
   | { status: 'ok'; message: { info: { id: string } }; result: { output: string; exitCode?: number; cancelled: boolean; truncated: boolean; timedOut: boolean } }
   | { status: 'refused'; error: string }
   | { status: 'notFound' };
 
+/** 挂载全部端点并取出 bash 路由的 handler（未挂载则抛错）。 */
 const mountBashRoute = (executeBash: (input: ExecuteBashInput) => Promise<ExecuteBashOutcome>): RouteHandler => {
   const routes: Array<{ method: string; pattern: string; handler: RouteHandler }> = [];
   const route = (method: string, pattern: string, handler: RouteHandler) => routes.push({ method, pattern, handler });
@@ -47,6 +58,7 @@ const mountBashRoute = (executeBash: (input: ExecuteBashInput) => Promise<Execut
   return entry.handler;
 };
 
+/** 构造 POST /omp/sessions/{id}/bash 的最小 JSON 请求。 */
 const bashRequest = (id: string, body: { command?: string; excludeFromContext?: boolean }, query = 'directory=%2Frepo'): Request =>
   new Request(`http://host/omp/sessions/${id}/bash?${query}`, {
     method: 'POST',
@@ -54,6 +66,7 @@ const bashRequest = (id: string, body: { command?: string; excludeFromContext?: 
     body: JSON.stringify(body),
   });
 
+/** 构造路由分发契约的最小 ctx（params/url/headers/engine 形状）。 */
 const bashCtx = (id: string) => ({
   params: { id },
   url: new URL(`http://host/omp/sessions/${id}/bash`),
@@ -63,18 +76,21 @@ const bashCtx = (id: string) => ({
   engine: asEngineDouble({}),
 });
 
+/** 调用 handler 并断言返回的是 Response（否则视为契约破坏抛错）。 */
 const invoke = async (handler: RouteHandler, id: string, body: { command?: string; excludeFromContext?: boolean }, query?: string): Promise<Response> => {
   const out = await handler(bashRequest(id, body, query), bashCtx(id));
   if (!(out instanceof Response)) throw new Error('handler returned void');
   return out;
 };
 
+/** 复用的 ok 结果样本：成功消息 + 零退出码。 */
 const okOutcome: ExecuteBashOutcome = {
   status: 'ok',
   message: { info: { id: 'msg_live' } },
   result: { output: 'hi\n', exitCode: 0, cancelled: false, truncated: false, timedOut: false },
 };
 
+/** 主套件：参数转发、默认值、命令/目录校验与结果到状态码的映射。 */
 describe('POST /omp/sessions/{id}/bash', () => {
   test('forwards the command with the request directory and returns the outcome', async () => {
     const calls: ExecuteBashInput[] = [];

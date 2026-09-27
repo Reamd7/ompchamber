@@ -1,3 +1,10 @@
+/**
+ * 会话事件桥接运行时（status-runtime.js）的测试套件。
+ *
+ * 通过 stub Linear GraphQL 验证：started 之后首次 idle 才发布 completed（后续 idle 忽略）、
+ * session.error 发布 failure 且用户主动中止（MessageAbortedError）跳过、
+ * busy 状态不会被误判为会话完成。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -5,13 +12,16 @@ import path from 'path';
 import { setLinearAuth, clearLinearAuth, setLinearSessionCommentsEnabled } from './auth.js';
 import { createLinearSessionStatusRuntime } from './status-runtime.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-status-runtime-'));
 
+/** 把对象包装成 JSON Response，模拟 Linear GraphQL 的 fetch 返回。 */
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 测试数据：一条标准的 Linear issue GraphQL 节点。 */
 const issueNode = {
   id: 'issue-uuid-1',
   identifier: 'ENG-12',
@@ -24,6 +34,7 @@ const issueNode = {
   comments: { nodes: [] },
 };
 
+/** 构造 stub 的 fetch：按 GraphQL 查询名分流返回 issue 详情与评论创建结果。 */
 function stubLinearGraphql({ commentId = 'comment-1' } = {}) {
   return vi.fn(async (_url, options) => {
     const body = JSON.parse(options.body);
@@ -44,6 +55,7 @@ function stubLinearGraphql({ commentId = 'comment-1' } = {}) {
   });
 }
 
+/** 会话事件到 Linear 状态评论的转换与去重行为。 */
 describe('Linear session status runtime', () => {
   let dataDir;
   let previousDataDir;

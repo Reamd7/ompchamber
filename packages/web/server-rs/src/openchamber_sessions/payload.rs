@@ -2,10 +2,17 @@
 //! `openchamber-sessions/routes.js` (`asNonEmptyString`, `splitModel`,
 //! `resolveRequestedModel`, `resolveGoalInput`, `resolveWorktreeInput` plus
 //! the JS truthiness rules those functions rely on).
+//!
+//! 中文说明：移植 `openchamber-sessions/routes.js` 顶部的 payload 形状
+//! 工具——`asNonEmptyString`、`splitModel`、`resolveRequestedModel`、
+//! `resolveGoalInput`、`resolveWorktreeInput`，以及它们依赖的 JS 真值规则。
 
 use serde_json::{Map, Value};
 
 /// JS `asNonEmptyString`: strings trim to a non-empty value or `null`.
+///
+/// 中文说明：仅接受字符串且 trim 后非空，返回 trim 后的值；其它输入
+/// （缺省/非字符串/纯空白）返回 `None`。
 pub fn as_non_empty_string(value: Option<&Value>) -> Option<String> {
     let text = value?.as_str()?;
     let trimmed = text.trim();
@@ -17,6 +24,9 @@ pub fn as_non_empty_string(value: Option<&Value>) -> Option<String> {
 }
 
 /// JS truthiness over a JSON value (`if (payload?.worktree)`).
+///
+/// 中文说明：复刻 JS 真值表——null/缺省为假、布尔取本值、数字非 0 为真、
+/// 字符串非空为真、数组与对象恒为真。
 pub fn is_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
@@ -29,13 +39,19 @@ pub fn is_truthy(value: Option<&Value>) -> bool {
 
 /// `{ providerID, modelID }` — the model reference shape shared by the
 /// request payload, engine messages, and dispatch bodies.
+///
+/// 中文说明：请求 payload、engine 消息与派发体共用的模型引用形状。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRef {
+    /// provider ID。
     pub provider_id: String,
+    /// model ID。
     pub model_id: String,
 }
 
+/// wire 形态序列化辅助。
 impl ModelRef {
+    /// 序列化为 engine 消息/prompt payload 中的 `{ providerID, modelID }` 对象。
     pub fn to_json(&self) -> Value {
         Value::Object(Map::from_iter([
             (
@@ -47,6 +63,9 @@ impl ModelRef {
     }
 
     /// `"providerID/modelID"` — the wire form `session.command` expects.
+    ///
+    /// 中文说明：`"providerID/modelID"` 斜杠串，`session.command` 期望的
+    /// wire 形式。
     pub fn to_slash_form(&self) -> String {
         format!("{}/{}", self.provider_id, self.model_id)
     }
@@ -54,6 +73,9 @@ impl ModelRef {
 
 /// JS `splitModel`: `provider/model` split on the first slash; leading or
 /// trailing slashes and slash-less values are rejected.
+///
+/// 中文说明：按第一个 `/` 拆分 `provider/model`；首尾是斜杠或没有斜杠的值
+/// 拒绝（返回 `None`）；model 部分允许继续包含 `/`。
 pub fn split_model(value: Option<&Value>) -> Option<ModelRef> {
     let model = as_non_empty_string(value)?;
     let slash = model.find('/')?;
@@ -68,6 +90,9 @@ pub fn split_model(value: Option<&Value>) -> Option<ModelRef> {
 
 /// JS `resolveRequestedModel`: the `model` string wins, else explicit
 /// `providerID` + `modelID`.
+///
+/// 中文说明：`model` 字符串优先；其次显式 `providerID` + `modelID` 组合；
+/// 都无效返回 `None`。
 pub fn resolve_requested_model(payload: &Value) -> Option<ModelRef> {
     if let Some(model) = split_model(payload.get("model")) {
         return Some(model);
@@ -83,18 +108,29 @@ pub fn resolve_requested_model(payload: &Value) -> Option<ModelRef> {
     }
 }
 
+/// goal token 预算下限（含）。
 pub const MIN_GOAL_TOKEN_BUDGET: u64 = 1_000;
+/// goal token 预算上限（含）。
 pub const MAX_GOAL_TOKEN_BUDGET: u64 = 100_000_000;
 
 /// JS `resolveGoalInput` output (`{ ok, enabled, tokenBudget }`).
+///
+/// 中文说明：`resolveGoalInput` 的输出——`enabled` 表示是否启用 goal，
+/// `token_budget` 为通过校验的可选预算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoalInput {
+    /// 是否启用 goal（payload `goal === true`）。
     pub enabled: bool,
+    /// 校验通过的 token 预算；未提供时为 `None`。
     pub token_budget: Option<u64>,
 }
 
 /// JS `resolveGoalInput(payload, prompt)` — validates the goal flags before
 /// any side effect. Errors map to `OMPChamberControlError(message, 400)`.
+///
+/// 中文说明：在任何副作用之前校验 goal 标志——预算必须伴随 goal、goal 必须
+/// 伴随 prompt、预算必须是区间内的整数；错误消息与 JS 逐字一致并映射为
+/// 400 控制错误。
 pub fn resolve_goal_input(payload: &Value, prompt: Option<&str>) -> Result<GoalInput, String> {
     let enabled = payload.get("goal") == Some(&Value::Bool(true));
     let budget_value = payload.get("goalTokenBudget");
@@ -135,6 +171,10 @@ pub fn resolve_goal_input(payload: &Value, prompt: Option<&str>) -> Result<GoalI
 
 /// JS `resolveWorktreeInput`: `{ mode: 'new', name, branchName?, startRef?,
 /// setUpstream? }` — `null` unless `worktree` is an object with a name.
+///
+/// 中文说明：`worktree` 为对象且带非空 `name` 时归一化为
+/// `{ mode: 'new', name, branchName?, startRef?, setUpstream? }`；
+/// `setUpstream` 仅在顶层 payload 中为布尔值时带入，其余情况返回 `None`。
 pub fn resolve_worktree_input(payload: &Value) -> Option<Value> {
     let worktree = payload.get("worktree")?;
     if !worktree.is_object() {
@@ -159,11 +199,13 @@ pub fn resolve_worktree_input(payload: &Value) -> Option<Value> {
     Some(Value::Object(input))
 }
 
+/// payload 形状工具与 JS 行为一致性的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证 `split_model` 只按第一个斜杠拆分，并拒绝首/尾斜杠与无斜杠输入。
     #[test]
     fn split_model_accepts_first_slash_only() {
         assert_eq!(
@@ -188,6 +230,8 @@ mod tests {
         assert_eq!(split_model(Some(&json!(42))), None);
     }
 
+    /// 验证 `model` 字符串优先于显式 `providerID`+`modelID`，两者皆缺时为
+    /// `None`。
     #[test]
     fn resolve_requested_model_prefers_model_string() {
         let payload = json!({
@@ -208,6 +252,8 @@ mod tests {
         assert_eq!(resolve_requested_model(&json!({})), None);
     }
 
+    /// 验证 goal 校验规则与 JS 错误消息逐字一致（缺 prompt、预算无 goal、
+    /// 预算越界/非整数、`null` 预算视为已提供）。
     #[test]
     fn goal_input_validation_matches_js_messages() {
         assert_eq!(
@@ -259,6 +305,8 @@ mod tests {
         );
     }
 
+    /// 验证 worktree 输入归一化：必须是带 name 的对象，`setUpstream` 仅在
+    /// 布尔值时带入。
     #[test]
     fn worktree_input_requires_named_object() {
         let payload = json!({
@@ -286,6 +334,8 @@ mod tests {
         );
     }
 
+    /// 验证 `is_truthy` 复刻 JS 真值表（null/false/0/空串/缺省为假，其余
+    /// 为真）。
     #[test]
     fn js_truthiness_rules() {
         assert!(is_truthy(Some(&json!({}))));

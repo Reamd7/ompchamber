@@ -6,6 +6,12 @@
 //! memory from a project-scoped call. Memory is created by the agent through
 //! the `ompchamber_memory` tool, so there is no create route here; the panel
 //! reads, corrects, and deletes.
+//!
+//! 中文说明：agent memory 面板路由（对应 JS 端 routes.js）。scope 放在
+//! 查询参数而非路径：全局与项目记忆是同一资源的两个归属地，scope 解析
+//! 失败必须响亮报错，绝不静默把项目作用域的调用写进用户的全局记忆。
+//! 记忆由 agent 经 `ompchamber_memory` 工具创建，故此处没有创建路由；
+//! 面板只负责读取、更正与删除。
 
 use std::sync::Arc;
 
@@ -21,15 +27,25 @@ use serde_json::{Value, json};
 use super::runtime::{AgentMemoryRuntime, MemoryEnabledGate, MemoryError, Target, UpdatePatch};
 
 /// `express.json({ limit: '1mb' })` on the one route that carries a body.
+/// 唯一带请求体的路由（PATCH）的 body 上限，等价 JS 端
+/// `express.json({ limit: '1mb' })` 的 1 MiB。
 const JSON_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 
+/// 路由共享状态：存储运行时与可选的启用闸门，经 `with_state` 注入各
+/// handler。
 pub struct RoutesState {
+    /// 共享的存储运行时，直接读写两个 scope 的记忆文件。
     pub runtime: Arc<AgentMemoryRuntime>,
     /// JS passes `isAgentMemoryEnabled` optionally; omitting it runs the
     /// surface ungated (how the JS route tests mount it).
+    /// 可选启用闸门：JS 侧可省略 `isAgentMemoryEnabled`，省略即不加闸
+    /// 运行（JS 路由测试即如此挂载）。
     pub is_enabled: Option<MemoryEnabledGate>,
 }
 
+/// 构造 agent memory 的 axum 路由：单 scope 读取（GET）、双 scope 合并
+/// 读取（GET /all）、按记忆 id 的 PATCH 更正与 DELETE 删除；共享状态
+/// 打包进 [`RoutesState`] 后随路由返回。
 pub fn routes(runtime: Arc<AgentMemoryRuntime>, is_enabled: Option<MemoryEnabledGate>) -> Router {
     Router::new()
         .route("/api/agent-memory", get(get_memory))
@@ -48,6 +64,10 @@ pub fn routes(runtime: Arc<AgentMemoryRuntime>, is_enabled: Option<MemoryEnabled
 /// not just its UI: with memory off, these routes must not read or write the
 /// store at all, or a stale client would keep editing memory the user
 /// believes is turned off.
+/// 整个路由面的统一闸门：开关关闭时这些路由绝不能读写存储，否则过期
+/// 客户端会继续编辑用户以为已关闭的记忆。关闭返回带 `disabled: true`
+/// 标记的 404（与“条目不存在”的 404 区分），设置读取失败返回 503——
+/// 宁可关闭也不暴露可能已被用户关掉的表面；闸门为 `None` 时直接放行。
 async fn require_enabled(state: &RoutesState) -> Result<(), Response> {
     let Some(gate) = &state.is_enabled else {
         return Ok(());
@@ -73,12 +93,17 @@ async fn require_enabled(state: &RoutesState) -> Result<(), Response> {
 }
 
 /// The JS handlers classify caught errors by message substring.
+/// 按错误消息子串判断是否为客户端校验错误（JS 处理器即如此分类）：
+/// 命中这些子串的错误映射为 400，其余按 500 处理。
 fn is_validation_error(message: &str) -> bool {
     message.contains("is required")
         || message.contains("unsupported characters")
         || message.contains("holds at most")
 }
 
+/// 把存储层错误转换成 HTTP 响应：先取出错误消息（IO 错误取其字符串
+/// 形式），校验类消息返回 400；其余返回 500，消息为空时用
+/// `fallback_message` 兜底，保证响应体总有可读的 `error` 字段。
 fn respond_with_error(error: &MemoryError, fallback_message: &str) -> Response {
     let message = match error {
         MemoryError::Message(message) => message.clone(),
@@ -102,6 +127,8 @@ fn respond_with_error(error: &MemoryError, fallback_message: &str) -> Response {
 /// Parsed query pairs. [`query_string`] mirrors JS `typeof query.key ===
 /// 'string'`: absent or repeated keys (`?k=a&k=b` parses as an array in
 /// express) both read as "not a string".
+/// 把原始查询串解析为 (key, value) 对列表；无查询串时返回空表。
+/// 重复键的全部出现都保留，由 [`query_string`] 决定取舍。
 fn parse_query(raw: Option<&str>) -> Vec<(String, String)> {
     raw.map(|query| {
         url::form_urlencoded::parse(query.as_bytes())
@@ -111,6 +138,8 @@ fn parse_query(raw: Option<&str>) -> Vec<(String, String)> {
     .unwrap_or_default()
 }
 
+/// 取“恰好出现一次”的 `key` 的值：键缺失或重复出现（express 会解析成
+/// 数组，`typeof !== 'string'`）都返回 `None`，绝不退化为取最后一个值。
 fn query_string(pairs: &[(String, String)], key: &str) -> Option<String> {
     let mut found: Option<String> = None;
     for (candidate, value) in pairs {
@@ -128,6 +157,10 @@ fn query_string(pairs: &[(String, String)], key: &str) -> Option<String> {
 /// project request without an id is rejected here rather than quietly
 /// falling back to global, which would write project facts into every other
 /// project.
+/// 从查询参数解析目标 scope：`scope=global`，或 `scope=project` 且附带
+/// 非空 `projectId`。project 缺 id、scope 缺失或拼写不对时返回错误消息
+/// （调用方据此回 400）；绝不静默回退到 global——那会把项目事实写进
+/// 其它所有项目的记忆。
 fn resolve_scope(pairs: &[(String, String)]) -> Result<Target, &'static str> {
     match query_string(pairs, "scope").as_deref() {
         Some("global") => Ok(Target::Global),
@@ -144,6 +177,9 @@ fn resolve_scope(pairs: &[(String, String)]) -> Result<Target, &'static str> {
 /// JS relies on express's `express.json()`: only `*json` content types
 /// populate `req.body`; anything else leaves it undefined, which this route
 /// rejects as a malformed body.
+/// 复刻 express 的 body 语义：仅当 Content-Type 含 "json" 才解析 body，
+/// 其余情况（以及解析失败时）返回 `Value::Null`，由调用方按非法 body
+/// 拒绝。
 fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Value {
     let json_content_type = headers
         .get("content-type")
@@ -155,12 +191,19 @@ fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Value {
     serde_json::from_slice(body).unwrap_or(Value::Null)
 }
 
+/// PATCH 成功的响应体：更新后的条目与该 scope 的全部剩余条目，
+/// 供面板立即重渲染。
 #[derive(Serialize)]
 struct UpdateResponse<'a> {
+    /// 更新后的记忆条目。
     entry: &'a super::runtime::MemoryEntry,
+    /// 该 scope 当前的全部条目。
     entries: &'a [super::runtime::MemoryEntry],
 }
 
+/// GET /api/agent-memory：读取单个 scope 的记忆并原样返回存储文件
+/// JSON。闸门关闭→404（带 disabled 标记）、scope 非法→400、
+/// 存储损坏→500。
 async fn get_memory(State(state): State<Arc<RoutesState>>, RawQuery(query): RawQuery) -> Response {
     if let Err(denied) = require_enabled(&state).await {
         return denied;
@@ -181,6 +224,10 @@ async fn get_memory(State(state): State<Arc<RoutesState>>, RawQuery(query): RawQ
 /// Both scopes in one response: the panel always shows them together, and
 /// two separate requests would let one scope render while the other is still
 /// loading, which reads as memory that has gone missing.
+/// GET /api/agent-memory/all：一次返回 global 与 project 两个 scope——
+/// 面板总是同屏展示两者，拆成两次请求会让一个 scope 先渲染而另一个
+/// 还在加载，看起来像记忆丢失。projectId 可选；任一侧读取失败由
+/// `read_all` 的 `*Failed` 标记表达，而非让整请求失败。
 async fn get_all_memory(
     State(state): State<Arc<RoutesState>>,
     RawQuery(query): RawQuery,
@@ -194,6 +241,11 @@ async fn get_all_memory(
     Json(all).into_response()
 }
 
+/// PATCH /api/agent-memory/{memoryId}：更正一条记忆。依次校验：启用
+/// 闸门、scope（400）、body 大小上限（413）、Content-Type 与 JSON 对象
+/// 形状（非对象拒绝）、title/body 必须为字符串、type 必须是
+/// [`super::runtime::MEMORY_TYPES`] 之一；随后组装 [`UpdatePatch`] 下推
+/// 存储层。命中返回 200（条目+列表），id 不存在返回 404。
 async fn patch_memory(
     State(state): State<Arc<RoutesState>>,
     Path(memory_id): Path<String>,
@@ -285,6 +337,9 @@ async fn patch_memory(
     }
 }
 
+/// DELETE /api/agent-memory/{memoryId}：删除指定 scope 的一条记忆。
+/// 成功返回 `deleted: true` 与剩余条目；id 不存在返回 404；存储错误走
+/// [`respond_with_error`]。
 async fn delete_memory(
     State(state): State<Arc<RoutesState>>,
     Path(memory_id): Path<String>,
@@ -303,6 +358,7 @@ async fn delete_memory(
 
     match state.runtime.remove(&target, &memory_id).await {
         Ok(result) if result.deleted => {
+            // 删除成功的响应体：deleted 标记与该 scope 剩余条目。
             #[derive(Serialize)]
             struct DeleteResponse<'a> {
                 deleted: bool,
@@ -323,6 +379,8 @@ async fn delete_memory(
     }
 }
 
+/// 路由层行为测试：scope 解析与拒绝、双 scope 读取、PATCH 校验、
+/// DELETE、启用闸门的关闭语义，以及查询参数的 express 兼容语义。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,12 +388,18 @@ mod tests {
     use axum::body::Body;
     use tower::ServiceExt;
 
+    /// 测试夹具：独立临时目录模拟用户配置根，drop 时整体清理。
     struct Fixture {
+        /// 临时根目录（模拟 `~/.config/ompchamber` 一类配置根）。
         root: std::path::PathBuf,
     }
 
+    /// 夹具的构造与派生 helper。
     impl Fixture {
+        /// 以 tag + 进程 id + 自增序号命名临时目录，避免测试间冲突；
+        /// 先清掉可能的残留再重建。
         fn new(tag: &str) -> Self {
+            // 每次构造自增，保证同进程内多个夹具的目录名唯一。
             static SEQUENCE: std::sync::atomic::AtomicUsize =
                 std::sync::atomic::AtomicUsize::new(0);
             let root = std::env::temp_dir().join(format!(
@@ -348,6 +412,8 @@ mod tests {
             Fixture { root }
         }
 
+        /// 基于夹具根构造存储运行时：配置根为 `<root>/config`，
+        /// 项目记忆存放于其下 `projects/<projectId>/memory.json`。
         fn runtime(&self) -> Arc<AgentMemoryRuntime> {
             Arc::new(AgentMemoryRuntime::new(
                 self.root.join("config"),
@@ -356,17 +422,21 @@ mod tests {
             ))
         }
 
+        /// 全局记忆文件的期望路径，用于断言“开关关闭时从未触碰存储”。
         fn global_path(&self) -> std::path::PathBuf {
             self.root.join("config").join("memory.json")
         }
     }
 
+    /// 夹具析构：递归删除临时根。
     impl Drop for Fixture {
+        /// 删除临时目录；失败忽略（不影响其它测试的唯一目录名）。
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.root).ok();
         }
     }
 
+    /// 读出响应 body 并按 JSON 解析，供断言使用。
     async fn body_json(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -374,6 +444,7 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json body")
     }
 
+    /// 构造对 agent memory 路由的请求；带 body 时自动附 `application/json`。
     fn request(method: &str, uri: &str, body: Option<&str>) -> axum::http::Request<Body> {
         let mut builder = axum::http::Request::builder().method(method).uri(uri);
         if body.is_some() {
@@ -384,6 +455,7 @@ mod tests {
             .expect("request")
     }
 
+    /// 构造返回固定结果的启用闸门，模拟开关打开/关闭/设置读取失败三种状态。
     fn gate(returning: Result<bool, &'static str>) -> MemoryEnabledGate {
         Arc::new(move || {
             let outcome = returning;
@@ -391,6 +463,7 @@ mod tests {
         })
     }
 
+    /// 验证 GET global scope 返回带版本号的存储 JSON，且条目默认类型为 fact。
     #[tokio::test]
     async fn reads_global_scope() {
         let fixture = Fixture::new("get-global");
@@ -420,6 +493,7 @@ mod tests {
         assert_eq!(body["entries"][0]["type"], json!("fact"));
     }
 
+    /// 验证带 projectId 的 project 读取落到该项目专属的 memory.json。
     #[tokio::test]
     async fn reads_project_scope_with_its_id() {
         let fixture = Fixture::new("get-project");
@@ -462,6 +536,7 @@ mod tests {
         );
     }
 
+    /// 验证 project scope 缺 projectId 时返回 400，且绝不回退写全局存储。
     #[tokio::test]
     async fn refuses_a_project_scope_with_no_id_rather_than_falling_back_to_global() {
         let fixture = Fixture::new("no-project-id");
@@ -484,6 +559,7 @@ mod tests {
         assert!(!fixture.global_path().exists(), "never touched the store");
     }
 
+    /// 验证缺失 scope 参数返回 400，错误消息说明合法取值。
     #[tokio::test]
     async fn refuses_a_missing_scope() {
         let fixture = Fixture::new("no-scope");
@@ -504,6 +580,7 @@ mod tests {
         );
     }
 
+    /// 验证 DELETE 缺 scope 时在触碰存储之前就被 400 拒绝。
     #[tokio::test]
     async fn refuses_a_delete_with_no_scope_before_touching_the_store() {
         let fixture = Fixture::new("delete-no-scope");
@@ -539,6 +616,7 @@ mod tests {
         );
     }
 
+    /// 验证 /all 一次返回两个 scope 的条目，且两个 failed 标记均为 false。
     #[tokio::test]
     async fn returns_global_and_project_together() {
         let fixture = Fixture::new("all");
@@ -586,6 +664,7 @@ mod tests {
         assert_eq!(body["projectFailed"], json!(false));
     }
 
+    /// 验证未打开项目时 /all 的 project 侧为空数组而非报错。
     #[tokio::test]
     async fn reads_global_alone_when_no_project_is_open() {
         let fixture = Fixture::new("all-no-project");
@@ -601,6 +680,7 @@ mod tests {
         assert!(body["project"].as_array().expect("project").is_empty());
     }
 
+    /// 验证项目存储损坏时 projectFailed 置真，而不是把记忆渲染成空列表。
     #[tokio::test]
     async fn a_broken_project_scope_is_reported_not_rendered_as_empty() {
         let fixture = Fixture::new("all-broken");
@@ -630,6 +710,7 @@ mod tests {
         assert!(body["project"].as_array().expect("project").is_empty());
     }
 
+    /// 验证全局存储文件损坏时返回 500 并报告 malformed。
     #[tokio::test]
     async fn reports_malformed_storage_as_a_server_error() {
         let fixture = Fixture::new("malformed");
@@ -648,6 +729,7 @@ mod tests {
         assert_eq!(body["error"], json!("Stored agent memory is malformed"));
     }
 
+    /// 验证含路径分隔符的 projectId 被判为不支持字符并返回 400。
     #[tokio::test]
     async fn reports_a_bad_project_id_as_a_client_error() {
         let fixture = Fixture::new("bad-id");
@@ -672,6 +754,7 @@ mod tests {
         );
     }
 
+    /// 验证 PATCH 用 JSON body 更新 title/body，响应含更新条目与全列表。
     #[tokio::test]
     async fn patches_a_memory_from_a_json_body() {
         let fixture = Fixture::new("patch");
@@ -705,6 +788,7 @@ mod tests {
         assert_eq!(body["entries"].as_array().expect("entries").len(), 1);
     }
 
+    /// 验证 title 非字符串时返回 400。
     #[tokio::test]
     async fn rejects_a_non_string_title() {
         let fixture = Fixture::new("patch-bad-title");
@@ -724,6 +808,8 @@ mod tests {
         assert_eq!(body["error"], json!("title must be a string"));
     }
 
+    /// 验证数组 body 与缺失 JSON Content-Type 都按非法 body 返回 400
+    /// （express 只在 JSON Content-Type 下填充 req.body）。
     #[tokio::test]
     async fn rejects_a_non_object_body_and_a_missing_content_type() {
         let fixture = Fixture::new("patch-bad-body");
@@ -752,6 +838,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// 验证空补丁 `{}` 被拒绝：title、body 或 type 至少提供一个。
     #[tokio::test]
     async fn an_empty_patch_is_a_client_error() {
         let fixture = Fixture::new("patch-empty");
@@ -773,6 +860,7 @@ mod tests {
         );
     }
 
+    /// 验证 PATCH 命中不存在的 id 返回 404。
     #[tokio::test]
     async fn reports_a_missing_memory_as_404() {
         let fixture = Fixture::new("patch-miss");
@@ -794,6 +882,7 @@ mod tests {
         );
     }
 
+    /// 验证 DELETE 删除指定 scope 的指定条目，响应含空剩余列表。
     #[tokio::test]
     async fn deletes_the_named_memory_in_the_named_scope() {
         let fixture = Fixture::new("delete");
@@ -834,6 +923,7 @@ mod tests {
         );
     }
 
+    /// 验证 DELETE 未命中返回 404 且不带 disabled 标记（与开关关闭区分）。
     #[tokio::test]
     async fn reports_a_missing_memory_as_404_on_delete() {
         let fixture = Fixture::new("delete-miss");
@@ -854,6 +944,7 @@ mod tests {
         assert!(body.get("disabled").is_none());
     }
 
+    /// 验证开关关闭时响应为带 `disabled: true` 的 404，且全程不读存储文件。
     #[tokio::test]
     async fn the_disabled_answer_is_flagged_so_a_deleted_entry_cannot_be_mistaken_for_it() {
         let fixture = Fixture::new("gate-off");
@@ -875,6 +966,7 @@ mod tests {
         );
     }
 
+    /// 验证开关关闭时过期客户端的 DELETE 不产生任何删除。
     #[tokio::test]
     async fn refuses_deletes_from_a_stale_client_while_memory_is_off() {
         let fixture = Fixture::new("gate-off-delete");
@@ -914,6 +1006,7 @@ mod tests {
         );
     }
 
+    /// 验证开关打开时路由正常服务。
     #[tokio::test]
     async fn serves_normally_while_memory_is_on() {
         let fixture = Fixture::new("gate-on");
@@ -927,6 +1020,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// 验证设置读取失败时以 503 关闭表面，而非冒险放行。
     #[tokio::test]
     async fn closes_the_surface_when_the_setting_cannot_be_read() {
         let fixture = Fixture::new("gate-error");
@@ -944,6 +1038,7 @@ mod tests {
         );
     }
 
+    /// 验证重复查询键按“非字符串”处理返回 400，绝不取最后一个值。
     #[tokio::test]
     async fn a_repeated_query_key_reads_as_an_array_never_as_its_last_value() {
         let fixture = Fixture::new("repeated-keys");

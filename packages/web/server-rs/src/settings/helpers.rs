@@ -1,5 +1,11 @@
 //! Port of `server/lib/opencode/settings-helpers.js`: update sanitization,
 //! persisted merge, and response shaping for `/api/config/settings`.
+//! 中文说明：本文件与 JS 参考实现逐一对齐，覆盖 `/api/config/settings`
+//! 的完整数据通路——更新载荷清洗（`sanitize_settings_update`，只保留
+//! 可识别且形状合法的键）、与磁盘已持久化设置的合并
+//! （`merge_persisted_settings`），以及面向客户端的响应整形
+//! （`format_settings_response`，剥离敏感字段并补齐服务端计算字段）。
+//! 对应测试见 `super::tests`。
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -16,14 +22,23 @@ use super::normalization::{
 };
 use crate::error::AppError;
 
+/// `pwaAppName` 归一化后允许的最大字符数，超出直接截断。
 const PWA_APP_NAME_MAX_LENGTH: usize = 64;
+/// `sttServerUrl` 允许的最大长度（按 UTF-16 码元计），超长则整键丢弃。
 const STT_SERVER_URL_MAX_LENGTH: usize = 2048;
+/// `sttModel` / `sttLocalModel` 允许的最大长度（按 UTF-16 码元计）。
 const STT_MODEL_MAX_LENGTH: usize = 256;
+/// `sttLanguage` 允许的最大长度（按 UTF-16 码元计）。
 const STT_LANGUAGE_MAX_LENGTH: usize = 64;
+/// `shortcutOverrides` 单个键名（动作名）的最大字符数，超出截断。
 const SHORTCUT_OVERRIDE_KEY_MAX_LENGTH: usize = 128;
+/// `shortcutOverrides` 单个值（组合键字符串）的最大字符数，超出截断。
 const SHORTCUT_OVERRIDE_VALUE_MAX_LENGTH: usize = 128;
+/// `hiddenModels` 列表允许保留的最大条目数。
 const HIDDEN_MODELS_MAX: usize = 1024;
+/// `recentEfforts` 允许的最大模型键数量，达到后停止收录后续键。
 const RECENT_EFFORTS_MAX_KEYS: usize = 128;
+/// `recentEfforts` 中每个模型键允许保留的最大档位数（去重后）。
 const RECENT_EFFORTS_MAX_VARIANTS_PER_KEY: usize = 5;
 
 /// Sanitized update: `None` values model JS `undefined` assignments — the key
@@ -31,6 +46,8 @@ const RECENT_EFFORTS_MAX_VARIANTS_PER_KEY: usize = 5;
 /// dropped by JSON serialization, exactly like `JSON.stringify`).
 pub type SanitizedUpdate = BTreeMap<String, Option<Value>>;
 
+/// 枚举值校验助手：`value`（调用方需已 trim）命中 `allowed` 白名单时返回
+/// 拥有所有权的 String，否则返回 `None` 表示该值应被整体丢弃。
 fn one_of(value: &str, allowed: &[&str]) -> Option<String> {
     allowed
         .iter()
@@ -42,6 +59,9 @@ fn one_of(value: &str, allowed: &[&str]) -> Option<String> {
 // settings-helpers.js small normalizers
 // ---------------------------------------------------------------------------
 
+/// 归一化 PWA 应用名：仅接受字符串输入；首尾去空白、连续空白（含
+/// U+FEFF）折叠为单个 ASCII 空格，再截断到 `PWA_APP_NAME_MAX_LENGTH`
+/// 个字符；非字符串或清洗后为空时返回 `fallback`。
 pub fn normalize_pwa_app_name(value: &Value, fallback: &str) -> String {
     let Some(raw) = value.as_str() else {
         return fallback.to_string();
@@ -67,6 +87,8 @@ pub fn normalize_pwa_app_name(value: &Value, fallback: &str) -> String {
     collapsed.chars().take(PWA_APP_NAME_MAX_LENGTH).collect()
 }
 
+/// 归一化 PWA 屏幕方向：trim 后仅接受 `system` / `portrait` / `landscape`
+/// 三个合法值，其余输入（含非字符串）回落到 `fallback`。
 pub fn normalize_pwa_orientation(value: &Value, fallback: &str) -> String {
     match value.as_str().map(str::trim) {
         Some(v) if matches!(v, "system" | "portrait" | "landscape") => v.to_string(),
@@ -74,6 +96,8 @@ pub fn normalize_pwa_orientation(value: &Value, fallback: &str) -> String {
     }
 }
 
+/// 归一化移动端虚拟键盘模式：trim 后仅接受 `native` / `resize-content`，
+/// 其余输入（含非字符串）回落到 `fallback`。
 pub fn normalize_mobile_keyboard_mode(value: &Value, fallback: &str) -> String {
     match value.as_str().map(str::trim) {
         Some(v) if matches!(v, "native" | "resize-content") => v.to_string(),
@@ -83,6 +107,9 @@ pub fn normalize_mobile_keyboard_mode(value: &Value, fallback: &str) -> String {
 
 /// `normalizeFollowUpBehavior(value, legacyQueueModeEnabled)` — `None` mirrors
 /// the JS `null` default argument.
+/// 中文补充：追问（follow-up）行为的归一化，结果只可能是 `steer` 或
+/// `queue`——旧值 `immediate` 映射为 `steer`；未提供 `value` 时由
+/// `legacy_queue_mode_enabled` 决定（`Some(false)` → `steer`，其余 → `queue`）。
 pub fn normalize_follow_up_behavior(
     value: Option<&Value>,
     legacy_queue_mode_enabled: Option<bool>,
@@ -101,6 +128,10 @@ pub fn normalize_follow_up_behavior(
     "queue".to_string()
 }
 
+/// 清洗 `shortcutOverrides` 映射：仅接受 JSON 对象（`null`、数组、字符串、
+/// 数字、布尔一律返回 `None`，表示该键不写入更新）；键与值分别 trim，
+/// 空键或空组合键被剔除，并各自截断到 `SHORTCUT_OVERRIDE_*_MAX_LENGTH`
+/// 个字符。显式传入的空对象会保留（用于整体重置快捷键）。
 fn sanitize_shortcut_overrides(value: &Value) -> Option<Map<String, Value>> {
     let map = match value {
         Value::Object(map) => map,
@@ -131,6 +162,10 @@ fn sanitize_shortcut_overrides(value: &Value) -> Option<Map<String, Value>> {
     Some(result)
 }
 
+/// 清洗 `recentEfforts`（模型引用 → 档位数组）：仅接受 JSON 对象；键 trim
+/// 后去重并跳过空键，值必须是字符串数组且逐项 trim、去重、剔除空串，
+/// 每键最多保留 `RECENT_EFFORTS_MAX_VARIANTS_PER_KEY` 个档位、全局最多
+/// `RECENT_EFFORTS_MAX_KEYS` 个键。清洗结果为空时返回 `None`（不写入该键）。
 fn sanitize_recent_efforts(value: &Value) -> Option<Map<String, Value>> {
     let map = match value {
         Value::Object(map) => map,
@@ -184,6 +219,13 @@ fn sanitize_recent_efforts(value: &Value) -> Option<Map<String, Value>> {
 /// Port of `sanitizeSettingsUpdate(payload)`. Returns the subset of recognized
 /// settings keys with valid shapes. Errors only where the JS throws (a
 /// managed tunnel config path outside the home directory).
+/// 中文补充：入参为 PUT /api/config/settings 的原始 JSON 载荷。逐键识别
+/// 已知设置字段并清洗：布尔字段只接受真布尔，枚举字段只认白名单值，
+/// 数值字段做 JS 语义的 round/clamp，字符串字段做 trim 与长度上限。
+/// 未识别或形状非法的键被静默丢弃；合法结果以 `SanitizedUpdate` 返回，
+/// 其中值为 `None` 表示"清除该键的持久化状态"。非对象载荷（含数组，
+/// 对齐 JS 的 `typeof === 'object'` 语义）返回空更新而非错误；唯一错误
+/// 路径是 `managedLocalTunnelConfigPath` 解析后落在 home 目录之外。
 pub fn sanitize_settings_update(payload: &Value) -> Result<SanitizedUpdate, AppError> {
     let mut result: SanitizedUpdate = BTreeMap::new();
     let candidate: &Map<String, Value> = match payload {
@@ -1051,6 +1093,8 @@ pub fn sanitize_settings_update(payload: &Value) -> Result<SanitizedUpdate, AppE
     Ok(result)
 }
 
+/// 终端 shell 白名单校验：`terminalShell` / `terminalLoginShells` 只接受
+/// 这些小写标识（`auto` 表示由系统探测），调用方需先 trim 并转小写。
 fn is_terminal_shell(shell: &str) -> bool {
     matches!(
         shell,
@@ -1076,6 +1120,11 @@ fn is_terminal_shell(shell: &str) -> bool {
 /// spread `current`, apply the sanitized update (`None` clears the key),
 /// then re-materialize `securityScopedBookmarks` (always present, unique)
 /// and merge `typographySizes` key-wise.
+/// 中文补充：合并语义与 JS 展开运算符一致——以 `current` 为底，逐键应用
+/// `changes`（`Some(v)` 覆盖、`None` 删除该键）；随后强制重建
+/// `securityScopedBookmarks`（优先取更新值、否则取现值，去重后该键始终
+/// 存在且可为空数组）；`typographySizes` 做按键级合并（现值打底、更新
+/// 覆盖），双方皆无该键时将其删除。
 pub fn merge_persisted_settings(
     current: &Map<String, Value>,
     changes: &SanitizedUpdate,
@@ -1137,6 +1186,9 @@ pub fn merge_persisted_settings(
 // ---------------------------------------------------------------------------
 
 /// `isAgentMemoryFeatureAvailable` — read per call, never baked in.
+/// 中文补充：读取环境变量 `OMPCHAMBER_MEMORY_ENABLE`（接受 1/true/yes/on，
+/// 大小写与首尾空白不敏感），每次调用实时读取、绝不缓存；未设置或值
+/// 不可识别时视为关闭。
 fn is_agent_memory_feature_available() -> bool {
     std::env::var("OMPCHAMBER_MEMORY_ENABLE")
         .map(|raw| {
@@ -1150,6 +1202,14 @@ fn is_agent_memory_feature_available() -> bool {
 
 /// Port of `formatSettingsResponse(settings)`: sanitized settings minus the
 /// managed tunnel token, plus server-computed fields.
+/// 中文补充：GET（及 PUT 成功后）返回给客户端的最终视图。先对设置整体
+/// 跑一遍清洗并剥离 `managedRemoteTunnelToken` 明文（改以布尔字段
+/// `hasManagedRemoteTunnelToken` 表示是否已配置），再补齐服务端计算字段：
+/// `agentMemoryFeatureAvailable`、PWA/移动端默认值、书签与置顶目录的
+/// 去重数组、`typographySizes`；`OMPCHAMBER_RUNTIME=desktop` 时额外附带
+/// LAN 访问状态与受阻原因两个字段；`showReasoningTraces`（默认 false）与
+/// `collapsibleThinkingBlocks`（默认 true）给出显式默认值。唯一错误路径
+/// 继承自 `sanitize_settings_update`（tunnel 配置路径越界 home 目录）。
 pub fn format_settings_response(settings: &Map<String, Value>) -> Result<Value, AppError> {
     let mut sanitized = sanitize_settings_update(&Value::Object(settings.clone()))?;
     sanitized.remove("managedRemoteTunnelToken");

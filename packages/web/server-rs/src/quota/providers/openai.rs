@@ -1,6 +1,10 @@
 //! Port of `server/lib/quota/providers/openai.js` — internal-only logic twin
 //! of the Codex provider (`fetchOpenaiQuota` is exported from the JS module
 //! but intentionally not registered for dispatcher routing).
+//!
+//! 中文概览：openai.js 的内部孪生实现——逻辑与 Codex 提供方一致
+//!（相同的 wham/usage 端点与凭据来源），但 fetchOpenaiQuota 在 JS 侧
+//! 刻意未注册到 dispatcher 路由，仅作为内部逻辑对照保留。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -14,12 +18,18 @@ use crate::quota::utils::{
     to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "openai";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "OpenAI";
+/// auth.json 中识别本提供方的别名列表（与 Codex 提供方共用 openai/codex/chatgpt）。
 pub const ALIASES: [&str; 3] = ["openai", "codex", "chatgpt"];
 
+/// 用量查询端点 URL（与 Codex 提供方相同）。
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
+/// 从 auth.json 的 openai/codex/chatgpt 别名条目读取 access token
+///（优先 access 字段，回退 token 字段）；读取失败返回 Err。
 fn load_access_token(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -31,10 +41,14 @@ fn load_access_token(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 access token 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_access_token(deps).unwrap_or(None).is_some()
 }
 
+/// 拉取流程（内部使用，未注册到路由）：读 token（缺失视为未配置）→
+/// 请求 wham/usage → 把 rate_limit.primary_window/secondary_window
+/// 分别映射为 "5h"/"weekly" 窗口，返回统一结果。
 pub fn fetch_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

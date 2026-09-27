@@ -1,6 +1,12 @@
+/**
+ * plugin-spec 测试套件：覆盖 parseNpmSpec 对 scoped / 普通包与各类畸形
+ * 输入的拆解、isExactSemver 对精确版本 / 范围 / dist-tag / 残缺版本的
+ * 判定，以及 isPathSpec / parsePathSpec 的本地路径识别与 ~ 相对路径解析。
+ */
 import { describe, expect, test } from 'bun:test';
 import * as spec from './plugin-spec.js';
 
+// parseNpmSpec：包名 + 版本的拆解与畸形输入兜底。
 describe('parseNpmSpec', () => {
   test('unscoped: no version', () => {
     expect(spec.parseNpmSpec('foo')).toEqual({ name: 'foo', version: null });
@@ -75,6 +81,7 @@ describe('parseNpmSpec', () => {
   });
 });
 
+// isExactSemver：精确 semver 与范围 / dist-tag / 残缺版本的区分。
 describe('isExactSemver', () => {
   test('plain semver', () => {
     expect(spec.isExactSemver('1.2.3')).toBe(true);
@@ -109,6 +116,7 @@ describe('isExactSemver', () => {
   });
 });
 
+// parsePathSpec 与 isPathSpec：本地路径识别及 ~ 与相对路径解析。
 describe('parsePathSpec', () => {
   test('identifies Windows absolute paths as path specs', () => {
     expect(spec.isPathSpec('C:\\Users\\me\\plugin.js')).toBe(true);

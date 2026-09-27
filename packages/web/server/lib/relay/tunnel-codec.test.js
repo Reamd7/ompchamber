@@ -1,3 +1,8 @@
+/**
+ * 【测试套件】relay 隧道帧编解码器（tunnel-codec.js）：帧的编码/解码往返、
+ * 大 streamId 无符号处理、截断与未知帧类型的拒绝、超长消息的分片与重组，
+ * 以及分片重组的内存上限保护。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -10,6 +15,7 @@ import {
   MAX_TUNNEL_PAYLOAD_BYTES,
 } from './tunnel-codec.js';
 
+// 主 describe：隧道帧编解码的正确性与防御性边界。
 describe('relay tunnel codec', () => {
   it('round-trips a frame', () => {
     const payload = new TextEncoder().encode('hello tunnel');

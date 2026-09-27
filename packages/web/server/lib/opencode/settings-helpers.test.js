@@ -1,8 +1,22 @@
+/**
+ * settings-helpers.js 的单元测试（vitest）。
+ *
+ * 验证 sanitizeSettingsUpdate 对各类持久化设置字段的清洗规则——布尔开关、
+ * 枚举取值、编辑器字号钳制、快捷键覆盖、权限自动接受策略等——以及
+ * formatSettingsResponse 的输出字段与默认值。两套工厂分别提供“直通桩”
+ * （归一化函数原样返回）与“真实归一化运行时”，前者聚焦被测模块自身的
+ * 字段白名单，后者覆盖数组 / 模型引用类字段的真实清洗行为。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createSettingsHelpers } from './settings-helpers.js';
 import { createSettingsNormalizationRuntime } from './settings-normalization-runtime.js';
 
+/**
+ * 用“直通桩”构造 settings helpers：所有 normalize / sanitize 依赖原样返回
+ * 输入或 undefined，使测试只触及被测模块自己的字段白名单与钳制逻辑，
+ * 不受归一化运行时行为影响。
+ */
 const createTestHelpers = () => createSettingsHelpers({
   normalizePathForPersistence: (value) => value,
   normalizeDirectoryPath: (value) => value,
@@ -21,6 +35,11 @@ const createTestHelpers = () => createSettingsHelpers({
   sanitizeProjects: () => undefined,
 });
 
+/**
+ * 用真实归一化运行时构造 settings helpers：注入内存版 os / path / process
+ * 与隧道 TTL 边界，normalizeStringArray 与 sanitizeModelRefs 走真实实现
+ * （字符串数组与模型引用类字段的清洗依赖它们），其余依赖仍是直通桩。
+ */
 const createTestHelpersWithRealSanitizers = () => {
   const runtime = createSettingsNormalizationRuntime({
     os: { homedir: () => '/home/testuser' },
@@ -57,6 +76,7 @@ const createTestHelpersWithRealSanitizers = () => {
   });
 };
 
+/** 主套件：逐字段验证持久化设置的白名单、合法取值与响应格式化默认值。 */
 describe('settings helpers', () => {
   it('accepts only booleans for draft starter visibility', () => {
     const helpers = createTestHelpers();
@@ -361,6 +381,7 @@ describe('settings helpers', () => {
     }
   });
 
+  /** 曾被误丢弃的模型选择器持久化字段：四类字段完整往返、垃圾输入拒绝与整份载荷回归。 */
   describe('previously-dropped model selector persistence fields', () => {
     it('round-trips hiddenModels through the sanitizer', () => {
       const helpers = createTestHelpersWithRealSanitizers();
@@ -486,6 +507,7 @@ describe('settings helpers', () => {
     });
   });
 
+  /** 会话保留策略持久化：sessionRetentionAction 合法取值、非法值拒绝与完整载荷回归。 */
   describe('session retention settings persistence', () => {
     it('round-trips sessionRetentionAction archive and delete through the sanitizer', () => {
       const helpers = createTestHelpersWithRealSanitizers();

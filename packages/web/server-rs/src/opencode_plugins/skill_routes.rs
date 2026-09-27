@@ -9,6 +9,11 @@
 //! that 500s a *successful* rename); this port implements the intended
 //! behavior — rename, then answer the reload response. The refresh hook
 //! itself is a logged no-op until the lifecycle module exposes it.
+//! （中文说明）本模块是 skill 配置面的 HTTP 路由层：列表合并（本地扫描
+//! + engine `GET /skill` 透传）、单 skill 来源元数据、辅助文件读写、
+//! skill CRUD 与重命名，以及委托 `skills_catalog` 模块的 catalog /
+//! scan / install 端点。除重命名外的成功变更统一返回
+//! "Restart the engine to apply." 的延迟重启响应。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,10 +45,15 @@ use crate::skills_catalog::{
 };
 
 /// `CLIENT_RELOAD_DELAY_MS` from `server/index.js`.
+/// 重命名成功后前端延迟刷新界面的毫秒数，随响应的 `reloadDelayMs` 字段下发。
 const CLIENT_RELOAD_DELAY_MS: u64 = 800;
+/// 透传 engine `GET /skill` 请求的超时时间（8 秒）；超时按空结果降级。
 const ENGINE_SKILLS_TIMEOUT: Duration = Duration::from_millis(8_000);
+/// scope 取值 "project"：表示 skill 创建/安装到项目目录下的受管理路径。
 const SKILL_SCOPE_PROJECT: &str = "project";
 
+/// 挂载 `/api/config/skills*` 前缀的全部 skill 配置路由，
+/// 以 `RouterContext` 作为共享状态。
 pub(crate) fn routes(ctx: RouterContext) -> Router {
     Router::new()
         .route("/api/config/skills", get(list_skills))
@@ -67,14 +77,17 @@ pub(crate) fn routes(ctx: RouterContext) -> Router {
         .with_state(ctx)
 }
 
+/// 以指定状态码与任意 JSON body 构造错误响应（结构化错误体也走这里）。
 fn error_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// 构造 `{"error": <message>}` 形式的简单 JSON 错误响应。
 fn plain_error(status: StatusCode, message: &str) -> Response {
     error_response(status, json!({ "error": message }))
 }
 
+/// 当前用户 home 目录；取不到时回退为 `/`，仅用于拼接 user 级路径。
 fn home_dir() -> PathBuf {
     crate::config::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
@@ -82,6 +95,10 @@ fn home_dir() -> PathBuf {
 /// `resolveSkillsDirectory` — optional first, then the active-project/last
 /// directory fallback; fallback errors are ignored (user-scoped listing
 /// without a project is valid).
+/// （中文）目录解析优先级：请求显式携带的 directory（参数或头）优先；
+/// 缺失时回退到活动项目（settings 的 lastDirectory），回退阶段的错误
+/// 被忽略——无项目上下文时返回 `Ok(None)` 表示仅枚举 user 级 skill。
+/// 显式 directory 非法时返回 `Err(消息)`（调用方映射 400）。
 async fn resolve_skills_directory(
     headers: &HeaderMap,
     query: &QueryValues,
@@ -95,6 +112,9 @@ async fn resolve_skills_directory(
 }
 
 /// `fetchOpenCodeDiscoveredSkills` — engine `GET /skill` passthrough.
+/// （中文）engine 不可用（无 base_url）、请求失败、超时或响应不是数组时
+/// 一律记日志并返回空列表，不向调用方报错；有效行要求 name 与 location
+/// 非空，内置位置直接标记 user/opencode，其余按路径推断 scope/source。
 async fn fetch_engine_skills(
     ctx: &RouterContext,
     directory: Option<&Path>,
@@ -188,6 +208,12 @@ async fn fetch_engine_skills(
 
 /// `inferSkillScopeAndSourceFromPath` — `.omp/skills`-aware project/user
 /// classification used for engine-reported locations.
+/// （中文）返回 (scope, source)：source 由路径片段判定——`.agents/skills`
+/// → "agents"、`.claude/skills` → "claude"、其余 → "opencode"。scope 先
+/// 从 working_directory 逐级向上（到 worktree 根为止）匹配 `.opencode`、
+/// `.claude/skills`、`.agents/skills`、`.omp/skills`，命中即 "project"；
+/// 否则对照 home 下各 user 级根目录（含 OPENCODE_CONFIG_DIR）；
+/// 两种路径形式都不匹配时兜底仍返回 "user"。
 fn infer_skill_scope_and_source_from_path(
     skill_path: &str,
     working_directory: Option<&Path>,
@@ -261,6 +287,10 @@ fn infer_skill_scope_and_source_from_path(
     ("user".to_string(), source.to_string())
 }
 
+/// `GET /api/config/skills`：合并 engine 透传与本地扫描的 skill，逐个附加
+/// `sources`（各来源元数据）与 `renamable`（路径受管理且非内置才为 true），
+/// 并按环境变量报告外部 skill（Claude 等）的禁用状态。目录解析失败 400；
+/// 任一 skill 的来源读取失败记日志并整体返回 500。
 async fn list_skills(
     State(ctx): State<RouterContext>,
     headers: HeaderMap,
@@ -310,6 +340,9 @@ async fn list_skills(
 }
 
 /// Custom + curated source rows (shared by /catalog and /catalog/source).
+/// （中文）输出统一行形状：id/label/description(取 source)/source，可选
+/// defaultSubpath 与 gitIdentityId。curated 序列化或 settings 读取失败时
+/// 返回 `Err`（调用方映射 500）。
 async fn catalog_sources(ctx: &RouterContext) -> Result<Vec<Value>, String> {
     let curated = get_curated_skills_sources();
     let settings = crate::settings::store(ctx)
@@ -358,6 +391,7 @@ async fn catalog_sources(ctx: &RouterContext) -> Result<Vec<Value>, String> {
     Ok(sources)
 }
 
+/// 供 authRequired 错误响应使用的 git identity 档案列表（仅保留 id/name）。
 fn identities_for_response() -> Vec<Value> {
     super::http_util::git_identity_profiles()
         .into_iter()
@@ -370,6 +404,8 @@ fn identities_for_response() -> Vec<Value> {
         .collect()
 }
 
+/// 按 profile id 解析 git identity，仅提取非空 sshKey；id 缺失、档案
+/// 不存在或 sshKey 为空白都返回 `None`（匿名访问仓库）。
 fn resolve_git_identity(profile_id: Option<&str>) -> Option<GitIdentity> {
     let profile_id = profile_id?;
     let profile = super::http_util::git_identity_profile(profile_id)?;
@@ -382,6 +418,11 @@ fn resolve_git_identity(profile_id: Option<&str>) -> Option<GitIdentity> {
     Some(GitIdentity { ssh_key })
 }
 
+/// `GET /api/config/skills/catalog`：先校验可选 directory（非法 400），再
+/// 返回 curated + 自定义来源；对 github.com 来源并发拉取 star 数与仓库
+/// 更新时间（取不到补 null），并从返回行剥离 gitIdentityId。
+/// `itemsBySource` 恒为空对象——条目由 /catalog/source 按需加载。
+/// 任意步骤失败记日志并返回 500（ok:false 结构）。
 async fn catalog_list(
     State(ctx): State<RouterContext>,
     headers: HeaderMap,
@@ -472,6 +513,11 @@ async fn catalog_list(
     }
 }
 
+/// `GET /api/config/skills/catalog/source?sourceId=&refresh=`：按 id 定位
+/// 来源（缺参数或目录错误 400、未知 id 404，均携带 invalidSource kind），
+/// 解析 repo source（失败 400），经 `scan_with_cache` 扫描（refresh=true
+/// 绕过缓存；失败 500），最后把扫描条目与本地已安装 skill（engine + 本地
+/// 合并结果，按名称匹配）比对并附加 installed 元数据。
 async fn catalog_source(
     State(ctx): State<RouterContext>,
     headers: HeaderMap,
@@ -613,6 +659,9 @@ async fn catalog_source(
     Json(json!({ "ok": true, "items": items })).into_response()
 }
 
+/// `GET /api/config/skills/{name}`：返回单 skill 的来源元数据，外层
+/// scope/source/exists 直接取自 md 来源行。目录解析失败 400；来源读取
+/// 失败记日志并返回 500。
 async fn get_skill(
     State(ctx): State<RouterContext>,
     AxumPath(name): AxumPath<String>,
@@ -650,6 +699,9 @@ async fn get_skill(
     }
 }
 
+/// `POST /api/config/skills/scan`：按 body 的 source/subpath/gitIdentityId
+/// 即时扫描远端仓库（不走缓存）。authRequired 错误附带可选 identities
+/// 列表返回 401，其余失败 400；成功返回 `{ok, items}`。
 async fn scan_repo(
     State(_ctx): State<RouterContext>,
     headers: HeaderMap,
@@ -696,6 +748,11 @@ async fn scan_repo(
     Json(json!({ "ok": true, "items": items })).into_response()
 }
 
+/// `POST /api/config/skills/install`：安装选中 skill 到 user 或 project
+/// scope；project 必须能解析出工作目录（否则 400 invalidSource）。支持
+/// selections 与 conflictPolicy/conflictDecisions：冲突返回 409（前端
+/// 决策后重试），authRequired 附 identities 返回 401，其余失败 400。
+/// 有实际安装时返回延迟重启响应，全部跳过则 requiresReload=false。
 async fn install_repo(
     State(_ctx): State<RouterContext>,
     headers: HeaderMap,
@@ -840,6 +897,8 @@ async fn install_repo(
     Json(Value::Object(body)).into_response()
 }
 
+/// 在 engine `GET /skill` 结果中按名称查找单个 skill；engine 不可达或
+/// 未命中都返回 `None`。
 async fn fetch_engine_skill_by_name(
     ctx: &RouterContext,
     name: &str,
@@ -851,12 +910,16 @@ async fn fetch_engine_skill_by_name(
         .find(|skill| skill.name == name)
 }
 
+/// 对 URL 路径段做 decodeURIComponent；解码失败以 `Err(())` 表示。
 fn decode_file_path(raw: &str) -> Result<String, ()> {
     super::http_util::decode_uri_component(raw).ok_or(())
 }
 
 /// Shared preamble for the supporting-file handlers: validate the path,
 /// resolve the directory, load sources; `None` ⇒ skill missing (404).
+/// （中文）成功返回 (skill 的 md 目录, 解码后的相对路径)；文件路径不安全
+/// 返回 400 "Invalid file path"；skill 不存在返回 404；解码失败与来源
+/// 读取失败分别按调用方给定的消息返回 500。
 async fn skill_file_context(
     ctx: &RouterContext,
     name: &str,
@@ -901,6 +964,8 @@ async fn skill_file_context(
     }
 }
 
+/// `GET /api/config/skills/{name}/files/{*file_path}`：读取 skill 辅助
+/// 文件内容；文件不存在 404，越权路径 403。
 async fn get_skill_file(
     State(ctx): State<RouterContext>,
     AxumPath((name, file_path)): AxumPath<(String, String)>,
@@ -927,6 +992,8 @@ async fn get_skill_file(
         Err(AccessError) => plain_error(StatusCode::FORBIDDEN, "Access to file denied"),
     }
 }
+/// `PUT .../files/{*file_path}`：以 body 的 content 覆写辅助文件；
+/// 越权路径 403。
 async fn put_skill_file(
     State(ctx): State<RouterContext>,
     AxumPath((name, file_path)): AxumPath<(String, String)>,
@@ -963,6 +1030,7 @@ async fn put_skill_file(
     }
 }
 
+/// `DELETE .../files/{*file_path}`：删除辅助文件；越权路径 403。
 async fn delete_skill_file(
     State(ctx): State<RouterContext>,
     AxumPath((name, file_path)): AxumPath<(String, String)>,
@@ -993,6 +1061,9 @@ async fn delete_skill_file(
     }
 }
 
+/// `POST /api/config/skills/{name}`：创建 skill。body 须为 JSON 对象
+/// （否则 500）；scope=project 时必须能解析出项目目录（否则 400），
+/// 其余 scope 走通用目录解析。成功返回延迟重启响应；失败 500。
 async fn create_skill_route(
     State(_ctx): State<RouterContext>,
     AxumPath(name): AxumPath<String>,
@@ -1047,6 +1118,10 @@ async fn create_skill_route(
     }
 }
 
+/// `PATCH /api/config/skills/{name}`：body 含 `renameTo` 时执行重命名，
+/// 成功返回 requiresReload 响应（携带 reloadDelayMs）；否则按 updates
+/// （含可选 targetPath）更新，成功返回延迟重启响应；错误消息为
+/// "Access to file denied" 时映射 403，其余 500。
 async fn patch_skill(
     State(_ctx): State<RouterContext>,
     AxumPath(name): AxumPath<String>,
@@ -1110,6 +1185,8 @@ async fn patch_skill(
     }
 }
 
+/// `DELETE /api/config/skills/{name}`：删除 skill；成功返回延迟重启响应，
+/// 失败（如不存在）500。
 async fn delete_skill_route(
     State(_ctx): State<RouterContext>,
     AxumPath(name): AxumPath<String>,
@@ -1130,6 +1207,9 @@ async fn delete_skill_route(
     }
 }
 
+/// skill 路由的行为契约测试：目录解析与列表合并、renamable 判定、
+/// engine 行合并的 scope 推断、CRUD/辅助文件/重命名的响应形状，以及
+/// catalog 与 scan 的参数校验。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,12 +1217,19 @@ mod tests {
     use axum::body::Body;
     use tower::ServiceExt;
 
+/// 测试环境守护：持有全局互斥锁并把 HOME 等环境变量切到临时目录，
+/// Drop 时自动恢复原值。
     struct EnvGuard {
+/// 全局测试环境互斥锁守卫：持有期间其它测试不能修改环境变量。
         _guard: std::sync::MutexGuard<'static, ()>,
+/// 进入测试前 HOME 的原值；None 表示原本未设置。
         previous_home: Option<String>,
     }
 
+/// EnvGuard 的加锁与环境切换构造。
     impl EnvGuard {
+/// 加全局锁，把 HOME 指向给定目录并清除 OPENCODE_CONFIG_DIR /
+/// OPENCODE_CONFIG，返回可自动恢复原值的 guard。
         fn lock(home: &Path) -> Self {
             let guard = super::super::http_util::TEST_ENV_MUTEX
                 .lock()
@@ -1160,7 +1247,9 @@ mod tests {
         }
     }
 
+/// Drop 实现：测试结束时恢复 HOME。
     impl Drop for EnvGuard {
+/// 恢复测试前记录的 HOME（原值缺失则移除该变量）。
         fn drop(&mut self) {
             match &self.previous_home {
                 Some(home) => unsafe {
@@ -1173,6 +1262,7 @@ mod tests {
         }
     }
 
+/// 创建带 pid 与计数后缀的唯一临时根目录，保证测试之间互不干扰。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-skill-routes-{tag}-{}-{}",
@@ -1183,12 +1273,15 @@ mod tests {
         dir
     }
 
+/// 生成进程内单调递增的唯一后缀（配合 pid 一起使用）。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
+        // 进程内原子计数器：同一进程并行测试也能拿到不同目录名。
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
+/// 读出整个响应 body 并解析为 JSON；失败即 panic（仅测试断言使用）。
     async fn json_body(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1196,6 +1289,8 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json")
     }
 
+/// 构造指向不可达 engine（127.0.0.1:1）的 RouterContext，
+/// 让测试聚焦本地文件系统行为。
     fn test_ctx(
         engine: std::sync::Arc<crate::engine::EngineState>,
         data_dir: PathBuf,
@@ -1219,6 +1314,8 @@ mod tests {
         }
     }
 
+/// 在 dir/<name>/SKILL.md 写入带 name/description frontmatter 的
+/// skill 文件，返回其路径。
     fn write_skill(dir: &Path, name: &str, description: &str, body: &str) -> PathBuf {
         let skill_dir = dir.join(name);
         std::fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1231,6 +1328,9 @@ mod tests {
         path
     }
 
+/// 验证：创建 project skill 时即便请求未带 directory（经 settings 的
+/// lastDirectory 回退解析），后续列表也能发现 `.agents/skills` 下的
+/// 该 skill 并正确标注 scope/source/exists。
     #[tokio::test]
     async fn create_then_lists_repository_local_agents_skills_without_directory() {
         let root = temp_root("create-list");
@@ -1309,6 +1409,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：受管理路径（项目 .opencode/skills）下的 skill 列表 renamable
+/// 为 true，而缓存目录（~/.cache/opencode/skills）中的为 false。
     #[tokio::test]
     async fn marks_managed_skills_renamable_but_cache_skills_not() {
         let root = temp_root("renamable");
@@ -1364,6 +1466,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：engine `GET /skill` 返回的 `.omp/skills` 行合并进列表后，
+/// 项目内路径推断为 project scope、home 下路径推断为 user scope。
     #[tokio::test]
     async fn merges_engine_rows_and_infers_omp_scopes() {
         let root = temp_root("engine-merge");
@@ -1451,6 +1555,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：单 skill 元数据读取、辅助文件写/读、不安全路径 400、缺失文件
+/// 404、重命名响应（requiresReload + reloadDelayMs=800）与删除的延迟
+/// 重启响应的完整形状。
     #[tokio::test]
     async fn skill_crud_and_supporting_files_shapes() {
         let root = temp_root("crud");
@@ -1639,6 +1746,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：catalog 列表包含 curated 来源（如 anthropic），行内剥离
+/// gitIdentityId 且带 stars/repoUpdatedAt 字段，itemsBySource 为空。
     #[tokio::test]
     async fn catalog_lists_curated_sources_with_metadata_shape() {
         let root = temp_root("catalog");
@@ -1679,6 +1788,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：/catalog/source 缺 sourceId 返回 400 invalidSource，
+/// 未知 sourceId 返回 404 invalidSource。
     #[tokio::test]
     async fn catalog_source_requires_known_source_id() {
         let root = temp_root("catalog-source");
@@ -1721,6 +1832,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证：scan 请求缺 source 时返回 400，错误 kind 为 invalidSource，
+/// 消息为 "Repository source is required"。
     #[tokio::test]
     async fn scan_rejects_missing_source_with_invalid_source() {
         let root = temp_root("scan");

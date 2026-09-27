@@ -1,4 +1,9 @@
 /**
+ * （中文模块说明）服务端语音转文字：把浏览器录音的原始音频代理到
+ * 任意 OpenAI 兼容的 /v1/audio/transcriptions 端点
+ * （faster-whisper、whisper.cpp 等），自定义 baseURL 必填。
+ */
+/**
  * Server-side Speech-to-Text Service
  *
  * Proxies audio to any OpenAI-compatible transcription endpoint
@@ -8,6 +13,10 @@
 import OpenAI, { toFile } from 'openai';
 import { normalizeCustomOpenAIBaseURL } from './base-url.js';
 
+/**
+ * （中文说明）先校验并归一化 baseURL（必须为已放行的自定义地址），
+ * 再按 MIME 推断扩展名组装 multipart 文件上传；language 可选。
+ */
 /**
  * Transcribe an audio buffer via an OpenAI-compatible /v1/audio/transcriptions endpoint.
  *
@@ -55,6 +64,10 @@ export async function transcribeAudio({ audioBuffer, mimeType, model, baseURL, a
   return result.text ?? '';
 }
 
+/**
+ * （中文说明）查表把 MIME 类型映射为 Whisper 服务端认识的扩展名；
+ * 未知类型回退 webm。
+ */
 /**
  * Map a MIME type to a file extension understood by Whisper servers.
  * @param {string} mimeType

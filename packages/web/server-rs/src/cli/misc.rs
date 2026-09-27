@@ -4,6 +4,10 @@
 //! `commands-projects.js`, `cli-control.js`, `cli-goal.js`,
 //! `cli-api-target.js`) plus the lifecycle-discovery and HTTP-client pieces
 //! they need from `cli-lifecycle.js` / `cli-http.js` / `cli-log-files.js`.
+//! 中文说明：本模块是 CLI 杂项命令组的 Rust 移植，聚合了 status / logs / schedule /
+//! session / models / projects / control 六组子命令，以及它们依赖的 async→sync 桥接、
+//! 主机与 URL 解析、JSON 值辅助、clack 风格输出、系统信息探测、实例发现、
+//! 日志跟随和带 UI 密码自动重试的 control HTTP 请求封装。
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,6 +26,9 @@ use super::{CliError, GENERAL_ERROR, OutputMode, print_json};
 // multi-thread CLI runtime `block_in_place` keeps the reactor alive; outside
 // one (unit tests) a fresh runtime is spun up.
 
+/// 同步驱动一个 future 到完成：`mod.rs` 的分发层是同步调用，而本文件的 HTTP 辅助
+/// 基于异步 reqwest。已处于多线程 tokio 运行时内时用 `block_in_place` 保住 reactor；
+/// 否则（如单元测试环境）临时新建一个 runtime。同步入口点借此复用 async 实现。
 fn block_on<F: Future>(future: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
@@ -31,7 +38,10 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// 进程级共享的 reqwest 客户端（LazyLock 惰性初始化），复用连接池；
+/// 所有 CLI 的探测与 control 请求都走这一个实例。
 fn http_client() -> &'static reqwest::Client {
+    /// 惰性单例客户端；首次调用时构造，之后复用连接池。
     static CLIENT: std::sync::LazyLock<reqwest::Client> =
         std::sync::LazyLock::new(reqwest::Client::new);
     &CLIENT
@@ -39,12 +49,14 @@ fn http_client() -> &'static reqwest::Client {
 
 // ── host / URL helpers (`cli-network.js` subset) ───────────────────────
 
+/// 规整探测主机：去除首尾空白，空白串视为未指定（返回 None）。
 fn normalize_probe_host(host: Option<&str>) -> Option<String> {
     host.map(str::trim)
         .filter(|host| !host.is_empty())
         .map(str::to_string)
 }
 
+/// 判断是否通配绑定地址（0.0.0.0 / :: / [::]）——不能作为具体连接目标。
 fn is_wildcard_probe_host(host: Option<&str>) -> bool {
     matches!(
         normalize_probe_host(host).as_deref(),
@@ -52,6 +64,7 @@ fn is_wildcard_probe_host(host: Option<&str>) -> bool {
     )
 }
 
+/// 判断是否回环地址（127.0.0.1 / localhost / ::1 / [::1]）。
 fn is_loopback_probe_host(host: Option<&str>) -> bool {
     matches!(
         normalize_probe_host(host).as_deref(),
@@ -59,6 +72,8 @@ fn is_loopback_probe_host(host: Option<&str>) -> bool {
     )
 }
 
+/// 判断是否"具体的权威主机"：非空且既非通配也非回环（如局域网 IP）。
+/// 该标记决定探测回退时是否强制 PID 匹配。
 fn is_concrete_probe_host(host: Option<&str>) -> bool {
     let normalized = normalize_probe_host(host);
     normalized.is_some() && !is_wildcard_probe_host(host) && !is_loopback_probe_host(host)
@@ -66,6 +81,8 @@ fn is_concrete_probe_host(host: Option<&str>) -> bool {
 
 /// `resolveApiHost`: option > OMPCHAMBER_HOST env > 127.0.0.1, with wildcard
 /// and bracket normalization.
+/// 解析实际连接用的 API 主机：显式参数 > OMPCHAMBER_HOST 环境变量 > 127.0.0.1；
+/// 通配地址折叠为回环，多余的方括号（如 `[::1]`）会被剥掉。
 fn resolve_api_host(host_override: Option<&str>) -> String {
     let configured = normalize_probe_host(host_override)
         .or_else(|| {
@@ -85,6 +102,7 @@ fn resolve_api_host(host_override: Option<&str>) -> String {
     }
 }
 
+/// 把主机格式化为 URL 片段：含冒号的 IPv6 地址加方括号，其余原样返回。
 fn format_host_for_url(host: &str) -> String {
     if host.contains(':') {
         format!("[{host}]")
@@ -93,6 +111,8 @@ fn format_host_for_url(host: &str) -> String {
     }
 }
 
+/// 构造 `http://<host>:<port><endpoint>` 形式的本地 URL；
+/// endpoint 缺前导斜杠时自动补上，主机经 resolve_api_host 规整。
 fn build_local_url(port: u16, endpoint: &str, host_override: Option<&str>) -> String {
     let host = format_host_for_url(&resolve_api_host(host_override));
     let path = if endpoint.starts_with('/') {
@@ -105,17 +125,21 @@ fn build_local_url(port: u16, endpoint: &str, host_override: Option<&str>) -> St
 
 // ── JSON value helpers ─────────────────────────────────────────────────
 
+/// 静态 JSON null，作为缺失字段的借用占位，让 `field` 无需分配即可返回默认值。
 static JSON_NULL: serde_json::Value = serde_json::Value::Null;
 
 /// `value?.key` with a JSON null stand-in for missing fields.
+/// 安全取字段：等价 JS 的 `value?.key`——键缺失时返回静态 null 引用而非 panic。
 fn field<'a>(value: &'a serde_json::Value, key: &str) -> &'a serde_json::Value {
     value.get(key).unwrap_or(&JSON_NULL)
 }
 
+/// 读取字符串字段；字段缺失或不是字符串时返回 None。
 fn value_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(|v| v.as_str())
 }
 
+/// trim 后非空才返回 Some，用于把"空白即未指定"的 CLI 选项规整掉。
 fn as_non_empty_str(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -125,6 +149,7 @@ fn as_non_empty_str(value: Option<&str>) -> Option<String> {
 
 /// JS number interpolation (`${n}`): integral values print without a
 /// fractional part.
+/// 模拟 JS 数字插值：整数值（|n| < 1e21）不打印小数部分，与旧 JS 输出逐字一致。
 fn js_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e21 {
         format!("{}", value as i64)
@@ -133,6 +158,7 @@ fn js_number(value: f64) -> String {
     }
 }
 
+/// f64 转 JSON 数值；非有限值（NaN/Infinity）无法表示时落回 JSON null。
 fn json_number(value: f64) -> serde_json::Value {
     serde_json::Number::from_f64(value)
         .map(serde_json::Value::Number)
@@ -140,6 +166,7 @@ fn json_number(value: f64) -> serde_json::Value {
 }
 
 /// `Number(options.timeout)`: "" → 0, non-numeric → null (JS NaN).
+/// 模拟 JS `Number(options.timeout)`：空串解析为 0，非数字解析为 null（对应 JS NaN）。
 fn number_option(raw: Option<&str>) -> Option<serde_json::Value> {
     let raw = raw?;
     match raw.trim().parse::<f64>() {
@@ -150,6 +177,8 @@ fn number_option(raw: Option<&str>) -> Option<serde_json::Value> {
 }
 
 /// `new Date(ms).toISOString()` (UTC, millisecond precision).
+/// 毫秒级 Unix 时间戳转 ISO 8601（UTC、毫秒精度），等价 `new Date(ms).toISOString()`；
+/// 非有限输入返回 None。纯整数运算，不依赖系统时区。
 fn iso8601_from_epoch_ms(ms: f64) -> Option<String> {
     if !ms.is_finite() {
         return None;
@@ -168,6 +197,8 @@ fn iso8601_from_epoch_ms(ms: f64) -> Option<String> {
 }
 
 /// Howard Hinnant's `civil_from_days`.
+/// Howard Hinnant 的"天数 → 公历日期"算法：以 1970-01-01 为纪元换算年月日，
+/// 对负数（1970 年之前）同样成立。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -185,6 +216,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 // clack-compatible rendering (byte-matches @clack/prompts 1.7 captured
 // output — see cli::ui for the glyph/ANSI contract).
 /// JS printJson injects `status: "ok"` FIRST when absent (cli-output.js).
+/// JS printJson 的兼容行为：对象缺少 `status` 键时把 `"ok"` 插入到第一位，
+/// 保持与旧 CLI JSON 输出的键序一致。
 fn status_first_json(mut value: serde_json::Value) -> serde_json::Value {
     if let Some(map) = value.as_object_mut() {
         if !map.contains_key("status") {
@@ -194,14 +227,17 @@ fn status_first_json(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+/// clack 风格输出首帧（intro 框线），转发到 cli::ui 渲染。
 fn clack_intro(title: &str) {
     super::ui::intro(title);
 }
 
+/// clack 风格输出收尾帧（outro 框线）。
 fn clack_outro(text: &str) {
     super::ui::outro(text);
 }
 
+/// 输出一条带状态图标（success/warning/info）的日志块，detail 并入框内。
 fn log_status(status: &str, message: &str, detail: Option<&str>) {
     // ui::log_status joins detail into the block with the bar prefix.
     super::ui::log_status(status, message, detail);
@@ -209,16 +245,22 @@ fn log_status(status: &str, message: &str, detail: Option<&str>) {
 
 // ── system info / health probes (`cli-http.js` subset) ─────────────────
 
+/// `/api/system/info` 的最小化响应模型：仅保留实例识别所需的 runtime 标识与 PID。
 #[derive(Debug, Clone)]
 struct SystemInfo {
+    /// runtime 标识（"cli" / "desktop" 等）；空串表示响应无效。
     runtime: String,
+    /// 服务端上报的进程号；缺失或非有限数时为 None。
     pid: Option<u32>,
 }
 
+/// 判定探测结果是否为有效的 OMPChamber 信息：Some 且 runtime 非空。
 fn has_ompchamber_runtime_info(info: &Option<SystemInfo>) -> bool {
     info.as_ref().is_some_and(|info| !info.runtime.is_empty())
 }
 
+/// 异步探测指定端口的 `/api/system/info`：1.5s 超时；非 2xx、JSON 解析失败或
+/// runtime 为空均返回 None。port 为 0 直接跳过（视为无效端口）。
 async fn fetch_system_info_from_port_async(
     port: u16,
     host_override: Option<&str>,
@@ -250,10 +292,13 @@ async fn fetch_system_info_from_port_async(
     Some(SystemInfo { runtime, pid })
 }
 
+/// `fetch_system_info_from_port_async` 的同步包装（经 block_on 桥接）。
 fn fetch_system_info_from_port(port: u16, host_override: Option<&str>) -> Option<SystemInfo> {
     block_on(fetch_system_info_from_port_async(port, host_override))
 }
 
+/// 异步健康检查：GET /health，2xx 视为就绪。timeout_ms 为 0 时按 1000ms 计；
+/// port 为 0 或任何网络错误都返回 false。
 async fn is_server_health_ready_async(port: u16, timeout_ms: u64) -> bool {
     if port == 0 {
         return false;
@@ -272,20 +317,27 @@ async fn is_server_health_ready_async(port: u16, timeout_ms: u64) -> bool {
     response.status().is_success()
 }
 
+/// `is_server_health_ready_async` 的同步包装。
 fn is_server_health_ready(port: u16, timeout_ms: u64) -> bool {
     block_on(is_server_health_ready_async(port, timeout_ms))
 }
 
 // ── process identity (`cli-process.js` `getOmpchamberProcessState`) ────
 
+/// PID 归属判定结果：区分"pid 文件指向的进程"是否仍是本 CLI 启动的 OMPChamber。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProcessState {
+    /// 进程已不存在——pid 文件过期，应当清理。
     Dead,
+    /// 进程活着但读不到命令行（权限或平台限制），无法判定归属。
     Unknown,
+    /// 命令行匹配 OMPChamber 特征，确认是自己的实例。
     Matched,
+    /// 进程已被其它程序复用，pid 文件失效。
     Mismatched,
 }
 
+/// 判定 pid 的当前状态：先查存活，再读命令行比对 OMPChamber 特征。
 fn get_ompchamber_process_state(pid: u32) -> ProcessState {
     if !process::is_process_running(pid) {
         return ProcessState::Dead;
@@ -302,6 +354,8 @@ fn get_ompchamber_process_state(pid: u32) -> ProcessState {
     }
 }
 
+/// 文件 mtime 的毫秒 Unix 时间戳；任何失败（不存在、无权限）返回 0。
+/// 用作实例"新旧"比较的兜底排序键。
 fn file_mtime_ms(path: &Path) -> f64 {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
@@ -313,21 +367,34 @@ fn file_mtime_ms(path: &Path) -> f64 {
 
 // ── instance discovery (`cli-lifecycle.js` subset) ─────────────────────
 
+/// 一次发现得到的运行实例：来源可以是注册表 pid 文件 + 探测确认（registry+probe），
+/// 也可以是仅凭端口探测（probe）。status / logs / 生命周期命令共用该模型。
 #[derive(Debug, Clone)]
 struct DiscoveredInstance {
+    /// 实例监听端口（也是注册表文件名的一部分）。
     port: u16,
+    /// 实例进程号；探测未取到时回退注册表 pid（仅当进程校验匹配）。
     pid: Option<u32>,
+    /// 注册表实例元数据文件路径（instance_file_path(port)）。
     instance_file_path: PathBuf,
+    /// pid 文件 mtime（毫秒）；纯探测来源时为 0。
     mtime_ms: f64,
+    /// 实例元数据记录的启动时间戳；缺失或非法时为 0.0。
     started_at: f64,
+    /// 启动模式："foreground" 或 "daemon"。
     launch_mode: String,
+    /// 服务端上报的 runtime 标识（"cli" / "desktop" 等）。
     runtime: String,
+    /// 发现来源标签："registry+probe" 或 "probe"（status 据此区分 cli / unmanaged）。
     source: &'static str,
 }
 
 /// `getSystemInfoProbeHosts`: candidate hosts in probe order, each flagging
 /// whether a PID match is required to accept the answer.
+/// 生成探测主机序列：显式主机优先且不要求 PID 匹配；存在具体权威主机时，
+/// 兜底的默认 / 127.0.0.1 探测必须 PID 匹配才能采信。按 resolve_api_host 归一化去重。
 fn get_system_info_probe_hosts(hosts: &[Option<String>]) -> Vec<(Option<String>, bool)> {
+    /// 归一化并去重地压入一个候选主机（按 resolve_api_host 结果作键比较）。
     fn push_probe_host(
         out: &mut Vec<(Option<String>, bool)>,
         host: Option<String>,
@@ -361,6 +428,8 @@ fn get_system_info_probe_hosts(hosts: &[Option<String>]) -> Vec<(Option<String>,
     out
 }
 
+/// 依序尝试候选主机，返回第一个有效的系统信息；标记 requires_pid_match 的候选
+/// 只有当响应 PID 与期望一致时才被采信，避免把端口上别的服务器误认成目标实例。
 fn fetch_system_info_from_port_candidates(
     port: u16,
     hosts: &[(Option<String>, bool)],
@@ -381,6 +450,9 @@ fn fetch_system_info_from_port_candidates(
 
 /// `discoverRunningInstances`: registry pid files + live /api/system/info
 /// confirmation, with stale-file cleanup.
+/// 遍历 run 目录下的 `ompchamber-<port>.pid` 注册表文件：读 pid、校验进程归属、
+/// 再经 /api/system/info 确认存活；确认失败的死文件 / 错配文件就地清理，
+/// desktop runtime 不算 CLI 实例（同样清理），结果按端口升序返回。
 fn discover_running_instances(options: &Options) -> Vec<DiscoveredInstance> {
     let mut instances = Vec::new();
     let run_dir = paths::run_dir();
@@ -467,6 +539,8 @@ fn discover_running_instances(options: &Options) -> Vec<DiscoveredInstance> {
     instances
 }
 
+/// 判定探测到的 desktop runtime 是否就是设置文件登记的那个端口；
+/// 未登记 desktopLocalPort 时视为匹配（唯一的 desktop 即目标）。
 fn is_desktop_runtime_for_port(info: &SystemInfo, port: u16) -> bool {
     if info.runtime != "desktop" {
         return false;
@@ -475,6 +549,8 @@ fn is_desktop_runtime_for_port(info: &SystemInfo, port: u16) -> bool {
     desktop_port.is_none() || desktop_port == Some(port)
 }
 
+/// 用纯探测结果构造实例记录（source = "probe"）：无注册表元数据，
+/// mtime / started_at 记 0，launch_mode 视为 daemon。
 fn create_live_port_instance(port: u16, info: Option<SystemInfo>) -> Option<DiscoveredInstance> {
     if !has_ompchamber_runtime_info(&info) {
         return None;
@@ -493,6 +569,8 @@ fn create_live_port_instance(port: u16, info: Option<SystemInfo>) -> Option<Disc
 }
 
 /// `discoverOMPChamberInstanceOnPort`.
+/// 定位指定端口的实例：优先复用已发现的运行实例；否则直接探测该端口，
+/// 若探测到 desktop runtime 但端口与设置不符则拒绝（返回 None）。
 fn discover_instance_on_port(
     port: u16,
     options: &Options,
@@ -514,6 +592,8 @@ fn discover_instance_on_port(
 }
 
 /// `discoverLifecycleInstances`.
+/// 生命周期实例全集：默认返回全部注册表实例；用户显式指定端口时只返回该端口
+/// （注册表命中优先，未命中则做单端口探测）。
 fn discover_lifecycle_instances(options: &Options) -> Vec<DiscoveredInstance> {
     let running_instances = discover_running_instances(options);
     if !options.explicit_port {
@@ -535,6 +615,8 @@ fn discover_lifecycle_instances(options: &Options) -> Vec<DiscoveredInstance> {
 }
 
 /// `discoverDesktopInstance`: (port, pid).
+/// 发现 desktop 应用实例：读设置里的 desktopLocalPort 并探测确认 runtime 为
+/// "desktop"；返回 (port, pid)。
 fn discover_desktop_instance() -> Option<(u16, Option<u32>)> {
     let port = paths::read_desktop_local_port_from_settings()?;
     let info = fetch_system_info_from_port(port, None)?;
@@ -545,6 +627,7 @@ fn discover_desktop_instance() -> Option<(u16, Option<u32>)> {
 }
 
 /// `getLatestInstance`: newest startedAt, then pid-file mtime, then port.
+/// 挑"最新"实例：先比 startedAt，其次 pid 文件 mtime，最后端口大小决胜负。
 fn get_latest_instance(instances: &[DiscoveredInstance]) -> Option<&DiscoveredInstance> {
     instances.iter().max_by(|a, b| {
         let started = a
@@ -567,15 +650,22 @@ fn get_latest_instance(instances: &[DiscoveredInstance]) -> Option<&DiscoveredIn
 
 // ── status (`commands-status.js`) ──────────────────────────────────────
 
+/// status 命令的展示条目：从发现结果与注册表元数据聚合而来。
 #[derive(Debug, Clone, PartialEq)]
 struct StatusEntry {
+    /// 展示用 runtime 标签："cli" / "unmanaged" / "desktop"。
     runtime: String,
+    /// 实例端口。
     port: u16,
+    /// 进程号；探测未取到为 None。
     pid: Option<u32>,
+    /// 启动模式；desktop 条目为 None。
     launch_mode: Option<String>,
+    /// 是否受 UI 密码保护；unmanaged（无注册表元数据）实例为 None（unknown）。
     password_protected: Option<bool>,
 }
 
+/// 密码保护状态的人类可读标签：yes / no / unknown。
 fn password_protection_label(value: Option<bool>) -> &'static str {
     match value {
         Some(true) => "yes",
@@ -584,6 +674,7 @@ fn password_protection_label(value: Option<bool>) -> &'static str {
     }
 }
 
+/// 将条目序列化为 JSON 输出（驼峰键名与旧 JS CLI 对齐；缺失字段用 null）。
 fn status_entry_json(entry: &StatusEntry) -> serde_json::Value {
     serde_json::json!({
         "runtime": entry.runtime,
@@ -602,6 +693,9 @@ fn status_entry_json(entry: &StatusEntry) -> serde_json::Value {
 }
 
 /// The instance aggregation between discovery and presentation.
+/// 发现与展示之间的一层聚合：注册表实例标注密码保护与 cli / unmanaged 来源；
+/// 单独发现的 desktop 实例仅在无同端口 CLI 实例时追加（显式端口时只追加
+/// 注册表里的 desktop 条目）。
 fn collect_status_instances(options: &Options) -> Vec<StatusEntry> {
     let running_instances = discover_lifecycle_instances(options);
     let desktop_instance = if options.explicit_port {
@@ -675,6 +769,10 @@ fn collect_status_instances(options: &Options) -> Vec<StatusEntry> {
     instances
 }
 
+/// `ompchamber status`：列出运行中的 OMPChamber runtime。
+/// JSON 模式输出 state / runningCount / instances；Quiet 每实例打印
+/// `port <p> mode:<m> pass:<x>` 单行；Human 模式用 clack 框线逐实例展示
+/// 端口、PID、启动模式与密码保护状态。
 pub fn status_command(_parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let instances = collect_status_instances(&options);
     let running_count = instances.len();
@@ -746,8 +844,11 @@ pub fn status_command(_parsed: &Parsed, options: Options) -> Result<(), CliError
 
 // ── log files (`cli-log-files.js` subset) ──────────────────────────────
 
+/// `--lines` 未指定时的默认尾部行数。
 const DEFAULT_TAIL_LINES: u32 = 200;
 
+/// 读取文件最后 N 行（CRLF 归一、去掉末尾空行）；读取失败返回空表。
+/// 一次性整读而非流式——CLI 场景的日志文件规模可控。
 fn read_tail_lines(file_path: &Path, line_count: u32) -> Vec<String> {
     let Ok(raw) = std::fs::read(file_path) else {
         return Vec::new();
@@ -765,13 +866,19 @@ fn read_tail_lines(file_path: &Path, line_count: u32) -> Vec<String> {
 }
 
 /// Incremental state for `followFile`.
+/// `followFile` 的增量跟随状态：记录已消费到的文件偏移与跨读取块的半行残渣。
 struct FollowState {
+    /// 被跟随的日志文件路径。
     path: PathBuf,
+    /// 已读取到的字节偏移；文件被截断（变短）时重置为 0。
     position: u64,
+    /// 上次读取留下的不含换行符的尾部片段，拼接到下次读取内容之前。
     remainder: String,
 }
 
+/// FollowState 的构造与初始偏移设定。
 impl FollowState {
+    /// 从文件当前大小起开始跟随（跳过既有内容），只输出后续追加的行。
     fn new(path: PathBuf) -> Self {
         let position = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
         Self {
@@ -783,6 +890,8 @@ impl FollowState {
 }
 
 /// One `followFile` interval tick: emits newly appended complete lines.
+/// 跟随一跳：读出自上次偏移后追加的字节，仅产出已完整的行；文件变小则从头重读。
+/// 返回空表表示无新内容（或文件暂时打不开）。
 fn follow_poll(state: &mut FollowState) -> Vec<String> {
     let mut lines = Vec::new();
     let Ok(stats) = std::fs::metadata(&state.path) else {
@@ -820,6 +929,8 @@ fn follow_poll(state: &mut FollowState) -> Vec<String> {
     lines
 }
 
+/// 多目标日志跟随主循环：每 400ms 轮询各目标日志的新增行（可带 `[port]` 前缀），
+/// unix 上监听 SIGINT / SIGTERM 以干净退出。整个循环经 block_on 驱动。
 fn follow_targets(targets: &[DiscoveredInstance], should_prefix_lines: bool) {
     block_on(async move {
         let mut states: Vec<(u16, FollowState)> = targets
@@ -869,6 +980,8 @@ fn follow_targets(targets: &[DiscoveredInstance], should_prefix_lines: bool) {
 
 // ── logs (`commands-logs.js`) ──────────────────────────────────────────
 
+/// 解析 logs 命令的目标实例：--all 取全部；显式端口精确匹配（找不到报错）；
+/// 默认取"最新"实例（human 模式下提示所选端口）；无实例时统一报错。
 fn resolve_log_targets(options: &Options) -> Result<Vec<DiscoveredInstance>, CliError> {
     let running = discover_running_instances(options);
     if options.all {
@@ -911,6 +1024,7 @@ fn resolve_log_targets(options: &Options) -> Result<Vec<DiscoveredInstance>, Cli
     Ok(vec![latest.clone()])
 }
 
+/// logs 的 JSON 输出：每个目标一条 {port, logPath, lines}（不注入 status:first）。
 fn log_entries_json(targets: &[DiscoveredInstance], line_count: u32) -> serde_json::Value {
     serde_json::json!({
         "entries": targets
@@ -927,6 +1041,9 @@ fn log_entries_json(targets: &[DiscoveredInstance], line_count: u32) -> serde_js
     })
 }
 
+/// `ompchamber logs`：打印目标实例日志尾部，默认跟随新增行。
+/// --json 必须搭配 --no-follow（保证确定性输出）；human 模式带 clack 框线，
+/// 多目标或非交互模式给每行加 `[port]` 前缀。
 pub fn logs_command(_parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let show_frames = !options.json && !options.quiet;
     let should_prefix_lines = options.all || !show_frames;
@@ -986,6 +1103,9 @@ pub fn logs_command(_parsed: &Parsed, options: Options) -> Result<(), CliError> 
 
 // ── api target resolution (`cli-api-target.js`) ────────────────────────
 
+/// 解析 control 请求的目标端口（cli-api-target.js）：显式 --port 直接生效；
+/// 否则优先 desktop 实例，其次唯一存活实例；多实例时若默认端口健康则用默认端口，
+/// 否则报 usage 错；无实例且默认端口不健康则提示启动 `ompchamber serve`。
 fn resolve_target_port(options: &Options) -> Result<u16, CliError> {
     if options.explicit_port && options.port.is_some_and(|port| port > 0) {
         return Ok(options.port.unwrap_or_default());
@@ -1043,12 +1163,17 @@ fn resolve_target_port(options: &Options) -> Result<u16, CliError> {
 
 // ── authenticated control requests (`cli-control.js`, `cli-http.js`) ───
 
+/// control 请求的原始响应封装：状态码、是否成功、解析后的 JSON 体。
 struct JsonResponse {
+    /// HTTP 状态码。
     status: u16,
+    /// 是否 2xx 成功。
     ok: bool,
+    /// 解析后的响应体；解析失败为 Null。
     body: serde_json::Value,
 }
 
+/// 从响应的 Set-Cookie 头里提取 `oc_ui_session=...` cookie（含值，不含属性）。
 fn extract_ui_session_cookie(response: &reqwest::Response) -> Option<String> {
     for value in response.headers().get_all(reqwest::header::SET_COOKIE) {
         let set_cookie = value.to_str().ok()?;
@@ -1062,6 +1187,8 @@ fn extract_ui_session_cookie(response: &reqwest::Response) -> Option<String> {
     None
 }
 
+/// 解析 UI 密码：显式 --ui-password（非空）优先，其次该端口实例元数据里存的
+/// 密码，最后回退 options 中的非空密码；都拿不到则为 None。
 fn resolve_ui_password_for_port(port: u16, options: &Options) -> Option<String> {
     if options.explicit_ui_password {
         if let Some(password) = options
@@ -1088,6 +1215,8 @@ fn resolve_ui_password_for_port(port: u16, options: &Options) -> Option<String> 
         .map(str::to_string)
 }
 
+/// 异步登录换取会话 cookie：POST /auth/session（JSON 密码），成功后从 Set-Cookie
+/// 提取 oc_ui_session。无密码、空密码、请求失败或非 2xx 均返回 None。
 async fn create_ui_session_cookie_async(
     port: u16,
     password: Option<&str>,
@@ -1115,6 +1244,8 @@ async fn create_ui_session_cookie_async(
     extract_ui_session_cookie(&response)
 }
 
+/// 若目标端口正是设置登记的 desktop 本地端口，读取 client token 并生成
+/// `Bearer <token>` Authorization 头；否则返回 None。
 fn get_desktop_local_auth_header(port: u16) -> Option<String> {
     if paths::read_desktop_local_port_from_settings() != Some(port) {
         return None;
@@ -1123,6 +1254,7 @@ fn get_desktop_local_auth_header(port: u16) -> Option<String> {
     (!token.is_empty()).then(|| format!("Bearer {token}"))
 }
 
+/// 把 reqwest 错误映射为 CLI 错误：超时与一般失败给出不同文案（均 GENERAL_ERROR）。
 fn map_request_error(error: &reqwest::Error, endpoint: &str, timeout_ms: u64) -> CliError {
     if error.is_timeout() {
         CliError::new(
@@ -1137,6 +1269,9 @@ fn map_request_error(error: &reqwest::Error, endpoint: &str, timeout_ms: u64) ->
     }
 }
 
+/// 异步发起 control POST：超时缺省 4s，可带 desktop bearer 头；请求体可选。
+/// 收到 401 "UI authentication required" 时自动用解析出的密码换会话 cookie 并
+/// 重试一次。返回原始响应（业务错误映射交给上层 request_control_action）。
 async fn request_json_async(
     port: u16,
     endpoint: &str,
@@ -1206,6 +1341,7 @@ async fn request_json_async(
     })
 }
 
+/// `request_json_async` 的同步包装（经 block_on 桥接）。
 fn request_json(
     port: u16,
     endpoint: &str,
@@ -1218,11 +1354,16 @@ fn request_json(
     ))
 }
 
+/// --wait 未显式给 timeout 时的默认等待秒数（600s）。
 const DEFAULT_WAIT_TIMEOUT_SECONDS: f64 = 600.0;
+/// 等待窗口之上追加的 HTTP 缓冲毫秒数，覆盖等待到期后响应传播的延迟。
 const WAIT_HTTP_TIMEOUT_BUFFER_MS: u64 = 30_000;
+/// worktree 预置（建会话前的 git 操作）的额外超时毫秒数。
 const WORKTREE_PROVISION_TIMEOUT_MS: u64 = 120_000;
 
 /// `resolveControlTimeoutMs`.
+/// 计算 control 请求超时：显式覆盖值优先；无等待且无 worktree 则不设超时（None）；
+/// 等待窗口 = timeout 秒 + 30s 缓冲；带 worktree 再加 120s 预置窗口。
 fn resolve_control_timeout_ms(
     input: &serde_json::Value,
     timeout_ms_override: Option<u64>,
@@ -1249,6 +1390,9 @@ fn resolve_control_timeout_ms(
 }
 
 /// `requestControlAction`: one typed POST to the shared control endpoint.
+/// 发送 {action, input} 信封到 /api/ompchamber/control。失败时读取响应里的 error
+/// 文案（缺省 "Failed to execute <action>"），partial 结果附上残留会话提示；
+/// 400 / 404 映射为 usage 错误，其余状态码映射为 GENERAL_ERROR。
 fn request_control_action(
     port: u16,
     action: &str,
@@ -1314,6 +1458,8 @@ fn request_control_action(
 
 // ── goal mode (`cli-goal.js`) ──────────────────────────────────────────
 
+/// 校验 --goal-token-budget：必须搭配 --goal，且是 1000..=100_000_000 的纯整数；
+/// 选项未提供时返回 None。
 fn parse_goal_token_budget(options: &Options) -> Result<Option<u64>, CliError> {
     let Some(raw) = options.goal_token_budget.as_deref() else {
         return Ok(None);
@@ -1338,17 +1484,21 @@ fn parse_goal_token_budget(options: &Options) -> Result<Option<u64>, CliError> {
 
 // ── schedule (`commands-schedule.js`) ──────────────────────────────────
 
+/// `ompchamber schedule --help` 的帮助文案模板（与旧 JS CLI 逐字对齐）。
 const SCHEDULE_HELP: &str = "OMPChamber Schedule Commands\n\nUSAGE:\n  ompchamber schedule status [OPTIONS]\n  ompchamber schedule list (--project <projectId> | --dir <path>) [OPTIONS]\n  ompchamber schedule create (--project <projectId> | --dir <path>) --name <name> --prompt <prompt> --model <provider/model> (--daily <HH:mm> | --weekly <0,1,2> --time <HH:mm> | --once <YYYY-MM-DD> --time <HH:mm> | --cron <expr>) [OPTIONS]\n  ompchamber schedule run (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  ompchamber schedule delete (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  ompchamber schedule enable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n  ompchamber schedule disable (--project <projectId> | --dir <path>) --task <taskId> [OPTIONS]\n\nOPTIONS:\n  --project <projectId>   Project id from ompchamber projects\n  --dir <path>            Resolve project by directory\n  -p, --port <port>       OMPChamber server port\n  --timezone <zone>       IANA timezone for created tasks\n  --agent <id>            Agent to use when running task\n  --variant <id>          Model variant to use when running task\n  --goal                  Continue the scheduled session toward a goal\n  --goal-token-budget <n> Goal token budget (1000-100000000; requires --goal)\n  --disabled              Create task disabled\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print concise output\n";
 
 /// Exposed for the shared `--help` dispatch (`mod.rs`).
+/// 供 mod.rs 的共享 --help 分发使用。
 pub fn schedule_help_text() -> &'static str {
     SCHEDULE_HELP
 }
 
+/// 断言必填选项非空，缺失时报 usage 错 "Missing required <flag>."。
 fn assert_required(value: Option<&str>, flag_name: &str) -> Result<String, CliError> {
     as_non_empty_str(value).ok_or_else(|| CliError::usage(format!("Missing required {flag_name}.")))
 }
 
+/// 任务 execution 的 goal 摘要："goal:no" / "goal:yes" / "goal:yes budget:N"。
 fn format_goal(execution: &serde_json::Value) -> String {
     if field(execution, "goalEnabled") != &serde_json::Value::Bool(true) {
         return "goal:no".to_string();
@@ -1362,6 +1512,7 @@ fn format_goal(execution: &serde_json::Value) -> String {
     }
 }
 
+/// 把 JSON 数组拼成逗号串：字符串原样、数字按 JS 数字格式化、其余元素为空串。
 fn join_string_array(value: &serde_json::Value) -> String {
     value
         .as_array()
@@ -1381,6 +1532,8 @@ fn join_string_array(value: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
+/// 任务 schedule 的人类可读摘要：daily / weekly / once / cron 各自格式化，
+/// 未知 kind 原样输出，非对象输出 "unknown"。
 fn format_schedule(schedule: &serde_json::Value) -> String {
     if !schedule.is_object() {
         return "unknown".to_string();
@@ -1410,6 +1563,8 @@ fn format_schedule(schedule: &serde_json::Value) -> String {
     }
 }
 
+/// 任务列表的三种输出模式：JSON（注入 status:first）、quiet（单行紧凑）、
+/// human（clack 框线逐任务展示，禁用任务标 warning）。
 fn output_tasks(options: &Options, tasks: &serde_json::Value) {
     let normalized_tasks = tasks.as_array().cloned().unwrap_or_default();
     if options.json {
@@ -1470,6 +1625,7 @@ fn output_tasks(options: &Options, tasks: &serde_json::Value) {
 }
 
 /// schedule target scope: `--project` / `--dir` (trimmed, when non-empty).
+/// 构造目标范围输入：--project → projectId、--dir → directory（trim 后非空才带）。
 fn schedule_target_input(options: &Options) -> serde_json::Map<String, serde_json::Value> {
     let mut target = serde_json::Map::new();
     if let Some(project) = as_non_empty_str(options.project.as_deref()) {
@@ -1481,6 +1637,9 @@ fn schedule_target_input(options: &Options) -> serde_json::Map<String, serde_jso
     target
 }
 
+/// `ompchamber schedule <action>`：status / list / create / run / delete / enable /
+/// disable。先解析目标端口与范围，再按动作构造输入调用对应 control action，
+/// 按 json / quiet / human 三种模式渲染结果；未知动作在端口解析之后报 usage 错。
 pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let action = parsed
         .schedule_action
@@ -1748,13 +1907,16 @@ pub fn schedule_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
 
 // ── session (`commands-session.js`) ────────────────────────────────────
 
+/// `ompchamber session --help` 的帮助文案模板（与旧 JS CLI 逐字对齐）。
 const SESSION_HELP: &str = "OMPChamber Session Commands\n\nUSAGE:\n  ompchamber session list [--dir <path>] [--limit <count>] [--with-status] [OPTIONS]\n  ompchamber session create --dir <path> [--title <title>] [--wait] [OPTIONS]\n  ompchamber session create --project <projectId> [--title <title>] [--wait] [OPTIONS]\n  ompchamber session send --session <id> --dir <path> --prompt <text> [--wait] [OPTIONS]\n  ompchamber session fork --session <id> --dir <path> --prompt <text> [--message <id>] [--wait] [OPTIONS]\n  ompchamber session status --session <id> --dir <path> [OPTIONS]\n  ompchamber session messages --session <id> --dir <path> [--wait] [OPTIONS]\n\nLIST OPTIONS:\n  --dir <path>            Filter sessions by directory\n  --limit <count>         Maximum sessions to show (default: 10)\n  --all                   Include archived sessions\n  --with-status           Include authoritative idle/busy/retry status\n\nACTION OPTIONS:\n  --session <id>          Source or target session id\n  --dir <path>            Authoritative session directory\n  --prompt <text>         Prompt to send to the session\n  --message <id>          Fork from this message (fork only; default: latest)\n  --model <provider/model>  Model for the prompt (defaults to configured selection)\n  --agent <id>            Agent for the prompt (defaults to configured selection)\n  --variant <id>          Model variant for the prompt\n  --goal                  Run the prompt as a new goal\n  --goal-token-budget <n> Goal token budget (1000-100000000; requires --goal)\n  --wait                  Wait for the dispatched activity to become idle\n  --last-assistant        Include the last assistant text after waiting\n  --timeout <seconds>     Wait timeout in seconds (default: 600, max: 86400)\n\nCREATE OPTIONS:\n  --worktree <name>       Create a git worktree before creating the session\n  --branch <name>         Branch name for --worktree\n  --start-ref, --base <ref>  Start ref for --worktree\n  --upstream              Set upstream for the worktree branch\n  --no-upstream           Do not set upstream for the worktree branch\n  --name <title>          Alias for --title\n\nSTATUS/MESSAGES OPTIONS:\n  --last                  Return only the latest text-bearing message\n  --last-assistant        Shorthand for --last --role assistant\n  --limit <count>         Maximum text messages to return (default: 10)\n  --all                   Return all text-bearing messages\n  --role <role>           Filter messages: all, user, assistant\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OMPChamber server port\n  --json                  Output machine-readable JSON\n  -q, --quiet             Print compact output\n";
 
 /// Exposed for the shared `--help` dispatch (`mod.rs`).
+/// 供 mod.rs 的共享 --help 分发使用。
 pub fn session_help_text() -> &'static str {
     SESSION_HELP
 }
 
+/// 校验 --model 必须是 `provider/model`（斜杠不能在首尾）；空 / 空白视为未指定。
 fn validate_model(model: Option<&str>) -> Result<Option<String>, CliError> {
     let Some(normalized) = as_non_empty_str(model) else {
         return Ok(None);
@@ -1768,6 +1930,7 @@ fn validate_model(model: Option<&str>) -> Result<Option<String>, CliError> {
     Ok(Some(normalized))
 }
 
+/// 规整 --limit：未提供用 fallback，提供了必须 ≥1，否则报 usage 错。
 fn normalize_limit(value: Option<u32>, fallback: u32) -> Result<u32, CliError> {
     match value {
         None => Ok(fallback),
@@ -1778,6 +1941,7 @@ fn normalize_limit(value: Option<u32>, fallback: u32) -> Result<u32, CliError> {
     }
 }
 
+/// 断言 --session 与 --dir 都非空，返回 (session_id, directory)。
 fn assert_session_target(options: &Options) -> Result<(String, String), CliError> {
     let session_id = as_non_empty_str(options.session.as_deref())
         .ok_or_else(|| CliError::usage("Missing required --session."))?;
@@ -1786,6 +1950,7 @@ fn assert_session_target(options: &Options) -> Result<(String, String), CliError
     Ok((session_id, directory))
 }
 
+/// 规整消息角色过滤：缺省 "all"，只接受 all / user / assistant。
 fn normalize_message_role(value: Option<&str>) -> Result<String, CliError> {
     let role = as_non_empty_str(value).unwrap_or_else(|| "all".to_string());
     if !matches!(role.as_str(), "all" | "user" | "assistant") {
@@ -1796,6 +1961,8 @@ fn normalize_message_role(value: Option<&str>) -> Result<String, CliError> {
     Ok(role)
 }
 
+/// 单条文本消息的 Markdown 渲染：**User / Assistant** 标题，时间与模型作为斜体
+/// 附注（createdAt 为 0 或无法格式化时省略），正文接在其后。
 fn format_text_message(message: &serde_json::Value) -> String {
     let label = if value_str(message, "role") == Some("user") {
         "User"
@@ -1824,6 +1991,8 @@ fn format_text_message(message: &serde_json::Value) -> String {
     )
 }
 
+/// 从 session.model 提取 `provider/model` 引用：兼容 providerID / providerId 与
+/// id / modelID / modelId 多种键名；任一缺失返回 None。
 fn format_session_model(session: &serde_json::Value) -> Option<String> {
     let model = field(session, "model");
     let provider_id = value_str(model, "providerID")
@@ -1842,6 +2011,8 @@ fn format_session_model(session: &serde_json::Value) -> Option<String> {
     Some(format!("{provider_id}/{model_id}"))
 }
 
+/// session list 的单行渲染：`标题` — `模型`, `agent`[, `variant`] — [status:xx] —
+/// `目录`；标题回退 slug → id → untitled，缺省字段用 unknown-* 占位。
 fn format_session_line(session: &serde_json::Value) -> String {
     let title = as_non_empty_str(value_str(session, "title"))
         .or_else(|| as_non_empty_str(value_str(session, "slug")))
@@ -1875,6 +2046,8 @@ fn format_session_line(session: &serde_json::Value) -> String {
 }
 
 /// `buildSessionCreatePayload`.
+/// 构造 session.create 的输入：--dir 与 --project 二选一必填；--goal 必须带
+/// prompt；worktree 相关选项收敛为嵌套对象 {name, branchName, startRef}。
 fn build_session_create_payload(
     options: &Options,
 ) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
@@ -1946,6 +2119,8 @@ fn build_session_create_payload(
 }
 
 /// `buildSessionPromptPayload`.
+/// 构造 session.send / fork 的输入：--session / --dir / --prompt 必填；
+/// --message 仅 fork 可用；goal 与 token 预算按需附加。
 fn build_session_prompt_payload(
     options: &Options,
     action: &str,
@@ -1985,6 +2160,7 @@ fn build_session_prompt_payload(
     Ok(payload)
 }
 
+/// 校验等待相关选项组合：--timeout 与 --last-assistant 都要求搭配 --wait。
 fn validate_action_wait_options(options: &Options, action: &str) -> Result<(), CliError> {
     if options.timeout.is_some() && !options.wait {
         return Err(CliError::usage("--timeout requires --wait."));
@@ -1998,6 +2174,8 @@ fn validate_action_wait_options(options: &Options, action: &str) -> Result<(), C
 }
 
 /// The shared "wait envelope" appended to dispatched control inputs.
+/// 追加到派发输入末尾的"等待信封"：wait、lastAssistant，以及可选的 timeout
+/// （按 JS Number 语义解析，经 number_option）。
 fn wait_envelope(options: &Options) -> Vec<(String, serde_json::Value)> {
     let mut envelope = vec![
         ("wait".to_string(), serde_json::json!(options.wait)),
@@ -2013,6 +2191,8 @@ fn wait_envelope(options: &Options) -> Vec<(String, serde_json::Value)> {
 }
 
 /// Common human tail for send/fork/create results.
+/// send / fork / create 结果的公共 human 尾部：worktree 信息（仅 create）、
+/// prompt / command 派发提示、goal 模式与预算、会话最终状态。create 控制文案前缀。
 fn print_session_result_details(result: &serde_json::Value, create: bool) {
     let worktree = field(result, "worktree");
     let worktree_path = value_str(worktree, "path").filter(|path| !path.is_empty());
@@ -2063,6 +2243,10 @@ fn print_session_result_details(result: &serde_json::Value, create: bool) {
     }
 }
 
+/// `ompchamber session <action>`：list / status / messages / send / fork / create。
+/// 各动作先做参数校验再解析端口，send / fork / create 追加等待信封后调用
+/// session.* control action；输出分 json / quiet / human 三种模式，
+/// 等待完成后可附最后一条 assistant 消息。
 pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let action = parsed
         .session_action
@@ -2351,13 +2535,17 @@ pub fn session_command(parsed: &Parsed, options: Options) -> Result<(), CliError
 
 // ── models (`commands-models.js`) ──────────────────────────────────────
 
+/// `ompchamber models --help` 的帮助文案模板。
 const MODELS_HELP: &str = "OMPChamber Models Commands\n\nUSAGE:\n  ompchamber models [OPTIONS]\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OMPChamber server port\n  --json                  Output machine-readable JSON\n";
 
 /// Exposed for the shared `--help` dispatch (`mod.rs`).
+/// 供 mod.rs 的共享 --help 分发使用。
 pub fn models_help_text() -> &'static str {
     MODELS_HELP
 }
 
+/// 从模型条目提取 `provider/model` 引用：兼容 providerID / providerId 与
+/// modelID / modelId / id 键名；任一缺失返回 None（列表中该条被过滤）。
 fn format_model_ref(entry: &serde_json::Value) -> Option<String> {
     let provider_id = value_str(entry, "providerID")
         .map(str::trim)
@@ -2375,6 +2563,8 @@ fn format_model_ref(entry: &serde_json::Value) -> Option<String> {
     Some(format!("{provider_id}/{model_id}"))
 }
 
+/// models 的 human 输出：默认模型（可含 variant）与默认 agent、收藏列表、
+/// 最近使用列表；空列表打印 "- none"。
 fn format_models_output(settings: &serde_json::Value) -> String {
     let favorites = field(settings, "favoriteModels")
         .as_array()
@@ -2426,6 +2616,8 @@ fn format_models_output(settings: &serde_json::Value) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+/// `ompchamber models [show]`：经 models.list control action 拉取设置，
+/// JSON 原样输出（注入 status:first），human 用 format_models_output 渲染。
 pub fn models_command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let action = parsed
         .positionals
@@ -2455,13 +2647,16 @@ pub fn models_command(parsed: &Parsed, options: Options) -> Result<(), CliError>
 
 // ── projects (`commands-projects.js`) ──────────────────────────────────
 
+/// `ompchamber projects --help` 的帮助文案模板。
 const PROJECTS_HELP: &str = "OMPChamber Projects Commands\n\nUSAGE:\n  ompchamber projects [OPTIONS]\n\nOUTPUT OPTIONS:\n  -p, --port <port>       OMPChamber server port\n  --json                  Output machine-readable JSON\n";
 
 /// Exposed for the shared `--help` dispatch (`mod.rs`).
+/// 供 mod.rs 的共享 --help 分发使用。
 pub fn projects_help_text() -> &'static str {
     PROJECTS_HELP
 }
 
+/// 单个项目的一行渲染：`label` — `id` — `path`。
 fn format_project_line(project: &serde_json::Value) -> String {
     format!(
         "- `{}` — `{}` — `{}`",
@@ -2471,6 +2666,8 @@ fn format_project_line(project: &serde_json::Value) -> String {
     )
 }
 
+/// `ompchamber projects [list]`：经 projects.list control action 拉取项目，
+/// JSON 输出 {projects}，human 逐行打印；无项目提示 "No projects found."。
 pub fn projects_command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let action = parsed
         .positionals
@@ -2511,13 +2708,16 @@ pub fn projects_command(parsed: &Parsed, options: Options) -> Result<(), CliErro
 
 // ── control (`cli.js` `showControlHelp`) ───────────────────────────────
 
+/// `ompchamber control help` 的帮助文案模板（cli.js 的 showControlHelp）。
 const CONTROL_HELP: &str = "\n OMPChamber Control Commands\n\nUSAGE:\n  ompchamber <COMMAND> [OPTIONS]\n\nCOMMANDS:\n  status                         Show running OMPChamber runtimes\n  session                        Create, inspect, and read sessions\n  models                         Show default and favorite models\n  projects                       Show configured projects and IDs\n  schedule                       Manage scheduled tasks\n  tunnel                         Inspect tunnel status/readiness\n  logs                           Tail logs for CLI-managed runtimes\n\nDETAILED HELP:\n  ompchamber session --help     Show session creation, status, and message options\n  ompchamber models --help      Show model defaults and favorites help\n  ompchamber projects --help    Show project list help\n  ompchamber schedule --help    Show scheduled task actions and schedule options\n  ompchamber tunnel help        Show tunnel lifecycle/status commands\n  ompchamber status --help      Show runtime status options\n\nCOMMON OPTIONS:\n  --json                         Output machine-readable JSON\n  -q, --quiet                    Print minimal output\n  -p, --port <port>              Target a specific OMPChamber runtime\n  --ui-password <password>       Authenticate to a password-protected runtime\n\nEXAMPLES:\n  ompchamber status\n  ompchamber models\n  ompchamber projects\n  ompchamber session --help\n  ompchamber schedule --help\n";
 
 /// Exposed for the shared `--help` dispatch (`mod.rs`).
+/// 供 mod.rs 的共享 --help 分发使用。
 pub fn control_help_text() -> &'static str {
     CONTROL_HELP
 }
 
+/// `ompchamber control`：只支持 help 子命令（打印帮助），其余动作报 usage 错。
 pub fn control_command(parsed: &Parsed, _options: Options) -> Result<(), CliError> {
     let action = parsed
         .control_action
@@ -2533,6 +2733,10 @@ pub fn control_command(parsed: &Parsed, _options: Options) -> Result<(), CliErro
     Ok(())
 }
 
+/// 覆盖 misc.rs 的单元测试：日期 / 数字格式化、探测主机、实例发现与 status 聚合、
+/// 目标端口解析、日志读取与跟随、control 传输与超时窗口、goal 校验、
+/// schedule / session / models / projects 的 payload 构造与输出格式化。
+/// 通过 EnvGuard 隔离环境变量与数据目录，spawn_fake_server 提供回环假服务端。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2541,24 +2745,28 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    /// 全局环境变量互斥锁（crate::cli::TEST_ENV_MUTEX）：环境是进程级共享状态。
     fn env_mutex() -> &'static std::sync::Mutex<()> {
         &crate::cli::TEST_ENV_MUTEX
     }
 
     /// Poisoning-tolerant lock: one failing test must not cascade into every
     /// other env-guarded test.
+    /// 容忍中毒的加锁：单个测试失败不得连锁拖垮其它持锁测试。
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         env_mutex()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// 测试内安全设置环境变量（调用方须已持有 env_lock）。
     fn set_var(key: &str, value: &str) {
         // SAFETY: every test that touches process environment variables holds
         // ENV_LOCK for its whole body, serializing access across threads.
         unsafe { std::env::set_var(key, value) }
     }
 
+    /// 测试内安全删除环境变量（调用方须已持有 env_lock）。
     fn remove_var(key: &str) {
         // SAFETY: see `set_var`.
         unsafe { std::env::remove_var(key) }
@@ -2567,13 +2775,19 @@ mod tests {
     /// Points the CLI at a temp data dir; `isolate_host` reroutes env-derived
     /// probe hosts to 127.0.0.2 so DEFAULT_PORT health checks cannot reach a
     /// real server the developer may be running on 127.0.0.1.
+    /// RAII 环境隔离：把 OMPCHAMBER_DATA_DIR / HOST / PORT 指向临时目录，
+    /// Drop 时恢复原值；isolate_host 用 127.0.0.2 重定向 env 派生的探测主机，
+    /// 防止 DEFAULT_PORT 健康检查误连开发者本机 127.0.0.1 上的真实服务。
     struct EnvGuard {
+        /// Drop 时需要恢复的 (键, 原值) 列表；原值为 None 表示安装前不存在。
         saved: Vec<(&'static str, Option<String>)>,
     }
 
+    /// EnvGuard 的安装入口。
     impl EnvGuard {
         /// Caller must already hold `ENV_LOCK` (tests lock it for their whole
         /// body) — std Mutex is not reentrant.
+        /// 调用方必须已持有 env_lock（std::sync::Mutex 不可重入）。
         fn install(data_dir: &Path, isolate_host: bool) -> Self {
             let saved = ["OMPCHAMBER_DATA_DIR", "OMPCHAMBER_HOST", "OMPCHAMBER_PORT"]
                 .iter()
@@ -2589,7 +2803,9 @@ mod tests {
         }
     }
 
+    /// Drop 时恢复所有被改写的环境变量。
     impl Drop for EnvGuard {
+        /// 逐项把环境变量恢复到安装前的状态。
         fn drop(&mut self) {
             for (key, value) in self.saved.drain(..) {
                 match value {
@@ -2600,7 +2816,9 @@ mod tests {
         }
     }
 
+    /// 创建唯一的临时数据目录（进程 id + 原子计数器保证并发唯一）。
     fn temp_data_dir(label: &str) -> PathBuf {
+        /// 并发唯一的目录计数器。
         static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let unique = format!(
             "ompchamber-misc-{label}-{}-{}",
@@ -2612,12 +2830,16 @@ mod tests {
         dir
     }
 
+    /// 假服务端的请求处理函数：path → (status, JSON body)。
     type Responder = Arc<dyn Fn(&str) -> (u16, String) + Send + Sync>;
 
     /// Minimal keep-alive HTTP/1.1 server; GETs and JSON POSTs both served.
     /// Recorded request: (method, path, body).
+    /// 已记录请求的共享日志：(method, path, body) 列表。
     type RequestLog = Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
 
+    /// 在 127.0.0.1 随机端口起一个最小 keep-alive HTTP/1.1 假服务端，
+    /// 返回 (port, 请求日志)；每连接一个线程，同时服务 GET 与 JSON POST。
     fn spawn_fake_server(responder: Responder) -> (u16, RequestLog) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake server");
         let port = listener.local_addr().unwrap().port();
@@ -2634,6 +2856,8 @@ mod tests {
         (port, log)
     }
 
+    /// 单连接处理循环：按 Content-Length 读完整请求、记入日志、交给 responder
+    /// 并写回固定格式响应；10s 读超时，超过 1MiB 的请求直接断开。
     fn handle_connection(mut stream: TcpStream, responder: Responder, log: RequestLog) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         loop {
@@ -2695,6 +2919,7 @@ mod tests {
         }
     }
 
+    /// 构造 /api/system/info + /health 的标准 responder（指定 runtime 与 pid）。
     fn system_info_responder(runtime: &str, pid: u32) -> Responder {
         let runtime = runtime.to_string();
         Arc::new(move |path| match path {
@@ -2704,6 +2929,8 @@ mod tests {
         })
     }
 
+    /// 写出注册表文件对：ompchamber-<port>.pid 与实例元数据 JSON
+    /// （daemon 模式、可选 UI 密码、startedAt）。
     fn write_instance_files(
         data_dir: &Path,
         port: u16,
@@ -2733,6 +2960,7 @@ mod tests {
         .expect("write instance file");
     }
 
+    /// 在 logs 目录写出 ompchamber-<port>.log。
     fn write_log_file(data_dir: &Path, port: u16, contents: &str) {
         let logs_dir = data_dir.join("logs");
         std::fs::create_dir_all(&logs_dir).expect("create logs dir");
@@ -2740,6 +2968,7 @@ mod tests {
             .expect("write log file");
     }
 
+    /// 解析 argv 为 Parsed（失败即 panic——测试输入必须合法）。
     fn parse(argv: &[&str]) -> Parsed {
         let owned = argv.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
         args::parse_args(&owned).expect("parse args")
@@ -2747,6 +2976,7 @@ mod tests {
 
     // ── log files ──────────────────────────────────────────────────
 
+    /// 验证 read_tail_lines 只返回最后 N 行、CRLF 被归一、文件缺失返回空。
     #[test]
     fn read_tail_lines_returns_last_n_and_handles_crlf() {
         let dir = temp_data_dir("tail");
@@ -2760,6 +2990,7 @@ mod tests {
         assert!(read_tail_lines(&dir.join("missing.log"), 5).is_empty());
     }
 
+    /// 验证 follow_poll 只产出完整行（半行跨读取块拼接），文件截断重写后从头重读。
     #[test]
     fn follow_poll_emits_only_complete_lines_and_resets_on_truncate() {
         let dir = temp_data_dir("follow");
@@ -2789,6 +3020,7 @@ mod tests {
 
     // ── date formatting ────────────────────────────────────────────
 
+    /// 验证 iso8601_from_epoch_ms 与 JS toISOString 输出一致（含闰日）。
     #[test]
     fn iso8601_matches_new_date_toISOString() {
         assert_eq!(
@@ -2808,6 +3040,7 @@ mod tests {
 
     // ── probe hosts ────────────────────────────────────────────────
 
+    /// 验证探测主机序列的去重规则，以及"具体权威主机 ⇒ 兜底探测需 PID 匹配"的标记。
     #[test]
     fn probe_hosts_dedup_loopback_and_flag_concrete_pid_matching() {
         let _env = env_lock();
@@ -2834,6 +3067,7 @@ mod tests {
 
     // ── status + discovery ─────────────────────────────────────────
 
+    /// 验证注册表实例经探测确认后的字段与 JSON 输出（含密码保护标记）。
     #[test]
     fn status_reports_registry_instance_with_password_protection() {
         let _env = env_lock();
@@ -2865,6 +3099,7 @@ mod tests {
         assert_eq!(json["pid"], pid);
     }
 
+    /// 验证仅凭端口探测发现的实例被标为 unmanaged，密码状态为 unknown。
     #[test]
     fn status_without_password_reports_unprotected_and_marks_probed_unmanaged() {
         let _env = env_lock();
@@ -2886,6 +3121,7 @@ mod tests {
         assert_eq!(json["passwordProtected"], serde_json::Value::Null);
     }
 
+    /// 验证 desktop 实例在无同端口 CLI 实例时作为独立条目追加。
     #[test]
     fn status_appends_desktop_entry_when_no_cli_instance_matches() {
         let _env = env_lock();
@@ -2917,6 +3153,7 @@ mod tests {
 
     // ── api target resolution ──────────────────────────────────────
 
+    /// 验证显式 -p 直接短路返回，不做任何发现。
     #[test]
     fn resolve_target_port_explicit_short_circuits() {
         let _env = env_lock();
@@ -2925,6 +3162,7 @@ mod tests {
         assert_eq!(resolve_target_port(&parsed.options).unwrap(), 4242);
     }
 
+    /// 验证唯一存活实例时无需 --port 即返回该端口。
     #[test]
     fn resolve_target_port_returns_single_lifecycle_port() {
         let _env = env_lock();
@@ -2938,6 +3176,7 @@ mod tests {
         assert_eq!(resolve_target_port(&options).unwrap(), port);
     }
 
+    /// 验证 desktop 实例优先于 CLI 实例被选为目标端口。
     #[test]
     fn resolve_target_port_prefers_desktop_runtime() {
         let _env = env_lock();
@@ -2958,6 +3197,7 @@ mod tests {
         assert_eq!(resolve_target_port(&options).unwrap(), desktop_port);
     }
 
+    /// 验证多实例且无显式端口时报 usage 错并列出全部端口。
     #[test]
     fn resolve_target_port_errors_on_multiple_without_explicit() {
         let _env = env_lock();
@@ -2981,6 +3221,7 @@ mod tests {
         );
     }
 
+    /// 验证无实例且默认端口不健康时的报错文案与退出码。
     #[test]
     fn resolve_target_port_reports_missing_server() {
         let _env = env_lock();
@@ -2996,6 +3237,7 @@ mod tests {
 
     // ── logs ───────────────────────────────────────────────────────
 
+    /// 验证 logs 默认选最新实例，JSON 条目含端口、尾部行与日志路径。
     #[test]
     fn logs_resolves_latest_instance_and_builds_json_entries() {
         let _env = env_lock();
@@ -3026,6 +3268,7 @@ mod tests {
         );
     }
 
+    /// 验证无运行实例时 logs 报错。
     #[test]
     fn logs_errors_when_no_instance_running() {
         let _env = env_lock();
@@ -3036,6 +3279,7 @@ mod tests {
         assert_eq!(error.message, "No running OMPChamber instance found.");
     }
 
+    /// 验证显式端口与发现结果不符时的报错文案。
     #[test]
     fn logs_explicit_port_missing_errors() {
         let _env = env_lock();
@@ -3053,6 +3297,7 @@ mod tests {
         );
     }
 
+    /// 验证 --json 必须搭配 --no-follow。
     #[test]
     fn logs_json_requires_no_follow() {
         let _env = env_lock();
@@ -3073,6 +3318,7 @@ mod tests {
 
     // ── control transport ──────────────────────────────────────────
 
+    /// 验证 control action 成功回传、404 映射 usage 错、500 映射通用错误与兜底文案。
     #[test]
     fn request_control_action_round_trips_and_maps_errors() {
         let _env = env_lock();
@@ -3121,6 +3367,7 @@ mod tests {
         assert_eq!(error.message, "Failed to execute session.list");
     }
 
+    /// 验证请求体是 {action, input} 的 typed JSON 信封。
     #[test]
     fn request_control_action_sends_typed_envelope() {
         let _env = env_lock();
@@ -3157,6 +3404,7 @@ mod tests {
         assert_eq!(envelope["input"]["sessionId"], "s1");
     }
 
+    /// 验证超时窗口：无等待无 worktree 不设、worktree 加 120s、等待加缓冲、覆盖值优先。
     #[test]
     fn resolve_control_timeout_ms_follows_wait_and_worktree_windows() {
         assert_eq!(
@@ -3194,6 +3442,7 @@ mod tests {
         );
     }
 
+    /// 验证密码解析优先级：显式 --ui-password > 实例文件 > options 回退。
     #[test]
     fn resolve_ui_password_prefers_explicit_then_instance_file() {
         let _env = env_lock();
@@ -3227,6 +3476,7 @@ mod tests {
 
     // ── goal mode ──────────────────────────────────────────────────
 
+    /// 验证 goal token budget 必须搭配 --goal 且是 1000..=100000000 的整数。
     #[test]
     fn goal_token_budget_validates_range_and_goal_flag() {
         let mut options = parse(&["schedule", "create"]).options;
@@ -3255,6 +3505,7 @@ mod tests {
 
     // ── schedule formatting ────────────────────────────────────────
 
+    /// 验证 goal 摘要的三种形态（no / yes / yes+budget）。
     #[test]
     fn format_goal_covers_disabled_enabled_and_budget() {
         assert_eq!(format_goal(&serde_json::json!({})), "goal:no");
@@ -3272,6 +3523,7 @@ mod tests {
         );
     }
 
+    /// 验证 schedule 摘要覆盖 daily / weekly / once / cron / 未知类型。
     #[test]
     fn format_schedule_covers_all_kinds() {
         assert_eq!(format_schedule(&serde_json::Value::Null), "unknown");
@@ -3306,6 +3558,7 @@ mod tests {
         );
     }
 
+    /// 验证未知 schedule 动作在端口解析之后报 usage 错。
     #[test]
     fn schedule_unknown_action_errors_after_port_resolution() {
         let _env = env_lock();
@@ -3321,6 +3574,7 @@ mod tests {
         assert_eq!(error.message, "Unknown schedule command 'bogus'.");
     }
 
+    /// 验证缺 --task 时报 usage 错。
     #[test]
     fn schedule_missing_task_flag_is_a_usage_error() {
         let _env = env_lock();
@@ -3338,6 +3592,7 @@ mod tests {
 
     // ── session payloads and formatting ────────────────────────────
 
+    /// 验证 --model 的 provider/model 格式校验与 trim 归一。
     #[test]
     fn validate_model_requires_provider_slash_model() {
         assert_eq!(validate_model(None).unwrap(), None);
@@ -3355,6 +3610,7 @@ mod tests {
         }
     }
 
+    /// 验证 create payload 的目标互斥 / 必填与 goal → prompt 依赖。
     #[test]
     fn build_session_create_payload_validates_target_and_goal() {
         let options = parse(&["session", "create", "--prompt", "hi", "--goal"]).options;
@@ -3370,6 +3626,7 @@ mod tests {
         assert_eq!(error.message, "--goal requires --prompt.");
     }
 
+    /// 验证 create payload 的 worktree 嵌套结构与各选项映射，及 control 传输前的展平。
     #[test]
     fn build_session_create_payload_shapes_worktree_and_flags() {
         let options = parse(&[
@@ -3425,6 +3682,7 @@ mod tests {
         assert_eq!(control_payload["startRef"], "main");
     }
 
+    /// 验证 send / fork payload 的必填项，以及 --message 仅 fork 可用。
     #[test]
     fn build_session_prompt_payload_validates_inputs() {
         let options = parse(&["session", "send", "--session", "s1", "--dir", "/repo"]).options;
@@ -3489,6 +3747,7 @@ mod tests {
         assert_eq!(error.message, "Missing required --dir.");
     }
 
+    /// 验证 --timeout / --last-assistant 均要求搭配 --wait。
     #[test]
     fn session_action_wait_options_validate() {
         let options = parse(&["session", "send", "--timeout", "30"]).options;
@@ -3506,6 +3765,7 @@ mod tests {
         assert!(validate_action_wait_options(&options, "send").is_ok());
     }
 
+    /// 验证 messages 各选项冲突在端口解析之前即报 usage 错。
     #[test]
     fn session_messages_flag_conflicts_error_before_port_resolution() {
         let base = ["session", "messages", "--session", "s1", "--dir", "/repo"];
@@ -3573,6 +3833,7 @@ mod tests {
         }
     }
 
+    /// 验证未知 session 动作直接报错，不触发端口发现。
     #[test]
     fn session_unknown_action_errors_without_port_resolution() {
         let parsed = parse(&["session", "bogus"]);
@@ -3581,6 +3842,7 @@ mod tests {
         assert_eq!(error.message, "Unknown session command 'bogus'.");
     }
 
+    /// 验证 status 动作对 --session / --dir 的必填校验。
     #[test]
     fn session_status_requires_target_flags() {
         let parsed = parse(&["session", "status"]);
@@ -3591,6 +3853,7 @@ mod tests {
         assert_eq!(error.message, "Missing required --dir.");
     }
 
+    /// 验证 session 行渲染的键名兼容、variant / status 拼接与缺省回退。
     #[test]
     fn format_session_line_includes_model_agent_variant_status() {
         let session = serde_json::json!({
@@ -3621,6 +3884,7 @@ mod tests {
         );
     }
 
+    /// 验证消息渲染的角色标签、时间 / 模型附注与正文。
     #[test]
     fn format_text_message_renders_label_details_and_body() {
         let message = serde_json::json!({
@@ -3646,6 +3910,7 @@ mod tests {
 
     // ── models / projects formatting ───────────────────────────────
 
+    /// 验证 models 输出的默认行、收藏 / 最近列表与空态。
     #[test]
     fn format_models_output_renders_defaults_favorites_and_recent() {
         let settings = serde_json::json!({
@@ -3670,6 +3935,7 @@ mod tests {
         );
     }
 
+    /// 验证项目行的 label—id—path 渲染。
     #[test]
     fn format_project_line_uses_label_id_path() {
         assert_eq!(
@@ -3682,6 +3948,7 @@ mod tests {
         );
     }
 
+    /// 验证未知 models / projects 动作直接报 usage 错，不触发端口发现。
     #[test]
     fn models_and_projects_unknown_actions_error_without_ports() {
         let parsed = parse(&["models", "bogus"]);
@@ -3695,6 +3962,7 @@ mod tests {
 
     // ── control help ───────────────────────────────────────────────
 
+    /// 验证 control 帮助文案与 JS 模板逐字一致（含末尾换行语义）。
     #[test]
     fn control_help_matches_the_js_template() {
         let text = control_help_text();
@@ -3706,6 +3974,7 @@ mod tests {
         assert!(rendered.ends_with("ompchamber schedule --help\n\n"));
     }
 
+    /// 验证 control 未知动作报 usage 错。
     #[test]
     fn control_unknown_action_is_a_usage_error() {
         let parsed = parse(&["control", "bogus"]);
@@ -3716,6 +3985,7 @@ mod tests {
 
     // ── completion scripts ─────────────────────────────────────────
 
+    /// 验证 bash / zsh / fish 补全脚本覆盖全部命令与 tunnel 子命令。
     #[test]
     fn completion_scripts_cover_all_commands_and_tunnel_subcommands() {
         let bash = include_str!("help/completion-bash.txt");
@@ -3790,6 +4060,7 @@ mod tests {
 
     // ── number formatting ──────────────────────────────────────────
 
+    /// 验证 JS 数字格式化（整值无小数部）与 number_option 的 JS Number 语义。
     #[test]
     fn js_number_drops_integral_fraction_and_number_option_parses() {
         assert_eq!(js_number(32000.0), "32000");

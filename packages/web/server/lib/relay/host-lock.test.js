@@ -1,8 +1,14 @@
+/**
+ * 【测试套件】relay host 锁（relay-host.lock）的声明/让位语义：空闲抢占、
+ * LIVE 持有者拒绝、过期声明（声明者已死）接管、forceClaim 强抢占、
+ * 只释放自己的声明、损坏文件与 EPERM 探测的容错。全部基于内存 fake fs + fake process。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import { createRelayHostLock } from './host-lock.js';
 
 // In-memory fs standing in for the shared data dir.
+// 用内存 Map 模拟共享数据目录的 fs（含 peek 以便断言文件内容）。
 const makeFakeFs = () => {
   const files = new Map();
   return {
@@ -25,6 +31,7 @@ const makeFakeFs = () => {
 };
 
 // Fake process: `alive` is the set of pids that respond to kill(pid, 0).
+// fake process：`alive` 是对 kill(pid, 0) 有响应（视为存活）的 pid 集合，其余抛 ESRCH/EPERM。
 const makeFakeProcess = (pid, alive = new Set([pid])) => ({
   pid,
   kill: (target) => {
@@ -37,9 +44,12 @@ const makeFakeProcess = (pid, alive = new Set([pid])) => ({
   },
 });
 
+// 测试用锁文件路径（fake fs 中并不需要真实存在）。
 const LOCK = '/data/relay-host.lock';
+// 静默 logger：吞掉 writeClaim 失败告警，保持测试输出干净。
 const silentLogger = { warn: () => {} };
 
+// 主 describe：锁的抢占、持有、强制覆盖与释放规则。
 describe('relay host lock', () => {
   it('claims a free lock and reports holding it', () => {
     const fs = makeFakeFs();

@@ -1,3 +1,21 @@
+/**
+ * 自定义主题运行时：从 themesDir 读取用户放置的主题 JSON 文件，逐个做
+ * 结构校验（metadata 与 colors 的必填字段）并规范化，产出可直接下发给
+ * 前端主题选择器与 CSS 变量生成器的主题对象。通过依赖注入 fsPromises、
+ * path、themesDir、maxThemeJsonBytes 与 logger，便于单元测试替换实现。
+ */
+
+/**
+ * 创建主题运行时实例。
+ *
+ * @param {object} dependencies 注入依赖
+ * @param {object} dependencies.fsPromises fs.promises 兼容对象
+ * @param {object} dependencies.path node:path 兼容对象
+ * @param {string} dependencies.themesDir 自定义主题所在目录
+ * @param {number} dependencies.maxThemeJsonBytes 单个主题 JSON 的大小上限（超出则跳过该文件）
+ * @param {object} dependencies.logger 日志对象（需提供 warn）
+ * @returns {{ normalizeThemeJson: Function, readCustomThemesFromDisk: Function }}
+ */
 export const createThemeRuntime = (dependencies) => {
   const {
     fsPromises,
@@ -7,9 +25,23 @@ export const createThemeRuntime = (dependencies) => {
     logger,
   } = dependencies;
 
+  /** 判断值是否为去掉首尾空白后仍非空的字符串。 */
   const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
+  /** 主题色值的合法性检查：当前仅要求是非空字符串，不校验具体颜色格式。 */
   const isValidThemeColor = (value) => isNonEmptyString(value);
 
+  /**
+   * 校验并规范化一份主题 JSON。
+   *
+   * 逐层检查 metadata（id / name / variant 必填，variant 只允许 light 或
+   * dark）与 colors（primary / surface / interactive / status / syntax 的
+   * 全部必填色字段，见下方 required 列表），任一字段缺失或为空字符串即视为
+   * 非法主题。合法时补齐默认 description、version，过滤空 tags，返回保留
+   * 原始其余字段的规范化新对象；非法返回 null，由调用方决定跳过或告警。
+   *
+   * @param {object} raw JSON.parse 后的原始主题对象
+   * @returns {object|null} 规范化后的主题对象；不合法时为 null
+   */
   const normalizeThemeJson = (raw) => {
     if (!raw || typeof raw !== 'object') {
       return null;
@@ -109,6 +141,16 @@ export const createThemeRuntime = (dependencies) => {
     };
   };
 
+  /**
+   * 扫描主题目录并读取所有合法的自定义主题。
+   *
+   * 只处理普通文件或符号链接、且以 .json 结尾的目录项；逐个 stat 检查
+   * 大小上限、解析 JSON、经 normalizeThemeJson 校验，并按 metadata.id
+   * 去重（后出现的重复 id 跳过）。单个文件失败只 warn 不中断整体扫描；
+   * 目录不存在（ENOENT）或其它目录级错误同样返回空数组。
+   *
+   * @returns {Promise<object[]>} 规范化后的主题列表（顺序与目录项一致）
+   */
   const readCustomThemesFromDisk = async () => {
     try {
       const entries = await fsPromises.readdir(themesDir, { withFileTypes: true });

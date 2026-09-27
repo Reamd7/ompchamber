@@ -11,6 +11,12 @@
 //!
 //! Known divergence: `--qr` cannot render a QR code (the `qrcode-terminal`
 //! crate is unavailable); the URL is printed and a warning goes to stderr.
+//!
+//! 中文说明：本模块是 `tunnel` 命令组的 Rust 实现，对应旧 JS CLI 的
+//! `commands-tunnel.js` 及其辅助模块（profiles/utils/capabilities）。
+//! profile 的 CRUD 与 legacy 迁移是纯本地文件状态；providers/ready/
+//! doctor/status/start/stop 则驱动运行实例的 HTTP tunnel API。本移植
+//! 无交互式提示（canPrompt 恒 false），全部走标志驱动的非 TTY 路径。
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -20,24 +26,33 @@ use super::args::{DEFAULT_PORT, Options, Parsed};
 use super::process;
 use super::{CliError, GENERAL_ERROR, OutputMode, print_json};
 
+/// tunnel-profiles.json 的存储格式版本号；当前固定为 1，写回时随载荷带上。
 const TUNNEL_PROFILES_VERSION: u64 = 1;
+/// --token-file 允许的最大文件字节数（8 KiB），防止把大文件整个读入内存。
 const MAX_TOKEN_FILE_BYTES: u64 = 8 * 1024;
 
+/// --connect-ttl（bootstrap token TTL）允许的最小值：60 秒。
 const TUNNEL_BOOTSTRAP_TTL_MIN_MS: f64 = 60_000.0;
+/// --connect-ttl（bootstrap token TTL）允许的最大值：24 小时。
 const TUNNEL_BOOTSTRAP_TTL_MAX_MS: f64 = 24.0 * 60.0 * 60.0 * 1000.0;
+/// --session-ttl（会话 TTL）允许的最小值：5 分钟。
 const TUNNEL_SESSION_TTL_MIN_MS: f64 = 5.0 * 60.0 * 1000.0;
+/// --session-ttl（会话 TTL）允许的最大值：30 天。
 const TUNNEL_SESSION_TTL_MAX_MS: f64 = 30.0 * 24.0 * 60.0 * 60.0 * 1000.0;
 
+/// `tunnel help` 的帮助文本，编译期内嵌自 help/tunnel.txt。
 pub fn help_text() -> &'static str {
     include_str!("help/tunnel.txt")
 }
 
 /// `cli.js` wires tunnel commands with a plain (non-async) call; HTTP work is
 /// driven on the ambient tokio runtime.
+/// 中文说明：要求当前是multi_thread tokio runtime（block_in_place 的前提）。
 fn block_on<F: Future>(future: F) -> F::Output {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
 }
 
+/// 当前 Unix 时间戳（毫秒）；系统时钟早于 epoch 时返回 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -46,6 +61,7 @@ fn now_ms() -> u64 {
 }
 
 /// `crypto.randomUUID()` (v4 shape) from the `rand` crate.
+/// 中文说明：版本位固定为 4、变体位固定为 10，符合 RFC 4122 v4 形态。
 fn random_uuid_v4() -> String {
     let bytes: [u8; 16] = rand::random();
     let mut hex = String::with_capacity(36);
@@ -68,6 +84,7 @@ fn random_uuid_v4() -> String {
 // ---------------------------------------------------------------------------
 
 /// `DEFAULT_TUNNEL_PROVIDER_CAPABILITIES` (cloudflare + ngrok).
+/// 中文说明：仅在探测不到运行实例的 providers 接口时作为兜底。
 fn default_tunnel_provider_capabilities() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({
@@ -121,39 +138,58 @@ fn default_tunnel_provider_capabilities() -> Vec<serde_json::Value> {
 // cli-tunnel-profiles.js
 // ---------------------------------------------------------------------------
 
+/// 一条已保存的 tunnel profile（tunnel-profiles.json 中的一条记录）。
+/// provider + name（小写）构成唯一键；token 为敏感字段，输出前需打码。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TunnelProfile {
+    /// 记录 id；缺失时由 sanitize 阶段生成 UUID v4。
     pub id: String,
+    /// 用户可见的 profile 名（保留大小写，查找时按小写比较）。
     pub name: String,
+    /// provider 标识（小写），如 cloudflare / ngrok。
     pub provider: String,
+    /// tunnel 模式（小写）：quick / managed-remote / managed-local。
     pub mode: String,
+    /// managed-remote 模式绑定的公网域名。
     pub hostname: String,
+    /// provider 凭证（如 Cloudflare tunnel token）；落盘为明文，输出时打码。
     pub token: String,
+    /// 创建时间（Unix 毫秒）；缺失时补当前时间。
     pub created_at: u64,
+    /// 最近更新时间（Unix 毫秒）；缺失时补当前时间。
     pub updated_at: u64,
 }
 
+/// 规范化 provider 字段：去首尾空白并转小写；None/空白归一为空串。
 fn normalize_profile_provider(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_lowercase()
 }
 
+/// 规范化 mode 字段：去首尾空白并转小写；None/空白归一为空串。
 fn normalize_profile_mode(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_lowercase()
 }
 
+/// 规范化 profile 名：仅去首尾空白（保留大小写，匹配时另按小写比较）；
+/// None 归一为空串。
 fn normalize_profile_name(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_string()
 }
 
+/// 规范化 hostname：仅去首尾空白；None 归一为空串。
 fn normalize_profile_hostname(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_string()
 }
 
+/// 规范化 token：仅去首尾空白；None 归一为空串。
 fn normalize_profile_token(value: Option<&str>) -> String {
     value.unwrap_or_default().trim().to_string()
 }
 
+/// 从 hostname 首个标签推导默认 profile 名：非法字符折叠为连字符、去首尾
+/// 连字符；为空或无 hostname 时回退 "prod-main"。仅测试引用
+///（非 test 构建下允许 dead_code）。
 #[cfg_attr(not(test), allow(dead_code))]
 fn suggest_profile_name_from_hostname(hostname: Option<&str>) -> String {
     let host = normalize_profile_hostname(hostname);
@@ -180,6 +216,8 @@ fn suggest_profile_name_from_hostname(hostname: Option<&str>) -> String {
     }
 }
 
+/// token 打码：空串返回 "***"；长度 ≤4 全打星号；更长时前缀打星并保留
+/// 末 4 位明文（如 "******ghij"）。
 fn mask_token(token: &str) -> String {
     if token.is_empty() {
         return "***".to_string();
@@ -192,6 +230,9 @@ fn mask_token(token: &str) -> String {
     format!("{}{}", "*".repeat(4.max(len - 4)), tail)
 }
 
+/// 安全读取 --token-file：先 canonicalize 区分不存在/无权限，再校验必须
+/// 是常规文件、非空、不超过 MAX_TOKEN_FILE_BYTES、不含 NUL（拒绝二进制），
+/// 最终返回 trim 后的内容。任一校验失败返回带绝对路径的 CliError。
 fn read_token_from_file_safely(token_file_path: &str) -> Result<String, CliError> {
     let absolute = absolute_path(token_file_path);
     let abs = absolute.display().to_string();
@@ -263,12 +304,14 @@ fn read_token_from_file_safely(token_file_path: &str) -> Result<String, CliError
     Ok(value.to_string())
 }
 
+/// 转为绝对路径；失败（如空串）时原样包成 PathBuf 返回。
 fn absolute_path(value: &str) -> PathBuf {
     std::path::absolute(value).unwrap_or_else(|_| PathBuf::from(value))
 }
 
 /// `resolveToken(options)`: single source among --token-stdin/--token-file/
 /// --token, resolved and trimmed. `Ok(None)` when no source given.
+/// 中文说明：stdin 单次最多读 64 KiB；--token 值仅 trim 不过滤其它字符。
 fn resolve_token(options: &Options) -> Result<Option<String>, CliError> {
     let mut sources: Vec<&str> = Vec::new();
     if options.token_stdin {
@@ -318,6 +361,8 @@ fn resolve_token(options: &Options) -> Result<Option<String>, CliError> {
         .map(String::from))
 }
 
+/// 把单条 profile 转为输出用 JSON；show_secrets 为 false 时 token 经
+/// mask_token 打码，其余字段原样透传。
 fn redact_profile_for_output(profile: &TunnelProfile, show_secrets: bool) -> serde_json::Value {
     let token = if show_secrets {
         profile.token.clone()
@@ -336,6 +381,7 @@ fn redact_profile_for_output(profile: &TunnelProfile, show_secrets: bool) -> ser
     })
 }
 
+/// redact_profile_for_output 的批量版本：逐条转换后组成 JSON 数组。
 fn redact_profiles_for_output(profiles: &[TunnelProfile], show_secrets: bool) -> serde_json::Value {
     serde_json::Value::Array(
         profiles
@@ -345,6 +391,8 @@ fn redact_profiles_for_output(profiles: &[TunnelProfile], show_secrets: bool) ->
     )
 }
 
+/// 人类可读输出的 token 状态：token:missing / token:present /
+/// token:<明文>（仅 show_secrets 时输出明文）。
 fn format_profile_token_status(token: &str, show_secrets: bool) -> String {
     let token = token.trim();
     if token.is_empty() {
@@ -356,6 +404,7 @@ fn format_profile_token_status(token: &str, show_secrets: bool) -> String {
     "token:present".to_string()
 }
 
+/// 从 JSON 值取非负有限毫秒数；缺失、NaN/Inf 或负数一律返回 None。
 fn finite_ms(value: Option<&serde_json::Value>) -> Option<u64> {
     value
         .and_then(serde_json::Value::as_f64)
@@ -365,6 +414,7 @@ fn finite_ms(value: Option<&serde_json::Value>) -> Option<u64> {
 
 /// `sanitizeTunnelProfilesData`: drop incomplete entries, dedupe by
 /// `provider::name(lower)`, default ids/timestamps.
+/// 中文说明：id 缺失时生成 UUID，createdAt/updatedAt 缺失补当前时间。
 fn sanitize_profiles(data: &serde_json::Value) -> Vec<TunnelProfile> {
     let Some(list) = data.get("profiles").and_then(serde_json::Value::as_array) else {
         return Vec::new();
@@ -416,6 +466,7 @@ fn sanitize_profiles(data: &serde_json::Value) -> Vec<TunnelProfile> {
 }
 
 /// `warnIfUnsafeFilePermissions` (stderr notice, non-fatal).
+/// 中文说明：unix 下 group/other 任一可读位（非 600）即告警。
 fn warn_if_unsafe_file_permissions(file_path: &Path) {
     #[cfg(unix)]
     {
@@ -438,6 +489,8 @@ use crate::os_compat::PermissionsExt;
     }
 }
 
+/// 读取 tunnel-profiles.json 并 sanitize；读取前做不安全权限检查，
+/// 文件不存在或 JSON 损坏时返回空表。
 fn read_tunnel_profiles_from_disk() -> Vec<TunnelProfile> {
     let file_path = super::paths::tunnel_profiles_file_path();
     warn_if_unsafe_file_permissions(&file_path);
@@ -450,6 +503,8 @@ fn read_tunnel_profiles_from_disk() -> Vec<TunnelProfile> {
     }
 }
 
+/// 以 0600 权限写入 pretty JSON：自动创建父目录；序列化或写失败仅向
+/// stderr 打警告，不向上传播错误。
 fn write_json_private(path: &Path, value: &serde_json::Value) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -468,6 +523,8 @@ use crate::os_compat::PermissionsExt;
     }
 }
 
+/// 落盘 profile 列表：先 sanitize（去重、补默认 id/时间戳）再写入 store
+/// 文件，返回实际持久化后的列表（即调用方应采用的真值）。
 fn write_tunnel_profiles_to_disk(profiles: &[TunnelProfile]) -> Vec<TunnelProfile> {
     let sanitized = sanitize_profiles(&serde_json::json!({
         "version": TUNNEL_PROFILES_VERSION,
@@ -485,6 +542,7 @@ fn write_tunnel_profiles_to_disk(profiles: &[TunnelProfile]) -> Vec<TunnelProfil
 
 /// `writeManagedRemotePairsToDiskFromProfiles`: mirror cloudflare
 /// managed-remote profiles into the legacy pairs file.
+/// 中文说明：镜像保持旧格式（version + tunnels[]），供旧版本与迁移逻辑兼容。
 fn write_managed_remote_pairs_to_disk_from_profiles(profiles: &[TunnelProfile]) {
     let tunnels: Vec<serde_json::Value> = profiles
         .iter()
@@ -505,6 +563,9 @@ fn write_managed_remote_pairs_to_disk_from_profiles(profiles: &[TunnelProfile]) 
     );
 }
 
+/// 读取旧版 cloudflare managed-remote pairs 文件并转换为 TunnelProfile
+///（固定 provider=cloudflare、mode=managed-remote）；缺 name/hostname/token
+/// 的条目丢弃，文件不存在或 JSON 损坏返回空表。
 fn read_legacy_managed_remote_entries() -> Vec<TunnelProfile> {
     let Ok(raw) =
         std::fs::read_to_string(super::paths::legacy_cloudflare_managed_remote_file_path())
@@ -555,6 +616,8 @@ fn read_legacy_managed_remote_entries() -> Vec<TunnelProfile> {
         .collect()
 }
 
+/// 在同 provider 现有 profile 内生成不冲突的名字：期望名未被占用则原样
+/// 返回（比较用小写），否则追加 "-2"、"-3"… 直到唯一；期望名为空返回空串。
 fn make_unique_profile_name(
     provider: &str,
     desired_name: &str,
@@ -584,6 +647,7 @@ fn make_unique_profile_name(
 
 /// `ensureTunnelProfilesMigrated`: read profiles, migrating the legacy
 /// cloudflare pairs file when the new store is empty.
+/// 中文说明：迁移仅在新 store 为空时执行一次；重名条目自动加 "-2" 等后缀。
 fn ensure_tunnel_profiles_migrated() -> Vec<TunnelProfile> {
     let current = read_tunnel_profiles_from_disk();
     if !current.is_empty() {
@@ -603,6 +667,9 @@ fn ensure_tunnel_profiles_migrated() -> Vec<TunnelProfile> {
     persisted
 }
 
+/// 按名（大小写不敏感）查 profile，provider 给定时进一步过滤：无匹配
+/// 或多 provider 同名（未指定 --provider）返回 Err(提示文本)，恰好一条
+/// 时返回该条目的引用。
 fn resolve_profile_by_name<'a>(
     profiles: &'a [TunnelProfile],
     profile_name: &str,
@@ -635,6 +702,7 @@ fn resolve_profile_by_name<'a>(
 // ---------------------------------------------------------------------------
 
 /// `parseHumanDurationToMs`: `30m`, `2h`, `1d`, `1h30m`, plain ms.
+/// 中文说明：单位支持 ms/s/m/h/d，可组合（如 1h30m），内部空白忽略。
 fn parse_human_duration_to_ms(value: &str) -> Option<f64> {
     let trimmed = value.trim().to_lowercase();
     if trimmed.is_empty() {
@@ -674,6 +742,8 @@ fn parse_human_duration_to_ms(value: &str) -> Option<f64> {
     Some(total)
 }
 
+/// 解析 TTL 标志值并做范围校验：解析失败或非正数报 usage 错误，
+/// 超出 [min_ms, max_ms] 也报 usage 错误（文案含边界毫秒数）。
 fn parse_ttl_ms_or_throw(
     raw: &str,
     flag_name: &str,
@@ -698,6 +768,8 @@ fn parse_ttl_ms_or_throw(
     Ok(parsed)
 }
 
+/// 把毫秒格式化为最短的人类可读时长（d/h/m/s/ms 依整除优先级选择）；
+/// 非有限或 ≤0 返回 None。
 fn format_duration_for_cli(ms: f64) -> Option<String> {
     if !ms.is_finite() || ms <= 0.0 {
         return None;
@@ -721,6 +793,8 @@ fn format_duration_for_cli(ms: f64) -> Option<String> {
     Some(format!("{}ms", value as i64))
 }
 
+/// POSIX shell 引用：仅含字母数字与 . _ - / : = 的串原样返回，
+/// 否则用单引号包裹并按 '"'"' 转义内嵌单引号。
 fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
@@ -732,22 +806,39 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+/// 构造 `tunnel start` 重放命令所需的参数快照。
 struct ReplayParams<'a> {
+    /// --port 值；0 表示省略该标志。
     port: u16,
+    /// provider 标识（空串省略 --provider）。
     provider: &'a str,
+    /// tunnel 模式（空串省略 --mode）。
     mode: &'a str,
+    /// --profile 名（None/空白省略）。
     profile_name: Option<&'a str>,
+    /// --config 路径（None/空白省略）。
     config_path: Option<&'a str>,
+    /// --hostname 值（None/空白省略）。
     hostname: Option<&'a str>,
+    /// 连接 TTL（毫秒）；Some 且可格式化时输出 --connect-ttl。
     connect_ttl_ms: Option<f64>,
+    /// 会话 TTL（毫秒）；Some 且可格式化时输出 --session-ttl。
     session_ttl_ms: Option<f64>,
+    /// 是否带 --qr。
     qr: bool,
+    /// 是否带 --no-qr（仅在用户显式关闭 QR 时）。
     no_qr: bool,
+    /// 是否附带 token 相关标志（以 <redacted> 占位防泄露）。
     include_token_placeholder: bool,
+    /// token 来自 stdin 时改用 --token-stdin（无需占位值）。
     token_via_stdin: bool,
+    /// token 来自文件时输出 --token-file <redacted>。
     token_file_provided: bool,
 }
 
+/// 组装可复制重跑的 `ompchamber tunnel start ...` 单行命令：各字段按需
+/// 拼接并做 shell 引用；token 一律以 <redacted> 占位（stdin 来源则改用
+/// --token-stdin），避免泄露真实凭证。
 fn build_tunnel_start_replay_command(params: &ReplayParams<'_>) -> String {
     let mut parts: Vec<String> = vec!["ompchamber".into(), "tunnel".into(), "start".into()];
     if params.port > 0 {
@@ -803,6 +894,7 @@ fn build_tunnel_start_replay_command(params: &ReplayParams<'_>) -> String {
 }
 
 /// JS serializes whole TTLs as integers (`7200000`, not `7200000.0`).
+/// 中文说明：整毫秒输出整数、否则保留小数。
 fn ttl_json(ms: f64) -> serde_json::Value {
     if ms.fract() == 0.0 {
         serde_json::json!(ms as u64)
@@ -811,6 +903,8 @@ fn ttl_json(ms: f64) -> serde_json::Value {
     }
 }
 
+/// 构造保存 profile 的示例命令（`tunnel profile add ...`）：name/token 用
+/// 占位符，provider 缺省 cloudflare、hostname 缺省 '<hostname>'。
 fn build_tunnel_profile_add_command(provider: Option<&str>, hostname: Option<&str>) -> String {
     ["ompchamber", "tunnel", "profile", "add", "--provider"]
         .iter()
@@ -831,6 +925,7 @@ fn build_tunnel_profile_add_command(provider: Option<&str>, hostname: Option<&st
 }
 
 /// `resolveTunnelTtlOverrides` without the interactive pickers: flags only.
+/// 中文说明：范围外直接 usage 报错，不进入后续网络流程。
 fn resolve_tunnel_ttl_overrides(options: &Options) -> Result<(Option<f64>, Option<f64>), CliError> {
     let connect_ttl_ms = match options.connect_ttl.as_deref() {
         Some(raw) => Some(parse_ttl_ms_or_throw(
@@ -857,6 +952,8 @@ fn resolve_tunnel_ttl_overrides(options: &Options) -> Result<(Option<f64>, Optio
 // cli-args.js helpers (tunnel-local copies)
 // ---------------------------------------------------------------------------
 
+/// 经典 Levenshtein 编辑距离（按字符，滚动数组实现），供未知命令的
+/// "Did you mean" 建议使用。
 fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -877,6 +974,8 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
     dp[b.len()]
 }
 
+/// 在候选集中找与输入（大小写不敏感）编辑距离最小且 ≤ max_distance 的
+/// 候选词；输入为空或全部超距返回 None。
 fn find_closest_match<'a>(
     input: &str,
     candidates: &[&'a str],
@@ -903,6 +1002,7 @@ fn find_closest_match<'a>(
 }
 
 /// Browser-unsafe ports (Fetch/Chromium restricted ports) — full JS set.
+/// 中文说明：含 FTP/SSH/Telnet 等知名端口，供 tunnel start 的端口校验。
 const UNSAFE_BROWSER_PORTS: [u16; 81] = [
     0, 1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101,
     102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427,
@@ -911,11 +1011,13 @@ const UNSAFE_BROWSER_PORTS: [u16; 81] = [
     6669, 6697, 10080,
 ];
 
+/// 判断端口是否落在浏览器封锁名单（ERR_UNSAFE_PORT）内。
 fn is_unsafe_browser_port(port: u16) -> bool {
     UNSAFE_BROWSER_PORTS.contains(&port)
 }
 
 /// `assertSafeBrowserPort` (cli-network.js): hard usage error on unsafe ports.
+/// 中文说明：错误信息附上示例 URL 与推荐的安全端口（3000/5173/8080 等）。
 fn assert_safe_browser_port_strict(port: u16, context: &str) -> Result<(), CliError> {
     if !is_unsafe_browser_port(port) {
         return Ok(());
@@ -931,6 +1033,7 @@ fn assert_safe_browser_port_strict(port: u16, context: &str) -> Result<(), CliEr
 // ---------------------------------------------------------------------------
 
 /// `resolveApiHost` + `formatHostForUrl` + `buildLocalUrl`.
+/// 中文说明：通配监听地址折叠为具体回环地址，保证本地 fetch 可达。
 fn resolve_api_host(host_override: Option<&str>) -> String {
     let configured = host_override
         .map(str::trim)
@@ -953,6 +1056,8 @@ fn resolve_api_host(host_override: Option<&str>) -> String {
     }
 }
 
+/// 拼接本地 API URL `http://{host}:{port}{endpoint}`：host 含冒号（IPv6）
+/// 时加方括号，endpoint 缺前导斜杠时补上。
 fn build_local_url(port: u16, endpoint: &str, host_override: Option<&str>) -> String {
     let host = resolve_api_host(host_override);
     let host = if host.contains(':') {
@@ -968,13 +1073,17 @@ fn build_local_url(port: u16, endpoint: &str, host_override: Option<&str>) -> St
     format!("http://{host}:{port}{path}")
 }
 
+/// /api/system/info 探测结果的最小视图：runtime 标识 + 进程 pid。
 #[derive(Debug, Clone)]
 struct SystemInfo {
+    /// 运行时标识（"cli"/"desktop" 等），空串视为探测失败。
     runtime: String,
+    /// 实例进程号（可缺失），用于确认探测到的是预期实例。
     pid: Option<i64>,
 }
 
 /// `fetchSystemInfoFromPort` (1.5s timeout, plain fetch).
+/// 中文说明：runtime 缺失视为探测失败，用于实例确认与 desktop 判定。
 async fn fetch_system_info_from_port(
     client: &reqwest::Client,
     port: u16,
@@ -1005,6 +1114,7 @@ async fn fetch_system_info_from_port(
 }
 
 /// `fetchTunnelProvidersFromPort`.
+/// 中文说明：非对象条目会被过滤掉。
 async fn fetch_tunnel_providers_from_port(
     client: &reqwest::Client,
     port: u16,
@@ -1025,6 +1135,7 @@ async fn fetch_tunnel_providers_from_port(
 }
 
 /// `isServerHealthReady`.
+/// 中文说明：仅以 2xx 判定，请求失败按未就绪处理。
 async fn is_server_health_ready(client: &reqwest::Client, port: u16, timeout_ms: u64) -> bool {
     let url = build_local_url(port, "/health", None);
     client
@@ -1038,6 +1149,7 @@ async fn is_server_health_ready(client: &reqwest::Client, port: u16, timeout_ms:
 }
 
 /// `waitForServerHealth`.
+/// 中文说明：单次探测超时收紧为 min(1s, interval*2)，避免整体超时被单次卡满。
 async fn wait_for_server_health(
     client: &reqwest::Client,
     port: u16,
@@ -1056,18 +1168,25 @@ async fn wait_for_server_health(
     }
 }
 
+/// 一次 HTTP JSON 响应的最小封装：状态码 + 已解析的 body。
 #[derive(Debug, Clone)]
 struct JsonResponse {
+    /// HTTP 状态码。
     status: u16,
+    /// 响应 JSON（非 JSON 或空 body 时为 Null）。
     body: serde_json::Value,
 }
 
+/// JsonResponse 的状态判断辅助。
 impl JsonResponse {
+    /// 是否为 2xx 成功响应。
     fn ok(&self) -> bool {
         (200..300).contains(&self.status)
     }
 }
 
+/// 把 reqwest 传输错误转为与 JS 一致的文本：超时带端点与毫秒数，
+/// 连接失败为 "fetch failed"，其余用错误原文。
 fn transport_error_message(error: &reqwest::Error, endpoint: &str, timeout_ms: u64) -> String {
     if error.is_timeout() {
         format!("Request to {endpoint} timed out after {timeout_ms}ms.")
@@ -1079,6 +1198,7 @@ fn transport_error_message(error: &reqwest::Error, endpoint: &str, timeout_ms: u
 }
 
 /// `resolveUiPasswordForPort`: explicit flag > instance file > flag value.
+/// 中文说明：三级来源均取非空值，全为空则返回 None（走匿名请求）。
 fn resolve_ui_password_for_port(port: u16, options: &Options) -> Option<String> {
     if options.explicit_ui_password {
         if let Some(password) = options
@@ -1107,6 +1227,7 @@ fn resolve_ui_password_for_port(port: u16, options: &Options) -> Option<String> 
 }
 
 /// `getDesktopLocalAuthHeader`.
+/// 中文说明：desktop 本地服务的 client token 存于设置文件。
 fn desktop_local_auth_header(port: u16) -> Option<String> {
     let desktop_port = super::paths::read_desktop_local_port_from_settings()?;
     if desktop_port != port {
@@ -1117,6 +1238,7 @@ fn desktop_local_auth_header(port: u16) -> Option<String> {
 }
 
 /// `createUiSessionCookie`: POST /auth/session, extract `oc_ui_session`.
+/// 中文说明：cookie 形如 "oc_ui_session=<value>"，供重试请求的 Cookie 头。
 async fn create_ui_session_cookie(
     client: &reqwest::Client,
     port: u16,
@@ -1152,6 +1274,8 @@ async fn create_ui_session_cookie(
 
 /// `requestJson`: JSON request with default 4s timeout, desktop bearer auth,
 /// and a UI-password session-cookie retry on `UI authentication required`.
+/// 中文说明：重试仅一次，且仅在 401 且 error 字段精确匹配时触发；
+/// 会话建立失败则原样返回首次响应。
 async fn request_json(
     client: &reqwest::Client,
     port: u16,
@@ -1229,19 +1353,29 @@ async fn request_json(
 // cli-lifecycle.js discovery (tunnel view)
 // ---------------------------------------------------------------------------
 
+/// 一个经 pid 文件 + system/info 探测确认在运行的 CLI 实例。
 #[derive(Debug, Clone)]
 struct RunningInstance {
+    /// 实例监听端口。
     port: u16,
+    /// pid 文件修改时间（Unix 毫秒），诊断排序用。
     mtime: u64,
+    /// 实例记录的启动时间戳（秒，来自 instance 文件；缺失为 0）。
     started_at: f64,
 }
 
+/// pid 与 OMPChamber 命令行的比对结果，用于清理过期注册文件。
 enum ProcessState {
+    /// 进程存活且命令行确属 OMPChamber。
     Matched,
+    /// 进程存活但命令行不属 OMPChamber（或读不到 cmdline）。
     Mismatched,
+    /// 进程已不存在（pid 文件过期）。
     Dead,
 }
 
+/// 判断 pid 的状态：未运行为 Dead；运行且 cmdline 属于 OMPChamber 为
+/// Matched；运行但命令行不匹配（或读不到）为 Mismatched。
 fn get_ompchamber_process_state(pid: u32) -> ProcessState {
     if !process::is_process_running(pid) {
         return ProcessState::Dead;
@@ -1253,6 +1387,7 @@ fn get_ompchamber_process_state(pid: u32) -> ProcessState {
     }
 }
 
+/// 探测结果是否携带非空 runtime（即确认响应方是 OMPChamber 实例）。
 fn has_ompchamber_runtime_info(info: &Option<SystemInfo>) -> bool {
     info.as_ref()
         .map(|i| !i.runtime.is_empty())
@@ -1260,6 +1395,8 @@ fn has_ompchamber_runtime_info(info: &Option<SystemInfo>) -> bool {
 }
 
 /// `getSystemInfoProbeHosts` + `fetchSystemInfoFromPortCandidates`.
+/// 中文说明：通配候选（默认 host、127.0.0.1）仅在存在显式 host 时才要求
+/// pid 匹配，避免误认同端口的其它服务。
 async fn fetch_system_info_confirmed(
     client: &reqwest::Client,
     port: u16,
@@ -1301,6 +1438,7 @@ async fn fetch_system_info_confirmed(
     None
 }
 
+/// 取 pid 文件的修改时间（Unix 毫秒）；任何失败返回 0。
 fn pid_file_mtime(path: &Path) -> u64 {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -1312,6 +1450,7 @@ fn pid_file_mtime(path: &Path) -> u64 {
 
 /// `discoverRunningInstances`: pid+instance registry entries confirmed by an
 /// `/api/system/info` probe; stale/desktop entries are pruned.
+/// 中文说明：清理动作作用于 pid 文件与 instance 注册文件两项。
 async fn discover_running_instances(
     client: &reqwest::Client,
     options_host: Option<&str>,
@@ -1382,6 +1521,7 @@ async fn discover_running_instances(
 }
 
 /// `getLatestInstance`.
+/// 中文说明：排序键依次为 started_at（秒）、pid 文件 mtime、端口。
 fn get_latest_instance(mut instances: Vec<RunningInstance>) -> Option<RunningInstance> {
     if instances.is_empty() {
         return None;
@@ -1397,6 +1537,7 @@ fn get_latest_instance(mut instances: Vec<RunningInstance>) -> Option<RunningIns
 }
 
 /// `isDesktopRuntimeForPort`.
+/// 中文说明：设置中无 desktop 端口记录时保守地视为 desktop。
 fn is_desktop_runtime_for_port(info: &SystemInfo, port: u16) -> bool {
     if info.runtime != "desktop" {
         return false;
@@ -1407,12 +1548,16 @@ fn is_desktop_runtime_for_port(info: &SystemInfo, port: u16) -> bool {
     }
 }
 
+/// tunnel 可附加性检查结果：能否把该端口实例作为 tunnel 的驱动目标。
 struct Attachability {
+    /// 是否可附加（runtime 非 desktop 且 /health 通过）。
     attachable: bool,
+    /// 不可附加原因："unreachable" | "desktop" | "unhealthy" | "ok"。
     reason: &'static str,
 }
 
 /// `inspectTunnelAttachability`.
+/// 中文说明：依次判 unreachable / desktop / unhealthy，全过则为可附加。
 async fn inspect_tunnel_attachability(client: &reqwest::Client, port: u16) -> Attachability {
     let Some(info) = fetch_system_info_from_port(client, port, None).await else {
         return Attachability {
@@ -1445,19 +1590,28 @@ async fn inspect_tunnel_attachability(client: &reqwest::Client, port: u16) -> At
 }
 
 /// `discoverDesktopInstance` (port only).
+/// 中文说明：读取设置中的 desktop 端口，探测确认 runtime 为 "desktop"
+/// 后返回该端口。
 async fn discover_desktop_instance(client: &reqwest::Client) -> Option<u16> {
     let port = super::paths::read_desktop_local_port_from_settings()?;
     let info = fetch_system_info_from_port(client, port, None).await?;
     (info.runtime == "desktop").then_some(port)
 }
 
+/// doctor 输出中的一行端口状态（含 desktop 占位与“无可用端口”兜底行）。
 struct PortStatus {
+    /// 端口号；无可报实例时为 None。
     port: Option<u16>,
+    /// 该端口当前是否可用于 tunneling。
     available: bool,
+    /// 人类可读的状态描述行。
     line: String,
 }
 
 /// `resolveDoctorPortStatuses`.
+/// 中文说明：显式 --port 时只报告该端口（三种结论：可 tunneling /
+/// desktop runtime / 无运行实例）；未指定时报告全部运行实例，另附
+/// desktop 端口（若有）与“无可用端口”的兜底行。
 async fn resolve_doctor_port_statuses(
     client: &reqwest::Client,
     options: &Options,
@@ -1529,6 +1683,7 @@ async fn resolve_doctor_port_statuses(
 
 /// `resolveTunnelProviders`: probe candidate ports, fall back to the static
 /// capability list.
+/// 中文说明：source 取 "api:<port>"（首个命中的探测端口）或 "fallback"。
 async fn resolve_tunnel_providers(
     client: &reqwest::Client,
     options: &Options,
@@ -1557,6 +1712,7 @@ async fn resolve_tunnel_providers(
 // ---------------------------------------------------------------------------
 
 /// `printJson` (cli-output.js): injects `status: "ok"` when absent.
+/// 中文说明：对齐 cli-output.js 的 printJson 语义，保证消费者可统一读 status。
 fn emit_json(mut value: serde_json::Value) {
     if let Some(object) = value.as_object_mut() {
         if !object.contains_key("status") {
@@ -1567,6 +1723,7 @@ fn emit_json(mut value: serde_json::Value) {
 }
 
 /// `logStatus` with clack frames (cli::ui).
+/// 中文说明：对齐 JS 侧 logStatus 的 info + detail 换行拼接行为。
 fn log_status(message: &str, detail: Option<&str>) {
     super::ui::info(message);
     if let Some(detail) = detail.filter(|d| !d.is_empty()) {
@@ -1575,14 +1732,17 @@ fn log_status(message: &str, detail: Option<&str>) {
     }
 }
 
+/// clack 风格的标题起始框（intro）。
 fn clack_intro(title: &str) {
     super::ui::intro(title);
 }
 
+/// clack 风格的结尾框（outro）。
 fn clack_outro(text: &str) {
     super::ui::outro(text);
 }
 
+/// clack 风格的缩进竖线 "│"；TTY 下着灰色。
 fn gray_bar() -> String {
     if super::ui::tty_enabled() {
         "\x1b[90m│\x1b[0m".to_string()
@@ -1591,6 +1751,7 @@ fn gray_bar() -> String {
     }
 }
 
+/// clack 风格的步骤符 "◇"；TTY 下着灰色。
 fn step_glyph() -> String {
     if super::ui::tty_enabled() {
         "\x1b[90m◇\x1b[0m".to_string()
@@ -1600,6 +1761,7 @@ fn step_glyph() -> String {
 }
 
 /// `formatProviderWithIcon`.
+/// 中文说明：cloudflare 加云图标前缀，空 provider 显示 "unknown"。
 fn format_provider_with_icon(provider: Option<&str>) -> String {
     let provider = provider.unwrap_or_default().trim();
     if provider.is_empty() {
@@ -1614,6 +1776,7 @@ fn format_provider_with_icon(provider: Option<&str>) -> String {
 }
 
 /// `formatModeRequirements`.
+/// 中文说明：requires 数组拼接为逗号分隔文本，空数组显示 "none"。
 fn format_mode_requirements(mode: &serde_json::Value) -> String {
     if mode.get("key").and_then(serde_json::Value::as_str) == Some("managed-local") {
         return "config-path (or default cloudflared config)".to_string();
@@ -1630,6 +1793,7 @@ fn format_mode_requirements(mode: &serde_json::Value) -> String {
 }
 
 /// `annotateTunnelProvidersForOutput`.
+/// 中文说明：给 JSON 输出补上人类可读的前置要求描述。
 fn annotate_tunnel_providers_for_output(
     providers: Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
@@ -1663,6 +1827,8 @@ fn annotate_tunnel_providers_for_output(
         .collect()
 }
 
+/// 环境变量是否为真值：存在且 trim 后非空、非 "0"/"false"/"no"
+///（大小写不敏感）。
 fn truthy_env(name: &str) -> bool {
     match std::env::var(name) {
         Ok(value) => {
@@ -1677,6 +1843,8 @@ fn truthy_env(name: &str) -> bool {
 }
 
 /// `shouldDisplayTunnelQr`.
+/// 中文说明：--qr/--no-qr 显式给出时以用户为准；默认路径要求 stdout 为
+/// TTY 且未设置 truthy 的 CI 环境变量。
 fn should_display_tunnel_qr(options: &Options) -> bool {
     if options.json || options.quiet {
         return false;
@@ -1692,6 +1860,7 @@ fn should_display_tunnel_qr(options: &Options) -> bool {
 }
 
 /// `displayTunnelQrCode` with the qrcode-terminal divergence.
+/// 中文说明：本移植无法渲染二维码，仅打印 URL 并向 stderr 输出警告。
 fn display_tunnel_qr_code(url: &str) {
     println!();
     println!("📱 Scan this QR code to access the tunnel:");
@@ -1704,12 +1873,18 @@ fn display_tunnel_qr_code(url: &str) {
 }
 
 /// Per-instance probe outcome for ready/status/stop.
+/// 中文说明：供 ready/status/stop 的 instances JSON 输出使用。
 struct PortResult {
+    /// 目标实例端口。
     port: u16,
+    /// 失败原因（服务端 error 字段或传输错误文本）。
     error: Option<String>,
+    /// 成功时的响应 JSON（失败时为 Null）。
     body: serde_json::Value,
 }
 
+/// 把逐实例探测结果组装为 JSON 数组：每项含 port；失败项带 error 字段，
+/// 成功项以 body_key（如 "status"/"result"）挂响应体。
 fn instances_payload(results: &[PortResult], body_key: &str) -> serde_json::Value {
     serde_json::Value::Array(
         results
@@ -1735,6 +1910,9 @@ fn instances_payload(results: &[PortResult], body_key: &str) -> serde_json::Valu
 // Command dispatch
 // ---------------------------------------------------------------------------
 
+/// `tunnel` 命令入口：按子命令分发到 help/profile/providers/ready/status/
+/// doctor/start/stop/completion；异步子命令经 block_on 在当前 runtime 上
+/// 驱动。未知子命令用编辑距离给出 "Did you mean" 建议并报 usage 错误。
 pub fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let subcommand = parsed
         .subcommand
@@ -1781,6 +1959,9 @@ pub fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
 // tunnel profile
 // ---------------------------------------------------------------------------
 
+/// `tunnel profile` 子命令分发（list/show/add/remove；无 action 时打印用法）。
+/// 入口先确保 legacy 迁移完成再操作 store；未知 action 用编辑距离给出
+/// 近似建议并报 usage 错误。
 fn handle_tunnel_profile_subcommand(
     options: &Options,
     action: Option<&str>,
@@ -1939,6 +2120,11 @@ fn handle_tunnel_profile_subcommand(
     )))
 }
 
+/// `tunnel profile add`：要求 provider、mode=managed-remote、name、hostname
+/// 与 token（--token/--token-file/--token-stdin 三选一）；同名已存在时需
+/// --force 才覆盖（覆盖保留原 id 与 created_at）。--dry-run 只回显将执行
+/// create/overwrite 不落盘。落盘后同步镜像 legacy pairs 文件，human 模式
+/// 额外提示可复用的 start 命令。
 fn profile_add(options: &Options, store: &[TunnelProfile]) -> Result<(), CliError> {
     let mode = OutputMode::from_options(options);
     let provider = normalize_profile_provider(options.provider.as_deref());
@@ -2088,6 +2274,9 @@ fn profile_add(options: &Options, store: &[TunnelProfile]) -> Result<(), CliErro
 // tunnel providers
 // ---------------------------------------------------------------------------
 
+/// `tunnel providers`：发现运行实例并解析 provider 能力表（探测失败回退
+/// 静态列表），按 JSON/quiet/human 三种模式输出；human 模式逐 provider
+/// 逐 mode 展示图标、标签与前置要求。
 async fn providers_command(options: &Options) -> Result<(), CliError> {
     let client = reqwest::Client::new();
     let discovered = discover_running_instances(&client, options.host.as_deref()).await;
@@ -2169,6 +2358,7 @@ async fn providers_command(options: &Options) -> Result<(), CliError> {
     Ok(())
 }
 
+/// 从实例列表按序提取端口。
 fn discovered_ports(instances: &[RunningInstance]) -> Vec<u16> {
     instances.iter().map(|e| e.port).collect()
 }
@@ -2178,6 +2368,8 @@ fn discovered_ports(instances: &[RunningInstance]) -> Vec<u16> {
 // ---------------------------------------------------------------------------
 
 /// `resolveTunnelReadEntries`.
+/// 中文说明：显式 --port 时仅返回该端口命中的实例（未命中即报错）；
+/// 未指定时返回全部运行实例，一个都没有也报错（提示先 `ompchamber serve`）。
 async fn resolve_tunnel_read_entries(
     client: &reqwest::Client,
     options: &Options,
@@ -2202,6 +2394,9 @@ async fn resolve_tunnel_read_entries(
     Ok(running)
 }
 
+/// 对每个实例发一次相同的 JSON 请求并收集结果：2xx 存 body；非 2xx 取
+/// body.error（缺失时用 error_label+状态码）作为错误；传输错误直接存
+/// 错误文本。供 ready/status/stop 复用。
 async fn probe_ports(
     client: &reqwest::Client,
     entries: &[RunningInstance],
@@ -2256,6 +2451,8 @@ async fn probe_ports(
     results
 }
 
+/// `tunnel ready`：按 --provider（默认 cloudflare）对每个目标实例 GET
+/// /api/ompchamber/tunnel/check，输出 available/version 或失败 message。
 async fn ready_command(options: &Options) -> Result<(), CliError> {
     let client = reqwest::Client::new();
     let entries = resolve_tunnel_read_entries(&client, options).await?;
@@ -2373,6 +2570,8 @@ async fn ready_command(options: &Options) -> Result<(), CliError> {
     Ok(())
 }
 
+/// 对应 JS 的 encodeURIComponent：字母数字与 - _ . ! ~ * ' ( ) 原样保留，
+/// 其余字节按 UTF-8 百分号编码（大写十六进制）。
 fn encode_uri_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -2395,6 +2594,8 @@ fn encode_uri_component(value: &str) -> String {
     encoded
 }
 
+/// `tunnel status`：对每个目标实例 GET /api/ompchamber/tunnel/status，
+/// 按输出模式渲染 active/inactive、provider/mode 与公开 URL。
 async fn status_command(options: &Options) -> Result<(), CliError> {
     let client = reqwest::Client::new();
     let entries = resolve_tunnel_read_entries(&client, options).await?;
@@ -2472,6 +2673,7 @@ async fn status_command(options: &Options) -> Result<(), CliError> {
     Ok(())
 }
 
+/// 从 JSON 对象取非空字符串字段（trim 后非空才算命中），否则 None。
 fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -2484,6 +2686,9 @@ fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
 // tunnel doctor
 // ---------------------------------------------------------------------------
 
+/// 校验 doctor 响应形状：必须 ok=true 且 providerChecks 为数组，且每个
+/// mode 条目要么带 ready+blockers、要么带 checks+summary.ready。
+/// 用于过滤旧版/不兼容实例的响应。
 fn is_valid_tunnel_doctor_response(body: &serde_json::Value) -> bool {
     if body.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         return false;
@@ -2527,6 +2732,12 @@ fn is_valid_tunnel_doctor_response(body: &serde_json::Value) -> bool {
     })
 }
 
+/// `tunnel doctor`：先汇总端口可用性，再把 provider/mode/config/hostname/
+/// token 等上下文 POST 给最近启动实例的 /api/ompchamber/tunnel/doctor
+///（逐实例重试，10s 超时，响应形状校验失败视为旧版实例）。--profile 或
+/// 唯一 managed-remote profile 会自动补齐 provider/hostname/token。
+/// 三种输出模式分别渲染端口清单、provider 检查项与逐 mode 的就绪/阻塞
+/// 详情；human 模式额外给出端口不匹配与 QR 预取吞 token 的排查建议。
 async fn doctor_command(options: &Options) -> Result<(), CliError> {
     let client = reqwest::Client::new();
     let (port_statuses, available_entries) = resolve_doctor_port_statuses(&client, options).await;
@@ -3138,6 +3349,9 @@ async fn doctor_command(options: &Options) -> Result<(), CliError> {
 
 /// Doctor mode blockers: `blockers[]` when present, else derived from failed
 /// checks (excluding `startup_readiness`).
+/// 中文说明：有 blockers[] 时直接采用（非字符串项转字符串）；否则从 checks
+/// 中筛 status=fail 且 id 非 startup_readiness 的条目，detail→label→id
+/// 依次取文案。
 fn doctor_mode_blockers(mode_entry: &serde_json::Value) -> Vec<String> {
     if let Some(blockers) = mode_entry
         .get("blockers")
@@ -3179,6 +3393,13 @@ fn doctor_mode_blockers(mode_entry: &serde_json::Value) -> Vec<String> {
 // tunnel start
 // ---------------------------------------------------------------------------
 
+/// `tunnel start`：解析 provider/mode/token/hostname（--profile 补缺省值，
+/// managed-remote 强制要求 hostname+token），校验显式端口安全与 TTL 范围；
+/// --dry-run 只回显。随后选定目标实例（必要时自动拉起并等 /health 就绪，
+/// 上限 60s），managed-remote 先同步 profile token 到实例，再 POST
+/// /api/ompchamber/tunnel/start（60s 超时，Cloudflare 超时有专门文案）。
+/// 成功后按输出模式给出 URL、可复制的重放命令与可选提示，并按 QR 门控
+/// 展示连接地址。
 async fn start_command(options: Options) -> Result<(), CliError> {
     let mode = OutputMode::from_options(&options);
     let client = reqwest::Client::new();
@@ -3578,6 +3799,7 @@ async fn start_command(options: Options) -> Result<(), CliError> {
     Ok(())
 }
 
+/// 从 JSON body 取有限数值字段并截为 i64；缺失/非有限时返回 fallback。
 fn finite_or(body: &serde_json::Value, key: &str, fallback: i64) -> i64 {
     body.get(key)
         .and_then(serde_json::Value::as_f64)
@@ -3586,14 +3808,21 @@ fn finite_or(body: &serde_json::Value, key: &str, fallback: i64) -> i64 {
         .unwrap_or(fallback)
 }
 
+/// 驱动目标：一个运行实例加上“是否由本次命令自动拉起”的标记。
 struct TargetInstance {
+    /// 被选中的运行实例。
     entry: RunningInstance,
+    /// 是否由本次命令自动 serve 拉起。
     auto_started: bool,
 }
 
 /// `resolveTargetInstance`: pick the instance to drive. With
 /// `require_all`/single semantics this returns one entry per selected
 /// instance (start/stop use exactly one except `stop --all`).
+/// 选择语义：`--all`（配合 require_all）返回全部实例；显式 --port 命中即选
+///（reject_desktop_runtime 时先过可附加性检查）；未指定端口时挑选唯一可附加
+/// 实例，多个则报错，一个都没有且允许自动启动时拉起 serve（优先返回的端口，
+/// 其次取最新实例）。
 async fn resolve_target_instance(
     client: &reqwest::Client,
     options: &Options,
@@ -3775,6 +4004,9 @@ async fn resolve_target_instance(
 
 /// Auto-start a serve instance (`serveCommand` dep). Returns the started port
 /// when discoverable; callers re-discover from the instance registry.
+/// 以静默选项（抑制不安全端口/密码警告与启动摘要）复用 serve 命令拉起实例；
+/// 给了显式端口则固定该端口。返回 serve 使用的端口（未知时 None），
+/// 调用方之后需从实例注册表重新确认发现。
 async fn auto_start_server(
     options: &Options,
     explicit_port: Option<u16>,
@@ -3822,6 +4054,9 @@ async fn auto_start_server(
 // tunnel stop
 // ---------------------------------------------------------------------------
 
+/// `tunnel stop`：解析目标实例（--all 时返回全部），逐个 POST
+/// /api/ompchamber/tunnel/stop，按输出模式渲染每端口的停止结果与
+/// 吊销的 bootstrap token / 失效会话计数。
 async fn stop_command(options: &Options) -> Result<(), CliError> {
     let client = reqwest::Client::new();
     let entries: Vec<RunningInstance> = if options.all {
@@ -3888,6 +4123,8 @@ async fn stop_command(options: &Options) -> Result<(), CliError> {
 // tunnel completion
 // ---------------------------------------------------------------------------
 
+/// 按 shell 名（大小写与首尾空白不敏感）取对应补全脚本的静态内容；
+/// 仅支持 bash/zsh/fish，其它返回 None。
 fn completion_script(shell: &str) -> Option<&'static str> {
     match shell.trim().to_lowercase().as_str() {
         "bash" => Some(COMPLETION_BASH),
@@ -3897,6 +4134,8 @@ fn completion_script(shell: &str) -> Option<&'static str> {
     }
 }
 
+/// `tunnel completion <shell>` 子命令：打印对应 shell 的补全脚本，
+/// shell 缺省为 bash；不支持的 shell 报 usage 错误。
 fn completion_command(action: Option<&str>) -> Result<(), CliError> {
     let shell = action.filter(|v| !v.is_empty()).unwrap_or("bash");
     let Some(script) = completion_script(shell) else {
@@ -3908,6 +4147,7 @@ fn completion_command(action: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
+/// bash 补全脚本（建议通过 eval "$(ompchamber tunnel completion bash)" 注入）。
 const COMPLETION_BASH: &str = r#"# Bash completion for ompchamber tunnel
 # Add to ~/.bashrc: eval "$(ompchamber tunnel completion bash)"
 _ompchamber_tunnel() {
@@ -3954,6 +4194,7 @@ _ompchamber_tunnel() {
 complete -F _ompchamber_tunnel ompchamber
 "#;
 
+/// zsh 补全脚本（以 compdef 注册 `_ompchamber`，含命令/子命令描述）。
 const COMPLETION_ZSH: &str = r#"#compdef ompchamber
 # Zsh completion for ompchamber tunnel
 # Add to ~/.zshrc: eval "$(ompchamber tunnel completion zsh)"
@@ -4021,6 +4262,8 @@ _ompchamber() {
 compdef _ompchamber ompchamber
 "#;
 
+/// fish 补全脚本（`complete -c ompchamber ...` 命令集合，建议保存到
+/// ~/.config/fish/completions/ompchamber.fish）。
 const COMPLETION_FISH: &str = r#"# Fish completion for ompchamber tunnel
 # Save to ~/.config/fish/completions/ompchamber.fish
 
@@ -4060,6 +4303,9 @@ complete -c ompchamber -n '__fish_seen_subcommand_from tunnel; and __fish_seen_s
 // ---------------------------------------------------------------------------
 // Tests
 
+/// tunnel 命令组的测试：profile 存取/迁移/脱敏、token 解析、TTL 工具、
+/// 命令分发错误矩阵，以及基于本地假 HTTP 服务的 status/ready/stop/
+/// providers 输出形状验证。
 #[cfg(test)]
 mod tests {
     use super::super::USAGE_ERROR;
@@ -4067,6 +4313,7 @@ mod tests {
     use axum::routing::{get, post};
     use std::sync::Mutex;
 
+    /// 验证 ttl_json 把整毫秒序列化为整数、非整数保留小数，对齐 JS 输出形状。
     #[test]
     fn ttl_json_prints_whole_numbers_as_integers() {
         assert_eq!(ttl_json(7_200_000.0), serde_json::json!(7_200_000u64));
@@ -4074,10 +4321,12 @@ mod tests {
     }
 
     /// OMPCHAMBER_DATA_DIR is process-global; serialize tests that touch it.
+    /// 对应 JS 侧的进程级序列化点。
     fn data_dir_lock() -> &'static Mutex<()> {
         &crate::cli::TEST_ENV_MUTEX
     }
 
+    /// 创建带标签 + pid 的独立临时目录（先移除旧残留）。
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-tunnel-test-{tag}-{}",
@@ -4088,6 +4337,8 @@ mod tests {
         dir
     }
 
+    /// 在独占锁保护下把 OMPCHAMBER_DATA_DIR 指向新建临时目录执行 f；
+    /// 结束后恢复环境变量并清理目录，测试中的 panic 会原样透传。
     fn with_data_dir(tag: &str, f: impl FnOnce(&Path)) {
         let _guard = data_dir_lock()
             .lock()
@@ -4103,17 +4354,22 @@ mod tests {
         }
     }
 
+    /// 把 argv 解析为 Parsed（解析失败直接 panic，供错误路径测试用）。
     fn parse(argv: &[&str]) -> Parsed {
         let args: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
         super::super::args::parse_args(&args).expect("parse args")
     }
 
+    /// 以 pretty JSON 写文件（测试辅助，失败即 panic）。
     fn write_json(path: &Path, value: serde_json::Value) {
         std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
     }
 
     // -- profiles ------------------------------------------------------------
 
+    /// 端到端验证 profile 存取与迁移：legacy pairs 文件迁移（重名加后缀、
+    /// 新 store 与 legacy 双写镜像）、add 的同名 --force 覆盖语义、
+    /// remove 按 id 精确删除。
     #[test]
     fn profiles_roundtrip_and_legacy_migration() {
         with_data_dir("migration", |dir| {
@@ -4193,6 +4449,8 @@ mod tests {
         });
     }
 
+    /// 验证输出脱敏：token 打码（保留末 4 位）/show_secrets 明文切换、
+    /// token 状态行三种取值、以及从 hostname 推导默认 profile 名的规则。
     #[test]
     fn profile_output_redaction_and_status() {
         let profile = TunnelProfile {
@@ -4228,6 +4486,8 @@ mod tests {
         assert_eq!(suggest_profile_name_from_hostname(None), "prod-main");
     }
 
+    /// 验证 sanitize 丢弃缺字段（如空 token）的条目、按 provider+小写名去重
+    /// 保留首条，并为缺失 id 的条目生成 UUID。
     #[test]
     fn sanitize_dedupes_and_drops_incomplete() {
         let data = serde_json::json!({
@@ -4245,6 +4505,8 @@ mod tests {
         assert_ne!(sanitized[1].id, "");
     }
 
+    /// 验证按名查 profile 的三种结果：未命中的错误文案、跨 provider 同名时
+    /// 要求 --provider、大小写不敏感命中正确条目。
     #[test]
     fn resolve_profile_by_name_errors() {
         let profiles = vec![
@@ -4287,6 +4549,8 @@ mod tests {
 
     // -- token resolution ----------------------------------------------------
 
+    /// 验证 token 解析：三种来源互斥（多选报错）、flag 值 trim、文件读取的
+    /// 各失败分支（缺失/空文件/超 8KiB/二进制/目录）。
     #[test]
     fn token_resolution_sources_and_files() {
         let multiple = Options {
@@ -4382,6 +4646,8 @@ mod tests {
 
     // -- ttl utils -----------------------------------------------------------
 
+    /// 验证人类可读时长解析（30m/1h30m/1d/纯毫秒及非法输入）、TTL 越界的
+    /// 错误文案、以及毫秒到最短时长格式的转换。
     #[test]
     fn ttl_parsing_and_errors() {
         assert_eq!(parse_human_duration_to_ms("30m"), Some(1_800_000.0));
@@ -4421,6 +4687,8 @@ mod tests {
         assert_eq!(format_duration_for_cli(0.0), None);
     }
 
+    /// 验证 --connect-ttl/--session-ttl 覆盖解析：合法值换算为毫秒，
+    /// 未提供时为 None。
     #[test]
     fn ttl_overrides_from_flags() {
         let options = Options {
@@ -4436,6 +4704,9 @@ mod tests {
         assert_eq!(session, None);
     }
 
+    /// 验证重放命令组装：含空格的 profile 名加引号、TTL 以人类可读格式输出、
+    /// token 三种来源分别渲染为 --token <redacted> / --token-stdin /
+    /// --token-file <redacted>，以及 profile add 示例命令的缺省回退。
     #[test]
     fn replay_and_profile_add_commands() {
         let command = build_tunnel_start_replay_command(&ReplayParams {
@@ -4507,6 +4778,9 @@ mod tests {
 
     // -- dispatch matrix -----------------------------------------------------
 
+    /// 验证命令分发的错误路径矩阵：未知子命令的近似建议、profile 子命令缺参、
+    /// 不支持的 completion shell、managed-remote 缺 hostname/token、TTL 越界
+    /// 先于网络请求报错、以及浏览器不安全端口（如 6000）被拒绝。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_matrix_errors() {
         // Unknown subcommand with a close-match suggestion.
@@ -4604,6 +4878,8 @@ mod tests {
         assert!(!is_unsafe_browser_port(3000));
     }
 
+    /// 验证 `tunnel profile show` 走真实磁盘 store：命中时成功，未命中时报
+    /// 固定错误信息。
     #[test]
     fn dispatch_profile_requires_store_lookup() {
         with_data_dir("dispatch-profile", |dir| {
@@ -4629,6 +4905,8 @@ mod tests {
         });
     }
 
+    /// 验证 `tunnel start --dry-run` 在不发起任何网络请求的情况下完成
+    /// 参数校验与结果回显。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn start_dry_run_requires_no_network() {
         with_data_dir("start-dry-run", |_dir| {
@@ -4649,6 +4927,8 @@ mod tests {
 
     // -- fake HTTP output shapes ----------------------------------------------
 
+    /// 在随机本地端口启动一个 axum 假服务，返回端口与后台任务句柄，
+    /// 供输出形状测试使用。
     async fn fake_server(routes: axum::Router) -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -4660,6 +4940,7 @@ mod tests {
         (port, handle)
     }
 
+    /// 构造一个仅填端口的 RunningInstance 测试替身。
     fn running(port: u16) -> RunningInstance {
         RunningInstance {
             port,
@@ -4773,6 +5054,8 @@ mod tests {
         assert_eq!(results[0].error.as_deref(), Some("fetch failed"));
     }
 
+    /// 在假 HTTP 服务上验证 stop 探测结果形状：revokedBootstrapCount 等
+    /// 计数透传到 result 字段。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stop_shape_on_fake_http() {
         let routes = axum::Router::new().route(
@@ -4805,6 +5088,8 @@ mod tests {
         assert_eq!(payload[0]["result"]["invalidatedSessionCount"], 1);
     }
 
+    /// 验证无运行实例时 provider 能力表回退到静态列表（source=fallback），
+    /// 以及 displayRequires 标注的三种输出。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn providers_fallback_and_annotation() {
         let (providers, source) =
@@ -4828,6 +5113,8 @@ mod tests {
         );
     }
 
+    /// 验证 doctor 响应形状校验：两种合法形状（blockers 式与 checks+summary 式）
+    /// 均通过，缺字段的形状被拒绝；同时覆盖阻塞项提取规则。
     #[test]
     fn doctor_response_validation() {
         let valid = serde_json::json!({
@@ -4869,6 +5156,7 @@ mod tests {
         );
     }
 
+    /// 验证 Levenshtein 距离与近似匹配对齐 JS 实现（含空输入、超距返回 None）。
     #[test]
     fn levenshtein_matches_js_distances() {
         assert_eq!(levenshtein_distance("stat", "status"), 2);
@@ -4881,6 +5169,8 @@ mod tests {
         assert_eq!(find_closest_match("zzzzzzzz", &["status"], 3), None);
     }
 
+    /// 验证本地 URL 拼接与 cli-network.js 一致：默认 host、0.0.0.0/:: 折叠为
+    /// 回环地址、IPv6 加方括号。
     #[test]
     fn url_building_matches_cli_network() {
         assert_eq!(
@@ -4902,6 +5192,8 @@ mod tests {
         );
     }
 
+    /// 验证 QR 展示门控遵循 JS 规则：--json/--quiet、显式 --no-qr 以及非 TTY
+    /// stdout 都不展示。
     #[test]
     fn qr_gate_follows_js_rules() {
         let mut options = Options {
@@ -4929,6 +5221,8 @@ mod tests {
         assert!(!should_display_tunnel_qr(&options));
     }
 
+    /// 验证 start_command 内构造的 managed-remote token 同步 payload 字段形状
+    /// （presetId/presetName/hostname/token 均正确透传）。
     #[test]
     fn token_sync_payload_reaches_managed_remote_token_route() {
         // Shape check for the PUT payload built in start_command.

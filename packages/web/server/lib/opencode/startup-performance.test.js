@@ -1,7 +1,16 @@
+/**
+ * startup-performance 模块的单元测试。
+ *
+ * 覆盖：默认关闭（环境变量未设置时无输出）；启用后仅记录白名单 phase
+ * 与通过数值校验的元数据、并验证敏感字段（sessionID/directory/token）
+ * 不会出现在输出里；未知 phase 与非法字段值被静默丢弃。每个用例结束
+ * 后恢复 OMPCHAMBER_STARTUP_PERF 原值并还原 mock。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { recordStartupPerformance } from './startup-performance.js';
 
+// 启动性能打点的开关、字段过滤与脱敏行为
 describe('startup performance diagnostics', () => {
   const previousValue = process.env.OMPCHAMBER_STARTUP_PERF;
 

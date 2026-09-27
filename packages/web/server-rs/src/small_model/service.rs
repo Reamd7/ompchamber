@@ -1,6 +1,10 @@
 //! Port of `server/lib/small-model/index.js`: orchestration —
 //! `generateSmallModelText`, `describeSmallModel`, `listAuthenticatedProviders`
 //! — plus the settings override, input clamping and output-budget rules.
+//! 中文说明：本模块移植自 `server/lib/small-model/index.js`，承担编排
+//! 职责——generateSmallModelText、describeSmallModel、
+//! listAuthenticatedProviders 三大入口，外加设置覆盖、输入钳制与输出
+//! 预算规则。
 
 use std::sync::Arc;
 
@@ -23,30 +27,44 @@ use crate::small_model::runtime_providers::RuntimeProviders;
 /// publish an OpenAI-compatible endpoint for Claude Code, but it is a façade
 /// over the Claude Agent SDK, which spawns the Claude Code CLI per request
 /// and spends the user's Claude subscription rate limit.
+/// 中文说明：claude-code 无论传输层长什么样都绝不算小模型——插件可以
+/// 为 Claude Code 发布 OpenAI 兼容端点，但那只是 Claude Agent SDK 的
+/// 门面，每个请求都会拉起 Claude Code CLI 并消耗用户的订阅限额。
 const CLAUDE_CODE_PROVIDER: &str = "claude-code";
 
 // Rough safety clamp so a huge input never blows the model's context window.
 // Token estimate is ~4 chars/token; when the catalog has no limit for the
 // model (Copilot/codex utility models are not listed) a conservative default
 // applies.
+/// catalog 未提供上下文限制时的保守默认（Copilot/codex 工具模型未收录）。
 const DEFAULT_CONTEXT_TOKENS: u64 = 64_000;
+/// 输入预算中默认为回答保留的 token 数（与默认输出预算对齐）。
 const OUTPUT_RESERVE_TOKENS: u64 = 4_000;
+/// 粗略换算率：约 4 字符折 1 token。
 const CHARS_PER_TOKEN: u64 = 4;
+/// 输入预算下限：即使上下文极小也至少留 1000 token 给输入。
 const MIN_INPUT_BUDGET_TOKENS: u64 = 1_000;
 
+/// 输入超过模型上下文预算时的处置策略（对应 JS 的 onOverflow 参数）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowPolicy {
     /// `truncate` (default): clip the tail and report `inputTruncated: true`.
     /// Correct for callers that degrade gracefully.
+    /// 中文说明：截尾并报告 inputTruncated=true，适合能优雅降级的调用方。
     Truncate,
     /// `error`: throw a 413 `context-too-small`. Correct for callers whose
     /// output would be quietly wrong on a clipped input.
+    /// 中文说明：抛 413 context-too-small；截断后输出会悄然出错的
+    /// 调用方应选它。
     Error,
 }
 
 /// OMPChamber's own settings (Settings → Sessions → Small Model): when
 /// `smallModelUseDefault` is false, `smallModelOverride` outranks every other
 /// resolution step. Parse failures read as "no override".
+/// 中文说明：OMPChamber 自身设置（Settings → Sessions → Small Model）：
+/// smallModelUseDefault 为 false 时 smallModelOverride 压过一切解析
+/// 步骤；解析失败视为"无覆盖"。
 fn read_small_model_settings_override(settings_path: &std::path::Path) -> Option<String> {
     let raw = std::fs::read_to_string(settings_path).ok()?;
     let settings: Value = serde_json::from_str(&raw).ok()?;
@@ -65,6 +83,7 @@ fn read_small_model_settings_override(settings_path: &std::path::Path) -> Option
 }
 
 /// `readConfiguredSmallModel`: `small_model` from the merged config layers.
+/// 中文说明：readConfiguredSmallModel——读合并配置层的 small_model 键。
 fn read_configured_small_model(
     config: &ConfigReader,
     working_directory: Option<&str>,
@@ -79,12 +98,20 @@ fn read_configured_small_model(
 /// Input budget in characters, given how much of the context the caller
 /// intends to leave for the answer. The reserve must match the output budget
 /// the caller will actually request.
+/// 中文说明：给定调用方打算留给回答的空间后，输入侧可用的字符预算；
+/// reserve 必须与调用方实际请求的输出预算一致，否则两侧预算会漂移。
 pub struct InputCharBudget {
+    /// 输入可用字符数（token 预算 × 4）；钳制以此为上限。
     pub max_chars: u64,
+    /// 模型上下文 token 数（未知时为保守默认值）。
     pub context_tokens: u64,
+    /// catalog 是否真的提供了 context 限制（影响上层提示口径）。
     pub context_known: bool,
 }
 
+/// 计算模型的输入字符预算：上下文减去输出保留（缺省 4000），下限
+/// 1000 token，再按 4 字符/token 折算；catalog 无该模型时用保守默认
+/// 上下文并标记 context_known=false。
 pub fn get_model_input_char_budget(
     catalog: &Value,
     provider_id: &str,
@@ -122,6 +149,9 @@ pub fn get_model_input_char_budget(
 /// The output budget to actually request: what the caller asked for, capped
 /// by what the model admits it can emit (`limit.output`). Asking for more is
 /// rejected outright by some providers and silently ignored by others.
+/// 中文说明：实际请求的输出预算——取调用方要的值并用模型自述的
+/// limit.output 封顶；多要会被某些 provider 直接拒绝、另一些静默忽略。
+/// 传 None 或 0 表示不设预算（返回 None）。
 fn resolve_output_tokens(
     catalog: &Value,
     provider_id: &str,
@@ -144,6 +174,9 @@ fn resolve_output_tokens(
 }
 
 /// `clampPromptToModelLimit`.
+/// 中文说明：clampPromptToModelLimit——输入在预算内原样通过；超预算时
+/// 按策略截断（尾部加省略号并报告截断）或返回 413 context-too-small
+/// （携带 required/available 字符数）。
 fn clamp_prompt_to_model_limit(
     prompt: &str,
     catalog: &Value,
@@ -179,21 +212,36 @@ fn clamp_prompt_to_model_limit(
     ))
 }
 
+/// generate 的入参集合；Default 全空 + Truncate 策略，对应 JS 的可选
+/// 参数对象。
 pub struct GenerateParams {
+    /// 用户提示词；空白视为缺失，返回 400。
     pub prompt: Option<String>,
+    /// 可选 system 指令；空白串视为无。
     pub system: Option<String>,
+    /// 期望输出 token；由 resolve_output_tokens 用 catalog 封顶。
     pub max_output_tokens: Option<u64>,
+    /// 显式 `provider/model` 引用；存在时跳过整个解析链（source=request）。
     pub model: Option<String>,
+    /// 会话工作目录；配置层与相对路径解析以此为基准。
     pub directory: Option<String>,
+    /// 会话偏好的 provider；配合 restrict 标志限制漂移。
     pub preferred_provider_id: Option<String>,
+    /// 会话偏好的模型 id（解析链的提示，而非硬约束）。
     pub preferred_model_id: Option<String>,
+    /// true 时禁止悄悄切到会话 provider 之外（显式选择仍允许）。
     pub restrict_to_preferred_provider: bool,
+    /// 可选 JSON Schema；触发结构化输出路径。
     pub response_schema: Option<Value>,
+    /// 单次调用超时（毫秒）；0/缺失用默认。
     pub timeout_ms: Option<u64>,
+    /// 输入超预算时的处置策略。
     pub on_overflow: OverflowPolicy,
 }
 
+/// 全字段缺省的实现。
 impl Default for GenerateParams {
+    /// 生成默认参数：无提示、无模型引用，溢出策略为截断。
     fn default() -> Self {
         Self {
             prompt: None,
@@ -211,16 +259,24 @@ impl Default for GenerateParams {
     }
 }
 
+/// generate 的结果：生成文本与实际使用的模型信息（供前端展示与诊断）。
 #[derive(Debug, Clone)]
 pub struct GenerateOutput {
+    /// 生成的文本（已 trim）。
     pub text: String,
+    /// 实际使用的 provider id。
     pub provider_id: String,
+    /// 实际使用的模型 id。
     pub model_id: String,
+    /// 模型解析来源（settings/config/request/preferred/auto）。
     pub source: String,
+    /// 输入被截断时为 Some(true)，否则 None（序列化时省略该键）。
     pub input_truncated: Option<bool>,
 }
 
+/// 结果到 JS 形状 JSON 的序列化。
 impl GenerateOutput {
+    /// 转成 JS 端期望的对象；inputTruncated 仅在真截断时出现。
     pub fn to_json(&self) -> Value {
         let mut object = serde_json::Map::new();
         object.insert("text".to_string(), Value::String(self.text.clone()));
@@ -238,14 +294,22 @@ impl GenerateOutput {
 }
 
 /// The service: one per server (the JS module state lives here).
+/// 中文说明：小模型服务——每台 server 一个实例（JS 的模块级状态都
+/// 装在这里）。
 pub struct SmallModelService {
+    /// 调用层依赖（fetch/配置/auth 存储/运行时快照）。
     pub deps: Arc<CallDeps>,
+    /// models-dev catalog 缓存（磁盘缓存 + 刷新）。
     pub catalog: Arc<CatalogCache>,
+    /// OMPChamber settings.json 路径（读取小模型覆盖）。
     pub settings_path: std::path::PathBuf,
 }
 
+/// 服务的构造与三大入口（generate / 列出已认证 provider / describe）。
 impl SmallModelService {
     /// Production wiring over the real filesystem and engine.
+    /// 中文说明：生产装配——真实文件系统与引擎（reqwest fetch、
+    /// FsAuthStore、引擎派生的运行时快照）。
     pub fn production(
         engine: Arc<crate::engine::EngineState>,
         data_dir: std::path::PathBuf,
@@ -267,6 +331,7 @@ impl SmallModelService {
     }
 
     /// Test wiring over injected seams.
+    /// 中文说明：测试装配——全部依赖注入。
     pub fn new(
         deps: Arc<CallDeps>,
         catalog: Arc<CatalogCache>,
@@ -281,6 +346,11 @@ impl SmallModelService {
 
     /// `generateSmallModelText`: resolves and authenticates entirely
     /// server-side from the OpenCode config and auth store.
+    /// 中文说明：generateSmallModelText——完全在服务端从 OpenCode 配置
+    /// 与 auth 存储完成解析和鉴权。空 prompt 400；解析不出模型 404；
+    /// 命中 claude-code 422；restrict 模式下漂移到会话 provider 之外
+    /// 404。输出预算经 catalog 封顶，输入按策略钳制后调用
+    /// call_small_model。
     pub async fn generate(
         &self,
         params: GenerateParams,
@@ -411,6 +481,10 @@ impl SmallModelService {
     /// `listAuthenticatedProviders`: provider ids this module can actually
     /// call — an auth.json login, or the credential + endpoint OpenCode
     /// resolved at runtime for a plugin provider.
+    /// 中文说明：listAuthenticatedProviders——本模块实际可调用的
+    /// provider：auth.json 登录，或 OpenCode 运行时为插件 provider 解析
+    /// 出的凭据+端点（无凭据、zen 哨兵、专用线格式与 claude-code 均排除；
+    /// 运行时查询失败只损失它本可新增的条目，不影响已确立的磁盘登录）。
     pub async fn list_authenticated_providers(&self) -> Vec<String> {
         let auth = match self.deps.auth_store.read() {
             Ok(auth) => auth,
@@ -463,6 +537,9 @@ impl SmallModelService {
 
     /// `describeSmallModel`: reports which model would be used, without
     /// calling it.
+    /// 中文说明：describeSmallModel——只报告将使用哪个模型，不真正调用。
+    /// 两遍预算计算：第一遍只为拿到上下文，供调用方的 reserve 函数
+    /// 决策；has_login 让 readiness 在用户付出 401 之前就能拒绝。
     pub async fn describe_small_model(
         &self,
         directory: Option<&str>,
@@ -563,37 +640,60 @@ impl SmallModelService {
 /// The reserve a caller hands to [`SmallModelService::describe_small_model`]:
 /// a number, or a function of the resolved model's limits for callers that
 /// want as much answer room as the model allows.
+/// 中文说明：调用方交给 describe 的输出保留——一个数值，或一个根据
+/// 解析出的模型限制回答的函数（想要多大回答空间就留多大）。
 pub enum OutputReserve {
+    /// 固定 token 数；None 表示用默认保留。
     Tokens(Option<u64>),
+    /// 由模型限制（上下文/输出上限）推算保留的回调函数。
     FromLimits(Arc<dyn Fn(ReserveLimits) -> Option<u64> + Send + Sync>),
 }
 
+/// OutputReserve 的缺省值。
 impl Default for OutputReserve {
+    /// 默认不指定保留 token（Tokens(None)）。
     fn default() -> Self {
         Self::Tokens(None)
     }
 }
 
+/// 传给 FromLimits 回调的模型限制快照。
 #[derive(Debug, Clone, Copy)]
 pub struct ReserveLimits {
+    /// 模型上下文 token 数（未知时为保守默认）。
     pub context_tokens: u64,
+    /// catalog 自述的输出 token 上限；未收录为 None。
     pub output_token_limit: Option<u64>,
 }
 
+/// describe 的结果：解析出的模型、登录可用性与预算口径（供 readiness
+/// 与 diff 演练等调用方决策）。
 pub struct DescribeResult {
+    /// 解析出的 provider id。
     pub provider_id: String,
+    /// 解析出的模型 id。
     pub model_id: String,
+    /// 解析来源（settings/config/request/preferred/auto）。
     pub source: &'static str,
+    /// 该 provider 当前是否有可用登录（false 时请求会 401）。
     pub has_login: bool,
+    /// 按最终 reserve 计算的输入字符预算。
     pub input_char_budget: u64,
+    /// 模型上下文 token 数（未知时为保守默认）。
     pub context_tokens: u64,
+    /// catalog 是否提供了 context 限制。
     pub context_known: bool,
+    /// 调用方应实际请求的输出 token（与上述 reserve 对齐、不漂移）。
     pub output_tokens: Option<u64>,
+    /// catalog 是否声明支持结构化输出；未声明为 None。
     pub structured_output: Option<bool>,
+    /// catalog 自述的输出 token 上限；未收录为 None。
     pub output_token_limit: Option<u64>,
 }
 
+/// 结果到 JS 形状 JSON 的序列化。
 impl DescribeResult {
+    /// 转成 JS 端期望的驼峰键对象（providerID/inputCharBudget 等）。
     pub fn to_json(&self) -> Value {
         serde_json::json!({
             "providerID": self.provider_id,

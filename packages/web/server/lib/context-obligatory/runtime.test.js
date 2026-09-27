@@ -1,12 +1,21 @@
+/**
+ * "必留上下文"（context obligatory）运行时的行为测试套件。
+ *
+ * 通过 stub 全局 fetch 模拟 OpenCode API，验证会话压缩（compaction）后
+ * 固定消息与项目知识的注入顺序、合成单条消息、游标/签名记录防重复注入，
+ * 以及对普通事件的静默忽略。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createContextObligatoryRuntime } from './runtime.js';
 
+/** 构造一个 200 状态、Content-Type 为 JSON 的 Response（供 stub 的 fetch 返回）。 */
 const json = (body) => new Response(JSON.stringify(body), {
   status: 200,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 覆盖压缩后的固定消息注入、项目知识恢复、单消息合成、无内容时跳过与事件过滤。 */
 describe('context obligatory runtime', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

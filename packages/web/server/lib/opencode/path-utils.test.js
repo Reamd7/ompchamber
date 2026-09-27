@@ -1,12 +1,23 @@
+/**
+ * path-utils 模块的单元测试。
+ *
+ * 覆盖 pathLooksUserConfigured 的启发式判定：空/非字符串与最小系统
+ * PATH 判为 false，家目录路径、Homebrew/pkg/snap 等包管理器前缀、
+ * .cargo/.nvm/.pyenv 等 dotfile 工具链目录以及 Windows 风格路径判为
+ * true；以及 mergePathValues 的保序去重合并语义。
+ */
 import path from 'node:path';
 import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 import { pathLooksUserConfigured, mergePathValues } from './path-utils.js';
 
+/** 当前用户主目录，用于构造“像用户配置过”的 PATH 段。 */
 const home = os.homedir();
+/** 当前平台的 PATH 分隔符（POSIX 为 ':'，Windows 为 ';'）。 */
 const delim = path.delimiter;
 
+// PATH 是否“由用户配置”的启发式判定
 describe('pathLooksUserConfigured', () => {
   it('returns false for empty or non-string values', () => {
     expect(pathLooksUserConfigured('', home, delim)).toBe(false);
@@ -48,6 +59,7 @@ describe('pathLooksUserConfigured', () => {
   });
 });
 
+// 两段 PATH 值的保序去重合并
 describe('mergePathValues', () => {
   it('returns empty string for empty inputs', () => {
     expect(mergePathValues('', '', delim)).toBe('');

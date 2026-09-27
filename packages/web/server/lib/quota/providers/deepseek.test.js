@@ -1,3 +1,10 @@
+/**
+ * DeepSeek 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，验证 USD/CNY 余额的
+ * 选择与格式化、字符串/数字余额的解析，以及 401/403、超时、解析失败、
+ * 空数据等错误路径的文案映射。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +17,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 构造最小可用的 fetch Response 替身：默认 200 + JSON 体，可被 init 覆盖。 */
 const mockResponse = (body, init = {}) => ({
   ok: true,
   status: 200,
@@ -17,6 +25,7 @@ const mockResponse = (body, init = {}) => ({
   ...init,
 });
 
+/** 官方文档示例的余额响应载荷，作为各用例构造变体的公共基底。 */
 // Documented payload shape from https://api.deepseek.com/user/balance
 const DOCUMENTED_PAYLOAD = {
   is_available: true,
@@ -30,6 +39,7 @@ const DOCUMENTED_PAYLOAD = {
   ]
 };
 
+/** DeepSeek provider 的余额窗口组装与错误映射行为。 */
 describe('DeepSeek quota provider', () => {
   it('builds credits_balance window from documented USD payload (string balance)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(DOCUMENTED_PAYLOAD)));

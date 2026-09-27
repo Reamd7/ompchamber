@@ -4,13 +4,21 @@
 //! `Date.now()` and persist `new Date().toISOString()` strings. The clock is
 //! injectable (same pattern as `scheduled_tasks::Clock`) so expiry and TTL
 //! behavior is deterministic under test.
+//! client-auth 各运行时共用的墙钟访问与 ISO-8601 时间工具。
+//!
+//! JS 侧（remote-clients.js / pairing.js / tunnel-auth.js）直接读取
+//! `Date.now()` 并持久化 `new Date().toISOString()` 字符串。这里把时钟
+//! 做成可注入（与 `scheduled_tasks::Clock` 相同的模式），使过期与 TTL
+//! 行为在测试中可确定性复现。
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Wall clock in unix ms (JS `Date.now()`).
+/// 墙钟函数类型：返回 unix 毫秒（等价 JS `Date.now()`）；用 Arc 包装以便在测试中注入固定时钟。
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+/// 真实系统墙钟；系统时钟早于 UNIX_EPOCH 时返回 0。
 pub fn system_clock() -> Clock {
     Arc::new(|| {
         SystemTime::now()
@@ -21,6 +29,7 @@ pub fn system_clock() -> Clock {
 }
 
 /// `new Date(ms).toISOString()` — UTC ISO-8601 with millisecond precision.
+/// unix 毫秒转 UTC ISO-8601 字符串（毫秒精度）；负毫秒正确回绕到 1969 年。
 pub fn iso_utc_from_unix_millis(unix_millis: i64) -> String {
     let secs = unix_millis.div_euclid(1000);
     let millis = unix_millis.rem_euclid(1000);
@@ -40,6 +49,11 @@ pub fn iso_utc_from_unix_millis(unix_millis: i64) -> String {
 /// `HH:MM[:SS[.fff]]` with a `Z` / `±HH:MM` / `±HHMM` / `±HH` offset.
 /// Returns `None` for anything else (JS yields `NaN`, callers test
 /// `Number.isFinite`). Other `Date.parse` formats are a noted gap.
+/// 解析这些 store 实际持有（并接受）的时间戳形态，返回 unix 毫秒：
+/// `YYYY-MM-DD`，可选拼接 `T`/空格 + `HH:MM[:SS[.fff]]` 与
+/// `Z` / `±HH:MM` / `±HHMM` / `±HH` 偏移；亚毫秒位截断（同 JS）。
+/// 其余输入返回 None（JS 得到 NaN，调用方以 Number.isFinite 判断）；
+/// Date.parse 支持的其它格式是已记录的差距。
 pub fn parse_iso_ms(value: &str) -> Option<i64> {
     let value = value.trim();
     if value.len() < 10 {
@@ -140,6 +154,8 @@ pub fn parse_iso_ms(value: &str) -> Option<i64> {
 
 /// `new Date(ms).toUTCString()` — RFC 7231 IMF-fixdate
 /// (`Www, dd Mmm yyyy HH:MM:SS GMT`).
+/// unix 毫秒转 RFC 7231 IMF-fixdate（`Www, dd Mmm yyyy HH:MM:SS GMT`），
+/// 等价 JS `toUTCString()`，供 HTTP Date/Cookie 头使用。
 pub fn http_date_from_unix_millis(unix_millis: i64) -> String {
     let secs = unix_millis.div_euclid(1000);
     let days = secs.div_euclid(86_400);
@@ -156,19 +172,24 @@ pub fn http_date_from_unix_millis(unix_millis: i64) -> String {
     )
 }
 
+/// 星期缩写表（下标 0 = 周日），供 http_date 输出。
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/// 月份缩写表（下标 0 = 一月），供 http_date 输出。
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+/// 整串非空且全为 ASCII 数字。
 fn is_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// 闰年判定（4/100/400 规则）。
 fn is_leap_year(year: i64) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+/// 指定年月的天数；月份非法返回 0（调用方已先校验 1..=12）。
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -181,6 +202,8 @@ fn days_in_month(year: i64, month: u32) -> u32 {
 
 /// Howard Hinnant's `civil_from_days` (same algorithm family as the other
 /// ported modules).
+/// Howard Hinnant 的 `civil_from_days`：epoch 起始天数转 (年, 月, 日)，
+/// 与其它移植模块同族算法。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -194,6 +217,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// `civil_from_days` 的逆运算：(年, 月, 日) 转 epoch 天数；与
+/// parse_iso_ms 的日期合法性校验共用。
 fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -204,10 +229,12 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// 时间工具的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+/// 验证毫秒 → ISO 字符串与 JS `toISOString()` 输出逐位一致（含纪元与负值）。
     #[test]
     fn iso_roundtrip_matches_js_shapes() {
         assert_eq!(iso_utc_from_unix_millis(0), "1970-01-01T00:00:00.000Z");
@@ -218,6 +245,7 @@ mod tests {
         assert_eq!(iso_utc_from_unix_millis(-1), "1969-12-31T23:59:59.999Z");
     }
 
+/// 验证 parse_iso_ms 覆盖 Date.parse 的各形态：纯日期、空格分隔、无秒、分数秒截断、数字偏移、空白与非法输入。
     #[test]
     fn parse_iso_ms_handles_dateparse_shapes() {
         assert_eq!(parse_iso_ms("1970-01-01T00:00:00Z"), Some(0));
@@ -255,6 +283,7 @@ mod tests {
         assert_eq!(parse_iso_ms("2026-13-01"), None);
     }
 
+/// 验证 http_date_from_unix_millis 与 JS `toUTCString()` 输出一致。
     #[test]
     fn http_date_matches_toutcstring() {
         assert_eq!(

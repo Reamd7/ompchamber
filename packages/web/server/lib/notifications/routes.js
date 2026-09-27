@@ -1,3 +1,14 @@
+/**
+ * 通知相关 HTTP 路由：Web Push/APNs 订阅注册与注销、UI 可见性心跳、
+ * SSE 通知流，以及会话状态/注意力快照与已读标记。
+ *
+ * 各项能力经 registerNotificationRoutes 注入（push/APNs 运行时方法、
+ * 会话快照与标记函数、UI 鉴权控制器等）；本模块只做参数校验与编排。
+ */
+/**
+ * 校验并规整 push 订阅请求体：需要非空 endpoint 与 keys.p256dh/auth。
+ * 返回 trim 后的 { endpoint, keys }，结构非法返回 null。
+ */
 const parsePushSubscribeBody = (body) => {
   if (!body || typeof body !== 'object') return null;
   const endpoint = body.endpoint;
@@ -15,6 +26,7 @@ const parsePushSubscribeBody = (body) => {
   };
 };
 
+/** 校验注销请求体：需要非空 endpoint；返回 trim 后的 { endpoint }，非法返回 null。 */
 const parsePushUnsubscribeBody = (body) => {
   if (!body || typeof body !== 'object') return null;
   const endpoint = body.endpoint;
@@ -22,8 +34,15 @@ const parsePushUnsubscribeBody = (body) => {
   return { endpoint: endpoint.trim() };
 };
 
+/** SSE 通知流的心跳间隔（20 秒），用于保活与探测断连。 */
 export const NOTIFICATION_SSE_HEARTBEAT_INTERVAL_MS = 20_000;
 
+/**
+ * 在 express 应用上注册通知相关路由。
+ * dependencies 注入：UI 鉴权（uiAuthController / getUiSessionTokenFromRequest）、
+ * push 与 APNs 运行时操作、可见性与角标、SSE 客户端集合与事件写入、
+ * 会话状态/注意力快照与标记函数等；可选依赖缺失时安全跳过。
+ */
 export const registerNotificationRoutes = (app, dependencies) => {
   const {
     uiAuthController,
@@ -54,6 +73,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     setAutoAcceptSession,
   } = dependencies;
 
+  /** 懒启动全局会话 watcher；未注入或启动失败仅告警，不阻塞请求。 */
   const ensureSessionWatcher = async () => {
     if (typeof ensureGlobalWatcherStarted !== 'function') {
       return;
@@ -65,6 +85,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
     }
   };
 
+  // GET /api/push/vapid-public-key：返回 Web Push 公钥。
+  // 先懒初始化 push（生成/加载 VAPID 密钥），失败返回 500。
   app.get('/api/push/vapid-public-key', async (_req, res) => {
     try {
       await ensurePushInitialized();
@@ -76,6 +98,10 @@ export const registerNotificationRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/push/subscribe：注册 web push 订阅。
+  // 确保 UI 会话（缺失 401）并校验 body（非法 400）；若请求携带 http(s) origin
+  // 且设置中尚无 publicOrigin，则记录该 origin 并重置 push 初始化，
+  // 使 VAPID subject 使用真实公开地址；最后按 endpoint 持久化订阅（含 UA 与平台）。
   app.post('/api/push/subscribe', async (req, res) => {
     await ensurePushInitialized();
     await ensureSessionWatcher();
@@ -124,6 +150,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
     return res.json({ ok: true });
   });
 
+  // DELETE /api/push/subscribe：注销订阅。确保 UI 会话、校验 endpoint 后
+  // 删除该会话下的对应订阅。
   app.delete('/api/push/subscribe', async (req, res) => {
     await ensurePushInitialized();
 
@@ -146,6 +174,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
   // Native iOS APNs device token registration (mirrors /api/push/subscribe). The token
   // is a hex APNs device token from @capacitor/push-notifications, scoped to the UI
   // session like web-push subscriptions.
+  // 注册原生 iOS APNs 设备 token（与 /api/push/subscribe 镜像），与会话绑定；
+  // platform 缺省 ios，environment 缺省 production。
   app.post('/api/push/apns-token', async (req, res) => {
     await ensureSessionWatcher();
 
@@ -171,6 +201,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     return res.json({ ok: true });
   });
 
+  // DELETE /api/push/apns-token：注销该 UI 会话下的 APNs 设备 token。
   app.delete('/api/push/apns-token', async (req, res) => {
     const uiToken = uiAuthController?.ensureSessionToken
       ? await uiAuthController.ensureSessionToken(req, res)
@@ -190,6 +221,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
     return res.json({ ok: true });
   });
 
+  // POST /api/push/visibility：上报 UI 可见性心跳（visible + platform），
+  // 供 push/APNs 的抑制门控使用。
   app.post('/api/push/visibility', async (req, res) => {
     const uiToken = uiAuthController?.ensureSessionToken
       ? await uiAuthController.ensureSessionToken(req, res)
@@ -204,6 +237,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     return res.json({ ok: true });
   });
 
+  // GET /api/push/visibility：查询当前会话心跳记录的可见状态（无需 401 以外的副作用）。
   app.get('/api/push/visibility', (req, res) => {
     const uiToken = getUiSessionTokenFromRequest(req);
     if (!uiToken) {
@@ -216,6 +250,10 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/notifications/stream：SSE 通知流。写入 SSE 响应头并把连接注册进
+  // 客户端集合；按 NOTIFICATION_SSE_HEARTBEAT_INTERVAL_MS 发送 ':heartbeat' 注释帧
+  // 保活并探测断连，close/error 时清理定时器与注册；建立成功先下发
+  // notification-stream-ready 事件（携带 uiToken）。
   app.get('/api/notifications/stream', async (req, res) => {
     await ensureSessionWatcher();
 
@@ -281,11 +319,13 @@ export const registerNotificationRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/session-activity：返回会话活动快照；异步触发 watcher 启动，不等待完成。
   app.get('/api/session-activity', (_req, res) => {
     void ensureSessionWatcher();
     res.json(getSessionActivitySnapshot());
   });
 
+  // GET /api/sessions/snapshot：返回会话状态与注意力双快照，附带服务器时间。
   app.get('/api/sessions/snapshot', async (_req, res) => {
     await ensureSessionWatcher();
     res.json({
@@ -295,6 +335,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/sessions/status：返回全部会话状态快照与服务器时间。
   app.get('/api/sessions/status', async (_req, res) => {
     await ensureSessionWatcher();
     const snapshot = getSessionStateSnapshot();
@@ -304,6 +345,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/sessions/:id/status：返回单个会话状态；无可用状态时 404。
   app.get('/api/sessions/:id/status', async (req, res) => {
     await ensureSessionWatcher();
     const sessionId = req.params.id;
@@ -322,6 +364,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/sessions/attention：返回全部会话注意力快照与服务器时间。
   app.get('/api/sessions/attention', async (_req, res) => {
     await ensureSessionWatcher();
     const snapshot = getSessionAttentionSnapshot();
@@ -331,6 +374,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/sessions/:id/attention：返回单个会话注意力状态；无则 404。
   app.get('/api/sessions/:id/attention', async (req, res) => {
     await ensureSessionWatcher();
     const sessionId = req.params.id;
@@ -349,6 +393,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/sessions/:id/view：标记会话已查看（clientId 取 x-client-id 头或 IP），
+  // 同时清空原生 push 角标（用户正在使用应用，角标不再适用）。
   app.post('/api/sessions/:id/view', (req, res) => {
     const sessionId = req.params.id;
     const clientId = req.headers['x-client-id'] || req.ip || 'anonymous';
@@ -366,6 +412,7 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/sessions/:id/unview：标记会话回到未查看状态。
   app.post('/api/sessions/:id/unview', (req, res) => {
     const sessionId = req.params.id;
     const clientId = req.headers['x-client-id'] || req.ip || 'anonymous';
@@ -379,6 +426,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/sessions/:id/message-sent：标记用户已发送消息，
+  // 并清空原生 push 角标（角标只统计此后的通知）。
   app.post('/api/sessions/:id/message-sent', (req, res) => {
     const sessionId = req.params.id;
 
@@ -397,6 +446,8 @@ export const registerNotificationRoutes = (app, dependencies) => {
   // Mirror client-side Permission Auto-Accept state to the server so it can
   // suppress permission notifications at the source (the 500ms debounce race
   // otherwise leaks notifications for auto-accepted permissions).
+  // 同步客户端的 Permission Auto-Accept 开关到服务端，使其能在源头
+  // 抑制权限通知（否则 500ms 去抖竞态会泄漏自动接受产生的通知）。
   app.post('/api/notifications/auto-accept', (req, res) => {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';

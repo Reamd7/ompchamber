@@ -1,3 +1,10 @@
+/**
+ * walkthrough 路由（routes.js）的 HTTP 集成测试：起真实 express 服务并用
+ * 真实 fetch 访问。存在意义是复现"断线检查误伤健康请求"的 bug——service
+ * 与 store 的单测都正确，问题只出现在真实 HTTP 层。覆盖未中断请求的正常
+ * 回答、刷新后重连重挂、无 directory 的前置 400、语言参数透传（含非字符串
+ * 忽略），以及经专用端点取消而非依赖断线。
+ */
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { registerWalkthroughRoutes } from './routes.js';
@@ -6,16 +13,21 @@ import { registerWalkthroughRoutes } from './routes.js';
 // invisible to unit tests: the service and the store were both correct, and the
 // response was dropped by a disconnect check that misread a healthy request.
 
+/** 测试用来源：working-tree 全部改动。 */
 const SOURCE = { kind: 'working-tree', scope: 'all' };
 
+/** 路由行为：正常回答、断线后重挂、入参校验、语言透传与显式取消。 */
 describe('walkthrough routes', () => {
   let server;
   let base;
   let releaseJob;
+  /** 当前挂起的生成任务 promise（由 releaseJob 手动放行），null 表示空闲。 */
   let job;
 
+  /** 最近一次传给 service 的参数，用于断言路由透传了什么。 */
   let lastArgs;
 
+  /** walkthrough service 桩：记录参数、可挂起的生成、可查询的取消。 */
   const service = {
     async getWalkthrough(args) {
       lastArgs = args;
@@ -34,6 +46,7 @@ describe('walkthrough routes', () => {
     },
   };
 
+  /** 发起一次 generate POST；可选 signal 用于模拟客户端断开。 */
   const generate = (signal) => fetch(`${base}/api/walkthrough/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

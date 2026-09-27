@@ -1,6 +1,12 @@
+/**
+ * （中文套件说明）终端主题查询应答测试：OpenTUI 启动握手的完整代答、
+ * 跨 chunk 拆分查询的去重、重复查询的顺序应答、DA1 回退开关，
+ * 以及 Kitty 键盘协议的 flags=0 应答。
+ */
 import { describe, expect, test } from 'vitest';
 import { consumeTerminalThemeQueries } from './theme-response.js';
 
+/** 测试用的浅色外观（themeMode/前景/背景/模式开关）。 */
 const lightAppearance = {
   themeMode: 'light',
   foreground: '#1b1b1b',
@@ -8,6 +14,7 @@ const lightAppearance = {
   modeEnabled: false,
 };
 
+// 终端主题应答：握手代答、跨 chunk 续写、查询顺序与 DA1/Kitty 回退。
 describe('terminal theme responses', () => {
   test('answers the complete OpenTUI startup handshake', () => {
     const result = consumeTerminalThemeQueries(

@@ -1,3 +1,11 @@
+/**
+ * Wire-ID 契约矩阵测试（docs/plan.md phase 5 验收）：长会话 id 稳定性、
+ * 跨目录同 sessionID、冷/热/重连 id 一致与多客户端乐观回显。稳定公式使
+ * 已定稿 assistant 消息的 live id 与任何冷重投影按构造相等，常规路径
+ * assistant 回显映射保持为空；只有客户端回显的 user id 与 SDK 偶发的时间
+ * 戳改写漂移会留下记录。SDK 与 engine 模块在 mock.module 登记之后动态
+ * 加载（接缝同 omp-host.engine.test.ts）。
+ */
 import { describe, expect, mock, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,40 +24,63 @@ import { deterministicWireId, wireMessageId } from './projection.ts';
 // The SDK and engine modules load dynamically AFTER mock.module registration
 // below — a static import would bind engine.ts to the real SDK graph before
 // the mocks exist (same seam as omp-host.engine.test.ts).
+// 真实 SDK 面：mock 展开在其上，仅替换被桩成员。
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+// 真实 runtime-init 面：仅替换 initializeExtensions。
 const realRuntimeInit = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
 
+/** Fixture transcript 消息——投影函数只读的字段子集。 */
 /** Fixture transcript message — the subset the projections read. */
 interface FixtureMessage {
+  // 消息角色。
   role: string;
+  // 毫秒时间戳（wire id 公式的输入之一）。
   timestamp: number;
+  // 内容部件数组（文本/工具调用等）。
   content: Array<{ type: string; text?: string; name?: string }>;
+  // 可选模型 id。
   model?: string;
+  // 可选 provider id。
   provider?: string;
+  // 可选用量（input/output）。
   usage?: { input: number; output: number };
+  // 可选停止原因。
   stopReason?: string;
 }
 
+/** 本套件发出的 AgentSessionEvent 成员——harness 契约。 */
 /** The AgentSessionEvent members these tests emit — the harness contract. */
 interface FixtureEvent {
+  // 事件类型。
   type: string;
+  // 可选：事件携带的消息。
   message?: FixtureMessage;
+  // 可选：流式增量事件。
   assistantMessageEvent?: { type: string; delta: string };
 }
 
+/** mock 会话文件记录：wire id、磁盘路径与所属 cwd。 */
 interface SessionFile {
+  // wire 会话 id（可与磁盘文件名不同）。
   id: string;
+  // .jsonl 磁盘路径。
   path: string;
+  // 会话工作目录（list 的过滤键）。
   cwd: string;
 }
 
+/** 顶层模块 mock 闭包引用的 harness 状态。 */
 interface WireIdMockState {
+  // 当前 agent 根目录。
   agentDir: string;
+  // 已登记的会话文件。
   files: SessionFile[];
+  // 按文件路径持久化的 transcript 模型（buildSessionContext 分支）。
   /** Per-file persisted transcript model (buildSessionContext arm). */
   transcript: Map<string, FixtureMessage[]>;
 }
 
+/** 顶层 mock 状态单例（createHarness 每次整体重置）。 */
 const mockState: WireIdMockState = {
   agentDir: '',
   files: [],
@@ -107,21 +138,32 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   },
 }));
 
+/** 断言读取的 wire 行最小形状：事件类型 + info.id/role。 */
 interface WireEventRow {
+  // wire 事件类型。
   type: string;
+  // 投影消息 info 的可断言子集。
   info: { id?: string; role?: string } | undefined;
 }
 
+/** 测试操作面：引擎、假时钟、事件注入、transcript 建模与 wire 行捕获。 */
 interface Harness {
+  // 被测引擎实例。
   engine: OmpHostEngine;
+  // 可手动推进的时间源（now 毫秒）。
   clock: { now: number };
+  // 向某目录的 live 订阅注入一条 SDK AgentSessionEvent。
   /** Emit an SDK AgentSessionEvent into one directory's live subscription. */
   emit: (directory: string, event: FixtureEvent) => void;
+  // 建模持久化 transcript：JSONL 文件、live 列表与冷上下文三处同步。
   /** Model the persisted transcript: JSONL file + live list + cold context. */
   persist: (directory: string, messages: FixtureMessage[]) => void;
+  // 捕获到的 wire 事件行。
   wireRows: () => WireEventRow[];
 }
 
+/** 逐出 disposal 经微任务加注入的 drain 预算落定；与 lifecycle 套件同款
+ * 短真实等待（注册表无公开完成 Promise）。 */
 /** Eviction disposal settles through microtasks plus the injected drain
  * budget; the module's lifecycle tests use the same short real wait because
  * the registry exposes no public completion promise. */
@@ -131,6 +173,8 @@ const settle = (ms = 20) => {
   return promise;
 };
 
+/** 组装隔离 harness：临时 agentDir、按 cwd 键控的 live 事件处理器/消息
+ * 列表、注入 agent 工厂的引擎，以及捕获全部 wire 行的订阅。 */
 const createHarness = async ({
   files: extraFiles,
 }: {
@@ -253,16 +297,20 @@ const createHarness = async ({
   };
 };
 
+/** 取最近一条流式 assistant 消息的 wire id（无则空串）。 */
 const lastStreamedAssistantId = (h: Harness) => {
   const rows = h.wireRows().filter((row) => row.type === 'message.updated' && row.info?.role === 'assistant');
   return rows.at(-1)?.info?.id ?? '';
 };
 
+/** 拉取某目录的会话消息页并按角色过滤。 */
 const roleRows = async (h: Harness, role: string, directory = '/repo') => {
   const page = await h.engine.getMessagesPage({ sessionID: 's1', directory });
   return (page?.messages ?? []).filter((message) => message.info.role === role);
 };
 
+/** wire id 契约（docs/plan.md phase 5）：长会话冷热 id 一致、跨目录同
+ * sessionID 互不串扰、逐出/重连后 id 稳定，以及乐观回显与漂移记录边界。 */
 describe('wire id contract (docs/plan.md phase 5)', () => {
   test('long session: settled assistant ids equal cold re-projection; only user prompts record echoes', async () => {
     const h = await createHarness();

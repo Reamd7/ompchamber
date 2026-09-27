@@ -10,6 +10,12 @@ import { detectTextLanguage } from '../tts/language-detect.js';
  *   endpoint (faster-whisper, whisper.cpp, OpenAI).
  */
 
+/**
+ * 听写服务（中文说明）：解析 STT provider、跟踪本地模型的下载状态，
+ * 并为状态路由暴露就绪快照；同时承载本地 TTS 合成与模型下载/删除操作。
+ * provider 为 'local'（sherpa-onnx Parakeet worker，首次使用自动后台
+ * 下载）或 'openai-compatible'（任意 OpenAI 兼容转写端点）。
+ */
 import { rm } from 'fs/promises';
 
 import { DictationWorkerClient, WorkerBackedTranscriptionSession } from './local/worker-client.js';
@@ -30,17 +36,30 @@ import {
 } from './local/model-catalog.js';
 import { ensureLocalSttModel, isLocalSttModelInstalled } from './local/model-downloader.js';
 
+/**
+ * 创建听写/语音服务实例。
+ * @param {{ modelsDir: string }} options 本地模型根目录
+ */
 export function createDictationService({ modelsDir }) {
+  // 与 worker 进程通信的客户端（STT 引擎与 TTS 合成都跑在 worker 里）。
   const workerClient = new DictationWorkerClient();
   /** modelId -> 'downloading' | 'error' */
+  /** modelId → 'downloading' | 'error' 的下载状态表。 */
   const downloadStates = new Map();
   /** modelId -> last download error message */
+  /** modelId → 最近一次下载错误信息。 */
   const downloadErrors = new Map();
   /** modelId -> in-flight ensure promise */
+  /** modelId → 进行中的 ensure promise（并发请求去重）。 */
   const downloadPromises = new Map();
   /** modelId -> 0..100 download percent (null while size unknown) */
+  /** modelId → 下载百分比 0..100（总大小未知时为 null）。 */
   const downloadProgress = new Map();
 
+  /**
+   * 启动（或复用）某模型的后台下载并维护状态/进度/错误三张表；
+   * 成功或失败后清理进行中记录，失败时保留 error 状态供下次重试。
+   */
   const startModelDownload = (modelId) => {
     const existing = downloadPromises.get(modelId);
     if (existing) {
@@ -74,6 +93,7 @@ export function createDictationService({ modelsDir }) {
     return promise;
   };
 
+  /** 请求的本地模型 id 合法则原样返回，否则回退默认 STT 模型。 */
   const resolveLocalModelId = (requested) => {
     return isLocalSttModelId(requested) ? requested : DEFAULT_LOCAL_STT_MODEL;
   };
@@ -86,6 +106,7 @@ export function createDictationService({ modelsDir }) {
    * @param {{ provider?: string, language?: string, localModel?: string,
    *           openaiCompatible?: { baseUrl?: string, model?: string, apiKey?: string } }} options
    */
+  /** 中文说明：按 provider 分派——openai-compatible 直连建会话；local 先查安装，未装则触发后台下载并返回可重试的"下载中"错误，损坏模型自动删除以便重下。 */
   const createSttSession = async (options = {}) => {
     const provider = options.provider === 'openai-compatible' ? 'openai-compatible' : 'local';
 
@@ -161,10 +182,12 @@ export function createDictationService({ modelsDir }) {
    * Readiness snapshot for the status route and UI gating.
    * @param {{ provider?: string, localModel?: string }} [options]
    */
+  /** 中文说明：返回 provider 就绪快照与全部 STT/TTS 模型的安装/下载状态；未就绪时带 reasonCode（下载中/下载失败/缺失）。 */
   const getStatus = async (options = {}) => {
     const provider = options.provider === 'openai-compatible' ? 'openai-compatible' : 'local';
     const modelId = resolveLocalModelId(options.localModel);
 
+    /** 生成单个模型的状态描述（是否已安装、下载进度与错误）。 */
     const describeModel = async (id, catalog) => ({
       id,
       description: catalog[id].description,
@@ -235,6 +258,7 @@ export function createDictationService({ modelsDir }) {
    * of it): the language is judged on that, never on a short chunk alone.
    * @param {{ text: string, model?: string, speakerId?: number, speed?: number, language?: string, languageSample?: string }} options
    */
+  /** 中文说明：用本地 TTS 模型合成 WAV；language 为 'auto' 时按整条消息判语种并可能切换模型/默认说话人，模型缺失时触发下载并返回可重试错误。 */
   const synthesizeSpeech = async ({ text, model, speakerId, speed, language, languageSample }) => {
     const requestedModelId = isLocalTtsModelId(model) ? model : DEFAULT_LOCAL_TTS_MODEL;
     let modelId = requestedModelId;
@@ -281,6 +305,7 @@ export function createDictationService({ modelsDir }) {
    * Kick off a background download for a model (used by the status route's
    * download action so Settings can pre-download models).
    */
+  /** 中文说明：为指定模型触发后台下载（已安装则直接返回），供设置页预下载。 */
   const requestModelDownload = async (modelId) => {
     if (!isLocalModelId(modelId)) {
       return { ok: false, error: 'Unknown model id' };
@@ -298,6 +323,7 @@ export function createDictationService({ modelsDir }) {
    * copy until the worker's idle shutdown; the files are simply re-downloaded
    * on the next use if the model is selected again.
    */
+  /** 中文说明：从磁盘删除已安装模型；下载中不允许删除，id 未知返回错误。 */
   const deleteModel = async (modelId) => {
     if (!isLocalModelId(modelId)) {
       return { ok: false, error: 'Unknown model id' };
@@ -310,10 +336,12 @@ export function createDictationService({ modelsDir }) {
     return { ok: true };
   };
 
+  /** 关闭 worker 客户端（进程退出时调用）。 */
   const shutdown = () => {
     workerClient.shutdown();
   };
 
+  // 服务对外暴露的接口。
   return {
     createSttSession,
     synthesizeSpeech,

@@ -1,3 +1,8 @@
+/**
+ * 运行时 provider 快照（runtime-providers.js）测试套件：/provider 载荷的
+ * 归一化（插件凭证、zen 哨兵剔除、模型端点回退）、快照的单飞与 TTL
+ * 缓存，以及 OpenCode 不可达或未接线时的回退语义。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,6 +13,7 @@ import {
   resetOpenCodeRuntimeProviders,
 } from './runtime-providers.js';
 
+/** 构造 /provider 响应载荷的工厂：三个典型 provider——插件配置注册、zen 匿名、auth.json 凭证。 */
 const providerPayload = (overrides = {}) => ({
   all: [
     {
@@ -34,6 +40,7 @@ const providerPayload = (overrides = {}) => ({
   ...overrides,
 });
 
+// 快照获取与缓存行为：mock 全局 fetch，验证归一化结果、并发去重与失败回退。
 describe('OpenCode runtime provider snapshot', () => {
   let fetchMock;
 

@@ -1,3 +1,9 @@
+/**
+ * realtime-proxy 的集成测试套件（bun:test）。每个用例自起真实的
+ * express/http/ws 上游与代理服务器，afterEach 统一关闭，覆盖：SSE/WS 代理
+ * URL 构造；SSE 流式转发与安全头透传；未认证 401、origin 受限 403、目标越界
+ * 与路径越界 404 的拒绝路径；WS upgrade 的查询参数透传与免密首次连接。
+ */
 import { afterEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import http from 'node:http';
@@ -6,8 +12,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { attachRealtimeProxy, buildRealtimeProxySseUrl, buildRealtimeProxyWsUrl } from './realtime-proxy.js';
 import { createUiAuth } from './ui-auth/ui-auth.js';
 
+/** 本套件启动的全部 http server，afterEach 统一关闭以防句柄泄漏。 */
 const servers = [];
 
+/** 在 127.0.0.1 随机端口监听 server，登记进 servers 并返回其 http origin。 */
 const listen = async (server) => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   servers.push(server);
@@ -16,10 +24,12 @@ const listen = async (server) => {
   return `http://127.0.0.1:${address.port}`;
 };
 
+/** 等待 server 完全关闭的 Promise 封装。 */
 const closeServer = async (server) => {
   await new Promise((resolve) => server.close(() => resolve()));
 };
 
+/** 起一个挂好实时代理的本地 server：注入固定的 X-Proxy-Auth 头，authToken 为 null 可模拟未认证，originAllowed 可模拟 origin 拒绝。 */
 const startProxyServer = async ({ apiBaseUrl, authToken = 'ui-token', originAllowed = true } = {}) => {
   const app = express();
   const server = http.createServer(app);
@@ -39,6 +49,7 @@ const startProxyServer = async ({ apiBaseUrl, authToken = 'ui-token', originAllo
   return { origin, runtime };
 };
 
+/** 同 startProxyServer，但认证改用真实 createUiAuth 控制器（覆盖免密首连场景）。 */
 const startProxyServerWithAuthController = async ({ apiBaseUrl, uiAuthController, originAllowed = true } = {}) => {
   const app = express();
   const server = http.createServer(app);
@@ -56,6 +67,7 @@ const startProxyServerWithAuthController = async ({ apiBaseUrl, uiAuthController
   return { origin, runtime };
 };
 
+/** 起一个记录请求的 SSE 上游：命中指定 path 时回放两帧 data 事件，其余路径 404。 */
 const startSseUpstream = async ({ path = '/api/global/event' } = {}) => {
   const requests = [];
   const server = http.createServer((req, res) => {
@@ -75,6 +87,7 @@ const startSseUpstream = async ({ path = '/api/global/event' } = {}) => {
   return { origin, requests };
 };
 
+// 关闭本套件登记的所有服务器。
 afterEach(async () => {
   while (servers.length > 0) {
     const server = servers.pop();
@@ -82,6 +95,7 @@ afterEach(async () => {
   }
 });
 
+/** URL 构造器：本地代理地址与 ?url= 查询参数编码规则。 */
 describe('realtime proxy URL builders', () => {
   it('builds local SSE proxy URLs with target URL encoded as query data', () => {
     const url = new URL(buildRealtimeProxySseUrl('http://127.0.0.1:57123', 'https://remote.example/api/global/event?x=1'));
@@ -101,6 +115,7 @@ describe('realtime proxy URL builders', () => {
   });
 });
 
+/** 代理主行为：SSE/WS 双向转发、认证与 origin 拦截、目标与路径白名单。 */
 describe('realtime proxy', () => {
   it('streams SSE chunks and forwards safe SSE headers with configured runtime headers', async () => {
     const upstream = await startSseUpstream();

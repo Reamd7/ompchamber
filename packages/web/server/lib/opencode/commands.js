@@ -1,3 +1,9 @@
+/**
+ * OpenCode 自定义命令（command）的配置读写层：管理项目级 / 用户级 .md 命令
+ * 文件与 opencode.json 中 command 段的双源读写，供配置实体路由调用。
+ * 路径解析兼容旧版单数目录（项目内 .opencode/command 与用户级
+ * ~/.config/opencode/command），仅在旧文件存在且新路径未占用时沿用旧位置。
+ */
 import fs from 'fs';
 import path from 'path';
 import {
@@ -22,6 +28,12 @@ import {
 /**
  * Ensure project-level command directory exists
  */
+/**
+ * 确保项目级命令目录存在：同时创建现行复数目录 .opencode/commands 与旧版
+ * 单数目录 .opencode/command（旧路径上的既有文件仍可被读写）。
+ * @param {string} workingDirectory 项目根目录
+ * @returns {string} 现行项目级命令目录路径
+ */
 function ensureProjectCommandDir(workingDirectory) {
   const projectCommandDir = path.join(workingDirectory, '.opencode', 'commands');
   if (!fs.existsSync(projectCommandDir)) {
@@ -37,6 +49,13 @@ function ensureProjectCommandDir(workingDirectory) {
 /**
  * Get project-level command path
  */
+/**
+ * 解析项目级命令 .md 的目标路径：仅当旧版单数路径已存在且复数路径不存在时
+ * 沿用旧路径，否则返回复数路径（不要求文件已存在）。
+ * @param {string} workingDirectory 项目根目录
+ * @param {string} commandName 命令名
+ * @returns {string} 命令 .md 文件路径
+ */
 function getProjectCommandPath(workingDirectory, commandName) {
   const pluralPath = path.join(workingDirectory, '.opencode', 'commands', `${commandName}.md`);
   const legacyPath = path.join(workingDirectory, '.opencode', 'command', `${commandName}.md`);
@@ -46,6 +65,12 @@ function getProjectCommandPath(workingDirectory, commandName) {
 
 /**
  * Get user-level command path
+ */
+/**
+ * 解析用户级命令 .md 的目标路径：同样优先保留已存在的旧版
+ * ~/.config/opencode/command 下的文件，否则落在现行 COMMAND_DIR。
+ * @param {string} commandName 命令名
+ * @returns {string} 命令 .md 文件路径
  */
 function getUserCommandPath(commandName) {
   const pluralPath = path.join(COMMAND_DIR, `${commandName}.md`);
@@ -57,6 +82,13 @@ function getUserCommandPath(commandName) {
 /**
  * Determine command scope based on where the .md file exists
  * Priority: project level > user level > null (built-in only)
+ */
+/**
+ * 按文件存在位置判定命令归属：项目级优先于用户级；两级均无 .md 时返回
+ * scope 与 path 双 null（仅剩内置命令或 JSON 配置定义）。
+ * @param {string} commandName 命令名
+ * @param {string | null} workingDirectory 项目目录（空则跳过项目级探测）
+ * @returns {{ scope: string | null, path: string | null }} 归属 scope 与对应 .md 路径
  */
 function getCommandScope(commandName, workingDirectory) {
   if (workingDirectory) {
@@ -76,6 +108,14 @@ function getCommandScope(commandName, workingDirectory) {
 
 /**
  * Get the path where a command should be written based on scope
+ */
+/**
+ * 决定命令的写入位置：已有 .md 时沿用其现有位置（项目级优先）；新建或覆盖
+ * 内置命令时按 requestedScope 选择（缺省用户级），项目级仅在提供项目目录时生效。
+ * @param {string} commandName 命令名
+ * @param {string | null} workingDirectory 项目目录
+ * @param {string | null} [requestedScope] 请求的写入 scope
+ * @returns {{ scope: string, path: string }} 写入目标 scope 与路径
  */
 function getCommandWritePath(commandName, workingDirectory, requestedScope) {
   // For updates: check existing location first (project takes precedence)
@@ -99,6 +139,15 @@ function getCommandWritePath(commandName, workingDirectory, requestedScope) {
   };
 }
 
+/**
+ * 汇总命令的双源定义状态：md（项目 / 用户级 .md，附 frontmatter 字段列表，
+ * 存在正文时额外标记 template 字段）与 json（opencode.json command 段，附
+ * 字段列表），另附 projectMd / userMd 分层视图，供设置页展示来源与冲突。
+ * @param {string} commandName 命令名
+ * @param {string | null} workingDirectory 项目目录（空则跳过项目级探测）
+ * @returns {{ md: object, json: object, projectMd: object, userMd: object }}
+ *   各来源的存在性、路径、scope 与字段名数组
+ */
 function getCommandSources(commandName, workingDirectory) {
   const projectPath = workingDirectory ? getProjectCommandPath(workingDirectory, commandName) : null;
   const projectExists = projectPath && fs.existsSync(projectPath);
@@ -154,6 +203,18 @@ function getCommandSources(commandName, workingDirectory) {
   return sources;
 }
 
+/**
+ * 新建命令：先 ensureDirs，再对项目级 .md、用户级 .md、opencode.json 三处
+ * 查重（任一存在即抛错）；随后按 scope 选择目标路径（项目级需提供项目目录，
+ * 其余一律用户级），把 config.template 写为正文、其余字段写入 frontmatter。
+ * 仅写 .md，不落 JSON 配置。
+ * @param {string} commandName 命令名
+ * @param {object} config 命令定义（template 为正文，其余字段进 frontmatter）
+ * @param {string | null} workingDirectory 项目目录
+ * @param {string | null} [scope] 请求的写入 scope
+ * @returns {void}
+ * @throws {Error} 任一来源已存在同名命令时抛出
+ */
 function createCommand(commandName, config, workingDirectory, scope) {
   ensureDirs();
 
@@ -192,6 +253,17 @@ function createCommand(commandName, config, workingDirectory, scope) {
   console.log(`Created new command: ${commandName} (scope: ${targetScope}, path: ${targetPath})`);
 }
 
+/**
+ * 更新命令字段：template 字段按来源分流——.md 存在（或作为内置覆盖新建 .md）
+ * 时写正文；否则当 JSON 中模板为文件引用时写入对应提示词文件，普通值写入
+ * command 段。其余字段优先写原来源（JSON 已有写 JSON，.md frontmatter 已有
+ * 写 .md），全新字段按 .md 可用性落盘；最后统一写回 .md / JSON 并打印摘要。
+ * @param {string} commandName 命令名
+ * @param {object} updates 字段到新值的映射
+ * @param {string | null} workingDirectory 项目目录
+ * @returns {void}
+ * @throws {Error} template 为非法文件引用时抛出
+ */
 function updateCommand(commandName, updates, workingDirectory) {
   ensureDirs();
 
@@ -292,6 +364,15 @@ function updateCommand(commandName, updates, workingDirectory) {
   console.log(`Updated command: ${commandName} (scope: ${targetScope}, md: ${mdModified}, json: ${jsonModified})`);
 }
 
+/**
+ * 删除命令：移除项目级与用户级 .md 文件，并从 opencode.json 的 command 段
+ * 删除对应条目（三处独立执行，能删几处删几处）；三处均不存在时抛出
+ * "not found" 错误。
+ * @param {string} commandName 命令名
+ * @param {string | null} workingDirectory 项目目录
+ * @returns {void}
+ * @throws {Error} 命令在任何来源都不存在时抛出
+ */
 function deleteCommand(commandName, workingDirectory) {
   let deleted = false;
 
@@ -326,6 +407,7 @@ function deleteCommand(commandName, workingDirectory) {
   }
 }
 
+/** 对外导出命令的读取与增删改接口，供配置实体路由（config-entity-routes）调用。 */
 export {
   getCommandSources,
   createCommand,

@@ -1,3 +1,11 @@
+/**
+ * Linear issue 数据层（issues.js）单元测试套件。
+ *
+ * 以 stub 的全局 fetch 模拟 Linear GraphQL：覆盖 issue 引用解析
+ * （identifier/URL/UUID）、列表与搜索、各状态/负责人/团队/优先级过滤、
+ * 脏数据清洗（priority、label 颜色）、401 后自动断连、workflow 状态
+ * 排序、issue 更新与评论创建，并断言任何返回值都不携带 token。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -5,13 +13,16 @@ import path from 'path';
 import { setLinearAuth, clearLinearAuth } from './auth.js';
 import { getLinearIssue, listLinearIssues, listLinearIssueStates, parseLinearIssueRef, createLinearIssueComment, updateLinearIssue } from './issues.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-issues-'));
 
+/** 把对象包装成 JSON Response，模拟 Linear GraphQL 的 fetch 返回。 */
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 测试数据：一条标准的 Linear issue GraphQL 节点。 */
 const issueNode = {
   id: 'issue-uuid-1',
   identifier: 'ENG-12',
@@ -24,6 +35,7 @@ const issueNode = {
   labels: { nodes: [{ id: 'label-bug', name: 'Bug', color: 'EB5757' }] },
 };
 
+/** Linear issue 引用（identifier、URL、UUID）的解析规则。 */
 describe('parseLinearIssueRef', () => {
   it('reads identifiers, URLs, and UUIDs', () => {
     expect(parseLinearIssueRef('eng-12')).toEqual({ kind: 'identifier', value: 'ENG-12' });
@@ -35,6 +47,7 @@ describe('parseLinearIssueRef', () => {
   });
 });
 
+/** 在真实 auth 存储与 stub fetch 下的 issue 列表、详情与写操作行为。 */
 describe('Linear issue list/get', () => {
   let dataDir;
   let previousDataDir;

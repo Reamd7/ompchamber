@@ -1,6 +1,14 @@
+/**
+ * 会话目标创建测试套件：验证“先写目标文件、后 PATCH goal metadata”的
+ * 顺序、目标文件写失败时回退内联 objective（objectiveFile: false），
+ * 以及介绍文案在有 / 无 token 预算时的行为。objectives 与小模型模块
+ * 均以 vi.mock 打桩。
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** objectives.js 的 writeObjective 替身。 */
 const writeObjectiveMock = vi.fn(async () => undefined);
+/** 小模型 generateSmallModelText 替身。 */
 const generateSmallModelTextMock = vi.fn(async () => ({ text: '' }));
 
 vi.mock('./objectives.js', () => ({
@@ -12,8 +20,10 @@ vi.mock('../small-model/index.js', () => ({
   generateSmallModelText: generateSmallModelTextMock,
 }));
 
+/** 在 vi.mock 注册之后再动态导入被测模块，确保其内部依赖已被替换为 mock。 */
 const { buildGoalIntroText, createSessionGoal } = await import('./create.js');
 
+/** 创建顺序、写文件失败回退与介绍文案验证。 */
 describe('session goal creation', () => {
   beforeEach(() => {
     writeObjectiveMock.mockReset().mockResolvedValue(undefined);

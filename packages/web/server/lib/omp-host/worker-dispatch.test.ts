@@ -12,6 +12,11 @@ import type {
   LoadableWorkerDispatch,
 } from './worker-dispatch.ts';
 import type { RejectionInterceptor } from '@oh-my-pi/pi-coding-agent/eval/js/worker-core';
+/**
+ * worker-dispatch 模块测试：`__omp_worker_*` 选择器的识别、分发与拒绝。
+ * 守护目标是「僵尸宿主」泄漏——未知选择器绝不能落到 serve 路径变成
+ * 第二个监听随机端口的宿主；分发表必须对 SDK 每个选择器都有显式处置。
+ */
 
 // Every selector the SDK CLI dispatches (pi-coding-agent src/cli.ts
 // runWorkerEntrypoint + the protocol constants: launch/protocol.ts,
@@ -19,6 +24,7 @@ import type { RejectionInterceptor } from '@oh-my-pi/pi-coding-agent/eval/js/wor
 // launch/terminal-output-worker-protocol.ts). A selector missing from our
 // table regresses to the zombie-host leak this module exists to prevent, so
 // the full list is asserted here to force a deliberate decision on bumps.
+/** SDK CLI 会派发的全部 worker 选择器清单（升级时强制显式决策）。 */
 const SDK_SELECTORS = [
   '__omp_worker_tiny_inference',
   '__omp_worker_stats_sync',
@@ -35,6 +41,7 @@ const SDK_SELECTORS = [
   '__omp_worker_terminal_output',
 ];
 
+/** 选择器识别契约：保留前缀、browser-relay、全量显式处置与未知拒绝。 */
 describe('worker-dispatch selector recognition', () => {
   test('recognizes the reserved selector prefix', () => {
     expect(WORKER_SELECTOR_PREFIX).toBe('__omp_worker_');
@@ -64,7 +71,9 @@ describe('worker-dispatch selector recognition', () => {
   });
 });
 
+/** 执行契约：四种 kind 的启动形态与 unsupported/缺导出的硬错误。 */
 describe('worker-dispatch execution', () => {
+  /** 临时替换 process.stderr.write 捕获输出，返回还原并取回文本的函数。 */
   const captureStderr = () => {
     const chunks: string[] = [];
     const original = process.stderr.write.bind(process.stderr);

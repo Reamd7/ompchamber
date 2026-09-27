@@ -1,9 +1,22 @@
+/**
+ * project-config 模块测试套件（vitest）。
+ *
+ * 在临时目录上驱动真实文件系统，覆盖 scheduled tasks 的创建/更新/
+ * 删除、schedule 与 execution 的校验规则、向前兼容的未知字段保留、
+ * `.agents/loops` 对账行为，以及跨进程文件锁的争用、超时与陈旧恢复。
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 import os from 'os';
 import path from 'path';
 import { mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { createProjectConfigRuntime } from './project-config.js';
 
+/**
+ * 在独立临时目录上创建 project-config runtime：注入真实 fs、固定的
+ * 任务 id 生成器便于断言；返回 runtime、tempRoot 与递归清理函数，
+ * 用例以 try/finally 保证清理。
+ */
 const createRuntime = async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-scheduled-project-config-'));
   const runtime = createProjectConfigRuntime({
@@ -21,6 +34,7 @@ const createRuntime = async () => {
   };
 };
 
+/** project-config runtime 基础行为：任务持久化、字段校验与既有数据的保留。 */
 describe('project-config runtime', () => {
   it('creates and persists a scheduled task', async () => {
     const { runtime, cleanup } = await createRuntime();
@@ -231,7 +245,9 @@ describe('project-config runtime', () => {
   });
 });
 
+/** `.agents/loops` 发现结果与持久化 JSON 任务列表的对账（reconcile）行为。 */
 describe('project-config loop reconciliation', () => {
+  /** 构造最小合法的 loop 发现项（scope/filePath + cron 定义）；overrides 深层覆盖默认字段。 */
   const loop = (name, overrides = {}) => ({
     scope: 'project',
     filePath: `/repo/.agents/loops/${name}.md`,
@@ -529,9 +545,11 @@ describe('project-config loop reconciliation', () => {
     }
   });
 
+/** 本版本不认识的字段（模拟更新版本写入的任务）在各类写入路径下的保留/丢弃规则。 */
   describe('fields this build does not know', () => {
     // Simulates a config written by a newer build (or a newer UI): the task
     // carries execution and state fields normalization here has never heard of.
+    /** 先正常建任务，再直接改写磁盘 JSON 注入未知字段，模拟新版本写入的数据。 */
     const seedForeignTask = async (runtime, tempRoot) => {
       const created = await runtime.upsertScheduledTask('project-test', {
         name: 'Nightly digest',
@@ -548,6 +566,7 @@ describe('project-config loop reconciliation', () => {
       return { id: created.task.id, filePath };
     };
 
+    /** 从磁盘配置 JSON 中按 id 取回原始存储的任务记录。 */
     const readStoredTask = async (filePath, id) => {
       const stored = JSON.parse(await readFile(filePath, 'utf8'));
       return stored.scheduledTasks.find((task) => task.id === id);

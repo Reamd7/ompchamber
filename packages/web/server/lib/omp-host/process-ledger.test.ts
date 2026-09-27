@@ -8,19 +8,36 @@
 //  - kill: entry/tree scope, single-pid scope, ownership guards, argv
 //    identity check, job cancellation;
 //  - transport: revision bumps coalesce into one publish per directory.
+/**
+ * ProcessLedger（会话进程台账）的行为契约测试，对应
+ * PLAN-session-process-monitor.md §验证。
+ *
+ * 通过注入假 platform（可变进程树）、可控单调时钟与可手动触发的
+ * interval/timeout 定时器，覆盖四组契约：归属（attribution，含 job
+ * 延展窗口与零候选基础设施 spawn 不入账）、生命周期（退出标记、
+ * pid 复用隔离）、kill（范围/所有权/argv 身份/job 取消）、传输
+ * （revision 递增按目录合并为一次 publish）。
+ */
 
 import { describe, expect, test } from 'bun:test';
 import { ProcessLedger } from './process-ledger.ts';
 import type { ProcInfo, ProcStats, ProcessPlatform } from './process-platform.ts';
 
+/** 测试基准目录（所有窗口与快照查询共用）。 */
 const DIR = '/repo';
+/** 会话 A 的 session id。 */
 const SES_A = 'ses_a';
+/** 会话 B 的 session id。 */
 const SES_B = 'ses_b';
 
+/** 假想的宿主进程 pid，作为测试进程树的根。 */
 const HOST_PID = 1000;
 
+/** 构造一条 ProcInfo：pid 同时充当 pgid，ppid 与 argv 由参数给定。 */
 const proc = (pid: number, ppid: number, argv: string): ProcInfo => ({ pid, ppid, argv, pgid: pid });
 
+/** 可变的进程平台假面：`tree` 是每轮 enumerateTree 能看到的进程树；
+ *  terminate 记录被杀 pid 并将其从存活集合剔除，供副作用断言。 */
 /** Mutable fake OS surface: `tree` is what each enumerate pass sees. */
 const fakePlatform = (tree: ProcInfo[], stats?: Map<number, ProcStats>) => {
   const terminated: number[] = [];
@@ -40,12 +57,18 @@ const fakePlatform = (tree: ProcInfo[], stats?: Map<number, ProcStats>) => {
   return { platform, terminated, alive };
 };
 
+/** 定时器回调：interval 周期采样与延迟 publish 共用的空参函数。 */
 type TimerFn = () => void;
+/** 捕获注入的 interval/timeout 回调，让测试手动触发以驱动台账节拍。 */
 interface TimerCapture {
+  /** 周期采样回调（由 setIntervalFn 注入）。 */
   interval?: TimerFn;
+  /** 延迟合并 publish 回调（由 setTimeoutFn 注入）。 */
   timeout?: TimerFn;
 }
 
+/** 构造一个定时器完全由测试驱动的台账实例：注入假 platform、可前进的
+ *  单调时钟、publish 记录数组与定时器捕获；advance(ms) 用于推进时钟。 */
 /** A ledger whose timers are fully test-driven. `tick()` is awaitable. */
 const setup = (
   tree: ProcInfo[],
@@ -83,12 +106,15 @@ const setup = (
   };
 };
 
+/** 触发一次 bash 工具开始事件，为该 toolCallId 打开归属窗口。 */
 const startBash = (ledger: ProcessLedger, sessionID: string, toolCallId: string, command: string) =>
   ledger.onToolStart({ sessionID, directory: DIR, toolCallId, toolName: 'bash', args: { command } });
 
+/** 触发一次 bash 工具结束事件；details.async.jobId 存在时窗口转为 job 延展。 */
 const endBash = (ledger: ProcessLedger, sessionID: string, toolCallId: string, details?: { async?: { jobId?: string } }) =>
   ledger.onToolEnd({ sessionID, directory: DIR, toolCallId, toolName: 'bash', isError: false, details });
 
+/** 归属契约：单一窗口吸收、父进程继承、argv 消歧、未归属保留与 job 延展窗口。 */
 describe('ProcessLedger — attribution', () => {
   test('a process first seen inside the single open window attributes by window', async () => {
     const tree = [proc(2001, HOST_PID, 'sleep 600')];
@@ -181,6 +207,7 @@ describe('ProcessLedger — attribution', () => {
   });
 });
 
+/** 生命周期契约：消失 pid 标记 exited、pid 复用换新行、cpu 百分比由累计差分推导。 */
 describe('ProcessLedger — lifecycle', () => {
   test('a disappeared pid is marked exited, not dropped', async () => {
     const tree = [proc(2001, HOST_PID, 'sleep 5')];
@@ -223,6 +250,7 @@ describe('ProcessLedger — lifecycle', () => {
   });
 });
 
+/** 输出尾巴契约：onToolUpdate 增量累积且按 outputTailBytes 字节上限截断。 */
 describe('ProcessLedger — output tail', () => {
   test('updates accumulate and the tail is bounded', async () => {
     const tree = [proc(2001, HOST_PID, 'cat')];
@@ -237,6 +265,7 @@ describe('ProcessLedger — output tail', () => {
   });
 });
 
+/** kill 契约：entry 树级终止、跨会话禁止、argv 不匹配跳过、job 取消联动。 */
 describe('ProcessLedger — kill', () => {
   test('entry kill terminates every live member and marks the entry', async () => {
     const tree = [proc(2001, HOST_PID, 'parent'), proc(2002, 2001, 'child')];
@@ -287,6 +316,7 @@ describe('ProcessLedger — kill', () => {
   });
 });
 
+/** 传输契约：同目录多次变更合并为一次 publish，revision 单调递增。 */
 describe('ProcessLedger — transport', () => {
   test('changes coalesce into one publish per directory', async () => {
     const tree = [proc(2001, HOST_PID, 'sleep 5')];

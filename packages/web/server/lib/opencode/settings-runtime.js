@@ -1,5 +1,14 @@
+/**
+ * 设置（settings.json）读写运行时：负责磁盘读取（宽松/严格）、迁移链、
+ * 原子写入、串行化持久化，以及项目 ID 规范化时项目级存储/图标/孤儿
+ * 文件的搬迁与恢复。
+ */
 import { createProjectIdFromPath } from '../projects/project-id.js';
 
+/**
+ * 各通知事件的默认标题/消息模板（支持 {agent_name}、{model_name}、
+ * {last_message} 等占位符），作为用户模板缺失或形状不合法时的回退。
+ */
 const DEFAULT_NOTIFICATION_TEMPLATES = {
   completion: { title: '{agent_name} is ready', message: '{model_name} completed the task' },
   error: { title: 'Tool error', message: '{last_message}' },
@@ -7,6 +16,13 @@ const DEFAULT_NOTIFICATION_TEMPLATES = {
   subtask: { title: '{agent_name} is ready', message: '{model_name} completed the task' },
 };
 
+/**
+ * 规范化通知模板形状：对每个已知事件补齐缺失/非字符串的 title 与
+ * message（用默认模板回退）；用户提供的未知事件键会被丢弃。
+ * @param {object} [templates] 用户提供的模板映射
+ * @returns {{templates: Record<string, {title: string, message: string}>, changed: boolean}}
+ *   规范化后的模板及是否发生了修改
+ */
 const ensureNotificationTemplateShape = (templates) => {
   const input = templates && typeof templates === 'object' ? templates : {};
   let changed = false;
@@ -26,6 +42,29 @@ const ensureNotificationTemplateShape = (templates) => {
   return { templates: next, changed };
 };
 
+/**
+ * 创建设置运行时：封装 settings.json 的读取（宽松/严格/含迁移）、
+ * 原子写入、项目 ID 迁移与孤儿恢复，以及串行化的 persistSettings。
+ *
+ * @param {object} deps 依赖注入集合
+ * @param {object} deps.fsPromises node:fs/promises（注入便于测试）
+ * @param {object} deps.path node:path 模块
+ * @param {object} deps.crypto node:crypto 模块
+ * @param {string} deps.SETTINGS_FILE_PATH settings.json 绝对路径
+ * @param {Function} deps.sanitizeProjects 清洗项目列表
+ * @param {Function} deps.sanitizeSettingsUpdate 清洗设置更新（过滤非法字段落盘）
+ * @param {Function} deps.mergePersistedSettings 合并持久化设置
+ * @param {Function} deps.normalizeSettingsPaths 规范化设置中的路径字段
+ * @param {Function} deps.normalizeStringArray 规范化字符串数组
+ * @param {Function} deps.formatSettingsResponse 格式化返回给客户端的设置响应
+ * @param {Function} deps.resolveDirectoryCandidate 解析目录候选（lastDirectory 迁移用）
+ * @param {Function} deps.normalizeManagedRemoteTunnelHostname 规范化受管远程隧道 hostname
+ * @param {Function} deps.normalizeManagedRemoteTunnelPresets 规范化隧道 preset 列表
+ * @param {Function} deps.normalizeManagedRemoteTunnelPresetTokens 规范化 preset token 映射
+ * @param {Function} deps.syncManagedRemoteTunnelConfigWithPresets 把 preset 变更同步到隧道配置
+ * @param {Function} deps.upsertManagedRemoteTunnelToken 写入/更新隧道 token
+ * @returns {object} 设置运行时 API（读、迁移读、原子写、persistSettings）
+ */
 export const createSettingsRuntime = (deps) => {
   const {
     fsPromises,
@@ -46,6 +85,7 @@ export const createSettingsRuntime = (deps) => {
     upsertManagedRemoteTunnelToken,
   } = deps;
 
+  // 串行化 persistSettings 的 Promise 链：读-改-写必须顺序执行，防止并发写互相覆盖。
   let persistSettingsLock = Promise.resolve();
 
   // Orphan recovery is a one-shot best-effort scan: when orphans can't be
@@ -54,15 +94,34 @@ export const createSettingsRuntime = (deps) => {
   // event loop, so hitting it 3+ times/second from fs/list, path, etc.
   // turns into perceptible UI jank for ~10-15 seconds after launch.
   // Cache the outcome for this process lifetime.
+  // 孤儿恢复只在本进程生命周期内做一次（结果缓存，避免高频读取反复扫描磁盘）。
   let orphanRecoveryDone = false;
 
+  // 项目级配置与存储的根目录（settings.json 同级的 projects/ 目录）。
   const PROJECTS_ROOT_DIR = path.join(path.dirname(SETTINGS_FILE_PATH), 'projects');
+  // 项目图标目录（settings.json 同级的 project-icons/ 目录）。
   const PROJECT_ICONS_DIR = path.join(path.dirname(SETTINGS_FILE_PATH), 'project-icons');
 
+  /**
+   * 计算字符串的 SHA-1 十六进制摘要（用于图标文件名）。
+   * @param {string} value 输入字符串
+   * @returns {string} 十六进制摘要
+   */
   const sha1Hex = (value) => crypto.createHash('sha1').update(value).digest('hex');
+  /**
+   * 由项目 id 派生图标文件基础名（project-<sha1>）。
+   * @param {string} projectId 项目 id
+   * @returns {string} 图标文件基础名
+   */
   const projectIconBaseName = (projectId) => `project-${sha1Hex(projectId)}`;
+  // 项目图标支持的扩展名（迁移时逐一尝试改名）。
   const PROJECT_ICON_EXTENSIONS = ['png', 'jpg', 'svg', 'webp', 'ico'];
 
+  /**
+   * 读取并解析 JSON 文件；文件不存在返回 null，其它错误（损坏/权限）抛出。
+   * @param {string} filePath 目标文件路径
+   * @returns {Promise<object|null>} 解析结果；非对象负载也返回 null
+   */
   const readJsonFile = async (filePath) => {
     try {
       const raw = await fsPromises.readFile(filePath, 'utf8');
@@ -76,13 +135,31 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 把值以 2 空格缩进的 JSON 写入文件（自动递归创建父目录）。
+   * @param {string} filePath 目标文件路径
+   * @param {*} value 待写入的值
+   * @returns {Promise<void>}
+   */
   const writeJsonFile = async (filePath, value) => {
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
     await fsPromises.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
   };
 
+  /**
+   * 过滤出非空字符串并去重。
+   * @param {Array<*>} values 输入列表
+   * @returns {string[]} 去重后的字符串列表
+   */
   const uniqueStrings = (values) => Array.from(new Set(values.filter((value) => typeof value === 'string' && value.trim().length > 0)));
 
+  /**
+   * 按 key 合并两个列表：新项优先、按 key 去重，跳过非对象与无 key 项。
+   * @param {Array} oldItems 旧列表
+   * @param {Array} newItems 新列表（优先保留）
+   * @param {Function} getKey 提取去重 key
+   * @returns {Array} 合并后的列表
+   */
   const mergeByKey = (oldItems, newItems, getKey) => {
     const result = [];
     const seen = new Set();
@@ -96,6 +173,14 @@ export const createSettingsRuntime = (deps) => {
     return result;
   };
 
+  /**
+   * 把计划文件条目的 path 从旧存储目录重映射到新目录；仅处理位于旧目录
+   * 内的路径（含旧目录本身），目录外的条目原样保留。
+   * @param {Array} entries 计划文件条目列表
+   * @param {string} fromDir 旧存储目录
+   * @param {string} toDir 新存储目录
+   * @returns {Array} 重映射后的条目列表
+   */
   const remapPlanPaths = (entries, fromDir, toDir) => {
     if (!Array.isArray(entries) || !fromDir || !toDir || fromDir === toDir) {
       return Array.isArray(entries) ? entries : [];
@@ -116,6 +201,18 @@ export const createSettingsRuntime = (deps) => {
     });
   };
 
+  /**
+   * 项目 id 变更时合并新旧两份 project 配置：新值字段优先覆盖，todos/
+   * actions/scheduledTasks/计划文件按 id 合并去重，setup-worktree 与
+   * projectNotes 合并保留双方，计划路径重映射到新存储目录。
+   * @param {object} args 参数集
+   * @param {object} [args.oldConfig] 旧配置
+   * @param {object} [args.newConfig] 新配置（字段优先）
+   * @param {string} args.oldStorageDir 旧存储目录
+   * @param {string} args.newStorageDir 新存储目录
+   * @param {string} [args.projectPath] 项目路径（写入合并结果）
+   * @returns {object} 合并后的配置
+   */
   const mergeProjectConfigData = ({ oldConfig, newConfig, oldStorageDir, newStorageDir, projectPath }) => {
     const oldValue = oldConfig && typeof oldConfig === 'object' ? oldConfig : {};
     const newValue = newConfig && typeof newConfig === 'object' ? newConfig : {};
@@ -152,6 +249,13 @@ export const createSettingsRuntime = (deps) => {
     };
   };
 
+  /**
+   * 递归搬迁目录内容到目标目录：目标已存在的同名文件跳过（不覆盖），
+   * 搬完删除源目录；源目录不存在（ENOENT）视为成功，其它错误抛出。
+   * @param {string} fromDir 源目录
+   * @param {string} toDir 目标目录
+   * @returns {Promise<void>}
+   */
   const moveDirectoryContents = async (fromDir, toDir) => {
     try {
       const entries = await fsPromises.readdir(fromDir, { withFileTypes: true });
@@ -179,6 +283,12 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 项目 id 变更时迁移图标文件：对每种支持的扩展名把旧基础名改名为新
+   * 基础名；目标已存在时直接删除旧文件。旧图标不存在则跳过。
+   * @param {{oldId: string, newId: string}} args 新旧项目 id
+   * @returns {Promise<void>}
+   */
   const migrateProjectIconFiles = async ({ oldId, newId }) => {
     if (!oldId || !newId || oldId === newId) {
       return;
@@ -225,6 +335,13 @@ export const createSettingsRuntime = (deps) => {
    * here: `project-context` converts it on read, and converting in two places
    * would mean two definitions of the same migration.
    */
+  /**
+   * 项目 id 变更时合并服务端持有的 context.json（notes/todos/plans）：
+   * 双方都存在时按 id 合并各列表，避免目录搬迁直接覆盖丢失任一侧。
+   * @param {string} oldStorageDir 旧项目存储目录
+   * @param {string} newStorageDir 新项目存储目录
+   * @returns {Promise<void>}
+   */
   const mergeProjectContextFiles = async (oldStorageDir, newStorageDir) => {
     const oldContextPath = path.join(oldStorageDir, 'context.json');
     const newContextPath = path.join(newStorageDir, 'context.json');
@@ -239,6 +356,7 @@ export const createSettingsRuntime = (deps) => {
       return;
     }
 
+    // notes 兼容 version 1 的单字符串形态：优先保留列表侧，双字符串时取新侧。
     const mergeNotes = () => {
       // One side may still be a version 1 string; keep whichever is a list, and
       // prefer the destination when both are strings.
@@ -262,6 +380,12 @@ export const createSettingsRuntime = (deps) => {
     await fsPromises.rm(oldContextPath, { force: true });
   };
 
+  /**
+   * 项目 id 变更的一站式搬迁：合并新旧 project 配置 json、合并
+   * context.json、递归搬迁存储目录，最后删除旧配置文件。
+   * @param {{oldId: string, newId: string, projectPath?: string}} args 新旧 id 与项目路径
+   * @returns {Promise<void>}
+   */
   const migrateProjectScopedStorage = async ({ oldId, newId, projectPath }) => {
     if (!oldId || !newId || oldId === newId) {
       return;
@@ -287,6 +411,13 @@ export const createSettingsRuntime = (deps) => {
     await fsPromises.rm(oldConfigPath, { force: true });
   };
 
+  /**
+   * 把随机 UUID 项目 id 迁移为基于路径的确定性 id：逐项目迁移项目级
+   * 存储与图标并记录 id 映射；进程内首次调用顺带做一次孤儿恢复；
+   * activeProjectId 随映射修正。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>} 迁移后的设置与是否有变化
+   */
   const migrateSettingsToDeterministicProjectIds = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     const projects = sanitizeProjects(settings.projects) || [];
@@ -341,6 +472,13 @@ export const createSettingsRuntime = (deps) => {
   // For each canonical project whose current config is empty (lost during the
   // earlier id churn), try to find a single orphan whose setup-worktree command
   // patterns uniquely match the project's basename and merge it in.
+  /**
+   * 扫描 projects/ 下无主的历史项目配置（早期随机 UUID id 遗留），尝试
+   * 通过 setup-worktree 命令中的相对路径或项目名唯一匹配到规范化项目
+   * 并合并进去；无法唯一匹配的仅告警保留在磁盘上。
+   * @param {Array<object>} canonicalProjects 规范化后的项目列表
+   * @returns {Promise<void>}
+   */
   const recoverOrphanProjectFiles = async (canonicalProjects) => {
     let entries;
     try {
@@ -378,6 +516,7 @@ export const createSettingsRuntime = (deps) => {
 
     if (orphans.length === 0) return;
 
+    /** 取路径最后一段作为小写 basename（统一正/反斜杠并去尾斜杠）。 */
     const basenameOf = (projectPath) => {
       if (typeof projectPath !== 'string') return '';
       const normalized = projectPath.replace(/\\/g, '/').replace(/\/+$/g, '');
@@ -385,6 +524,7 @@ export const createSettingsRuntime = (deps) => {
       return (idx >= 0 ? normalized.slice(idx + 1) : normalized).toLowerCase();
     };
 
+    /** 从孤儿配置的 setup-worktree/命令文本中提取 ROOT_PROJECT_PATH 等占位符后的相对路径集合。 */
     const extractRootRelPaths = (orphan) => {
       const commands = [
         ...(Array.isArray(orphan.content['setup-worktree']) ? orphan.content['setup-worktree'] : []),
@@ -401,6 +541,7 @@ export const createSettingsRuntime = (deps) => {
       return Array.from(results);
     };
 
+    /** 判断相对路径在项目目录中是否存在。 */
     const fileExistsInProject = async (projectPath, relPath) => {
       try {
         await fsPromises.access(path.join(projectPath, relPath));
@@ -410,6 +551,7 @@ export const createSettingsRuntime = (deps) => {
       }
     };
 
+    /** 判断孤儿是否匹配项目：任一提取的相对路径存在，或命令/名称文本包含项目 basename。 */
     const orphanMatchesProject = async (orphan, project) => {
       if (typeof project.path !== 'string' || !project.path.trim()) return false;
       const rels = extractRootRelPaths(orphan);
@@ -427,6 +569,7 @@ export const createSettingsRuntime = (deps) => {
       return haystacks.includes(name);
     };
 
+    // 孤儿 → 匹配项目的映射（仅保留恰好匹配到唯一项目的孤儿）。
     const matches = new Map();
     for (const orphan of orphans) {
       const matchedProjects = [];
@@ -472,6 +615,11 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 宽松读取 settings.json：任何失败（文件缺失/JSON 损坏/IO 错误）都
+   * 返回 {} 且不抛错。
+   * @returns {Promise<object>} 解析出的设置对象
+   */
   const readSettingsFromDisk = async () => {
     try {
       const raw = await fsPromises.readFile(SETTINGS_FILE_PATH, 'utf8');
@@ -496,6 +644,12 @@ export const createSettingsRuntime = (deps) => {
   // every paired device and push binding, and overwrite the settings file with
   // the empty spread. Here only a genuinely missing file means "no settings";
   // any other failure (including a non-object payload) throws.
+  /**
+   * 严格读取：仅「文件不存在」视为空设置；JSON 损坏、权限错误、非对象
+   * 负载一律抛错。供需要区分「首启动」与「读失败」的调用方使用（如
+   * relay 签名/加密密钥的再生），避免误 mint 新身份导致配对设备全部失联。
+   * @returns {Promise<object>} 设置对象
+   */
   const readSettingsFromDiskStrict = async () => {
     let raw;
     try {
@@ -513,8 +667,18 @@ export const createSettingsRuntime = (deps) => {
     return parsed;
   };
 
+  /**
+   * 毫秒级延时。
+   * @param {number} ms 延时毫秒数
+   * @returns {Promise<void>}
+   */
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+  /**
+   * 判断是否为 Windows 上瞬时性的文件替换错误（EPERM/EACCES/EBUSY）。
+   * @param {*} error 捕获的错误
+   * @returns {boolean}
+   */
   const isTransientWindowsReplaceError = (error) => {
     if (process.platform !== 'win32' || !error || typeof error !== 'object') {
       return false;
@@ -522,6 +686,13 @@ export const createSettingsRuntime = (deps) => {
     return error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'EBUSY';
   };
 
+  /**
+   * 用临时文件原子替换目标：Windows 上对瞬时错误做退避重试，仍失败则
+   * 退化为 copyFile 直接覆盖（保证设置持久化不被永久卡死），并清理临时文件。
+   * @param {string} tmp 临时文件路径
+   * @param {string} target 目标文件路径
+   * @returns {Promise<void>}
+   */
   const replaceFile = async (tmp, target) => {
     const maxAttempts = process.platform === 'win32' ? 6 : 1;
     let lastError = null;
@@ -554,6 +725,12 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 尽力清理目录中遗留的 settings.json.tmp-* 临时文件；读取目录失败
+   * 静默忽略（不影响设置操作）。
+   * @param {string} directory 设置文件所在目录
+   * @returns {Promise<void>}
+   */
   const cleanupOrphanedSettingsTempFiles = async (directory) => {
     try {
       const entries = await fsPromises.readdir(directory, { withFileTypes: true });
@@ -566,6 +743,12 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 原子写入 settings.json：先写 0600 权限的临时文件再 rename 替换
+   * （目录 0700）；任何失败都会清理临时文件后抛错。
+   * @param {object} settings 完整设置对象
+   * @returns {Promise<void>}
+   */
   const writeSettingsToDisk = async (settings) => {
     const settingsDirectory = path.dirname(SETTINGS_FILE_PATH);
     await fsPromises.mkdir(settingsDirectory, { recursive: true, mode: 0o700 });
@@ -587,11 +770,18 @@ export const createSettingsRuntime = (deps) => {
     }
   };
 
+  /**
+   * 校验项目条目路径有效性：path 缺失、非目录或目录已不存在则丢弃该
+   * 条目；权限或瞬时 IO 错误则保留（避免静默丢失用户项目）。
+   * @param {Array} projects 项目列表
+   * @returns {Promise<Array>} 校验后的项目列表
+   */
   const validateProjectEntries = async (projects) => {
     if (!Array.isArray(projects)) {
       return [];
     }
 
+    // 逐项目并行校验路径，返回项目本身或 null（null 稍后被过滤掉）。
     const validations = projects.map(async (project) => {
       if (!project || typeof project.path !== 'string' || project.path.length === 0) {
         console.warn('[validateProjectEntries] Dropping project entry with missing or empty path');
@@ -618,6 +808,12 @@ export const createSettingsRuntime = (deps) => {
     return (await Promise.all(validations)).filter((p) => p !== null);
   };
 
+  /**
+   * 旧版 lastDirectory 迁移：项目列表为空时把 lastDirectory 转成首个
+   * 项目；并保证 activeProjectId 指向实际存在的项目（否则切到首个或清除）。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>}
+   */
   const migrateSettingsFromLegacyLastDirectory = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     const now = Date.now();
@@ -679,6 +875,12 @@ export const createSettingsRuntime = (deps) => {
     return { settings: merged, changed: true };
   };
 
+  /**
+   * 旧版单一主题偏好迁移：按 themeId/themeVariant 推导 lightThemeId 与
+   * darkThemeId（缺失侧补默认 flexoki 主题）。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>}
+   */
   const migrateSettingsFromLegacyThemePreferences = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
 
@@ -723,6 +925,12 @@ export const createSettingsRuntime = (deps) => {
     return { settings: merged, changed: true };
   };
 
+  /**
+   * 旧版 collapsedProjects 迁移：把折叠集合转移到各项目的
+   * sidebarCollapsed 字段，并从设置中移除废弃的旧键。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>}
+   */
   const migrateSettingsFromLegacyCollapsedProjects = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     const collapsed = Array.isArray(settings.collapsedProjects)
@@ -742,6 +950,7 @@ export const createSettingsRuntime = (deps) => {
     const projects = sanitizeProjects(settings.projects) || [];
     let changed = false;
 
+    // 把折叠集合写进各项目的 sidebarCollapsed 字段。
     const nextProjects = projects.map((project) => {
       const shouldCollapse = set.has(project.id);
       if (project.sidebarCollapsed !== shouldCollapse) {
@@ -765,6 +974,12 @@ export const createSettingsRuntime = (deps) => {
     return { settings: next, changed: true };
   };
 
+  /**
+   * 补齐通知默认值：四个 notifyOn* 布尔缺失时置 true，并确保
+   * notificationTemplates 形状完整（见 ensureNotificationTemplateShape）。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>}
+   */
   const migrateSettingsNotificationDefaults = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     let changed = false;
@@ -796,6 +1011,12 @@ export const createSettingsRuntime = (deps) => {
     return { settings: changed ? next : settings, changed };
   };
 
+  /**
+   * 旧版 namedTunnel* 键迁移到 managedRemoteTunnel*（hostname/token/
+   * presets/presetTokens/selectedPresetId），迁移完成后删除旧键。
+   * @param {object} current 当前设置
+   * @returns {Promise<{settings: object, changed: boolean}>}
+   */
   const migrateSettingsFromLegacyNamedTunnelKeys = async (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     const next = { ...settings };
@@ -860,6 +1081,11 @@ export const createSettingsRuntime = (deps) => {
   // `approvedDirectories` was a write-only registry: every project path and
   // visited directory was appended forever, but nothing ever read it. Strip
   // the stale key from persisted settings on upgrade.
+  /**
+   * 移除只写不读的遗留键 approvedDirectories。
+   * @param {object} current 当前设置
+   * @returns {{settings: object, changed: boolean}}
+   */
   const migrateSettingsRemoveApprovedDirectories = (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     if (!Object.prototype.hasOwnProperty.call(settings, 'approvedDirectories')) {
@@ -873,6 +1099,12 @@ export const createSettingsRuntime = (deps) => {
   // OpenCode updates now ship only with OMPChamber. Remove the retired
   // notification preference and dismissed-version marker from disk so stale
   // clients cannot keep reintroducing a dead UI contract.
+  /**
+   * 移除随 OpenCode 更新机制下线的通知偏好与版本标记键，防止旧客户端
+   * 继续把废弃的 UI 契约写回磁盘。
+   * @param {object} current 当前设置
+   * @returns {{settings: object, changed: boolean}}
+   */
   const migrateSettingsRemoveOpenCodeUpdateState = (current) => {
     const settings = current && typeof current === 'object' ? current : {};
     const legacyKeys = ['showOpenCodeUpdateNotifications', 'openCodeUpdateToastDismissedVersion'];
@@ -884,8 +1116,15 @@ export const createSettingsRuntime = (deps) => {
     return { settings: next, changed: true };
   };
 
+  // 是否已做过一次遗留临时文件清理（每进程一次）。
   let hasCleanedOrphanedTempFiles = false;
 
+  /**
+   * 读取设置并顺序执行全部迁移（lastDirectory → 主题 → 折叠项目 →
+   * 通知默认值 → 隧道键 → 路径规范化 → 确定性项目 id → 移除废弃键），
+   * 任一迁移产生变化则回写磁盘；首次调用顺带清理遗留临时文件。
+   * @returns {Promise<object>} 迁移后的设置
+   */
   const readSettingsFromDiskMigrated = async () => {
     if (!hasCleanedOrphanedTempFiles) {
       hasCleanedOrphanedTempFiles = true;
@@ -907,6 +1146,14 @@ export const createSettingsRuntime = (deps) => {
     return migration9.settings;
   };
 
+  /**
+   * 串行化地持久化设置变更：读盘 → 清洗 → 合并 → 路径/项目 id/废弃键
+   * 迁移 → 仅当更新涉及 projects 时校验路径 → 修正 activeProjectId →
+   * 同步隧道 preset 与 token → 原子写盘，返回格式化的设置响应。
+   * 日志只记录字段名，绝不记录可能含凭据的值。
+   * @param {object} changes 本次变更的字段集合
+   * @returns {Promise<object>} 格式化后的设置响应
+   */
   const persistSettings = async (changes) => {
     persistSettingsLock = persistSettingsLock.then(async () => {
       // Log field names only — changes can carry credentials (UI password,
@@ -984,6 +1231,7 @@ export const createSettingsRuntime = (deps) => {
     return persistSettingsLock;
   };
 
+  // 暴露给 server 的设置运行时 API。
   return {
     readSettingsFromDisk,
     readSettingsFromDiskStrict,

@@ -17,11 +17,28 @@
 //!   wire the real `crate::project_context` / `crate::agent_memory` /
 //!   `crate::small_model` seams. The `unavailable_*` / `unresolved_*`
 //!   constructors remain for tests and alternate wiring.
+//!
+//! 中文说明：`session_assist` 聚合了三个兄弟 hub 消费者的移植（JS 侧每
+//! 个模块一个文件，此处保持同样的拆分）：knowledge 负责"会话该知道什么、
+//! 是否已告知"，assist 负责闲置安静期后的 recap 与建议生成，obligatory
+//! 负责压缩后把置顶消息与知识块合并成一条 synthetic prompt 重发。本文件
+//! 是组合根（composition root）：把真实的 project-context / agent-memory /
+//! small-model 接缝注入各生产 runtime，并把两个事件驱动的 runtime 挂到
+//! hub 上。
 
+/// 移植自 `server/lib/session-assist/runtime.js`：闲置安静期后的 recap 与
+/// 建议生成，结果写入 session metadata。
 pub mod assist;
+/// 三个消费者共享的引擎 fetch 接缝（JS 的 `openCodeFetch` 闭包）。
 pub mod fetch;
+/// 移植自 `server/lib/session-knowledge/runtime.js`：会话必须被告知的项目
+/// 知识（置顶 notes/plans + agent-memory 索引）及投递状态。
 pub mod knowledge;
+/// 移植自 `server/lib/context-obligatory/runtime.js`：压缩后把用户置顶的
+/// 必需消息与知识块作为一条 synthetic prompt 重发。
 pub mod obligatory;
+/// 移植自 `server/lib/session-knowledge/routes.js`：`/api/session-knowledge*`
+/// 的 HTTP 路由。
 pub mod routes;
 
 pub use assist::{
@@ -48,6 +65,9 @@ use crate::hub::EventHub;
 /// `registerSessionKnowledgeRoutes(app, ...)` — the session-knowledge HTTP
 /// surface (`/api/session-knowledge*`), wired with the production knowledge
 /// runtime.
+///
+/// 中文说明：构建 session-knowledge 的 HTTP 路由，内部先经
+/// [`knowledge_runtime`] 装配生产依赖再交给 [`routes::router`]。
 pub fn router(ctx: RouterContext) -> axum::Router {
     routes::router(knowledge_runtime(&ctx))
 }
@@ -58,6 +78,10 @@ pub fn router(ctx: RouterContext) -> axum::Router {
 /// shared project-context store, shared memory store with its failed-scope
 /// flags, the worktree-aware memory project resolver, and the shared memory
 /// gate (feature flag first — unreleased means absent).
+///
+/// 中文说明：生产装配——共享的 project-context 存储、带失败标记的共享
+/// memory 存储、worktree 感知的 memory project 解析器，以及共享的 memory
+/// 开关（feature flag 优先，未发布即视为关闭）。
 pub fn knowledge_runtime(ctx: &RouterContext) -> Arc<SessionKnowledgeRuntime> {
     let project_context = crate::project_context::ProjectContextRuntime::for_context(ctx);
     let project_context_plans = project_context.clone();
@@ -112,6 +136,8 @@ pub fn knowledge_runtime(ctx: &RouterContext) -> Arc<SessionKnowledgeRuntime> {
     })
 }
 
+/// 把 `agent_memory::MemoryEntry` 列表序列化为 JSON 值；单条序列化失败时
+/// 以 Null 占位，不拖垮整个列表。
 fn entries_to_values(entries: &[crate::agent_memory::MemoryEntry]) -> Vec<serde_json::Value> {
     entries
         .iter()
@@ -124,6 +150,10 @@ fn entries_to_values(entries: &[crate::agent_memory::MemoryEntry]) -> Vec<serde_
 /// restrictToPreferredProvider: true })` with the session's own
 /// provider/model, so conversation content never leaves the provider the
 /// user picked (unless the small model was chosen explicitly).
+///
+/// 中文说明：把共享 small-model service 适配为 assist 接缝——强制
+/// `restrictToPreferredProvider`，并携带会话自己的 provider/model，使
+/// 会话内容不会流出用户选定的 provider（用户显式选了 small model 除外）。
 pub fn assist_small_model(
     service: Arc<crate::small_model::SmallModelService>,
 ) -> assist::SmallModelText {
@@ -161,6 +191,9 @@ pub fn assist_small_model(
 /// `createSessionAssistRuntime({ buildOpenCodeUrl, getOpenCodeAuthHeaders,
 /// getSmallModelService })` wiring: engine fetch, the shared small-model
 /// service, and the settings-file recap/suggestion switches.
+///
+/// 中文说明：生产装配——引擎 fetch、共享 small-model service，以及从
+/// settings 文件读取的 recap/建议开关。
 pub fn assist_runtime(ctx: &RouterContext) -> Arc<SessionAssistRuntime> {
     SessionAssistRuntime::new(SessionAssistOptions {
         fetch: engine_fetch(Arc::clone(&ctx.engine), assist::FETCH_TIMEOUT_MS),
@@ -170,6 +203,8 @@ pub fn assist_runtime(ctx: &RouterContext) -> Arc<SessionAssistRuntime> {
     })
 }
 /// Production context-obligatory runtime over the production knowledge
+///
+/// 中文说明：基于生产 knowledge runtime 装配 context-obligatory runtime。
 pub fn obligatory_runtime(ctx: &RouterContext) -> Arc<ContextObligatoryRuntime> {
     ContextObligatoryRuntime::new(ContextObligatoryOptions {
         fetch: engine_fetch(Arc::clone(&ctx.engine), obligatory::FETCH_TIMEOUT_MS),
@@ -181,6 +216,9 @@ pub fn obligatory_runtime(ctx: &RouterContext) -> Arc<ContextObligatoryRuntime> 
 /// equivalent of index.js `onPayload` handing each payload + directory to
 /// `sessionAssistRuntime.processPayload` and
 /// `contextObligatoryRuntime.processPayload`.
+///
+/// 中文说明：把 assist 与 obligatory 两个事件驱动 runtime 同时订阅 hub
+/// 帧，返回各自的 JoinHandle 供上层统一停机。
 pub fn spawn_bridge(
     assist: Arc<SessionAssistRuntime>,
     obligatory: Arc<ContextObligatoryRuntime>,
@@ -192,10 +230,13 @@ pub fn spawn_bridge(
     ]
 }
 
+/// 生产装配的冒烟测试与临时 [`RouterContext`] 构造。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+/// 契约：三个生产工厂能装配真实兄弟源（引擎、project-context、memory、
+/// small-model），runtime 可正常创建与停机。
     #[test]
     fn production_factories_wire_the_real_sibling_sources() {
         let ctx = test_context();
@@ -208,6 +249,8 @@ mod tests {
         let _ = knowledge;
     }
 
+/// 构造使用独立临时目录、外部引擎（空 base URL）的测试 [`RouterContext`]，
+/// 避免测试之间共享状态。
     fn test_context() -> RouterContext {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-session-assist-mod-{}-{}",

@@ -1,3 +1,11 @@
+/**
+ * OpenAI（ChatGPT 后端）配额 provider。
+ *
+ * 用 OpenCode auth 中的 access token 请求 chatgpt.com 的 wham/usage 端点，
+ * 读取 primary/secondary 两个限流窗口并固定映射为 5h 与 weekly 窗口。
+ * 注意与 codex.js 共享同一组 auth 别名，但此处窗口命名是固定标签、
+ * 且不读取 credits/spend_control。
+ */
 import { readAuthFile } from '../../opencode/auth.js';
 import {
   getAuthEntry,
@@ -8,16 +16,25 @@ import {
   toTimestamp
 } from '../utils/index.js';
 
+/** 对外 provider 标识（模块内部使用，不导出）。 */
 const providerId = 'openai';
+/** 展示名（模块内部使用，不导出）。 */
 const providerName = 'OpenAI';
+/** OpenCode auth 文件中的凭据匹配别名（与 codex.js 共享）。 */
 const aliases = ['openai', 'codex', 'chatgpt'];
 
+/** 读取 auth 文件，存在 OAuth access token 或 API token 即视为已配置。 */
 const isConfigured = () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return Boolean(entry?.access || entry?.token);
 };
 
+/**
+ * 拉取 OpenAI 限流窗口：primary_window 固定映射为 '5h'、
+ * secondary_window 固定映射为 'weekly'；reset_at 由秒级时间戳换算为毫秒；
+ * 未配置、HTTP 错误或异常均返回结构化失败结果。
+ */
 export const fetchQuota = async () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));

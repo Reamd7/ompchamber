@@ -5,6 +5,11 @@
 //! `/api`, `/linear`, or asset-like extensions, which 404 (so unknown API
 //! routes are not answered with HTML). When the dist dir is missing the SPA
 //! fallback answers a "build first" message; `--api-only` serves no assets.
+//!
+//! 中文说明：本模块负责静态 UI 资源的服务与 SPA 回退。从 dist 目录提供
+//! 文件；未知路径回退到 `index.html`，但 `/api`、`/linear` 前缀及带静态资源
+//! 扩展名的路径除外（它们直接 404，避免未知 API 路由被 HTML 应答）。
+//! dist 目录缺失时 SPA 回退返回"请先构建"提示；`--api-only` 模式不提供任何资源。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,17 +20,24 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
+/// 不做 SPA 回退的路径前缀：这些前缀下的未知路径直接 404（API 与 Linear 回调）。
 const SPA_FALLBACK_EXCLUDE_PREFIXES: [&str; 2] = ["/api", "/linear"];
+/// 视为静态资源的文件扩展名：带这些扩展名的未知路径直接 404 而非回退到 SPA shell。
 const ASSET_EXTENSIONS: [&str; 12] = [
     "js", "css", "svg", "png", "jpg", "jpeg", "gif", "ico", "woff", "woff2", "ttf", "eot",
 ];
 
+/// 静态资源路由的共享状态（一次性在启动时捕获，请求期间只读）。
 pub struct StaticState {
+    /// UI 构建产物目录（`OMPCHAMBER_DIST_DIR` 或 `<web package>/dist`）。
     dist_dir: PathBuf,
+    /// dist 目录在启动时是否存在；缺失时返回"请先构建"提示而不是panic。
     dist_exists: bool,
+    /// `--api-only` / OMPCHAMBER_API_ONLY：不服务任何浏览器 UI 资源。
     api_only: bool,
 }
 
+/// 构建静态资源路由：以 SPA 回退处理器作为兜底路由挂载到 axum Router。
 pub fn router(config: &crate::config::ServerConfig) -> Router {
     let state = Arc::new(StaticState {
         dist_exists: config.dist_dir.is_dir(),
@@ -35,6 +47,8 @@ pub fn router(config: &crate::config::ServerConfig) -> Router {
     Router::new().fallback(get(spa_fallback)).with_state(state)
 }
 
+/// 判断路径是否允许 SPA 回退：排除 `/api`、`/linear` 前缀（含恰好等于前缀
+/// 本身的路径）以及带静态资源扩展名的路径，其余（含无扩展名路由）均回退。
 fn is_spa_fallback_path(path: &str) -> bool {
     if SPA_FALLBACK_EXCLUDE_PREFIXES
         .iter()
@@ -53,6 +67,7 @@ fn is_spa_fallback_path(path: &str) -> bool {
     }
 }
 
+/// 按扩展名返回 Content-Type；未识别的扩展名统一 `application/octet-stream`。
 fn mime_for(extension: &str) -> &'static str {
     match extension.to_ascii_lowercase().as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
@@ -76,6 +91,8 @@ fn mime_for(extension: &str) -> &'static str {
 }
 
 /// Resolve `uri.path()` inside the dist dir, rejecting traversal.
+/// 中文说明：通过 canonicalize 双重校验候选路径仍在 dist 目录内，杜绝
+/// `..` 路径穿越；根路径 `/` 映射到 `index.html`。
 fn resolve_dist_file(dist_dir: &Path, path: &str) -> Option<PathBuf> {
     let relative = path.trim_start_matches('/');
     if relative.is_empty() || relative.contains("..") {
@@ -95,6 +112,8 @@ fn resolve_dist_file(dist_dir: &Path, path: &str) -> Option<PathBuf> {
     }
 }
 
+/// 读取并返回一个磁盘文件：按扩展名设置 Content-Type；文件在解析后消失
+/// （竞态）时返回 404。
 async fn serve_file(path: PathBuf) -> Response {
     let extension = path
         .extension()
@@ -111,6 +130,9 @@ async fn serve_file(path: PathBuf) -> Response {
     }
 }
 
+/// 兜底处理器，复刻 static-routes-runtime 的分发顺序：
+/// api-only → 404；dist 缺失 → "请先构建"；精确文件命中 → 直接服务；
+/// SPA 回退路径 → 返回 index.html；其余（API 前缀/资源扩展名）→ 404。
 async fn spa_fallback(State(state): State<Arc<StaticState>>, uri: Uri, _req: Request) -> Response {
     let path = uri.path().to_string();
 
@@ -146,10 +168,12 @@ async fn spa_fallback(State(state): State<Arc<StaticState>>, uri: Uri, _req: Req
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
+/// 静态资源服务的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证：SPA 回退排除 /api、/linear 前缀和静态资源扩展名，其余路径放行。
     #[test]
     fn spa_fallback_excludes_api_linear_and_assets() {
         assert!(is_spa_fallback_path("/"));
@@ -162,6 +186,7 @@ mod tests {
         assert!(is_spa_fallback_path("/docs/app.meta"));
     }
 
+    /// 验证：含 `..` 的路径穿越请求被拒绝，不会解析到 dist 目录之外。
     #[test]
     fn traversal_is_rejected() {
         let dir = std::env::temp_dir();

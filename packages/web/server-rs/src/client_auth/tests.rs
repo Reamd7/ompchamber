@@ -1,6 +1,10 @@
 //! Tests for the client-auth port, mirroring `remote-clients.test.js`,
 //! `pairing.test.js`, and the tunnel-auth behaviors exercised by
 //! `core-routes.test.js`.
+//!
+//! 中文说明：client-auth 移植层的测试，逐条对齐 JS 侧
+//! `remote-clients.test.js`、`pairing.test.js`，以及
+//! `core-routes.test.js` 所覆盖的 tunnel-auth 行为。
 
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +17,7 @@ use super::time::{Clock, system_clock};
 use super::tunnel_auth::{RequestScope, TunnelAuth, TunnelRequestContext};
 use crate::error::AppResult;
 
+/// 每个用例独立的临时目录（进程 id + 随机数防并发冲突）；调用方负责清理。
 fn temp_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-client-auth-{label}-{}-{:x}",
@@ -23,12 +28,15 @@ fn temp_dir(label: &str) -> std::path::PathBuf {
     dir
 }
 
+/// 把 &str 包成 Option<String> 的便捷构造，配合 ..Default::default()。
 fn label(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
 // -- remote clients ---------------------------------------------------------
 
+/// 验证客户端 token 完整生命周期：创建（oc_client_ 前缀、公开形状不含
+/// tokenHash）→ 认证（回填 lastUsedAt）→ 撤销 → purge 已撤销记录。
 #[tokio::test]
 async fn creates_authenticates_lists_and_revokes_client_tokens() {
     let dir = temp_dir("lifecycle");
@@ -83,6 +91,7 @@ async fn creates_authenticates_lists_and_revokes_client_tokens() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证过期 token 认证失败、未过期 token 正常通过。
 #[tokio::test]
 async fn rejects_expired_client_tokens() {
     let dir = temp_dir("expired");
@@ -126,6 +135,7 @@ async fn rejects_expired_client_tokens() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证相同 dedupe key 重复创建只保留一条记录：旧 token 失效、新 token 可用。
 #[tokio::test]
 async fn keeps_one_client_per_dedupe_key() {
     let dir = temp_dir("dedupe");
@@ -173,6 +183,8 @@ async fn keeps_one_client_per_dedupe_key() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 dedupe 重发时的标签规则：未传新标签沿用既有记录标签，传入则覆盖，
+/// 全新 dedupe 记录用 fallback 标签。
 #[tokio::test]
 async fn keeps_the_replaced_record_label_on_a_dedupe_re_mint() {
     let dir = temp_dir("relabel");
@@ -221,6 +233,7 @@ async fn keeps_the_replaced_record_label_on_a_dedupe_re_mint() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证（Unix）token 存储文件落盘权限为 0o600。
 #[cfg(unix)]
 #[tokio::test]
 async fn keeps_the_token_store_private_on_disk() {
@@ -244,6 +257,8 @@ async fn keeps_the_token_store_private_on_disk() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证磁盘存储跨 runtime 实例往返：重开后列表一致、version=1、
+/// tokenHash 为 64 位 hex、原 token 仍可认证。
 #[tokio::test]
 async fn registry_roundtrips_across_runtime_instances() {
     let dir = temp_dir("roundtrip");
@@ -284,6 +299,8 @@ async fn registry_roundtrips_across_runtime_instances() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证经 relay 传输的认证会自愈置位 usesRelay，且粘滞——后续 direct
+/// 请求不清除 relay 需求。
 #[tokio::test]
 async fn self_heals_uses_relay_when_a_request_arrives_through_the_relay_tunnel() {
     let dir = temp_dir("relay-heal");
@@ -320,6 +337,8 @@ async fn self_heals_uses_relay_when_a_request_arrives_through_the_relay_tunnel()
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证旧版存储（只有 lastTransport=relay、无 usesRelay 标记）也被视作
+/// relay 需求。
 #[tokio::test]
 async fn counts_an_observed_relay_transport_as_relay_demand() {
     let dir = temp_dir("relay-demand");
@@ -346,6 +365,7 @@ async fn counts_an_observed_relay_transport_as_relay_demand() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证并发认证与撤销交错后不会复活已撤销客户端（撤销状态最终一致）。
 #[tokio::test]
 async fn does_not_resurrect_revoked_clients_after_concurrent_traffic() {
     let dir = temp_dir("concurrent");
@@ -398,6 +418,8 @@ async fn does_not_resurrect_revoked_clients_after_concurrent_traffic() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 is_valid_client_token 对前缀、hash 与状态全部校验：
+/// 篡改/伪造/空串一律拒绝。
 #[tokio::test]
 async fn is_valid_client_token_gates_on_prefix_hash_and_state() {
     let dir = temp_dir("validity");
@@ -421,15 +443,22 @@ async fn is_valid_client_token_gates_on_prefix_hash_and_state() {
 
 /// Fake issuer mirroring the `pairing.test.js` mock, with scriptable results
 /// so a failing first issuance can leave the session unconsumed.
+/// 中文：预置的发号结果脚本——第 i 次调用取第 i 项，越界回落为成功。
 type ScriptedIssue = Vec<Result<(String, String), String>>;
 
+/// 测试用 ClientIssuer 假实现：记录每次 create_client 入参并按脚本返回结果。
 struct FakeIssuer {
+    /// 自增调用序号，用于从脚本中取对应结果。
     next_id: Mutex<usize>,
+    /// 逐次记录的 create_client 入参，供断言传播的元数据。
     calls: Mutex<Vec<CreateClientInput>>,
+    /// 脚本化的返回结果队列。
     results: Mutex<ScriptedIssue>,
 }
 
+/// FakeIssuer 的构造与观测辅助。
 impl FakeIssuer {
+    /// 以给定结果脚本构造共享（Arc）的 FakeIssuer。
     fn with(results: ScriptedIssue) -> Arc<Self> {
         Arc::new(Self {
             next_id: Mutex::new(0),
@@ -438,11 +467,13 @@ impl FakeIssuer {
         })
     }
 
+    /// 读取已记录的 create_client 入参快照。
     fn calls(&self) -> Vec<CreateClientInput> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
+/// 按发号结果构造最小 PublicClient 桩（label 回退 fallback，其余透传）。
 fn public_client_stub(id: &str, input: &CreateClientInput) -> PublicClient {
     PublicClient {
         id: id.to_string(),
@@ -467,7 +498,9 @@ fn public_client_stub(id: &str, input: &CreateClientInput) -> PublicClient {
     }
 }
 
+/// 把假发号器接入 ClientIssuer 接缝（对应 JS 测试的 DI 点）。
 impl ClientIssuer for FakeIssuer {
+    /// 记录入参并返回脚本中的第 n 个结果（越界默认成功 client-x/token-x）。
     fn create_client<'a>(
         &'a self,
         input: CreateClientInput,
@@ -499,6 +532,7 @@ impl ClientIssuer for FakeIssuer {
     }
 }
 
+/// 构造指向临时目录的 ClientPairing 运行时（system_clock + TTL + 注入 issuer）。
 fn pairing_runtime(
     dir: &std::path::Path,
     ttl_ms: i64,
@@ -512,6 +546,7 @@ fn pairing_runtime(
     )
 }
 
+/// 把 redeem 结果折叠为可断言的字符串：Ok → "ok"，Err → 错误消息。
 fn redeem_error(result: &AppResult<super::pairing::RedeemedPairing>) -> String {
     match result {
         Ok(_) => "ok".to_string(),
@@ -519,6 +554,8 @@ fn redeem_error(result: &AppResult<super::pairing::RedeemedPairing>) -> String {
     }
 }
 
+/// 验证配对会话一次性兑换：secret 仅展示一次（43 字符 base64url），
+/// 客户端元数据/auth_method=pairing/dedupe 传给 issuer，二次兑换得到通用 400。
 #[tokio::test]
 async fn redeems_a_pairing_session_once_and_propagates_client_metadata() {
     let dir = temp_dir("pairing-redeem");
@@ -594,6 +631,7 @@ async fn redeems_a_pairing_session_once_and_propagates_client_metadata() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证过期、已取消、secret 错误、client 类型不在白名单四种兑换一律返回通用 400。
 #[tokio::test]
 async fn rejects_expired_cancelled_wrong_secret_and_disallowed_kind_redemption() {
     // Expired: negative TTL.
@@ -696,6 +734,7 @@ async fn rejects_expired_cancelled_wrong_secret_and_disallowed_kind_redemption()
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 issuer 失败时会话不被消费：错误原样上抛，同一 secret 可再次兑换成功。
 #[tokio::test]
 async fn does_not_consume_the_pairing_session_if_client_issuance_fails() {
     let dir = temp_dir("pairing-issuance");
@@ -738,6 +777,7 @@ async fn does_not_consume_the_pairing_session_if_client_issuance_fails() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证下次 create 时顺带清扫：过期且从未使用的会话从磁盘存储中删除。
 #[tokio::test]
 async fn sweeps_expired_never_used_sessions_from_the_store_on_the_next_create() {
     let dir = temp_dir("pairing-sweep");
@@ -773,6 +813,8 @@ async fn sweeps_expired_never_used_sessions_from_the_store_on_the_next_create() 
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 pending 列表与单查只返回公开形状（不含 secret/secretHash）；
+/// 无 id 的 get 返回 None；relay 会话计入 has_active_relay_session。
 #[tokio::test]
 async fn pairing_pending_list_and_get_hide_the_secret() {
     let dir = temp_dir("pairing-list");
@@ -819,6 +861,7 @@ async fn pairing_pending_list_and_get_hide_the_secret() {
 // -- tunnel auth ------------------------------------------------------------
 
 /// A controllable wall clock: returns the shared current millis.
+/// 中文：可控时钟——返回时钟闭包与共享毫秒状态，测试直接改毫秒推进时间。
 fn manual_clock(start_ms: i64) -> (Clock, Arc<Mutex<i64>>) {
     let current = Arc::new(Mutex::new(start_ms));
     let reader = current.clone();
@@ -828,6 +871,7 @@ fn manual_clock(start_ms: i64) -> (Clock, Arc<Mutex<i64>>) {
     )
 }
 
+/// 由 (name, value) 数组构造 HeaderMap（静态 name + 合法 value）。
 fn header_map(pairs: &[(&'static str, &str)]) -> HeaderMap {
     let mut map = HeaderMap::new();
     for (name, value) in pairs {
@@ -839,6 +883,7 @@ fn header_map(pairs: &[(&'static str, &str)]) -> HeaderMap {
     map
 }
 
+/// 由 headers 构造最小 TunnelRequestContext（其余字段为空/默认）。
 fn ctx_of(headers: &HeaderMap) -> TunnelRequestContext<'_> {
     TunnelRequestContext {
         headers,
@@ -849,6 +894,7 @@ fn ctx_of(headers: &HeaderMap) -> TunnelRequestContext<'_> {
     }
 }
 
+/// 以给定 headers/token/TTL 调用 exchange_bootstrap_token 的便捷封装。
 fn exchange_with(
     auth: &TunnelAuth,
     headers: &HeaderMap,
@@ -859,6 +905,8 @@ fn exchange_with(
     auth.exchange_bootstrap_token(&ctx, token, ttl)
 }
 
+/// 验证请求范围分类与 JS 一致：tunnel host 命中、本地 Host + 本地 peer、
+/// 公网 peer 伪造私有 Host 不被信任、无活动 tunnel 时公网 host 回退 local。
 #[test]
 fn classifies_request_scopes_like_the_js_controller() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -911,6 +959,9 @@ fn classifies_request_scopes_like_the_js_controller() {
     );
 }
 
+/// 验证 bootstrap token 一次性兑换并下发会话 cookie；重放报 expired、
+/// 错误/缺失 token 报 invalid-token/missing-token、无活动 tunnel 报
+/// inactive 且无法发号。
 #[test]
 fn exchanges_bootstrap_tokens_one_time_and_sets_the_session_cookie() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -961,6 +1012,8 @@ fn exchanges_bootstrap_tokens_one_time_and_sets_the_session_cookie() {
     assert!(auth3.issue_bootstrap_token(Some(60_000)).is_err());
 }
 
+/// 验证会话 cookie 认证、过期后 401 + 清除 cookie（Max-Age=0）、
+/// 非法 cookie 永不通过。
 #[test]
 fn tunnel_sessions_authenticate_via_cookie_and_expire() {
     let (clock, now) = manual_clock(1_700_000_000_000);
@@ -1016,6 +1069,8 @@ fn tunnel_sessions_authenticate_via_cookie_and_expire() {
     );
 }
 
+/// 验证撤销 tunnel 工件令会话与 bootstrap（已使用的 bootstrap 仍计数）
+/// 失效；clearActiveTunnel 清空后无法再发号。
 #[test]
 fn revoking_tunnel_artifacts_invalidates_sessions_and_bootstrap() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -1059,6 +1114,7 @@ fn revoking_tunnel_artifacts_invalidates_sessions_and_bootstrap() {
     assert!(auth.issue_bootstrap_token(Some(60_000)).is_err());
 }
 
+/// 验证撤销未使用的 bootstrap token 计数为 1，且状态查询不再报告有效 token。
 #[test]
 fn revoking_an_unused_bootstrap_token_counts_it() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -1071,6 +1127,9 @@ fn revoking_an_unused_bootstrap_token_counts_it() {
     assert!(!auth.bootstrap_status().has_bootstrap_token);
 }
 
+/// 验证 connect 兑换按客户端 IP 限流：20 次失败内仍放行、第 21 次锁定
+/// （Retry-After 600s，正确 token 同样被拒）；其它 IP 独立配额；
+/// 锁过期后原 token 已被消费。
 #[test]
 fn connect_attempts_are_rate_limited_per_client_ip() {
     let (clock, now) = manual_clock(1_700_000_000_000);
@@ -1105,6 +1164,7 @@ fn connect_attempts_are_rate_limited_per_client_ip() {
     assert_eq!(after_lock.reason, Some("expired"));
 }
 
+/// 验证无法推导 IP 的请求进入更严的 no-ip 桶：5 次失败即锁定。
 #[test]
 fn no_ip_requests_get_the_stricter_rate_limit_bucket() {
     let (clock, now) = manual_clock(1_700_000_000_000);
@@ -1122,6 +1182,7 @@ fn no_ip_requests_get_the_stricter_rate_limit_bucket() {
     assert_eq!(locked.reason, Some("rate-limited"));
 }
 
+/// 验证 x-forwarded-proto: https 请求下发的会话 cookie 带 Secure 属性。
 #[test]
 fn secure_requests_get_secure_cookies() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -1135,6 +1196,8 @@ fn secure_requests_get_secure_cookies() {
     assert!(exchange.set_cookie.expect("cookie").ends_with("; Secure"));
 }
 
+/// 验证活动 tunnel host 取自 public URL（剥端口）；URL 带端口仍可分类；
+/// 非法 URL 时 host 为空。
 #[test]
 fn active_tunnel_host_derives_from_the_public_url() {
     let (clock, _) = manual_clock(1_700_000_000_000);
@@ -1165,6 +1228,8 @@ fn active_tunnel_host_derives_from_the_public_url() {
 
 // -- shared registry --------------------------------------------------------
 
+/// 验证共享注册表按 data_dir 复用同一 runtime：pairing 兑换出的 token
+/// 写入真实 remote-client 存储，另一句柄可见。
 #[tokio::test]
 async fn state_registry_shares_runtimes_per_data_dir() {
     let dir = temp_dir("registry");
@@ -1207,6 +1272,7 @@ async fn state_registry_shares_runtimes_per_data_dir() {
 
 // -- iso helpers ------------------------------------------------------------
 
+/// 验证 ISO 时间辅助函数毫秒精度往返无损。
 #[test]
 fn iso_helpers_roundtrip_ms_precision() {
     let ms = 1_790_380_800_123i64;

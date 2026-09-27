@@ -21,6 +21,12 @@
 //!   resolves `[]` and never throws; `getCachedZenModels` holds
 //!   `{ models: [] }`), so both the success and fallback bodies are
 //!   `{ "models": [] }`.
+//!
+//! 中文说明：本模块是 `server/lib/opencode/openchamber-routes.js` 的 Rust
+//! 移植，提供 OpenChamber 自身的更新检查/安装与模型元数据路由。更新安装
+//! 的真实执行会替换 npm 发行版 Node server 而非当前运行的二进制，因此各
+//! 执行分支统一返回 JS 的错误形状与“本构建不可自更新”的诚实语义；纯决策
+//! 逻辑（无更新 400、无 systemd 前台 409、实例文件启动模式解析）完整移植。
 
 use std::sync::Arc;
 
@@ -34,6 +40,7 @@ use serde_json::{Value, json};
 use super::{MetaState, parse_query, parse_string};
 use crate::package_manager::CheckForUpdatesOptions;
 
+/// 挂载本模块四条路由：update-check、update-install、models-metadata 与 zen models。
 pub(crate) fn routes(state: Arc<MetaState>) -> axum::Router {
     axum::Router::new()
         .route("/api/ompchamber/update-check", get(update_check))
@@ -43,6 +50,7 @@ pub(crate) fn routes(state: Arc<MetaState>) -> axum::Router {
         .with_state(state)
 }
 
+/// 构造统一 JSON 错误响应：`{ "error": message }` + 给定状态码。
 fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
@@ -51,6 +59,8 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 // GET /api/ompchamber/update-check
 // ---------------------------------------------------------------------------
 
+/// 从 User-Agent 嗅探设备类型（对应 JS `inferDeviceClass`）：空串 → unknown；
+/// ipad/tablet → tablet；mobi/android/iphone → mobile；其余 → desktop。
 /// JS `inferDeviceClass`: sniff the device class from the User-Agent.
 pub(crate) fn infer_device_class(user_agent: &str) -> &'static str {
     let value = user_agent.to_lowercase();
@@ -66,6 +76,7 @@ pub(crate) fn infer_device_class(user_agent: &str) -> &'static str {
     "desktop"
 }
 
+/// 解析 reportUsage 参数（对应 JS `parseReportUsage`）：缺省视为同意上报，仅字面 false/0/no（忽略大小写）视为退出。
 /// JS `parseReportUsage`: absent → report; only the literal false/0/no
 /// spellings opt out.
 pub(crate) fn parse_report_usage(value: Option<&str>) -> Option<bool> {
@@ -74,6 +85,9 @@ pub(crate) fn parse_report_usage(value: Option<&str>) -> Option<bool> {
     Some(!(normalized == "false" || normalized == "0" || normalized == "no"))
 }
 
+/// `GET /update-check`：把查询参数（appType/deviceClass/platform/arch/
+/// instanceMode/currentVersion/installId/reportUsage）与 UA 嗅探结果组装成
+/// `CheckForUpdatesOptions`，委托 package_manager 检查更新并原样返回 JSON。
 async fn update_check(
     State(state): State<Arc<MetaState>>,
     RawQuery(query): RawQuery,
@@ -105,6 +119,7 @@ async fn update_check(
 // POST /api/ompchamber/update-install
 // ---------------------------------------------------------------------------
 
+/// 校验 systemd unit 名（对应 JS `SYSTEMD_SERVICE_UNIT_PATTERN`）：<安全字符>.service，安全字符为字母数字与 :_.@-。
 /// JS `SYSTEMD_SERVICE_UNIT_PATTERN`: `/^[A-Za-z0-9:_.@-]+\.service$/`.
 fn is_valid_systemd_unit(unit: &str) -> bool {
     let Some(prefix) = unit.strip_suffix(".service") else {
@@ -116,6 +131,9 @@ fn is_valid_systemd_unit(unit: &str) -> bool {
         })
 }
 
+/// 解析 systemd 服务单元（对应 JS `resolveSystemdServiceUnit`）：仅在 INVOCATION_ID
+/// 非空（确认由 systemd 拉起）时生效；未配置时默认 ompchamber.service，配置名
+/// 必须通过安全校验。
 /// JS `resolveSystemdServiceUnit(environment)`.
 pub(crate) fn resolve_systemd_service_unit(
     invocation_id: Option<&str>,
@@ -137,21 +155,27 @@ pub(crate) fn resolve_systemd_service_unit(
     }
 }
 
+/// `update-install` 执行前的决策树结果，对应 JS 的分支结构。
 /// The decision tree `update-install` walks before executing anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InstallDecision {
+    /// 容器环境（/.dockerenv 或 CONTAINER 标记）：JS 在线安装并保持运行。
     /// `/.dockerenv`/env markers: the JS installs and stays online.
     Container,
+    /// 前台运行且解析不到 systemd unit：对应 JS 原文的 409 拒绝。
     /// Foreground launch without a resolvable systemd unit → the JS's exact
     /// 409 error.
     ForegroundWithoutSystemd,
+    /// 前台 + systemd：JS 排队一个 transient systemd-run 单元（内含 unit 名）。
     /// Foreground under systemd: the JS queues a transient `systemd-run` unit.
     ForegroundSystemd(String),
+    /// daemon 运行：JS 拉起 detached 的安装+重启脚本后退出。
     /// Daemon launch: the JS spawns a detached install+restart script and
     /// exits.
     DaemonRestart,
 }
 
+/// 走决策树：容器优先；前台时有 unit → ForegroundSystemd、无 unit → 409 拒绝；其余为 daemon 重启路径。
 pub(crate) fn install_decision(
     is_container: bool,
     launch_mode_foreground: bool,
@@ -169,6 +193,7 @@ pub(crate) fn install_decision(
     InstallDecision::DaemonRestart
 }
 
+/// 容器探测（对应 JS 输入集合）：存在 /.dockerenv，或 CONTAINER/container 环境变量指示容器，即视为容器。
 /// JS container probe inputs (`/.dockerenv` + `CONTAINER` env vars).
 fn container_environment() -> bool {
     let dockerenv = std::path::Path::new("/.dockerenv").exists();
@@ -177,16 +202,24 @@ fn container_environment() -> bool {
     dockerenv || container_var.is_some() || container_docker
 }
 
+/// JS 原文的前台拒绝文案（409 响应体逐字一致）。
 /// The JS's exact foreground refusal message.
 const FOREGROUND_WITHOUT_SYSTEMD_MESSAGE: &str = "Foreground servers must be updated by their service manager. Set OMPCHAMBER_SYSTEMD_UNIT when running under systemd, or run ompchamber update and restart the service.";
 
+/// 三条“本构建不可自更新”的诚实文案：真实安装会替换 npm 发行版的 Node
+/// server 而非当前运行的二进制，故容器/systemd/daemon 分支分别提示用
+/// 对应方式更新。
 /// Honest not-available messages for the install executions this Rust build
 /// cannot perform (they would replace the npm-distributed Node server, not
 /// the running binary).
 const NOT_AVAILABLE_CONTAINER: &str = "Self-update is not available in this server build; update the container image and restart the container.";
+/// systemd 前台分支的文案：提示改用 `ompchamber update` 并重启服务。
 const NOT_AVAILABLE_SYSTEMD: &str = "Self-update is not available in this server build; run 'ompchamber update' and restart the OMPChamber service.";
+/// daemon 分支的文案：提示在终端执行 `ompchamber update` 后重启 server。
 const NOT_AVAILABLE_DAEMON: &str = "Self-update is not available in this server build; run 'ompchamber update' from a terminal and restart the server.";
 
+/// 读取实例文件 `<dataDir>/run/ompchamber-<port>.json` 判断是否前台启动：
+/// 缺失或损坏按 daemon 处理；端口取自配置（0 沿用 JS 的 3000 兜底）。
 /// JS instance-file read: `<dataDir>/run/ompchamber-<port>.json` (missing or
 /// corrupt files fall back to `{ port, daemon: true }`). The JS reads the
 /// bound port from `server.address()`; this port carries the requested port
@@ -210,6 +243,9 @@ async fn read_launch_mode(state: &MetaState) -> bool {
     )
 }
 
+/// `POST /update-install`：先复查更新可用性（不可用 → 400 "No update
+/// available"），再按容器/实例文件/systemd 决策树返回 409；无 systemd 的
+/// 前台是 JS 原文拒绝，其余分支是本构建的诚实不可用文案。
 async fn update_install(State(state): State<Arc<MetaState>>) -> Response {
     let update_info = state
         .package_manager
@@ -248,6 +284,9 @@ async fn update_install(State(state): State<Arc<MetaState>>) -> Response {
 // GET /api/ompchamber/models-metadata
 // ---------------------------------------------------------------------------
 
+/// `GET /models-metadata`：委托 `ModelsMetadataCache` 读取 models.dev 目录；
+/// 非过期缓存命中 Cache-Control 60 秒、其余 300 秒；超时类失败 504、其余
+/// 502（与 JS 一致）。
 async fn models_metadata(State(state): State<Arc<MetaState>>) -> Response {
     match state
         .models
@@ -286,6 +325,8 @@ async fn models_metadata(State(state): State<Arc<MetaState>>) -> Response {
 // GET /api/zen/models
 // ---------------------------------------------------------------------------
 
+/// `GET /zen/models`：依赖的 `fetchFreeZenModels` 是恒返回空数组且不抛错的
+/// 兼容 stub，因此恒定返回 `{ "models": [] }` 与 300 秒 Cache-Control。
 async fn zen_models() -> Response {
     // `fetchFreeZenModels` is the notifications compatibility stub resolving
     // `[]`; it never throws, so the cached-fallback branch never runs (and

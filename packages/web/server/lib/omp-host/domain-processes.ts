@@ -10,6 +10,14 @@
 // Snapshots are directory-scoped while ownership stays session-scoped:
 // unattributed rows carry `candidateSessionIds` and are filtered per session
 // client-side, matching the agent-runs transport shape (spec 04 §5.5.1).
+/**
+ * 进程域（PLAN-session-process-monitor.md）：暴露引擎
+ * ProcessLedger 的三个 HTTP 面——目录级快照、单次调用的输出尾巴与
+ * kill 动作。所有权留在台账；本模块只是薄路由层（路由、门控、参数
+ * 解码）。快照按目录作用域而所有权按会话作用域：未归属行携带
+ * candidateSessionIds，由客户端按会话过滤（与 agent-runs 传输形状
+ * 一致，spec 04 §5.5.1）。
+ */
 
 import { featureUnavailable } from './omp-parity.ts';
 import type { OmpFeatures } from './omp-parity.ts';
@@ -17,30 +25,42 @@ import { normalizeDirectoryKey } from './registry.ts';
 import type { LedgerKillRequest, LedgerKillResult, ProcessLedger } from './process-ledger.ts';
 import type { UriRoute, UriRouteContext } from './domain-uri.ts';
 
+/** 进程域依赖注入：feature 开关读取与惰性台账解析。 */
 export interface ProcessDomainDeps {
+  /** feature 开关读取函数；缺省视为全关。 */
   features?: () => OmpFeatures;
+  /** 惰性解析：引擎异步解析 pi-natives，就绪前返回 null。 */
   /** Lazy: the engine resolves pi-natives asynchronously; null until ready. */
   ledger: () => ProcessLedger | null;
 }
 
+/** 进程域实例：仅暴露 mount 一个成员。 */
 export interface ProcessDomain {
+  /** 把三条路由挂载到给定的路由注册函数上。 */
   mount(route: UriRoute): void;
 }
 
+/** kill 请求体（运行时校验前的原始形状）。 */
 interface KillBody {
+  /** 动作名；仅 'kill' 受支持。 */
   kind?: unknown;
+  /** 可选的单 pid 目标（省略则杀整棵 entry 树）。 */
   pid?: unknown;
 }
 
+/** Response.json 自身的参数契约——平台持有的类型透传。 */
 type ResponseJsonData = Parameters<typeof Response.json>[0];
 
+/** JSON 响应构造直通函数。 */
 const json = (data: ResponseJsonData, init?: ResponseInit): Response => Response.json(data, init);
 
+/** 从路由上下文读取并归一化 directory 查询参数；缺失返回 null。 */
 const directoryOf = (ctx: UriRouteContext | undefined): string | null => {
   const raw = ctx?.url?.searchParams.get('directory');
   return raw ? normalizeDirectoryKey(raw) : null;
 };
 
+/** 读取请求 JSON 体；解析失败返回空对象（由 handler 兜底校验）。 */
 const readJsonBody = async (request: Request): Promise<KillBody> => {
   try {
     // SAFETY: handlers runtime-validate `kind`/`pid` below.
@@ -50,14 +70,18 @@ const readJsonBody = async (request: Request): Promise<KillBody> => {
   }
 };
 
+/** 创建进程域：所有路由共享 feature 门控与 kill 结果到 HTTP 的映射。 */
 export const createProcessDomain = (deps: ProcessDomainDeps): ProcessDomain => {
+  /** 判定某 feature 键当前是否为 true。 */
   const featureOn = (key: string): boolean => deps.features?.()[key] === true;
+  /** 门控：feature 关闭或台账未就绪返回 501 响应，否则返回台账。 */
   const gate = (): { ledger: ProcessLedger } | { blocked: Response } => {
     const ledger = deps.ledger();
     if (!featureOn('processes.v1') || !ledger) return { blocked: featureUnavailable('processes.v1') };
     return { ledger };
   };
 
+  /** 把台账 kill 结果映射为 HTTP：forbidden→403、invalid→400、其余→404。 */
   const killResultToResponse = (result: LedgerKillResult): Response => {
     if (result.ok) return json(result);
     const status = result.error === 'forbidden' ? 403 : result.error === 'invalid' ? 400 : 404;
@@ -65,6 +89,7 @@ export const createProcessDomain = (deps: ProcessDomainDeps): ProcessDomain => {
   };
 
   return {
+    /** 挂载三条路由：GET 快照 / GET 输出 / POST kill。 */
     mount(route) {
       route('GET', '/omp/processes', (_request: Request, ctx?: UriRouteContext) => {
         const gated = gate();

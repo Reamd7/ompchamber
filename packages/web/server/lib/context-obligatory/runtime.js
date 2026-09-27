@@ -1,8 +1,20 @@
+/**
+ * "必留上下文"（context obligatory）运行时。
+ *
+ * 监听 OpenCode 会话压缩（session.compacted）事件：压缩会把用户显式固定
+ * 的消息和项目知识一起裁掉，此模块在压缩后立即把两者合成一条 synthetic
+ * 消息重新注入会话，并把压缩游标（及知识签名）写回会话 metadata，
+ * 保证同一轮压缩只注入一次。错误只告警，绝不让注入失败影响主流程。
+ */
+/** 单次 OpenCode API 请求的超时。 */
 const FETCH_TIMEOUT_MS = 15_000;
+/** 注入前拉取最近消息（定位压缩摘要与执行模型）的条数上限。 */
 const MESSAGE_FETCH_LIMIT = 20;
 
+/** 值是否为非数组普通对象（防御性读取外部 JSON 结构用）。 */
 const isRecord = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
+/** 从会话对象里安全读出 metadata.ompchamber 与合法的固定消息列表（id/createdAt/role 齐全的项）。 */
 const readContextState = (session) => {
   const metadata = isRecord(session?.metadata) ? session.metadata : {};
   const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
@@ -16,6 +28,7 @@ const readContextState = (session) => {
   return { metadata, ompchamber, messages };
 };
 
+/** 把固定消息按时间线拼成注入提示词：头部说明使用规则（静默续用、仅无任务时简短总结），正文按时间戳排序。 */
 const buildContextPrompt = (entries) => {
   const timeline = entries.map(({ pinned, text }) => {
     const timestamp = new Date(pinned.createdAt).toISOString();
@@ -30,14 +43,28 @@ const buildContextPrompt = (entries) => {
   ].join('\n');
 };
 
+/**
+ * 创建必留上下文运行时。
+ *
+ * @param {(path: string, directory: string) => string} buildOpenCodeUrl 构造 OpenCode API 完整 URL
+ * @param {() => object} getOpenCodeAuthHeaders 每次请求附带的认证头
+ * @param {object} [sessionKnowledgeRuntime] 项目知识运行时（resolvePending/readPins/metadataKey），缺省则只恢复固定消息
+ * @returns {{ processPayload: Function, stop: Function }} SSE 事件入口与停止函数
+ */
 export const createContextObligatoryRuntime = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   sessionKnowledgeRuntime = null,
 }) => {
+  // 进行中的注入按会话 id 去重。
   const inflight = new Set();
+  // stop() 之后忽略一切事件。
   let stopped = false;
 
+  /**
+   * 调 OpenCode HTTP API：拼 URL 与 directory 查询参数，附带认证头，
+   * 15 秒超时；非 2xx 抛错，空/坏 JSON 容错为 null。
+   */
   const openCodeFetch = async (fetchPath, { directory, method = 'GET', body, query } = {}) => {
     const params = new URLSearchParams(query || {});
     if (directory) params.set('directory', directory);
@@ -56,6 +83,12 @@ export const createContextObligatoryRuntime = ({
     return response.json().catch(() => null);
   };
 
+  /**
+   * 对一个刚压缩完的会话执行一次注入：读会话固定消息与项目知识，
+   * 从最近消息里定位压缩摘要与上一个执行模型/agent，把两部分合成一条
+   * synthetic 消息发回会话，然后把压缩游标与知识签名 PATCH 进 metadata。
+   * 无固定消息且无知识、找不到摘要、或游标表明已注入过时直接返回。
+   */
   const tick = async (sessionId, directory) => {
     const session = await openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory });
     if (session?.parentID) return;
@@ -152,6 +185,10 @@ export const createContextObligatoryRuntime = ({
     });
   };
 
+  /**
+   * SSE 事件入口：只对 session.compacted 事件触发一次 tick；同一会话并发
+   * 去重，stop() 后忽略一切事件，错误只告警不外抛。
+   */
   const processPayload = (payload, directoryHint = '') => {
     if (stopped || payload?.type !== 'session.compacted') return;
     const sessionId = payload?.properties?.sessionID;
@@ -163,6 +200,7 @@ export const createContextObligatoryRuntime = ({
       .finally(() => inflight.delete(sessionId));
   };
 
+  /** 停止运行时：之后所有事件被忽略（不中断已在途的注入）。 */
   const stop = () => {
     stopped = true;
   };

@@ -62,27 +62,48 @@
 //! `resolveGitBinaryForSpawn` and `searchPathFor`/`isExecutable` are also the
 //! seams the JS fs/git and terminal runtimes borrow; the Rust git_service
 //! already carries its own `git_binary()` resolution.
+//!
+//! 中文说明：OpenCode 环境/启动支持运行时的 Rust 移植总模块，聚合三个子模块
+//! 并统一再导出对外 API：`env_runtime`（登录 shell 环境快照、二进制解析与
+//! Windows 包装链）、`managed_process_registry`（托管进程注册表与孤儿回收）、
+//! `path_utils`（PATH 启发式）。这是一个服务型模块而非路由族——如同
+//! `inherited_env`、`path_realpath_cache`，暴露的是函数与运行时句柄而不是
+//! `router(ctx)`。JS 源文件与 Rust 文件的逐项对应、以及 composition root
+//! 的五个接线点（启动回收、引擎 spawn 环境、注册、注销、二进制重解析）
+//! 见上方英文说明。
 
+/// 登录 shell 环境快照、可执行文件判定/PATH 搜索、omp-host 运行时与
+/// node/bun/git 二进制解析（含缓存、清理与 shebang shim 处理），以及带
+/// Windows 包装链的托管启动规格解析（`env-runtime.js` 的移植）。
 pub mod env_runtime;
+/// 托管 OpenCode 进程注册表：每 pid 一个 `<pid>.json` 记录 + 启动时孤儿
+/// 回收（`managed-process-registry.js` 的移植，详见子模块文档）。
 pub mod managed_process_registry;
+/// PATH 纯字符串工具：用户配置判定与保序合并（`path-utils.js` 的移植）。
 pub mod path_utils;
 
+// 再导出 env_runtime 的公开类型与函数（组合根经本模块统一取用）。
 pub use env_runtime::{
     BinarySource, EnvRuntime, ManagedLaunchSpec, Platform, SpawnFn, SpawnOptions, SpawnOutput,
     WrapperType, host_platform,
 };
+// 再导出托管进程注册表的公开 API。
 pub use managed_process_registry::{
     ManagedProcessRegistry, ReapSummary, RegistryEntry, RegistryFs, command_identifies_our_server,
     default_registry, resolve_registry_dir,
 };
+// 再导出 PATH 工具函数。
 pub use path_utils::{merge_path_values, path_looks_user_configured};
 
+/// re-export 接线测试：三个子模块的关键 API 都能经由本模块访问。
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The JS module contract the JS tests pin: pure helpers compose into the
     /// runtime's PATH strategies.
+    /// 中文：JS 测试所固定的模块契约——纯辅助函数可组合进运行时的
+    /// PATH 策略。
     #[test]
     fn reexports_are_wired() {
         assert_eq!(merge_path_values("/a", "/b", ':'), "/a:/b");

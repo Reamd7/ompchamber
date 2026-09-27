@@ -30,6 +30,11 @@
 //! - The Bun-only libc `unsetenv` half of `clearAppImageArgv0FromProcessEnv`
 //!   is a JS-runtime artifact; the Rust overlay delete covers the observable
 //!   behavior (see `src/inherited_env.rs` for the PTY-side wrapper).
+//!
+//! 中文摘要：本模块为托管 opencode/omp-host 进程提供环境运行时——解析 Bun/Node/Git
+//! 等依赖二进制、探测并缓存登录 shell 环境快照、组装增强 PATH 与 Windows 启动
+//! 包装规格。对 `process.env` 的一切副作用以覆盖层（overlay）建模，spawn/env/
+//! home/platform 四个 seam 均可注入，以便在任意宿主上测试 win32 行为。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,20 +47,28 @@ use crate::engine_env::path_utils::{merge_path_values, path_looks_user_configure
 
 /// JS `SHELL_PROBE_TIMEOUT_MS`: login-shell probes source the user's rc files;
 /// a slow or interactive rc must not hold startup hostage.
+/// 登录 shell 探测的超时上限（毫秒）：探测会加载用户 rc 文件，
+/// 慢速或交互式 rc 不得阻塞启动。
 const SHELL_PROBE_TIMEOUT_MS: u64 = 5_000;
 
 /// JS `WINDOWS_BATCH_EXTENSIONS`.
+/// Windows 批处理脚本扩展名集合（.cmd/.bat/.com）。
 const WINDOWS_BATCH_EXTENSIONS: [&str; 3] = [".cmd", ".bat", ".com"];
 
 /// `process.platform` as the JS module reads it. Injectable so the win32 flow
 /// is testable on any host (the JS tests override `process.platform` the same
 /// way while the node `path` builtin stays host-bound).
+/// process.platform 的可注入抽象：使 win32 流程可在任意宿主上测试
+/// （JS 测试同样覆写 process.platform，而 node path 内建仍绑定宿主）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
+    /// 非 Windows 平台（JS 的非 'win32' 分支）。
     Unix,
+    /// Windows（JS 的 'win32'）。
     Windows,
 }
 
+/// 宿主实际平台：编译期按 windows 目标判定。
 pub fn host_platform() -> Platform {
     if cfg!(windows) {
         Platform::Windows
@@ -66,10 +79,12 @@ pub fn host_platform() -> Platform {
 
 /// Host path separator / delimiter — mirrors the node `path` module the JS
 /// code ran under (`path.sep`, `path.delimiter`).
+/// 主机路径分隔符：Windows 为反斜杠，其它为正斜杠（对应 node path.sep）。
 fn path_sep() -> &'static str {
     if cfg!(windows) { "\\" } else { "/" }
 }
 
+/// 主机 PATH 列表分隔符：Windows 为分号，其它为冒号（对应 node path.delimiter）。
 fn path_delim() -> char {
     if cfg!(windows) { ';' } else { ':' }
 }
@@ -78,10 +93,12 @@ fn path_delim() -> char {
 // Small host-path helpers (node `path` semantics, both separators accepted)
 // ---------------------------------------------------------------------------
 
+/// 判断字符是否路径分隔符；同时接受 / 与 \（node 在 Windows 上的宽容行为）。
 fn is_sep(c: char) -> bool {
     c == '/' || c == '\\'
 }
 
+/// JS path.basename：路径末段组件（忽略尾部分隔符），两种分隔符都识别。
 fn basename(p: &str) -> String {
     let trimmed = p.trim_end_matches(is_sep);
     match trimmed.rfind(is_sep) {
@@ -90,6 +107,8 @@ fn basename(p: &str) -> String {
     }
 }
 
+/// JS path.dirname：去掉末段后的目录部分；根路径保留单个分隔符，
+/// 无分隔符的相对路径返回 "."。
 fn dirname(p: &str) -> String {
     let trimmed = p.trim_end_matches(is_sep);
     match trimmed.rfind(is_sep) {
@@ -108,6 +127,8 @@ fn dirname(p: &str) -> String {
 
 /// JS `path.extname`: extension of the final component, including the dot;
 /// a leading-dot-only component (`.opencode`) has no extension.
+/// JS path.extname：末段组件的扩展名（含点）；仅前导点的组件（如 .opencode）
+/// 视为无扩展名。
 fn extname(p: &str) -> String {
     let name = basename(p);
     match name.rfind('.') {
@@ -117,6 +138,7 @@ fn extname(p: &str) -> String {
 }
 
 /// String join with the host separator (node `path.join` for our inputs).
+/// 以主机分隔符拼接各段（node path.join 在本模块输入下的行为）。
 fn join(parts: &[&str]) -> String {
     parts
         .iter()
@@ -128,6 +150,8 @@ fn join(parts: &[&str]) -> String {
 
 /// JS `path.resolve(single)` — lexical absolutization + normalization (no
 /// symlink resolution; that is `canonicalize` below).
+/// JS path.resolve(单参数)：词法绝对化与规范化——消除 . 与 ..、压缩分隔符；
+/// 不解析符号链接（那是 canonicalize 的职责）。相对路径基于当前工作目录。
 fn lexical_resolve(p: &str) -> String {
     let (prefix, rest) = if p.len() >= 2 && p.as_bytes()[1] == b':' {
         (&p[..2], &p[2..])
@@ -173,27 +197,40 @@ fn lexical_resolve(p: &str) -> String {
 /// The JS `spawnSync` dependency: `(program, args, options) -> { status, stdout }`.
 /// `Ok(Err)` mirrors a thrown spawn error (ENOENT); `status: None` mirrors a
 /// null status (timeout / killed by signal).
+/// spawn seam 的调用选项（JS spawnSync options 中被本模块消费的部分）。
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
+    /// 超时毫秒数；None 表示不设超时（超时的探针会被放弃并按 status null 处理）。
     pub timeout_ms: Option<u64>,
 }
 
+/// spawn seam 的输出形状（JS spawnSync 返回的 status/stdout 投影）。
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOutput {
+    /// 子进程退出码；None 对应 JS 的 status: null（超时或被信号杀死）。
     pub status: Option<i32>,
+    /// 标准输出（UTF-8 有损解码后的字符串）。
     pub stdout: String,
 }
 
+/// spawn seam 的返回 future 类型：装箱的异步 IO 结果，便于注入伪造实现与超时控制。
 pub type SpawnFuture = Pin<Box<dyn Future<Output = std::io::Result<SpawnOutput>> + Send>>;
+/// 可注入的 spawn seam：(程序, 参数, 选项) -> 异步结果；替代并对应 JS 注入的
+/// spawnSync 依赖，Err 表示 spawn 本身失败（如 ENOENT）。
 pub type SpawnFn = Arc<dyn Fn(String, Vec<String>, SpawnOptions) -> SpawnFuture + Send + Sync>;
 
 /// Base environment read (`process.env` in JS). A snapshot function so the
 /// case-insensitive [`EnvRuntime::get_env_value`] lookup can enumerate keys.
+/// 底层环境读取 seam（JS 的 process.env）：返回完整快照，
+/// 供大小写不敏感的 get_env_value 枚举键名。
 pub type EnvSource = Arc<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 
 /// The injectable `deps.homedir` (JS `os.homedir()`).
+/// 可注入的 deps.homedir（JS os.homedir()）。
 pub type HomeFn = Arc<dyn Fn() -> PathBuf + Send + Sync>;
 
+/// 生产 spawn seam：tokio 子进程，stdin 关闭、stdout/stderr 管道、kill_on_drop
+/// 防止超时放弃后泄漏子进程；设置 timeout 时超时返回 status=None。
 fn real_spawn() -> SpawnFn {
     Arc::new(
         |program: String, args: Vec<String>, options: SpawnOptions| {
@@ -231,6 +268,7 @@ fn real_spawn() -> SpawnFn {
     )
 }
 
+/// 生产环境快照 seam：每次调用把当前进程环境变量复制为 HashMap。
 fn real_env_source() -> EnvSource {
     Arc::new(|| {
         std::env::vars_os()
@@ -244,6 +282,7 @@ fn real_env_source() -> EnvSource {
     })
 }
 
+/// 生产 home seam：crate::config::home_dir()，取不到时退回 "."。
 fn real_home() -> HomeFn {
     Arc::new(|| crate::config::home_dir().unwrap_or_else(|| PathBuf::from(".")))
 }
@@ -254,16 +293,25 @@ fn real_home() -> HomeFn {
 
 /// Where the omp-host runtime (Bun) was found. Mirrors the strings the JS
 /// writes into `state.resolvedOpencodeBinarySource`.
+/// omp-host runtime（Bun）的定位来源；as_str 输出与 JS 写入
+/// state.resolvedOpencodeBinarySource 的字符串一致。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinarySource {
+    /// 来自显式环境变量（OMPCHAMBER_OMP_HOST_RUNTIME / OPENCODE_BINARY）。
     Env,
+    /// 来自 PATH 搜索。
     Path,
+    /// 来自固定 fallback 路径（如 ~/.bun/bin、/opt/homebrew/bin）。
     Fallback,
+    /// 来自内置 CLI 目录。
     Bundled,
+    /// 已解析但来源未细分（ensure 流程的默认补记）。
     Unknown,
 }
 
+/// BinarySource 与 JS 字符串表示的互转。
 impl BinarySource {
+    /// 返回 JS 使用的来源字符串（"env"/"path"/"fallback"/"bundled"/"unknown"）。
     pub fn as_str(self) -> &'static str {
         match self {
             BinarySource::Env => "env",
@@ -278,42 +326,66 @@ impl BinarySource {
 /// The shared `state` object JS threads into `createOpenCodeEnvRuntime`.
 /// `cached_login_shell_env_snapshot` keeps the JS tri-state: outer `None` is
 /// "not probed yet", `Some(None)` is "probed, no snapshot available".
+/// 运行时共享状态（JS 闭包捕获并贯穿传递的 state 对象）。
+/// cached_login_shell_env_snapshot 保留 JS 三态：外层 None=尚未探测，
+/// Some(None)=已探测但无快照。
 #[derive(Debug, Default)]
 pub struct EnvRuntimeState {
+    /// 登录 shell 快照缓存（未探测 / 已探测无快照 / 快照本体 三态）。
     pub cached_login_shell_env_snapshot: Option<Option<HashMap<String, String>>>,
+    /// 已解析的 omp-host runtime 二进制路径缓存。
     pub resolved_opencode_binary: Option<String>,
+    /// 最近一次解析的来源标记。
     pub resolved_opencode_binary_source: Option<BinarySource>,
+    /// 已解析的 node 二进制路径缓存。
     pub resolved_node_binary: Option<String>,
+    /// 已解析的 bun 二进制路径缓存。
     pub resolved_bun_binary: Option<String>,
+    /// Windows 上已解析的 git 二进制缓存。
     pub resolved_git_binary: Option<String>,
 }
 
 /// JS `process.env` mutations performed by this runtime, as an overlay:
 /// `Some(value)` sets, `None` deletes (AppImage `ARGV0`).
+/// 本运行时对 process.env 的变更（overlay 形式）：
+/// Some(v) 表示设值，None 表示删除该键（AppImage 的 ARGV0）。
 type EnvOverrides = HashMap<String, Option<String>>;
 
 // ---------------------------------------------------------------------------
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// 环境运行时本体：共享状态与 env 覆盖层之外，持有四个可注入 seam
+/// （env_source/spawn/home/platform），对应 JS createOpenCodeEnvRuntime(deps)。
 pub struct EnvRuntime {
+    /// 共享解析状态（快照与各二进制缓存），Mutex 保护。
     state: Mutex<EnvRuntimeState>,
+    /// process.env 变更的覆盖层；不动真实进程环境（多线程下 set_var 不安全）。
     overrides: Mutex<EnvOverrides>,
+    /// 底层环境快照 seam（生产为真实进程环境）。
     env_source: EnvSource,
+    /// 子进程探测 seam（生产为 tokio 实现，见 real_spawn）。
     spawn: SpawnFn,
+    /// 用户主目录 seam（JS os.homedir()）。
     home: HomeFn,
+    /// 注入平台（JS process.platform）。
     platform: Platform,
 }
 
+/// 环境运行时实现（JS createOpenCodeEnvRuntime 返回的方法集）：
+/// 依赖二进制定位、登录 shell 快照、PATH 组装与 Windows 启动包装。
 impl EnvRuntime {
     /// Process-wide runtime (index.js module-level state).
+    /// 进程级共享实例（对应 index.js 的模块级单例），首次访问时惰性初始化。
     pub fn shared() -> &'static EnvRuntime {
+        // 进程级唯一实例：LazyLock 保证首次调用时初始化一次，此后所有调用共享。
         static SHARED: std::sync::LazyLock<EnvRuntime> = std::sync::LazyLock::new(EnvRuntime::new);
         &SHARED
     }
 
     /// Number of env overrides currently applied (login-shell snapshot keys
     /// plus the ARGV0 delete).
+    /// 当前 env 覆盖层中设值项（Some）的数量，即登录 shell 快照写入的键数。
     pub fn shell_env_key_count(&self) -> usize {
         self.lock_overrides()
             .values()
@@ -323,16 +395,19 @@ impl EnvRuntime {
 
     /// JS `resolvedBunBinary` state: only `ensureBunCliEnv` sets it (the shim
     /// runtime paths); the plain managed omp-host launch never does.
+    /// 读取已缓存的 bun 二进制路径；仅 ensure_bun_cli_env（shim 运行时路径）会写入。
     pub fn resolved_bun_binary(&self) -> Option<String> {
         self.lock_state().resolved_bun_binary.clone()
     }
 
     /// JS `resolvedNodeBinary` state: only `ensureNodeCliEnv` sets it.
+    /// 读取已缓存的 node 二进制路径；仅 ensure_node_cli_env 会写入。
     pub fn resolved_node_binary(&self) -> Option<String> {
         self.lock_state().resolved_node_binary.clone()
     }
 
     /// Production runtime with real seams.
+    /// 生产构造函数：使用真实 seam（进程 env、tokio spawn、config home_dir、宿主平台）。
     pub fn new() -> Self {
         Self::with_seams(
             real_env_source(),
@@ -343,6 +418,7 @@ impl EnvRuntime {
     }
 
     /// Test/consumer constructor with injected seams (JS `createOpenCodeEnvRuntime(deps)`).
+    /// 注入全部 seam 的构造函数（JS createOpenCodeEnvRuntime(deps)），供测试与定制消费者使用。
     pub fn with_seams(
         env_source: EnvSource,
         spawn: SpawnFn,
@@ -359,19 +435,23 @@ impl EnvRuntime {
         }
     }
 
+    /// 获取共享状态锁；锁中毒时恢复内部数据继续（状态仅为缓存，无需 panic）。
     fn lock_state(&self) -> std::sync::MutexGuard<'_, EnvRuntimeState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 获取 env 覆盖层锁；锁中毒时同样恢复数据继续。
     fn lock_overrides(&self) -> std::sync::MutexGuard<'_, EnvOverrides> {
         self.overrides.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 读取注入的平台值（process.platform 的可测试替身）。
     fn platform(&self) -> Platform {
         self.platform
     }
 
     /// `process.env[name]` after this runtime's overlay.
+    /// 读取叠加覆盖层后的环境变量：先查覆盖表，未命中回落到底层 env 快照。
     fn env_get(&self, name: &str) -> Option<String> {
         {
             let overrides = self.lock_overrides();
@@ -384,6 +464,8 @@ impl EnvRuntime {
 
     /// JS `getEnvValue`: exact key first, then a case-insensitive fallback
     /// (Windows env casing).
+    /// JS getEnvValue：先精确匹配键名，再按 ASCII 大小写不敏感回退查找
+    /// （兼容 Windows 环境变量大小写）；无匹配返回空串。
     fn get_env_value(&self, name: &str) -> String {
         let env = self.effective_env();
         if let Some(value) = env.get(name) {
@@ -397,6 +479,8 @@ impl EnvRuntime {
 
     /// Base environment with this runtime's overlay applied. This is the env
     /// the engine spawn should use (wiring point for `engine.rs`).
+    /// 底层环境快照应用本运行时全部覆盖后的最终环境；
+    /// 引擎 spawn 应以此为 env 来源（engine.rs 的接线点）。
     pub fn effective_env(&self) -> HashMap<String, String> {
         let mut env = (self.env_source)();
         let overrides = self.lock_overrides();
@@ -413,26 +497,32 @@ impl EnvRuntime {
         env
     }
 
+    /// 写入一条 env 覆盖：Some(v) 设值，None 删除该键。
     fn set_override(&self, key: &str, value: Option<String>) {
         self.lock_overrides().insert(key.to_string(), value);
     }
 
     /// Test seam for the shared `state.cachedLoginShellEnvSnapshot` the JS
     /// tests pre-set.
+    /// 测试 seam：预置登录 shell 快照缓存（JS 测试直接改 state 的等价物）。
     pub fn set_cached_login_shell_env_snapshot(&self, snapshot: Option<HashMap<String, String>>) {
         self.lock_state().cached_login_shell_env_snapshot = Some(snapshot);
     }
 
+    /// 读取最近一次 omp-host runtime 解析的来源标记。
     pub fn resolved_opencode_binary_source(&self) -> Option<BinarySource> {
         self.lock_state().resolved_opencode_binary_source
     }
 
+    /// 记录 omp-host runtime 解析来源。
     fn set_resolved_opencode_binary_source(&self, source: BinarySource) {
         self.lock_state().resolved_opencode_binary_source = Some(source);
     }
 
     // -- JS isExecutable ----------------------------------------------------
 
+    /// JS isExecutable：候选存在且为普通文件才算；Windows 按扩展名
+    /// （.exe/.cmd/.bat/.com，或无扩展名）判定，Unix 检查任一执行位。
     pub fn is_executable(&self, file_path: &str) -> bool {
         let Ok(metadata) = std::fs::metadata(file_path) else {
             return false;
@@ -460,6 +550,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS resolveWindowsExecutablePath ------------------------------------
 
+    /// 读取 PATHEXT（兼容 PathExt 大小写，缺省 .COM;.EXE;.BAT;.CMD），
+    /// 按 ; 拆分并去掉空段，返回扩展名变体列表。
     fn pathext_variants(&self) -> Vec<String> {
         let raw = self
             .env_get("PATHEXT")
@@ -477,6 +569,9 @@ use crate::os_compat::PermissionsExt;
         variants
     }
 
+    /// JS resolveWindowsExecutablePath：非 Windows 原样返回候选；Windows 上
+    /// 带扩展名的候选直接校验可执行性，无扩展名的候选逐个 PATHEXT 变体补全后
+    /// 校验，最后再试无扩展名本体；都不行返回 None。
     fn resolve_windows_executable_path(&self, candidate: &str) -> Option<String> {
         if self.platform() != Platform::Windows {
             return Some(candidate.to_string());
@@ -512,6 +607,8 @@ use crate::os_compat::PermissionsExt;
     // -- JS searchPathFor ---------------------------------------------------
 
     /// JS `searchPathFor(binaryName, searchPath)`. Does not mutate anything.
+    /// 在给定搜索 PATH 中按目录顺序查找二进制，返回第一个可执行候选的完整路径；
+    /// Windows 上无扩展名的名字先尝试 PATHEXT 补全的候选名。纯查询，不修改任何状态。
     pub fn search_path_for(&self, binary_name: &str, search_path: &str) -> Option<String> {
         let trimmed = binary_name.trim();
         if trimmed.is_empty() {
@@ -553,6 +650,7 @@ use crate::os_compat::PermissionsExt;
     }
 
     /// JS `searchPathFor(binaryName)` with the default `process.env.PATH`.
+    /// 以当前生效的 PATH 环境变量执行 search_path_for（JS 的单参数重载）。
     pub fn search_path_for_env(&self, binary_name: &str) -> Option<String> {
         let search_path = self.env_get("PATH").unwrap_or_default();
         self.search_path_for(binary_name, &search_path)
@@ -560,6 +658,7 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS prependToPath ---------------------------------------------------
 
+    /// JS prependToPath：把目录前置到 PATH 覆盖层（已存在则不动），空目录忽略。
     fn prepend_to_path(&self, dir: &str) {
         let trimmed = dir.trim();
         if trimmed.is_empty() {
@@ -582,6 +681,9 @@ use crate::os_compat::PermissionsExt;
 
     /// JS `parseNullSeparatedEnvSnapshot` (pure). `windows` mirrors the
     /// `process.platform === 'win32'` PATH-casing fixup.
+    /// JS parseNullSeparatedEnvSnapshot：解析 null 分隔的 KEY=VALUE 快照，
+    /// 丢弃空段与空键段；windows=true 时把小写 Path 键补写为 PATH。
+    /// 输入为空或全部无效返回 None。
     pub fn parse_null_separated_env_snapshot(
         raw: &str,
         windows: bool,
@@ -618,6 +720,9 @@ use crate::os_compat::PermissionsExt;
 
     /// JS `getWindowsShellEnvSnapshot`: PowerShell candidates, then the
     /// `cmd /c set` fallback.
+    /// Windows 登录环境快照：依次尝试 pwsh.exe/powershell.exe（含 System32 内置
+    /// 路径；脚本会合并 Machine/User/Process 三级 Path），全部失败后回退
+    /// ComSpec 的 "cmd /d /s /c set"，其换行输出转 null 分隔再解析。
     async fn get_windows_shell_env_snapshot(&self) -> Option<HashMap<String, String>> {
         let ps_script = [
             "$entries = [ordered]@{}",
@@ -690,6 +795,8 @@ use crate::os_compat::PermissionsExt;
 
     /// JS `getLoginShellEnvSnapshot` — probes once, then caches (including
     /// the failure tri-state).
+    /// 获取登录 shell 环境快照（按平台分派到 Windows/Unix 实现），
+    /// 结果连同失败状态一起写入缓存——整个进程只探测一次。
     pub async fn get_login_shell_env_snapshot(&self) -> Option<HashMap<String, String>> {
         if let Some(cached) = self.lock_state().cached_login_shell_env_snapshot.clone() {
             return cached;
@@ -704,6 +811,9 @@ use crate::os_compat::PermissionsExt;
         snapshot
     }
 
+    /// Unix 登录环境快照：依次用 $SHELL 与 /bin/zsh、/bin/bash、/bin/sh 执行
+    /// -lic 'env -0'，解析第一个成功且非空的输出；超时受
+    /// SHELL_PROBE_TIMEOUT_MS 约束。
     async fn get_unix_login_shell_env_snapshot(&self) -> Option<HashMap<String, String>> {
         let mut shell_candidates: Vec<String> = Vec::new();
         if let Some(shell) = self.env_get("SHELL")
@@ -745,6 +855,9 @@ use crate::os_compat::PermissionsExt;
     /// JS `applyLoginShellEnvSnapshot`: always clears AppImage `ARGV0`, fills
     /// unset vars from the snapshot, and merges the shell PATH ahead of the
     /// current one.
+    /// JS applyLoginShellEnvSnapshot：无条件删除 AppImage ARGV0；跳过
+    /// PWD/OLDPWD/SHLVL/_/ARGV0 等易变键；仅填充当前为空的变量；
+    /// shell PATH 合并到当前 PATH 之前。
     pub async fn apply_login_shell_env_snapshot(&self) {
         // Always clear AppImage ARGV0, even when no login-shell snapshot is
         // available (#2588).
@@ -781,6 +894,9 @@ use crate::os_compat::PermissionsExt;
 
     // -- Bundled CLI ----------------------------------------------------------
 
+    /// 构造内置 opencode CLI 候选路径列表：仅读取
+    /// OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR 目录下的 opencode（Windows 为
+    /// opencode.exe）；Electron 的 process.resourcesPath 在独立 server 不存在。
     fn bundled_open_code_cli_candidates(&self) -> Vec<String> {
         let names: [&str; 1] = if self.platform() == Platform::Windows {
             ["opencode.exe"]
@@ -805,6 +921,8 @@ use crate::os_compat::PermissionsExt;
         candidates
     }
 
+    /// 返回候选的规范化路径：优先 std::fs::canonicalize（解析符号链接），
+    /// 失败时退回词法 resolve；空候选返回 None。
     fn canonical_executable_path(&self, candidate: &str) -> Option<String> {
         let trimmed = candidate.trim();
         if trimmed.is_empty() {
@@ -816,6 +934,7 @@ use crate::os_compat::PermissionsExt;
         }
     }
 
+    /// 判断候选是否为内置 CLI：其规范化路径与任一内置候选的规范化路径完全一致。
     pub fn is_bundled_open_code_cli_path(&self, candidate: &str) -> bool {
         let Some(canonical_candidate) = self.canonical_executable_path(candidate) else {
             return false;
@@ -834,6 +953,10 @@ use crate::os_compat::PermissionsExt;
     /// managed omp host (Bun), not an opencode CLI. Kept under its historical
     /// name because the resolution snapshot, PATH augmentation, and settings
     /// plumbing all flow through it.
+    /// 解析启动托管 omp host 的运行时（Bun，历史上名为 resolveOpencodeCliPath）：
+    /// 先取 OMPCHAMBER_OMP_HOST_RUNTIME 与 OPENCODE_BINARY 显式值（去除包裹引号），
+    /// 再搜 PATH 中的 bun，最后尝试 home/.bun/bin 及常见安装位置 fallback；
+    /// 命中时记录 BinarySource，找不到返回 None。
     pub fn resolve_opencode_cli_path(&self) -> Option<String> {
         let mut explicit: Vec<String> = Vec::new();
         for name in ["OMPCHAMBER_OMP_HOST_RUNTIME", "OPENCODE_BINARY"] {
@@ -879,6 +1002,9 @@ use crate::os_compat::PermissionsExt;
     }
 
     /// Login shell probe for a single binary: `$SHELL -lic 'command -v X'`.
+    /// 登录 shell 单二进制定位探测：依次用 $SHELL 与 /bin/zsh、/bin/bash、/bin/sh
+    /// 执行 -lic 'command -v <binary>'，取输出最后一个词并校验可执行；
+    /// 探测受 SHELL_PROBE_TIMEOUT_MS 超时约束。
     async fn probe_shell_command_v(&self, binary: &str) -> Option<String> {
         let mut shells: Vec<String> = Vec::new();
         if let Some(shell) = self.env_get("SHELL")
@@ -920,6 +1046,7 @@ use crate::os_compat::PermissionsExt;
     }
 
     /// Windows `where <binary>` probe.
+    /// Windows where <binary> 探测：返回输出中第一行真实可执行的路径。
     async fn probe_where(&self, binary: &str) -> Option<String> {
         let result = (self.spawn)(
             "where".to_string(),
@@ -942,6 +1069,9 @@ use crate::os_compat::PermissionsExt;
             .map(str::to_string)
     }
 
+    /// JS resolveNodeCliPath：按 NODE_BINARY/OMPCHAMBER_NODE_BINARY 显式值 →
+    /// PATH 搜索 → 常见 Unix 安装路径的顺序解析 node；仍失败时按平台回退到
+    /// where（Windows）或登录 shell command -v 探测。
     pub async fn resolve_node_cli_path(&self) -> Option<String> {
         let mut explicit: Vec<String> = Vec::new();
         for name in ["NODE_BINARY", "OMPCHAMBER_NODE_BINARY"] {
@@ -979,6 +1109,9 @@ use crate::os_compat::PermissionsExt;
         self.probe_shell_command_v("node").await
     }
 
+    /// JS resolveBunCliPath：按 BUN_BINARY/OMPCHAMBER_BUN_BINARY 显式值 →
+    /// PATH 搜索 → home/.bun/bin 与常见 Unix 路径（Windows 另查 USERPROFILE 下
+    /// 的 bun.exe/bun.cmd）的顺序解析 bun；仍失败时回退 where 或 command -v 探测。
     pub async fn resolve_bun_cli_path(&self) -> Option<String> {
         let mut explicit: Vec<String> = Vec::new();
         for name in ["BUN_BINARY", "OMPCHAMBER_BUN_BINARY"] {
@@ -1033,6 +1166,8 @@ use crate::os_compat::PermissionsExt;
         self.probe_shell_command_v("bun").await
     }
 
+    /// 返回缓存的 bun 二进制；未缓存时经 resolve_bun_cli_path 解析，
+    /// 首次成功后把其目录前置到 PATH 并写入缓存。解析失败返回 None。
     pub async fn ensure_bun_cli_env(&self) -> Option<String> {
         if let Some(cached) = self.lock_state().resolved_bun_binary.clone() {
             return Some(cached);
@@ -1043,6 +1178,8 @@ use crate::os_compat::PermissionsExt;
         Some(resolved)
     }
 
+    /// 返回缓存的 node 二进制；未缓存时经 resolve_node_cli_path 解析，
+    /// 首次成功后把其目录前置到 PATH 并写入缓存。解析失败返回 None。
     pub async fn ensure_node_cli_env(&self) -> Option<String> {
         if let Some(cached) = self.lock_state().resolved_node_binary.clone() {
             return Some(cached);
@@ -1055,6 +1192,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS normalizeExecutableCandidate -------------------------------------
 
+    /// JS normalizeExecutableCandidate：修剪空白后校验候选可执行性；
+    /// Windows 上还会经 resolve_windows_executable_path 补全 PATHEXT 扩展名。
     fn normalize_executable_candidate(&self, value: &str) -> Option<String> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -1071,6 +1210,9 @@ use crate::os_compat::PermissionsExt;
 
     // -- Windows native opencode package resolution ---------------------------
 
+    /// 按宿主架构返回 Windows 原生 opencode npm 包名候选（x86_64 与 aarch64 一致，
+    /// 均先 x64-baseline 后 x64 —— ARM64 原生包存在 Bun FFI 问题的临时规避）；
+    /// 其它架构返回空表。
     fn windows_native_opencode_package_names() -> Vec<&'static str> {
         // TEMPORARY WORKAROUND — Windows ARM64: native opencode.exe fails with
         // a Bun FFI/TinyCC dlopen error; the bundler ships x64-baseline
@@ -1082,6 +1224,8 @@ use crate::os_compat::PermissionsExt;
         }
     }
 
+    /// 在 node_modules 目录中定位原生 Windows opencode.exe：先查
+    /// opencode-ai/bin，再查各原生包的直装与嵌套安装位置。
     fn resolve_native_opencode_binary_from_node_modules(
         &self,
         node_modules_dir: Option<&str>,
@@ -1117,6 +1261,8 @@ use crate::os_compat::PermissionsExt;
         None
     }
 
+    /// node_modules 内只有 JS 启动器（opencode-ai/bin/opencode）时，
+    /// 构造以解析出的 node（缺省 "node"）承载该启动器的启动规格。
     async fn resolve_opencode_node_launch_spec_from_node_modules(
         &self,
         node_modules_dir: Option<&str>,
@@ -1142,6 +1288,8 @@ use crate::os_compat::PermissionsExt;
         })
     }
 
+    /// 从 .cmd 包装脚本内容中提取 node_modules/opencode-ai/bin/opencode 引用，
+    /// 相对脚本目录解析后向上回溯三级，得到 node_modules 根目录。
     fn resolve_node_modules_dir_from_cmd_wrapper(&self, wrapper_path: &str) -> Option<String> {
         if wrapper_path.is_empty() {
             return None;
@@ -1155,6 +1303,9 @@ use crate::os_compat::PermissionsExt;
         Some(dirname(&dir2))
     }
 
+    /// 从 opencode 路径推断其所属 node_modules 目录：依次识别 bun 全局安装布局、
+    /// npm .bin shim、包内 bin 布局与 npm 目录结构，以及 .cmd 包装脚本内的引用；
+    /// 每个候选须经原生二进制或 node 启动器验证有效才返回，全部无效返回 None。
     async fn resolve_opencode_node_modules_dir(&self, opencode_path: &str) -> Option<String> {
         let trimmed = opencode_path.trim();
         if trimmed.is_empty() {
@@ -1235,6 +1386,10 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS resolveManagedOpenCodeLaunchSpec ----------------------------------
 
+    /// JS resolveManagedOpenCodeLaunchSpec：把 opencode 路径换算成可安全 spawn 的
+    /// 启动规格。非 Windows 原样透传；Windows 依次尝试 node_modules 原生二进制、
+    /// node 启动器、node/bun shebang、PATHEXT 补全的可执行文件，并兜底保证
+    /// .cmd/.bat 一定经 cmd.exe 启动（绝不直接 spawn 批处理）。
     pub async fn resolve_managed_open_code_launch_spec(
         &self,
         opencode_path: &str,
@@ -1366,6 +1521,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- Shebangs -------------------------------------------------------------
 
+    /// 读取文件首行并提取 #! 之后的 shebang 解释器串；
+    /// 路径为空、打开失败、无 #! 前缀或内容为空均返回 None。
     fn read_shebang(&self, opencode_path: &str) -> Option<String> {
         if opencode_path.is_empty() {
             return None;
@@ -1387,6 +1544,8 @@ use crate::os_compat::PermissionsExt;
         Some(shebang.to_string())
     }
 
+    /// 依据 shim 首行 shebang 判定承载运行时：
+    /// 含整词 node 返回 Node，含整词 bun 返回 Bun，否则 None。
     fn opencode_shim_interpreter(&self, opencode_path: &str) -> Option<ShimInterpreter> {
         let shebang = self.read_shebang(opencode_path)?;
         if contains_word_ci(&shebang, "node") {
@@ -1398,6 +1557,7 @@ use crate::os_compat::PermissionsExt;
         None
     }
 
+    /// 为 shim 的 shebang 解释器预先解析并前置对应运行时（node 或 bun）到 PATH。
     async fn ensure_opencode_shim_runtime(&self, opencode_path: &str) {
         match self.opencode_shim_interpreter(opencode_path) {
             Some(ShimInterpreter::Node) => {
@@ -1412,6 +1572,10 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS ensureOpencodeCliEnv ----------------------------------------------
 
+    /// JS ensureOpencodeCliEnv：返回缓存的 omp-host runtime；未缓存时优先采用
+    /// OPENCODE_BINARY 已有可执行值，否则经 resolve_opencode_cli_path 解析，
+    /// 成功后写入 OPENCODE_BINARY 覆盖、前置其目录到 PATH 并准备 shim 运行时。
+    /// 解析失败返回 None。
     pub async fn ensure_opencode_cli_env(&self) -> Option<String> {
         let cached = self.lock_state().resolved_opencode_binary.clone();
         if let Some(cached) = cached {
@@ -1456,6 +1620,10 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS resolveGitBinaryForSpawn -------------------------------------------
 
+    /// JS resolveGitBinaryForSpawn：非 Windows 直接返回 "git"；Windows 按
+    /// GIT_BINARY/OMPCHAMBER_GIT_BINARY 显式值 → PATH 搜索 → 常见安装目录
+    /// （Program Files、LocalAppData 等）的顺序解析，优先 .exe 结果并缓存；
+    /// 全部失败兜底 "git.exe"。
     pub fn resolve_git_binary_for_spawn(&self) -> String {
         if self.platform() != Platform::Windows {
             return "git".to_string();
@@ -1541,6 +1709,7 @@ use crate::os_compat::PermissionsExt;
 
     // -- JS clearResolvedOpenCodeBinary ----------------------------------------
 
+    /// JS clearResolvedOpenCodeBinary：清空缓存的 omp-host runtime，使下次 ensure 重新解析。
     pub fn clear_resolved_open_code_binary(&self) {
         self.lock_state().resolved_opencode_binary = None;
     }
@@ -1549,6 +1718,7 @@ use crate::os_compat::PermissionsExt;
 
     /// JS `getLoginShellPath` (server/index.js): the snapshot's PATH when
     /// present and non-empty, else null.
+    /// 返回登录 shell 快照中非空的 PATH；无快照或快照 PATH 为空返回 None。
     pub async fn get_login_shell_path(&self) -> Option<String> {
         let snapshot = self.get_login_shell_env_snapshot().await?;
         match snapshot.get("PATH") {
@@ -1557,6 +1727,10 @@ use crate::os_compat::PermissionsExt;
         }
     }
 
+    /// JS buildWindowsManagedToolchainPath：枚举 Windows 包管理器/运行时目录
+    /// （npm、nodejs、pnpm、bun、volta、yarn、scoop、chocolatey、WindowsApps 等；
+    /// 相关环境变量缺失时按默认位置推导），忽略大小写去重后仅保留真实存在的
+    /// 目录并以主机分隔符连接；非 Windows 返回空串。
     fn build_windows_managed_toolchain_path(&self) -> String {
         if self.platform() != Platform::Windows {
             return String::new();
@@ -1671,6 +1845,8 @@ use crate::os_compat::PermissionsExt;
     /// JS `buildAugmentedPath`: keep a user-configured process PATH ahead of
     /// the login-shell PATH; when the process PATH looks like a bare system
     /// default, prefer the login shell and append the process entries.
+    /// JS buildAugmentedPath：进程 PATH 看似用户自定义时以它为主、登录 shell PATH
+    /// 为补充；反之以登录 shell PATH 为主；两侧条目按序去重合并。
     pub async fn build_augmented_path(&self) -> String {
         let current_path = self.get_env_value("PATH");
         let login_shell_path = self.get_login_shell_path().await.unwrap_or_default();
@@ -1687,6 +1863,8 @@ use crate::os_compat::PermissionsExt;
 
     /// JS `buildManagedOpenCodePath`: the login-shell PATH first, then the
     /// process PATH, then the existing Windows package-manager directories.
+    /// JS buildManagedOpenCodePath：登录 shell PATH → 进程 PATH → Windows 工具链
+    /// 目录，逐层按序去重合并，供托管 opencode 进程使用。
     pub async fn build_managed_open_code_path(&self) -> String {
         let current_path = self.get_env_value("PATH");
         let login_shell_path = self.get_login_shell_path().await.unwrap_or_default();
@@ -1696,7 +1874,9 @@ use crate::os_compat::PermissionsExt;
     }
 }
 
+/// 默认实现委托 EnvRuntime::new（真实 seam 的生产运行时）。
 impl Default for EnvRuntime {
+    /// 构造使用真实 seam 的默认实例。
     fn default() -> Self {
         Self::new()
     }
@@ -1706,19 +1886,30 @@ impl Default for EnvRuntime {
 // Launch spec shapes (JS resolveManagedOpenCodeLaunchSpec return value)
 // ---------------------------------------------------------------------------
 
+/// 托管 opencode 启动规格中的包装类型（JS resolveManagedOpenCodeLaunchSpec 的
+/// wrapperType 值）：描述二进制以何种间接方式被启动，用于 spawn 决策与遥测区分。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrapperType {
     /// JS `null`.
+    /// 无包装：直接启动二进制（对应 JS 的 null）。
     None,
+    /// 解析出的原生 opencode 可执行文件（如 node_modules 内的 opencode.exe）。
     NativeWrapper,
+    /// 以 node 运行包内 bin/opencode 启动器脚本启动。
     NodeLauncher,
+    /// shim 首行为 node shebang，由 node 解释器承载。
     NodeShebang,
+    /// shim 首行为 bun shebang，由 bun 解释器承载。
     BunShebang,
+    /// Windows 批处理 shim，经 ComSpec（cmd.exe）的 /c call 启动。
     CmdWrapper,
+    /// 解析出的其它可执行文件（如按 PATHEXT 补全扩展名后的 .exe）。
     ExecutableWrapper,
 }
 
+/// WrapperType 与 JS wrapperType 字符串表示的互转。
 impl WrapperType {
+    /// 返回 JS 序列化用的 wrapperType 字符串；None 包装对应 JS 的 null。
     pub fn as_str(self) -> Option<&'static str> {
         match self {
             WrapperType::None => None,
@@ -1732,20 +1923,30 @@ impl WrapperType {
     }
 }
 
+/// 托管 opencode 的最终启动规格（JS resolveManagedOpenCodeLaunchSpec 的返回值）：
+/// 真正要 spawn 的程序、传给它的参数与包装类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLaunchSpec {
+    /// 实际启动的程序：可能是解释器（node/bun）或 cmd.exe，而非 opencode 本体。
     pub binary: String,
+    /// 传给 binary 的参数：被承载的 shim 路径，或 cmd 的 /d /s /c call 等序列。
     pub args: Vec<String>,
+    /// 包装方式标记，用于区分启动路径（遥测/日志）。
     pub wrapper_type: WrapperType,
 }
 
+/// shim 首行 shebang 指向的 JS 运行时种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShimInterpreter {
+    /// shebang 中出现整词 node。
     Node,
+    /// shebang 中出现整词 bun。
     Bun,
 }
 
 /// JS `stripWrappingQuotes` — strip a single wrapping quote pair.
+/// 去掉首尾成对的同类引号（单引号或双引号）及外侧空白；
+/// 引号不成对或无引号时返回修剪后的原值。
 pub fn strip_wrapping_quotes(value: &str) -> String {
     let trimmed = value.trim();
     let bytes = trimmed.as_bytes();
@@ -1760,6 +1961,8 @@ pub fn strip_wrapping_quotes(value: &str) -> String {
 }
 
 /// Case-insensitive ASCII substring search returning a byte index.
+/// 从 start 起在 haystack 中做 ASCII 大小写不敏感的子串查找，
+/// 命中返回起始字节下标（首个匹配字节为 ASCII，必为字符边界）。
 fn find_ascii_ci(haystack: &str, needle: &str, start: usize) -> Option<usize> {
     let hay = haystack.as_bytes();
     let needle_bytes = needle.as_bytes();
@@ -1782,11 +1985,14 @@ fn find_ascii_ci(haystack: &str, needle: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// 判断字节是否为词字符（ASCII 字母数字或下划线），用于整词边界判断。
 fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
 /// JS `/\bnode\b/i`-style whole-word, case-insensitive containment.
+/// 大小写不敏感地判断 haystack 是否把 word 作为完整单词包含
+/// （前后都不是词字符），对应 JS 的 /\bword\b/i 语义。
 fn contains_word_ci(haystack: &str, word: &str) -> bool {
     let hay = haystack.as_bytes();
     let word_bytes = word.as_bytes();
@@ -1810,6 +2016,8 @@ fn contains_word_ci(haystack: &str, word: &str) -> bool {
 }
 
 /// Match `[\\/]+` at `pos`; returns the index after the separator run.
+/// 在 pos 处匹配一段连续的 / 或 \ 分隔符，返回分隔符串之后的位置；
+/// pos 处没有分隔符则返回 None。
 fn match_sep_run(text: &str, pos: usize) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut i = pos;
@@ -1820,6 +2028,8 @@ fn match_sep_run(text: &str, pos: usize) -> Option<usize> {
 }
 
 /// Case-insensitive literal match at exactly `pos`; returns the end index.
+/// 在 pos 处做大小写不敏感的字面量匹配，成功返回结束下标；
+/// 越界或内容不符返回 None。
 fn match_lit_at(text: &str, pos: usize, lit: &str) -> Option<usize> {
     let end = pos + lit.len();
     let slice = text.get(pos..end)?;
@@ -1838,6 +2048,8 @@ fn match_lit_at(text: &str, pos: usize, lit: &str) -> Option<usize> {
 
 /// JS `/node_modules[\\/]+opencode-ai[\\/]+bin[\\/]+opencode/i` — returns the
 /// matched substring (original casing), like `match[0]`.
+/// 在包装脚本内容中查找 node_modules/opencode-ai/bin/opencode 引用
+/// （各段间允许 / 与 \ 混用、可连续多个），返回保留原始大小写的匹配子串。
 fn find_opencode_ai_bin_ref(content: &str) -> Option<String> {
     let mut search_from = 0;
     while let Some(start) = find_ascii_ci(content, "node_modules", search_from) {
@@ -1864,6 +2076,7 @@ fn find_opencode_ai_bin_ref(content: &str) -> Option<String> {
 
 /// Replace runs of `/` and `\` with the host separator (JS
 /// `match[0].replace(/[\\/]+/g, path.sep)`).
+/// 把连续的 / 与 \ 分隔符串压缩为单个主机路径分隔符。
 fn replace_runs_of_seps(value: &str) -> String {
     let sep = path_sep();
     let mut out = String::with_capacity(value.len());
@@ -1882,10 +2095,15 @@ fn replace_runs_of_seps(value: &str) -> String {
     out
 }
 
+/// env-runtime 行为测试：通过注入 seam（env/spawn/home/platform）复现 JS 测试对
+/// process.env、process.platform 与 spawnSync 的覆盖，验证 PATH 搜索、登录 shell
+/// 快照、二进制定位与 Windows 启动包装等契约。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 创建以 tag 命名、带进程号与纳秒时间戳的唯一临时目录（已递归创建），
+    /// 避免并行测试冲突；返回其路径。
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-env-runtime-{tag}-{}-{}",
@@ -1899,8 +2117,12 @@ mod tests {
         dir
     }
 
+    /// 测试辅助：记录 spawn seam 收到的 (program, args, options) 调用序列，
+    /// 供测试断言实际发出的探测命令。
     type SpawnCalls = Arc<Mutex<Vec<(String, Vec<String>, SpawnOptions)>>>;
 
+    /// 写入文件内容并（Unix 上）设为 0o755 可执行，返回路径字符串；
+    /// 用于构造 PATH 搜索与 shebang 识别所需的候选二进制。
     fn write_executable(path: &Path, contents: &str) -> String {
         std::fs::write(path, contents).expect("write executable");
         #[cfg(unix)]
@@ -1911,6 +2133,7 @@ use crate::os_compat::PermissionsExt;
         path.to_string_lossy().to_string()
     }
 
+    /// 由 &str 键值对构造返回固定快照的 EnvSource seam。
     fn env_of(map: &[(&str, &str)]) -> EnvSource {
         let owned: HashMap<String, String> = map
             .iter()
@@ -1919,10 +2142,12 @@ use crate::os_compat::PermissionsExt;
         Arc::new(move || owned.clone())
     }
 
+    /// 构造始终返回同一目录的 HomeFn seam。
     fn home_of(dir: PathBuf) -> HomeFn {
         Arc::new(move || dir.clone())
     }
 
+    /// 永远返回 status=1、空 stdout 的 SpawnFn seam，让所有子进程探测失败。
     fn noop_spawn() -> SpawnFn {
         Arc::new(|_program, _args, _options| {
             Box::pin(async {
@@ -1936,6 +2161,7 @@ use crate::os_compat::PermissionsExt;
 
     // -- parse_null_separated_env_snapshot -----------------------------------
 
+    /// 验证 null 分隔快照解析：KEY=VALUE 收录，空段与无 "=" 或空键的段被丢弃。
     #[test]
     fn parses_null_separated_snapshot() {
         let parsed = EnvRuntime::parse_null_separated_env_snapshot(
@@ -1951,12 +2177,14 @@ use crate::os_compat::PermissionsExt;
         assert!(!parsed.contains_key("BAD"));
     }
 
+    /// 验证空输入与全空段的快照都返回 None（JS 的 "无快照" 三态）。
     #[test]
     fn empty_snapshot_is_none() {
         assert!(EnvRuntime::parse_null_separated_env_snapshot("", false).is_none());
         assert!(EnvRuntime::parse_null_separated_env_snapshot("\0\0", false).is_none());
     }
 
+    /// 验证 windows=true 时小写 "Path" 键被补写为大写 "PATH"；非 Windows 不做该修正。
     #[test]
     fn windows_snapshot_fixes_path_casing() {
         let parsed = EnvRuntime::parse_null_separated_env_snapshot("Path=C:\\x\0A=1\0", true)
@@ -1970,6 +2198,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- searchPathFor ---------------------------------------------------------
 
+    /// 验证 search_path_for 是纯查询：在显式搜索路径中命中候选，
+    /// 且不向 env 覆盖层写入任何变更。
     #[test]
     fn searches_explicit_path_without_mutating_env() {
         let default_dir = temp_dir("default-path");
@@ -1996,6 +2226,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- applyLoginShellEnvSnapshot ---------------------------------------------
 
+    /// 验证 apply_login_shell_env_snapshot：始终删除 AppImage ARGV0、跳过 PWD 等
+    /// 易变键、只填充当前未设置的变量，并把 shell PATH 合并到当前 PATH 之前。
     #[tokio::test]
     async fn applies_snapshot_clears_argv0_and_fills_missing() {
         let runtime = EnvRuntime::with_seams(
@@ -2024,6 +2256,7 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
     }
 
+    /// 验证登录 shell 探测失败（无快照）时 ARGV0 仍会被清除（#2588 的行为契约）。
     #[tokio::test]
     async fn clears_argv0_even_without_snapshot() {
         let runtime = EnvRuntime::with_seams(
@@ -2039,6 +2272,7 @@ use crate::os_compat::PermissionsExt;
         assert!(!runtime.effective_env().contains_key("ARGV0"));
     }
 
+    /// 验证快照应用后 shell PATH 条目排在当前 PATH 之前并按序去重合并。
     #[tokio::test]
     async fn merges_shell_path_ahead_of_current() {
         let runtime = EnvRuntime::with_seams(
@@ -2066,6 +2300,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- resolveOpencodeCliPath ---------------------------------------------------
 
+    /// 验证 resolve_opencode_cli_path 在无显式配置时从 PATH 找到 bun，
+    /// 并把解析来源标记为 BinarySource::Path。
     #[tokio::test]
     async fn resolves_omp_host_runtime_from_path() {
         let path_dir = temp_dir("path-bun");
@@ -2084,6 +2320,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 is_bundled_open_code_cli_path 经 canonical 路径比对识别内置 CLI 目录下的
+    /// opencode；同目录下的其它路径不匹配。
     #[test]
     fn recognizes_bundled_cli_by_canonical_path() {
         let bundled_dir = temp_dir("bundled-opencode");
@@ -2104,6 +2342,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 OPENCODE_BINARY 显式指定的可执行文件优先于内置 CLI 候选，
+    /// 来源标记为 BinarySource::Env。
     #[test]
     fn explicit_binary_beats_bundled_cli() {
         let bundled_dir = temp_dir("bundled-opencode");
@@ -2135,10 +2375,14 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 PATH 与 home 目录都找不到 bun 时落到绝对路径 fallback
+    /// （/opt/homebrew/bin、/usr/local/bin）；宿主机不存在则返回 None。
+    /// 两种宿主结果都断言对应的来源标记。
     #[test]
     fn falls_through_to_absolute_bun_fallbacks_or_none() {
         // The unix fallback list ends with two absolute paths the test
         // cannot control; assert whichever outcome the host dictates.
+        // 探测宿主机上真实存在的绝对路径 fallback（测试无法控制这两个路径）。
         fn host_bun_fallback() -> Option<&'static str> {
             ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"]
                 .into_iter()
@@ -2187,6 +2431,8 @@ use crate::os_compat::PermissionsExt;
         }
     }
 
+    /// 验证 Windows 桌面版安装目录（LOCALAPPDATA 下的 Programs\OpenCode）
+    /// 不会被自动识别为 omp-host runtime 候选。
     #[test]
     fn windows_desktop_app_is_not_auto_detected() {
         let local_app_data = temp_dir("localappdata");
@@ -2208,6 +2454,7 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(runtime.resolve_opencode_cli_path(), None);
     }
 
+    /// 验证 Windows 上 PATH 中的 bun.exe 优先于 home 目录 fallback，来源标记为 Path。
     #[test]
     fn windows_path_resolution_ahead_of_home_fallback() {
         let path_dir = temp_dir("cli");
@@ -2234,6 +2481,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 WSL_BINARY 环境变量与 wsl.exe 不参与解析：结果为 None，
+    /// 且记录到的所有 spawn 调用都不以 wsl.exe 为目标。
     #[tokio::test]
     async fn wsl_fallback_paths_are_not_used() {
         let dir = temp_dir("wsl-opencode");
@@ -2279,6 +2528,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- login shell probes ---------------------------------------------------
 
+    /// 验证登录 shell 探测以 -lic 参数执行并携带 SHELL_PROBE_TIMEOUT_MS 超时；
+    /// 探针超时（status 为 null）时依次降级尝试，最终返回 None。
     #[tokio::test]
     async fn login_shell_probes_are_bounded_and_fall_through() {
         let calls: SpawnCalls = Arc::new(Mutex::new(Vec::new()));
@@ -2319,6 +2570,8 @@ use crate::os_compat::PermissionsExt;
         }
     }
 
+    /// 验证 PowerShell 探测失败后回退到 cmd /c set，其 CRLF 输出
+    /// 被转换为 null 分隔并正确解析（含 PATH 大小写修正）。
     #[tokio::test]
     async fn windows_shell_env_snapshot_falls_back_to_cmd_set() {
         let spawn: SpawnFn = Arc::new(|program, _args, _options| {
@@ -2353,6 +2606,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- resolveManagedOpenCodeLaunchSpec ----------------------------------------
 
+    /// 验证非 Windows 平台 resolve_managed_open_code_launch_spec 原样透传二进制
+    /// （空输入回退为 "opencode"），不构造任何包装。
     #[tokio::test]
     async fn unix_launch_spec_passes_binary_through() {
         let runtime = EnvRuntime::with_seams(
@@ -2381,6 +2636,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 Windows 下 .cmd shim 被包装为 ComSpec 的 "/d /s /c call <shim>" 调用，
+    /// wrapper_type 标记为 CmdWrapper。
     #[tokio::test]
     async fn windows_cmd_shim_launches_through_comspec() {
         let dir = temp_dir("opencode-cmd");
@@ -2412,6 +2669,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 npm 的 .cmd shim 依据脚本内容引用定位 node_modules 内的原生
+    /// opencode.exe，wrapper_type 标记为 NativeWrapper。
     #[tokio::test]
     async fn npm_cmd_shim_resolves_packaged_windows_executable() {
         let npm_dir = temp_dir("opencode-npm");
@@ -2448,6 +2707,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 node shebang 分支优先于直连可执行文件分支：shim 由解析出的 node
+    /// （或字面量 "node"）承载启动，wrapper_type 为 NodeShebang。
     #[tokio::test]
     async fn node_shebang_shim_launches_under_node() {
         let dir = temp_dir("opencode-node-shim");
@@ -2470,6 +2731,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- shebang helpers ----------------------------------------------------------
 
+    /// 验证 opencode_shim_interpreter 能从 shim 首行 shebang 识别 node/bun 解释器，
+    /// 其它 shebang（如 /bin/sh）返回 None。
     #[test]
     fn reads_shebang_interpreters() {
         let dir = temp_dir("shebangs");
@@ -2493,6 +2756,8 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(runtime.opencode_shim_interpreter(&plain), None);
     }
 
+    /// 验证 strip_wrapping_quotes 去除首尾成对的同类引号与外侧空白；
+    /// 引号不成对或无引号的输入原样返回修剪结果。
     #[test]
     fn strips_wrapping_quotes() {
         assert_eq!(strip_wrapping_quotes("  '/x/y' "), "/x/y");
@@ -2504,6 +2769,9 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(strip_wrapping_quotes("\"unmatched"), "\"unmatched");
     }
 
+    /// 验证 find_opencode_ai_bin_ref 在 cmd/bun 包装脚本内容中定位
+    /// node_modules/opencode-ai/bin/opencode 引用：/ 与 \ 混用可匹配，
+    /// 前缀残缺（如 node_modulesX）或无引用时不匹配。
     #[test]
     fn finds_opencode_ai_bin_refs() {
         assert_eq!(
@@ -2527,6 +2795,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- ensureOpencodeCliEnv / clearResolvedOpenCodeBinary ------------------------
 
+    /// 验证 ensure_opencode_cli_env：首次解析写入 OPENCODE_BINARY 覆盖并把其目录
+    /// 前置到 PATH；clear_resolved_open_code_binary 清缓存后可经覆盖值重新解析。
     #[tokio::test]
     async fn ensure_opencode_cli_env_caches_and_clear_resets() {
         let path_dir = temp_dir("ensure-bun");
@@ -2563,6 +2833,7 @@ use crate::os_compat::PermissionsExt;
 
     // -- git binary ------------------------------------------------------------------
 
+    /// 验证非 Windows 平台 resolve_git_binary_for_spawn 直接返回裸 "git"，不做任何探测。
     #[test]
     fn git_binary_is_plain_git_off_windows() {
         let runtime = EnvRuntime::with_seams(
@@ -2574,6 +2845,7 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(runtime.resolve_git_binary_for_spawn(), "git");
     }
 
+    /// 验证 Windows 上 GIT_BINARY 显式指定的可执行文件优先于 PATH 与安装目录探测。
     #[test]
     fn git_binary_prefers_explicit_env_binary_on_windows() {
         let dir = temp_dir("git-bin");
@@ -2593,6 +2865,8 @@ use crate::os_compat::PermissionsExt;
 
     // -- PATH builders (server-utils-runtime.js) --------------------------------------
 
+    /// 验证 build_augmented_path：进程 PATH 看似用户自定义时保持其顺序优先，
+    /// 登录 shell 独有的目录按序去重后追加在后。
     #[tokio::test]
     async fn augmented_path_preserves_user_configured_order() {
         let home = temp_dir("augmented-home");
@@ -2634,6 +2908,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证进程 PATH 仅为系统默认极简集合时，build_augmented_path 改以登录 shell
+    /// PATH 为主、进程独有条目追加在后。
     #[tokio::test]
     async fn augmented_path_prefers_login_shell_when_process_path_minimal() {
         let home = temp_dir("augmented-minimal-home");
@@ -2671,6 +2947,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 build_managed_open_code_path：登录 shell PATH 条目在前，
+    /// 进程 PATH 独有条目按序去重追加。
     #[tokio::test]
     async fn managed_path_prefers_shell_path_then_appends_process_entries() {
         let home = temp_dir("managed-home");
@@ -2715,6 +2993,8 @@ use crate::os_compat::PermissionsExt;
         );
     }
 
+    /// 验证 Windows 下 build_managed_open_code_path 追加现存的包管理器目录
+    /// （npm/nodejs/pnpm/yarn/chocolatey 等），且仅保留真实存在的目录。
     #[tokio::test]
     async fn windows_managed_path_keeps_existing_package_manager_dirs() {
         let root = temp_dir("win-path");

@@ -1,3 +1,9 @@
+/**
+ * 统一 diff 的解析层：把 `git diff` 输出拆成文件与可寻址的 hunk，并生成
+ * "scope:路径:内容哈希" 形式的稳定 hunk id。模型叙事锚定这些 id，客户端再用
+ * id 找回渲染代码，过期检测就是"id 在当前 diff 中已不存在"——三者都依赖同一
+ * 套 id 定义，因此 id 的生成算法只存在于这里，客户端只拿到结果。
+ */
 import crypto from 'crypto';
 
 // Parsing a unified diff into addressable hunks lives here and only here. The
@@ -6,11 +12,15 @@ import crypto from 'crypto';
 // all three break the moment two implementations disagree about what an id is,
 // so the client is never given the algorithm, only the results.
 
+/** 文件头行（diff --git ...）的识别正则。 */
 const FILE_HEADER = /^diff --git /;
+/** hunk 头行（@@ -a,b +c,d @@ ...）的识别正则，捕获新旧起始行号与行数。 */
 const HUNK_HEADER = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)$/;
 
+/** 计算字符串的 sha1 前 8 位十六进制摘要，用作 hunk id 的内容指纹。 */
 const shortHash = (value) => crypto.createHash('sha1').update(value).digest('hex').slice(0, 8);
 
+/** 从 "diff --git a/old b/new" 行解析两侧路径（兼容含空格时的引号形式）；不匹配返回 null。 */
 const parsePathsFromFileHeader = (line) => {
   // `diff --git a/old b/new`, with either side quoted when it contains spaces.
   const match = /^diff --git (?:"?a\/(.+?)"?) (?:"?b\/(.+?)"?)$/.exec(line);
@@ -18,6 +28,7 @@ const parsePathsFromFileHeader = (line) => {
   return { oldPath: match[1], newPath: match[2] };
 };
 
+/** 由文件头附属行（new file mode / deleted file mode / rename from）推断变更状态，缺省为 modified。 */
 const statusFromHeaderLines = (lines) => {
   if (lines.some((line) => line.startsWith('new file mode'))) return 'added';
   if (lines.some((line) => line.startsWith('deleted file mode'))) return 'deleted';
@@ -25,6 +36,7 @@ const statusFromHeaderLines = (lines) => {
   return 'modified';
 };
 
+/** 判断文件头附属行是否声明了二进制内容。 */
 const isBinaryHeader = (lines) => lines.some((line) => line.startsWith('Binary files ') || line.startsWith('GIT binary patch'));
 
 /**
@@ -37,6 +49,12 @@ const isBinaryHeader = (lines) => lines.some((line) => line.startsWith('Binary f
  *   changes never silently resolves against unstaged ones.
  * @returns {{files: Array<{path: string, oldPath: string|null, status: string, binary: boolean, hunks: Array<object>}>}}
  */
+/**
+ * 把覆盖任意数量文件的统一 diff 拆成 files 与 hunks。scope 进入每个 hunk id，
+ * 使同一仓库两个 scope 下字节相同的 hunk 拥有不同 id（针对 staged 写的停靠点
+ * 不会静默锚到 unstaged 的相同内容）。文件内字节级重复的 hunk 以出现次数后缀
+ * 去重；hunk id 覆盖头与正文，任何编辑（即使行号不变）都会得到新 id。
+ */
 export function parseDiffFiles(patch, scope = 'diff') {
   const text = typeof patch === 'string' ? patch : '';
   if (!text.trim()) return { files: [] };
@@ -47,6 +65,7 @@ export function parseDiffFiles(patch, scope = 'diff') {
   let headerLines = [];
   let hunk = null;
 
+  /** 结算当前 hunk：计算内容摘要与去重后缀，组装 hunk 对象（含可直接渲染的 patch 文本）压入当前文件。 */
   const closeHunk = () => {
     if (!current || !hunk) return;
     const body = hunk.lines.join('\n');
@@ -76,6 +95,7 @@ export function parseDiffFiles(patch, scope = 'diff') {
     hunk = null;
   };
 
+  /** 结算当前文件：先结算 hunk，补二进制标记、清理临时字段后压入结果列表。 */
   const closeFile = () => {
     closeHunk();
     if (!current) return;
@@ -143,6 +163,7 @@ export function parseDiffFiles(patch, scope = 'diff') {
  * Flatten parsed files into an id-keyed index for resolution and staleness
  * checks.
  */
+/** 把解析结果拍平为 id -> hunk（附所属文件路径与状态）的索引，供锚点解析与过期检测使用。 */
 export function indexHunks(files) {
   const index = new Map();
   for (const file of files) {
@@ -157,6 +178,7 @@ export function indexHunks(files) {
  * Every hunk id in the diff, in file-then-position order. Used to compute the
  * "not covered by any stop" tail.
  */
+/** 按文件与出现顺序列出全部 hunk id，用于计算"未被任何停靠点覆盖"的尾部。 */
 export function listHunkIds(files) {
   const ids = [];
   for (const file of files) {

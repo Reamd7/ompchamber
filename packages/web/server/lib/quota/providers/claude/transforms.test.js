@@ -1,8 +1,15 @@
+/**
+ * Claude 用量转换测试套件：验证 toClaudeUsage 对真实 Anthropic OAuth
+ * usage 响应（裁剪样本）的整形——limits 数组到 5h/7d/模型级窗口的映射、
+ * 窗口时长与金额标签、旧版字段回退、未知 kind 忽略以及畸形输入兜底。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { toClaudeUsage } from './transforms.js';
 
 // Trimmed capture of GET https://api.anthropic.com/api/oauth/usage for a Max account.
+// 真实 Max 账号 GET https://api.anthropic.com/api/oauth/usage 响应的裁剪样本，
+// 同时包含旧版具名字段与新版 limits 数组（含模型级 scoped 限额）。
 const LIVE_PAYLOAD = {
   five_hour: { utilization: 5.0, resets_at: '2026-08-14T19:10:00.313090+00:00' },
   seven_day: { utilization: 4.0, resets_at: '2026-08-20T15:00:00.313112+00:00' },
@@ -29,6 +36,7 @@ const LIVE_PAYLOAD = {
   }
 };
 
+// 主 describe：覆盖 limits 数组路径、legacy 字段路径与容错路径的窗口产出。
 describe('Claude usage transforms', () => {
   it('maps the limits array to session, weekly, and model-scoped windows', () => {
     const { windows, models } = toClaudeUsage(LIVE_PAYLOAD);

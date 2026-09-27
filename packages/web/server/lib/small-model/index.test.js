@@ -1,3 +1,10 @@
+/**
+ * small-model 服务层（index.js）测试套件：不可用 provider 的拒绝、模型
+ * 选择器的 provider 可见性、超长输入的截断与报错策略、describeSmallModel
+ * 的能力上报，以及输出预算与输入预留的一致性。通过 vi.mock 隔离
+ * auth/config/catalog/call/runtime-providers，并把 OMPCHAMBER_DATA_DIR
+ * 指向临时目录，避免读到开发者本机设置。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,6 +13,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 // The settings override is read straight from disk at module load, so without
 // this the suite would resolve whatever small model the developer running it
 // happens to have configured.
+/** 临时数据目录：隔离本套件对 settings.json 的读取，不受本机配置影响。 */
 const TEMP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'small-model-settings-'));
 process.env.OMPCHAMBER_DATA_DIR = TEMP_DATA_DIR;
 
@@ -30,13 +38,20 @@ vi.mock('./runtime-providers.js', () => ({
   getRuntimeProviderSnapshot: vi.fn(async () => null),
 }));
 
+// 被测服务层的三个入口（vi.mock 生效后动态导入）。
 const { generateSmallModelText, describeSmallModel, listAuthenticatedProviders } = await import('./index.js');
+// auth.json 读取 mock，用于控制登录状态。
 const { readAuthFile } = await import('../opencode/auth.js');
+// 运行时 provider 快照 mock，默认返回 null（"未知"）。
 const { getRuntimeProviderSnapshot } = await import('./runtime-providers.js');
+// 配置层读取 mock，用于控制 small_model 配置。
 const { readConfigLayers } = await import('../opencode/shared.js');
+// 模型目录 mock。
 const { getModelCatalog } = await import('./catalog.js');
+// 底层传输调用 mock，用于拦截并检查最终发出的请求参数。
 const { callSmallModel } = await import('./call.js');
 
+// Claude Code 的无条件拒绝：不允许作为小模型调用，也不出现在选择器里。
 describe('unsupported small-model providers', () => {
   beforeEach(() => {
     readAuthFile.mockReturnValue({
@@ -87,6 +102,7 @@ describe('unsupported small-model providers', () => {
   });
 });
 
+// 模型选择器可见的 provider 集合：插件运行时 provider、无端点 provider、zen 匿名与 OpenCode 不可达时的回退。
 describe('provider availability for the model pickers', () => {
   beforeEach(() => {
     readAuthFile.mockReturnValue({ openai: { type: 'api', key: 'sk-test' } });
@@ -95,6 +111,7 @@ describe('provider availability for the model pickers', () => {
     getRuntimeProviderSnapshot.mockResolvedValue(null);
   });
 
+  /** 把 provider 数组组装成运行时快照形状（Map + Set）的便捷工厂。 */
   const snapshot = (providers, connected) => ({
     providers: new Map(providers.map((provider) => [provider.id, provider])),
     connected: new Set(connected ?? providers.map((provider) => provider.id)),
@@ -133,6 +150,7 @@ describe('provider availability for the model pickers', () => {
 });
 
 // 8k context leaves 4k input tokens after the output reserve → 16k chars.
+/** 测试目录：8k 上下文模型，供截断与能力断言复用。 */
 const CATALOG = {
   anthropic: {
     id: 'anthropic',
@@ -144,6 +162,7 @@ const CATALOG = {
   },
 };
 
+/** generateSmallModelText 请求参数工厂：默认 20k 字符超长 prompt，便于覆盖截断路径。 */
 const request = (overrides = {}) => ({
   prompt: 'x'.repeat(20_000),
   model: 'anthropic/claude-haiku-4-5',
@@ -151,6 +170,7 @@ const request = (overrides = {}) => ({
   ...overrides,
 });
 
+// 超长输入处理策略：默认截断并标记 inputTruncated；onOverflow 为 'error' 时直接拒绝且不触达 provider。
 describe('generateSmallModelText — oversized input', () => {
   beforeEach(() => {
     readAuthFile.mockReturnValue({ anthropic: { type: 'api', key: 'sk-ant' } });
@@ -211,6 +231,7 @@ describe('generateSmallModelText — oversized input', () => {
   });
 });
 
+// describeSmallModel 的能力上报：输入预算、登录状态与 structured output 三态。
 describe('describeSmallModel — capability reporting', () => {
   beforeEach(() => {
     readAuthFile.mockReturnValue({ anthropic: { type: 'api', key: 'sk-ant' } });
@@ -268,6 +289,7 @@ describe('describeSmallModel — capability reporting', () => {
 // The input reserve and the requested output budget are the same number seen
 // from two sides; if they drift, a caller that asks for a large answer overruns
 // the model's context and the failure looks like a truncation bug.
+// 输出预算与输入预留必须一致：申请的输出 token 会从输入字符预算中等量扣除。
 describe('output budget and input reserve', () => {
   beforeEach(() => {
     readAuthFile.mockReturnValue({ anthropic: { type: 'api', key: 'sk-ant' } });
@@ -358,6 +380,7 @@ describe('output budget and input reserve', () => {
   });
 });
 
+// 清理临时数据目录。
 afterAll(() => {
   fs.rmSync(TEMP_DATA_DIR, { recursive: true, force: true });
 });

@@ -1,7 +1,15 @@
+/**
+ * claude-cli-auth 模块的单元测试。
+ *
+ * 覆盖：以净化后的环境执行 `claude auth status --json` 得到权威登录态
+ * （并断言凭证环境变量确实被剔除）；CLI 登出时不被 OpenCode 的过期
+ * 标记误导；桌面 PATH 找不到 claude 时经登录 shell（zsh -lic）定位后重试。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import { getClaudeCliAuthStatus } from './claude-cli-auth.js';
 
+// getClaudeCliAuthStatus 的探测、环境净化与登录 shell 回退链路
 describe('getClaudeCliAuthStatus', () => {
   test('reports the authoritative Claude CLI login state', () => {
     let invocation = null;

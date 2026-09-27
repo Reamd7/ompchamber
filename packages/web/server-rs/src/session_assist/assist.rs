@@ -3,6 +3,11 @@
 //! last reply plus one suggested user follow-up with the small model, and
 //! store both on the session's metadata (`metadata.ompchamber.assist`).
 //! Purely event-driven: no backfill, no session scans.
+//!
+//! 会话辅助（session-assist）运行期：会话空闲并静默满一分钟后，用小
+//! 模型为助手最近一条回复生成简短回顾（recap）与一条可直接发送的后续
+//! 建议（suggestion），写入 metadata.ompchamber.assist。纯事件驱动：
+//! 无回填、无会话扫描。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -23,10 +28,15 @@ use crate::session_goal::runtime::{
 use super::fetch::{OpenCodeFetch, encode_uri_component};
 
 /// The "1 minute of quiet" rule between idle and generation.
+/// idle 到触发生成之间的静默窗口（1 分钟）。
 pub const IDLE_QUIET_MS: u64 = 60_000;
+/// 拉取最近消息的条数上限。
 pub const TRANSCRIPT_MESSAGE_LIMIT: usize = 12;
+/// 回顾文本的字符上限。
 pub const RECAP_CHAR_LIMIT: usize = 320;
+/// 建议文本的字符上限。
 pub const SUGGESTION_CHAR_LIMIT: usize = 500;
+/// 单次引擎请求的超时（毫秒）。
 pub const FETCH_TIMEOUT_MS: u64 = 5_000;
 
 // ---------------------------------------------------------------------------
@@ -34,16 +44,23 @@ pub const FETCH_TIMEOUT_MS: u64 = 5_000;
 // ---------------------------------------------------------------------------
 /// The Chat settings are hard generation switches (default on): when both are
 /// off, no small-model calls and no metadata writes happen at all.
+/// 两个生成开关的当前取值（默认全开）；全关时小模型调用与
+/// metadata 写入完全不发生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssistTargets {
+    /// 是否生成回顾（recap）。
     pub recap: bool,
+    /// 是否生成后续建议（suggestion）。
     pub suggestion: bool,
 }
 
+/// 读取当前 AssistTargets 的闭包类型；每次生成前实时读取。
 pub type GetTargets = Arc<dyn Fn() -> AssistTargets + Send + Sync>;
 
 /// JS `getSessionAssistTargets`: `settings.sessionRecapEnabled !== false`
 /// (default on when settings cannot be read).
+/// 基于 settings.json 构建开关读取器：sessionRecapEnabled/
+/// sessionSuggestionEnabled 显式为 false 才关闭；读不到或非法一律默认开启。
 pub fn settings_targets(data_dir: PathBuf) -> GetTargets {
     Arc::new(move || {
         let Ok(raw) = std::fs::read_to_string(data_dir.join("settings.json")) else {
@@ -72,33 +89,52 @@ pub fn settings_targets(data_dir: PathBuf) -> GetTargets {
 /// Mirrors `generateSmallModelText({restrictToPreferredProvider: true, ...})`
 /// — conversation content must never leave the session's own provider unless
 /// the user explicitly picked a small model.
+/// 一次小模型文本生成的请求；restrictToPreferredProvider 语义要求
+/// 会话内容不离开其自身 provider，除非用户显式选定小模型。
 pub struct AssistRequest {
+    /// 用户 prompt（含最新一轮对话摘录）。
     pub prompt: String,
+    /// 系统提示词（build_assist_system_prompt 的产物）。
     pub system: String,
+    /// 会话所在项目目录（引擎请求按目录路由）。
     pub directory: String,
+    /// 会话最近回复所用 provider（优先约束）。
     pub preferred_provider_id: Option<String>,
+    /// 会话最近回复所用 model（优先约束）。
     pub preferred_model_id: Option<String>,
 }
 
+/// 小模型生成结果。
 pub struct AssistOutput {
+    /// 生成的原始文本（应为单个 JSON 对象）。
     pub text: String,
+    /// 实际使用的 provider（记入日志）。
     pub provider_id: Option<String>,
+    /// 实际使用的 model。
     pub model_id: Option<String>,
 }
 
 /// Carries the JS `error.statusCode` (404 = no authenticated small model,
 /// silently skipped).
+/// 生成失败：status 对应 JS 的 error.statusCode
+///（404 = 无已认证小模型，静默跳过）。
 #[derive(Debug)]
 pub struct AssistError {
+    /// 可选的 HTTP 风格状态码。
     pub status: Option<u16>,
+    /// 人类可读的错误消息。
     pub message: String,
 }
 
+/// 生成调用的装箱 future 类型。
 pub type AssistFuture = Pin<Box<dyn Future<Output = Result<AssistOutput, AssistError>> + Send>>;
+/// 小模型文本生成的 seam 类型：请求 → future，测试可注入假实现。
 pub type SmallModelText = Arc<dyn Fn(AssistRequest) -> AssistFuture + Send + Sync>;
 
 /// The small-model module is not ported yet: generation fails closed and the
 /// assist flow follows the JS error path (404 — silent, nothing written).
+/// 小模型模块未移植前的占位实现：恒返回 404，让 assist 流程走
+/// JS 的错误路径（静默、什么都不写）。
 pub fn unavailable_small_model() -> SmallModelText {
     Arc::new(|_request: AssistRequest| {
         Box::pin(async {
@@ -115,6 +151,8 @@ pub fn unavailable_small_model() -> SmallModelText {
 // ---------------------------------------------------------------------------
 
 /// JS: `buildAssistSystemPrompt({recap, suggestion})`.
+/// 按开关拼接系统提示词：要求只输出一个 JSON 对象，并给出 recap 与
+/// suggestion 的措辞规则与示例；未开启的目标整段省略。
 pub fn build_assist_system_prompt(targets: AssistTargets) -> String {
     let recap = targets.recap;
     let suggestion = targets.suggestion;
@@ -176,11 +214,16 @@ pub fn build_assist_system_prompt(targets: AssistTargets) -> String {
 }
 
 /// JS: `extractUserMessage` — a user `message.updated` with its creation time.
+/// 从 message.updated 提取的用户消息：会话 id 与创建时间。
 pub struct UserMessageEvent {
+    /// 所属会话 id。
     pub session_id: String,
+    /// 消息创建时间（epoch 毫秒，缺失为 0）。
     pub created_at: f64,
 }
 
+/// 判定 payload 是否为 user 角色的 message.updated，取出 sessionID 与
+/// time.created；role 不符或 sessionID 缺失/为空返回 None。
 pub fn extract_user_message(payload: &Value) -> Option<UserMessageEvent> {
     if payload.get("type").and_then(Value::as_str) != Some("message.updated") {
         return None;
@@ -204,10 +247,12 @@ pub fn extract_user_message(payload: &Value) -> Option<UserMessageEvent> {
     })
 }
 
+/// 按字符（非字节）截取前 limit 个，避免切坏多字节文本。
 fn chars_take(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
 }
 
+/// 当前 Unix 毫秒；时钟早于 epoch 时退化为 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -219,44 +264,69 @@ fn now_ms() -> u64 {
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// 一个已武装的静默定时器槽位。
 struct TimerSlot {
+    /// 武装序号：仅最新一次武装有效，旧任务自清理时比对。
     seq: u64,
+    /// 定时器任务句柄（clear 时 abort）。
     handle: tokio::task::JoinHandle<()>,
     /// Set when the callback has fired; a fired slot is treated as absent
     /// (JS deletes the map entry at callback start).
+    /// 回调是否已触发；已触发的槽位视同不存在（JS 在回调开头删表项）。
     fired: Arc<AtomicBool>,
     /// JS `armedAt: Date.now()` — only a message created after the timer was
     /// armed means the user actually moved on.
+    /// 武装时刻（Date.now()）：只有创建时间晚于它的用户消息才代表用户真的动了。
     armed_at_ms: u64,
 }
 
+/// 运行期的共享可变状态。
 struct RuntimeInner {
+    /// session_id → 定时器槽位。
     timers: Mutex<HashMap<String, TimerSlot>>,
+    /// 正在生成中的会话集合（防重入）。
     inflight: Mutex<HashSet<String>>,
+    /// 停止标志：置位后不再武装/触发任何生成。
     stopped: AtomicBool,
+    /// 定时器武装序号发生器。
     seq: AtomicU64,
 }
 
+/// 运行期构造参数（全部是可注入的 seam）。
 pub struct SessionAssistOptions {
+    /// 引擎请求 seam（路径、目录、方法、body）。
     pub fetch: OpenCodeFetch,
+    /// 小模型生成 seam。
     pub small_model: SmallModelText,
+    /// 生成开关读取器。
     pub get_targets: GetTargets,
+    /// 静默窗口时长（毫秒）。
     pub quiet_ms: u64,
 }
 
+/// 事件驱动的会话辅助运行期：定时器的武装/清除、生成与 metadata
+/// 写回都从这里协调。
 pub struct SessionAssistRuntime {
+    /// 共享状态（定时器、在途集合、停止位）。
     inner: RuntimeInner,
+    /// 引擎请求 seam。
     fetch: OpenCodeFetch,
+    /// 小模型 seam。
     small_model: SmallModelText,
+    /// 生成开关读取器。
     get_targets: GetTargets,
+    /// 静默窗口时长（毫秒）。
     quiet_ms: u64,
 }
 
+/// 拿互斥锁；锁中毒时恢复数据继续（单写者场景下安全）。
 fn lock_map<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 运行期的构造与事件处理操作。
 impl SessionAssistRuntime {
+    /// 由 options 构造共享运行期（返回 Arc）。
     pub fn new(options: SessionAssistOptions) -> Arc<Self> {
         Arc::new(Self {
             inner: RuntimeInner {
@@ -272,28 +342,36 @@ impl SessionAssistRuntime {
         })
     }
 
+    /// 配置的静默窗口时长（毫秒）。
     pub fn quiet_ms(&self) -> u64 {
         self.quiet_ms
     }
 
+    /// 该会话是否存在未触发的定时器（已触发的槽位视同不存在）。
     fn has_timer(&self, session_id: &str) -> bool {
         lock_map(&self.inner.timers)
             .get(session_id)
             .is_some_and(|slot| !slot.fired.load(Ordering::SeqCst))
     }
 
+    /// 移除并中止该会话的定时器；无定时器时为空操作。
     fn clear_timer(&self, session_id: &str) {
         if let Some(existing) = lock_map(&self.inner.timers).remove(session_id) {
             existing.handle.abort();
         }
     }
 
+    /// 该会话是否正在生成中（防重入检查）。
     fn inflight_contains(&self, session_id: &str) -> bool {
         lock_map(&self.inner.inflight).contains(session_id)
     }
 
     /// JS: `generateAssist` — the timer callback's body. Exposed so tests can
     /// drive it deterministically without the quiet window.
+    /// 生成本体（定时器回调体）：开关全关直接返回 → 读会话并跳过子
+    /// 代理会话 → 取最近一轮对话 → 调小模型 → 脚本守卫丢幻觉字段 →
+    /// 尾部新鲜度复查 → 用最新 metadata 合并后 PATCH 写回；
+    /// 各失败路径只告警、不重试。
     pub async fn generate(self: &Arc<Self>, session_id: &str, directory: &str) {
         let targets = (self.get_targets)();
         if !targets.recap && !targets.suggestion {
@@ -553,6 +631,8 @@ impl SessionAssistRuntime {
     }
 
     /// JS: `fetchRecentMessages` — null on any failure or non-array payload.
+    /// 拉取最近 TRANSCRIPT_MESSAGE_LIMIT 条消息；
+    /// 任何失败或非数组返回值都归一为 None。
     async fn fetch_recent_messages(&self, session_id: &str, directory: &str) -> Option<Vec<Value>> {
         let path = format!(
             "/session/{}/message?limit={}",
@@ -565,6 +645,8 @@ impl SessionAssistRuntime {
         }
     }
 
+    /// （重新）武装静默定时器：先清旧定时器，seq 自增以防旧回调误删
+    /// 新槽位；到点后若未停止且不在途，则置在途标记并执行 generate。
     fn arm_timer(self: &Arc<Self>, session_id: &str, directory: &str) {
         self.clear_timer(session_id);
         let seq = self.inner.seq.fetch_add(1, Ordering::SeqCst);
@@ -605,6 +687,8 @@ impl SessionAssistRuntime {
 
     /// JS: `processPayload(payload, directoryHint)` — synchronous entrypoint
     /// fed from the global SSE hub subscription.
+    /// SSE 事件入口：session.status 为 idle 时武装定时器、非 idle 时
+    /// 清除；用户 message.updated 仅当创建时间晚于武装时刻才清除定时器。
     pub fn process_payload(self: &Arc<Self>, payload: &Value, directory_hint: &str) {
         if self.inner.stopped.load(Ordering::SeqCst) {
             return;
@@ -640,6 +724,7 @@ impl SessionAssistRuntime {
     }
 
     /// JS: `stop`.
+    /// 停止运行期：置停止位并中止全部已武装的定时器。
     pub fn stop(&self) {
         self.inner.stopped.store(true, Ordering::SeqCst);
         let mut timers = lock_map(&self.inner.timers);
@@ -650,6 +735,8 @@ impl SessionAssistRuntime {
 }
 
 /// JS `value.replace(/\s+/g, ' ').trim()`.
+/// 把连续空白折叠为单个空格并去首尾空白（等价 JS 的
+/// replace 加 trim 组合）。
 fn collapse_whitespace(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut in_whitespace = false;
@@ -670,6 +757,9 @@ fn collapse_whitespace(value: &str) -> String {
 /// index.js `onPayload` wiring for this runtime: hub frames carry the
 /// event-stream envelope `{payload, directory}`; a `payload.payload` object
 /// wins over the wrapper, and `global` directories become an empty hint.
+/// 订阅 hub 并把事件帧转交 process_payload 的桥接任务：解包
+/// {payload, directory} 信封，内层 payload.payload 对象优先，
+/// global/空目录归一为空提示。
 pub fn spawn_hub_bridge(
     runtime: Arc<SessionAssistRuntime>,
     hub: Arc<EventHub>,
@@ -703,11 +793,13 @@ pub fn spawn_hub_bridge(
     })
 }
 
+/// 系统提示词、事件提取与运行期行为（含 SSE 桥接）的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证系统提示词按开关拼出对应 Shape 与规则/示例段落。
     #[test]
     fn system_prompt_shape_reflects_enabled_targets() {
         let both = build_assist_system_prompt(AssistTargets {
@@ -735,6 +827,7 @@ mod tests {
         assert!(!suggestion_only.contains("NEVER narrate"));
     }
 
+    /// 验证仅 user 角色且带 sessionID 的 message.updated 被提取，缺失时间字段补 0。
     #[test]
     fn extract_user_message_requires_role_user_and_session() {
         assert!(extract_user_message(&json!({
@@ -764,6 +857,7 @@ mod tests {
         assert_eq!(missing_created.created_at, 0.0);
     }
 
+    /// 验证空白折叠行为与 JS 正则一致。
     #[test]
     fn collapse_whitespace_matches_js_regex() {
         assert_eq!(collapse_whitespace("  a \n\t b  "), "a b");
@@ -771,6 +865,7 @@ mod tests {
         assert_eq!(collapse_whitespace("   "), "");
     }
 
+    /// 验证开关默认开启、显式 false 生效、settings 非法时回退默认。
     #[test]
     fn settings_targets_default_on_and_honor_explicit_false() {
         let dir = std::env::temp_dir().join(format!(
@@ -817,24 +912,36 @@ mod tests {
 
     use std::sync::Mutex as StdMutex;
 
+    /// 测试用会话 id。
     const SESSION_ID: &str = "ses_1";
+    /// 测试用项目目录。
     const DIRECTORY: &str = "/work/project";
 
+    /// 记录到假引擎的一次请求。
     #[derive(Clone, Debug)]
     struct RecordedRequest {
+        /// 请求路径（含查询串）。
         path: String,
+        /// HTTP 方法。
         method: String,
+        /// 请求体（GET 为 None）。
         body: Option<Value>,
     }
 
+    /// 内存假引擎：记录全部请求，会话对象与消息列表可编程改写。
     struct FakeEngine {
+        /// 收到的请求流水。
         requests: StdMutex<Vec<RecordedRequest>>,
+        /// GET /session/:id 返回的会话对象。
         session: StdMutex<Value>,
         /// Tail contents returned by the SECOND message fetch (stale check).
+        /// 消息接口的返回值；generate 首拉与尾部新鲜度复查共用。
         messages: StdMutex<Value>,
     }
 
+    /// 假引擎的构造与查询辅助。
     impl FakeEngine {
+        /// 构造默认假引擎：一条用户消息加一条助手回复的会话。
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 requests: StdMutex::new(Vec::new()),
@@ -858,6 +965,9 @@ mod tests {
             })
         }
 
+        /// 生成 OpenCodeFetch seam：记录请求；message 路径校验 limit
+        /// 查询并返回消息表；session PATCH 合并 metadata；session GET
+        /// 返回会话对象；其余路径返回 404。
         fn fetch(self: &Arc<Self>) -> OpenCodeFetch {
             let engine = Arc::clone(self);
             Arc::new(
@@ -917,6 +1027,7 @@ mod tests {
             )
         }
 
+        /// 返回请求流水快照。
         fn requests(&self) -> Vec<RecordedRequest> {
             self.requests
                 .lock()
@@ -924,6 +1035,7 @@ mod tests {
                 .clone()
         }
 
+        /// 过滤出全部 PATCH 请求体。
         fn patches(&self) -> Vec<Value> {
             self.requests()
                 .iter()
@@ -933,6 +1045,7 @@ mod tests {
         }
     }
 
+    /// 造一个恒返回固定文本的小模型假实现，并返回记录到的请求列表。
     fn small_model_returning(text: &str) -> (SmallModelText, Arc<StdMutex<Vec<AssistRequest>>>) {
         let seen: Arc<StdMutex<Vec<AssistRequest>>> = Arc::new(StdMutex::new(Vec::new()));
         let text = text.to_string();
@@ -956,6 +1069,7 @@ mod tests {
         )
     }
 
+    /// 以给定 seam 与开关（静默窗口 0）组装运行期。
     fn runtime(
         fetch: OpenCodeFetch,
         small_model: SmallModelText,
@@ -969,10 +1083,12 @@ mod tests {
         })
     }
 
+    /// 让出调度一小段时间，等 spawn 出的定时器/桥接任务跑完。
     async fn settle() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    /// 验证从最后一轮对话生成 recap/suggestion，并以新鲜读合并写回 metadata。
     #[tokio::test]
     async fn generates_assist_metadata_from_the_last_exchange() {
         let engine = FakeEngine::new();
@@ -1032,6 +1148,7 @@ mod tests {
         );
     }
 
+    /// 验证带 parentID 的子代理会话在小模型调用前即被跳过。
     #[tokio::test]
     async fn skips_subagent_sessions_before_any_generation() {
         let engine = FakeEngine::new();
@@ -1056,6 +1173,7 @@ mod tests {
         assert!(engine.patches().is_empty());
     }
 
+    /// 验证开关全关时连会话读取都不发生。
     #[tokio::test]
     async fn both_targets_off_makes_no_calls_at_all() {
         let engine = FakeEngine::new();
@@ -1075,6 +1193,7 @@ mod tests {
         assert!(seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
     }
 
+    /// 验证生成期间尾部出现更新的助手回复时丢弃结果、不写回。
     #[tokio::test]
     async fn a_moved_on_tail_drops_the_result() {
         let engine = FakeEngine::new();
@@ -1098,6 +1217,7 @@ mod tests {
         assert!(engine.patches().is_empty(), "stale result dropped");
     }
 
+    /// 验证脚本守卫只丢弃语言错乱的字段（西里尔 recap 弃、拉丁 suggestion 留）。
     #[tokio::test]
     async fn script_mismatch_drops_only_the_hallucinated_field() {
         let engine = FakeEngine::new();
@@ -1124,6 +1244,7 @@ mod tests {
         assert_eq!(assist["suggestion"], json!("Run the suite twice"));
     }
 
+    /// 验证小模型 404 时静默跳过、不写任何 metadata。
     #[tokio::test]
     async fn a_404_small_model_is_silent_and_writes_nothing() {
         let engine = FakeEngine::new();
@@ -1149,6 +1270,7 @@ mod tests {
         assert!(engine.patches().is_empty());
     }
 
+    /// 验证 recap/suggestion 分别被截到各自的字符上限。
     #[tokio::test]
     async fn clamps_apply_to_generated_fields() {
         let engine = FakeEngine::new();
@@ -1183,6 +1305,7 @@ mod tests {
         );
     }
 
+    /// 验证 idle 事件武装的静默定时器到点触发生成并写回。
     #[tokio::test]
     async fn idle_event_arms_and_fires_the_quiet_timer() {
         let engine = FakeEngine::new();
@@ -1213,6 +1336,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 验证 busy 状态与晚于武装时刻的用户消息都会取消定时器。
     #[tokio::test]
     async fn busy_status_and_fresh_user_message_clear_the_timer() {
         let engine = FakeEngine::new();
@@ -1279,6 +1403,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 验证旧消息的重发不清除定时器，生成照常发生。
     #[tokio::test]
     async fn stale_user_message_does_not_clear_the_timer() {
         let engine = FakeEngine::new();
@@ -1321,6 +1446,7 @@ mod tests {
         runtime.stop();
     }
 
+    /// 验证 stop 之后已武装的定时器不再触发生成。
     #[tokio::test]
     async fn stop_prevents_late_generation() {
         let engine = FakeEngine::new();
@@ -1351,6 +1477,7 @@ mod tests {
         assert!(engine.patches().is_empty());
     }
 
+    /// 验证 hub 桥接解包事件信封并携带信封目录完成整条生成链路。
     #[tokio::test]
     async fn hub_bridge_routes_idle_events_with_the_envelope_directory() {
         let engine = FakeEngine::new();
@@ -1388,6 +1515,7 @@ mod tests {
         assert_eq!(engine.patches().len(), 1);
     }
 
+    /// 验证会话读取为裸路径、消息拉取带 ?limit=12 查询（URL 形状对齐 JS）。
     #[test]
     fn messages_fetch_url_carries_the_limit() {
         // Seam-level URL shape: the session read is bare (directory rides as

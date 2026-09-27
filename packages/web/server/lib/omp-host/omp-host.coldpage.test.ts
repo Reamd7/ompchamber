@@ -1,3 +1,9 @@
+/**
+ * 窗口化冷读取器的对齐矩阵测试（docs/plans/omp-host-memory/plan.md
+ * §7.2/§7.3）：流式分页臂必须与全量物化臂逐字段相等——以真实 JSONL 文件、
+ * 真实 SDK 加载器 + buildSessionContext 为参照，两臂运行引擎同款的投影、
+ * 分隔符合并与分页数学。
+ */
 import { afterAll, describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,20 +27,26 @@ import { readSessionEventRows, readSessionScalars, readTranscriptMessagePage } f
 // real SDK loader + buildSessionContext as the reference. Both arms run the
 // same projection + divider-merge + pagination math the engine applies.
 
+/** fixture 用的临时目录（afterAll 递归清理）。 */
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-coldpage-'));
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
+/** 毫秒 → ISO 字符串（条目时间戳统一格式）。 */
 const iso = (ms: number) => new Date(ms).toISOString();
+/** transcript 文件名自增序号，避免 fixture 相互覆盖。 */
 let seq = 0;
+/** 把行数组写成真实 JSONL 文件并返回其路径。 */
 const writeTranscript = (lines: unknown[]): string => {
   const file = path.join(dir, `t${seq++}.jsonl`);
   fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
   return file;
 };
 
+/** fixture 写入的 JSONL 字段值——具体联合类型，不用 unknown。 */
 /** JSONL field values the fixtures write — concrete union, no `unknown`. */
 type JsonlValue = string | number | boolean | null | readonly JsonlValue[] | { [key: string]: JsonlValue };
 
+/** 构造会话头条目（session 类型，可附加任意字段）。 */
 const header = (id = 's1', extra: { [key: string]: JsonlValue } = {}) => ({
   type: 'session',
   version: 3,
@@ -43,6 +55,7 @@ const header = (id = 's1', extra: { [key: string]: JsonlValue } = {}) => ({
   cwd: dir,
   ...extra,
 });
+/** 构造一条通用条目（type/id/parentId/时间戳 + 附加字段）。 */
 const entry = (type: string, id: string, parentId: string | null, ts: number, extra: { [key: string]: JsonlValue } = {}) => ({
   type,
   id,
@@ -50,11 +63,13 @@ const entry = (type: string, id: string, parentId: string | null, ts: number, ex
   timestamp: iso(ts),
   ...extra,
 });
+/** 构造 user 文本消息。 */
 const userMsg = (ts: number, text: string) => ({
   role: 'user',
   content: [{ type: 'text', text }],
   timestamp: ts,
 });
+/** 构造 assistant 文本消息（附加字段可覆盖默认值）。 */
 const assistantMsg = (ts: number, text: string, extra: { [key: string]: JsonlValue } = {}) => ({
   role: 'assistant',
   content: [{ type: 'text', text }],
@@ -64,6 +79,7 @@ const assistantMsg = (ts: number, text: string, extra: { [key: string]: JsonlVal
   stopReason: 'stop',
   ...extra,
 });
+/** 构造 assistant 工具调用消息。 */
 const toolCallMsg = (ts: number, callId: string, name = 'bash') => ({
   role: 'assistant',
   content: [{ type: 'toolCall', id: callId, name, arguments: {} }],
@@ -72,15 +88,19 @@ const toolCallMsg = (ts: number, callId: string, name = 'bash') => ({
   timestamp: ts,
   stopReason: 'toolUse',
 });
+/** 构造 toolResult 消息。 */
 const toolResultMsg = (ts: number, callId: string, text = 'result-out') => ({
   role: 'toolResult',
   toolCallId: callId,
   content: [{ type: 'text', text }],
   timestamp: ts,
 });
+/** 把一条消息包装成 message 条目。 */
 const msgEntry = (id: string, parentId: string | null, ts: number, message: JsonlValue) =>
   entry('message', id, parentId, ts, { message });
 
+/** 参照臂：对真实加载完整跑一遍引擎冷文件臂的管线（迁移→上下文→投影→
+ * 分隔符合并→分页）。 */
 /** Reference arm: exactly the engine's cold file arm over a real load. */
 const referencePage = async (filePath: string, { limit, before }: { limit?: number; before?: string } = {}) => {
   const loaded = await loadEntriesFromFile(filePath);
@@ -106,9 +126,11 @@ const referencePage = async (filePath: string, { limit, before }: { limit?: numb
   return { page: paginateProjectedMessages(merged, { limit, before }), count: context.messages.length };
 };
 
+/** 被测臂：窗口化读取器直接产出同一形状的分页结果。 */
 const streamed = (filePath: string, opts: { limit?: number; before?: string } = {}) =>
   readTranscriptMessagePage(filePath, { sessionID: 's1', agent: 'build', limit: opts.limit, before: opts.before });
 
+/** 断言两臂逐字段对齐：fileMessageCount、cursor 与消息数组完全相等。 */
 const expectParity = async (filePath: string, opts: { limit?: number; before?: string } = {}) => {
   const got = await streamed(filePath, opts);
   const ref = await referencePage(filePath, opts);
@@ -119,6 +141,9 @@ const expectParity = async (filePath: string, opts: { limit?: number; before?: s
   return got?.page;
 };
 
+/** 冷 transcript 分页对齐：线性回合、模型/模式切换、压缩对、分支路径、
+ * 标题槽、畸形行、跨页工具配对、developer 消息与各类回退形状下，流式臂
+ * 与全量物化臂输出一致。 */
 describe('cold transcript page parity', () => {
   test('linear turns: tail page + cursor walk', async () => {
     const lines: unknown[] = [header()];
@@ -336,6 +361,8 @@ describe('cold transcript page parity', () => {
   });
 });
 
+/** 冷标量与事件行读取器：readSessionScalars 对齐头字段与尾部字段、坏头
+ * 回退 null；readSessionEventRows 对齐 manager 臂的行形状。 */
 describe('cold scalar + event-row readers', () => {
   test('readSessionScalars matches the header + tail fields', async () => {
     const file = writeTranscript([

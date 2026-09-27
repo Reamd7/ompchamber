@@ -18,10 +18,22 @@
 // daemons reparent out of the descendant tree and read as exited while still
 // alive; output captured after a process detaches its fds is unreachable.
 // Neither is papered over — rows show exited/uncertain rather than lying.
+/**
+ * 会话进程监控台账（中文摘要）：bash/eval 工具调用都运行在本 host 进程内，
+ * 会话派生出的进程在存活期间都是 host 的后代；SDK 不上报 pid，本模块用
+ * "工具事件开合调用窗口 + 轮询差分 host 后代进程树"的方式重建归属关系。
+ * 归因是尽力而为的，每行数据都携带判定方式（见 ProcessAttribution）；
+ * setsid/双 fork 守护进程会脱离后代树、进程脱离 fd 后的输出不可达——
+ * 台账宁可显示 exited/uncertain 也不伪造状态。
+ */
 
 import type { ProcInfo, ProcStats, ProcessPlatform } from './process-platform.ts';
 import { normalizeDirectoryKey } from './registry.ts';
 
+/** 进程归属判定方式：window=仅一个调用窗口打开时首见；argv=多个窗口
+ * 重叠时按命令行匹配区分；parent=ppid 链接到已跟踪进程（fork/`&` 子进程）；
+ * job=该调用支撑的 SDK 异步 job 仍在运行；unattributed=无法判定（保留
+ * 可见、可 kill，并携带候选会话 id）。 */
 export type ProcessAttribution = 'window' | 'argv' | 'parent' | 'job' | 'unattributed';
 
 // ---------------------------------------------------------------------------
@@ -29,52 +41,91 @@ export type ProcessAttribution = 'window' | 'argv' | 'parent' | 'job' | 'unattri
 // zod schema in packages/ui/src/lib/api/omp.ts — keep the shapes aligned).
 // ---------------------------------------------------------------------------
 
+/** 快照中的单个 OS 进程成员：一个 pid 从首次被观测到判定退出的生命周期视图。 */
 export interface OmpProcessMember {
+  // 进程 id
   pid: number;
+  // 父进程 id（parent 归因沿 ppid 链继承 owner）
   ppid: number;
+  // 完整命令行（空格拼接；argv 归因的匹配对象）
   argv: string;
+  // 可观测到的工作目录
   cwd?: string;
+  // running=仍在后代树中；exited=差分判定已退出
   state: 'running' | 'exited';
+  // 台账首次观测到该 pid 的时间（epoch ms）
   firstSeenAt: number;
+  // 判定退出的时间；存活期间缺省
   exitedAt?: number;
+  // 最近一次采样到的常驻内存（字节）
   rssBytes?: number;
+  // 两次采样间隔折算出的 CPU 百分比（0-100，已按核数归一）
   cpuPercent?: number;
+  // 该成员的归属判定方式
   attribution: ProcessAttribution;
+  // 用户是否通过 kill 接口终止过此进程
   killedByUser?: boolean;
 }
 
+/** 快照条目：一次 bash/eval 调用（invocation）或一个未归属进程子树的聚合视图。 */
 export interface OmpProcessEntry {
   /** Invocation key `${sessionID}${toolCallId}` or `proc:<pid>` for an unattributed root. */
+  /** 条目主键（中文）：`${sessionID} ${toolCallId}`；未归属根为 `proc:<pid>`。 */
   key: string;
+  // 所属会话 id；未归属根条目为 null
   sessionID: string | null;
   /** Sessions that owned an open window when an unattributed process appeared. */
+  /** 未归属进程出现时持有打开窗口的会话 id 列表。 */
   candidateSessionIds?: string[];
+  // 条目种类：bash 调用 / eval 调用 / 纯进程（未归属根）
   kind: 'bash' | 'eval' | 'process';
+  // bash 命令串或 eval 摘要标签
   command: string;
+  // 调用声明的工作目录
   cwd?: string;
+  // killed=被用户终止；failed=调用以错误结束；exited=正常结束
   status: 'running' | 'exited' | 'killed' | 'failed';
+  // 调用（或首个成员进程）的开始时间
   startedAt: number;
+  // 调用结束时间；进行中缺省
   endedAt?: number;
+  // 工具结果携带的退出码；可能为 null（未知）
   exitCode?: number | null;
+  // 关联的 SDK 异步 job id（后台 bash/eval 任务）
   jobId?: string;
+  // 成员归因的聚合：全部一致时为该值，混合时为 'mixed'
   attribution: ProcessAttribution | 'mixed';
+  // 尚未退出的成员进程数
   liveCount: number;
+  // 存活成员 rss 合计（至少一个成员有采样时才出现）
   totalRssBytes?: number;
+  // 存活成员 CPU 百分比合计
   totalCpuPercent?: number;
+  // 是否有可读输出尾部（含曾被截断的情况）
   hasOutput: boolean;
+  // 成员进程列表（按首见时间、pid 升序）
   processes: OmpProcessMember[];
 }
 
+/** 目录级进程快照：domain-processes 路由与 UI zod schema 的对线形状（须保持一致）。 */
 export interface OmpProcessSnapshot {
+  // 单调递增修订号（每次状态变更 +1），读方据此判断快照新鲜度
   revision: number;
+  // 快照生成时间（epoch ms）
   generatedAt: number;
+  // 条目列表：running 在前，其余按开始时间倒序
   entries: OmpProcessEntry[];
 }
 
+/** 单个调用输出尾部的读取结果。 */
 export interface OmpProcessOutput {
+  // 调用主键
   key: string;
+  // 保留的输出尾部文本
   output: string;
+  // 追加过程中是否发生过截断
   truncated: boolean;
+  // 是否仍在产出输出（有存活成员或调用未结束）
   live: boolean;
 }
 
@@ -85,147 +136,248 @@ export interface OmpProcessOutput {
 
 /** Typed view of the tool args the ledger reads — the engine boundary
  * asserts the SDK's declared contract once (see engine.ts). */
+/** 台账读取的工具参数类型视图（中文）：SDK 事件联合的运行时形状已在引擎
+ * 边界断言过一次，这里只声明台账实际读取的字段。 */
 export interface LedgerToolArgs {
+  // bash 命令串
   command?: string;
+  // 声明的工作目录
   cwd?: string;
+  // eval 语言（缺省按 js）
   language?: string;
+  // eval 代码文本
   code?: string;
 }
 
 /** Typed view of the tool-result details the ledger reads. */
+/** 工具结果 details 的类型视图（中文）：只读取 async.jobId 一个字段。 */
 export interface LedgerToolDetails {
+  // 受管异步 job 信息：jobId 使调用窗口延伸到 job 结束
   async?: { jobId?: string };
 }
 
+/** onToolStart 的输入：一次 bash/eval 调用开始（打开一个调用窗口）。 */
 export interface LedgerToolStart {
+  // 所属会话 id
   sessionID: string;
+  // 会话目录（会归一化为目录 key）
   directory: string;
+  // 工具调用 id（与 sessionID 拼成调用主键）
   toolCallId: string;
+  // 工具名（仅 bash/eval 被跟踪）
   toolName: string;
+  // 工具参数（command/cwd 或 language/code）
   args: LedgerToolArgs;
 }
 
+/** onToolUpdate 的输入：调用进行中的流式增量输出。 */
 export interface LedgerToolUpdate {
+  // 所属会话 id
   sessionID: string;
+  // 会话目录
   directory: string;
+  // 工具调用 id
   toolCallId: string;
+  // 本批增量文本（空串会被忽略）
   text: string;
 }
 
+/** onToolEnd 的输入：调用结束，携带最终输出、退出码与可选的异步 job 关联。 */
 export interface LedgerToolEnd {
+  // 所属会话 id
   sessionID: string;
+  // 会话目录
   directory: string;
+  // 工具调用 id
   toolCallId: string;
+  // 工具名（可选：结束事件不一定携带）
   toolName?: string;
   /** Normalized final output text. */
+  /** 追加进输出尾部的归一化最终文本。 */
   output?: string;
+  // 工具是否以错误结束（决定条目 failed 状态）
   isError?: boolean;
+  // 退出码；可能为 null
   exitCode?: number | null;
   /** Tool result `details` — `details.async.jobId` links managed jobs. */
+  /** details.async.jobId 把调用窗口延伸到受管 job 结束。 */
   details?: LedgerToolDetails;
 }
 
+/** kill 请求：定位条目 key，可选只终止其中单个 pid。 */
 export interface LedgerKillRequest {
+  // 发起 kill 的会话（权限校验主体）
   sessionID: string;
+  // 条目主键（调用 key 或 proc:<pid>）
   key: string;
+  // 省略则终止条目内全部存活成员
   pid?: number;
 }
 
+/** kill 结果：请求是否被接受，以及实际终止、跳过的 pid 明细。 */
 export interface LedgerKillResult {
+  // 请求是否被接受（找到条目且权限通过）
   ok: boolean;
+  // 失败原因：条目不存在 / 会话无权限 / 参数无效
   error?: 'not-found' | 'forbidden' | 'invalid';
+  // 成功终止的进程数
   killed: number;
+  // 跳过的 pid（已退出、身份不符或终止失败）
   skipped: number[];
 }
 
 /** Timer handle union — the default deps return real NodeJS.Timeout handles;
  * injected test fakes need only satisfy the empty marker shape and flow back
  * through clearIntervalFn/clearTimeoutFn. */
+/** 测试假定时器句柄（中文）：只需满足空标记形状，即可经清理函数回流。 */
 export interface LedgerTimerFake {
+  // 哨兵属性：仅用于构成可区分的标记类型，不承载值
   readonly __ledgerTimer?: never;
 }
+/** 定时器句柄：真实的 NodeJS.Timeout，或测试注入的假句柄。 */
 export type LedgerTimerHandle = ReturnType<typeof setInterval> | LedgerTimerFake;
 
+/** 台账依赖注入：平台观测/终止能力、job 状态查询、变更发布回调与全部时序参数。 */
 export interface ProcessLedgerDeps {
+  // 平台适配层：枚举后代树、采样资源、查询 cwd、终止进程
   platform: ProcessPlatform;
   /** Ids of running SDK async bash/eval jobs — extends windows for them. */
+  /** 仍在运行的 SDK 异步 bash/eval job id（为它们延伸调用窗口）。 */
   runningJobIds?: () => string[];
   /** Cancel hook for job-backed entries (engine → AsyncJobManager.cancel). */
+  /** job 支撑条目的取消钩子（engine → AsyncJobManager.cancel）。 */
   cancelJob?: (jobId: string, sessionID: string) => void;
   /** Called per dirty directory after a coalescing delay (engine publishes). */
+  /** 每个脏目录在合并窗口结束后回调一次（由 engine 负责发布）。 */
   publishUpdate?: (directory: string) => void;
+  // 时间源（默认 Date.now），测试可注入假时钟
   now?: () => number;
+  // 轮询间隔（默认 2000ms）
   pollIntervalMs?: number;
   /** Post-end grace during which late `&` spawns still attribute. */
+  /** 调用结束后的宽限期：期间迟到的 `&` 派生仍可归因。 */
   windowGraceMs?: number;
   /** How long exited invocations/processes stay listed. */
+  /** 已退出的调用/进程在列表中的保留时长。 */
   retainExitedMs?: number;
+  // 输出尾部字节上限（默认 64KB）
   outputTailBytes?: number;
+  // 每会话保留的已完成调用条数上限（默认 50）
   maxInvocationsPerSession?: number;
+  // 变更发布合并窗口（默认 400ms）
   publishCoalesceMs?: number;
+  // CPU 核数（CPU 百分比归一用，默认 1）
   cpuCores?: number;
+  // 轮询定时器注入点（测试假定时器）
   setIntervalFn?: (fn: () => void, ms: number) => LedgerTimerHandle;
+  // 轮询定时器清理注入点
   clearIntervalFn?: (t: LedgerTimerHandle) => void;
+  // 发布定时器注入点（测试假定时器）
   setTimeoutFn?: (fn: () => void, ms: number) => LedgerTimerHandle;
+  // 发布定时器清理注入点
   clearTimeoutFn?: (t: LedgerTimerHandle) => void;
 }
 
 // ---------------------------------------------------------------------------
 
+/** 默认轮询间隔：2000ms。 */
 const DEFAULT_POLL_MS = 2000;
+/** 默认窗口宽限期：调用结束后 3000ms 内的迟到派生仍可归因。 */
 const DEFAULT_GRACE_MS = 3000;
+/** 默认退出条目保留时长：10 分钟。 */
 const DEFAULT_RETAIN_MS = 10 * 60_000;
+/** 默认输出尾部上限：64KB。 */
 const DEFAULT_TAIL_BYTES = 64 * 1024;
+/** 默认每会话已完成调用条数上限：50。 */
 const DEFAULT_MAX_INVOCATIONS = 50;
+/** 默认变更发布合并窗口：400ms。 */
 const DEFAULT_COALESCE_MS = 400;
+/** 未归属根条目 key 前缀（后接根进程 pid）。 */
 const UNATTRIBUTED_PREFIX = 'proc:';
 
+/** 触发调用窗口跟踪的工具名集合（bash/eval）。 */
 const TRACKED_TOOLS = new Set(['bash', 'eval']);
 
+/** 内部调用记录：一次 bash/eval 调用从开始到结束（含宽限期/job 延伸）的窗口状态。 */
 interface Invocation {
+  // 调用主键：`${sessionID} ${toolCallId}`
   key: string;
+  // 所属会话 id
   sessionID: string;
+  // 归一化后的目录 key（快照过滤与发布定向）
   directory: string;
+  // bash 或 eval
   kind: 'bash' | 'eval';
+  // bash 命令串或 eval 摘要标签（argv 计分 token 的来源）
   command: string;
+  // 声明的工作目录（多窗口计分的 cwd 加成）
   cwd?: string;
+  // 开始时间（epoch ms）
   startedAt: number;
+  // 结束时间；进行中缺省
   endedAt?: number;
+  // 退出码；null 表示未知
   exitCode?: number | null;
+  // 是否以错误结束（快照 failed 状态的来源）
   isError?: boolean;
+  // 输出尾部文本（超限截头保留）
   outputTail: string;
+  // 尾部是否发生过截断
   outputTruncated: boolean;
+  // 关联的 SDK 异步 job id
   jobId?: string;
+  // 用户是否终止过此调用
   killedByUser?: boolean;
 }
 
+/** 内部进程行：单个 pid 的归属与观测状态（含资源采样与退出判定）。 */
 interface TrackedProc {
+  // 进程 id
   pid: number;
+  // 父进程 id（快照输出 + parent 归因）
   ppid: number;
+  // 完整命令行；发生变化即判定为 PID 复用
   argv: string;
+  // 进程组 id（可观测到时）
   pgid: number | null;
+  // 工作目录（可观测到时）
   cwd?: string;
+  // 首次观测时间
   firstSeenAt: number;
+  // 判定退出时间；存活期间缺省
   exitedAt?: number;
+  // 最近采样的常驻内存（字节）
   rssBytes?: number;
+  // 最近采样的累计 CPU 毫秒（差分折算用）
   cpuMs?: number;
+  // 折算出的 CPU 百分比（0-100，按核数归一）
   cpuPercent?: number;
+  // 上次采样时间（cpuMs 差分的分母）
   lastSampleAt?: number;
   /** Invocation key or `proc:<rootPid>` for an unattributed subtree. */
+  /** 所属调用 key，或未归属子树根 `proc:<pid>`。 */
   ownerKey: string;
+  // 归属判定方式
   attribution: ProcessAttribution;
+  // 未归属进程的候选会话 id
   candidateSessionIds?: string[];
+  // 用户是否终止过此进程
   killedByUser?: boolean;
 }
 
 /** Aggregate resource view over an entry's live members. */
+/** 条目存活成员的资源聚合视图（中文）：字段仅在存在采样时出现。 */
 interface ProcTotals {
+  // 存活成员 rss 合计（字节）
   rss?: number;
+  // 存活成员 CPU 百分比合计
   cpu?: number;
 }
 
 /** Command tokens worth matching an argv against — basename of each word,
  * flags and `env VAR=` prefixes dropped, deduped. */
+/** 提取命令中值得匹配 argv 的 token（中文）：逐词取 basename、丢弃
+ * flag（- 开头）与 env 前缀（含 =）、去重，长度不足 2 的丢弃。 */
 const commandTokens = (command: string): string[] => {
   const tokens: string[] = [];
   const seen = new Set<string>();
@@ -239,6 +391,7 @@ const commandTokens = (command: string): string[] => {
   return tokens;
 };
 
+/** 生成 eval 调用的展示标签：语言 + 首个非空代码行（截断到 60 字符）。 */
 const evalLabel = (args: LedgerToolArgs): string => {
   const language = args.language || 'js';
   const code = args.code ?? '';
@@ -247,32 +400,64 @@ const evalLabel = (args: LedgerToolArgs): string => {
   return snippet ? `eval ${language}: ${snippet}` : `eval ${language}`;
 };
 
+/** 向尾部追加 chunk 并只保留最后 max 字节；返回新尾部与是否发生截断。 */
 const tailAppend = (tail: string, chunk: string, max: number) => {
   const next = tail + chunk;
   if (next.length <= max) return { tail: next, truncated: false };
   return { tail: next.slice(next.length - max), truncated: true };
 };
 
+/**
+ * 进程台账：跟踪 bash/eval 调用派生的 host 后代进程，维护尽力而为的
+ * 归属关系，产出目录级快照并支持定向 kill。
+ *
+ * 生命周期：构造即启动轮询定时器（真实句柄 unref，不单独保活 host）；
+ * 工具事件钩子实时开合窗口并唤醒轮询；dispose 后停止一切跟踪。内部
+ * 状态全部私有，外部读取只走 snapshot()/output()/revision。
+ */
 export class ProcessLedger {
+  // 注入依赖（平台适配、job 查询、发布回调、定时器）
   readonly #deps: ProcessLedgerDeps;
+  // 时间源
   readonly #now: () => number;
+  // 轮询间隔（ms）
   readonly #pollMs: number;
+  // 窗口宽限期（ms）
   readonly #graceMs: number;
+  // 退出条目保留时长（ms）
   readonly #retainMs: number;
+  // 输出尾部字节上限
   readonly #tailBytes: number;
+  // 每会话调用条数上限
   readonly #maxInvocations: number;
+  // 发布合并窗口（ms）
   readonly #coalesceMs: number;
+  // CPU 核数（至少 1）
   readonly #cores: number;
+  // 调用记录表：key -> Invocation
   readonly #invocations = new Map<string, Invocation>();
+  // 进程跟踪表：pid -> TrackedProc
   readonly #procs = new Map<number, TrackedProc>();
+  // 会话 -> 归一化目录（未归属条目的目录反查）
   readonly #sessionDirs = new Map<string, string>();
+  // 快照修订号，每次标脏 +1
   #revision = 0;
+  // 待发布变更的目录集合
   #dirtyDirectories = new Set<string>();
+  // 轮询定时器句柄
   #timer: LedgerTimerHandle | null = null;
+  // 发布合并定时器句柄
   #publishTimer: LedgerTimerHandle | null = null;
+  // 进行中的一轮 tick（并发调用合流用）
   #tickPromise: Promise<void> | null = null;
+  // dispose 后忽略事件与轮询
   #disposed = false;
 
+  /**
+   * 构造台账：读取时序依赖（缺省用 DEFAULT_* 常量）并启动轮询定时器。
+   * 真实 interval 句柄会 unref——监控本身不得保活 host；注入的测试假
+   * 句柄可能没有 unref，因此探测保持可选。
+   */
   constructor(deps: ProcessLedgerDeps) {
     this.#deps = deps;
     this.#now = deps.now ?? (() => Date.now());
@@ -292,6 +477,7 @@ export class ProcessLedger {
     this.#timer = timer;
   }
 
+  /** 当前修订号：每次状态变更递增，读方据此判断快照是否需要重建。 */
   get revision(): number {
     return this.#revision;
   }
@@ -300,6 +486,11 @@ export class ProcessLedger {
   // Engine tool-event hooks
   // -------------------------------------------------------------------------
 
+  /**
+   * 工具开始钩子：为被跟踪的 bash/eval 调用建立调用记录并打开窗口，
+   * 同时记录会话目录。非跟踪工具或已 dispose 时直接忽略；记录后立即
+   * 唤醒一轮 tick——shell 子进程通常在一个轮询周期内就已出现。
+   */
   onToolStart(input: LedgerToolStart): void {
     if (!TRACKED_TOOLS.has(input.toolName) || this.#disposed) return;
     const sessionID = input.sessionID;
@@ -325,6 +516,7 @@ export class ProcessLedger {
     void this.tick();
   }
 
+  /** 工具增量输出钩子：把流式文本追加进该调用的输出尾部（超限截头）；未知调用忽略。 */
   onToolUpdate(input: LedgerToolUpdate): void {
     const inv = this.#invocations.get(`${input.sessionID} ${input.toolCallId}`);
     if (!inv || !input.text) return;
@@ -333,6 +525,11 @@ export class ProcessLedger {
     inv.outputTruncated = inv.outputTruncated || next.truncated;
   }
 
+  /**
+   * 工具结束钩子：记录结束时间/错误标记/退出码并追加最终输出；details
+   * 带 async.jobId 时记录 job 关联（受管异步 job 在调用结束后继续延伸
+   * 窗口）。结束会把该调用所在目录标脏。
+   */
   onToolEnd(input: LedgerToolEnd): void {
     const inv = this.#invocations.get(`${input.sessionID} ${input.toolCallId}`);
     if (!inv) return;
@@ -355,16 +552,19 @@ export class ProcessLedger {
   // Polling
   // -------------------------------------------------------------------------
 
+  /** 当前仍在运行的 SDK 异步 job id 集合（未注入 runningJobIds 时视为空）。 */
   #jobIdsRunning(): Set<string> {
     return new Set(this.#deps.runningJobIds?.() ?? []);
   }
 
+  /** 窗口判定：调用未结束，或结束后仍在宽限期内，或其关联 job 仍在运行。 */
   #isOpen(inv: Invocation, now: number, runningJobs: Set<string>): boolean {
     if (inv.endedAt === undefined) return true;
     if (now - inv.endedAt <= this.#graceMs) return true;
     return inv.jobId !== undefined && runningJobs.has(inv.jobId);
   }
 
+  /** 是否还有可跟踪的工作：任一窗口打开，或任一进程行仍存活。 */
   #hasWork(now: number, runningJobs: Set<string>): boolean {
     for (const inv of this.#invocations.values()) {
       if (this.#isOpen(inv, now, runningJobs)) return true;
@@ -380,6 +580,8 @@ export class ProcessLedger {
    * wake edges in the tool hooks; callers may await it (tests join through
    * it). Concurrent calls join the in-flight pass instead of double-running.
    */
+  /** 单轮枚举/差分/采样流程（中文）：由轮询定时器与工具钩子的唤醒沿触发；
+   * 调用方可 await（测试借此合流）；并发调用并入进行中的一轮，不重复执行。 */
   tick(): Promise<void> {
     if (this.#disposed) return Promise.resolve();
     this.#tickPromise ??= this.#doTick().finally(() => {
@@ -388,6 +590,11 @@ export class ProcessLedger {
     return this.#tickPromise;
   }
 
+  /**
+   * tick 执行体：无工作直接返回；enumerateTree 失败则整轮放弃（绝不把
+   * 枚举失败当成进程退出，下轮重试），成功后依次差分新进程、采样资源、
+   * 清理过期条目。
+   */
   async #doTick(): Promise<void> {
     const now = this.#now();
     const runningJobs = this.#jobIdsRunning();
@@ -404,6 +611,11 @@ export class ProcessLedger {
     this.#purge(now);
   }
 
+  /**
+   * 差分一轮枚举样本：未见过的 pid 交给 #adopt 归因；同 pid 但 argv 变化
+   * 视为 PID 复用（旧行标记退出、样本重新归因）；已知行刷新 ppid/pgid；
+   * 本轮未出现且未标退出的行判定退出并标脏其所属目录。
+   */
   #diff(samples: ProcInfo[], now: number, runningJobs: Set<string>): void {
     const seen = new Set<number>();
     const fresh: ProcInfo[] = [];
@@ -433,6 +645,7 @@ export class ProcessLedger {
   }
 
   /** Open invocation windows a freshly seen pid could belong to. */
+  /** 当前打开的调用窗口列表（新进程的归属候选）。 */
   #openCandidates(now: number, runningJobs: Set<string>): Invocation[] {
     const out: Invocation[] = [];
     for (const inv of this.#invocations.values()) {
@@ -441,6 +654,15 @@ export class ProcessLedger {
     return out;
   }
 
+  /**
+   * 新进程归因：
+   * 1) 父进程已跟踪 → 直接继承 owner 与候选会话（parent / 继承 unattributed）；
+   * 2) 没有打开窗口 → 视为基础设施派生（MCP/LSP/worker），不跟踪；
+   * 3) 单一窗口 → 除非窗口有存活 job 支撑，argv 必须命中至少一个命令
+   *    token，否则落入 unattributed 根；命中则记 window/job；
+   * 4) 多窗口 → argv token 计分 + cwd 命中加成，唯一最高分胜出
+   *    （argv/job）；平分或零分落入 unattributed 根并保留候选会话 id。
+   */
   #adopt(sample: ProcInfo, now: number, runningJobs: Set<string>): void {
     // Rule 1 — the parent is already tracked: inherit its owner outright.
     const parent = this.#procs.get(sample.ppid);
@@ -507,6 +729,7 @@ export class ProcessLedger {
     this.#markDirty(this.#directoryOfOwner(ownerKey));
   }
 
+  /** 落表：按归因结果创建 TrackedProc 行（pid/ppid/argv/pgid + owner 与候选会话）。 */
   #track(
     sample: ProcInfo,
     now: number,
@@ -527,6 +750,11 @@ export class ProcessLedger {
     this.#procs.set(sample.pid, proc);
   }
 
+  /**
+   * 对存活成员采样资源：更新 rss；用 cpuMs 差分除以采样间隔折算 CPU
+   * 百分比（按核数归一并夹在 0-100）；采样失败整轮静默跳过。每个有
+   * 更新的成员都标脏其所属目录。
+   */
   async #sampleStats(now: number): Promise<void> {
     const live = [...this.#procs.values()].filter((proc) => !proc.exitedAt);
     if (live.length === 0) return;
@@ -555,6 +783,10 @@ export class ProcessLedger {
     }
   }
 
+  /**
+   * 清理：删除超过保留期的已退出进程行；调用记录在已结束、无存活成员
+   * 且过保留期后删除；再按会话限制已完成条数，超限时驱逐最旧的。
+   */
   #purge(now: number): void {
     for (const [pid, proc] of this.#procs) {
       if (proc.exitedAt && now - proc.exitedAt > this.#retainMs) this.#procs.delete(pid);
@@ -584,6 +816,7 @@ export class ProcessLedger {
     }
   }
 
+  /** 反查 ownerKey 的目录：调用记录直接取 directory；未归属根取首个候选会话的目录。 */
   #directoryOfOwner(ownerKey: string): string {
     if (ownerKey.startsWith(UNATTRIBUTED_PREFIX)) {
       const root = this.#procs.get(Number(ownerKey.slice(UNATTRIBUTED_PREFIX.length)));
@@ -593,12 +826,14 @@ export class ProcessLedger {
     return this.#invocations.get(ownerKey)?.directory ?? '';
   }
 
+  /** 标脏：修订号 +1，登记目录（非空时），并调度合并发布。 */
   #markDirty(directory: string): void {
     this.#revision += 1;
     if (directory) this.#dirtyDirectories.add(directory);
     this.#schedulePublish();
   }
 
+  /** 合并发布：延迟 coalesceMs 后把脏目录集合一次性交给 publishUpdate；窗口内的后续变更累积到下一轮。 */
   #schedulePublish(): void {
     if (this.#publishTimer || !this.#deps.publishUpdate) return;
     const setTimeoutFn = this.#deps.setTimeoutFn ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
@@ -614,6 +849,7 @@ export class ProcessLedger {
   // Reads
   // -------------------------------------------------------------------------
 
+  /** 取某 owner 下的全部成员进程，按首见时间、pid 升序排列。 */
   #membersOf(ownerKey: string): TrackedProc[] {
     const members: TrackedProc[] = [];
     for (const proc of this.#procs.values()) {
@@ -623,6 +859,7 @@ export class ProcessLedger {
     return members;
   }
 
+  /** 把内部 TrackedProc 投影为对线形态 OmpProcessMember（缺省字段不出现）。 */
   #memberView(proc: TrackedProc): OmpProcessMember {
     const view: OmpProcessMember = {
       pid: proc.pid,
@@ -640,6 +877,7 @@ export class ProcessLedger {
     return view;
   }
 
+  /** 条目状态：用户终止过 → killed；有存活成员 → running；否则按调用结束的 isError 给 exited/failed。 */
   #entryStatus(inv: Invocation | null, members: TrackedProc[], killed: boolean): OmpProcessEntry['status'] {
     if (killed || members.some((proc) => proc.killedByUser)) return 'killed';
     if (members.some((proc) => !proc.exitedAt)) return 'running';
@@ -647,6 +885,7 @@ export class ProcessLedger {
     return inv.isError ? 'failed' : 'exited';
   }
 
+  /** 聚合存活成员的 rss/cpu；仅当至少一个成员有对应采样时才输出该字段。 */
   #totals(members: TrackedProc[]): ProcTotals {
     const live = members.filter((proc) => !proc.exitedAt);
     const totals: ProcTotals = {};
@@ -659,6 +898,11 @@ export class ProcessLedger {
     return totals;
   }
 
+  /**
+   * 产出目录快照（纯读取）：按归一化目录过滤调用记录（无成员的跳过），
+   * 再补充该目录下的未归属根条目；每条聚合成员视图、归因集合、状态与
+   * 资源合计；running 条目排前，其余按开始时间倒序。
+   */
   snapshot(directory: string): OmpProcessSnapshot {
     const dir = normalizeDirectoryKey(directory);
     const now = this.#now();
@@ -719,6 +963,7 @@ export class ProcessLedger {
     return { revision: this.#revision, generatedAt: now, entries };
   }
 
+  /** 读取某个调用的输出尾部；key 未知返回 null；live 表示仍在产出输出。 */
   output(key: string): OmpProcessOutput | null {
     const inv = this.#invocations.get(key);
     if (!inv) return null;
@@ -730,6 +975,12 @@ export class ProcessLedger {
   // Kill
   // -------------------------------------------------------------------------
 
+  /**
+   * 终止条目（或其中单个 pid）：先校验 key 与会话归属（未归属根要求请求
+   * 会话在候选列表中），失败返回 not-found/forbidden；逐个终止前用 argv
+   * 复核进程身份（防 PID 复用误杀），已退出/身份不符/终止失败的收入
+   * skipped；job 支撑的调用同步 cancelJob；有成功 kill 则标脏。
+   */
   async kill(input: LedgerKillRequest): Promise<LedgerKillResult> {
     const now = this.#now();
     let ownerKey: string;
@@ -784,6 +1035,7 @@ export class ProcessLedger {
     return { ok: true, killed, skipped };
   }
 
+  /** 停止台账：置 disposed 标记并清理轮询、发布两个定时器（清理函数走依赖注入，缺省用全局 clear*）。 */
   dispose(): void {
     this.#disposed = true;
     if (this.#timer) {

@@ -1,21 +1,33 @@
+/**
+ * 会话知识运行时（runtime.js）测试：会话应得的知识块内容与签名语义、
+ * 单一来源失败时的降级、记忆开关、metadata 的读取与置顶写入、超长截断，
+ * 以及 flagged 记忆的过滤。运行时依赖全部以桩（stub）注入。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import { buildKnowledgeSignature, buildKnowledgeText, createSessionKnowledgeRuntime } from './runtime.js';
 
+/** 测试用项目目录。 */
 const DIRECTORY = '/work/project';
+/** resolveProjectId 桩固定返回的项目 id。 */
 const PROJECT_ID = 'path_project';
+/** 默认置顶清单：一条笔记 n1、一个计划 p1。 */
 const PINS = { notes: ['n1'], plans: ['p1'] };
 
+/** 构造项目笔记对象，可按字段覆盖。 */
 const note = (overrides = {}) => ({
   id: 'n1', body: 'Pinned note body.', createdAt: 1, updatedAt: 1, pinned: true, source: 'manual', ...overrides,
 });
+/** 构造项目计划对象，可按字段覆盖。 */
 const plan = (overrides = {}) => ({
   id: 'p1', file: 'p1.md', title: 'Migration plan', createdAt: 1, pinned: true, ...overrides,
 });
+/** 构造 agent 记忆条目，可按字段覆盖。 */
 const memory = (overrides = {}) => ({
   id: 'm1', title: 'Uses bun', body: 'Full text.', type: 'fact', createdAt: 1, updatedAt: 1, ...overrides,
 });
 
+/** 用默认桩构造运行时；overrides 可整体替换 projectContextRuntime/agentMemoryRuntime，或注入 openCodeFetch 与 isAgentMemoryEnabled。 */
 const createRuntime = (overrides = {}) => createSessionKnowledgeRuntime({
   resolveProjectId: async () => PROJECT_ID,
   projectContextRuntime: {
@@ -31,6 +43,7 @@ const createRuntime = (overrides = {}) => createSessionKnowledgeRuntime({
   ...('isAgentMemoryEnabled' in overrides ? { isAgentMemoryEnabled: overrides.isAgentMemoryEnabled } : {}),
 });
 
+/** 会话应得的知识块应包含什么、不包含什么。 */
 describe('what the session is owed', () => {
   test('carries pinned notes, pinned plan bodies, and the memory index', async () => {
     const { text } = await createRuntime().resolvePending(DIRECTORY, '', PINS);
@@ -74,6 +87,7 @@ describe('what the session is owed', () => {
   });
 });
 
+/** 已送达签名的匹配与失效语义。 */
 describe('what has already been delivered', () => {
   test('owes nothing when the signature matches', async () => {
     const runtime = createRuntime();
@@ -119,6 +133,7 @@ describe('what has already been delivered', () => {
   });
 });
 
+/** 单一来源读取失败时的降级行为。 */
 describe('when a source will not load', () => {
   test('a broken memory store still delivers the pinned notes', async () => {
     const runtime = createRuntime({
@@ -167,6 +182,7 @@ describe('when a source will not load', () => {
   });
 });
 
+/** 记忆功能开关（含开关本身读不出时）对知识块的影响。 */
 describe('the memory switch', () => {
   test('memory is left out entirely while the feature is off', async () => {
     const runtime = createRuntime({ isAgentMemoryEnabled: async () => false });
@@ -188,6 +204,7 @@ describe('the memory switch', () => {
   });
 });
 
+/** 从会话 metadata 读取置顶与已送达签名、以及 setPin 的写入行为。 */
 describe('reading what a session was told', () => {
   test('project context pins are isolated in each session metadata record', () => {
     const runtime = createRuntime();
@@ -238,6 +255,7 @@ describe('reading what a session was told', () => {
   });
 });
 
+/** 知识块超长时的截断与标注。 */
 describe('size', () => {
   test('an oversized block is cut and says so', () => {
     const text = buildKnowledgeText({
@@ -251,6 +269,7 @@ describe('size', () => {
   });
 });
 
+/** 被标记 flagged（疑似指令注入）的记忆条目不得进入知识块。 */
 describe('entries that read as instructions', () => {
   test('a flagged memory is kept out of what the session is told', async () => {
     const runtime = createRuntime({

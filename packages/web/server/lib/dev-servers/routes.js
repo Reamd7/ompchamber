@@ -10,6 +10,11 @@
  * empty list, because a caller cannot tell "nothing is running" from "the scan
  * broke" and would render the wrong empty state.
  */
+/**
+ * dev server 发现（中文说明）：枚举本机真实监听的 socket，回答"有什么
+ * 可以预览"。发现是 advisory 的：扫描失败时报告失败而非空列表，调用方
+ * 才能区分"没在跑"与"扫描坏了"。
+ */
 import fsPromises from 'node:fs/promises';
 
 import {
@@ -19,10 +24,17 @@ import {
   selectDevServerCandidates,
 } from './parse.js';
 
+/** 单次枚举命令（lsof/netstat）的硬超时。 */
 const SCAN_TIMEOUT_MS = 2_500;
 /** Enumeration is cheap but not free; a short cache absorbs panel re-renders. */
+/** 枚举便宜但不是免费；短缓存用于吸收面板的重复渲染。 */
 const CACHE_TTL_MS = 3_000;
 
+/**
+ * 执行一个子命令并收集 stdout；spawn 抛错、进程出错、超时、或非零退出
+ * 且无输出时统一返回 null（表示"该枚举来源不可用"），成功返回 stdout。
+ * 结束时总是 kill 子进程并清理定时器，只结算一次。
+ */
 const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) => {
   let child;
   try {
@@ -34,6 +46,7 @@ const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) =>
 
   let stdout = '';
   let settled = false;
+  /** 结算子命令：保证只结算一次，清理定时器并 kill 子进程后再 resolve。 */
   const finish = (value) => {
     if (settled) return;
     settled = true;
@@ -53,6 +66,7 @@ const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) =>
  * and a deployed OMPChamber is precisely where discovery has to work, so this
  * is tried whenever the command is unavailable.
  */
+/** 读 /proc/net/tcp 与 tcp6 并按端口合并去重；两表都读不到（非 Linux）时返回 null 表示来源不可用。 */
 const readProcListeners = async (readFile) => {
   const tables = await Promise.all(['/proc/net/tcp', '/proc/net/tcp6'].map(
     (path) => readFile(path, 'utf8').catch(() => null),
@@ -68,9 +82,16 @@ const readProcListeners = async (readFile) => {
   return [...byPort.values()].sort((left, right) => left.port - right.port);
 };
 
+/**
+ * 创建 dev server 扫描器：Windows 走 netstat，其它平台优先 lsof，
+ * lsof 缺失时回退 /proc/net/tcp。成功结果短缓存，失败不缓存
+ * （瞬时故障不应压制下一次尝试）。
+ */
 export const createDevServerScanner = ({ spawn, platform, readFile = fsPromises.readFile }) => {
+  // 上一次成功发现的结果与时间戳。
   let cache = null;
 
+  /** 执行一次平台相关的监听 socket 枚举；返回 { ok, listeners } 或 { ok: false, reason }。 */
   const scan = async () => {
     const isWindows = platform === 'win32';
     if (isWindows) {
@@ -93,6 +114,7 @@ export const createDevServerScanner = ({ spawn, platform, readFile = fsPromises.
      * @param {{ ownPorts?: number[] }} options
      * @returns {Promise<{ ok: true, servers: Array<{ port: number, pid: number|null, command: string, url: string }> } | { ok: false, reason: string }>}
      */
+    /** 发现可预览的 dev server：过滤自身端口/进程与基础设施端口并补上 localhost URL；命中缓存直接返回。 */
     async discover({ ownPorts = [] } = {}) {
       const now = Date.now();
       if (cache && now - cache.at < CACHE_TTL_MS) return cache.value;
@@ -118,7 +140,9 @@ export const createDevServerScanner = ({ spawn, platform, readFile = fsPromises.
   };
 };
 
+/** 在 express app 上注册 GET /api/dev-servers：返回候选列表；扫描不可用回 503，异常回 500。 */
 export function registerDevServerRoutes(app, { scanner, getOwnPorts }) {
+  // 发现路由：把自己的监听端口传给扫描器排除自身。
   app.get('/api/dev-servers', async (req, res) => {
     try {
       const ownPorts = typeof getOwnPorts === 'function' ? getOwnPorts() : [];

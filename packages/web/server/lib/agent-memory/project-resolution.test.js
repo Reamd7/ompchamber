@@ -1,11 +1,21 @@
+/**
+ * 项目归属解析 project-resolution.js 的测试套件。
+ *
+ * 用桩替换项目列表与 git worktree 解析，验证：worktree 归并到所属项
+ * 目、已注册目录保持自身、托管 Chats 目录共享根存储、路径规整不分裂
+ * 存储，以及项目列表或 git 不可用时仍能收敛而不是失败。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import { createMemoryProjectResolver } from './project-resolution.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 
+/** 桩中的主项目目录（模拟用户配置的正式 checkout）。 */
 const PROJECT = '/Users/x/projects/openchamber';
+/** 模拟同一仓库的 git worktree 路径（OpenCode 托管 worktree 的布局）。 */
 const WORKTREE = '/Users/x/.local/share/opencode/worktree/abc/jammy-koala';
 
+/** 造一个使用默认桩（项目列表、worktree 解析）的解析器；overrides 可逐项替换。 */
 const createResolver = (overrides = {}) => createMemoryProjectResolver({
   listProjectPaths: async () => [PROJECT],
   resolvePrimaryWorktreeRoot: async (directory) => (
@@ -14,6 +24,7 @@ const createResolver = (overrides = {}) => createMemoryProjectResolver({
   ...overrides,
 });
 
+// 会话目录 → 项目的常规解析：worktree 归并、显式注册优先、路径规整。
 describe('resolving a session directory to its project', () => {
   test('a worktree resolves to the project it belongs to', async () => {
     const resolve = createResolver();
@@ -75,6 +86,7 @@ describe('resolving a session directory to its project', () => {
   });
 });
 
+// 依赖不可用时的回退：项目列表读不出或 git 缺席都不丢失记忆归属。
 describe('when something is unavailable', () => {
   test('an unreadable project list still converges worktrees on the repository', async () => {
     const resolve = createResolver({

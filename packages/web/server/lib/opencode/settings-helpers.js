@@ -1,5 +1,22 @@
+/**
+ * OpenCode 客户端设置（settings.json）的清洗、合并与响应格式化工厂。
+ *
+ * createSettingsHelpers(dependencies) 以依赖注入方式接收各种 normalize 与
+ * sanitize 函数，产出无状态助手集合。核心是 sanitizeSettingsUpdate：对
+ * 更新载荷逐字段做类型/取值/长度校验，只产出可安全落盘的增量对象，非法
+ * 与未知字段一律静默丢弃；mergePersistedSettings 负责落盘前合并；
+ * formatSettingsResponse 负责下发前补默认值并隐藏秘密字段。
+ */
 import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
 
+/**
+ * 创建设置清洗助手集合。
+ *
+ * dependencies 需提供路径持久化规范化、tunnel TTL/provider/mode 规范化、
+ * 可选路径与托管远端 tunnel 的各 normalize 函数，以及排版尺寸/字符串
+ * 数组/模型引用/技能目录/项目列表的 sanitize 函数（内部直接调用，缺一
+ * 不可）。返回的助手无状态，可在多个路由间共享。
+ */
 export const createSettingsHelpers = (dependencies) => {
   const {
     normalizePathForPersistence,
@@ -18,23 +35,44 @@ export const createSettingsHelpers = (dependencies) => {
     sanitizeProjects,
   } = dependencies;
 
+  /** PWA 应用名称的最大长度。 */
   const PWA_APP_NAME_MAX_LENGTH = 64;
+  /** STT 服务器 URL 的最大长度。 */
   const STT_SERVER_URL_MAX_LENGTH = 2048;
+  /** STT 模型名的最大长度。 */
   const STT_MODEL_MAX_LENGTH = 256;
+  /** STT 语言代码的最大长度。 */
   const STT_LANGUAGE_MAX_LENGTH = 64;
+  /** 版本字符串的最大长度。 */
   const VERSION_STRING_MAX_LENGTH = 128;
+  /** 快捷键覆盖——键（动作名）的最大长度。 */
   const SHORTCUT_OVERRIDE_KEY_MAX_LENGTH = 128;
+  /** 快捷键覆盖——值（组合键）的最大长度。 */
   const SHORTCUT_OVERRIDE_VALUE_MAX_LENGTH = 128;
+  /** PWA 屏幕方向的合法取值集合。 */
   const PWA_ORIENTATION_VALUES = new Set(['system', 'portrait', 'landscape']);
+  /** 移动端键盘模式的合法取值集合。 */
   const MOBILE_KEYBOARD_MODE_VALUES = new Set(['native', 'resize-content']);
+  /** 终端 shell 选择的合法取值集合。 */
   const TERMINAL_SHELL_VALUES = new Set(['auto', 'bash', 'zsh', 'sh', 'fish', 'pwsh', 'powershell', 'cmd', 'dash', 'ksh', 'nu']);
+  /** 侧栏项目展示模式的合法取值集合。 */
   const SIDEBAR_PROJECT_DISPLAY_MODE_VALUES = new Set(['all', 'single']);
+  /** 侧栏会话分组模式的合法取值集合。 */
   const SIDEBAR_SESSION_GROUPING_MODE_VALUES = new Set(['by-worktree', 'flat']);
+  /** 侧栏项目排序方式的合法取值集合。 */
   const SIDEBAR_PROJECT_SORT_ORDER_VALUES = new Set(['manual', 'a-z', 'z-a', 'date-added', 'recent']);
+  /** 隐藏模型列表的条目上限（照顾多 provider 各暴露上百模型的密集场景）。 */
   const HIDDEN_MODELS_MAX = 1024;
+  /** 最近 effort 记录的键（模型）数量上限。 */
   const RECENT_EFFORTS_MAX_KEYS = 128;
+  /** 每个模型保留的最近 effort 变体数上限。 */
   const RECENT_EFFORTS_MAX_VARIANTS_PER_KEY = 5;
 
+  /**
+   * 清洗快捷键覆盖表：仅接受对象；键与组合键各自 trim，任一为空即丢弃；
+   * 键与值分别截断到上限长度。返回重建后的新对象，输入非法或无可保留项
+   * 时返回 null。
+   */
   const sanitizeShortcutOverrides = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
@@ -49,6 +87,11 @@ export const createSettingsHelpers = (dependencies) => {
     return result;
   };
 
+  /**
+   * 清洗最近 effort 记录（模型 -> 变体数组）：键 trim 且去重，变体 trim
+   * 去重并截断到每键上限，最多保留 RECENT_EFFORTS_MAX_KEYS 个键。
+   * 全部无效时返回 null，否则返回重建后的新对象。
+   */
   const sanitizeRecentEfforts = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return null;
@@ -78,6 +121,10 @@ export const createSettingsHelpers = (dependencies) => {
     return count > 0 ? result : null;
   };
 
+  /**
+   * 规范化 PWA 应用名：非字符串返回 fallback；连续空白合并为单空格，
+   * trim 后为空返回 fallback，否则截断到上限长度。
+   */
   const normalizePwaAppName = (value, fallback = '') => {
     if (typeof value !== 'string') {
       return fallback;
@@ -89,6 +136,7 @@ export const createSettingsHelpers = (dependencies) => {
     return normalized.slice(0, PWA_APP_NAME_MAX_LENGTH);
   };
 
+  /** 规范化 PWA 屏幕方向：仅接受白名单值，非法或非字符串返回 fallback。 */
   const normalizePwaOrientation = (value, fallback = 'system') => {
     if (typeof value !== 'string') {
       return fallback;
@@ -100,6 +148,7 @@ export const createSettingsHelpers = (dependencies) => {
     return fallback;
   };
 
+  /** 规范化移动端键盘模式：仅接受白名单值，非法或非字符串返回 fallback。 */
   const normalizeMobileKeyboardMode = (value, fallback = 'native') => {
     if (typeof value !== 'string') {
       return fallback;
@@ -111,6 +160,12 @@ export const createSettingsHelpers = (dependencies) => {
     return fallback;
   };
 
+  /**
+   * 规范化追问（follow-up）行为：已移除的 'immediate'（与 'steer' 线上
+   * 等价）直接折叠为 'steer'；'steer'/'queue' 原样通过；其它值由
+   * legacyQueueModeEnabled 决定——显式 false 走 'steer'，未提供则默认
+   * 'queue'。
+   */
   const normalizeFollowUpBehavior = (value, legacyQueueModeEnabled = null) => {
     // "immediate" was removed (it was wire-identical to "steer"); collapse it.
     if (value === 'immediate') {
@@ -125,6 +180,15 @@ export const createSettingsHelpers = (dependencies) => {
     return 'queue';
   };
 
+  /**
+   * 清洗设置更新载荷（设置 PATCH 的候选增量）。
+   *
+   * 对每个已知字段做类型检查与取值归一：布尔直通、枚举走白名单、数值做
+   * clamp+round、字符串做 trim 与长度上限，路径类字段先经
+   * normalizePathForPersistence，复杂结构（permissionAutoAccept、projects、
+   * tunnel 配置与预设、usage 下拉/分组等）逐层重建。非法或未知字段一律
+   * 静默丢弃，返回对象因此只含可安全落盘的键；非对象载荷返回空对象。
+   */
   const sanitizeSettingsUpdate = (payload) => {
     if (!payload || typeof payload !== 'object') {
       return {};
@@ -873,6 +937,12 @@ export const createSettingsHelpers = (dependencies) => {
     return result;
   };
 
+  /**
+   * 合并落盘设置：changes 浅覆盖 current，但两类字段特殊处理——
+   * securityScopedBookmarks 取任一存在的一方并去重去空（而非拼接）；
+   * typographySizes 做浅层按键合并（保留未提及键的旧值）。
+   * 返回新的合并对象，不修改入参。
+   */
   const mergePersistedSettings = (current, changes) => {
     const baseBookmarks = Array.isArray(changes.securityScopedBookmarks)
       ? changes.securityScopedBookmarks
@@ -901,6 +971,15 @@ export const createSettingsHelpers = (dependencies) => {
     return next;
   };
 
+  /**
+   * 把落盘设置格式化为下发给客户端的响应对象。
+   *
+   * 先整体过一遍 sanitizeSettingsUpdate 统一形态，再删除明文
+   * managedRemoteTunnelToken（仅保留 hasManagedRemoteTunnelToken 布尔）；
+   * 补齐 PWA 三项与书签/固定目录/排版尺寸的规范值；desktop 运行时附加
+   * LAN 接入状态与阻断原因；showReasoningTraces 与
+   * collapsibleThinkingBlocks 缺省时分别回退 false / true。
+   */
   const formatSettingsResponse = (settings) => {
     const sanitized = sanitizeSettingsUpdate(settings);
     delete sanitized.managedRemoteTunnelToken;
@@ -946,6 +1025,8 @@ export const createSettingsHelpers = (dependencies) => {
     };
   };
 
+  // 导出的助手集合：normalize 三件套供其它模块复用，sanitize/merge/format
+  // 分别服务设置路由的写入校验、落盘合并与读取响应。
   return {
     normalizePwaAppName,
     normalizePwaOrientation,

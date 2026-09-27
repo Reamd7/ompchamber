@@ -1,3 +1,11 @@
+/**
+ * ompchamber_memory 工具动作层 actions.js 的测试套件。
+ *
+ * 动作层跑在真实的临时文件存储之上，重点验证归属与安全约束：项目
+ * scope 只认会话目录（无视模型给的 projectId）、未知 scope 与动作用 400
+ * 拒绝、写入通知的容错、按 title/id 读取与 scope 缺省时的双库搜索、列
+ * 表不携带正文，以及设置关闭后整个分发入口闸断。
+ */
 import { beforeEach, describe, expect, test } from 'bun:test';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
@@ -7,18 +15,23 @@ import { createAgentMemoryActions } from './actions.js';
 import { createAgentMemoryRuntime } from './runtime.js';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 
+/** 模拟的会话目录；项目归属由它推导。 */
 const DIRECTORY = '/tmp/some-project';
 
+/** 测试用错误类：携带 status，替代生产里 createError 的产物。 */
 class TestError extends Error {
+  /** 以 message 与状态码构造；对齐生产错误的形状。 */
   constructor(message, status) {
     super(message);
     this.status = status;
   }
 }
 
+// 每个用例重建的被测动作集与其下的真实存储运行时。
 let actions;
 let runtime;
 
+// 每个用例：临时目录 + 真实存储运行时 + 挂在其上的动作集。
 beforeEach(async () => {
   const rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-memory-actions-'));
   runtime = createAgentMemoryRuntime({
@@ -34,6 +47,7 @@ beforeEach(async () => {
   });
 });
 
+// scope 归属：项目记忆按会话目录归档，模型给的 projectId 一律无效。
 describe('scope', () => {
   test('project scope files against the session directory, not a model-supplied id', async () => {
     await actions.execute('memory.save', {
@@ -66,6 +80,7 @@ describe('scope', () => {
   });
 });
 
+// 保存：必填校验、类型白名单、替换语义与写入通知（含监听器抛错的容错）。
 describe('save', () => {
   test('requires title and body', async () => {
     await expect(actions.execute('memory.save', { scope: 'global', body: 'b' }, DIRECTORY))
@@ -127,6 +142,7 @@ describe('save', () => {
   });
 });
 
+// worktree 会话：全部动作经项目解析器落到项目存储，读、写、删一致。
 describe('worktree sessions reach the project store', () => {
   test('every memory action resolves the directory through the project resolver', async () => {
     const WORKTREE = '/tmp/worktree-checkout';
@@ -163,6 +179,7 @@ describe('worktree sessions reach the project store', () => {
   });
 });
 
+// 读取：按 title 或 id；scope 可省略（先项目后全局）；读不到不等于不存在。
 describe('read', () => {
   test('reads by the title the session index shows', async () => {
     await actions.execute('memory.save', { scope: 'global', title: 'Uses bun', body: 'Full text here.' }, DIRECTORY);
@@ -239,6 +256,7 @@ describe('read', () => {
   });
 });
 
+// 列表：默认两个 scope 一起列出并标注归属；正文永不随列表下发。
 describe('list', () => {
   test('lists both scopes by default and labels which is which', async () => {
     await actions.execute('memory.save', { scope: 'global', title: 'About user', body: 'x' }, DIRECTORY);
@@ -275,6 +293,7 @@ describe('list', () => {
   });
 });
 
+// 删除：按 id 删除；缺 id 与未命中都如实报错，不谎报成功。
 describe('delete', () => {
   test('removes the entry', async () => {
     const saved = await actions.execute('memory.save', { scope: 'global', title: 'T', body: 'b' }, DIRECTORY);
@@ -295,7 +314,9 @@ describe('delete', () => {
   });
 });
 
+// 用户关闭记忆后：分发入口整体闸断（读写皆拒）；设置读不出同样按关闭处理。
 describe('when the user switches memory off', () => {
+  // 造一个"设置开关已关闭"的动作集。
   const disabled = () => createAgentMemoryActions({
     agentMemoryRuntime: runtime,
     createError: (message, status) => new TestError(message, status),

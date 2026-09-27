@@ -7,6 +7,11 @@
 //!
 //! Errors flow through `sendServiceError` (`asControlError` semantics); the
 //! `console.error` calls become `tracing::error!` with the message only.
+//!
+//! 中文说明：移植 `registerOMPChamberSessionRoutes`——三条 POST 路由
+//! （`POST /api/ompchamber/sessions`、`/:sessionId/send`、`/:sessionId/fork`）
+//! 及各自的请求体处理；错误统一走 `sendServiceError`（`asControlError`
+//! 语义），JS 的 `console.error` 换成 `tracing::error!`（仅记录消息）。
 
 use std::sync::Arc;
 
@@ -22,11 +27,16 @@ use serde_json::Value;
 use super::service::SessionService;
 
 /// Module-local state (`Router::with_state` before returning).
+///
+/// 中文说明：路由的模块内状态，仅承载共享的 SessionService（返回前经
+/// `Router::with_state` 注入）。
 #[derive(Clone)]
 pub struct SessionState {
+    /// 会话编排服务的共享句柄。
     pub service: Arc<SessionService>,
 }
 
+/// 注册 create/send/fork 三条路由，返回待注入 SessionState 的 Router。
 pub fn routes() -> Router<SessionState> {
     Router::new()
         .route("/api/ompchamber/sessions", post(create_route))
@@ -44,6 +54,10 @@ pub fn routes() -> Router<SessionState> {
 /// JSON content-type parses any JSON document (objects pass through; `null`
 /// and non-documents become `{}`), anything else leaves the body unset, and
 /// malformed JSON under a JSON content-type is a 400 like express.json.
+///
+/// 中文说明：复刻 Express 的 body 语义——JSON content-type 下解析任意
+/// JSON 文档（对象直通，`null` 与非文档变为 `{}`），非 JSON content-type
+/// 视为无 body（`{}`），坏 JSON 返回 400（同 express.json）。
 fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Result<Value, Response> {
     let is_json = headers
         .get("content-type")
@@ -68,6 +82,8 @@ fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Result<Value, Response> 
     }
 }
 
+/// POST /api/ompchamber/sessions：创建会话；失败时 tracing 记录并以
+/// "Failed to create session" 兜底消息返回错误响应。
 async fn create_route(
     State(state): State<SessionState>,
     headers: HeaderMap,
@@ -90,6 +106,8 @@ async fn create_route(
     }
 }
 
+/// POST /api/ompchamber/sessions/:sessionId/send：向既有会话派发 prompt；
+/// 错误兜底消息为 "Failed to send session"。
 async fn send_route(
     State(state): State<SessionState>,
     Path(session_id): Path<String>,
@@ -113,6 +131,8 @@ async fn send_route(
     }
 }
 
+/// POST /api/ompchamber/sessions/:sessionId/fork：fork 会话后派发 prompt；
+/// 错误兜底消息为 "Failed to fork session"。
 async fn fork_route(
     State(state): State<SessionState>,
     Path(session_id): Path<String>,

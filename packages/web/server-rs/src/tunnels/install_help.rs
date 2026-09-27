@@ -1,16 +1,25 @@
 //! Port of `server/lib/tunnels/install-help.js`: provider/platform install
 //! command metadata for missing tunnel dependencies.
+//! （中文说明）维护各 tunnel provider（cloudflared/ngrok）在各平台上
+//! 的安装指引：依赖名、安装命令（brew/winget/下载链接）与缺依赖时的
+//! 提示文案，供可用性检查与 doctor 诊断接口直接返回给前端展示。
 
 use serde_json::{Value, json};
 
 use super::types::{TUNNEL_PROVIDER_CLOUDFLARE, TUNNEL_PROVIDER_NGROK};
 
+/// 单个 provider 的静态安装元数据表项。
 struct ProviderInstallInfo {
+    /// 依赖二进制名（cloudflared/ngrok），用于提示文案开头。
     dependency: &'static str,
+    /// 官方下载页地址（无包管理器命令的平台直接给出该链接）。
     install_url: &'static str,
+    /// 三个平台的安装命令，顺序固定为 darwin、win32、linux。
     commands: [&'static str; 3], // [darwin, win32, linux]
 }
 
+/// 静态安装信息表：cloudflare 在前（索引 0，兼作未知 provider 的兜底
+/// 项），ngrok 在后；运行时只读。
 const PROVIDER_INSTALL_INFO: [(&str, ProviderInstallInfo); 2] = [
     (
         TUNNEL_PROVIDER_CLOUDFLARE,
@@ -38,6 +47,8 @@ const PROVIDER_INSTALL_INFO: [(&str, ProviderInstallInfo); 2] = [
     ),
 ];
 
+/// 把平台标识归一到 darwin/win32/linux 之一；未知值（如 sunos、空串）
+/// 一律按 linux 处理，与 JS 版兜底行为一致。
 fn normalize_install_platform(platform: &str) -> &'static str {
     match platform {
         "darwin" => "darwin",
@@ -47,6 +58,8 @@ fn normalize_install_platform(platform: &str) -> &'static str {
     }
 }
 
+/// 拼接缺依赖提示：安装命令以 "Download " 开头时直接跟在句点后
+/// （其本身已是完整指引句），否则加 "Install it with: " 前缀。
 fn create_missing_dependency_message(dependency: &str, install_command: &str) -> String {
     if install_command.starts_with("Download ") {
         format!("{dependency} is not installed. {install_command}")
@@ -56,6 +69,10 @@ fn create_missing_dependency_message(dependency: &str, install_command: &str) ->
 }
 
 /// `getTunnelDependencyInstallInfo(provider, platform)`.
+///
+/// 查表返回 provider 在指定平台的安装信息：provider 未命中时退回
+/// cloudflare 表项，平台未知时按 linux 处理；同时生成面向用户的
+/// 消息文案。
 pub fn get_tunnel_dependency_install_info(provider: &str, platform: &str) -> InstallInfo {
     let provider_info = &PROVIDER_INSTALL_INFO
         .iter()
@@ -78,16 +95,26 @@ pub fn get_tunnel_dependency_install_info(provider: &str, platform: &str) -> Ins
     }
 }
 
+/// 面向调用方（routes/doctor、前端 UI）的安装指引快照，字段与 JS 版
+/// 返回对象一一对应。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallInfo {
+    /// 依赖二进制名，如 cloudflared、ngrok。
     pub dependency: String,
+    /// 当前平台的安装命令（brew/winget 或下载指引句）。
     pub install_command: String,
+    /// 官方下载页 URL。
     pub install_url: String,
+    /// 归一化后的平台标识（darwin/win32/linux）。
     pub platform: String,
+    /// 拼装好的"依赖未安装"完整提示文案。
     pub message: String,
 }
 
+/// 将 `InstallInfo` 序列化为 camelCase 键（installCommand/installUrl）
+/// 的 JSON 对象，与 JS API 响应字段名保持一致。
 impl From<&InstallInfo> for Value {
+    /// 逐字段映射；键名是对外 API 契约，不可改动。
     fn from(info: &InstallInfo) -> Self {
         json!({
             "dependency": info.dependency,
@@ -99,10 +126,12 @@ impl From<&InstallInfo> for Value {
     }
 }
 
+/// 覆盖各平台安装命令选择、未知 provider/平台的兜底规则与消息文案格式。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 行为契约：win32 下 cloudflared 给出 winget 安装命令并出现在提示文案中。
     #[test]
     fn returns_windows_cloudflared_winget_guidance() {
         let info = get_tunnel_dependency_install_info(TUNNEL_PROVIDER_CLOUDFLARE, "win32");
@@ -114,6 +143,7 @@ mod tests {
         assert!(info.message.contains("Cloudflare.cloudflared"));
     }
 
+    /// 行为契约：win32 下 ngrok 给出 msstore 源的 winget 命令。
     #[test]
     fn returns_windows_ngrok_winget_guidance() {
         let info = get_tunnel_dependency_install_info(TUNNEL_PROVIDER_NGROK, "win32");
@@ -122,6 +152,7 @@ mod tests {
         assert!(info.message.contains("ngrok -s msstore"));
     }
 
+    /// 行为契约：darwin 下提示使用 Homebrew 安装 cloudflared。
     #[test]
     fn keeps_macos_homebrew_guidance() {
         let info = get_tunnel_dependency_install_info(TUNNEL_PROVIDER_CLOUDFLARE, "darwin");
@@ -132,6 +163,7 @@ mod tests {
         );
     }
 
+    /// 行为契约：linux 下安装命令与下载 URL 均指向 Cloudflare 官方下载页。
     #[test]
     fn returns_current_linux_cloudflared_download_guidance() {
         let info = get_tunnel_dependency_install_info(TUNNEL_PROVIDER_CLOUDFLARE, "linux");
@@ -144,6 +176,7 @@ mod tests {
         assert!(info.message.contains(download_url));
     }
 
+    /// 行为契约：未知平台归一为 linux 并给出下载指引。
     #[test]
     fn unknown_platform_falls_back_to_linux() {
         let info = get_tunnel_dependency_install_info(TUNNEL_PROVIDER_NGROK, "sunos");
@@ -154,6 +187,7 @@ mod tests {
         );
     }
 
+    /// 行为契约：未知 provider 回退到 cloudflare 表项。
     #[test]
     fn unknown_provider_falls_back_to_cloudflare() {
         let info = get_tunnel_dependency_install_info("bogus", "darwin");

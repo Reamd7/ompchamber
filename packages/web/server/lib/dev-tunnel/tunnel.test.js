@@ -12,12 +12,20 @@ import { createDevTunnelRuntime, isDevTunnelPath } from './runtime.js';
  * as it does locally.
  */
 
+/**
+ * dev server 隧道（client.js + runtime.js）的端到端测试（中文说明）：
+ * 走真实 socket 链路（dev server ↔ OMPChamber 宿主 ↔ 本地端口），
+ * 验证页面经隧道加载与本地完全一致，以及认证与端口白名单约束。
+ */
+// 收集已启动资源的停止函数，afterEach 里统一释放。
 const started = [];
 
+/** 在指定 host 上监听随机端口，resolve 实际端口号。 */
 const listen = (server, host = '127.0.0.1') => new Promise((resolve) => {
   server.listen(0, host, () => resolve(server.address().port));
 });
 
+/** 跟踪服务器的全部连接 socket；测试收尾时强制销毁，避免句柄悬挂阻塞退出。 */
 const trackSockets = (server) => {
   const sockets = new Set();
   server.on('connection', (socket) => {
@@ -27,6 +35,7 @@ const trackSockets = (server) => {
   return sockets;
 };
 
+/** 构造停止函数：先销毁全部连接再 close 服务器（Node 的 close 会等连接自然结束）。 */
 const stopServer = (server, sockets) => async () => {
   for (const socket of sockets) {
     socket.destroy();
@@ -34,6 +43,7 @@ const stopServer = (server, sockets) => async () => {
   await new Promise((resolve) => server.close(resolve));
 };
 
+/** 启动一个用 handler 应答的 dev server，返回其端口；停止函数已登记到 started。 */
 const startDevServer = async (handler) => {
   const server = http.createServer(handler);
   const sockets = trackSockets(server);
@@ -42,6 +52,7 @@ const startDevServer = async (handler) => {
   return port;
 };
 
+/** 启动一个挂了 dev-tunnel 运行时的 OMPChamber 宿主服务器，返回端口、baseUrl 与运行时。 */
 const startHost = async ({ allowedPorts, auth = null, discoveryOk = true }) => {
   const server = http.createServer((_req, res) => res.end('host'));
   const sockets = trackSockets(server);
@@ -69,6 +80,7 @@ const startHost = async ({ allowedPorts, auth = null, discoveryOk = true }) => {
   return { port, baseUrl: `http://127.0.0.1:${port}`, runtime, sockets };
 };
 
+/** 对 127.0.0.1:port 发起 HTTP GET，resolve { status, body, headers }；5 秒超时。 */
 const httpGet = (port, path = '/') => new Promise((resolve, reject) => {
   const request = http.get({ host: '127.0.0.1', port, path }, (response) => {
     let body = '';
@@ -79,6 +91,7 @@ const httpGet = (port, path = '/') => new Promise((resolve, reject) => {
   request.setTimeout(5_000, () => request.destroy(new Error('timeout')));
 });
 
+// 逐个执行收集到的停止函数，确保每条 socket 与服务器都被释放。
 afterEach(async () => {
   while (started.length) {
     const stop = started.pop();
@@ -86,6 +99,7 @@ afterEach(async () => {
   }
 });
 
+/** 隧道 upgrade 路径判定：只认领自己的 /api/dev-tunnel。 */
 describe('dev tunnel path matching', () => {
   test('only claims its own upgrade path', () => {
     expect(isDevTunnelPath('/api/dev-tunnel?port=5173')).toBe(true);
@@ -94,6 +108,7 @@ describe('dev tunnel path matching', () => {
   });
 });
 
+/** 端到端：透传不改动、握手洪泛防护、监听复用、端口白名单、关闭释放与非法入参拒绝。 */
 describe('dev tunnel end to end', () => {
   test('serves the dev server through a local port, unmodified', async () => {
     const devPort = await startDevServer((req, res) => {
@@ -131,6 +146,7 @@ describe('dev tunnel end to end', () => {
     const closed = await new Promise((resolve) => {
       const socket = net.createConnection({ port: localPort, host: '127.0.0.1' }, () => {
         const chunk = Buffer.alloc(64 * 1024, 0x61);
+        // 持续写入直到握手超时被隧道掐断，验证缓冲上限生效。
         const write = () => {
           // Keep writing while the handshake hangs; the tunnel must stop this
           // rather than hold every byte in the desktop app's memory.
@@ -217,6 +233,7 @@ describe('dev tunnel end to end', () => {
  * rightly do — silently rejected every tunnel and surfaced as an empty response
  * in the panel, with nothing to connect it back to authentication.
  */
+/** 认证矩阵：无 Origin 的显式 bearer 放行、ambient 会话拒绝、坏 Origin 拒绝、发现不可用全拒。 */
 describe('dev tunnel authentication', () => {
   const clientAuth = {
     enabled: true,

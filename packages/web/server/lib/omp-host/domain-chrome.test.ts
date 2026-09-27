@@ -7,19 +7,31 @@
 //  - R-E3 observable drops: factory payloads count, never render.
 //  - snapshot authority: revision monotonic, last-writer-wins per key,
 //    widget line cap.
+/**
+ * domain-chrome 域测试 —— spec 09 §5.0-5.2（扩展宿主表面）。
+ *
+ * 覆盖契约：R-E1 RpcExtensionUIRequest 镜像（set/clear 语义、payload
+ * 形状、undefined 清除、placement 透传）；R-E2 无 lease 门控（无任何
+ * lease 时 chrome handler 仍可写入）；R-E3 可观测丢弃（factory payload
+ * 只计数不渲染）；快照权威（revision 单调、每 key 后写者胜、widget
+ * 行数上限）。
+ */
 
 import { describe, expect, test } from 'bun:test';
 import { createDomainChrome, registerChromeDomainRoutes } from './domain-chrome.ts';
 import type { DomainChrome } from './domain-chrome.ts';
 import type { OmpEventBus, OmpEventEnvelope } from './events.ts';
 
+/** 测试基准目录。 */
 const DIR = '/repo';
+/** 测试会话 id。 */
 const SESSION = 'ses_1';
 
 // Typed stubs for the dialog-bridge delegation test below. Both are inert:
 // the registry under test never publishes (no dialog lifecycle runs) and the
 // bridge counts setFooter factories as drops without invoking them — these
 // shapes exist only to satisfy the SDK/exported contracts.
+/** 惰性事件信封桩：只为满足 OmpEventEnvelope 导出契约，从不被真正发布。 */
 const envelopeStub: OmpEventEnvelope = {
   id: 0,
   type: '',
@@ -28,8 +40,10 @@ const envelopeStub: OmpEventEnvelope = {
   createdAt: 0,
   payload: {},
 };
+/** pi-tui 组件桩：bridge 只把 setFooter factory 计为丢弃，绝不调用 render。 */
 const componentStub = { render: (): readonly string[] => [] };
 
+/** 构造被测 chrome 实例：记录 publish 事件并提供步进 1000ms 的假时钟。 */
 const setup = () => {
   const published: unknown[] = [];
   const chrome = createDomainChrome({
@@ -42,6 +56,7 @@ const setup = () => {
   return { chrome, published };
 };
 
+/** widget 表契约：RpcExtensionUIRequest 形状的存取/清除/上限与防御。 */
 describe('createDomainChrome — widget table', () => {
   test('string[] set stores and publishes the RpcExtensionUIRequest shape', () => {
     const { chrome, published } = setup();
@@ -99,6 +114,7 @@ describe('createDomainChrome — widget table', () => {
   });
 });
 
+/** status 表契约：与 widget 同构的 set/clear/publish 语义（空串即清除）。 */
 describe('createDomainChrome — status table', () => {
   test('set/clear/publish mirror the widget semantics', () => {
     const { chrome, published } = setup();
@@ -122,6 +138,7 @@ describe('createDomainChrome — status table', () => {
   });
 });
 
+/** 桥接 handler 契约（R-E2/R-E3）：无 lease 可写；factory 与非字符串 payload 计为丢弃。 */
 describe('createDomainChrome — bridge handlers (R-E2/R-E3)', () => {
   test('bridge handlers write without any lease (passive surface)', () => {
     const { chrome } = setup();
@@ -153,6 +170,7 @@ describe('createDomainChrome — bridge handlers (R-E2/R-E3)', () => {
   });
 });
 
+/** 路由挂载契约：capability 501 门控、directory 400 校验与快照序列化。 */
 describe('registerChromeDomainRoutes', () => {
   const mount = (chrome: DomainChrome | Partial<DomainChrome>, features?: Record<string, boolean>) => {
     const routes = new Map<string, unknown>();
@@ -209,6 +227,7 @@ describe('registerChromeDomainRoutes', () => {
   });
 });
 
+/** dialog bridge 集成委托：chrome 成员转发到表；未注入 chrome 时保持 no-op。 */
 describe('dialog bridge delegation (domain-dialogs integration)', () => {
   test('bridge chrome members delegate to the table; absent chrome stays no-op', async () => {
     const { UiLeaseTable, PendingDialogRegistry, createDialogBridge } = await import('./domain-dialogs.ts');

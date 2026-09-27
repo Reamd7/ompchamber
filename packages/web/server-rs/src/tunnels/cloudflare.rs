@@ -6,6 +6,13 @@
 //! `#` comments). `.json` configs parse with serde_json. Full YAML is not
 //! available in the allowed crate set; the subset covers the ingress
 //! hostname extraction this module needs.
+//!
+//! 中文说明：Cloudflare 隧道适配层。前半部分直接驱动 `cloudflared`
+//! 子进程：三种启动模式（quick 临时隧道 / managed-remote token 隧道 /
+//! managed-local 配置文件隧道），各自等待启动日志就绪并产出可停止的
+//! `TunnelController`。后半部分（provider adapter）把这些能力包装成
+//! `TunnelProvider` trait 实现，向注册表暴露能力描述、可用性检查与
+//! 按模式的诊断 JSON。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,21 +34,32 @@ use super::types::{
     TUNNEL_PROVIDER_CLOUDFLARE, TunnelServiceError, TunnelStartRequest,
 };
 
+/// quick 隧道等待 trycloudflare URL 出现的默认超时（30 秒）。
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 30_000;
+/// managed 隧道等待就绪日志的硬超时（20 秒）。
 const MANAGED_TUNNEL_STARTUP_TIMEOUT_MS: u64 = 20_000;
+/// managed 隧道的活性兜底窗口（6 秒）：窗口内只要子进程有输出即视为就绪。
 const MANAGED_TUNNEL_LIVENESS_FALLBACK_MS: u64 = 6_000;
 
+/// managed-local 配置文件的大小上限（256 KiB），避免读取超大文件。
 const MANAGED_LOCAL_CONFIG_MAX_BYTES: u64 = 256 * 1024;
+/// managed-local 配置允许的扩展名白名单（YAML 子集 + JSON）。
 const MANAGED_LOCAL_CONFIG_ALLOWED_EXTENSIONS: [&str; 3] = [".yml", ".yaml", ".json"];
 
+/// 三种启动模式的超时参数集合（毫秒），测试可注入更小的值。
 #[derive(Debug, Clone)]
 pub struct CloudflareTunnelOpts {
+    /// quick 隧道等待 trycloudflare URL 的超时。
     pub quick_timeout_ms: u64,
+    /// managed 隧道启动的硬超时，超时即 kill 子进程。
     pub managed_startup_timeout_ms: u64,
+    /// managed 隧道的活性兜底窗口：有输出但未见到就绪日志时按此时限放行。
     pub liveness_fallback_ms: u64,
 }
 
+/// 默认值取上面的毫秒常量（对齐 JS host 的 30s/20s/6s）。
 impl Default for CloudflareTunnelOpts {
+    /// 以模块级默认超时构造。
     fn default() -> Self {
         Self {
             quick_timeout_ms: DEFAULT_STARTUP_TIMEOUT_MS,
@@ -51,15 +69,22 @@ impl Default for CloudflareTunnelOpts {
     }
 }
 
+/// Cloudflare API 探测结果：可达性与失败详情。
 #[derive(Debug, Clone, Default)]
 pub struct Reachability {
+    /// 请求是否成功发出并收到任意 HTTP 应答。
     pub reachable: bool,
+    /// 收到的 HTTP 状态码（请求未成功时为 `None`）。
     pub status: Option<u16>,
+    /// 发送/传输层错误描述（成功时为 `None`）。
     pub error: Option<String>,
 }
 
+/// API 可达性探测注入点：返回 future 的闭包，供测试离线替换，
+/// 生产路径使用真实 HTTP 探测。
 pub type ApiProbe = Arc<dyn Fn() -> BoxFuture<'static, Reachability> + Send + Sync>;
 
+/// 小写化后的子串包含判定。
 fn contains_ci(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(needle)
 }
@@ -73,6 +98,8 @@ fn followed_by_ci(line: &str, a: &str, b: &str) -> bool {
     }
 }
 
+/// 就绪日志判定：连接注册完成、metrics server 启动或已连上 edge，
+/// 任一命中即视为隧道就绪。
 pub fn is_cloudflared_ready_log_line(line: &str) -> bool {
     if line.is_empty() {
         return false;
@@ -83,6 +110,8 @@ pub fn is_cloudflared_ready_log_line(line: &str) -> bool {
         || contains_ci(line, "connected to edge")
 }
 
+/// 致命日志判定：配置解析/加载失败、token 无效或未授权、凭证文件
+/// 缺失或凭证无效，命中即终止启动等待。
 pub fn is_cloudflared_fatal_log_line(line: &str) -> bool {
     if line.is_empty() {
         return false;
@@ -123,6 +152,8 @@ pub fn extract_try_cloudflare_url(text: &str) -> Option<String> {
     None
 }
 
+/// 自 `from` 起做 ASCII 大小写不敏感的子串查找，返回字节偏移；
+/// needle 必须是纯 ASCII（小写形式）。
 fn lower_find(haystack: &str, needle: &str, from: usize) -> Option<usize> {
     if needle.is_empty() || from >= haystack.len() {
         return None;
@@ -143,6 +174,7 @@ fn lower_find(haystack: &str, needle: &str, from: usize) -> Option<usize> {
     None
 }
 
+/// ASCII 大小写不敏感的前缀判定。
 fn starts_with_ci(haystack: &str, prefix: &str) -> bool {
     haystack.len() >= prefix.len()
         && haystack[..prefix.len()]
@@ -172,6 +204,7 @@ pub fn normalize_cloudflare_tunnel_hostname(value: Option<&str>) -> Option<Strin
     Some(hostname)
 }
 
+/// 打印 cloudflared 安装指引横幅（按平台列出安装命令）。
 fn print_cloudflare_tunnel_install_help() {
     println!(
         "
@@ -205,6 +238,8 @@ pub fn print_tunnel_warning() {
     );
 }
 
+/// 组装 cloudflared 子进程环境：可执行搜索环境 + 关闭 CF 遥测
+/// （`CF_TELEMETRY_DISABLE=1`）+ 调用方覆盖项。
 fn cloudflared_env(env_overrides: &[(&str, String)]) -> EnvMap {
     let mut env = create_executable_search_env(&real_env(), Platform::current(), &real_home());
     env.insert("CF_TELEMETRY_DISABLE".to_string(), "1".to_string());
@@ -214,10 +249,14 @@ fn cloudflared_env(env_overrides: &[(&str, String)]) -> EnvMap {
     env
 }
 
+/// cloudflared 二进制的原始可用性探测结果。
 #[derive(Debug, Clone, Default)]
 pub struct RawAvailability {
+    /// 解析到可执行文件且 `--version` 探测退出码为 0。
     pub available: bool,
+    /// 解析到的可执行文件路径（后续 spawn 直接使用）。
     pub path: Option<String>,
+    /// `--version` 的 stdout 原文（已 trim）。
     pub version: Option<String>,
 }
 
@@ -263,6 +302,8 @@ pub async fn check_cloudflare_api_reachability(
     }
 }
 
+/// 校验 managed-local 配置文件可读且合规：存在、是文件、扩展名在
+/// 白名单内、非空且不超过大小上限；错误文案面向用户。
 fn assert_readable_file(file_path: &Path, context_label: &str) -> Result<(), String> {
     let stats = std::fs::metadata(file_path).map_err(|_| {
         format!("{context_label} file was not found. Select a valid cloudflared config file.")
@@ -302,6 +343,7 @@ fn assert_readable_file(file_path: &Path, context_label: &str) -> Result<(), Str
     Ok(())
 }
 
+/// 去掉行内 ` #` 注释；带引号的标量原样保留。
 fn strip_yaml_comment(value: &str) -> &str {
     if value.starts_with('"') || value.starts_with('\'') {
         return value;
@@ -312,6 +354,7 @@ fn strip_yaml_comment(value: &str) -> &str {
     }
 }
 
+/// 解析 YAML 标量：trim 后剥掉成对的单/双引号。
 fn yaml_scalar(value: &str) -> String {
     let value = strip_yaml_comment(value.trim());
     value
@@ -322,6 +365,7 @@ fn yaml_scalar(value: &str) -> String {
         .to_string()
 }
 
+/// 从 `key: value` 形态的行提取非空标量值。
 fn yaml_key_value(text: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     let rest = text.strip_prefix(&prefix)?;
@@ -369,6 +413,10 @@ fn yaml_ingress_hostnames(raw: &str) -> Vec<String> {
     hostnames
 }
 
+/// 读取 cloudflared 配置并按扩展名分流解析（`.json` 走 serde_json，
+/// 其余走 YAML 子集），返回首个能通过 hostname 归一化的 ingress
+/// hostname 与可选错误：读不到文件或 JSON 非法时给出面向用户的错误；
+/// 解析成功但无可用 hostname 时两者均为 `None`。
 fn extract_hostname_from_cloudflared_config_detailed(
     config_path: &Path,
 ) -> (Option<String>, Option<String>) {
@@ -418,17 +466,23 @@ fn extract_hostname_from_cloudflared_config_detailed(
     (None, None)
 }
 
+/// 默认配置路径：`$HOME/.cloudflared/config.yml`。
 fn get_default_cloudflared_config_path() -> PathBuf {
     Path::new(&real_home())
         .join(".cloudflared")
         .join("config.yml")
 }
 
+/// managed-local 配置检查结果（诊断与启动前检查共用）。
 #[derive(Debug, Clone)]
 pub struct ManagedLocalInspection {
+    /// 配置可读、解析成功且 hostname 可解析。
     pub ok: bool,
+    /// 实际生效的配置文件路径（未指定时为默认路径）。
     pub effective_config_path: String,
+    /// 优先取显式 hostname，回退到配置内的 ingress hostname。
     pub resolved_hostname: Option<String>,
+    /// 失败原因（面向用户的文案）；成功时为 `None`。
     pub error: Option<String>,
 }
 
@@ -489,11 +543,16 @@ pub fn inspect_managed_local_cloudflare_config(
 
 /// A spawned child whose exit also runs a cleanup (temp dir removal).
 struct WatchedChild {
+    /// 子进程 stdout/stderr 的输出 chunk 流（`spawn_output_readers` 建立）。
     chunks: mpsc::Receiver<ChildChunk>,
+    /// 子进程退出码的一次性接收端（守护任务完成清理后才触发）。
     exit: tokio::sync::oneshot::Receiver<Option<i32>>,
+    /// 终止子进程的回调（与 runner 共享同一 Arc 句柄）。
     kill: Arc<dyn Fn() + Send + Sync>,
 }
 
+/// 包裹 Spawned：启动输出读取器，并 spawn 一个守护任务——子进程退出后
+/// 先删除临时目录，再把退出码转交 `exit` 通道。
 fn watch_child(mut spawned: Spawned, cleanup_dir: Option<PathBuf>) -> WatchedChild {
     let chunks = spawn_output_readers(&mut spawned);
     let kill = spawned.kill.clone();
@@ -513,10 +572,12 @@ fn watch_child(mut spawned: Spawned, cleanup_dir: Option<PathBuf>) -> WatchedChi
     }
 }
 
+/// 删除临时目录（best-effort，失败忽略）。
 fn cleanup_temp_dir(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 写入 token 文件：确保父目录存在后以私有权限落盘（不落 shell 历史）。
 async fn write_token_file(path: &Path, token: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -605,6 +666,9 @@ pub async fn start_cloudflare_quick_tunnel(
     })
 }
 
+/// 等待 managed 隧道就绪：优先等就绪日志行；命中致命日志或子进程退出
+/// 立即报错；超过 `liveness_fallback_ms` 时只要期间有任意输出即放行
+/// （部分版本不打印标准就绪行）；`managed_startup_timeout_ms` 为硬超时。
 async fn wait_for_managed_tunnel_ready(
     child: &mut WatchedChild,
     mode_label: &str,
@@ -826,6 +890,8 @@ pub async fn start_cloudflare_managed_local_tunnel(
 // Provider adapter (providers/cloudflare.js)
 // ---------------------------------------------------------------------------
 
+/// 三种模式的能力描述（quick / managed-remote / managed-local），
+/// 含各自的必填项与支持选项，供注册表与 UI 呈现。
 pub static CLOUDFLARE_MODES: [ModeDescriptor; 3] = [
     ModeDescriptor {
         key: TUNNEL_MODE_QUICK,
@@ -853,6 +919,7 @@ pub static CLOUDFLARE_MODES: [ModeDescriptor; 3] = [
     },
 ];
 
+/// 组装 provider 能力 JSON（默认模式 + 模式描述列表），供诊断与 UI。
 pub fn cloudflare_capabilities_json() -> Value {
     json!({
         "provider": TUNNEL_PROVIDER_CLOUDFLARE,
@@ -861,14 +928,22 @@ pub fn cloudflare_capabilities_json() -> Value {
     })
 }
 
+/// Cloudflare provider 适配器：持有命令 runner、HTTP 客户端与超时选项，
+/// 实现注册表的 `TunnelProvider` 契约。
 pub struct CloudflareTunnelProvider {
+    /// 命令解析/派生/探测/终止的执行后端（测试可注入 fake runner）。
     runner: Arc<dyn CommandRunner>,
+    /// API 可达性探测使用的 reqwest 客户端。
     http: reqwest::Client,
+    /// 测试注入的离线探测钩子；`None` 时走真实 HTTP 探测。
     api_probe: Option<ApiProbe>,
+    /// 三种启动模式的超时参数。
     opts: CloudflareTunnelOpts,
 }
 
+/// 构造与可达性探测来源的选择。
 impl CloudflareTunnelProvider {
+    /// 以默认超时构造 provider。
     pub fn new(runner: Arc<dyn CommandRunner>, http: reqwest::Client) -> Self {
         Self {
             runner,
@@ -885,6 +960,8 @@ impl CloudflareTunnelProvider {
         self
     }
 
+    /// 选择可达性探测来源：优先测试注入的 probe，否则用真实 HTTP
+    /// 探测 api.trycloudflare.com（5 秒超时）。
     fn reachability(&self) -> BoxFuture<'static, Reachability> {
         if let Some(probe) = &self.api_probe {
             return probe();
@@ -894,6 +971,8 @@ impl CloudflareTunnelProvider {
     }
 }
 
+/// managed-remote token 形状校验：非空且不含任何空白字符；
+/// 返回 (是否有效, 面向用户的说明文案)。
 fn validate_token_shape(value: Option<&str>) -> (bool, String) {
     let Some(value) = value else {
         return (false, "Managed remote token is missing.".to_string());
@@ -911,6 +990,7 @@ fn validate_token_shape(value: Option<&str>) -> (bool, String) {
     (true, "Managed remote token looks valid.".to_string())
 }
 
+/// 汇总一组检查项：fail 计数为 0 即 ready，同时统计 warning 数量。
 fn create_mode_summary(checks: &[Value]) -> Value {
     let failures = checks
         .iter()
@@ -927,6 +1007,8 @@ fn create_mode_summary(checks: &[Value]) -> Value {
     })
 }
 
+/// 组装单个模式的诊断对象：检查列表、summary，以及除
+/// `startup_readiness` 外的失败项作为 blockers（优先取 detail 文案）。
 fn describe_mode(mode: &str, checks: Vec<Value>) -> Value {
     let summary = create_mode_summary(&checks);
     let blockers: Vec<Value> = checks
@@ -950,23 +1032,29 @@ fn describe_mode(mode: &str, checks: Vec<Value>) -> Value {
     })
 }
 
+/// 构造一条诊断检查项 JSON（id/label/status/detail 四字段）。
 fn check_entry(id: &str, label: &str, status: &str, detail: impl Into<String>) -> Value {
     json!({ "id": id, "label": label, "status": status, "detail": detail.into() })
 }
 
+/// 注册表契约的 Cloudflare 实现：能力、可用性、按模式诊断与三种启动。
 impl TunnelProvider for CloudflareTunnelProvider {
+    /// provider 固定标识 `cloudflare`。
     fn id(&self) -> &'static str {
         TUNNEL_PROVIDER_CLOUDFLARE
     }
 
+    /// 能力 JSON（委托 `cloudflare_capabilities_json`）。
     fn capabilities_json(&self) -> Value {
         cloudflare_capabilities_json()
     }
 
+    /// 静态模式描述表（`CLOUDFLARE_MODES`）。
     fn mode_descriptors(&self) -> &'static [ModeDescriptor] {
         &CLOUDFLARE_MODES
     }
 
+    /// 探测 cloudflared 可用性，并附上平台化的安装指引信息。
     fn check_availability(&self) -> BoxFuture<'static, AvailabilityInfo> {
         let runner = self.runner.clone();
         Box::pin(async move {
@@ -987,6 +1075,10 @@ impl TunnelProvider for CloudflareTunnelProvider {
         })
     }
 
+    /// 按模式诊断：依赖 + 网络作为 provider 级检查；quick /
+    /// managed-local / managed-remote 各自组装检查列表，其中
+    /// managed-remote 在未显式提供输入时允许回退到已保存 profile；
+    /// 可用 `mode` 参数过滤只输出单个模式。
     fn diagnose(&self, request: DiagnoseRequest) -> BoxFuture<'static, Value> {
         let runner = self.runner.clone();
         let reachability = self.reachability();
@@ -1175,6 +1267,8 @@ impl TunnelProvider for CloudflareTunnelProvider {
         })
     }
 
+    /// 按请求模式分流启动：managed-remote / managed-local 走各自启动器，
+    /// 默认 quick 模式（需要 `originUrl`，缺失时返回 validation error）。
     fn start(
         &self,
         request: TunnelStartRequest,
@@ -1218,10 +1312,13 @@ impl TunnelProvider for CloudflareTunnelProvider {
         })
     }
 
+    /// 停止一个运行中的控制器（执行其 stop 回调并清理临时目录）。
     fn stop(&self, controller: &TunnelController) {
         controller.stop();
     }
 
+    /// 提取控制器的配置路径与已解析 hostname；无控制器时两字段为
+    /// null（对齐 JS 可选链语义）。
     fn get_metadata(&self, controller: Option<&TunnelController>) -> Value {
         match controller {
             Some(controller) => json!({
@@ -1235,6 +1332,7 @@ impl TunnelProvider for CloudflareTunnelProvider {
     }
 }
 
+/// 集成测试位于同目录 `cloudflare_tests.rs`（经 `#[path]` 挂载）。
 #[cfg(test)]
 #[path = "cloudflare_tests.rs"]
 mod cloudflare_tests;

@@ -9,6 +9,14 @@
 //! port via an IPC `ompchamber:ready` message; the Rust daemon resolves a
 //! free port CLI-side before spawning (bind :0, read port, release) and
 //! polls /health — observable output is identical.
+//!
+//! 中文说明：`ompchamber serve` 命令的 Rust 实现（对应 commands-serve.js）。
+//! 前台模式在本进程内直接运行服务器（CLI 进程即服务器，systemd
+//! Type=simple 需要）；守护模式（默认）分离 spawn 自身二进制执行
+//! `serve --foreground`，stdout/stderr 重定向到日志文件，轮询 /health
+//! 确认就绪后写 pid 与 instance 文件并输出摘要。与 JS 的差异：JS 通过
+//! IPC `ompchamber:ready` 获知端口，Rust 在 spawn 前自行探测空闲端口
+//! （绑定 :0 读取后释放）——可观察输出保持一致。
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -23,8 +31,12 @@ use super::paths;
 use super::process::{InstanceOptions, is_process_running, write_instance_options, write_pid_file};
 use super::{CliError, GENERAL_ERROR, OutputMode, USAGE_ERROR};
 
+/// 守护模式等待子进程 /health 就绪的最长时间（毫秒）；超时杀掉子进程
+/// 并报错。
 const DAEMON_READY_TIMEOUT_MS: u64 = 30_000;
 
+/// 让操作系统分配一个空闲端口：绑定 (host, 0) 后读取实际端口再释放。
+/// 绑定失败返回 None（调用方转为 "No available port found."）。
 fn pick_free_port(host: &str) -> Option<u16> {
     TcpListener::bind((host, 0))
         .ok()
@@ -32,6 +44,9 @@ fn pick_free_port(host: &str) -> Option<u16> {
         .map(|addr| addr.port())
 }
 
+/// 请求 http://host:port/api/system/info（2 秒超时）并解析 JSON；请求
+/// 失败、非 2xx 或解析失败均返回 None。用于区分端口占用者是否为
+/// OMPChamber（含 desktop runtime）。
 async fn probe_system_info(port: u16, host: &str) -> Option<serde_json::Value> {
     let url = format!("http://{host}:{port}/api/system/info");
     let response = reqwest::Client::new()
@@ -46,6 +61,8 @@ async fn probe_system_info(port: u16, host: &str) -> Option<serde_json::Value> {
     response.json().await.ok()
 }
 
+/// 探测 http://host:port/health 是否返回 2xx（2 秒超时），作为"该端口
+/// 已有 OMPChamber 服务"的就绪信号。
 async fn port_answers_health(port: u16, host: &str) -> bool {
     let url = format!("http://{host}:{port}/health");
     matches!(
@@ -55,6 +72,8 @@ async fn port_answers_health(port: u16, host: &str) -> bool {
 }
 
 /// Foreground server boot — delegates to the composition root in main.
+/// 前台启动的薄封装：把参数转成 RunServerOptions 并进入完整服务器
+/// 启动序列；正常情况下阻塞到退出信号为止。
 pub async fn run_server_forever(
     port: u16,
     host: &str,
@@ -70,6 +89,14 @@ pub async fn run_server_forever(
     .await
 }
 
+/// `ompchamber serve` 主流程。先解析 host/目标端口与 UI 密码；占用检查：
+/// 目标端口 /health 有响应时按 runtime 区分 desktop 应用、已有
+/// OMPChamber 实例与第三方占用并给出对应错误，显式端口无响应时再试
+/// 绑定确认；随后校验网络暴露安全（无密码绑定非回环地址会直接报错）
+/// 并对密码缺失发告警。前台分支禁止 --json 后进入 run_server_forever；
+/// 守护分支写日志文件、spawn 子进程（Unix 上独立进程组）、轮询 /health
+/// 最多 30 秒、写 pid/instance 文件，最后按 human/quiet/json 模式输出
+/// 摘要（自动生成的随机密码只展示这一次）。
 pub async fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let mode = OutputMode::from_options(&options);
     let host = resolve_serve_host(options.host.as_deref());
@@ -311,6 +338,7 @@ pub async fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> 
     Ok(())
 }
 
+/// 当前 Unix 毫秒时间戳（取值失败按 0），写入 instance 文件的 startedAt。
 fn now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -318,6 +346,9 @@ fn now_ms() -> f64 {
         .unwrap_or_default()
 }
 
+/// 输出一条 notice 级提示：human 模式按级别加 "Error:"/"Warning:" 前缀
+/// 打到 stderr；json 模式仅打印消息正文（JSON payload 的 messages 数组
+/// 由调用方组装 payload 时另行收集）。
 fn emit_notice(
     options: &Options,
     mode: &OutputMode,
@@ -344,6 +375,9 @@ fn emit_notice(
     }
 }
 
+/// 确定首选端口：显式指定则直接采用；否则先试绑定 127.0.0.1 上的期望
+/// 端口，被占用时提示 "Port N in use; using a free port" 并返回 None
+/// （交给后续 pick_free_port 兜底）。
 async fn resolve_target_port(explicit: bool, desired: u16, _host: &str) -> Option<u16> {
     if explicit {
         return Some(desired);
@@ -355,6 +389,7 @@ async fn resolve_target_port(explicit: bool, desired: u16, _host: &str) -> Optio
     None
 }
 
+/// 端口兜底：首选值有效则用之，否则由操作系统分配一个空闲端口。
 fn resolve_final_port(candidate: Option<u16>, host: &str) -> Option<u16> {
     candidate.or_else(|| pick_free_port(host))
 }

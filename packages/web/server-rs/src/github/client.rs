@@ -16,6 +16,11 @@
 //!
 //! The transport is a seam (`Transport`) so tests drive routes against a fake
 //! instead of api.github.com.
+//!
+//! 中文概述：替代 `@octokit/rest` 的 GitHub REST 客户端。所有请求走可替换的
+//! `Transport` 接缝，生产实现为 reqwest（8 秒超时 + ETag 条件请求缓存），
+//! 测试注入 fake 应答。URL 编码、错误消息拼接等细节逐一复刻 octokit，
+//! 保证与旧 JS server 的对外行为一致。
 
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -27,44 +32,63 @@ const REQUEST_TIMEOUT_MS: u64 = 8_000;
 /// `octokit.js` `ETAG_CACHE_MAX_ENTRIES`.
 const ETAG_CACHE_MAX_ENTRIES: usize = 300;
 
+/// GitHub REST API 根地址。
 pub const GITHUB_API_BASE: &str = "https://api.github.com";
+/// 默认 `accept` 头：与 octokit 一致的 v3 JSON 媒体类型。
 const DEFAULT_ACCEPT: &str = "application/vnd.github.v3+json";
 
 /// A single GitHub API request as octokit would issue it.
+/// 发往 GitHub 的一次 HTTP 请求（octokit 等价形状）。
 #[derive(Debug, Clone)]
 pub struct GithubRequest {
+/// HTTP 方法（大写字符串）。
     pub method: String,
     /// Absolute URL (base + encoded path + query).
+/// 完整 URL = base + 已编码路径 + query。
     pub url: String,
+/// 附加请求头（name/value 对）。
     pub headers: Vec<(String, String)>,
+/// 请求体（JSON 序列化后的字节）；无 body 时为 `None`。
     pub body: Option<Vec<u8>>,
 }
 
+/// 一次 GitHub 响应：状态码、响应头与未解码的字节体。
 #[derive(Debug, Clone)]
 pub struct GithubResponse {
+/// HTTP 状态码。
     pub status: u16,
+/// 响应头（name/value 对）。
     pub headers: Vec<(String, String)>,
+/// 未解码的响应体字节。
     pub body: Vec<u8>,
 }
 
 /// Mirror of octokit's `RequestError`: `status`, `message`,
 /// `response.headers`, `response.data`.
+/// GitHub 请求错误：镜像 octokit 的 `RequestError`（status/message/headers/data）。
 #[derive(Debug, Clone)]
 pub struct GithubError {
+/// HTTP 状态码；传输层失败等无状态场景为 `None`（本实现恒有值）。
     pub status: Option<u16>,
+/// 按 octokit 规则拼出的可读错误消息。
     pub message: String,
+/// 出错响应的响应头。
     pub headers: Vec<(String, String)>,
     /// Parsed response body (`response.data`) when it was JSON/text.
+/// 已解析的响应体（octokit 的 response.data），JSON/文本时存在。
     pub data: Option<Value>,
 }
 
+/// 错误对象上的响应头便捷查询。
 impl GithubError {
     /// Case-insensitive response header lookup.
+/// 大小写不敏感地取错误响应头。
     pub fn header(&self, name: &str) -> Option<&str> {
         header_value(&self.headers, name)
     }
 }
 
+/// 在 `(name, value)` 列表中按名字（忽略大小写）查找首个匹配值。
 pub fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
@@ -72,8 +96,10 @@ pub fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&
         .map(|(_, v)| v.as_str())
 }
 
+/// 响应体的解析与头查询。
 impl GithubResponse {
     /// Case-insensitive header lookup.
+/// 大小写不敏感地取响应头。
     pub fn header(&self, name: &str) -> Option<&str> {
         header_value(&self.headers, name)
     }
@@ -81,6 +107,9 @@ impl GithubResponse {
     /// `getResponseData` from octokit's fetch-wrapper: `application/json`
     /// bodies parse as JSON (falling back to the raw string), `text/*` or
     /// `charset=utf-8` bodies decode as text, anything else stays opaque.
+/// 按 octokit getResponseData 的规则解析响应体：`application/json` 解析为
+/// JSON（失败回退原字符串）；`text/*` 或 `charset=utf-8` 解析为字符串；
+/// 其余二进制类型返回 `None`。
     pub fn octokit_data(&self) -> Option<Value> {
         let content_type = self.header("content-type").unwrap_or("");
         let mimetype = content_type
@@ -106,6 +135,9 @@ impl GithubResponse {
 }
 
 /// `toErrorMessage` from octokit's fetch-wrapper.
+/// 复刻 octokit 的错误消息拼接：对象取 `message`，附 `errors` 数组
+/// （JSON 化后逗号连接）与 `documentation_url` 后缀；
+/// 非对象/缺失 message 时为 "Unknown error: …"。
 fn to_error_message(data: Option<&Value>) -> String {
     match data {
         None | Some(Value::Null) => "Unknown error".to_string(),
@@ -139,6 +171,7 @@ fn to_error_message(data: Option<&Value>) -> String {
 }
 
 /// Build a `GithubError` the way octokit does for status >= 400.
+/// 由 >= 400 的响应构造 `GithubError`（带状态、解析体与响应头）。
 fn error_from_response(response: &GithubResponse) -> GithubError {
     let data = response.octokit_data();
     GithubError {
@@ -151,21 +184,28 @@ fn error_from_response(response: &GithubResponse) -> GithubError {
 
 /// HTTP transport seam. Production: reqwest with the octokit timeout + ETag
 /// conditional cache. Tests: canned responses.
+/// 传输层抽象：吃请求、返回 future 的共享函数；测试注入 fake 应答。
 pub type Transport = Arc<
     dyn Fn(GithubRequest) -> BoxFuture<'static, Result<GithubResponse, GithubError>> + Send + Sync,
 >;
 
+/// ETag 缓存条目：上次 200 的 etag、响应体与响应头。
 struct EtagEntry {
+/// 上次响应的 ETag（作为 If-None-Match 回传）。
     etag: String,
+/// 缓存的响应体字节（304 时回放为 200）。
     body: Vec<u8>,
+/// 缓存的响应头（304 回放时一并返回）。
     headers: Vec<(String, String)>,
 }
 
 /// Process-global ETag cache (`octokit.js` `etagCache`), keyed
 /// `token\nurl`, insertion-ordered with LRU touch, capped at 300 entries.
+/// 进程级全局缓存；Vec 保插入序，读写时 touch 实现 LRU，容量 300。
 static ETAG_CACHE: LazyLock<Mutex<Vec<(String, EtagEntry)>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// 按 `token\nurl` key 读取缓存条目（返回克隆）。
 fn etag_cache_get(key: &str) -> Option<EtagEntry> {
     ETAG_CACHE
         .lock()
@@ -179,6 +219,7 @@ fn etag_cache_get(key: &str) -> Option<EtagEntry> {
         })
 }
 
+/// 写入/刷新缓存条目：先移除同 key 再压入尾部，超容量淘汰队首（最旧）。
 fn etag_cache_remember(key: String, entry: EtagEntry) {
     let mut cache = ETAG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     cache.retain(|(k, _)| k != &key);
@@ -189,6 +230,7 @@ fn etag_cache_remember(key: String, entry: EtagEntry) {
 }
 
 /// AbortSignal.timeout semantics: octokit rethrows the abort as a 500 error.
+/// 超时中断错误：octokit 把 AbortSignal.timeout 的中止重抛为 500。
 fn abort_error() -> GithubError {
     GithubError {
         status: Some(500),
@@ -198,6 +240,7 @@ fn abort_error() -> GithubError {
     }
 }
 
+/// 传输层错误（URL 解析/连接/读体失败等）统一包装为 500 的 `GithubError`。
 fn transport_error(message: String) -> GithubError {
     GithubError {
         status: Some(500),
@@ -207,6 +250,7 @@ fn transport_error(message: String) -> GithubError {
     }
 }
 
+/// 把 reqwest 响应头收集为 `(name, value)` 列表；非法 UTF-8 值降级为空串。
 fn collect_headers(response: &reqwest::Response) -> Vec<(String, String)> {
     response
         .headers()
@@ -222,6 +266,9 @@ fn collect_headers(response: &reqwest::Response) -> Vec<(String, String)> {
 
 /// Production transport: reqwest + 8s timeout + ETag conditional requests
 /// (`octokit.js` `createConditionalFetch(token)`).
+/// 生产传输实现：GET 命中缓存则附 If-None-Match；304 回放缓存为 200
+/// （无缓存时报 "Not modified"）；4xx/5xx 转为 `GithubError`；
+/// 成功的 GET 按条件写回 ETag 缓存。整体受 8 秒超时约束，超时映射为 abort 错误。
 pub fn default_transport(token: &str) -> Transport {
     let token = token.to_string();
     Arc::new(move |request: GithubRequest| {
@@ -345,12 +392,15 @@ pub fn default_transport(token: &str) -> Transport {
     })
 }
 
+/// 进程级共享的 reqwest Client（连接池复用）。
 fn token_client() -> &'static reqwest::Client {
+        // 进程生命周期内共享的连接池实例。
     static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
     &CLIENT
 }
 
 /// `withAuthorizationPrefix`: JWTs use `bearer`, everything else `token`.
+/// JWT（三段式点号分隔）用 `bearer` 前缀，其余 token 用 `token` 前缀。
 pub fn authorization_header(token: &str) -> String {
     if token.split('.').count() == 3 {
         format!("bearer {token}")
@@ -361,6 +411,7 @@ pub fn authorization_header(token: &str) -> String {
 
 /// URL-template `{var}` expansion (`encodeUnreserved`): encodeURIComponent
 /// plus escaping `!'()*`.
+/// URL 模板路径段编码：仅保留 `A-Za-z0-9-_.~`，其余字节按 `%XX` 转义。
 pub fn encode_path_segment(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -375,6 +426,7 @@ pub fn encode_path_segment(value: &str) -> String {
 }
 
 /// JS `encodeURIComponent`: leaves `A-Za-z0-9-_.!~*'()` untouched.
+/// 与 JS encodeURIComponent 一致：放行 `A-Za-z0-9-_.!~*'()`，其余转义 `%XX`。
 pub fn encode_query_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -399,6 +451,8 @@ pub fn encode_query_component(value: &str) -> String {
 
 /// `addQueryParameters`' `q` special case: split on `+`, encode each part,
 /// rejoin with `+` (so `c++` survives and spaces become `%20`).
+/// Search 的 `q` 参数专用编码：按 `+` 切段分别编码后以 `+` 重连，
+/// 使 `c++` 原样保留而空格转为 `%20`。
 pub fn encode_search_query(q: &str) -> String {
     q.split('+')
         .map(encode_query_component)
@@ -407,14 +461,19 @@ pub fn encode_search_query(q: &str) -> String {
 }
 
 /// The GitHub API client (`createOctokit(token)` equivalent).
+/// GitHub API 客户端：持有传输层与预计算的 authorization 头。
 #[derive(Clone)]
 pub struct GithubClient {
+/// 实际执行 HTTP 的传输层。
     transport: Transport,
     /// `authorization` header value octokit's auth-token plugin would set.
+/// octokit auth-token 插件会设置的 authorization 头（含 token/bearer 前缀）。
     authorization: String,
 }
 
+/// 各 REST 端点封装与请求构造。
 impl GithubClient {
+/// 用真实 token 构造走生产 reqwest 传输的客户端。
     pub fn new(token: &str) -> Self {
         Self {
             transport: default_transport(token),
@@ -422,6 +481,7 @@ impl GithubClient {
         }
     }
 
+/// 注入自定义传输（测试 fake）；不带鉴权头。
     pub fn with_transport(transport: Transport) -> Self {
         // Fake transports do not authenticate; mirror the empty-token shape.
         Self {
@@ -430,6 +490,8 @@ impl GithubClient {
         }
     }
 
+/// 组装 `GithubRequest`：拼接 base+path 与编码后的 query，附
+/// accept/user-agent/authorization 头；有 body 时序列化为 JSON 并补 content-type。
     fn build_request(
         &self,
         method: &str,
@@ -472,6 +534,7 @@ impl GithubClient {
     }
 
     /// GET with default accept, returning parsed data.
+/// GET 并把响应体解析为 JSON（无法解析时为 `Null`）。
     async fn get_json(
         &self,
         path: &str,
@@ -484,6 +547,7 @@ impl GithubClient {
 
     /// GET returning parsed data plus response headers (`link` drives
     /// has-more checks in routes).
+/// GET 并返回解析体与响应头（`link` 头供路由判断分页 has-more）。
     async fn get_json_with_headers(
         &self,
         path: &str,
@@ -494,6 +558,7 @@ impl GithubClient {
         Ok((resp.octokit_data().unwrap_or(Value::Null), resp.headers))
     }
 
+/// POST/PATCH/PUT 等带 JSON body 的请求，返回解析后的响应体。
     async fn send_body(
         &self,
         method: &str,
@@ -507,10 +572,12 @@ impl GithubClient {
 
     // ---- users ----
 
+/// `GET /user`：当前鉴权用户。
     pub async fn users_get_authenticated(&self) -> Result<Value, GithubError> {
         self.get_json("/user", Vec::new()).await
     }
 
+/// `GET /user/emails`：当前用户邮箱列表（每页 100）。
     pub async fn users_list_emails(&self) -> Result<Value, GithubError> {
         self.get_json(
             "/user/emails",
@@ -521,6 +588,7 @@ impl GithubClient {
 
     // ---- repos ----
 
+/// `GET /repos/{owner}/{repo}`：仓库元数据。
     pub async fn repos_get(&self, owner: &str, repo: &str) -> Result<Value, GithubError> {
         let path = format!(
             "/repos/{}/{}",
@@ -530,6 +598,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `GET /repos/{o}/{r}/branches/{branch}`：分支信息。
     pub async fn repos_get_branch(
         &self,
         owner: &str,
@@ -545,6 +614,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `GET /repos/{o}/{r}/branches`：分页列出分支（每页 100）。
     pub async fn repos_list_branches(
         &self,
         owner: &str,
@@ -566,6 +636,7 @@ impl GithubClient {
         .await
     }
 
+/// `GET /repos/{o}/{r}/commits/{ref}/status`：commit 的聚合 CI 状态。
     pub async fn repos_combined_status(
         &self,
         owner: &str,
@@ -581,6 +652,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `GET /repos/{o}/{r}/collaborators/{user}/permission`：协作者权限级别。
     pub async fn repos_collaborator_permission(
         &self,
         owner: &str,
@@ -596,6 +668,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `GET /repos/{o}/{r}/git/ref/{ref}`：解析 ref 到具体对象。
     pub async fn git_get_ref(
         &self,
         owner: &str,
@@ -614,6 +687,7 @@ impl GithubClient {
     // ---- pulls ----
 
     /// `pulls.list`. Returns parsed data plus headers.
+/// `GET /repos/{o}/{r}/pulls`：可按 state/head 过滤；返回数据与响应头。
     pub async fn pulls_list(
         &self,
         owner: &str,
@@ -641,6 +715,7 @@ impl GithubClient {
         self.get_json_with_headers(&path, query).await
     }
 
+/// `GET /repos/{o}/{r}/pulls/{n}`：单个 PR 详情。
     pub async fn pulls_get(
         &self,
         owner: &str,
@@ -656,6 +731,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `POST /repos/{o}/{r}/pulls`：创建 PR。
     pub async fn pulls_create(
         &self,
         owner: &str,
@@ -670,6 +746,7 @@ impl GithubClient {
         self.send_body("POST", &path, Some(payload.clone())).await
     }
 
+/// `PATCH /repos/{o}/{r}/pulls/{n}`：更新 PR（标题/base 等字段）。
     pub async fn pulls_update(
         &self,
         owner: &str,
@@ -686,6 +763,7 @@ impl GithubClient {
         self.send_body("PATCH", &path, Some(payload.clone())).await
     }
 
+/// `PUT /repos/{o}/{r}/pulls/{n}/merge`：按指定 merge_method 合并 PR。
     pub async fn pulls_merge(
         &self,
         owner: &str,
@@ -707,6 +785,7 @@ impl GithubClient {
         .await
     }
 
+/// `GET /repos/{o}/{r}/pulls/{n}/files`：PR 变更文件（每页 100）。
     pub async fn pulls_list_files(
         &self,
         owner: &str,
@@ -723,6 +802,7 @@ impl GithubClient {
             .await
     }
 
+/// `GET /repos/{o}/{r}/pulls/{n}/comments`：PR review 行内评论（每页 100）。
     pub async fn pulls_list_review_comments(
         &self,
         owner: &str,
@@ -741,6 +821,7 @@ impl GithubClient {
 
     /// `GET /repos/{owner}/{repo}/pulls/{n}` with
     /// `accept: application/vnd.github.v3.diff` — returns the diff text.
+/// 以 diff 媒体类型请求 PR 详情，返回 diff 文本；>= 400 转为错误。
     pub async fn pulls_get_diff(
         &self,
         owner: &str,
@@ -769,6 +850,7 @@ impl GithubClient {
 
     // ---- checks / actions ----
 
+/// `GET /repos/{o}/{r}/commits/{ref}/check-runs`：commit 的 check runs。
     pub async fn checks_list_for_ref(
         &self,
         owner: &str,
@@ -785,6 +867,7 @@ impl GithubClient {
             .await
     }
 
+/// `GET /repos/{o}/{r}/check-runs/{id}/annotations`：单条 check 的注解，分页获取。
     pub async fn checks_list_annotations(
         &self,
         owner: &str,
@@ -807,6 +890,7 @@ impl GithubClient {
         .await
     }
 
+/// `GET /repos/{o}/{r}/actions/runs/{id}/jobs`：workflow run 的 job 列表。
     pub async fn actions_list_jobs(
         &self,
         owner: &str,
@@ -824,6 +908,7 @@ impl GithubClient {
 
     // ---- issues ----
 
+/// `GET /repos/{o}/{r}/issues`：按 state 分页列出 issue；返回数据与响应头。
     pub async fn issues_list_for_repo(
         &self,
         owner: &str,
@@ -848,6 +933,7 @@ impl GithubClient {
         .await
     }
 
+/// `GET /repos/{o}/{r}/issues/{n}`：单个 issue（PR 也复用该端点）。
     pub async fn issues_get(
         &self,
         owner: &str,
@@ -863,6 +949,7 @@ impl GithubClient {
         self.get_json(&path, Vec::new()).await
     }
 
+/// `GET /repos/{o}/{r}/issues/{n}/comments`：issue/PR 顶层评论（每页 100）。
     pub async fn issues_list_comments(
         &self,
         owner: &str,
@@ -881,6 +968,7 @@ impl GithubClient {
 
     // ---- search ----
 
+/// `GET /search/issues`：issue/PR 搜索；`q` 使用加号切分的专用编码。
     pub async fn search_issues(
         &self,
         q: &str,
@@ -911,6 +999,8 @@ impl GithubClient {
 
     // ---- graphql ----
 
+/// `POST /graphql`：执行 GraphQL 查询/变更；响应 body 中的 `errors` 数组
+/// 转为携带 HTTP 状态的 `GithubError`（对齐 octokit graphql 的抛错行为）。
     pub async fn graphql(&self, query: &str, variables: Value) -> Result<Value, GithubError> {
         let payload = serde_json::json!({ "query": query, "variables": variables });
         let req = self.build_request(
@@ -945,10 +1035,12 @@ impl GithubClient {
     }
 }
 
+/// 客户端单元测试：错误消息形状、编码规则与 URL 构造均对齐 octokit。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+/// 构造 JSON content-type 的响应。
     fn json_response(status: u16, body: Value) -> GithubResponse {
         GithubResponse {
             status,
@@ -960,6 +1052,7 @@ mod tests {
         }
     }
 
+/// 用同步应答函数构造 fake 传输的客户端。
     fn fake(
         responder: impl Fn(&GithubRequest) -> Result<GithubResponse, GithubError>
         + Send
@@ -972,6 +1065,7 @@ mod tests {
         }))
     }
 
+/// 验证：422 校验失败体的错误消息拼出 message 与 errors 字段子串。
     #[tokio::test]
     async fn error_message_mirrors_octokit_validation_failed_shape() {
         let data = serde_json::json!({
@@ -987,6 +1081,7 @@ mod tests {
         assert!(error.message.contains("\"code\":\"invalid\""));
     }
 
+/// 验证：documentation_url 以 " - <url>" 后缀拼进错误消息。
     #[tokio::test]
     async fn error_message_uses_documentation_url_suffix() {
         let data = serde_json::json!({
@@ -998,12 +1093,14 @@ mod tests {
         assert_eq!(error.message, "Not Found - https://docs.github.com");
     }
 
+/// 验证：普通 token 与 JWT 分别得到 `token`/`bearer` 前缀。
     #[test]
     fn authorization_prefix_matches_octokit() {
         assert_eq!(authorization_header("abc"), "token abc");
         assert_eq!(authorization_header("a.b.c"), "bearer a.b.c");
     }
 
+/// 验证：路径段、query 组件与 search q 的编码与 octokit 逐字节一致。
     #[test]
     fn path_and_query_encoding_match_octokit() {
         assert_eq!(encode_path_segment("feat/x"), "feat%2Fx");
@@ -1019,6 +1116,7 @@ mod tests {
         assert_eq!(encode_search_query("c++ lang"), "c++%20lang");
     }
 
+/// 验证：pulls.list 生成的 URL 与请求头形状和 octokit 相同。
     #[tokio::test]
     async fn pulls_list_builds_octokit_url_shape() {
         let client = fake(|req| {
@@ -1043,6 +1141,7 @@ mod tests {
         assert_eq!(data, serde_json::json!([]));
     }
 
+/// 验证：search 的 q 参数按 `+` 切分编码且空格转 `%20`。
     #[tokio::test]
     async fn search_issues_encodes_q_with_plus_splitting() {
         let client = fake(|req| {
@@ -1062,6 +1161,7 @@ mod tests {
         assert_eq!(data["total_count"], 0);
     }
 
+/// 验证：graphql POST 的 body 携带 query 与 variables。
     #[tokio::test]
     async fn graphql_posts_query_and_variables() {
         let client = fake(|req| {
@@ -1086,6 +1186,7 @@ mod tests {
             .unwrap();
     }
 
+/// 验证：diff 等 text 媒体类型的成功响应按文本返回。
     #[tokio::test]
     async fn non_json_success_body_parses_as_text() {
         let client = fake(|_| {

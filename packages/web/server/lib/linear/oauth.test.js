@@ -1,3 +1,10 @@
+/**
+ * Linear OAuth 授权流程（oauth.js）的测试套件。
+ *
+ * 验证 PKCE 授权 URL 的生成与 pending state 管理、未知 state 与缺失 code 的回调拒绝、
+ * 授权码 + 原 PKCE verifier 的令牌交换、refresh token 轮换的持久化，
+ * 以及云端 broker 中转（claim callback）场景下的本地交换。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -11,8 +18,10 @@ import {
   clearPendingAuthorizationsForTests,
 } from './oauth.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-oauth-'));
 
+/** PKCE 授权发起、回调消费与 broker 中转的行为。 */
 describe('Linear OAuth PKCE', () => {
   let dataDir;
   let previousDataDir;
@@ -157,6 +166,7 @@ describe('Linear OAuth PKCE', () => {
   });
 });
 
+/** 恢复环境变量：previous 为 undefined 表示原本不存在，直接删除该变量。 */
 function restoreEnv(name, previous) {
   if (previous === undefined) {
     delete process.env[name];

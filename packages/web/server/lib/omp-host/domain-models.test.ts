@@ -5,6 +5,13 @@
 // throwaway agent directories so cloneForCwd's storage-sharing and
 // project-layer reload are exercised against actual persistence.
 
+/**
+ * domain-models 测试（中文摘要）：验证按目录键控的 Settings 拓扑、
+ * /omp/models payload 形状、凭据脱敏、project 范围写限制、旧版
+ * defaultModel 导入，以及 revision/事件语义。使用真实 SDK Settings 类
+ * 与一次性 agent 目录，让 cloneForCwd 的存储共享与项目层重载走真实
+ * 持久化路径。
+ */
 import { describe, test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +31,9 @@ import {
 } from './domain-models.ts';
 import type { SettingsChangesInput, SettingValue } from './domain-models.ts';
 
+/** 测试中创建的一次性目录清单，afterAll 统一清理。 */
 const cleanupDirs: string[] = [];
+/** 新建一次性目录（登记进 cleanupDirs）并返回其路径。 */
 const makeDir = () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'omp-domain-models-'));
   cleanupDirs.push(dir);
@@ -32,11 +41,15 @@ const makeDir = () => {
 };
 
 /** Partial route ctx the direct handler invocations pass. */
+/** 直连 handler 传入的部分路由 ctx 视图（中文）：只带 params。 */
 type ModelsCtxLite = { params?: Record<string, string> };
+/** 发布事件 payload 的读取视图：只断言 revision。 */
 type PublishedPayload = { revision?: number };
+/** 发布事件 scope 的读取视图：directory/durable。 */
 type PublishedScope = { directory?: string; durable?: boolean };
 
 /** Write `<dir>/.omp/config.yml` with a modelRoles subtree. */
+/** 写入 <dir>/.omp/config.yml 的 modelRoles 子树（中文补充）。 */
 const writeProjectConfig = (dir: string, roles: Record<string, string>) => {
   mkdirSync(path.join(dir, '.omp'), { recursive: true });
   const body = Object.entries(roles)
@@ -45,6 +58,7 @@ const writeProjectConfig = (dir: string, roles: Record<string, string>) => {
   writeFileSync(path.join(dir, '.omp', 'config.yml'), `modelRoles:\n${body}\n`);
 };
 
+/** 读取项目层 config.yml 文本；不存在返回 null。 */
 const readProjectConfig = (dir: string) => {
   try {
     return readFileSync(path.join(dir, '.omp', 'config.yml'), 'utf8');
@@ -53,6 +67,7 @@ const readProjectConfig = (dir: string) => {
   }
 };
 
+/** 读取全局 config.yml 文本；不存在返回 null。 */
 const readGlobalConfig = (agentDir: string) => {
   try {
     return readFileSync(path.join(agentDir, 'config.yml'), 'utf8');
@@ -63,6 +78,8 @@ const readGlobalConfig = (agentDir: string) => {
 
 /** Fresh env: isolated agentDir + boot Settings (loadIsolated — no process
  * singleton pollution) + store. Project layers written before boot load. */
+/** 构造全新环境（中文）：隔离 agentDir + loadIsolated 引导 Settings + store；
+ * 项目层在引导前写盘，避免进程级单例污染。 */
 const makeEnv = async ({ projectA = null, projectB = null }: { projectA?: Record<string, string> | null; projectB?: Record<string, string> | null } = {}) => {
   const agentDir = makeDir();
   const dirA = makeDir();
@@ -74,11 +91,13 @@ const makeEnv = async ({ projectA = null, projectB = null }: { projectA?: Record
   return { agentDir, dirA, dirB, boot, store };
 };
 
+/** 拆除环境：disposeAll 释放 store 派生实例，取消引导实例的挂起保存。 */
 const disarm = async (env: Awaited<ReturnType<typeof makeEnv>>) => {
   await env.store.disposeAll();
   env.boot.cancelPendingSaves();
 };
 
+/** 统一清理全部一次性目录（Windows 文件锁下尽力而为）。 */
 afterAll(async () => {
   for (const dir of cleanupDirs) {
     try {
@@ -89,6 +108,7 @@ afterAll(async () => {
   }
 });
 
+// 按目录键控的 Settings 实例：boot 目录复用引导实例，克隆共享存储但重载各自项目层。
 describe('createSettingsStore: per-directory keyed instances (06 §5.1 R2, R6)', () => {
   test('boot directory resolves to the boot instance; clones share storage but reload the project layer', async () => {
     const env = await makeEnv({
@@ -137,6 +157,7 @@ describe('createSettingsStore: per-directory keyed instances (06 §5.1 R2, R6)',
   });
 });
 
+// buildModelsPayload：roles 快照、cycleOrder、enabledModels、fallback 链与旧默认值的投影形状。
 describe('buildModelsPayload (01 §5.3(1))', () => {
   test('roles snapshot, cycleOrder, enabledModels, fallbackChains, legacyDefaults', async () => {
     const env = await makeEnv();
@@ -245,6 +266,7 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
   });
 });
 
+// 凭据脱敏：PUT 回显只报 configured，GET 遮蔽 value/default，事件负载不含明文。
 describe('credential sanitization (R9: GET + PUT echo)', () => {
   test('PUT writes a credential and echoes only { configured: true }', async () => {
     const env = await makeEnv();
@@ -293,6 +315,7 @@ describe('credential sanitization (R9: GET + PUT echo)', () => {
   });
 });
 
+// PUT /omp/settings 写路由：project 仅允许 modelRoles.*，global 恒落在 boot 实例并失效缓存克隆。
 describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
   test('project scope accepts only modelRoles.<role> keys', async () => {
     const env = await makeEnv();
@@ -420,6 +443,7 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
   });
 });
 
+// PUT 校验：未知 key、类型违规、终态专用 key 与非法 scope/body 的拒绝路径。
 describe('PUT validation (06 §5.3.1)', () => {
   test('unknown keys and type violations are rejected without echoing values', async () => {
     const env = await makeEnv();
@@ -479,6 +503,7 @@ describe('PUT validation (06 §5.3.1)', () => {
   });
 });
 
+// 旧版 defaultModel 迁移：只读检测 + 不覆盖导入（含 modelRoleStorage=project 场景）。
 describe('legacy defaultModel migration (01 §5.8, R12)', () => {
   test('detectLegacyDefaultModel is read-only and parse-gated', async () => {
     const env = await makeEnv();
@@ -556,6 +581,7 @@ describe('legacy defaultModel migration (01 §5.8, R12)', () => {
   });
 });
 
+// revision 单调性与 omp.settings.updated 事件：失败不递增、空变更不发布、负载不含凭据。
 describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
   test('revision is monotonic; failures do not bump; payload carries keys/origin only', async () => {
     const env = await makeEnv();
@@ -626,6 +652,7 @@ describe('revision + omp.settings.updated events (06 §5.3.5/§5.4)', () => {
   });
 });
 
+// buildSettingsPayload：schema 驱动的 tabs/keys 形状、modelRoles 记录视图与条件隐藏。
 describe('buildSettingsPayload (06 §5.2)', () => {
   test('schema-driven shape: tabs, defs, defaults, modelRoles record view', async () => {
     const env = await makeEnv();
@@ -703,6 +730,7 @@ describe('buildSettingsPayload (06 §5.2)', () => {
   });
 });
 
+// 路由挂载：GET /omp/models、GET/PUT /omp/settings 三条路由的注册与直连 handler 行为。
 describe('route mounting', () => {
   test('GET /omp/models, GET/PUT /omp/settings wire to the store', async () => {
     const env = await makeEnv();

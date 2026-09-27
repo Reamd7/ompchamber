@@ -1,6 +1,13 @@
+/**
+ * 统一 diff 解析（hunks.js）的单元测试：文件/hunk 拆分与行号计数、每个
+ * hunk 的独立可用 patch、重解析 id 稳定性与唯一性、邻块改动不影响未动块、
+ * scope 区分、文件内字节级重复 hunk 去重、重命名/删除/二进制识别，以及
+ * 空输入容错。
+ */
 import { describe, expect, it } from 'vitest';
 import { parseDiffFiles, indexHunks, listHunkIds } from './hunks.js';
 
+/** 测试基准 diff：两个文件、三个 hunk（修改两处 + 新增文件）。 */
 const TWO_FILE_DIFF = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
 --- a/src/a.ts
@@ -23,6 +30,7 @@ index 0000000..3333333
 +export const y = 2;
 `;
 
+/** parseDiffFiles：拆分、计数、独立 patch、id 稳定性与各种边界输入。 */
 describe('parseDiffFiles', () => {
   it('splits files and hunks with line ranges and counts', () => {
     const { files } = parseDiffFiles(TWO_FILE_DIFF, 'working');
@@ -138,6 +146,7 @@ Binary files a/logo.png and b/logo.png differ
   });
 });
 
+/** indexHunks：每个 id 都映射到带所属文件路径的 hunk。 */
 describe('indexHunks', () => {
   it('maps every id to its hunk with the owning file path', () => {
     const { files } = parseDiffFiles(TWO_FILE_DIFF, 'working');

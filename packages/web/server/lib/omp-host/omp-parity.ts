@@ -11,27 +11,47 @@
 // inlined by every bundler (including `bun build --compile`, where a
 // runtime readFileSync against __dirname looks into the bunfs root and the
 // file is not there — capabilities 500 on every packaged build).
+/**
+ * omp-parity 基础：capability 协商 + 事件注册表访问
+ * （spec 05 §5.2.2/§5.2.3，master D6-R1/R2）。`GET /api/omp/capabilities`
+ * 是唯一的服务端裁决开关板：此处定义的 feature 键门控每个 /api/omp
+ * 域表面，事件 schema 版本协商 omp 事件通道；消费方必须把缺键或 404
+ * 视为「feature 关闭」并降级到 wire-only 行为。
+ */
 import ompEventRegistry from './omp-event-registry.json' with { type: 'json' };
 
+/** 事件注册表中单个 omp 事件的条目：持久性、作用域与关联端点。 */
 export interface OmpEventRegistryEntry {
+  /** 是否 durable（重连可重放）。 */
   durable: boolean;
+  /** 作用域（如 session/directory/global）。 */
   scope: string;
+  /** 断线重连后可恢复该事件的快照端点列表。 */
   snapshotEndpoints: string[];
+  /** 引入该事件的最低版本。 */
   since: string;
+  /** 门控该事件的 capability 键（可选）。 */
   gated?: string;
+  /** 是否控制类事件（可选）。 */
   control?: boolean;
 }
 
+/** 事件注册表清单：schema 版本 + 事件名 → 条目。 */
 export interface OmpEventRegistryManifest {
+  /** 事件 schema 版本串。 */
   eventSchema: string;
+  /** 事件名 → 注册表条目。 */
   events: Record<string, OmpEventRegistryEntry>;
 }
 
+/** 读取构建期内联的 omp 事件注册表清单。 */
 export const loadOmpEventRegistry = (): OmpEventRegistryManifest => {
   const manifest = ompEventRegistry;
   return { eventSchema: manifest.eventSchema, events: manifest.events };
 };
 
+/** feature 开关表，服务端裁决（master R2）：域落地时在此翻键；
+ *  false 键的端点保持显式 501（见 featureUnavailable）。 */
 /**
  * Feature flags, server-adjudicated (master R2). A domain landing flips its
  * key here; `false` keys keep their endpoints answering explicit 501s with
@@ -89,13 +109,19 @@ export const ompFeatures = () => ({
   'mcp.readOnly': true,
 }) satisfies OmpFeatures;
 
+/** GET /api/omp/capabilities 的响应体。 */
 export interface OmpCapabilities {
+  /** capability 载荷版本（当前为 1）。 */
   version: number;
+  /** 协商的 omp 事件 schema 版本。 */
   eventSchema: string;
+  /** 全量 feature 开关表。 */
   features: OmpFeatures;
+  /** 客户端最低兼容 UI 版本。 */
   minUiVersion: string;
 }
 
+/** 组装 capability 载荷：版本 + 事件 schema + 当前 feature 表。 */
 export const buildCapabilities = (): OmpCapabilities => {
   const registry = loadOmpEventRegistry();
   return {
@@ -106,15 +132,19 @@ export const buildCapabilities = (): OmpCapabilities => {
   };
 };
 
+/** feature 开关表类型：只读的键 → 布尔映射。 */
 export type OmpFeatures = { readonly [key: string]: boolean };
 
+/** 判定某 capability 载荷上指定 feature 键是否开启（缺键即关闭）。 */
 export const featureEnabled = (capabilities: OmpCapabilities | null | undefined, key: string): boolean =>
   Boolean(capabilities?.features?.[key]);
 
+/** 被门控关闭的域表面的显式 501 响应体（响亮失败，R2）。 */
 /** Explicit 501 body for gated-off domain surfaces (fail loudly, R2). */
 export const featureUnavailable = (key: string): Response =>
   Response.json({ error: `${key}-unavailable` }, { status: 501 });
 
+/** catch 变量探针：抛出值携带 message 时取之，否则渲染原值。 */
 /** Catch-variable probe: the message string when the thrown value carries one, else the value rendered. */
 export const errorText = (cause: unknown): string => {
   if (cause instanceof Error) return cause.message;
@@ -122,6 +152,7 @@ export const errorText = (cause: unknown): string => {
   return String((cause as { message?: unknown } | null | undefined)?.message ?? cause);
 };
 
+/** catch 变量探针：存在 NodeJS 风格 code 字符串时取之，否则 undefined。 */
 /** Catch-variable probe: a NodeJS-style code string when present. */
 export const errorCode = (cause: unknown): string | undefined => {
   // SAFETY: NodeJS fs/process errors carry a string code field; absent otherwise.

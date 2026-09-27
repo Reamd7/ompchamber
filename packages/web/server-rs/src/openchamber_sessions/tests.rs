@@ -3,6 +3,11 @@
 //! mock) drives the route shapes, ordering, and error mapping; a spawned
 //! HTTP fake engine exercises the production wiring (URLs, headers, goal
 //! PATCH) through `HttpEngineClient`.
+//! （中文说明）本文件是路由 + 服务测试，对齐
+//! `openchamber-sessions/routes.test.js`：用 trait 级假 engine（对应 JS
+//! 的 `local-engine-client` mock + fetch mock）驱动路由形状、调用顺序与
+//! 错误映射；再用真实起动的 HTTP 假 engine，通过 `HttpEngineClient`
+//! 验证生产接线（URL、请求头、goal PATCH）。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,14 +32,17 @@ use super::client::{
 use super::routes::{self, SessionState};
 use super::service::{GoalCall, SessionDeps, SessionService, WorktreeOps};
 
+/// 共享调用日志：各替身以固定字符串记录动作，供顺序断言。
 type Log = Arc<Mutex<Vec<String>>>;
 
+/// 追加一条日志；锁中毒时也照常取值，测试不因 panic 残骸卡死。
 fn log_push(log: &Log, entry: &str) {
     log.lock()
         .unwrap_or_else(|e| e.into_inner())
         .push(entry.to_string());
 }
 
+/// 返回某条日志首次出现的位置，用于调用顺序断言。
 fn log_position(log: &Log, entry: &str) -> Option<usize> {
     log.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -42,12 +50,15 @@ fn log_position(log: &Log, entry: &str) -> Option<usize> {
         .position(|item| item == entry)
 }
 
+/// 加锁并从 poisoning 中恢复（返回 guard）；测试替身统一用它。
 fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 临时目录序号，保证并行测试的目录互不冲突。
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// 创建唯一的临时目录（标签 + 进程号 + 自增序号）。
 fn temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-ocs-{label}-{}-{}",
@@ -62,28 +73,47 @@ fn temp_dir(label: &str) -> PathBuf {
 // Fake engine (JS: the local-engine-client mock + selection-input fetch mock)
 // ---------------------------------------------------------------------------
 
+/// 假 engine 的可变内核：预设消息、命令与各失败开关。
 struct FakeEngineState {
+    /// `session_messages` 返回的既有消息。
     existing_messages: Vec<Value>,
+    /// "落盘 prompt" 的自增序号，用于生成 `msg_dispatched_N`。
     dispatched_seq: usize,
+    /// 派发的 prompt 是否出现在消息列表里（模拟"已落地"）。
     land_prompts: bool,
+    /// `command_list` 返回的斜杠命令定义。
     commands: Vec<Value>,
+    /// 预设的 session_command 失败消息。
     command_error: Option<String>,
+    /// 预设的 prompt_async 失败消息。
     prompt_error: Option<String>,
 }
 
+/// trait 级假 engine（JS：local-engine-client mock + fetch mock）：记录
+/// 每类调用并把动作写入共享日志。
 #[derive(Clone)]
 struct FakeEngine {
+    /// 共享调用日志。
     log: Log,
+    /// 可变内核。
     state: Arc<Mutex<FakeEngineState>>,
+    /// 记录 (session_id, directory, limit)。
     messages_calls: Arc<Mutex<Vec<(String, String, u32)>>>,
+    /// 记录 (session_id, directory, message_id)。
     fork_calls: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
+    /// 记录斜杠命令派发参数。
     command_calls: Arc<Mutex<Vec<SessionCommandParams>>>,
+    /// 记录 fetch_json 的请求路径。
     fetch_calls: Arc<Mutex<Vec<String>>>,
+    /// 记录 (directory, title)。
     create_session_calls: Arc<Mutex<Vec<(String, Option<String>)>>>,
+    /// 记录 (session_id, directory, payload)。
     prompt_payloads: Arc<Mutex<Vec<(String, String, Value)>>>,
 }
 
+/// 构造器与预设注入方法。
 impl FakeEngine {
+    /// 初始化空内核与各空记录表。
     fn new(log: Log) -> Self {
         Self {
             log,
@@ -104,28 +134,36 @@ impl FakeEngine {
         }
     }
 
+    /// 预设既有消息列表。
     fn set_existing_messages(&self, messages: Vec<Value>) {
         lock(&self.state).existing_messages = messages;
     }
 
+    /// 预设斜杠命令定义。
     fn set_commands(&self, commands: Vec<Value>) {
         lock(&self.state).commands = commands;
     }
 
+    /// 预设 session_command 的失败消息。
     fn set_command_error(&self, error: &str) {
         lock(&self.state).command_error = Some(error.to_string());
     }
 
+    /// 预设 prompt_async 的失败消息。
     fn set_prompt_error(&self, error: &str) {
         lock(&self.state).prompt_error = Some(error.to_string());
     }
 
+    /// 控制派发的 prompt 是否"落地"到消息列表。
     fn set_land_prompts(&self, land: bool) {
         lock(&self.state).land_prompts = land;
     }
 
     /// `selectionInputResponse`: the providers/agents/config bodies every
     /// prompt-dispatching fetch mock must answer.
+    /// 对应 JS 的 `selectionInputResponse`：每个会触发 prompt 派发的 fetch
+    /// mock 都要能回答的 providers/agents/config 响应体；未匹配的路径返回
+    /// `None`（由调用方回退默认值）。
     fn selection_response(path: &str) -> Option<Value> {
         if path.starts_with("/config/providers") {
             return Some(json!({
@@ -149,7 +187,9 @@ impl FakeEngine {
     }
 }
 
+/// 各 engine 接口的假实现：记录调用、写日志、按预设应答或失败。
 impl EngineClient for FakeEngine {
+    /// 返回既有消息；`land_prompts` 开启时追加一条新派发的用户消息。
     fn session_messages(
         &self,
         session_id: &str,
@@ -177,6 +217,7 @@ impl EngineClient for FakeEngine {
         Box::pin(async move { Ok(EngineReply::ok(Value::Array(messages))) })
     }
 
+    /// 记录 fork 调用并固定返回 `ses_fork` 会话。
     fn session_fork(
         &self,
         session_id: &str,
@@ -196,6 +237,7 @@ impl EngineClient for FakeEngine {
         })
     }
 
+    /// 记录斜杠命令派发；预设了错误则返回 `Err`。
     fn session_command(
         &self,
         _session_id: &str,
@@ -212,12 +254,14 @@ impl EngineClient for FakeEngine {
         })
     }
 
+    /// 返回预设的斜杠命令定义列表。
     fn command_list(&self, _directory: &str) -> BoxFut<'_, Result<EngineReply, String>> {
         log_push(&self.log, "engine.command_list");
         let commands = lock(&self.state).commands.clone();
         Box::pin(async move { Ok(EngineReply::ok(Value::Array(commands))) })
     }
 
+    /// 记录路径并返回 selection 响应；未匹配路径回退调用方默认值。
     fn fetch_json(&self, path: &str, _directory: &str, fallback: Value) -> BoxFut<'_, Value> {
         lock(&self.fetch_calls).push(path.to_string());
         log_push(&self.log, &format!("engine.fetch_json:{path}"));
@@ -225,6 +269,7 @@ impl EngineClient for FakeEngine {
         Box::pin(async move { body })
     }
 
+    /// 记录 (directory, title) 并固定返回 `ses_123`。
     fn create_session(
         &self,
         directory: &str,
@@ -235,6 +280,7 @@ impl EngineClient for FakeEngine {
         Box::pin(async move { Ok("ses_123".to_string()) })
     }
 
+    /// 记录 prompt 载荷；预设了错误则返回 `Err`。
     fn prompt_async(
         &self,
         session_id: &str,
@@ -261,14 +307,22 @@ impl EngineClient for FakeEngine {
 // Fake worktrees (JS: the `git/index.js` mock)
 // ---------------------------------------------------------------------------
 
+/// 假 worktree 实现（JS：`git/index.js` mock）：记录创建调用并按队列
+/// 回放 bootstrap 状态。
 struct FakeWorktrees {
+    /// 共享调用日志。
     log: Log,
+    /// create 固定返回的 worktree 记录。
     record: Value,
+    /// 记录 (directory, input)。
     create_calls: Arc<Mutex<Vec<(String, Value)>>>,
+    /// 预设的 bootstrap 状态队列（耗尽后回退 ready）。
     statuses: Arc<Mutex<Vec<Value>>>,
 }
 
+/// create 与 bootstrap_status 的假实现，均记录日志。
 impl WorktreeOps for FakeWorktrees {
+    /// 记录调用并返回固定 worktree 记录。
     fn create(&self, directory: &str, input: &Value) -> BoxFut<'_, Result<Value, String>> {
         lock(&self.create_calls).push((directory.to_string(), input.clone()));
         log_push(&self.log, "worktree.create");
@@ -276,6 +330,8 @@ impl WorktreeOps for FakeWorktrees {
         Box::pin(async move { Ok(record) })
     }
 
+    /// 逐条弹出预设状态；队列空了回退 ready（对齐 JS 的
+    /// `statuses.shift() || last`）。
     fn bootstrap_status(&self, _directory: &str) -> BoxFut<'_, Result<Value, String>> {
         log_push(&self.log, "worktree.status");
         // JS test harness: `statuses.shift() || last`.
@@ -293,20 +349,31 @@ impl WorktreeOps for FakeWorktrees {
 // Harness (JS: `createApp`)
 // ---------------------------------------------------------------------------
 
+/// 测试装配（JS：`createApp`）：真实路由 + 假依赖，暴露各记录表供断言。
 struct Harness {
+    /// 被测路由。
     router: Router,
+    /// 共享调用日志。
     log: Log,
+    /// 假 engine。
     engine: FakeEngine,
+    /// 可预置的 bootstrap 状态队列。
     worktree_statuses: Arc<Mutex<Vec<Value>>>,
+    /// worktree 创建调用记录。
     create_worktree_calls: Arc<Mutex<Vec<(String, Value)>>>,
+    /// goal 元数据创建调用记录。
     goal_calls: Arc<Mutex<Vec<GoalCall>>>,
+    /// emit 出的 session-created 事件。
     events: Arc<Mutex<Vec<Value>>>,
 }
 
+/// 默认装配：settings 里带一个项目 `/repo/app`。
 fn harness() -> Harness {
     harness_with(json!({ "projects": [{ "id": "proj_1", "path": "/repo/app" }] }))
 }
 
+/// 用自定义 settings 装配：假 engine/worktree、直通的目录校验与就绪等待、
+/// 记录型 goal 创建与事件发射，组合成 `SessionDeps` 并挂上真实路由。
 fn harness_with(settings: Value) -> Harness {
     let log: Log = Arc::new(Mutex::new(Vec::new()));
     let engine = FakeEngine::new(Arc::clone(&log));
@@ -381,6 +448,7 @@ fn harness_with(settings: Value) -> Harness {
     }
 }
 
+/// 向路由发一个 JSON POST，返回 (状态码, 解析后的 body)。
 async fn post(router: &Router, uri: &str, body: &Value) -> (StatusCode, Value) {
     let request = Request::builder()
         .method("POST")
@@ -397,12 +465,15 @@ async fn post(router: &Router, uri: &str, body: &Value) -> (StatusCode, Value) {
     (status, value)
 }
 
+/// 会话创建路由的 URI。
 const CREATE_URI: &str = "/api/ompchamber/sessions";
 
 // ---------------------------------------------------------------------------
 // Route tests (JS parity)
 // ---------------------------------------------------------------------------
 
+/// 验证：仅带目录与标题创建会话——engine 收到一次 create，不派发
+/// prompt，响应不含 model 字段。
 #[tokio::test]
 async fn creates_a_session_for_a_directory() {
     let h = harness();
@@ -427,6 +498,8 @@ async fn creates_a_session_for_a_directory() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：创建成功后发射 session-created 事件，携带 sessionID/目录/标题
+/// 与两个派发标志（createdAt 为数值时间戳）。
 #[tokio::test]
 async fn emits_session_created_event_after_creating_session() {
     let h = harness();
@@ -448,6 +521,8 @@ async fn emits_session_created_event_after_creating_session() {
     assert!(event["createdAt"].is_u64());
 }
 
+/// 验证：prompt 省略 model/agent 时从 settings 默认值解析（并确实拉取了
+/// selection 输入），载荷与响应都带上默认选择。
 #[tokio::test]
 async fn resolves_default_model_and_agent_when_prompt_omits_them() {
     let h = harness_with(json!({
@@ -482,6 +557,8 @@ async fn resolves_default_model_and_agent_when_prompt_omits_them() {
     assert_eq!(payloads[0].2["agent"], "build");
 }
 
+/// 验证：显式给出 model 时派发初始 prompt；无 agent 配置时默认选第一个
+/// primary agent（build）。
 #[tokio::test]
 async fn dispatches_initial_prompt_when_model_is_provided() {
     let h = harness();
@@ -503,6 +580,9 @@ async fn dispatches_initial_prompt_when_model_is_provided() {
     assert_eq!(payloads[0].2["agent"], "build");
 }
 
+/// 验证：goal 模式先创建 goal 元数据再派发 prompt；prompt 载荷追加
+/// synthetic 引言（含 "Goal mode is active" 与 token 预算），响应回带
+/// goalEnabled/goalTokenBudget。
 #[tokio::test]
 async fn creates_goal_metadata_before_dispatching_the_initial_goal_prompt() {
     let h = harness();
@@ -556,6 +636,8 @@ async fn creates_goal_metadata_before_dispatching_the_initial_goal_prompt() {
     assert_eq!(body["promptDispatched"], true);
 }
 
+/// 验证：非法 goal 请求（开 goal 缺 prompt、裸 goalTokenBudget、预算
+/// 越界）在触碰 engine 之前就被 400 拒绝，且日志为空。
 #[tokio::test]
 async fn rejects_invalid_goal_requests_before_creating_a_session() {
     let h = harness();
@@ -581,6 +663,8 @@ async fn rejects_invalid_goal_requests_before_creating_a_session() {
     assert!(lock(&h.log).is_empty(), "no engine contact allowed");
 }
 
+/// 验证：带 worktree 的创建先建 worktree，会话与 prompt 都落在 worktree
+/// 目录（`/repo/worktrees/side-task`）里。
 #[tokio::test]
 async fn creates_a_worktree_before_creating_a_session() {
     let h = harness();
@@ -622,6 +706,8 @@ async fn creates_a_worktree_before_creating_a_session() {
     assert_eq!(payloads[0].1, "/repo/worktrees/side-task");
 }
 
+/// 验证：会话创建被 bootstrap 轮询挡在后面，顺序为 worktree.status →
+/// engine.create_session → engine.prompt_async。
 #[tokio::test]
 async fn waits_for_the_worktree_bootstrap_before_creating_the_session() {
     let h = harness();
@@ -667,6 +753,8 @@ async fn waits_for_the_worktree_bootstrap_before_creating_the_session() {
     assert!(create_at < prompt_at);
 }
 
+/// 验证：bootstrap 失败时创建以 500 失败并带回 "Worktree bootstrap
+/// failed: …"，不派发 prompt。
 #[tokio::test]
 async fn fails_the_create_when_the_worktree_bootstrap_failed() {
     let h = harness();
@@ -697,6 +785,8 @@ async fn fails_the_create_when_the_worktree_bootstrap_failed() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：向既有会话发送 goal prompt 时先建 goal 元数据再派发，基线消息
+/// ID 取最后一条助手消息，variant 原样透传。
 #[tokio::test]
 async fn sends_a_goal_prompt_to_an_existing_session_after_creating_goal_metadata() {
     let h = harness();
@@ -744,6 +834,8 @@ async fn sends_a_goal_prompt_to_an_existing_session_after_creating_goal_metadata
     assert_eq!(payloads[0].2["variant"], "high");
 }
 
+/// 验证：斜杠命令 prompt 的 goal 目标取展开后的模板（$ARGUMENTS 已
+/// 替换）；goal 先建、命令后派发，且不再走 prompt_async。
 #[tokio::test]
 async fn uses_the_expanded_slash_command_template_as_the_goal_objective() {
     let h = harness();
@@ -787,6 +879,8 @@ async fn uses_the_expanded_slash_command_template_as_the_goal_objective() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：send 省略 selection 时复用会话上一次的用户消息选择
+/// （model/agent/variant），完全不访问 selection 端点。
 #[tokio::test]
 async fn reuses_the_previous_session_selection_when_send_omits_selection() {
     let h = harness();
@@ -837,6 +931,8 @@ async fn reuses_the_previous_session_selection_when_send_omits_selection() {
     );
 }
 
+/// 验证：fork 透传 messageId，prompt 派发到新会话 `ses_fork`，基线/
+/// 落地查询都指向 fork，且发射带 sourceSessionID 的创建事件。
 #[tokio::test]
 async fn forks_from_a_message_dispatches_the_prompt_and_emits_the_new_session() {
     let h = harness();
@@ -897,6 +993,8 @@ async fn forks_from_a_message_dispatches_the_prompt_and_emits_the_new_session() 
     assert_eq!(events[0]["promptDispatched"], true);
 }
 
+/// 验证：send/fork 缺 prompt 时在触碰 engine 之前被 400 拒绝
+///（"prompt is required"）。
 #[tokio::test]
 async fn rejects_send_and_fork_without_a_prompt_before_calling_the_engine() {
     let h = harness();
@@ -912,6 +1010,8 @@ async fn rejects_send_and_fork_without_a_prompt_before_calling_the_engine() {
     assert!(lock(&h.engine.fork_calls).is_empty());
 }
 
+/// 验证：fork 成功后 prompt 派发失败时上报部分结果：partial + "fork-created"
+/// + 新会话 ID + 目录。
 #[tokio::test]
 async fn reports_the_forked_session_when_prompt_dispatch_fails() {
     let h = harness();
@@ -937,6 +1037,7 @@ async fn reports_the_forked_session_when_prompt_dispatch_fails() {
     assert_eq!(body["error"], "prompt_async failed (500): dispatch failed");
 }
 
+/// 验证：goal 已配置后派发失败时上报 "goal-configured" 部分结果。
 #[tokio::test]
 async fn reports_goal_configured_partial_when_dispatch_fails_after_goal_creation() {
     let h = harness();
@@ -961,6 +1062,7 @@ async fn reports_goal_configured_partial_when_dispatch_fails_after_goal_creation
     assert_eq!(body["directory"], "/repo/app");
 }
 
+/// 验证：显式请求的 model 不继承 settings 里的默认 variant。
 #[tokio::test]
 async fn does_not_apply_a_default_variant_to_an_explicitly_requested_model() {
     let h = harness_with(json!({
@@ -989,6 +1091,7 @@ async fn does_not_apply_a_default_variant_to_an_explicitly_requested_model() {
     );
 }
 
+/// 验证：未知 agent 在建会话/worktree 之前就被 400 拒绝。
 #[tokio::test]
 async fn rejects_an_unknown_agent_before_creating_a_session_or_worktree() {
     let h = harness();
@@ -1013,6 +1116,7 @@ async fn rejects_an_unknown_agent_before_creating_a_session_or_worktree() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：subagent（reviewer）不能直接接收 prompt，被 400 拒绝。
 #[tokio::test]
 async fn rejects_a_subagent_selection() {
     let h = harness();
@@ -1034,6 +1138,7 @@ async fn rejects_a_subagent_selection() {
     );
 }
 
+/// 验证：未知 model 与未知 variant 都在派发之前被 400 拒绝。
 #[tokio::test]
 async fn rejects_an_unknown_model_and_an_unknown_variant_before_dispatching() {
     let h = harness();
@@ -1068,6 +1173,8 @@ async fn rejects_an_unknown_model_and_an_unknown_variant_before_dispatching() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：未知 projectId 报 404 "Project not found"；有效 projectId 解析出
+/// 项目目录并在响应回带。
 #[tokio::test]
 async fn rejects_unknown_project_and_resolves_project_directories() {
     let h = harness();
@@ -1086,6 +1193,8 @@ async fn rejects_unknown_project_and_resolves_project_directories() {
     assert_eq!(body["projectId"], "proj_1");
 }
 
+/// 验证：prompt 未落地时创建仍 200，但 promptDispatched 为 false 并携带
+/// promptError 说明。
 #[tokio::test]
 async fn reports_prompt_dispatched_false_when_the_prompt_never_lands() {
     let h = harness();
@@ -1105,6 +1214,7 @@ async fn reports_prompt_dispatched_false_when_the_prompt_never_lands() {
     );
 }
 
+/// 验证：斜杠命令派发失败时直接报 500，不会退回成普通 prompt 重试。
 #[tokio::test]
 async fn does_not_retry_a_failed_slash_command_as_a_normal_prompt() {
     let h = harness();
@@ -1128,6 +1238,7 @@ async fn does_not_retry_a_failed_slash_command_as_a_normal_prompt() {
     assert!(lock(&h.engine.prompt_payloads).is_empty());
 }
 
+/// 验证：提供 worktree 对象但缺 name 时被 400 拒绝，不创建 worktree。
 #[tokio::test]
 async fn worktree_requires_a_name_when_provided() {
     let h = harness();
@@ -1149,22 +1260,33 @@ async fn worktree_requires_a_name_when_provided() {
 // Production wiring over a spawned fake engine (JS: the global fetch mock)
 // ---------------------------------------------------------------------------
 
+/// 假 engine 记录到的一次 HTTP 调用：方法、路径与关键请求头、请求体。
 #[derive(Clone, Debug)]
 struct RecordedCall {
+    /// HTTP 方法。
     method: String,
+    /// 路径 + 查询串。
     path: String,
+    /// `x-opencode-directory` 请求头（百分号编码后的目录）。
     directory_header: Option<String>,
+    /// authorization 请求头。
     authorization: Option<String>,
+    /// content-type 请求头。
     content_type: Option<String>,
+    /// 解析后的 JSON 请求体（非 JSON 时为 null）。
     body: Value,
 }
 
+/// 假 engine 的调用记录器。
 #[derive(Default)]
 struct EngineRecorder {
+    /// 收到的全部调用，按到达顺序。
     calls: Mutex<Vec<RecordedCall>>,
 }
 
+/// 查询辅助：按方法与路径前缀检索调用。
 impl EngineRecorder {
+    /// 找第一条匹配方法与前缀的调用。
     fn find(&self, method: &str, prefix: &str) -> Option<RecordedCall> {
         lock(&self.calls)
             .iter()
@@ -1172,6 +1294,8 @@ impl EngineRecorder {
             .cloned()
     }
 
+    /// 该会话是否已收到 prompt_async——决定消息查询是否"看到"落地的
+    /// prompt。
     fn has_prompt_async(&self, session_id: &str) -> bool {
         lock(&self.calls).iter().any(|call| {
             call.method == "POST"
@@ -1181,16 +1305,22 @@ impl EngineRecorder {
     }
 }
 
+/// 生成 `directory=<值>` 的表单编码查询串，与生产客户端的拼法一致。
 fn form_encode(value: &str) -> String {
     url::form_urlencoded::Serializer::new(String::new())
         .append_pair("directory", value)
         .finish()
 }
 
+/// 去掉查询串，只留路径部分。
 fn request_path_only(path: &str) -> String {
     path.split('?').next().unwrap_or(path).to_string()
 }
 
+/// 在随机端口起一个假 engine（JS：global fetch mock）：记录所有请求，
+/// 并按路径形状应答 session 创建、prompt_async、command、fork、消息、
+/// 配置等端点；消息查询依据"该会话是否已派发过 prompt"决定是否返回
+/// 落地消息。返回基础 URL 与记录器。
 async fn spawn_fake_engine() -> (String, Arc<EngineRecorder>) {
     let recorder = Arc::new(EngineRecorder::default());
     let state_recorder = Arc::clone(&recorder);
@@ -1275,6 +1405,8 @@ async fn spawn_fake_engine() -> (String, Arc<EngineRecorder>) {
     (format!("http://{addr}"), recorder)
 }
 
+/// 走生产装配路径构建被测路由：外部 engine 配置 + 测试密码 + 临时
+/// data_dir，经 `super::router(ctx)` 组装。
 fn production_router(data_dir: &Path, base_url: &str) -> Router {
     let config = ServerConfig {
         port: 0,
@@ -1297,6 +1429,7 @@ fn production_router(data_dir: &Path, base_url: &str) -> Router {
     super::router(ctx)
 }
 
+/// 生产客户端应携带的 Basic 鉴权头（opencode:test-password 的 base64）。
 fn expected_auth() -> String {
     use base64::Engine;
     format!(
@@ -1305,6 +1438,8 @@ fn expected_auth() -> String {
     )
 }
 
+/// 验证：生产客户端 POST /session 带 directory 表单编码查询、Basic
+/// 鉴权、百分号编码的 `x-opencode-directory` 头与 JSON 体。
 #[tokio::test]
 async fn http_client_posts_session_create_with_directory_query_and_headers() {
     let data_dir = temp_dir("http-create");
@@ -1344,6 +1479,8 @@ async fn http_client_posts_session_create_with_directory_query_and_headers() {
     );
 }
 
+/// 验证：生产装配下缺目录与目录不存在分别报 "Directory parameter is
+/// required" / "Directory not found"。
 #[tokio::test]
 async fn production_validation_requires_a_directory() {
     let data_dir = temp_dir("http-nodefault");
@@ -1363,6 +1500,8 @@ async fn production_validation_requires_a_directory() {
     assert_eq!(body, json!({ "error": "Directory not found" }));
 }
 
+/// 验证：非 ASCII 目录路径在 `x-opencode-directory` 头中被正确百分号
+/// 编码。
 #[tokio::test]
 async fn http_client_percent_encodes_the_directory_header_for_non_ascii_paths() {
     let data_dir = temp_dir("http-unicode");
@@ -1389,6 +1528,9 @@ async fn http_client_percent_encodes_the_directory_header_for_non_ascii_paths() 
     );
 }
 
+/// 验证：prompt_async 走 engine 的 URL 形状（路径 + directory 查询 +
+/// 鉴权/目录头），体含 model/agent/parts，且 selection 校验确实访问了
+/// /config/providers。
 #[tokio::test]
 async fn http_client_dispatches_prompt_async_with_the_engine_url_shape() {
     let data_dir = temp_dir("http-prompt");
@@ -1448,6 +1590,8 @@ async fn http_client_dispatches_prompt_async_with_the_engine_url_shape() {
     );
 }
 
+/// 验证：生产 goal 创建器写目标文件并 PATCH 会话元数据
+///（status/tokenBudget/objectiveFile），且 PATCH 先于 prompt 派发。
 #[tokio::test]
 async fn production_goal_creator_writes_the_objective_file_and_patches_metadata() {
     let data_dir = temp_dir("http-goal");
@@ -1505,6 +1649,8 @@ async fn production_goal_creator_writes_the_objective_file_and_patches_metadata(
     assert!(patch_at < prompt_at);
 }
 
+/// 验证：创建会话后 EventHub 收到 ompchamber:session-created 线框，
+/// 属性齐全且不含 projectId。
 #[tokio::test]
 async fn hub_receives_the_session_created_wire_frame() {
     let data_dir = temp_dir("http-emit");

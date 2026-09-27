@@ -38,15 +38,26 @@
 //! default broker reaches zero clients and every request fails fast with the
 //! JS 503 message instead of blocking — the honest "not here" answer, never
 //! a fake timeout.
+//!
+//! 中文说明：本目录是 `server/lib/browser-control/` 的移植。`broker` 负责请求生命周期
+//!（发布、在途持有、按结果/超时/取消收结），`routes` 提供 claim/result 回调对；唯一
+//! 调用方是 `openchamber-control/service.js`（把 `openchamber_web` 工具的 `browser.*`
+//! action 映射到 broker），客户端半边在 `packages/ui/src/lib/browser/controlClient.ts`。
+//! 组合缺口：`SseClients` 尚未暴露按连接的能力标志与送达计数，默认 [`router`] 的
+//! broker 到达零客户端，所有请求按 JS 语义快速返回 503，绝不伪造超时。
 
+/// 请求/响应 broker：发布动作、保存待处理、按超时与取消收结；不感知传输层。
 pub mod broker;
+/// 回调路由对：claim（唯一执行权）与 result（结果回传），校验信封后交给 broker。
 pub mod routes;
 
+/// 重导出 broker 的公开类型，供服务层与组合方使用。
 pub use broker::{
     BrowserControlBroker, BrowserControlError, CancelSignal, ClientResult, CreateId,
     DEFAULT_TIMEOUT_MS, EmitRequest, MAX_TIMEOUT_MS, NO_CLIENTS_MESSAGE, OutgoingRequest,
     RequestOptions,
 };
+/// 重导出组合入口：由调用方持有并传入共享 broker。
 pub use routes::router_shared;
 
 use crate::context::RouterContext;
@@ -55,10 +66,13 @@ use crate::context::RouterContext;
 /// module scope (see the composition-seam note above), so it reaches zero
 /// clients and the broker answers with the JS 503 "no client connected"
 /// error rather than pretending someone is listening.
+/// 中文：模块级默认无传输可达，返回 0 触发快速失败路径。
 fn unwired_emit(_: &OutgoingRequest) -> usize {
     0
 }
 
+/// 默认模块路由：broker 使用 uuid id 工厂与未接线的 emit（见上方组合缺口说明），
+/// 行为等同于 JS 侧“无客户端连接”的 503 快速失败。
 pub fn router(ctx: RouterContext) -> axum::Router {
     // index.js supplies `createId: () => browser-<uuid>`; the emit seam is
     // documented above.

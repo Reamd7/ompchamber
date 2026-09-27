@@ -9,6 +9,12 @@
 //! Cooldown expiry uses JS `setTimeout` semantics; in Rust it is a lazily
 //! applied deadline (`tick`) driven by a background sweeper and by every
 //! snapshot read, so an expired cooldown always reports `idle`.
+//!
+//! 中文概要：按会话 id 维护三类状态——活动相位（busy → cooldown → idle）、
+//! 会话状态（status 与合并后的 metadata）、关注状态（needsAttention 与已读
+//! 客户端集合）。busy/retry 进入 busy 相位，idle 先落入 cooldown（默认 2 秒）
+//! 再由 tick 惰性转到 idle；状态更新带 5 秒同状态去重，迁移通过
+//! ompchamber:session-status / ompchamber:session-activity 合成事件广播。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -18,11 +24,16 @@ use serde_json::{Map, Value, json};
 
 use crate::hub::EventHub;
 
+/// busy 结束后的冷却时长（毫秒）：idle 状态先呈现为 cooldown 相位，到期后才转为 idle。
 pub const SESSION_COOLDOWN_DURATION_MS: u64 = 2000;
+/// 会话状态条目的最大保留时长（24 小时），过期后由 cleanup_old_session_states 清除。
 pub const SESSION_STATE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+/// 关注状态条目的最大保留时长（24 小时）。
 pub const SESSION_ATTENTION_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+/// 活动相位条目的最大保留时长（24 小时）。
 pub const SESSION_ACTIVITY_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// 当前 Unix 时间戳（毫秒）；系统时钟早于 UNIX_EPOCH 时兜底返回 0。
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -30,14 +41,20 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 会话活动相位：busy（执行中）→ cooldown（刚结束的冷却窗口）→ idle（空闲）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityPhaseKind {
+    /// 会话正在执行（对应 status busy/retry）。
     Busy,
+    /// busy 刚结束后的冷却窗口，只能从 busy 迁入，到期后转为 idle。
     Cooldown,
+    /// 空闲：冷却结束或从未活动。
     Idle,
 }
 
+/// 活动相位的 wire 字符串编码。
 impl ActivityPhaseKind {
+    /// 返回与 JS 一致的相位字符串（"busy" / "cooldown" / "idle"）。
     fn as_str(&self) -> &'static str {
         match self {
             ActivityPhaseKind::Busy => "busy",
@@ -47,64 +64,99 @@ impl ActivityPhaseKind {
     }
 }
 
+/// 单个会话的当前活动相位及最后迁移时间。
 #[derive(Debug, Clone)]
 struct ActivityPhase {
+    /// 当前相位。
     phase: ActivityPhaseKind,
+    /// 最近一次相位迁移的毫秒时间戳（24 小时过期清理的依据）。
     updated_at: u64,
 }
 
+/// 会话状态条目：最近一次 status 及合并后的元数据。
 #[derive(Debug, Clone)]
 struct SessionState {
+    /// 最近一次状态字符串（busy/idle/retry 等）。
     status: String,
+    /// 状态最后更新时间戳（5 秒去重窗口与 24 小时过期的依据）。
     last_update_at: u64,
+    /// 触发该状态的 SSE 事件 id；缺失时由调用方合成。
     last_event_id: String,
+    /// 合并后的元数据（attempt/message/next/reason 等；None 值更新会删除键）。
     metadata: Map<String, Value>,
 }
 
+/// 会话“关注”状态：用户是否需要回头看这个会话。
 #[derive(Debug, Clone)]
 struct AttentionState {
+    /// 是否待关注：用户发过消息、会话从 busy/retry 落 idle 且尚无客户端查看时置位。
     needs_attention: bool,
+    /// 最近一条用户消息时间戳；None 表示本进程尚未见过该会话的用户消息。
     last_user_message_at: Option<u64>,
+    /// 状态最后变化时间戳（关注快照的 24 小时过期依据）。
     last_status_change_at: u64,
+    /// 已标记查看的客户端 id 集合；非空即 isViewed = true。
     viewed_by_clients: HashSet<String>,
+    /// 最近一次状态字符串（随关注快照一起暴露）。
     status: String,
 }
 
+/// 受 Mutex 保护的全部可变会话状态（JS 版为模块级单例）。
 #[derive(Default)]
 struct SessionInner {
+    /// session id → 当前活动相位。
     activity_phases: HashMap<String, ActivityPhase>,
     /// session id → cooldown deadline (JS `setTimeout` handle).
+    /// 到期由 tick 统一应用（对应 JS 的 setTimeout 回调语义）。
     cooldowns: HashMap<String, u64>,
+    /// session id → 会话状态（status + metadata）。
     states: HashMap<String, SessionState>,
+    /// session id → 关注状态。
     attention_states: HashMap<String, AttentionState>,
+    /// 当前处于 busy 相位的会话数：随相位进出 busy 增减，钳制下限 0。
     active_session_count: i64,
 }
 
+/// 从一条 session.status SSE 载荷中提取出的结构化更新。
 struct SessionStatusUpdate {
+    /// 目标会话 id（properties.sessionID，trim 后非空）。
     session_id: String,
+    /// 状态类型字符串（canonical status.type，回退 legacy info.type）。
     status_type: String,
+    /// 触发更新的 SSE 事件 id，可为空字符串。
     event_id: String,
+    /// 重试序号；仅当值为 JSON 数字时保留。
     attempt: Option<serde_json::Value>,
+    /// 状态附加消息文本。
     message: Option<String>,
+    /// 下一步提示；仅当值为 JSON 数字时保留。
     next: Option<serde_json::Value>,
 }
 
 /// One synthetic broadcast: (SSE event name, payload JSON).
+/// 在锁内累积、锁外统一发布。
 type Broadcast = (&'static str, Value);
 
+/// 会话运行时：持有全部会话状态，负责合成事件广播与生命周期清理。
 pub struct SessionRuntime {
+    /// 受锁保护的全部可变状态。
     inner: Mutex<SessionInner>,
+    /// 共享事件总线：所有客户端 SSE 流都订阅它，因此无需 per-client 回写。
     broadcast: Arc<EventHub>,
+    /// busy → cooldown 的冷却时长（毫秒）；生产默认 2000，测试可注入。
     cooldown_ms: u64,
 }
 
 /// `typeof x === 'number'` check preserving the original JSON number form.
+/// 仅 JSON 数字通过，其余类型（含字符串数字）返回 None。
 fn number_value(value: &Value) -> Option<Value> {
     value.as_number().cloned().map(Value::Number)
 }
 
 /// `extractSessionStatusUpdate`: canonical `properties.status.type` with the
 /// legacy `properties.info.type` fallback.
+/// 载荷 type 必须为 "session.status"；sessionID 与状态类型（status.type 回退
+/// info.type）任一为空即返回 None。
 fn extract_session_status_update(payload: &Value) -> Option<SessionStatusUpdate> {
     if payload.get("type").and_then(Value::as_str) != Some("session.status") {
         return None;
@@ -168,7 +220,9 @@ fn extract_session_status_update(payload: &Value) -> Option<SessionStatusUpdate>
     })
 }
 
+/// 会话运行时公开 API：SSE 摄入、各类快照读取、查看标记与生命周期清理。
 impl SessionRuntime {
+    /// 以默认冷却时长构造运行时；返回 Arc 便于跨任务共享。
     pub fn new(broadcast: Arc<EventHub>) -> Arc<Self> {
         Arc::new(Self::with_cooldown_ms(
             broadcast,
@@ -176,6 +230,7 @@ impl SessionRuntime {
         ))
     }
 
+    /// 以自定义冷却时长构造（测试注入用）；初始状态为空。
     pub(crate) fn with_cooldown_ms(broadcast: Arc<EventHub>, cooldown_ms: u64) -> Self {
         Self {
             inner: Mutex::new(SessionInner::default()),
@@ -184,6 +239,7 @@ impl SessionRuntime {
         }
     }
 
+    /// 把锁内累积的合成广播逐条发布到 EventHub；必须在释放锁之后调用。
     fn publish(&self, broadcasts: Vec<Broadcast>) {
         for (name, payload) in broadcasts {
             self.broadcast.publish_json(name, &payload);
@@ -191,6 +247,8 @@ impl SessionRuntime {
     }
 
     /// `processOpenCodeSsePayload`: the SSE ingestion entrypoint.
+    /// busy/retry 载荷先置 busy 相位、idle 载荷置 cooldown；事件 id 缺失时合成
+    /// "sse-{now}"；锁内累积的广播在锁外一次性发布。
     pub fn process_opencode_sse_payload(&self, payload: &Value) {
         let Some(update) = extract_session_status_update(payload) else {
             return;
@@ -243,6 +301,8 @@ impl SessionRuntime {
 
     /// Apply expired cooldowns (JS timer callback). Safe to call any time;
     /// driven by the module sweeper and by snapshot reads.
+    /// 先在锁内收集到期冷却并把 cooldown 会话迁到 idle，再在锁外发布广播；
+    /// 任意时刻调用都安全。
     pub fn tick(&self) {
         let now = now_ms();
         let mut broadcasts: Vec<Broadcast> = Vec::new();
@@ -273,6 +333,7 @@ impl SessionRuntime {
     }
 
     /// `getSessionActivitySnapshot`: `{ sessionId: { type: phase } }`.
+    /// 形如 { sessionId: { "type": phase } }；读取前先 tick，使过期冷却呈现为 idle。
     pub fn get_session_activity_snapshot(&self) -> Map<String, Value> {
         self.tick();
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -283,6 +344,7 @@ impl SessionRuntime {
             .collect()
     }
 
+    /// 当前处于 busy 相位的会话数量（跨会话幂等计数）。
     pub fn get_active_session_count(&self) -> i64 {
         self.inner
             .lock()
@@ -291,6 +353,7 @@ impl SessionRuntime {
     }
 
     /// `getSessionStateSnapshot` (24h age filter).
+    /// 只返回 24 小时内更新过的条目：{ sessionId: { status, lastUpdateAt, metadata } }。
     pub fn get_session_state_snapshot(&self) -> Map<String, Value> {
         let now = now_ms();
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -313,6 +376,7 @@ impl SessionRuntime {
             .collect()
     }
 
+    /// 读取单个会话状态（含 lastEventId 与 metadata）；id 为空或未知返回 None。
     pub fn get_session_state(&self, session_id: &str) -> Option<Value> {
         if session_id.is_empty() {
             return None;
@@ -329,6 +393,7 @@ impl SessionRuntime {
     }
 
     /// `getSessionAttentionSnapshot` (24h age filter).
+    /// 只返回 24 小时内的条目；条目结构见 attention_snapshot_value。
     pub fn get_session_attention_snapshot(&self) -> Map<String, Value> {
         let now = now_ms();
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -342,6 +407,7 @@ impl SessionRuntime {
             .collect()
     }
 
+    /// 读取单个会话的关注快照；id 为空或未知返回 None。
     pub fn get_session_attention_state(&self, session_id: &str) -> Option<Value> {
         if session_id.is_empty() {
             return None;
@@ -355,6 +421,8 @@ impl SessionRuntime {
 
     /// `markSessionViewed`: clears `needsAttention` and broadcasts the
     /// resolution.
+    /// 把 client_id 加入已读集合；仅当此前确实 needsAttention 时才清除标记并
+    /// 广播一条 needsAttention = false 的 session-status 事件。
     pub fn mark_session_viewed(&self, session_id: &str, client_id: &str) {
         let now = now_ms();
         let broadcasts: Vec<Broadcast> = {
@@ -386,6 +454,7 @@ impl SessionRuntime {
         self.publish(broadcasts);
     }
 
+    /// 把 client_id 移出已读集合（客户端断开时回滚查看）；不改动 needsAttention，也不广播。
     pub fn mark_session_unviewed(&self, session_id: &str, client_id: &str) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = inner.attention_states.get_mut(session_id) {
@@ -393,6 +462,8 @@ impl SessionRuntime {
         }
     }
 
+    /// 记录用户刚在该会话发送消息（更新 lastUserMessageAt，必要时懒创建关注状态），
+    /// 为之后 busy → idle 判定“待关注”提供依据。
     pub fn mark_user_message_sent(&self, session_id: &str) {
         let now = now_ms();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -403,6 +474,7 @@ impl SessionRuntime {
 
     /// `resetAllSessionActivityToIdle`: no per-session broadcasts (JS sets
     /// the map directly).
+    /// 清空冷却、活跃计数归零、全部相位直接改 idle；与 JS 一致不产生任何广播。
     pub fn reset_all_session_activity_to_idle(&self) {
         let now = now_ms();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -417,6 +489,9 @@ impl SessionRuntime {
     /// `interruptBusySessionsAfterRestart`: settles busy/retry sessions to
     /// idle with a restart marker and broadcasts one interruption
     /// notification per session, then resets all activity.
+    /// 收集状态为 busy/retry 或相位为 busy 的会话（按 id 去重排序），逐个落 idle
+    /// （携带 opencode-restart 标记，绕过 5 秒去重）并广播一条 session.error
+    /// （MessageAbortedError），最后内联重置全部活动相位；返回被打断的会话 id。
     pub fn interrupt_busy_sessions_after_restart(&self) -> Vec<String> {
         let now = now_ms();
         let event_id = format!("opencode-restart-{now}");
@@ -482,6 +557,8 @@ impl SessionRuntime {
     }
 
     /// `cleanupOldSessionStates` (JS runs it hourly from a setInterval).
+    /// 逐出超过 24 小时未更新的状态、关注与活动条目；清理 busy 活动条目时同步
+    /// 扣减活跃计数（下限 0）。JS 由每小时 setInterval 驱动。
     pub fn cleanup_old_session_states(&self) {
         let now = now_ms();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -505,6 +582,7 @@ impl SessionRuntime {
             }
         }
     }
+    /// 清空全部内部状态（冷却、相位、状态、关注、活跃计数）；关停与测试用。
     pub fn dispose(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.cooldowns.clear();
@@ -515,6 +593,8 @@ impl SessionRuntime {
     }
 }
 
+/// 把关注状态序列化为快照 JSON：needsAttention / lastUserMessageAt /
+/// lastStatusChangeAt / status / isViewed。
 fn attention_snapshot_value(state: &AttentionState) -> Value {
     json!({
         "needsAttention": state.needs_attention,
@@ -525,6 +605,8 @@ fn attention_snapshot_value(state: &AttentionState) -> Value {
     })
 }
 
+/// 取出或懒创建会话的关注状态（新建条目初始为 idle、无关注、无已读）；
+/// 会话 id 为空返回 None。
 fn get_or_create_attention_state<'a>(
     inner: &'a mut SessionInner,
     session_id: &str,
@@ -550,6 +632,8 @@ fn get_or_create_attention_state<'a>(
 /// `setSessionActivityPhase`: idempotent transitions with an active-count
 /// invariant and a `ompchamber:session-activity` broadcast per accepted
 /// transition. `cooldown` is only reachable from `busy`.
+/// 同相位直接拒绝；cooldown 仅可从 busy 迁入；busy 进出维护活跃计数；
+/// 接受迁移时登记/撤销冷却截止并追加一条广播。返回是否真的发生了迁移。
 fn set_session_activity_phase(
     inner: &mut SessionInner,
     session_id: &str,
@@ -606,6 +690,10 @@ fn set_session_activity_phase(
 /// `updateSessionState`: 5s same-status dedupe, metadata merge, attention
 /// transition, conditional `ompchamber:session-status` broadcast, then the
 /// activity phase.
+/// 同状态 5 秒内去重（opencode-restart 打断除外）；metadata 按 Some 覆盖、
+/// None 删除合并；busy/retry → idle 且有用户消息且无人查看时置
+/// needsAttention；“首次 / 状态变化 / 关注翻转 / 重启打断”任一成立才广播；
+/// 最后同步活动相位（cooldown 期间不被 idle 覆盖）。
 fn update_session_state(
     inner: &mut SessionInner,
     session_id: &str,
@@ -720,6 +808,7 @@ fn update_session_state(
     }
 }
 
+/// SessionRuntime 单元测试：相位迁移、状态去重、关注标记与生命周期清理。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,17 +816,22 @@ mod tests {
 
     /// Test harness capturing broadcasts instead of relying on the shared
     /// EventHub wiring.
+    /// 订阅 EventHub 广播并在 drain 中解析回 JSON，便于断言。
     struct Recorder {
+        /// hub 事件订阅端。
         rx: broadcast::Receiver<crate::hub::HubEvent>,
     }
 
+    /// Recorder 的构造与收取辅助。
     impl Recorder {
+        /// 新建 EventHub 并订阅，返回 (Recorder, hub)。
         fn new() -> (Self, Arc<EventHub>) {
             let hub = EventHub::new();
             let rx = hub.subscribe();
             (Self { rx }, hub)
         }
 
+        /// 非阻塞取空积压的广播，返回 (事件名, 载荷 JSON) 列表。
         fn drain(&mut self) -> Vec<(String, Value)> {
             let mut out = Vec::new();
             while let Ok(event) = self.rx.try_recv() {
@@ -749,6 +843,7 @@ mod tests {
         }
     }
 
+    /// 构造 canonical 形态（properties.status.type）的 session.status 载荷。
     fn status_payload(session_id: &str, status_type: &str) -> Value {
         json!({
             "type": "session.status",
@@ -760,6 +855,7 @@ mod tests {
         })
     }
 
+    /// 构造 legacy 形态（properties.info.*，含 attempt/message）的载荷。
     fn legacy_status_payload(session_id: &str, status_type: &str) -> Value {
         json!({
             "type": "session.status",
@@ -770,6 +866,7 @@ mod tests {
         })
     }
 
+    /// 验证非 status 载荷与空 sessionID 被忽略：无广播、无活动条目。
     #[test]
     fn ignores_non_status_payloads() {
         let (mut recorder, hub) = Recorder::new();
@@ -781,6 +878,7 @@ mod tests {
         assert!(runtime.get_session_activity_snapshot().is_empty());
     }
 
+    /// 验证 busy 迁移按序广播 session-activity 与 session-status，活跃计数与快照同步。
     #[test]
     fn busy_transitions_broadcast_activity_and_status() {
         let (mut recorder, hub) = Recorder::new();
@@ -805,6 +903,7 @@ mod tests {
         );
     }
 
+    /// 验证 5 秒去重窗口内重复的同状态不产生任何广播。
     #[test]
     fn same_status_within_dedupe_window_is_suppressed() {
         let (mut recorder, hub) = Recorder::new();
@@ -817,6 +916,7 @@ mod tests {
         assert!(recorder.drain().is_empty());
     }
 
+    /// 验证 busy → idle 先进入 cooldown，冷却到期后由快照读取触发 tick 并广播 idle。
     #[test]
     fn idle_moves_through_cooldown_then_idle() {
         let (mut recorder, hub) = Recorder::new();
@@ -854,6 +954,7 @@ mod tests {
         assert_eq!(phases, vec!["idle"]);
     }
 
+    /// 验证从未 busy 的会话直接落 idle，不进入 cooldown。
     #[test]
     fn idle_without_busy_does_not_enter_cooldown() {
         let (mut recorder, hub) = Recorder::new();
@@ -871,6 +972,7 @@ mod tests {
         );
     }
 
+    /// 验证活跃计数跨会话随相位进出 busy 幂等增减。
     #[test]
     fn keeps_idempotent_active_count_across_sessions() {
         let (_recorder, hub) = Recorder::new();
@@ -883,6 +985,7 @@ mod tests {
         assert_eq!(runtime.get_active_session_count(), 0);
     }
 
+    /// 验证未查看会话落 idle 置 needsAttention 并重播；mark viewed 清除且只广播一次；unview 不重新置位。
     #[test]
     fn flags_needs_attention_when_unviewed_session_goes_idle() {
         let (mut recorder, hub) = Recorder::new();
@@ -927,6 +1030,7 @@ mod tests {
         assert!(recorder.drain().is_empty());
     }
 
+    /// 验证已被查看的会话落 idle 时不会标记待关注。
     #[test]
     fn viewed_sessions_do_not_flag_attention() {
         let (_recorder, hub) = Recorder::new();
@@ -941,6 +1045,7 @@ mod tests {
         );
     }
 
+    /// 验证 legacy info 形态载荷仍能提取状态并合并 attempt/message 元数据。
     #[test]
     fn legacy_info_type_fallback_is_supported() {
         let (_recorder, hub) = Recorder::new();
@@ -959,6 +1064,7 @@ mod tests {
         assert_eq!(state["metadata"]["message"], "retrying");
     }
 
+    /// 验证重启打断把 busy 会话落 idle（带 restart 标记）、逐会话广播 session.error 并绕过 5 秒去重。
     #[test]
     fn interrupt_busy_sessions_after_restart_settles_and_broadcasts() {
         let (mut recorder, hub) = Recorder::new();
@@ -1006,6 +1112,7 @@ mod tests {
         );
     }
 
+    /// 验证仅有 busy 活动相位（无状态条目）的会话也会被重启打断收尾。
     #[test]
     fn interrupt_picks_up_activity_only_sessions() {
         let (_recorder, hub) = Recorder::new();
@@ -1016,6 +1123,7 @@ mod tests {
         assert_eq!(interrupted, vec!["ses_9".to_string()]);
     }
 
+    /// 验证 cleanup 保留新近条目，dispose 清空全部状态与计数。
     #[test]
     fn cleanup_and_dispose_release_state() {
         let (_recorder, hub) = Recorder::new();

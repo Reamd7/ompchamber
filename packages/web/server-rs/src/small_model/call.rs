@@ -5,6 +5,11 @@
 //! (`globalThis.fetch`), the OpenCode config layers (`shared.js`), the auth
 //! store (`auth.js`) and the runtime provider snapshot
 //! (`runtime-providers.js`).
+//! 中文说明：本模块移植自 `server/lib/small-model/call.js`，负责各
+//! provider 的线格式（wire format）与鉴权细节；凭据只在本模块的请求
+//! 路径中使用，绝不外泄。可注入的依赖接缝与 JS 测试逐模块 mock 的位置
+//! 一一对应：HTTP 传输、OpenCode 配置层、auth 存储与运行时 provider
+//! 快照。
 
 use std::sync::Arc;
 
@@ -22,35 +27,58 @@ use crate::small_model::opencode_config::{ConfigReader, is_plain_object};
 use crate::small_model::resolve::get_auth_entry_for_provider;
 use crate::small_model::runtime_providers::{RuntimeProvider, RuntimeProviders};
 
+/// 所有 provider 请求的默认超时（毫秒）；调用方未传 `timeout_ms` 或
+/// 传 0 时由 request_timeout_ms 兜底到该值。
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
+/// GitHub Copilot `/models` 端点探测的独立短超时（毫秒）：该调用只
+/// 用于选择线格式，不应占用一次完整生成的超时预算。
 const COPILOT_MODELS_TIMEOUT_MS: u64 = 5_000;
 /// Generous default: thinking models that can't be switched off (DeepSeek,
 /// Qwen, …) spend part of this budget on reasoning before the actual answer.
+/// 中文补充：默认值刻意偏大——无法关闭 thinking 的模型（DeepSeek、
+/// Qwen 等）会先消耗一部分预算做推理再产出答案，预算过小会得到空回复。
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4_000;
 
+/// 对外请求统一携带的 User-Agent 标识（codex 与 Copilot 端点都要求）。
 const USER_AGENT: &str = "opencode/1.0 ompchamber";
 
+/// ChatGPT 计划（codex）用 refresh token 换取 access token 的 OAuth 端点。
 const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+/// codex 后端 OAuth 换 token 时使用的公开 client_id（与 OpenCode 一致）。
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// ChatGPT 计划流式 Responses API 的固定端点（不走任何 provider baseURL）。
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 
+/// 结构化输出在请求体里的统一名称；OpenAI 的 json_schema
+/// response_format 与 Anthropic 的强制 tool 调用共用这个名字。
 const STRUCTURED_OUTPUT_NAME: &str = "response";
 
 /// Error shape carrying the fields JS attaches to thrown errors
 /// (`statusCode`, `code`, `providerID`, `requiredChars`/`availableChars`);
 /// route mapping and callers read them exactly like the JS.
+/// 中文说明：错误结构携带 JS 抛错时附加的字段（statusCode、code、
+/// providerID、requiredChars/availableChars），路由映射与调用方按与
+/// JS 完全一致的方式读取它们。
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{message}")]
 pub struct SmallModelError {
+    /// 映射到 HTTP 路由的状态码；500 表示内部错误，413 用于输入超限等场景。
     pub status_code: u16,
+    /// 面向用户的错误正文，也是 thiserror 显示的内容。
     pub message: String,
+    /// 机器可读的错误码（如 no-provider-login），供前端分支处理；可为空。
     pub code: Option<String>,
+    /// 触发错误的 provider id（401 场景下用于界面提示）；可为空。
     pub provider_id: Option<String>,
+    /// 413 输入超限时请求所需的字符数（UTF-16 码元语义）；其余场景为空。
     pub required_chars: Option<usize>,
+    /// 413 输入超限时模型上下文实际可用的字符数（UTF-16 码元语义）；其余场景为空。
     pub available_chars: Option<usize>,
 }
 
+/// 便捷构造函数集合：按 JS 抛错惯例生成不同 status/code 组合的错误。
 impl SmallModelError {
+    /// 构造 500 内部错误：无 code、无 provider 归属。
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status_code: 500,
@@ -62,6 +90,7 @@ impl SmallModelError {
         }
     }
 
+    /// 以指定 HTTP 状态码构造错误（message 仍是唯一正文）。
     pub fn with_status(status_code: u16, message: impl Into<String>) -> Self {
         Self {
             status_code,
@@ -69,6 +98,7 @@ impl SmallModelError {
         }
     }
 
+    /// 以指定状态码 + 机器可读 code 构造错误，供调用方按 code 分支处理。
     pub fn with_code(status_code: u16, code: &str, message: impl Into<String>) -> Self {
         Self {
             status_code,
@@ -78,11 +108,14 @@ impl SmallModelError {
     }
 }
 
+/// 小模型调用的统一 Result 别名；错误统一为 SmallModelError。
 pub type SmallModelResult<T> = Result<T, SmallModelError>;
 
 /// `httpError`: callers need the status to tell "this provider rejected the
 /// request shape" (retryable with a different shape) from "this provider is
 /// down". Reads as a 500 (JS attaches no `statusCode`).
+/// 中文说明：把非 2xx 的 HTTP 响应转为错误，正文截取前 300 个 UTF-16
+/// 字符作为线索；状态一律按 500 处理（JS 侧不附带 statusCode）。
 async fn http_error(response: &FetchResponse, provider: &str) -> SmallModelError {
     let body = response.text();
     let snippet = if body.is_empty() {
@@ -98,6 +131,8 @@ async fn http_error(response: &FetchResponse, provider: &str) -> SmallModelError
 
 /// `requestSignal`: per-call deadline (the JS caller-abort `signal` seam has
 /// no Rust caller yet; the HTTP route passes none either).
+/// 中文说明：单次调用的截止时间；传 0 或缺失时回落 60s 默认值。JS 侧
+/// 的 caller-abort signal 接缝在 Rust 端尚无使用者，HTTP 路由也不传。
 fn request_timeout_ms(timeout_ms: Option<u64>) -> u64 {
     timeout_ms
         .filter(|value| *value > 0)
@@ -107,6 +142,8 @@ fn request_timeout_ms(timeout_ms: Option<u64>) -> u64 {
 /// Google's schema dialect is OpenAPI-flavored and rejects JSON Schema
 /// keywords it does not know, so unsupported keys are dropped rather than
 /// passed through.
+/// 中文说明：Google 的 schema 方言是 OpenAPI 风格，遇到不认识的
+/// JSON Schema 关键字会直接报错，因此这些键被递归剔除而不是透传。
 const GOOGLE_UNSUPPORTED_SCHEMA_KEYS: [&str; 6] = [
     "$schema",
     "additionalProperties",
@@ -116,6 +153,8 @@ const GOOGLE_UNSUPPORTED_SCHEMA_KEYS: [&str; 6] = [
     "strict",
 ];
 
+/// 递归剥离 Google 不支持的 JSON Schema 键，生成 generateContent 可
+/// 接受的 responseSchema；数组与对象逐层处理，其余值原样克隆。
 pub fn to_google_schema(schema: &Value) -> Value {
     match schema {
         Value::Array(items) => Value::Array(items.iter().map(to_google_schema).collect()),
@@ -135,14 +174,22 @@ pub fn to_google_schema(schema: &Value) -> Value {
 // refreshed token written back to auth.json exactly like OpenCode does.
 // ---------------------------------------------------------------------------
 
+/// 单飞（single-flight）共享的刷新 future：并发调用者克隆同一句柄共享
+/// 一次请求；错误被折叠为 message 字符串传播。
 type RefreshFuture = Shared<BoxFuture<'static, Result<Value, String>>>;
 
+/// OpenAI OAuth 刷新的单飞闸门：同一时刻只允许一个真正的刷新请求，
+/// 其余调用者共享其结果（对应 JS 的模块级 openaiRefreshPromise）。
 #[derive(Default)]
 struct RefreshGate {
+    /// 当前在飞的共享刷新 future；None 表示没有刷新正在进行。
     inflight: Option<RefreshFuture>,
+    /// 递增代号：只有创建该 flight 的调用者才能在结算后清空闸门。
     generation: u64,
 }
 
+/// 按 JWT 结构解码 payload 段（第二段）并解析为 JSON 对象；base64 的
+/// 无 padding 与有 padding 两种变体都尝试，任何一步失败都返回 None。
 fn decode_jwt_claims(token: &str) -> Option<Map<String, Value>> {
     let payload = token.split('.').nth(1)?;
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -152,6 +199,8 @@ fn decode_jwt_claims(token: &str) -> Option<Map<String, Value>> {
     serde_json::from_slice(&decoded).ok()
 }
 
+/// 从 access token 的 JWT claims 提取 chatgpt_account_id（位于
+/// `https://api.openai.com/auth` 命名空间下）；缺失或为空返回 None。
 fn extract_chatgpt_account_id(access_token: &str) -> Option<String> {
     let claims = decode_jwt_claims(access_token)?;
     let value = claims
@@ -165,6 +214,10 @@ fn extract_chatgpt_account_id(access_token: &str) -> Option<String> {
     }
 }
 
+/// 用 refresh token 向 auth.openai.com 换取新 access token，并把刷新后
+/// 的完整条目写回 auth.json 的 openai 键（副作用）。非 2xx、非法 JSON、
+/// 缺失 access token 均报错；expires 按 expires_in（默认 3600s）折算为
+/// 绝对毫秒时间戳，refresh_token 仅在响应非空时覆盖。
 async fn refresh_openai_oauth(deps: &Arc<CallDeps>, entry: &Value) -> SmallModelResult<Value> {
     let request = FetchRequest {
         method: "POST".to_string(),
@@ -230,6 +283,9 @@ async fn refresh_openai_oauth(deps: &Arc<CallDeps>, entry: &Value) -> SmallModel
     Ok(refreshed)
 }
 
+/// 返回未过期的 OAuth 条目：access 非空且未到期时原样克隆；否则触发
+/// 单飞刷新。没有 refresh token 直接报错；并发调用共享同一在飞刷新，
+/// 结算后由创建者清空闸门。
 async fn ensure_fresh_openai_oauth(deps: &Arc<CallDeps>, entry: &Value) -> SmallModelResult<Value> {
     let access = entry.get("access").and_then(Value::as_str).unwrap_or("");
     let expires = entry
@@ -281,11 +337,18 @@ async fn ensure_fresh_openai_oauth(deps: &Arc<CallDeps>, entry: &Value) -> Small
 // Wire formats
 // ---------------------------------------------------------------------------
 
+/// 读取响应体并解析为 JSON；解析失败统一报 "invalid JSON" 内部错误。
 async fn read_response_json(response: &FetchResponse) -> SmallModelResult<Value> {
     serde_json::from_slice(&response.body)
         .map_err(|_| SmallModelError::internal("Provider returned invalid JSON"))
 }
 
+/// OpenAI 兼容 `POST {base_url}/chat/completions` 的通用路径：组装
+/// system/user 消息、可选 json_schema response_format，并把 extra_body
+/// 的键合并进请求体。请求/响应/完成三个阶段都打 small_model 诊断日志。
+/// thinking 模型只产出 reasoning_content 或被截断（finish_reason 为
+/// length）时返回 output-exhausted 错误——这是预算问题而非传输问题；
+/// 其余空内容按 500 "no message content" 处理。
 async fn call_openai_compatible(
     deps: &CallDeps,
     base_url: &str,
@@ -433,6 +496,8 @@ async fn call_openai_compatible(
     Ok(text)
 }
 
+/// 提取 message.content 的纯文本：字符串直接返回；分段数组拼接各段的
+/// text 字段；其余形态返回空串（thinking 模型常见）。
 fn message_content_text(message: &Value) -> String {
     match message.get("content") {
         Some(Value::String(text)) => text.clone(),
@@ -444,6 +509,8 @@ fn message_content_text(message: &Value) -> String {
     }
 }
 
+/// 计算 message.content 的 UTF-16 码元数，仅用于诊断日志；与
+/// message_content_text 针对同一内容形态做长度统计。
 fn message_content_length(message: &Value) -> usize {
     match message.get("content") {
         Some(Value::String(text)) => utf16_len(text),
@@ -460,6 +527,10 @@ fn message_content_length(message: &Value) -> usize {
     }
 }
 
+/// OpenAI Responses API（`POST {base_url}/responses`，非流式）：schema
+/// 走 text.format，system 走 instructions。优先读顶层 output_text，
+/// 否则遍历 output 数组的 content 收集 output_text 分段；结果为空报
+/// "no text output"。
 async fn call_openai_responses(
     deps: &CallDeps,
     base_url: &str,
@@ -549,6 +620,10 @@ async fn call_openai_responses(
     Ok(text)
 }
 
+/// Anthropic Messages 线格式（POST 到调用方给定的完整 URL）：system
+/// 是顶层字段；schema 请求改为强制调用名为 response 的单一 tool
+/// （Messages API 没有 response_format），成功时返回 tool input 的
+/// JSON 序列化文本；无 schema 时收集 content 数组中的 text 分段。
 async fn call_messages(
     deps: &CallDeps,
     url: String,
@@ -639,6 +714,9 @@ async fn call_messages(
     Ok(text)
 }
 
+/// Anthropic 专用封装：baseURL 缺省 `https://api.anthropic.com/v1`
+/// （视为完整 API 前缀，直接追加 /messages），附 x-api-key 与
+/// anthropic-version 头后复用 call_messages。
 async fn call_anthropic(
     deps: &CallDeps,
     api_key: &str,
@@ -673,6 +751,10 @@ async fn call_anthropic(
     .await
 }
 
+/// 探测 Copilot `/models`（5s 短超时）确定目标模型支持的线格式：
+/// 优先 /v1/messages，其次 /responses，再次 /chat/completions；没有
+/// supported_endpoints 字段时默认 chat。模型不在列表或端点元数据非法
+/// 都会报错。
 async fn get_copilot_endpoint(
     deps: &CallDeps,
     base_url: &str,
@@ -738,6 +820,10 @@ async fn get_copilot_endpoint(
     )))
 }
 
+/// Google generateContent 线格式：API key 走 x-goog-api-key 头；
+/// gemini-3 设 thinkingLevel、gemini-2 设 thinkingBudget=0 以关闭思考；
+/// schema 经 to_google_schema 净化后放入 generationConfig。从
+/// candidates 首项的 content.parts 收集文本，为空报错。
 async fn call_google(
     deps: &CallDeps,
     api_key: &str,
@@ -816,6 +902,9 @@ async fn call_google(
 
 /// ChatGPT-plan traffic goes to the codex backend, which only speaks the
 /// streaming Responses API — collect the output_text deltas from the SSE body.
+/// 中文说明：ChatGPT 计划流量打到 codex 后端，它只讲流式 Responses
+/// API——从 SSE body 收集 output_text 增量；done 事件携带完整文本时
+/// 优先采用；遇到 response.failed/error 事件立即报错。
 async fn call_codex_responses(
     deps: &CallDeps,
     access_token: &str,
@@ -924,6 +1013,8 @@ async fn call_codex_responses(
 /// `resolveConfigValue`: `{env:NAME}` and `{file:path}` substitutions. Only
 /// the relative-file branch consults the config layers (which layer declared
 /// the reference); everything else is direct.
+/// 中文说明：`{env:NAME}` 与 `{file:path}` 两种替换；只有相对文件分支
+/// 需要查询配置层（判断引用声明在哪个层），其余分支直接求值。
 fn resolve_config_value(
     config: &ConfigReader,
     value: &str,
@@ -1007,6 +1098,8 @@ fn resolve_config_value(
 
 /// JS `/^\{env:([^}]+)\}$/i`-style single match: the value must be exactly
 /// `{prefix:…}` for the (case-insensitive) prefix.
+/// 中文说明：等价 JS 的整串单次匹配——值必须恰好是 `{prefix:…}`
+/// （前缀大小写不敏感）才返回内部内容，否则 None。
 fn extract_braced<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
     let value = value.strip_prefix('{')?.strip_suffix('}')?;
     let (kind, rest) = value.split_once(':')?;
@@ -1016,6 +1109,9 @@ fn extract_braced<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
     Some(rest)
 }
 
+/// 读取 provider 配置的 options.headers 表并逐项做 `{env:}`/`{file:}`
+/// 解析；任何一项解析失败都会中止整个读取（向上冒泡为 provider 配置
+/// 整体丢弃）。非字符串项直接跳过；结果为空时返回 None。
 fn read_configured_headers(
     config: &ConfigReader,
     provider_config: &Value,
@@ -1056,13 +1152,19 @@ fn read_configured_headers(
     Ok((!headers.is_empty()).then_some(headers))
 }
 
+/// 从 OpenCode 配置层读出的自定义 provider 参数（baseURL、headers、
+/// apiKey）；默认值表示没有自定义配置，后续回落到 catalog 与运行时。
 #[derive(Default)]
 pub struct ProviderConfig {
+    /// options.baseURL（去空白）；自定义 OpenAI 兼容代理的入口地址。
     pub base_url: Option<String>,
+    /// 解析后的 options.headers 名值对；认证网关可用它覆盖 bearer 默认头。
     pub headers: Option<Vec<(String, String)>>,
     /// Shape the config-supplied key as a regular api-key auth entry so it
     /// can win the precedence check and flow through the dispatch's
     /// `entry.type === 'api'` branch unchanged.
+    /// 中文说明：把配置提供的 key 整形为常规 api-key auth 条目，使其
+    /// 能赢得优先级比较，并原样走 dispatch 的 `entry.type === "api"` 分支。
     pub auth: Option<Value>,
 }
 
@@ -1070,6 +1172,9 @@ pub struct ProviderConfig {
 /// (a `{file:…}` key/header that cannot be resolved included) drops the
 /// whole entry and continues with catalog-only resolution, exactly like the
 /// JS `try { … } catch { return null; }`.
+/// 中文说明：readProviderConfig——provider 配置不是必需品：任何失败
+/// （包括无法解析的 `{file:…}` key/header）都会丢弃整个条目、继续走
+/// 仅 catalog 的解析，与 JS 的 try/catch-return-null 行为一致。
 pub fn read_provider_config(
     config: &ConfigReader,
     working_directory: Option<&str>,
@@ -1078,6 +1183,9 @@ pub fn read_provider_config(
     read_provider_config_inner(config, working_directory, provider_id).unwrap_or_default()
 }
 
+/// read_provider_config 的可失败内核：从合并配置层取 `provider.<id>`，
+/// 依次解析 baseURL、apiKey（含 `{env:}`/`{file:}` 替换）与 headers；
+/// 条目不存在或不是对象时返回空 ProviderConfig。
 fn read_provider_config_inner(
     config: &ConfigReader,
     working_directory: Option<&str>,
@@ -1127,9 +1235,15 @@ fn read_provider_config_inner(
 /// access token that api.openai.com answers with 401 — so the runtime
 /// credential never stands in for them, and the runtime listing skips them
 /// because the auth.json scan already covers them.
+/// 中文说明：这些 provider 走下方各自的专用线格式（token 交换、OAuth
+/// 刷新或非 bearer 头）。OpenCode 运行时的 options.apiKey 并非这些
+/// 分支需要的值——最典型的是 ChatGPT 计划的 openai 登录，其运行时
+/// key 是 OAuth access token，直连 api.openai.com 会得到 401——因此
+/// 运行时凭据绝不顶替它们，运行时列表也跳过它们（auth.json 扫描已覆盖）。
 pub const DEDICATED_WIRE_FORMAT_PROVIDERS: [&str; 5] =
     ["github-copilot", "copilot", "openai", "anthropic", "google"];
 
+/// 判断 provider 是否属于专用线格式名单（语义见上方常量说明）。
 pub fn is_dedicated_wire_format_provider(provider_id: &str) -> bool {
     DEDICATED_WIRE_FORMAT_PROVIDERS.contains(&provider_id)
 }
@@ -1137,6 +1251,8 @@ pub fn is_dedicated_wire_format_provider(provider_id: &str) -> bool {
 /// `runtimeCredential`: the runtime credential shaped as an auth entry, or
 /// `None` when the provider owns its credential handling or OpenCode reports
 /// nothing usable.
+/// 中文说明：runtimeCredential——把运行时凭据整形成 auth 条目；
+/// provider 自管凭据（专用线格式）或 OpenCode 未给出可用值时返回 None。
 pub fn runtime_credential(provider_id: &str, runtime: Option<&RuntimeProvider>) -> Option<Value> {
     if is_dedicated_wire_format_provider(provider_id) {
         return None;
@@ -1146,15 +1262,23 @@ pub fn runtime_credential(provider_id: &str, runtime: Option<&RuntimeProvider>) 
 }
 
 /// Injectable dependencies (the seams the JS suites mock module-by-module).
+/// 中文说明：可注入依赖集合——JS 测试逐模块 mock 的那些接缝都在这里。
 pub struct CallDeps {
+    /// HTTP 传输接缝（生产为 reqwest；测试注入桩 fetch）。
     pub fetch: Fetch,
+    /// OpenCode 配置层读取接缝（生产为文件系统读取）。
     pub config: ConfigReader,
+    /// auth.json 读写接缝（读登录条目、写回刷新后的 OAuth 条目）。
     pub auth_store: Arc<dyn AuthStore>,
+    /// OpenCode 运行时 provider 快照（30s TTL 缓存视图）。
     pub runtime: Arc<RuntimeProviders>,
+    /// OpenAI OAuth 单飞刷新闸门（私有；见 RefreshGate）。
     openai_refresh: tokio::sync::Mutex<RefreshGate>,
 }
 
+/// CallDeps 的构造入口。
 impl CallDeps {
+    /// 以四个注入接缝构造共享的 CallDeps（刷新闸门内置初始化）。
     pub fn new(
         fetch: Fetch,
         config: ConfigReader,
@@ -1176,6 +1300,10 @@ impl CallDeps {
 /// credential OpenCode resolved for a plugin provider, then the auth.json
 /// entry. Callers that need to refuse before spending a request must use
 /// this rather than inventing a second rule.
+/// 中文说明：resolveProviderLogin——与请求路径完全相同的凭据解析顺序：
+/// 配置 `provider.<id>.options.apiKey` 优先，其次 OpenCode 为插件
+/// provider 解析出的运行时凭据，最后是 auth.json 条目。需要在发请求前
+/// 判定有无登录的调用方必须复用它，不得另立第二套规则。
 pub async fn resolve_provider_login(
     deps: &CallDeps,
     auth: &Value,
@@ -1195,20 +1323,39 @@ pub async fn resolve_provider_login(
     get_auth_entry_for_provider(auth, provider_id).cloned()
 }
 
+/// call_small_model 的入参集合：一次小模型调用的完整上下文（凭据、
+/// catalog、工作目录、模型引用、提示词与各项预算限制）。
 pub struct CallParams<'a> {
+    /// 整个 auth.json 内容（按 provider id 查登录条目）。
     pub auth: &'a Value,
+    /// models-dev catalog（provider/model 元数据与 baseURL 兜底）。
     pub catalog: &'a Value,
+    /// 会话工作目录；相对 `{file:…}` 与配置层解析以此为基准。
     pub working_directory: Option<&'a str>,
+    /// 目标 provider id（同时决定 dispatch 走哪个分支）。
     pub provider_id: &'a str,
+    /// 目标模型 id（拼入请求体，并用于 Copilot 端点探测）。
     pub model_id: &'a str,
+    /// 用户提示词（调用前已被 clamp 到模型上下文预算内）。
     pub prompt: &'a str,
+    /// 可选 system 指令；空串视为无。
     pub system: Option<&'a str>,
+    /// 输出 token 预算；0 或缺失回落 DEFAULT_MAX_OUTPUT_TOKENS。
     pub max_output_tokens: Option<u64>,
+    /// 可选 JSON Schema；触发各线格式的结构化输出路径。
     pub response_schema: Option<&'a Value>,
+    /// 单次调用超时（毫秒）；0 或缺失回落 REQUEST_TIMEOUT_MS。
     pub timeout_ms: Option<u64>,
 }
 
 /// `callSmallModel`.
+/// 中文说明：callSmallModel 的移植——凭据解析优先级为配置 apiKey、
+/// 运行时凭据、auth.json；无登录返回 401 no-provider-login。之后按
+/// provider 分派：github-copilot 走设备 token；openai+oauth 走 codex
+/// （schema 请求直接报不支持）；anthropic/google 走各自线格式；其余
+/// 统一走 OpenAI 兼容 chat completions，baseURL 依次取配置、openai
+/// 默认、运行时解析与 catalog。zai/zhipu/glm/minimax-m3 等支持
+/// thinking 开关的模型附加禁用 thinking 的 extra_body。
 pub async fn call_small_model(
     deps: &Arc<CallDeps>,
     params: CallParams<'_>,
@@ -1418,6 +1565,10 @@ pub async fn call_small_model(
     .await
 }
 
+/// GitHub Copilot 专用路径：直接以存储的设备 OAuth token 作 bearer
+/// （access 即 refresh，无交换无过期）。企业账户从 enterpriseUrl 推导
+/// `copilot-api.{host}` 域名；先探测 /models 选择线格式，再按
+/// messages/responses/chat 分派，并附加 Copilot 要求的意图头。
 async fn call_copilot(
     deps: &CallDeps,
     entry: &Value,

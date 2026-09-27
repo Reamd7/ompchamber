@@ -7,6 +7,14 @@
 //! image signature, and fit the size cap. Outside-workspace files get an
 //! `OutsideGrantStore` grant reusable by `/api/fs/raw` — the same store the
 //! fs routes serve, shared via `fs_routes::router_with`.
+//! 本模块是 `server/lib/markdown-image-grants/routes.js` 的 Rust 移植。
+//!
+//! 为 assistant 消息实际引用到的图片铸造路径绑定的 raw-file grant：
+//! assistant 自己的 markdown 是权威来源（远端客户端无法为未引用的
+//! 路径铸造 grant）；文件必须位于 session 目录内（或经 symlink 解析后
+//! 位于获批的 temp root 内）、具有图片签名、不超过大小上限。工作区
+//! 之外的文件会得到一个 OutsideGrantStore 的 grant，可被 /api/fs/raw
+//! 复用——与 fs 路由同一存储，经 fs_routes::router_with 共享。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,13 +29,17 @@ use serde_json::{Value, json};
 use crate::context::RouterContext;
 use crate::fs_routes::FsState;
 
+/// 单张图片的大小上限（10 MiB），超出即拒绝。
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+/// 单次请求允许携带的图片源数量上限。
 const MAX_IMAGE_SOURCES: usize = 12;
 
+/// 读取字符串值并 trim；非字符串返回空串。
 fn as_string(value: &Value) -> String {
     value.as_str().unwrap_or_default().trim().to_string()
 }
 
+/// 对应 Node 的 path.relative(root, target) 包含性判断（纯词法比较）。
 /// Node `path.relative(root, target)` containment check (lexical).
 fn is_within(target: &Path, root: &Path) -> bool {
     match target.strip_prefix(root) {
@@ -36,10 +48,13 @@ fn is_within(target: &Path, root: &Path) -> bool {
     }
 }
 
+/// 两个路径是否等价：直接相等，或字符串表示一致。
 fn same_path(a: &Path, b: &Path) -> bool {
     a == b || a.to_string_lossy() == b.to_string_lossy()
 }
 
+/// 对应 JS parseFileSource：接受 file:// URL（仅限无 host 或 localhost，
+/// 做 percent-decode）或普通路径（剥离 query/fragment）；非法输入返回空串。
 /// `parseFileSource`: file:// URLs (localhost only, %-decoded) or plain
 /// paths with query/fragment stripped.
 fn parse_file_source(source: &str) -> String {
@@ -70,6 +85,7 @@ fn parse_file_source(source: &str) -> String {
     percent_decode(pathname)
 }
 
+/// 百分号解码：把 %XX 还原为字节；非法序列原样保留。
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -89,6 +105,7 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 对应 JS hasImageSignature：识别 PNG/JPEG/GIF87a/GIF89a/RIFF-WEBP 魔数。
 /// `hasImageSignature`: PNG/JPEG/GIF87a/GIF89a/RIFF-WEBP.
 fn has_image_signature(bytes: &[u8]) -> bool {
     if bytes.len() >= 8
@@ -111,6 +128,7 @@ fn has_image_signature(bytes: &[u8]) -> bool {
             && &header[8.min(header.len())..12.min(header.len())] == "WEBP")
 }
 
+/// 归一化引用式图片的 label：trim、连续空白折叠为单个空格、转小写。
 fn normalize_reference_label(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut last_was_space = false;
@@ -128,8 +146,11 @@ fn normalize_reference_label(value: &str) -> String {
     out
 }
 
+/// CommonMark 定义的 ASCII 标点集合（反斜杠转义的目标字符）。
 const PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
+/// 对应 JS unescapeMarkdownDestination：去掉转义 ASCII 标点（含 \\）
+/// 前的反斜杠。
 /// `unescapeMarkdownDestination`: drop the backslash before escaped ASCII
 /// punctuation (and `\\`).
 fn unescape_markdown_destination(value: &str) -> String {
@@ -149,6 +170,7 @@ fn unescape_markdown_destination(value: &str) -> String {
     out
 }
 
+/// 判断 index 处的字符是否被奇数个前导反斜杠转义。
 fn is_escaped_at(value: &str, index: usize) -> bool {
     let bytes = value.as_bytes();
     let mut slashes = 0;
@@ -160,6 +182,7 @@ fn is_escaped_at(value: &str, index: usize) -> bool {
     slashes % 2 == 1
 }
 
+/// 从 start 起查找下一个未被转义的 ]。
 fn find_closing_bracket(value: &str, start: usize) -> Option<usize> {
     let bytes = value.as_bytes();
     for cursor in start..bytes.len() {
@@ -170,10 +193,13 @@ fn find_closing_bracket(value: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// 是否为 CommonMark 认定的空白字节。
 fn is_whitespace_byte(byte: u8) -> bool {
     byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r' || byte == 0x0b || byte == 0x0c
 }
 
+/// 定位内联图片 ![alt](dest "title") 的收尾 )：允许空白与引号/括号
+/// 包裹的 title。
 fn find_inline_image_end(value: &str, start: usize) -> Option<usize> {
     let bytes = value.as_bytes();
     let mut cursor = start;
@@ -211,11 +237,16 @@ fn find_inline_image_end(value: &str, start: usize) -> Option<usize> {
     None
 }
 
+/// 内联图片 destination 的解析结果。
 struct InlineDestination {
+    /// 反转义后的目标地址。
     source: String,
+    /// 整个内联图片（含收尾括号）结束处的字节索引。
     end: usize,
 }
 
+/// 解析 ![alt]( 之后到 ) 之前的 destination：支持 <尖括号> 形态与含
+/// 配对括号/转义字符的裸形态。
 fn parse_inline_destination(value: &str, start: usize) -> Option<InlineDestination> {
     let bytes = value.as_bytes();
     let mut cursor = start;
@@ -277,6 +308,8 @@ fn parse_inline_destination(value: &str, start: usize) -> Option<InlineDestinati
     None
 }
 
+/// 解析引用定义 [label]: 之后的 destination：<尖括号> 形态，或保留
+/// 转义的非空白连续段。
 fn parse_definition_destination(value: &str) -> String {
     let trimmed = value.trim_start();
     if trimmed.starts_with('<') {
@@ -308,6 +341,7 @@ fn parse_definition_destination(value: &str) -> String {
     unescape_markdown_destination(&out)
 }
 
+/// 收集消息 text parts 的行：剔除围栏代码块内的行，并移除行内 code span。
 /// Lines from text parts with fenced code blocks and inline code spans
 /// removed.
 fn collect_markdown_lines_outside_code(message: &Value) -> Vec<String> {
@@ -345,6 +379,7 @@ fn collect_markdown_lines_outside_code(message: &Value) -> Vec<String> {
     lines
 }
 
+/// 识别行首（最多 3 个空格缩进）的 ``` 或 ~~~ 围栏标记。
 /// `^\s{0,3}(`{3,}|~{3,})` fence marker at line start.
 fn leading_fence_marker(line: &str) -> Option<String> {
     let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
@@ -370,6 +405,8 @@ fn leading_fence_marker(line: &str) -> Option<String> {
     }
 }
 
+/// 把行内 code span（反引号包裹的片段）替换为空串，对应 JS 正则
+/// /`+[^`]*`+/g。
 /// Replace `/`+[^`]+`+` spans (JS regex `` /`+[^`]*`+/g ``) with ''.
 fn strip_inline_code(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
@@ -406,6 +443,7 @@ fn strip_inline_code(line: &str) -> String {
     out
 }
 
+/// 提取消息引用的全部图片来源（内联图片 + 引用定义）。
 /// All image sources (inline + reference definitions) a message references.
 pub fn markdown_image_sources(message: &Value) -> HashSet<String> {
     let mut sources = HashSet::new();
@@ -473,6 +511,8 @@ pub fn markdown_image_sources(message: &Value) -> HashSet<String> {
     sources
 }
 
+/// 识别 ^\s{0,3}\[label\]: destination 形态的链接定义行，
+/// 返回 (label, 冒号之后的剩余部分)。
 /// `^\s{0,3}\[([^\]]+)]\s*:\s*(.*)$` link-definition line.
 fn definition_line(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim_start();
@@ -488,6 +528,8 @@ fn definition_line(line: &str) -> Option<(String, String)> {
     Some((label.to_string(), rest.trim_start().to_string()))
 }
 
+/// 从 OpenCode 服务拉取指定消息：404 或响应缺 info/parts 结构时返回
+/// Ok(None)；服务不可用或非成功状态返回 Err(描述)。
 async fn fetch_message(
     engine: &crate::engine::EngineState,
     session_id: &str,
@@ -530,16 +572,25 @@ async fn fetch_message(
     })
 }
 
+/// inspect_image 的判定结果。
 #[derive(Debug)]
 enum InspectStatus {
+    /// 通过全部校验，可以铸造 grant。
     Ready {
+        /// 通过校验的文件路径（工作区内为原始路径，工作区外为 canonical 路径）。
         path: PathBuf,
+        /// 是否位于工作区之外（决定是否需要 OutsideGrantStore）。
         outside_workspace: bool,
     },
+    /// 文件不存在。
     Missing,
+    /// 其它校验失败（越界、超限、非图片等）。
     Error,
 }
 
+/// 校验单个图片源：解析 file:// 路径（相对路径按 session 目录做词法
+/// 解析）；canonicalize 后必须位于允许的根内、是普通文件、不超大小
+/// 上限且具有图片签名。
 async fn inspect_image(source: &str, directory: &Path, approved_temp_root: &Path) -> InspectStatus {
     let parsed = parse_file_source(source);
     if parsed.is_empty() {
@@ -602,6 +653,7 @@ async fn inspect_image(source: &str, directory: &Path, approved_temp_root: &Path
     }
 }
 
+/// 词法拼接 base 与 relative（消解 . 与 ..，不触碰文件系统）。
 fn lexical_resolve(base: &Path, relative: &Path) -> PathBuf {
     let mut out: Vec<std::ffi::OsString> = Vec::new();
     for component in base.components() {
@@ -619,6 +671,8 @@ fn lexical_resolve(base: &Path, relative: &Path) -> PathBuf {
     out.iter().collect()
 }
 
+/// 对应 JS encodeURIComponent：未保留字符原样输出，其余编码为
+/// 大写十六进制的 %XX。
 fn encode_uri_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -641,13 +695,21 @@ fn encode_uri_component(value: &str) -> String {
     out
 }
 
+/// 路由共享状态。
 #[derive(Clone)]
 struct ModuleState {
+    /// 路由上下文（含引擎，用于拉取消息）。
     ctx: RouterContext,
+    /// fs 路由状态（提供 OutsideGrantStore）。
     fs: FsState,
+    /// 获批的临时文件根目录（工作区外文件必须位于其中）。
     approved_temp_root: PathBuf,
 }
 
+/// POST /api/ompchamber/sessions/{sessionId}/markdown-image-grants：
+/// 校验请求参数与目录，拉取 assistant 消息并以消息自身的 markdown 为
+/// 权威来源，逐个 source 检查并铸造 grant；每个 source 返回
+/// ready/missing/error 及对应的 grant 信息。
 async fn mint_grants(
     State(state): State<ModuleState>,
     AxumPath(session_id): AxumPath<String>,
@@ -762,6 +824,8 @@ async fn mint_grants(
     Json(json!({ "results": results })).into_response()
 }
 
+/// 构建 markdown-image-grants 路由；approved temp root 固定为
+/// <系统临时目录>/opencode。
 pub fn router(ctx: RouterContext, fs: FsState) -> Router {
     let approved_temp_root = std::env::temp_dir().join("opencode");
     Router::new()
@@ -776,14 +840,17 @@ pub fn router(ctx: RouterContext, fs: FsState) -> Router {
         })
 }
 
+/// markdown 图片源提取与图片校验的行为测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 构造带单条 text part 的 assistant 消息 JSON。
     fn message_with_text(text: &str) -> Value {
         json!({ "info": { "id": "m1", "role": "assistant" }, "parts": [ { "type": "text", "text": text } ] })
     }
 
+    /// 验证内联与引用定义两种形态的图片来源都会被提取。
     #[test]
     fn collects_inline_and_reference_sources() {
         let message = message_with_text(
@@ -797,6 +864,7 @@ mod tests {
         assert_eq!(sources.len(), 4);
     }
 
+    /// 验证围栏代码块与行内 code 中的图片语法不被提取。
     #[test]
     fn ignores_code_fences_and_inline_code() {
         let message = message_with_text(
@@ -808,6 +876,7 @@ mod tests {
         assert!(sources.contains("/ok.png"));
     }
 
+    /// 验证反斜杠转义的 ! 不构成图片语法。
     #[test]
     fn escaped_bangs_do_not_count() {
         let message = message_with_text("\\![not](/no.png)\n![yes](/yes.png)");
@@ -816,6 +885,7 @@ mod tests {
         assert!(sources.contains("/yes.png"));
     }
 
+    /// 验证 destination 的反转义只作用于 ASCII 标点：反斜杠+空格保持字面。
     #[test]
     fn unescapes_punctuation_in_destinations() {
         // Backslash-punctuation is unescaped; backslash-space is NOT (JS
@@ -826,6 +896,8 @@ mod tests {
         assert!(sources.contains("/path\\ with\\ spaces.png"));
     }
 
+    /// 验证 file:// URL 解析（localhost、拒绝远程 host、percent-decode）
+    /// 与普通路径的 query 剥离。
     #[test]
     fn parses_file_urls_and_strips_queries() {
         assert_eq!(parse_file_source("file:///tmp/a%20b.png"), "/tmp/a b.png");
@@ -837,6 +909,7 @@ mod tests {
         assert_eq!(parse_file_source("/tmp/x.png?v=1"), "/tmp/x.png");
     }
 
+    /// 验证各图片格式的魔数识别与非图片内容的拒绝。
     #[test]
     fn image_signatures() {
         assert!(has_image_signature(&[
@@ -849,6 +922,8 @@ mod tests {
         assert!(!has_image_signature(b""));
     }
 
+    /// 验证 inspect_image 的包含性、图片签名与存在性判定（词法逃逸
+    /// 不被授权）。
     #[tokio::test]
     async fn inspect_enforces_signature_and_containment() {
         let dir = std::env::temp_dir().join(format!(

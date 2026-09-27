@@ -2,16 +2,28 @@
 //! (depth- and visit-capped readdir walk; `.git` directory, file, or symlink
 //! marks a repository boundary; junk directories and symlinks are never
 //! descended into).
+//!
+//! 中文说明：嵌套 git 仓库发现——`/api/fs/git-dirs` 路由的底层实现。
+//! 以深度上限 3、访问目录数上限 100 做受控 BFS：`.git`（目录、文件或
+//! symlink，worktree/file 均算）标记仓库边界并停止下钻；跳过名单目录
+//! 与 symlink 目录保证遍历安全且有界。
 
 use std::path::{Path, PathBuf};
 
+/// 遍历的最大深度（根为 0；深度 ≥ 3 的目录不再下钻）。
 pub const GIT_DIRS_MAX_DEPTH: usize = 3;
+/// 最多访问的目录总数（防大仓库失控）。
 pub const GIT_DIRS_MAX_DIRS: usize = 100;
+/// 永不下钻的目录名清单（构建产物与依赖目录）。
 const GIT_DIRS_SKIP_LIST: [&str; 6] = ["node_modules", "dist", "build", ".venv", "target", ".next"];
 
 /// Walks `root_path` and returns every nested git repository path. The root
 /// itself, when it is a repo, yields no results; unreadable subtrees are
 /// silently skipped while an unreadable root still errors.
+///
+/// 中文说明：遍历 `root_path` 返回全部嵌套仓库路径。根自身是仓库时
+/// 不产出任何结果且立即停止；子目录不可读则静默跳过，根不可读才
+/// 向上返回错误。
 pub fn find_git_directories(root_path: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut results: Vec<PathBuf> = Vec::new();
     let mut visited: usize = 0;
@@ -27,6 +39,10 @@ pub fn find_git_directories(root_path: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(results)
 }
 
+/// 递归遍历实现：读取一层目录、识别仓库边界、按字典序下钻子目录。
+///
+/// `visited` 在进入目录体时计数（读取失败的目录不计），达到
+/// `max_dirs` 后不再展开新目录。
 fn walk(
     root_path: &Path,
     dir: &Path,
@@ -101,10 +117,12 @@ fn walk(
     Ok(())
 }
 
+/// git 目录发现的行为测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 创建带进程号隔离的临时目录，避免测试间相互污染。
     fn unique_temp_dir(label: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fsport-gitdirs-{label}-{}", std::process::id()));
@@ -113,6 +131,7 @@ mod tests {
         dir
     }
 
+    /// 验证发现嵌套仓库、在仓库边界停止下钻（边界内的嵌套仓库不上报）。
     #[test]
     fn finds_nested_repos_and_stops_at_boundaries() {
         let root = unique_temp_dir("walk");
@@ -138,6 +157,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证跳过名单与深度上限：node_modules 不下钻，深度 4 的仓库被截断。
     #[test]
     fn skip_list_and_depth_caps_are_enforced() {
         let root = unique_temp_dir("caps");
@@ -159,6 +179,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证根自身是仓库时返回空列表并终止遍历（JS 只 readdir 一次）。
     #[test]
     fn root_repo_yields_no_results_and_stops_the_walk() {
         let root = unique_temp_dir("rootrepo");

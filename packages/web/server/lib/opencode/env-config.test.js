@@ -1,6 +1,15 @@
+/**
+ * env-config 模块的单元测试。
+ *
+ * 覆盖 isValidOpenCodeHostname 对 IPv4/IPv6（含方括号）/DNS 主机名的
+ * 接受与各类畸形值的拒绝，以及 resolveOpenCodeEnvConfig 对
+ * OMPCHAMBER_OPENCODE_HOSTNAME 的读取、trim、空值告警回退与非法值
+ * 报错回退（回退均为 127.0.0.1，且不影响其余环境配置）。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import { isValidOpenCodeHostname, resolveOpenCodeEnvConfig } from './env-config.js';
 
+// hostname 合法性校验：合法输入与各类非法输入的边界
 describe('isValidOpenCodeHostname', () => {
   it('accepts IPv4 addresses', () => {
     expect(isValidOpenCodeHostname('127.0.0.1')).toBe(true);
@@ -50,6 +59,7 @@ describe('isValidOpenCodeHostname', () => {
   });
 });
 
+// resolveOpenCodeEnvConfig 的 hostname 解析、回退与告警行为
 describe('resolveOpenCodeEnvConfig hostname', () => {
   it('defaults to loopback when the env var is absent', () => {
     expect(resolveOpenCodeEnvConfig({ env: {} }).configuredOpenCodeHostname).toBe('127.0.0.1');

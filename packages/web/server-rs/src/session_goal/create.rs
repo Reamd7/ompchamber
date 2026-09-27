@@ -7,6 +7,10 @@
 //! PATCH active goal metadata onto the session. The synthetic first-turn
 //! goal-mode reminder (`buildGoalIntroText`) is appended to the dispatch
 //! prompt by the callers.
+//! （中文概要）目标创建流程：把 objective 压进元数据大小预算（优先小模型
+//! 蒸馏，否则首尾截断），先写 objective 文件（失败则内联回退进元数据），
+//! 再 PATCH 会话的 active goal 元数据；首轮合成的 goal-mode 提醒
+//! （buildGoalIntroText）由调用方拼进派发 prompt。
 
 use std::path::Path;
 use std::pin::Pin;
@@ -19,10 +23,13 @@ use crate::engine::EngineState;
 use crate::session_goal::objectives::{GOAL_OBJECTIVE_CHAR_LIMIT, chars_take, write_objective};
 use crate::session_goal::runtime::GoalMetadata;
 
+/// 首尾截断时替换中段的省略标记，告知审计方完整 prompt 已在聊天消息里。
 const TRIM_MARKER: &str = "\n\n[… objective trimmed for the auditor — the full prompt was delivered in the chat message …]\n\n";
 
 /// JS: `buildGoalIntroText` — the synthetic goal-mode system reminder attached
 /// to the first user prompt. A zero/absent budget omits the budget sentence.
+/// 生成第一轮用户 prompt 附带的合成 goal-mode system-reminder；
+/// 预算为 None 或 0 时省略 token 预算句。
 pub fn build_goal_intro_text(token_budget: Option<u64>) -> String {
     let budget_line = match token_budget {
         Some(budget) if budget != 0 => {
@@ -43,49 +50,78 @@ pub fn build_goal_intro_text(token_budget: Option<u64>) -> String {
 /// small-model module is not ported yet, so the seam stays injectable and the
 /// production path passes `None` — falling back to the head/tail trim exactly
 /// like the JS catch branch when the model is unavailable.
+/// 蒸馏请求参数：objective 原文、会话目录与可选的 provider/model 标识。
 pub struct DistillRequest<'a> {
+    /// 待蒸馏的目标原文（已超出字符上限）。
     pub objective: &'a str,
+    /// 会话所在目录，供小模型侧定位上下文。
     pub directory: &'a str,
+    /// 可选 provider id。
     pub provider_id: Option<&'a str>,
+    /// 可选 model id。
     pub model_id: Option<&'a str>,
 }
 
+/// 蒸馏调用的 boxed future：成功返回蒸馏文本，失败返回错误消息字符串。
 pub type DistillFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+/// 可注入的蒸馏 seam；生产路径暂传 None（小模型模块尚未移植）。
 pub type Distiller = Arc<dyn Fn(DistillRequest<'_>) -> DistillFuture + Send + Sync>;
 
 /// `onWarning(message, error)` sink; JS defaults to `console.warn`.
+/// onWarning(message, error) 回调类型；缺省实现走 tracing::warn。
 pub type WarningSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// Single-shot session-metadata PATCH seam (`url`, `body`) resolving to the
 /// HTTP status; `Ok(())` mirrors `response.ok`.
+/// PATCH seam 的 boxed future：Ok 表示 2xx（对应 JS response.ok），
+/// Err 携带 HTTP 状态码。
 pub type PatchFuture = Pin<Box<dyn Future<Output = Result<(), u16>> + Send>>;
+/// 单发会话元数据 PATCH seam（url、body）；生产环境由 engine_patch_fetch
+/// 基于受管 engine 构建。
 pub type PatchFetch = Arc<dyn Fn(&str, &Value) -> PatchFuture + Send + Sync>;
 
+/// 创建 goal 的入参：会话 id、目录、objective 原文、可选 token 预算与
+/// provider/model 标识。
 pub struct CreateGoalParams {
+    /// 目标所属会话的 id。
     pub session_id: String,
+    /// 会话的工作目录（写入 PATCH query）。
     pub directory: String,
+    /// 目标原文；写入前会 trim。
     pub objective: String,
+    /// 可选 token 预算；0 视为无预算。
     pub token_budget: Option<u64>,
+    /// 可选蒸馏用 provider id。
     pub provider_id: Option<String>,
+    /// 可选蒸馏用 model id。
     pub model_id: Option<String>,
 }
 
 /// Injectable dependencies; production builds `patch` via
 /// [`engine_patch_fetch`] over the managed engine.
+/// 可注入依赖集合；生产环境的 patch 通过 engine_patch_fetch 构建在
+/// 受管 engine 之上。
 pub struct CreateDeps {
+    /// 会话元数据 PATCH seam。
     pub patch: PatchFetch,
+    /// 可选蒸馏 seam；None 时回退首尾截断。
     pub distiller: Option<Distiller>,
+    /// 可选告警 sink；None 时使用 tracing::warn 默认实现。
     pub warn: Option<WarningSink>,
 }
 
+/// 创建 goal 的两类失败：objective 缺失、元数据 PATCH 非 2xx。
 #[derive(Debug, thiserror::Error)]
 pub enum CreateGoalError {
+    /// trim 后 objective 为空。
     #[error("goal objective is required")]
     ObjectiveRequired,
+    /// 元数据 PATCH 失败，携带响应的 HTTP 状态码。
     #[error("goal metadata patch failed ({0})")]
     PatchFailed(u16),
 }
 
+/// 当前 Unix 毫秒时间戳；时钟异常时返回 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -93,10 +129,13 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// base-36 数字表（0-9、a-z），供 goal id 生成使用。
 const RADIX36: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
 /// JS: `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}` —
 /// radix-36 timestamp plus 6 random base-36 characters.
+/// 生成 goal id：时间戳的 36 进制串 + 6 位随机 base-36 后缀；同一时间戳
+/// 的两次调用前缀相同而整体不同。
 fn generate_goal_id(now: u64) -> String {
     let mut id = String::new();
     let mut value = now;
@@ -115,12 +154,16 @@ fn generate_goal_id(now: u64) -> String {
     format!("{id}{suffix}")
 }
 
+/// 默认告警 sink：以 `[session-goal]` 前缀输出 tracing::warn。
 fn default_warn() -> WarningSink {
     Arc::new(|message: &str, error: &str| {
         tracing::warn!("[session-goal] {message}: {error}");
     })
 }
 
+/// 把 objective 压进 GOAL_OBJECTIVE_CHAR_LIMIT 预算：不超限原样返回；
+/// 超限时先尝试蒸馏 seam（不可用或失败时经 warn 告警），蒸馏结果 trim
+/// 后仍截断到上限；无蒸馏则回退首尾各留半、中段替换为 TRIM_MARKER。
 async fn fit_objective(
     objective: &str,
     directory: &str,
@@ -172,6 +215,10 @@ async fn fit_objective(
 
 /// JS: `createSessionGoal` — objective-file-before-metadata ordering, inline
 /// fallback, active goal payload, PATCH via the seam.
+/// 创建会话 goal：先把 objective 压进预算（fit_objective），再先写目标
+/// 文件（失败则告警并内联回退），随后组装 active goal 元数据（含
+/// objectiveFile 标记与 tokenBudget）并通过 PATCH seam 写回会话；
+/// 成功返回解析后的 GoalMetadata。
 pub async fn create_session_goal(
     base_url: &str,
     data_dir: &Path,
@@ -259,6 +306,8 @@ pub async fn create_session_goal(
 
 /// Production wiring: PATCH through the managed engine's HTTP client with the
 /// Basic auth header. Mirrors the JS `baseUrl` + `authHeaders` injection.
+/// 生产环境 PATCH seam：复用受管 engine 的 HTTP client，附带 accept/
+/// content-type 与 Basic auth 头；2xx 视为成功，发送失败映射为 502。
 pub fn engine_patch_fetch(engine: Arc<EngineState>) -> PatchFetch {
     Arc::new(move |url: &str, body: &Value| {
         let engine = Arc::clone(&engine);
@@ -286,6 +335,8 @@ pub fn engine_patch_fetch(engine: Arc<EngineState>) -> PatchFetch {
 
 /// JS `encodeURIComponent` (RFC 3986 unreserved + JS extras literal). Local
 /// copy of `fs_routes::paths::encode_uri_component` (that module is private).
+/// JS encodeURIComponent 的本地实现（保留 RFC 3986 unreserved 与 JS 额外
+/// 字面字符），用于拼 PATCH URL 里的 session/directory query 参数。
 fn encode_uri_component(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for &byte in value.as_bytes() {
@@ -303,12 +354,15 @@ fn encode_uri_component(value: &str) -> String {
     out
 }
 
+/// create 模块测试套件：用记录型 PATCH seam 验证 intro 文案、写入顺序、
+/// 内联回退、首尾截断与错误映射。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::Value;
     use std::sync::Mutex;
 
+    /// 为测试创建按标签隔离的临时目录（带进程 id 防并行冲突）。
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-session-goal-create-{tag}-{}",
@@ -318,11 +372,15 @@ mod tests {
         dir
     }
 
+    /// 记录型 PATCH seam 的共享日志：捕获全部 (url, body) 调用。
     struct PatchLog {
+        /// 已捕获的 PATCH 调用（url 与 JSON body）。
         calls: Mutex<Vec<(String, Value)>>,
     }
 
+    /// PatchLog 的构造与 seam 装配。
     impl PatchLog {
+        /// 返回恒成功并记录每次调用的 PatchFetch 及其共享日志句柄。
         fn ok() -> (PatchFetch, Arc<Self>) {
             let log = Arc::new(PatchLog {
                 calls: Mutex::new(Vec::new()),
@@ -340,6 +398,7 @@ mod tests {
         }
     }
 
+    /// 组装最小可用依赖：给定 patch、无蒸馏 seam、默认告警。
     fn deps(patch: PatchFetch) -> CreateDeps {
         CreateDeps {
             patch,
@@ -348,6 +407,7 @@ mod tests {
         }
     }
 
+    /// 契约：intro 包含 goal-mode 提醒语，带预算时附上预算句。
     #[test]
     fn builds_the_same_goal_intro_with_an_optional_budget() {
         let no_budget = build_goal_intro_text(None);
@@ -357,11 +417,14 @@ mod tests {
         assert!(budgeted.contains("A token budget of 200000 tokens applies to this goal."));
     }
 
+    /// 契约：预算为 0 时 intro 省略 token 预算句。
     #[test]
     fn zero_budget_omits_the_budget_sentence() {
         assert!(!build_goal_intro_text(Some(0)).contains("token budget of"));
     }
 
+    /// 契约：objective 先落文件，元数据 PATCH 只带 objectiveFile 标记与
+    /// active 状态，且 URL 正确编码 directory。
     #[tokio::test]
     async fn writes_the_objective_before_patching_active_goal_metadata() {
         let dir = temp_dir("ordering");
@@ -407,6 +470,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：目标文件写失败时告警一次，objective 内联进元数据
+    /// （objectiveFile=false）。
     #[tokio::test]
     async fn falls_back_to_inline_metadata_when_objective_storage_fails() {
         let dir = temp_dir("fallback");
@@ -456,6 +521,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：空白 objective 以 "goal objective is required" 拒绝。
     #[tokio::test]
     async fn empty_objective_is_rejected() {
         let dir = temp_dir("empty");
@@ -479,6 +545,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：无蒸馏 seam 时超长 objective 回退为首尾截断（中段替换为
+    /// TRIM_MARKER），并留下蒸馏不可用告警。
     #[tokio::test]
     async fn overlong_objective_head_tail_trims_without_distiller() {
         let dir = temp_dir("trim");
@@ -538,6 +606,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：蒸馏 seam 的输出（trim 后）取代超长原文写入目标文件。
     #[tokio::test]
     async fn distiller_output_replaces_the_objective() {
         let dir = temp_dir("distill");
@@ -582,6 +651,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：PATCH 返回非 2xx 时错误信息携带状态码
+    /// （如 "goal metadata patch failed (500)"）。
     #[tokio::test]
     async fn patch_failure_maps_to_status_error() {
         let dir = temp_dir("patchfail");
@@ -605,6 +676,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 契约：goal id 为 36 进制时间戳前缀 + 6 位随机后缀；同一时间戳生成
+    /// 的两个 id 前缀相同而整体不同。
     #[test]
     fn goal_ids_are_radix36_timestamps_with_suffix() {
         let a = generate_goal_id(1_000_000_000_000);

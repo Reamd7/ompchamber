@@ -10,6 +10,14 @@
 //! `~/.config/opencode/snippets` (preferred) / `snippet` and
 //! `<project>/.opencode/snippets` / `snippet`, with `aliases` frontmatter and
 //! `<prepend>`/`<append>`/`<inject>` blocks.
+//!
+//! 中文说明：snippets 完整库的 Rust 移植，覆盖 listSnippets / getSnippet /
+//! CRUD / expandSnippets 全部能力。snippet 是放在
+//! ~/.config/opencode/snippets（优先）或 snippet 目录与
+//! <project>/.opencode/snippets / snippet 目录下、以 #名称 引用的
+//! markdown 文件，支持 frontmatter aliases 别名与
+//! <prepend>/<append>/<inject> 块。本模块是 opencode 表面的权威副本
+//! （scheduled_tasks 仅持有 dispatch 子集，待其下次改动时合并到此处）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -18,19 +26,24 @@ use serde_json::{Map, Value};
 
 use super::md_yaml::{parse_yaml, stringify_yaml};
 
+/// snippet 名称的最大长度（80 字符）。
 const SNIPPET_NAME_MAX: usize = 80;
+/// 单个 snippet 在一次展开中允许的最大展开次数，超出即判定为循环并停止该引用的展开。
 const MAX_EXPANSION_COUNT: usize = 15;
 
+/// 拼接 home 下的全局 OpenCode 配置目录（~/.config/opencode）。
 fn opencode_config_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode")
 }
 
+/// 全局 snippet 目录候选：复数 snippets（优先）在前、单数 snippet（旧名）在后。
 fn global_snippet_dirs(home: &Path) -> Vec<PathBuf> {
     let config_dir = opencode_config_dir(home);
     // ALT (`snippets`) is preferred for writes/reads; singular is the legacy.
     vec![config_dir.join("snippets"), config_dir.join("snippet")]
 }
 
+/// 项目 snippet 目录候选：<project>/.opencode/snippets 与 snippet。
 fn project_snippet_dirs(working_directory: &Path) -> Vec<PathBuf> {
     vec![
         working_directory.join(".opencode").join("snippets"),
@@ -38,6 +51,7 @@ fn project_snippet_dirs(working_directory: &Path) -> Vec<PathBuf> {
     ]
 }
 
+/// 汇总待扫描的目录及来源标签：全局目录标 "global" 在前，有工作目录时项目目录标 "project" 追加在后。
 fn load_dirs(working_directory: Option<&Path>, home: &Path) -> Vec<(PathBuf, &'static str)> {
     let mut dirs: Vec<(PathBuf, &'static str)> = global_snippet_dirs(home)
         .into_iter()
@@ -54,6 +68,7 @@ fn load_dirs(working_directory: Option<&Path>, home: &Path) -> Vec<(PathBuf, &'s
 }
 
 /// `/^[a-z0-9][a-z0-9_-]{0,79}$/i`.
+/// 中文注解：按 /^[a-z0-9][a-z0-9_-]{0,79}$/i 校验（1–80 字符、字母数字开头、仅字母数字/_/-）。
 fn snippet_name_ok(name: &str) -> bool {
     let count = name.chars().count();
     if count == 0 || count > SNIPPET_NAME_MAX {
@@ -69,6 +84,7 @@ fn snippet_name_ok(name: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
 }
 
+/// 名称不合法时报错（文案与 JS 一致），供各 CRUD 入口统一复用。
 fn assert_valid_snippet_name(name: &str) -> Result<(), String> {
     if !snippet_name_ok(name) {
         return Err("Snippet name must use letters, numbers, dashes, or underscores".to_string());
@@ -78,6 +94,8 @@ fn assert_valid_snippet_name(name: &str) -> Result<(), String> {
 
 /// snippets.js `parseMarkdownFile` — the closing fence must be followed by a
 /// (optional) newline: `/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/`.
+/// 中文注解：手写解析 --- 围栏 frontmatter（闭合围杠后至多一个换行），
+/// YAML 解析失败降级为空 frontmatter，正文 trim 后返回。
 fn parse_markdown_content(content: &str) -> (Map<String, Value>, String) {
     let Some(rest) = content
         .strip_prefix("---\n")
@@ -124,6 +142,7 @@ fn parse_markdown_content(content: &str) -> (Map<String, Value>, String) {
     (Map::new(), content.trim().to_string())
 }
 
+/// 读取 frontmatter 的 aliases（兼容旧键 alias），接受数组或单值，trim 后滤掉空项，统一成字符串数组。
 fn normalize_aliases(frontmatter: &Map<String, Value>) -> Vec<String> {
     let raw = frontmatter
         .get("aliases")
@@ -146,6 +165,8 @@ fn normalize_aliases(frontmatter: &Map<String, Value>) -> Vec<String> {
 }
 
 /// `writeMarkdownFile` — aliases then description, fenced.
+/// 中文注解：组装 aliases/description frontmatter（空值省略键）与正文并按围栏写出；
+/// 必要时创建父目录，IO 错误原样上抛。
 fn write_markdown_file(
     file_path: &Path,
     content: &Value,
@@ -195,17 +216,26 @@ fn write_markdown_file(
     std::fs::write(file_path, output)
 }
 
+/// 一个已加载的 snippet：名称、正文、别名、描述、来源文件与来源标签。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snippet {
+    /// snippet 名称（文件名去掉 .md）。
     pub name: String,
+    /// 正文（frontmatter 之后的部分）。
     pub content: String,
+    /// frontmatter 中声明的别名列表。
     pub aliases: Vec<String>,
+    /// frontmatter 中的可选描述。
     pub description: Option<String>,
+    /// 来源文件路径（更新时的写回目标）。
     pub file_path: PathBuf,
+    /// 来源标签："global" 或 "project"。
     pub source: &'static str,
 }
 
+/// Snippet 的 JSON 序列化。
 impl Snippet {
+    /// 转成带 name/content/aliases/description(可选)/filePath/source 的 JSON 对象。
     pub(crate) fn to_value(&self) -> Value {
         let mut map = Map::new();
         map.insert("name".into(), Value::from(self.name.clone()));
@@ -231,13 +261,18 @@ impl Snippet {
     }
 }
 
+/// snippet 注册表：以小写名称/别名为键的索引；先注册者胜，规范名优先于别名。
 #[derive(Default)]
 struct Registry {
+    /// 小写名称与别名到 snippet 的映射（别名与规范名指向同一份数据）。
     by_key: HashMap<String, Snippet>,
+    /// 已占用的规范名集合（小写），用于阻止别名遮蔽规范名。
     canonical_names: HashSet<String>,
 }
 
+/// 注册表的注册与别名回收逻辑。
 impl Registry {
+    /// 摘除某 snippet 此前注册的别名（仅当该键未与规范名冲突且确实由这个 snippet 占用时移除）。
     fn remove_snippet_aliases(&mut self, snippet: &Snippet) {
         for alias in &snippet.aliases {
             let alias_key = alias.to_lowercase();
@@ -253,6 +288,8 @@ impl Registry {
         }
     }
 
+    /// 注册 snippet：同键旧条目若为规范名则先回收其别名；随后写入规范名，
+    /// 并登记不与现有规范名冲突的合法别名。
     fn register(&mut self, snippet: Snippet) {
         let key = snippet.name.to_lowercase();
         if let Some(existing) = self.by_key.get(&key).cloned()
@@ -273,6 +310,7 @@ impl Registry {
     }
 }
 
+/// 读取单个 snippet 文件：仅接受合法名称的 .md 文件，解析 frontmatter 得到别名与描述；任何失败返回 None。
 fn load_snippet_file(dir: &Path, filename: &str, source: &'static str) -> Option<Snippet> {
     let name = filename.strip_suffix(".md")?;
     if !snippet_name_ok(name) {
@@ -295,6 +333,7 @@ fn load_snippet_file(dir: &Path, filename: &str, source: &'static str) -> Option
     })
 }
 
+/// 扫描全部候选目录（目录不存在跳过、文件名排序保证确定性）逐个注册 snippet；单个加载失败记 tracing 警告。
 fn load_snippet_registry(working_directory: Option<&Path>, home: &Path) -> Registry {
     let mut registry = Registry::default();
     for (dir, source) in load_dirs(working_directory, home) {
@@ -323,6 +362,7 @@ fn load_snippet_registry(working_directory: Option<&Path>, home: &Path) -> Regis
 }
 
 /// `listSnippets` — unique by `(source, filePath)`, name-sorted.
+/// 中文注解：按 (source, filePath) 去重后，用 JS localeCompare 的近似排序按名称升序输出。
 pub(crate) fn list_snippets(working_directory: Option<&Path>, home: &Path) -> Vec<Snippet> {
     let registry = load_snippet_registry(working_directory, home);
     let mut seen: HashSet<(String, String)> = HashSet::new();
@@ -343,12 +383,14 @@ pub(crate) fn list_snippets(working_directory: Option<&Path>, home: &Path) -> Ve
 
 /// `String.prototype.localeCompare` approximation: case-insensitive primary,
 /// lowercase tie-break.
+/// 中文注解：先按小写形式比较、再用原文兜底，近似 String.prototype.localeCompare 的排序结果。
 fn js_locale_compare(a: &str, b: &str) -> std::cmp::Ordering {
     let la = a.to_lowercase();
     let lb = b.to_lowercase();
     la.cmp(&lb).then_with(|| a.cmp(b))
 }
 
+/// 按名称或别名查询单个 snippet（名称先做合法性校验）；注册表每次现算，未找到返回 Ok(None)。
 pub(crate) fn get_snippet(
     name: &str,
     working_directory: Option<&Path>,
@@ -359,6 +401,8 @@ pub(crate) fn get_snippet(
     Ok(registry.by_key.get(&name.to_lowercase()).cloned())
 }
 
+/// 计算写入目录：默认用规范的单数 snippet 目录，仅当只有复数 snippets 目录存在时沿用复数；
+/// project scope 缺工作目录时报错。
 fn writable_snippet_dir(
     scope: &str,
     working_directory: Option<&Path>,
@@ -386,6 +430,7 @@ fn writable_snippet_dir(
     })
 }
 
+/// 创建 snippet：校验名称后在可写目录下写 <name>.md（已存在报错），成功后重新加载并返回落盘结果。
 pub(crate) fn create_snippet(
     name: &str,
     config: &Value,
@@ -404,6 +449,7 @@ pub(crate) fn create_snippet(
         .ok_or_else(|| format!("Snippet \"{name}\" not found"))
 }
 
+/// 从配置对象提取 content/aliases/description 并调用 write_markdown_file 落盘。
 fn write_snippet_config(file_path: &Path, config: &Value) -> std::io::Result<()> {
     let aliases: Vec<String> = config
         .get("aliases")
@@ -427,6 +473,7 @@ fn write_snippet_config(file_path: &Path, config: &Value) -> std::io::Result<()>
     )
 }
 
+/// 更新 snippet：先读现有值，按键合并 updates（updates 胜出）后写回原文件，返回更新后的 snippet。
 pub(crate) fn update_snippet(
     name: &str,
     updates: &Value,
@@ -450,6 +497,7 @@ pub(crate) fn update_snippet(
         .ok_or_else(|| format!("Snippet \"{name}\" not found"))
 }
 
+/// 删除 snippet 对应的源文件；未找到时报错，删除失败把 IO 错误转成文案。
 pub(crate) fn delete_snippet(
     name: &str,
     working_directory: Option<&Path>,
@@ -460,14 +508,19 @@ pub(crate) fn delete_snippet(
     std::fs::remove_file(&existing.file_path).map_err(|error| error.to_string())
 }
 
+/// 展开过程中收集到的 <prepend>/<append> 块内容。
 #[derive(Debug, Default)]
 struct Blocks {
+    /// 全部前插块（按出现顺序）。
     prepend: Vec<String>,
+    /// 全部追加块（按出现顺序）。
     append: Vec<String>,
 }
 
 /// `expandSnippets(text, workingDirectory)` — expand `#hashtag` references,
 /// collect prepend/append blocks, join with blank lines.
+/// 中文注解：把文本中 #名称 引用递归替换为 snippet 内容；前插块置于最前、
+/// 追加块置于最后，非空段落之间用空行连接。
 pub(crate) fn expand_snippets(text: &str, working_directory: Option<&Path>, home: &Path) -> String {
     let registry = load_snippet_registry(working_directory, home);
     let snippets: HashMap<String, Snippet> = registry.by_key;
@@ -486,6 +539,8 @@ pub(crate) fn expand_snippets(text: &str, working_directory: Option<&Path>, home
 }
 
 /// `expandText` — fixed-point hashtag replacement with a loop guard.
+/// 中文注解：反复执行整轮 hashtag 替换直至文本不再变化或检测到循环
+/// （单个 snippet 展开次数超过 MAX_EXPANSION_COUNT）。
 fn expand_text(
     text: &str,
     registry: &HashMap<String, Snippet>,
@@ -504,6 +559,8 @@ fn expand_text(
     expanded
 }
 
+/// 单轮扫描替换：识别 #名称（字母数字/_/-），跳过 #skill(...) 引用与未注册名称；
+/// 命中则递归展开其 prepend/append 块并内联展开正文。
 fn replace_hashtags(
     text: &str,
     registry: &HashMap<String, Snippet>,
@@ -575,6 +632,8 @@ fn replace_hashtags(
 
 /// `parseSnippetBlocks`: extract `<prepend>`/`<append>` blocks in order
 /// (unclosed tags run to end-of-string), drop `<inject>` blocks, trim.
+/// 中文注解：依次抽取 <prepend>/<append> 块（未闭合的取到文末）、剔除 <inject> 块，
+/// 返回剩余正文与收集到的块。
 fn parse_snippet_blocks(content: &str) -> (String, Blocks) {
     let mut blocks = Blocks::default();
     let after_prepend = replace_tag_blocks(content, "prepend", &mut blocks);
@@ -583,6 +642,7 @@ fn parse_snippet_blocks(content: &str) -> (String, Blocks) {
     (stripped.trim().to_string(), blocks)
 }
 
+/// 抽取指定标签的块并从原文移除（大小写不敏感；缺闭合标签取到文末，空白块丢弃）。
 fn replace_tag_blocks(input: &str, tag: &str, blocks: &mut Blocks) -> String {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -609,6 +669,7 @@ fn replace_tag_blocks(input: &str, tag: &str, blocks: &mut Blocks) -> String {
     out
 }
 
+/// 按标签把块内容压入 prepend 或 append 列表。
 fn push_block(blocks: &mut Blocks, tag: &str, value: &str) {
     if tag == "prepend" {
         blocks.prepend.push(value.to_string());
@@ -617,6 +678,7 @@ fn push_block(blocks: &mut Blocks, tag: &str, value: &str) {
     }
 }
 
+/// 从原文剔除指定标签的块但内容不入收集器（用于 <inject>）。
 fn strip_tag_blocks(input: &str, tag: &str) -> String {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -635,6 +697,7 @@ fn strip_tag_blocks(input: &str, tag: &str) -> String {
     out
 }
 
+/// 字节级大小写不敏感查找 needle 首次出现的偏移；needle 为空返回 Some(0)。
 fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     let h = haystack.as_bytes();
     let n_lower: Vec<u8> = needle
@@ -653,11 +716,13 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     })
 }
 
+/// snippets.rs 的单元测试：覆盖别名/描述加载、目录与命名优先级、CRUD 往返与递归展开的防护。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 为当前测试创建唯一的临时根目录。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-snippets-{tag}-{}-{}",
@@ -668,17 +733,21 @@ mod tests {
         dir
     }
 
+    /// 进程内原子递增计数，用于临时目录去重。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
+        // 局部静态计数器：每次调用递增，保证并发测试目录唯一。
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// 测试助手：把内容写到项目相对路径（自动创建父目录）。
     fn write_snippet(project: &Path, relative: &str, content: &str) {
         let path = project.join(relative);
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(path, content).expect("write");
     }
+    /// 验证项目 snippet 的 aliases/description 从 frontmatter 正确加载，且别名可当名称查询。
     #[test]
     fn loads_project_snippets_with_aliases_and_description() {
         let root = temp_root("aliases");
@@ -702,6 +771,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证 snippet 与 snippets 目录同时存在时，单数 snippet 目录的内容胜出。
     #[test]
     fn snippet_dir_wins_over_snippets_dir() {
         let root = temp_root("precedence");
@@ -716,6 +786,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证规范名优先于冲突的别名，别名仍指向其宿主 snippet。
     #[test]
     fn canonical_names_beat_colliding_aliases() {
         let root = temp_root("canonical");
@@ -748,6 +819,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证同名 snippet 顶替先前注册的别名映射后，旧 snippet 的其余别名仍然有效。
     #[test]
     fn replacement_drops_earlier_alias_registrations() {
         let root = temp_root("replace");
@@ -777,6 +849,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证 create/update/delete 全链路：别名持久化、更新按键合并、删除后查不到。
     #[test]
     fn create_update_delete_round_trip() {
         let root = temp_root("crud");
@@ -812,6 +885,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证含路径穿越的名称在创建时被拒绝。
     #[test]
     fn rejects_invalid_names() {
         let root = temp_root("invalid");
@@ -828,6 +902,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证递归展开：内层 #base 引用被替换，prepend/append 块分置首尾并以空行分隔。
     #[test]
     fn expands_recursively_with_prepend_and_append() {
         let root = temp_root("expand");
@@ -846,6 +921,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证自引用展开被次数上限截停（保留原文引用），#skill(...) 形式不被展开。
     #[test]
     fn loops_are_guarded_and_skill_refs_are_untouched() {
         let root = temp_root("loops");

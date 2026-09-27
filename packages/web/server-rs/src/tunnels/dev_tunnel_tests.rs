@@ -1,14 +1,19 @@
 //! Unit tests for the dev-tunnel WS client primitives (SHA-1, handshake URL
 //! building, frame codec) and path matching; the route-level and end-to-end
 //! dev-tunnel tests live in `routes_tests.rs`.
+//! （中文说明）dev-tunnel 客户端原语的单元测试：SHA-1 与握手密钥、
+//! HTTP 基址到 WS URL 的转换、客户端帧掩码编码、服务端分片帧读取，
+//! 以及 dev-tunnel 路径与端口参数校验。
 
 use super::*;
 
+/// 计算 SHA-1 摘要并编码为 base64，便于与 RFC 测试向量直接比对。
 fn sha1_hex(data: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(sha1(data.as_bytes()))
 }
 
+/// 行为契约：SHA-1 实现命中 RFC 3174 已知向量（含百万字节多块输入）。
 #[test]
 fn sha1_known_vectors() {
     // RFC 3174 test vectors (base64-rendered for compactness).
@@ -23,6 +28,7 @@ fn sha1_known_vectors() {
     assert_eq!(sha1_hex(&million_a), "NKqXPNTE2qT2Husr260nMWU0AW8=");
 }
 
+/// 行为契约：WS 握手 accept key 的推导与 RFC 6455 §1.3 示例一致。
 #[test]
 fn ws_accept_key_matches_rfc_example() {
     // RFC 6455 §1.3: key "dGhlIHNhbXBsZSBub25jZQ==" → accept
@@ -33,6 +39,8 @@ fn ws_accept_key_matches_rfc_example() {
     );
 }
 
+/// 行为契约：http(s) 基址转为 ws(s) 的 /api/dev-tunnel?port=… URL；
+/// 非 http(s) scheme 直接报错而非等到建连时崩溃。
 #[test]
 fn builds_ws_urls_from_http_bases() {
     assert_eq!(
@@ -55,6 +63,7 @@ fn builds_ws_urls_from_http_bases() {
     );
 }
 
+/// 行为契约：客户端帧置掩码位、长度正确，掩码解码后还原出原始负载。
 #[test]
 fn client_frame_encoding_is_masked_and_parses_back() {
     // A masked client frame must be decodable by the server-side reader.
@@ -73,6 +82,8 @@ fn client_frame_encoding_is_masked_and_parses_back() {
     assert_eq!(payload, b"hello tunnel".to_vec());
 }
 
+/// 行为契约：服务端帧读取器支持分片消息重组、ping 帧上抛与 close 帧
+/// 收尾，流关闭（EOF）后返回 None。
 #[tokio::test]
 async fn reads_unmasked_server_frames_with_fragments_and_ping() {
     use tokio::io::AsyncWriteExt;
@@ -111,6 +122,7 @@ async fn reads_unmasked_server_frames_with_fragments_and_ping() {
     assert!(frame.is_none());
 }
 
+/// 行为契约：路径判定只认 /api/dev-tunnel 前缀，不吞并其它路由。
 #[test]
 fn dev_tunnel_path_matching_only_claims_its_path() {
     assert!(is_dev_tunnel_path("/api/dev-tunnel?port=5173"));
@@ -120,8 +132,10 @@ fn dev_tunnel_path_matching_only_claims_its_path() {
     assert!(!is_dev_tunnel_path("not a url"));
 }
 
+/// 行为契约：port 查询参数必须是 1..=65535 的数字且路径匹配，否则 None。
 #[test]
 fn parse_requested_port_validates_range_and_path() {
+    // 解析 URI 字符串并提取 port 查询参数的便捷封装。
     fn port_of(uri: &str) -> Option<u16> {
         parse_requested_port(&uri.parse().unwrap())
     }

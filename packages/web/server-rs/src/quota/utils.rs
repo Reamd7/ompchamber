@@ -13,6 +13,11 @@
 //! - `toLocaleTimeString`/`toLocaleString` labels ([`format_reset_time`]) are
 //!   locale-dependent in JS; the port emits deterministic en-US/UTC labels so
 //!   the two `resetAtFormatted`/`resetAfterFormatted` fields stay populated.
+//!
+//! 中文说明：本文件汇集各 quota provider 共用的数值转换、格式化与结果
+//! 组装工具，逐项对齐 JS 版 utils 的行为——JS Number/JSON 序列化语义、
+//! ISO-8601 子集解析、`toFixed` 舍入、统一 usage window 与 provider
+//! result 信封，以及凭据条目的读取/归一化辅助函数。
 
 use std::path::Path;
 
@@ -21,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::quota::deps::QuotaDeps;
 
 /// JS `asObject` — arrays count as objects too (callers only read fields).
+/// 中文说明：仅当值为 JSON 对象或数组时返回 `Some`（调用方只按对象读取字段）。
 pub fn as_object_value(value: Option<&Value>) -> Option<&Value> {
     match value? {
         Value::Object(_) | Value::Array(_) => value,
@@ -29,6 +35,7 @@ pub fn as_object_value(value: Option<&Value>) -> Option<&Value> {
 }
 
 /// JS `nonEmptyString` (xai.js) — trimmed non-empty string.
+/// 中文说明：trim 后非空才返回 `Some`，空串与其它类型一律 `None`。
 pub fn non_empty_string_value(value: &Value) -> Option<String> {
     let trimmed = value.as_str()?.trim();
     if trimmed.is_empty() {
@@ -41,6 +48,7 @@ pub fn non_empty_string_value(value: &Value) -> Option<String> {
 /// JS-style property access: missing keys and JSON `null` both read as
 /// absent, matching the `value?.key` / `if (value)` patterns the JS uses
 /// (a `null` field is falsy and every coerce maps it to null).
+/// 中文说明：模拟 JS 的 `value?.key` + 真值判断——键缺失或值为 `null` 都视为不存在。
 pub fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value
         .as_object()
@@ -49,6 +57,7 @@ pub fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 }
 
 /// `asNonEmptyString`: non-empty trimmed string.
+/// 中文说明：与 [`non_empty_string_value`] 行为一致的别名实现，供各 provider 选用。
 pub fn as_non_empty_string(value: &Value) -> Option<String> {
     let text = value.as_str()?;
     let trimmed = text.trim();
@@ -61,6 +70,7 @@ pub fn as_non_empty_string(value: &Value) -> Option<String> {
 
 /// JS `Number(string)` for the string branch of `toNumber`: trimmed, empty → 0,
 /// invalid → None (JS NaN filtered by `Number.isFinite` upstream).
+/// 中文说明：trim 后空串按 JS `Number("")` 返回 0；解析失败或得到非有限值返回 `None`。
 fn js_number_string(text: &str) -> Option<f64> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -71,6 +81,7 @@ fn js_number_string(text: &str) -> Option<f64> {
 
 /// `toNumber`: finite numbers pass through; numeric strings parse; everything
 /// else is null.
+/// 中文说明：数字须有限才透传；字符串交给 [`js_number_string`]；其余类型一律 `None`。
 pub fn to_number(value: Option<&Value>) -> Option<f64> {
     match value? {
         Value::Number(n) => n.as_f64().filter(|v| v.is_finite()),
@@ -81,6 +92,7 @@ pub fn to_number(value: Option<&Value>) -> Option<f64> {
 
 /// Serialize a float the way `JSON.stringify` would: integer-valued floats
 /// lose the fractional part.
+/// 中文说明：整数值且绝对值小于 2^53 的浮点数序列化为整数，其余保留小数，与 `JSON.stringify` 一致。
 pub fn num(value: f64) -> Value {
     if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         json!(value as i64)
@@ -91,6 +103,7 @@ pub fn num(value: f64) -> Value {
 
 /// Same canonicalization as [`num`] but as a display string
 /// (JS template interpolation of a number).
+/// 中文说明：与 [`num`] 相同的整数化规则，但输出展示字符串（等价 JS 模板插值数字）。
 pub fn num_str(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         format!("{}", value as i64)
@@ -102,6 +115,7 @@ pub fn num_str(value: f64) -> String {
 // ============== date helpers ==============
 
 /// Days from 1970-01-01 for a civil date (Howard Hinnant's algorithm).
+/// 中文说明：公历日期折算为距 1970-01-01 的天数（Howard Hinnant 算法，纯天运算无时区）。
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
@@ -113,6 +127,7 @@ pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 }
 
 /// Inverse of [`days_from_civil`]: (year, month, day).
+/// 中文说明：[`days_from_civil`] 的逆运算，返回 `(年, 月, 日)` 三元组。
 pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let days = days + 719_468;
     let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
@@ -127,15 +142,19 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// 0 = Sunday … 6 = Saturday for a days-from-epoch value.
+/// 中文说明：1970-01-01 是周四（偏移 +4），据此把天数折算为 0=周日 … 6=周六。
 fn weekday_from_days(days: i64) -> usize {
     (((days % 7) + 7 + 4) % 7) as usize
 }
 
+/// 月份缩写表，供 en-US 风格的 `Mon D` 标签使用。
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
+/// 星期缩写表（索引 0=Sun … 6=Sat）。
 const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+/// 把 24 小时制的时/分格式化为 `h:MM AM/PM`（0 点显示 12 AM、12 点显示 12 PM）。
 fn hour_minute_ampm(hour: u32, minute: u32) -> String {
     let display_hour = match hour % 12 {
         0 => 12,
@@ -148,6 +167,9 @@ fn hour_minute_ampm(hour: u32, minute: u32) -> String {
 /// `Date.parse` subset: `YYYY-MM-DD[THH:MM[:SS[.frac]]][Z|±HH[:]MM]]`.
 /// Fractional seconds may have any digit count. A missing timezone reads as
 /// UTC (JS would apply the server's local offset).
+///
+/// 中文说明：支持任意位数的小数秒；无时区时按 UTC 解析（JS `Date.parse`
+/// 会套用本地时区，这是移植时的已知偏差）。解析失败返回 `None`。
 pub fn parse_iso_ms(text: &str) -> Option<i64> {
     let text = text.trim();
     let bytes = text.as_bytes();
@@ -243,6 +265,8 @@ pub fn parse_iso_ms(text: &str) -> Option<i64> {
 
 /// `toTimestamp`: falsy values are null; numbers below 1e12 are seconds;
 /// strings parse as dates.
+/// 中文说明：0、空串与其它类型视为无时间戳；数值小于 1e12 认为是秒并 ×1000，
+/// 字符串走 [`parse_iso_ms`]。
 pub fn to_timestamp(value: Option<&Value>) -> Option<i64> {
     match value? {
         Value::Number(n) => {
@@ -262,6 +286,7 @@ pub fn to_timestamp(value: Option<&Value>) -> Option<i64> {
 }
 
 /// `normalizeTimestamp`: numbers only; seconds below 1e12 are scaled.
+/// 中文说明：仅接受数值输入；秒（<1e12）换算为毫秒，毫秒原样返回，否则 `None`。
 pub fn normalize_timestamp(value: &Value) -> Option<i64> {
     let raw = value.as_f64()?;
     Some(if raw < 1_000_000_000_000.0 {
@@ -273,6 +298,7 @@ pub fn normalize_timestamp(value: &Value) -> Option<i64> {
 
 /// JS `new Date(value).getTime()` for number/string inputs (numbers are
 /// already milliseconds — no scaling).
+/// 中文说明：数值已是毫秒不做缩放；字符串按 [`parse_iso_ms`] 解析；其它类型 `None`。
 pub fn date_to_ms(value: &Value) -> Option<i64> {
     match value {
         Value::Number(n) => Some(n.as_f64()? as i64),
@@ -286,6 +312,9 @@ pub fn date_to_ms(value: &Value) -> Option<i64> {
 /// Round a fixed-precision decimal string at `decimals` with JS `toFixed`
 /// semantics (ties pick the larger integer; the sign always mirrors the
 /// input, so small negatives keep a `-0.00` shape like JS).
+///
+/// 中文说明：在十进制字符串上按位数舍入并补齐小数位，正负号跟随输入，
+/// 因此 `-0.125` 舍两位得 `-0.12`（与 JS 的进位方向一致）。
 fn round_decimal_string(text: &str, decimals: usize) -> String {
     let negative = text.starts_with('-');
     let body = text.trim_start_matches(['-', '+']);
@@ -341,12 +370,15 @@ fn round_decimal_string(text: &str, decimals: usize) -> String {
 }
 
 /// JS `value.toFixed(digits)` for finite floats.
+/// 中文说明：先以高精度格式化取回十进制字符串，再交给 [`round_decimal_string`] 舍入，
+/// 规避二进制浮点本身的表示偏差。
 pub fn js_to_fixed(value: f64, digits: usize) -> String {
     let hint = format!("{:.*}", digits + 8, value);
     round_decimal_string(&hint, digits)
 }
 
 /// `formatMoney`: fixed 2-decimal money label; null for non-numbers.
+/// 中文说明：非有限值或 `None` 返回 `None`，否则输出固定两位小数的金额字符串。
 pub fn format_money(value: Option<f64>) -> Option<String> {
     let value = value?;
     if !value.is_finite() {
@@ -357,6 +389,9 @@ pub fn format_money(value: Option<f64>) -> Option<String> {
 
 /// `formatResetTime`: en-US/UTC label — time-only when the reset is today,
 /// otherwise `Mon D, Wkd, h:MM AM/PM`.
+///
+/// 中文说明：以 UTC 日期判定"今天"——重置时刻与 now 同一天时只给时刻，
+/// 否则输出 `Mon D, Wkd, h:MM AM/PM`，保证字段确定性。
 pub fn format_reset_time(timestamp_ms: i64, now_ms: u64) -> Option<String> {
     let days = timestamp_ms.div_euclid(86_400_000);
     let (year, month, day) = civil_from_days(days);
@@ -380,6 +415,8 @@ pub fn format_reset_time(timestamp_ms: i64, now_ms: u64) -> Option<String> {
     ))
 }
 
+/// 判断 resetAt 是否携带可解析的时间戳：非空字符串或数字为真；
+/// `null`、空串与其它类型为假（对齐 JS 的真值判断）。
 fn has_reset_timestamp(reset_at: Option<&Value>) -> bool {
     match reset_at {
         None | Some(Value::Null) => false,
@@ -391,11 +428,15 @@ fn has_reset_timestamp(reset_at: Option<&Value>) -> bool {
 
 /// The reset instant in epoch ms when JS would parse one
 /// (`new Date(resetAt).getTime()`), for the derived fields.
+///
+/// 中文说明：用 [`date_to_ms`] 把 resetAt 折算为 epoch 毫秒，供派生字段计算。
 fn reset_instant(reset_at: Option<&Value>) -> Option<i64> {
     date_to_ms(reset_at?)
 }
 
 /// `calculateResetAfterSeconds`.
+/// 中文说明：距重置的整秒数，向下取整且不为负（已过期返回 0）；
+/// resetAt 不可解析时为 `None`。
 pub fn calculate_reset_after_seconds(reset_at: Option<&Value>, now_ms: u64) -> Option<i64> {
     if !has_reset_timestamp(reset_at) {
         return None;
@@ -406,6 +447,11 @@ pub fn calculate_reset_after_seconds(reset_at: Option<&Value>, now_ms: u64) -> O
 }
 
 /// `toUsageWindow` — the unified window shape every provider emits.
+///
+/// 中文说明：所有 provider 共用的窗口构造器——`usedPercent`（须有限）、
+/// `remainingPercent`（= 100 - used，下限 0）、`windowSeconds`、
+/// `resetAfterSeconds`、`resetAt` 原样回填、格式化时间双字段及可选
+/// `valueLabel`；缺失信息一律写 `null` 保持键存在。
 #[allow(clippy::too_many_arguments)]
 pub fn to_usage_window(
     now_ms: u64,
@@ -473,6 +519,9 @@ pub fn to_usage_window(
 }
 
 /// `buildResult` — the unified provider result envelope, key order preserved.
+///
+/// 中文说明：统一结果信封——`providerId/providerName/ok/configured/
+/// usage/fetchedAt` 恒有，`error`/`planLabel` 仅在非空时写入。
 #[allow(clippy::too_many_arguments)]
 pub fn build_result(
     provider_id: &str,
@@ -501,6 +550,7 @@ pub fn build_result(
 }
 
 /// Convenience: usage payload `{ windows, models? }`.
+/// 中文说明：`{ windows, models? }` 的便捷组装；models 为空时整个键省略。
 pub fn usage_payload(windows: Map<String, Value>, models: Option<Map<String, Value>>) -> Value {
     let mut map = Map::new();
     map.insert("windows".into(), Value::Object(windows));
@@ -512,9 +562,12 @@ pub fn usage_payload(windows: Map<String, Value>, models: Option<Map<String, Val
 
 // ============== transformers.js ==============
 
+/// z.ai limit 的 unit 代码 → 秒数映射：3=小时（3600）、6=周（604800）。
 const ZAI_TOKEN_WINDOW_SECONDS: &[(f64, f64)] = &[(3.0, 3_600.0), (6.0, 604_800.0)];
 
 /// `resolveWindowSeconds` — z.ai limit unit × number as window seconds.
+/// 中文说明：读取 limit 的 `number` 与 `unit`，二者缺一、number 为 0 或
+/// unit 不在已知映射中都返回 `None`。
 pub fn resolve_window_seconds(limit: &Value) -> Option<f64> {
     let number = to_number(field(limit, "number"))?;
     if number == 0.0 {
@@ -529,6 +582,8 @@ pub fn resolve_window_seconds(limit: &Value) -> Option<f64> {
 }
 
 /// `resolveWindowLabel` — `'tokens'` fallback, weekly/`Nd`/`Nh`/`Ns` labels.
+/// 中文说明：无秒数回退 `tokens`；整周输出 `weekly`（7 天）或 `Nd`，
+/// 整小时输出 `Nh`，其余输出 `Ns`。
 pub fn resolve_window_label(window_seconds: Option<f64>) -> String {
     let Some(seconds) = window_seconds else {
         return "tokens".to_string();
@@ -548,6 +603,8 @@ pub fn resolve_window_label(window_seconds: Option<f64>) -> String {
 }
 
 /// `durationToLabel` — Kimi `window.duration` + `timeUnit` → label.
+/// 中文说明：Kimi 的 duration+timeUnit → `Nm`/`Nh`/`Nd` 标签；
+/// 缺失、为 0 或未知单位时回退 `limit`。
 pub fn duration_to_label(duration: Option<f64>, unit: Option<&str>) -> String {
     let (Some(duration), Some(unit)) = (duration, unit) else {
         return "limit".to_string();
@@ -564,6 +621,8 @@ pub fn duration_to_label(duration: Option<f64>, unit: Option<&str>) -> String {
 }
 
 /// `durationToSeconds` — Kimi `window.duration` + `timeUnit` → seconds.
+/// 中文说明：Kimi 的 duration+timeUnit 折算为秒（分/时/日三档）；
+/// duration 为 0 或未知单位返回 `None`。
 pub fn duration_to_seconds(duration: Option<f64>, unit: Option<&str>) -> Option<f64> {
     let (duration, unit) = (duration?, unit?);
     if duration == 0.0 {
@@ -580,12 +639,15 @@ pub fn duration_to_seconds(duration: Option<f64>, unit: Option<&str>) -> Option<
 // ============== auth.js ==============
 
 /// `getAuthEntry` — first alias present in the auth file.
+/// 中文说明：按给定顺序在 auth 对象里取第一个存在的条目（不递归）。
 pub fn get_auth_entry<'a>(auth: &'a Value, aliases: &[&str]) -> Option<&'a Value> {
     aliases.iter().find_map(|alias| field(auth, alias))
 }
 
 /// `normalizeAuthEntry` — string entries become `{ token }`; objects pass
 /// through; anything else is null.
+/// 中文说明：字符串条目包装为 `{ token }`；对象/数组原样克隆；
+/// `null` 与其它类型归为 `None`。
 pub fn normalize_auth_entry(entry: Option<&Value>) -> Option<Value> {
     match entry? {
         Value::Null => None,
@@ -596,6 +658,7 @@ pub fn normalize_auth_entry(entry: Option<&Value>) -> Option<Value> {
 }
 
 /// `readJsonFile` — missing/empty/unparseable files read as null.
+/// 中文说明：文件缺失、内容为空白或 JSON 解析失败都返回 `None`。
 pub fn read_json_file(path: &Path) -> Option<Value> {
     let raw = std::fs::read_to_string(path).ok()?;
     let trimmed = raw.trim();
@@ -607,15 +670,19 @@ pub fn read_json_file(path: &Path) -> Option<Value> {
 
 /// OpenCode config locations (`ANTIGRAVITY_ACCOUNTS_PATHS` precedent):
 /// `~/.config/opencode` and `~/.local/share/opencode`.
+/// 中文说明：`~/.config/opencode`；home 不可得时为 `None`。
 pub fn opencode_config_dir(deps: &QuotaDeps) -> Option<std::path::PathBuf> {
     (deps.home_dir)().map(|home| home.join(".config").join("opencode"))
 }
 
+/// OpenCode 数据目录 `~/.local/share/opencode`；home 不可得时为 `None`。
 pub fn opencode_data_dir(deps: &QuotaDeps) -> Option<std::path::PathBuf> {
     (deps.home_dir)().map(|home| home.join(".local").join("share").join("opencode"))
 }
 
 /// Antigravity accounts candidates in JS resolution order.
+/// 中文说明：按 JS 解析顺序依次给出 config 目录与 data 目录下的
+/// `antigravity-accounts.json` 两个候选路径。
 pub fn antigravity_accounts_paths(deps: &QuotaDeps) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     if let Some(config) = opencode_config_dir(deps) {
@@ -628,19 +695,24 @@ pub fn antigravity_accounts_paths(deps: &QuotaDeps) -> Vec<std::path::PathBuf> {
 }
 
 /// Insert-or-replace helper preserving insertion order (BTreeMap-free).
+/// 中文说明：向 windows map 插入或覆盖一个键；serde_json 的 Map 保持插入序。
 pub fn set_window(windows: &mut Map<String, Value>, key: &str, value: Value) {
     windows.insert(key.to_string(), value);
 }
 
 /// Clone a JSON object map out of a value (`{ ...obj }` spread on objects).
+/// 中文说明：值是对象时克隆其 map，否则返回空 map（JS 对对象做 `{ ...obj }` 展开的等价写法）。
 pub fn object_clone(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
 }
 
+/// utils 的行为单元测试（对齐 JS 语义的边界样例）。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证 `to_number`：数字/数字字符串（含首尾空白、空串→0）可解析，
+    /// 非法串、布尔与 null 为 None。
     #[test]
     fn to_number_parses_numbers_and_numeric_strings() {
         assert_eq!(to_number(Some(&json!(3))), Some(3.0));
@@ -652,6 +724,7 @@ mod tests {
         assert_eq!(to_number(Some(&Value::Null)), None);
     }
 
+    /// 验证 `num` 把整数值浮点序列化为不带小数部分的整数。
     #[test]
     fn num_serializes_integer_valued_floats_without_fraction() {
         assert_eq!(num(36.0).to_string(), "36");
@@ -659,6 +732,7 @@ mod tests {
         assert_eq!(num(100.0).to_string(), "100");
     }
 
+    /// 验证 `format_money` 固定两位小数，NaN/None 返回 None。
     #[test]
     fn format_money_matches_to_fixed_two() {
         assert_eq!(format_money(Some(7.54)), Some("7.54".to_string()));
@@ -668,6 +742,7 @@ mod tests {
         assert_eq!(format_money(Some(f64::NAN)), None);
     }
 
+    /// 验证 `js_to_fixed` 的负数舍入方向与向上进位（9.999 → 10.00）。
     #[test]
     fn js_to_fixed_handles_negative_and_carry() {
         assert_eq!(js_to_fixed(-1.005, 2), "-1.00");
@@ -675,6 +750,7 @@ mod tests {
         assert_eq!(js_to_fixed(2674.8724080324173, 0), "2675");
     }
 
+    /// 验证窗口标签规则：无值 → tokens、一周 → weekly、整天 → Nd、整小时 → Nh、其余 → Ns。
     #[test]
     fn resolve_window_labels_durations() {
         assert_eq!(resolve_window_label(None), "tokens");
@@ -684,6 +760,7 @@ mod tests {
         assert_eq!(resolve_window_label(Some(90.0)), "90s");
     }
 
+    /// 验证 z.ai unit 代码 3/6 分别换算为小时/周窗口，未知 unit 或缺 number 为 None。
     #[test]
     fn resolve_window_seconds_maps_zai_units() {
         let limit = json!({ "unit": 3, "number": 5 });
@@ -697,6 +774,7 @@ mod tests {
         assert_eq!(resolve_window_seconds(&json!({ "unit": 3 })), None);
     }
 
+    /// 验证 `to_timestamp`：秒自动 ×1000、毫秒原样、ISO 字符串解析；0/空串/非法输入为 None。
     #[test]
     fn to_timestamp_scales_seconds_and_parses_iso() {
         assert_eq!(
@@ -720,6 +798,7 @@ mod tests {
         assert_eq!(to_timestamp(Some(&json!("not-a-date"))), None);
     }
 
+    /// 验证 `parse_iso_ms` 支持纯日期、任意位数小数秒与时区偏移，垃圾输入返回 None。
     #[test]
     fn parse_iso_ms_supports_date_only_and_fraction_digits() {
         assert_eq!(parse_iso_ms("2026-08-12"), Some(1_786_492_800_000));
@@ -734,6 +813,8 @@ mod tests {
         assert_eq!(parse_iso_ms("garbage"), None);
     }
 
+    /// 验证 usage window 派生字段：remaining = 100-used（钳 0）、resetAfterSeconds
+    /// 与格式化时间正确生成，缺失输入写 null。
     #[test]
     fn to_usage_window_derives_remaining_and_reset_fields() {
         let now = 1_000_000_000_u64;
@@ -757,6 +838,7 @@ mod tests {
         assert_eq!(missing["windowSeconds"], Value::Null);
     }
 
+    /// 验证 `build_result` 仅在 error/planLabel 非空时写入对应键，usage 缺省为 null。
     #[test]
     fn build_result_includes_optional_keys_only_when_truthy() {
         let result = build_result(
@@ -789,6 +871,7 @@ mod tests {
         assert!(ok_result.get("error").is_none());
     }
 
+    /// 验证 `normalize_auth_entry`：字符串 token 包装为 { token }，对象透传，null/数字为 None。
     #[test]
     fn normalize_auth_entry_wraps_string_tokens() {
         assert_eq!(
@@ -801,6 +884,7 @@ mod tests {
         assert_eq!(normalize_auth_entry(Some(&json!(42))), None);
     }
 
+    /// 验证 `get_auth_entry` 按别名顺序优先命中第一个存在的条目。
     #[test]
     fn get_auth_entry_prefers_first_alias() {
         let auth = json!({ "kimi": { "key": "k" }, "kimi-for-coding": { "key": "kf" } });
@@ -809,6 +893,7 @@ mod tests {
         assert!(get_auth_entry(&auth, &["missing"]).is_none());
     }
 
+    /// 验证 `format_reset_time`：重置时刻在"今天"只显示时刻，跨天输出 `Mon D, Wkd, h:MM AM/PM`。
     #[test]
     fn format_reset_time_switches_between_today_and_future() {
         let now = 1_786_492_800_000_u64; // 2026-08-12T00:00:00Z
@@ -820,6 +905,7 @@ mod tests {
         assert_eq!(later, "Aug 13, Thu, 12:00 AM");
     }
 
+    /// 验证 Kimi duration/timeUnit 的标签与秒数换算，未知单位分别回退 limit / None。
     #[test]
     fn duration_helpers_map_kimi_units() {
         assert_eq!(
@@ -834,6 +920,7 @@ mod tests {
         assert_eq!(duration_to_seconds(Some(5.0), Some("TIME_UNIT_WEEK")), None);
     }
 
+    /// 验证 `read_json_file` 把缺失、空白与损坏 JSON 文件都读作 None，合法文件正常解析。
     #[test]
     fn read_json_file_treats_missing_and_broken_files_as_null() {
         let dir =
@@ -850,6 +937,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 `round_decimal_string` 的十进制舍入语义（含 0.125 的 JS 进位方向与负号处理）。
     #[test]
     fn round_decimal_string_keeps_precision_hints() {
         assert_eq!(round_decimal_string("12.345678901234", 2), "12.35");

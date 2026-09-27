@@ -1,3 +1,6 @@
+//! `/api/walkthrough*` 四条路由（读取、生成、进度、取消）：参数解析对齐
+//! express 的宽松语义，错误统一经 WalkthroughError 转成响应。生成不因
+//! 客户端断开而中止——任务跑在自己的 task 上且条目已落盘。
 //! Port of `server/lib/walkthrough/routes.js` — `/api/walkthrough*`.
 //!
 //! Generation is deliberately not aborted when the client disconnects: it
@@ -18,6 +21,7 @@ use serde_json::{Value, json};
 
 use super::service::WalkthroughService;
 
+/// 注册 walkthrough 全部路由，并以服务实例作共享 state。
 pub fn routes(service: Arc<WalkthroughService>) -> Router {
     Router::new()
         .route("/api/walkthrough", get(get_walkthrough))
@@ -27,6 +31,8 @@ pub fn routes(service: Arc<WalkthroughService>) -> Router {
         .with_state(service)
 }
 
+/// 解析 query 中的 `source` 参数：它是 JSON 编码的描述符字符串，
+/// 为空或解析失败都按缺失处理。
 /// `readSource(value)`: the query carries the descriptor as a JSON-encoded
 /// string; anything else reads as absent.
 fn read_source(value: Option<&String>) -> Option<Value> {
@@ -34,6 +40,8 @@ fn read_source(value: Option<&String>) -> Option<Value> {
     serde_json::from_str(text).ok()
 }
 
+/// 按 express.json() 的语义解析请求体：仅 `*json` content-type 才尝试，
+/// 其余情况（或解析失败）一律得到 `{}`。
 /// JS relies on express's `express.json()` body parser: only `*json` content
 /// types populate `req.body`; anything else (or a malformed body) reads as
 /// `{}`.
@@ -48,10 +56,13 @@ fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Value {
     serde_json::from_slice(body).unwrap_or(json!({}))
 }
 
+/// 从 JSON 对象取字符串字段（非字符串按缺失处理）。
 fn field_str(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// GET /api/walkthrough：读取（或触发）某目录 + 来源的 walkthrough；
+/// `directory` 缺失直接 400。
 async fn get_walkthrough(
     State(service): State<Arc<WalkthroughService>>,
     Query(query): Query<HashMap<String, String>>,
@@ -79,6 +90,7 @@ async fn get_walkthrough(
     }
 }
 
+/// 从 query map 取参数：存在即透传（含空串），回落交由下游解析决定。
 /// `typeof req.query.model === 'string' ? req.query.model : undefined` —
 /// absent reads as absent; present-but-empty still passes through as a
 /// string (and falls back inside resolution).
@@ -86,6 +98,8 @@ fn field_str_in(query: &HashMap<String, String>, key: &str) -> Option<String> {
     query.get(key).cloned()
 }
 
+/// POST /api/walkthrough/generate：发起生成；`force` 为 true 时忽略缓存
+/// 重写。响应即使客户端已断开也照常写出（任务与其条目已落盘）。
 async fn generate(
     State(service): State<Arc<WalkthroughService>>,
     headers: HeaderMap,
@@ -120,6 +134,8 @@ async fn generate(
     }
 }
 
+/// GET /api/walkthrough/progress：查询生成阶段（纯内存读，可在生成
+/// 进行中安全轮询；完整读取会重跑 git 管线，不用于此）。
 async fn progress(
     State(service): State<Arc<WalkthroughService>>,
     Query(query): Query<HashMap<String, String>>,
@@ -147,6 +163,7 @@ async fn progress(
     }
 }
 
+/// POST /api/walkthrough/cancel：显式取消进行中的生成任务。
 async fn cancel(
     State(service): State<Arc<WalkthroughService>>,
     headers: HeaderMap,
@@ -169,5 +186,6 @@ async fn cancel(
     }
 }
 
+/// 路由层测试（见 tests 子模块文件）。
 #[cfg(test)]
 mod tests;

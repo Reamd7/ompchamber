@@ -1,11 +1,20 @@
+/**
+ * 会话目标运行时测试套件：验证“活跃度门控”——静置窗口内父会话重新忙起、
+ * 子会话仍在工作时等待下一轮 idle、实时状态读取失败时重试静置窗口，
+ * 以及空闲父会话无在跑子会话时的正常审计（终结为 complete 的主路径）。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionGoalRuntime } from './runtime.js';
 
+/** 测试用父会话 id。 */
 const SESSION_ID = 'ses_parent';
+/** 测试用子会话 id。 */
 const CHILD_ID = 'ses_child';
+/** 测试用项目目录。 */
 const DIRECTORY = '/workspace';
 
+/** 预置的激活目标 metadata，内嵌在会话响应用。 */
 const goal = {
   id: 'goal_1',
   objective: 'Finish the task',
@@ -15,19 +24,26 @@ const goal = {
   updatedAt: 1,
 };
 
+/** 预置的父会话响应体（metadata 内嵌 goal）。 */
 const session = {
   id: SESSION_ID,
   directory: DIRECTORY,
   metadata: { ompchamber: { goal } },
 };
 
+/** 构造 JSON Response 的 fetch 替身辅助。 */
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 从 fetch 入参（字符串或 Request）提取 pathname，便于断言请求序列。 */
 const requestPath = (input) => new URL(typeof input === 'string' ? input : input.url).pathname;
 
+/**
+ * 用给定 fetch 替身创建运行时（静置窗口 10ms、总开关强制开），注入一条
+ * idle 事件并跑完定时器，返回运行时与小模型服务 mock。
+ */
 const startIdleTick = async (fetchImpl) => {
   const getSmallModelService = vi.fn();
   vi.stubGlobal('fetch', fetchImpl);
@@ -46,6 +62,7 @@ const startIdleTick = async (fetchImpl) => {
   return { runtime, getSmallModelService };
 };
 
+/** 活跃度门控与审计主路径验证（fake timers + 全局 fetch 打桩）。 */
 describe('session goal live activity gate', () => {
   beforeEach(() => {
     vi.useFakeTimers();

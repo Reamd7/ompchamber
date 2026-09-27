@@ -1,5 +1,10 @@
 //! Port of `server/lib/quota/providers/codex.js` — Codex (ChatGPT backend)
 //! quota via `GET https://chatgpt.com/backend-api/wham/usage`.
+//!
+//! 中文概览：Codex（ChatGPT 后端）配额提供方——用 OpenCode auth.json 中的
+//! access token 请求 chatgpt.com/backend-api/wham/usage，把 primary/
+//! secondary 限流窗口、credits 余额与商业账户的 spend_control 消费上限
+//! 转换成统一的用量窗口。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -13,17 +18,26 @@ use crate::quota::utils::{
     resolve_window_label, to_number, to_timestamp, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "codex";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "Codex";
+/// auth.json 中识别本提供方的别名（兼容 openai/chatgpt 旧条目名）。
 pub const ALIASES: [&str; 3] = ["openai", "codex", "chatgpt"];
 
+/// 用量查询端点 URL。
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
+/// 从 auth.json 解析出的 Codex 凭据：access token 与可选的 ChatGPT 账号 id。
 struct Credential {
+    /// bearer access token（取 access 字段，回退 token 字段）。
     access_token: String,
+    /// 可选的 ChatGPT-Account-Id 请求头值（多账号工作区场景）。
     account_id: Option<String>,
 }
 
+/// 从 auth.json 的 openai/codex/chatgpt 任一条目读取凭据；
+/// 条目缺失 access/token 字段返回 Ok(None)，auth 文件读取失败返回 Err。
 fn load_credential(deps: &QuotaDeps) -> Result<Option<Credential>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -41,10 +55,15 @@ fn load_credential(deps: &QuotaDeps) -> Result<Option<Credential>, String> {
     }))
 }
 
+/// 是否已配置：能解析出凭据即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_credential(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读凭据（缺失视为未配置，读取失败直接返回错误）→ 请求用量
+/// 端点（有账号 id 时附 ChatGPT-Account-Id 头）→ 组装 primary/secondary
+/// 限流窗口、credits 余额窗口（unlimited 时标签显示 "Unlimited"）以及
+/// spend_control.individual_limit 消费上限窗口；401 提示重新认证。
 pub fn fetch_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

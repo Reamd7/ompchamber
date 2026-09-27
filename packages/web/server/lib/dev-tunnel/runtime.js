@@ -24,14 +24,28 @@
  *   cannot reach this path: the WebSocket API always sends an origin and never
  *   lets a page set an `Authorization` header.
  */
+/**
+ * 到 OMPChamber 宿主上 dev server 的原始字节隧道（中文说明）。
+ *
+ * 安全姿态：可达集合就是 dev-server 发现展示给用户的那份列表，而不是
+ * "任意 loopback 端口"——否则已认证客户端可以借此拨打宿主上的任意本地
+ * 服务（数据库、管理面板、OpenCode API）。认证与浏览器侧 socket 不同：
+ * 带 Origin 头则照常做 origin 检查；不带 Origin 的请求必须持客户端
+ * bearer token（浏览器 WebSocket 一定会带 origin 且无法自定义
+ * Authorization 头，故可区分）。
+ */
 import net from 'node:net';
 import { WebSocketServer } from 'ws';
 
+/** dev tunnel 的 WebSocket upgrade 路径。 */
 const DEV_TUNNEL_WS_PATH = '/api/dev-tunnel';
 /** One page load opens many sockets; the cap is per host, not per page. */
+/** 单宿主并发的隧道 socket 上限（一次页面加载会开很多连接）。 */
 const MAX_CONCURRENT_SOCKETS = 64;
+/** 连接 dev server（127.0.0.1）的超时。 */
 const CONNECT_TIMEOUT_MS = 5_000;
 
+/** 从 upgrade URL 里解析目标端口；路径不符或端口非法（不在 1..65535）时返回 null。 */
 const parseRequestedPort = (url) => {
   try {
     const parsed = new URL(String(url || ''), 'http://localhost');
@@ -43,6 +57,7 @@ const parseRequestedPort = (url) => {
   }
 };
 
+/** 判断某 URL 是否是 dev tunnel 的 upgrade 路径（供宿主服务器分发 upgrade 事件）。 */
 export const isDevTunnelPath = (url) => {
   try {
     return new URL(String(url || ''), 'http://localhost').pathname === DEV_TUNNEL_WS_PATH;
@@ -51,6 +66,17 @@ export const isDevTunnelPath = (url) => {
   }
 };
 
+/**
+ * 创建 dev tunnel 运行时：挂到已有 HTTP 服务器的 upgrade 事件上，
+ * 校验认证/origin/端口白名单/并发上限后，把 WebSocket 与到
+ * 127.0.0.1:port 的 TCP 连接做原始字节对拷。
+ * @param {object} server 宿主 HTTP 服务器
+ * @param {() => Promise<{ok:boolean,servers:Array<{port:number}>}>} discoverDevServers dev-server 发现
+ * @param {object} uiAuthController UI 认证控制器（enabled 时逐请求解析认证上下文）
+ * @param {(req: object) => Promise<boolean>} isRequestOriginAllowed Origin 白名单判定
+ * @param {(socket: object, status: number, message: string) => void} rejectWebSocketUpgrade 拒绝 upgrade 的统一出口
+ * @param {object} [logger] 日志对象
+ */
 export function createDevTunnelRuntime({
   server,
   discoverDevServers,
@@ -59,7 +85,9 @@ export function createDevTunnelRuntime({
   rejectWebSocketUpgrade,
   logger = console,
 }) {
+  // noServer 模式：由 upgradeHandler 手动分发。
   const wsServer = new WebSocketServer({ noServer: true });
+  // 当前活跃的隧道 socket 计数（上限 MAX_CONCURRENT_SOCKETS）。
   let openSockets = 0;
 
   /**
@@ -67,12 +95,14 @@ export function createDevTunnelRuntime({
    * every upgrade rather than cached, so a dev server that stops listening
    * stops being reachable.
    */
+  /** 端口只有仍被 dev-server 发现报告时才可达；每次 upgrade 都重查，不缓存。 */
   const isAllowedPort = async (port) => {
     const result = await discoverDevServers();
     if (!result?.ok) return false;
     return result.servers.some((entry) => entry.port === port);
   };
 
+  // 每条隧道连接：解析端口 → 连 127.0.0.1 → 双向搬运字节，任一侧断开即收尾。
   wsServer.on('connection', (socket, req) => {
     const port = parseRequestedPort(req.url);
     if (port === null) {
@@ -85,6 +115,7 @@ export function createDevTunnelRuntime({
     upstream.setNoDelay(true);
 
     let settled = false;
+    /** 收尾（幂等，只结算一次）：递减计数并双向销毁 upstream 与 WebSocket。 */
     const teardown = () => {
       if (settled) return;
       settled = true;
@@ -107,6 +138,7 @@ export function createDevTunnelRuntime({
       // fast response against a slow client buffers the whole body in memory.
       if (socket.bufferedAmount > 1_000_000) {
         upstream.pause();
+        /** 轮询等待 WebSocket 缓冲排空后恢复读取 upstream。 */
         const resume = () => {
           if (socket.bufferedAmount > 1_000_000) {
             setTimeout(resume, 20);
@@ -128,6 +160,11 @@ export function createDevTunnelRuntime({
     socket.on('error', teardown);
   });
 
+  /**
+   * upgrade 事件处理：只认领 dev tunnel 路径；依次校验 UI 认证、
+   * Origin（有则查白名单，无则必须是 client token 认证）、端口格式、
+   * 并发上限、端口白名单，全部通过才交给 wsServer 完成握手。
+   */
   const upgradeHandler = (req, socket, head) => {
     if (!isDevTunnelPath(req.url)) return;
     void (async () => {
@@ -174,13 +211,16 @@ export function createDevTunnelRuntime({
     })();
   };
 
+  // 挂到宿主服务器的 upgrade 事件上。
   server.on('upgrade', upgradeHandler);
 
   return {
     path: DEV_TUNNEL_WS_PATH,
+    /** 当前活跃的隧道 socket 数（监控/测试用）。 */
     get openSocketCount() {
       return openSockets;
     },
+    /** 摘除 upgrade 监听并关闭 WebSocket 服务器。 */
     dispose() {
       server.off('upgrade', upgradeHandler);
       wsServer.close();

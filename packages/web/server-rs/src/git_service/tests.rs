@@ -2,6 +2,10 @@
 //! injectable runner fake, the path-safety checks the JS tests pin, route
 //! shapes via `Router::oneshot` against the same fake, long-path (issue
 //! #2746) normalization, and the pure parsers.
+//!
+//! 中文说明：git_service 模块移植的测试：通过可注入的假 runner 断言 argv
+//! 构造、JS 测试固定的路径安全检查、用 `Router::oneshot` 配合同一假 runner
+//! 验证路由形状、长路径（issue #2746）规范化，以及各类纯解析函数。
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -19,22 +23,29 @@ use super::service::{GitService, NOT_A_REPO_MESSAGE};
 // Fake runner
 // ---------------------------------------------------------------------------
 
+/// 脚本化 git 响应：按 argv 匹配返回预置结果；未匹配（`None`）视为空输出成功。
 type Script = Arc<dyn Fn(&[String]) -> Option<GitCommandResult> + Send + Sync>;
 
+/// 记录调用的假 git 辅助类型。
 struct FakeGit {
+    /// 已记录的 (cwd, argv) 调用列表。
     calls: Arc<Mutex<Vec<(PathBuf, Vec<String>)>>>,
 }
 
+/// 构造成功结果的快捷方式（stdout 取入参）。
 fn ok(stdout: &str) -> GitCommandResult {
     GitCommandResult::ok(stdout.to_string())
 }
 
+/// 构造失败结果的快捷方式（stdout 为空、退出码 1）。
 fn fail(stderr: &str) -> GitCommandResult {
     GitCommandResult::fail("", stderr)
 }
 
 /// Runner that records every invocation and answers from `script`; unscripted
 /// commands succeed with empty output (like git's quiet success).
+/// 构造使用脚本化 runner 的 GitService 并返回调用记录句柄；未脚本化的命令
+/// 以空输出成功（模拟 git 的静默成功）。
 fn fake_runner(script: Script) -> (GitService, Arc<Mutex<Vec<(PathBuf, Vec<String>)>>>) {
     let calls: Arc<Mutex<Vec<(PathBuf, Vec<String>)>>> = Arc::new(Mutex::new(Vec::new()));
     let runner: GitRunner = {
@@ -55,6 +66,7 @@ fn fake_runner(script: Script) -> (GitService, Arc<Mutex<Vec<(PathBuf, Vec<Strin
     (GitService::with_runner(runner), calls)
 }
 
+/// 创建带随机后缀的唯一临时目录（测试夹具）。
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-git-svc-{}-{}-{}",
@@ -66,6 +78,7 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// 生成 8 位十六进制随机后缀，避免并行测试冲突。
 fn suffix() -> String {
     use rand::Rng;
     let mut rng = rand::rng();
@@ -74,6 +87,7 @@ fn suffix() -> String {
         .collect()
 }
 
+/// 取调用记录快照，仅保留 argv（丢弃 cwd）。
 fn calls_snapshot(calls: &Arc<Mutex<Vec<(PathBuf, Vec<String>)>>>) -> Vec<Vec<String>> {
     calls
         .lock()
@@ -83,6 +97,7 @@ fn calls_snapshot(calls: &Arc<Mutex<Vec<(PathBuf, Vec<String>)>>>) -> Vec<Vec<St
         .collect()
 }
 
+/// 判断调用记录中是否存在以给定前缀开头的 argv。
 fn has_call(calls: &[Vec<String>], prefix: &[&str]) -> bool {
     calls.iter().any(|args| {
         prefix.len() <= args.len()
@@ -97,6 +112,8 @@ fn has_call(calls: &[Vec<String>], prefix: &[&str]) -> bool {
 // getStatus
 // ---------------------------------------------------------------------------
 
+/// 预置 getStatus 所需的 git 响应脚本：分支跟踪行、文件状态、numstat
+/// 以及 MERGE_HEAD/upstream 远端探测。
 fn status_script(repo: &str) -> Script {
     let repo = repo.to_string();
     Arc::new(move |args: &[String]| {
@@ -122,6 +139,8 @@ fn status_script(repo: &str) -> Script {
     })
 }
 
+/// 验证 getStatus 解析出分支、tracking、ahead/behind、文件状态与 diff
+/// 统计，且无 merge/rebase 进行时也不多出 upstreamComparison 字段。
 #[tokio::test]
 async fn get_status_parses_tracking_files_and_stats() {
     let repo = temp_dir("status");
@@ -148,6 +167,7 @@ async fn get_status_parses_tracking_files_and_stats() {
     assert!(status.get("upstreamComparison").is_none());
 }
 
+/// 验证 light 模式既不执行 numstat 命令，也不产出 diffStats 字段。
 #[tokio::test]
 async fn get_status_light_mode_skips_stats() {
     let repo = temp_dir("status-light");
@@ -164,6 +184,7 @@ async fn get_status_light_mode_skips_stats() {
     assert!(!has_call(&calls, &["diff", "--numstat"]));
 }
 
+/// 验证非仓库目录返回固定的 NOT_A_REPO_MESSAGE 错误文本。
 #[tokio::test]
 async fn get_status_rejects_non_repo_with_pinned_message() {
     let (service, _calls) = fake_runner(Arc::new(|args: &[String]| {
@@ -186,6 +207,7 @@ async fn get_status_rejects_non_repo_with_pinned_message() {
 // Staging argv + path safety
 // ---------------------------------------------------------------------------
 
+/// 验证 stage_files 去空白、去空项并去重后构造单条 `add -- <paths>` 批量 argv。
 #[tokio::test]
 async fn stage_files_builds_add_argv_with_resolved_repo_paths() {
     let repo = temp_dir("stage");
@@ -228,6 +250,7 @@ async fn stage_files_builds_add_argv_with_resolved_repo_paths() {
     );
 }
 
+/// 验证越库路径在校验阶段即被拒绝，且不执行任何 git 命令。
 #[tokio::test]
 async fn stage_files_rejects_paths_outside_repository_before_running_git() {
     let (service, calls) = fake_runner(Arc::new(|_| None));
@@ -242,6 +265,7 @@ async fn stage_files_rejects_paths_outside_repository_before_running_git() {
     );
 }
 
+/// 验证 unstage_files 构造 `restore --staged -- <paths>` argv。
 #[tokio::test]
 async fn unstage_files_builds_restore_staged_argv() {
     let repo = temp_dir("unstage");
@@ -270,6 +294,8 @@ async fn unstage_files_builds_restore_staged_argv() {
 // commit argv + summary parse
 // ---------------------------------------------------------------------------
 
+/// 验证 commit 使用 `core.abbrev=40` 前缀的 commit argv，并从输出摘要解析
+/// 提交哈希、分支与变更统计。
 #[tokio::test]
 async fn commit_builds_simple_git_commit_argv_and_parses_summary() {
     let repo = temp_dir("commit");
@@ -326,6 +352,7 @@ async fn commit_builds_simple_git_commit_argv_and_parses_summary() {
     ));
 }
 
+/// 验证 addAll 选项先执行 `add .` 再 commit，摘要统计解析正确。
 #[tokio::test]
 async fn commit_add_all_runs_plain_add_dot() {
     let repo = temp_dir("commit-all");
@@ -363,6 +390,7 @@ async fn commit_add_all_runs_plain_add_dot() {
 // Branch operations argv
 // ---------------------------------------------------------------------------
 
+/// 验证创建分支走 `checkout -b <name> <start-point>` argv。
 #[tokio::test]
 async fn create_branch_uses_checkout_b_with_start_point() {
     let repo = temp_dir("branch");
@@ -388,6 +416,7 @@ async fn create_branch_uses_checkout_b_with_start_point() {
     assert!(has_call(&calls, &["checkout", "-b", "feature", "main"]));
 }
 
+/// 验证检出远端分支名时自动建立本地跟踪分支，且返回实际检出的分支名。
 #[tokio::test]
 async fn checkout_branch_resolves_remote_pick_to_tracking_branch() {
     let repo = temp_dir("checkout");
@@ -426,6 +455,8 @@ async fn checkout_branch_resolves_remote_pick_to_tracking_branch() {
     ));
 }
 
+/// 验证本地与远端都不存在的分支 fetch 失败时，返回
+/// "Failed to fetch <branch> from origin" 错误。
 #[tokio::test]
 async fn checkout_branch_reports_remote_only_branch_fetch_failure() {
     let repo = temp_dir("checkout-fetch");
@@ -462,6 +493,7 @@ async fn checkout_branch_reports_remote_only_branch_fetch_failure() {
 // Range helpers
 // ---------------------------------------------------------------------------
 
+/// 验证 range diff 对本地不存在的 ref 返回固定的 "not available locally" 错误。
 #[tokio::test]
 async fn range_diff_names_unfetched_ref_plainly() {
     let repo = temp_dir("range");
@@ -494,6 +526,8 @@ async fn range_diff_names_unfetched_ref_plainly() {
     );
 }
 
+/// 验证 range files 解析 `-z` porcelain 输出：rename 条目取目标路径，
+/// 状态归一为 R，含空格文件名正确还原。
 #[tokio::test]
 async fn range_files_parses_rename_destinations() {
     let repo = temp_dir("range-files");
@@ -534,6 +568,8 @@ async fn range_files_parses_rename_destinations() {
 // Long paths (issue #2746)
 // ---------------------------------------------------------------------------
 
+/// 验证 worktree 填充错误含 "Filename too long" 时附加长路径指引
+/// （core.longpaths），其它错误原样透传。
 #[test]
 fn populate_error_appends_path_length_guidance() {
     let message = super::service_ops::format_worktree_populate_error(
@@ -547,6 +583,7 @@ fn populate_error_appends_path_length_guidance() {
     assert_eq!(passthrough, "boom");
 }
 
+/// 验证填充流程先设置 core.longpaths、再执行带该配置的 reset --hard（顺序断言）。
 #[tokio::test]
 async fn populate_enables_longpaths_then_resets_hard() {
     let repo = temp_dir("longpaths");
@@ -588,6 +625,7 @@ async fn populate_enables_longpaths_then_resets_hard() {
     );
 }
 
+/// 验证重试耗尽后字节未变化的陈旧 index.lock 会被删除，恢复最终成功。
 #[tokio::test]
 async fn populate_recovers_from_stale_unchanged_index_lock() {
     let repo = temp_dir("stale-lock");
@@ -632,6 +670,7 @@ async fn populate_recovers_from_stale_unchanged_index_lock() {
 // Pure parsers
 // ---------------------------------------------------------------------------
 
+/// 验证分支创建来源解析：仅接受非 HEAD、非完整哈希的 reflog 起点。
 #[test]
 fn branch_creation_source_rules() {
     use super::service::parse_branch_creation_source;
@@ -662,6 +701,8 @@ fn branch_creation_source_rules() {
     assert_eq!(parse_branch_creation_source(""), None);
 }
 
+/// 验证日志 base ref 的本地优先解析：本地分支存在则优先，其次
+/// origin/<from>，都不可用则原样返回；空白/缺失返回 None。
 #[tokio::test]
 async fn resolve_base_ref_local_first_semantics() {
     use super::service::resolve_base_ref_for_log;
@@ -705,6 +746,7 @@ async fn resolve_base_ref_local_first_semantics() {
 // Routes (oneshot against the fake service layer)
 // ---------------------------------------------------------------------------
 
+/// 构造带临时目录、独立 identity 存储与空 EventHub 的路由测试状态。
 fn test_state(service: GitService) -> super::GitState {
     super::GitState {
         service: Arc::new(service),
@@ -714,6 +756,7 @@ fn test_state(service: GitService) -> super::GitState {
     }
 }
 
+/// 以给定的方法/URI/body 对 git 路由发起单次请求并返回响应。
 async fn oneshot(
     state: super::GitState,
     method: &str,
@@ -731,6 +774,7 @@ async fn oneshot(
     router.oneshot(request).await.unwrap()
 }
 
+/// 读取响应体并解析为 JSON（解析失败时返回 Null）。
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
         .await
@@ -738,6 +782,7 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
 }
 
+/// 验证 status 路由对非仓库目录返回 200 与 isGitRepository:false 的软失败负载。
 #[tokio::test]
 async fn route_status_soft_non_repo_payload() {
     let repo = temp_dir("route-status");
@@ -770,6 +815,7 @@ async fn route_status_soft_non_repo_payload() {
     );
 }
 
+/// 保留路径安全字符的最小 URL 百分号编码（用于 query 参数拼装）。
 fn url_encode(value: &str) -> String {
     value
         .chars()
@@ -783,6 +829,7 @@ fn url_encode(value: &str) -> String {
         .collect()
 }
 
+/// 验证 status 路由对真实仓库返回核心状态字段的形状。
 #[tokio::test]
 async fn route_status_answers_repo_shape() {
     let repo = temp_dir("route-status-repo");
@@ -802,6 +849,8 @@ async fn route_status_answers_repo_shape() {
     assert_eq!(body["files"][0]["working_dir"], "M");
 }
 
+/// 验证 stage 路由：非法负载返回 400 且不触发 git；旧版单 path 负载与
+/// 批量 paths 负载都能正确 stage。
 #[tokio::test]
 async fn route_stage_validation_and_success() {
     // Invalid payloads are rejected before git runs.
@@ -871,6 +920,7 @@ async fn route_stage_validation_and_success() {
     ));
 }
 
+/// 验证涉及 hash/mode 参数的路由对非法输入返回 400 与固定错误文本。
 #[tokio::test]
 async fn route_hash_validation_rejections() {
     let (service, _calls) = fake_runner(Arc::new(|_| None));
@@ -923,6 +973,7 @@ async fn route_hash_validation_rejections() {
     );
 }
 
+/// 验证 commit 与分支相关路由对缺失或非法字段返回 400 与固定错误文本。
 #[tokio::test]
 async fn route_commit_and_branch_validations() {
     let (service, _calls) = fake_runner(Arc::new(|_| None));
@@ -972,6 +1023,7 @@ async fn route_commit_and_branch_validations() {
     assert_eq!(body_json(response).await["error"], "newName is required");
 }
 
+/// 验证 diff 路由缺少 path 参数时返回 400。
 #[tokio::test]
 async fn route_diff_requires_path() {
     let (service, _calls) = fake_runner(Arc::new(|_| None));
@@ -989,6 +1041,8 @@ async fn route_diff_requires_path() {
     );
 }
 
+/// 验证一组代表性路由缺少 directory 参数时统一返回 400
+/// 与 "directory parameter is required"。
 #[tokio::test]
 async fn route_missing_directory_is_400() {
     let (service, _calls) = fake_runner(Arc::new(|_| None));
@@ -1017,6 +1071,8 @@ async fn route_missing_directory_is_400() {
     }
 }
 
+/// 验证 worktrees 路由把 porcelain 输出映射为 name/branch/path 列表
+/// （含 detached 条目与嵌套分支名）。
 #[tokio::test]
 async fn route_worktrees_lists_porcelain_entries() {
     let repo = temp_dir("route-worktrees");
@@ -1049,6 +1105,8 @@ async fn route_worktrees_lists_porcelain_entries() {
     );
 }
 
+/// 验证 identities CRUD 路由：空列表起步、创建、重复 ID 返回 400、
+/// 更新与删除成功。
 #[tokio::test]
 async fn route_identities_crud_shapes() {
     let (service, _calls) = fake_runner(Arc::new(|_| None));
@@ -1098,6 +1156,7 @@ async fn route_identities_crud_shapes() {
     assert_eq!(body_json(response).await["success"], true);
 }
 
+/// 验证 global identity 未配置时 set-identity 返回 404 与固定错误文本。
 #[tokio::test]
 async fn route_set_identity_global_falls_back_to_ssh_key() {
     let repo = temp_dir("set-identity");
@@ -1123,6 +1182,7 @@ async fn route_set_identity_global_falls_back_to_ssh_key() {
 // getLog
 // ---------------------------------------------------------------------------
 
+/// 验证 get_log 的 --all 模式解析记录分隔符边界、refs/parents 与变更统计。
 #[tokio::test]
 async fn log_all_mode_parses_boundaries_and_stats() {
     let repo = temp_dir("log-all");

@@ -1,23 +1,35 @@
+/**
+ * OMPChamber 自更新路由测试：聚焦前台（foreground）运行模式下的
+ * /api/ompchamber/update-install——非 systemd 托管与非法 unit 名直接
+ * 409 拒绝；systemd 环境下通过 systemd-run 的瞬时 unit 排队安装并返回
+ * job 标识与日志查看方式。child_process 与 package-manager 均被打桩。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import path from 'node:path';
 import request from 'supertest';
 
+// 打桩 child_process：捕获 spawnSync 调用参数并阻止真实执行。
 vi.mock('child_process', () => ({
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
 
+// 打桩包管理器的更新检查、命令构造与探测。
 vi.mock('../package-manager.js', () => ({
   checkForUpdates: vi.fn(),
   getUpdateCommand: vi.fn(),
   detectPackageManagerDetails: vi.fn(),
 }));
 
+/** 被打桩的 child_process 模块句柄（断言 spawnSync 参数用）。 */
 const childProcess = await import('child_process');
+/** 被打桩的 package-manager 模块句柄。 */
 const packageManager = await import('../package-manager.js');
+/** 被测的 OMPChamber 路由注册器。 */
 const { registerOMPChamberRoutes } = await import('./openchamber-routes.js');
 
+/** 构造挂好被测路由的 express app；environment 注入 process.env，storedOptions 覆盖磁盘启动选项。 */
 const createApp = ({ environment = {}, storedOptions = {} } = {}) => {
   const app = express();
   const dependencies = {
@@ -53,6 +65,7 @@ const createApp = ({ environment = {}, storedOptions = {} } = {}) => {
   return { app, dependencies };
 };
 
+// 每个用例前设定更新检查与包管理器桩的默认返回。
 beforeEach(() => {
   packageManager.checkForUpdates.mockResolvedValue({
     available: true,
@@ -64,11 +77,13 @@ beforeEach(() => {
   packageManager.getUpdateCommand.mockReturnValue('npm install -g https://github.com/Reamd7/ompchamber/releases/latest/download/ompchamber-latest.tgz');
 });
 
+// 每个用例后还原并清空全部 mock。
 afterEach(() => {
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
+// 前台更新路由套件：拒绝路径与 systemd 排队路径。
 describe('OMPChamber foreground update route', () => {
   it('rejects a foreground update when the server is not owned by systemd', async () => {
     const { app } = createApp();

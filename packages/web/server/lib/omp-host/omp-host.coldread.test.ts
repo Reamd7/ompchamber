@@ -8,19 +8,33 @@ import type { OmpHostEngine } from './engine.ts';
 // GET path releases its temporary manager (close + releaseRetainedEntries in
 // finally), the entry-tree snapshot no longer hands a raw manager to the URI
 // domain, and the counters observe it all without touching content.
+/**
+ * 冷读（cold-read）契约测试（docs/plan.md §7，验收 §10.1「冷读」）：
+ * 每条冷 GET 路径都必须在 finally 中释放其临时 manager
+ * （close + releaseRetainedEntries），entry-tree 快照不再把原始 manager
+ * 交给 URI 域，且计数器只观测释放行为、不触碰内容。
+ */
 
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
 const realRuntimeInit = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
 
+/** 顶层模块 mock 所闭合的测试装置状态。 */
 // Harness state the top-level module mocks close over.
+/** 顶层 mock 共享的可变状态形状。 */
 interface ColdMockState {
+  /** 当前测试的 agent 目录（临时目录）。 */
   agentDir: string;
+  /** SessionManager.list 可见的会话文件表（path + cwd）。 */
   files: Array<{ path: string; cwd: string }>;
   released: string[];
+  /** 已 releaseRetainedEntries 的文件列表。 */
+  /** close→release 顺序证明（SDK 契约要求先 close）。 */
   /** close→release ordering proof (the SDK contract is close-first). */
   order: string[];
+  /** 置 true 时让 mock 的 close() 抛错，验证失败路径仍会释放。 */
   failClose: boolean;
 }
+/** 全局 mock 状态实例：各用例经 makeEngine 重置后复用。 */
 const mockState: ColdMockState = {
   agentDir: '',
   files: [],
@@ -97,6 +111,8 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
 const { coldReaderStats, resetColdReaderStats } = await import('./cold-reader.ts');
 const { OmpHostEngine: Engine } = await import('./engine.ts');
 
+/** 每个用例的装置：建临时 agent 目录与 c1.jsonl、重置 mockState，
+ *  返回挂载该目录的引擎实例。 */
 const makeEngine = () => {
   const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-cold-'));
   const file = path.join(agentDir, 'sessions', 'c1.jsonl');
@@ -110,6 +126,8 @@ const makeEngine = () => {
   return { engine: new Engine({ agentDir }), file };
 };
 
+/** 主套件：各冷读路径（getSession/getMessages/getEntries/getTelemetry/
+ *  entryTree）逐一验证 open→close→release 计数、顺序与永不物化 agent。 */
 describe('cold reads release every temporary manager (plan §7)', () => {
   test('getSession cold path: one open, one release, one close', async () => {
     resetColdReaderStats();

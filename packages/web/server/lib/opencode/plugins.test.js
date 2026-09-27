@@ -1,13 +1,27 @@
+/**
+ * plugins.js OpenCode 插件数据层的单元测试（bun:test）。
+ *
+ * 通过 OPENCODE_CONFIG 指向临时用户配置文件并动态导入被测模块，覆盖：
+ * 插件条目的解析与序列化（字符串与 [spec, options] 元组）、非法 spec 与
+ * 文件名的拒绝、创建/更新/删除及其在 user/project 层的路由、OPENCODE_CONFIG
+ * 变更后的重新解析、损坏项目层的容错列表、条目 id 编解码，以及插件目录文件
+ * 的写入/读取/删除/覆盖与合法性过滤。
+ */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+// beforeAll 创建的临时根目录（afterAll 删除）。
 let rootDir;
+// beforeEach 重建的临时项目目录。
 let projectDir;
+// 临时用户级配置文件路径（经 OPENCODE_CONFIG 注入被测模块）。
 let userConfigPath;
+// beforeAll 中动态导入的被测模块（等环境变量就绪后再加载）。
 let plugins;
 
+/** 执行 fn 并返回其抛出的 Error；未抛出时反而抛出「Expected function to throw」。 */
 function thrownBy(fn) {
   try {
     fn();
@@ -17,16 +31,20 @@ function thrownBy(fn) {
   throw new Error('Expected function to throw');
 }
 
+/** 将 data 以两空格缩进的 JSON 写入 filePath（自动创建父目录）。 */
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
+/** 读取并解析 filePath 的 JSON 内容。 */
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+// 套件：插件条目与插件目录文件在 user/project 配置层上的解析与增删改查。
 describe('opencode plugins data layer', () => {
+  // 建立临时根目录、把 OPENCODE_CONFIG 指向临时用户配置，并动态导入被测模块。
   beforeAll(async () => {
     rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-plugins-'));
     userConfigPath = path.join(rootDir, 'user-opencode.json');
@@ -34,12 +52,14 @@ describe('opencode plugins data layer', () => {
     plugins = await import('./plugins.js');
   });
 
+  // 每个用例重置用户级配置并新建独立的项目目录。
   beforeEach(() => {
     process.env.OPENCODE_CONFIG = userConfigPath;
     projectDir = fs.mkdtempSync(path.join(rootDir, 'project-'));
     fs.rmSync(userConfigPath, { force: true });
   });
 
+  // 删除临时根目录并清除 OPENCODE_CONFIG 环境变量。
   afterAll(() => {
     fs.rmSync(rootDir, { recursive: true, force: true });
     delete process.env.OPENCODE_CONFIG;

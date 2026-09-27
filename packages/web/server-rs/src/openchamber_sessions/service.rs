@@ -3,6 +3,11 @@
 //! worktree + bootstrap wait → session create → prompt dispatch → event
 //! emit) and the `runExisting` flow (`send`/`fork` with partial-failure
 //! bookkeeping).
+//!
+//! 中文说明：本文件实现 JS 版 `createOMPChamberSessionService` 的两个主流程——
+//! `create`（解析目录 → 可选创建 worktree 并等待 bootstrap 就绪 → 创建会话 →
+//! 派发初始 prompt → 广播 session-created 事件）与 `runExisting`
+//! （`send`/`fork` 的共享主体，含部分失败记账）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,78 +31,132 @@ use super::selection::{
     fetch_selection_inputs, resolve_default_selection, validate_requested_selection,
 };
 
+/// `wait_for_prompt_landed` 确认 prompt 落地的总超时（毫秒），对应 JS 的 5000。
 const PROMPT_LANDED_TIMEOUT_MS: u64 = 5_000;
+/// 两次轮询消息列表之间的间隔（毫秒）。
 const PROMPT_LANDED_POLL_MS: u64 = 150;
+/// 等待 worktree bootstrap 进入可用阶段的总超时（毫秒），对应 JS 的 60000。
 const WORKTREE_BOOTSTRAP_TIMEOUT_MS: u64 = 60_000;
+/// bootstrap 状态轮询间隔（毫秒）。
 const WORKTREE_BOOTSTRAP_POLL_MS: u64 = 150;
 
 /// `createWorktree` / `getWorktreeBootstrapStatus` from `git/index.js` — the
 /// JS tests mock both, so the seam stays injectable.
+///
+/// 中文说明：git worktree 操作接缝——创建 worktree 与查询 bootstrap 状态；
+/// JS 测试对两者都做了 mock，因此保持可注入。
 pub trait WorktreeOps: Send + Sync {
     /// Returns the worktree record embedded verbatim in the route response.
+    /// 返回的 worktree 记录会原样嵌入路由响应；`Err` 携带 git 服务的错误文本。
     fn create(&self, directory: &str, input: &Value) -> BoxFut<'_, Result<Value, String>>;
+    /// 查询指定目录 worktree bootstrap 的当前状态/阶段。
     fn bootstrap_status(&self, directory: &str) -> BoxFut<'_, Result<Value, String>>;
 }
 
 /// One `createSessionGoal` invocation (JS passes the same fields plus
 /// `baseUrl`/`authHeaders`, which the engine-backed creator resolves
 /// itself).
+///
+/// 中文说明：一次 `createSessionGoal` 调用的参数集（JS 侧还传
+/// `baseUrl`/`authHeaders`，由 engine 后端创建器自行解析）。
 #[derive(Debug, Clone)]
 pub struct GoalCall {
+    /// 目标会话 ID。
     pub session_id: String,
+    /// 会话所在目录（canonical 路径）。
     pub directory: String,
+    /// 目标文本（命令模板展开后的目标，或展开后的 prompt）。
     pub objective: String,
+    /// 可选的 token 预算。
     pub token_budget: Option<u64>,
+    /// 模型 provider ID。
     pub provider_id: String,
+    /// 模型 model ID。
     pub model_id: String,
 }
 
+/// 依赖注入闭包：读取共享设置存储的 raw Map（异步）。
 pub type ReadSettings = Arc<dyn Fn() -> BoxFut<'static, Map<String, Value>> + Send + Sync>;
+/// 依赖注入闭包：把 settings.projects 清洗为安全的项目列表。
 pub type SanitizeProjects = Arc<dyn Fn(&Value) -> Vec<Value> + Send + Sync>;
+/// 依赖注入闭包：校验并规范化目录路径，`Err` 为用户可读的错误消息。
 pub type ValidateDirectory =
     Arc<dyn Fn(&str) -> BoxFut<'static, Result<String, String>> + Send + Sync>;
+/// 依赖注入闭包：等待本地 engine 就绪（含超时）。
 pub type WaitReady = Arc<dyn Fn() -> BoxFut<'static, Result<(), String>> + Send + Sync>;
+/// 依赖注入闭包：为会话创建 goal 元数据，`Err` 为错误消息。
 pub type GoalCreator = Arc<dyn Fn(GoalCall) -> BoxFut<'static, Result<(), String>> + Send + Sync>;
+/// 依赖注入闭包：广播 session-created 事件（同步，永不使请求失败）。
 pub type EmitSessionCreated = Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// The JS `dependencies` object of `createOMPChamberSessionService`.
+///
+/// 中文说明：对应 JS `createOMPChamberSessionService` 的 `dependencies`
+/// 对象；测试与生产（mod.rs 组合根）各注入一份实现。
 pub struct SessionDeps {
+    /// 本地 engine 客户端（SDK 约定 + raw fetch 帮助函数）。
     pub client: Arc<dyn EngineClient>,
+    /// 设置读取注入点。
     pub read_settings: ReadSettings,
+    /// projects 清洗注入点。
     pub sanitize_projects: SanitizeProjects,
+    /// 目录校验注入点。
     pub validate_directory: ValidateDirectory,
+    /// engine 就绪等待注入点。
     pub wait_ready: WaitReady,
+    /// worktree 操作注入点。
     pub worktrees: Arc<dyn WorktreeOps>,
+    /// goal 创建注入点。
     pub create_goal: GoalCreator,
+    /// session-created 事件广播注入点。
     pub emit_session_created: EmitSessionCreated,
 }
 
 /// The outcome of `dispatchPrompt`.
+///
+/// 中文说明：记录派发最终生效的 selection 与结果标志——model/agent/variant、
+/// prompt 是否落地、是否以命令派发，以及未落地时的错误文本。
 #[derive(Debug, Clone)]
 struct DispatchOutcome {
+    /// 实际生效的模型（经默认值回填）。
     model: Option<ModelRef>,
+    /// 实际生效的 agent 名。
     agent: Option<String>,
+    /// 实际生效的 variant。
     variant: Option<String>,
+    /// prompt 是否已被 engine 接受并出现在会话中。
     prompt_dispatched: bool,
+    /// 是否按 slash 命令（而非普通 prompt）派发。
     dispatched_as_command: bool,
+    /// 未落地等非致命错误的描述文本。
     prompt_error: Option<String>,
 }
 
 /// `resolveRequestedDirectory` output.
+///
+/// 中文说明：目录解析结果——canonical 目录路径，以及按 projectId 请求时
+/// 命中的项目 ID（按 directory 请求时为 `None`）。
 struct ResolvedDirectory {
+    /// 校验后的 canonical 目录路径。
     directory: String,
+    /// 请求携带 projectId 时命中的项目 ID。
     project_id: Option<String>,
 }
 
+/// 会话编排服务：持有全部依赖闭包，实现 create / send / fork 流程。
 pub struct SessionService {
+    /// 注入的依赖集合。
     deps: SessionDeps,
 }
 
+/// `create` 与 `runExisting` 两个流程的实现主体。
 impl SessionService {
+    /// 以给定依赖构造服务。
     pub fn new(deps: SessionDeps) -> Self {
         Self { deps }
     }
 
+    /// 读取当前设置并等待结果（各流程内联使用）。
     fn log_settings(&self) -> BoxFut<'static, Map<String, Value>> {
         (self.deps.read_settings)()
     }
@@ -105,6 +164,10 @@ impl SessionService {
     /// JS `resolveRequestedDirectory`: `projectId`/`projectID` lookup in the
     /// sanitized settings projects (404 when unknown), else the `directory`
     /// field through validation.
+    ///
+    /// 中文说明：优先按 `projectId`/`projectID` 在清洗后的 settings.projects
+    /// 中查找（未命中 404，项目路径校验失败 400）；否则对 `directory` 字段
+    /// 做目录校验（失败 400）。
     async fn resolve_requested_directory(
         &self,
         payload: &Value,
@@ -161,6 +224,9 @@ impl SessionService {
     /// JS `waitForWorktreeBootstrapReady`: poll until the bootstrap reaches a
     /// git-ready phase, reporting the bootstrap failure or a 60s timeout as
     /// 500s.
+    ///
+    /// 中文说明：轮询 bootstrap 状态直到 ready 或进入 git-ready/setup-ready
+    /// 阶段；bootstrap 标记失败或超过 60 秒未就绪均按 500 返回。
     async fn wait_for_worktree_bootstrap_ready(&self, directory: &str) -> Result<(), SvcError> {
         let deadline = Instant::now() + Duration::from_millis(WORKTREE_BOOTSTRAP_TIMEOUT_MS);
         loop {
@@ -199,6 +265,9 @@ impl SessionService {
 
     /// JS `latestUserMessageID` — `Err` marks a failed lookup (the JS
     /// returns `{ ok: false }`), `Ok(None)` a session without user messages.
+    ///
+    /// 中文说明：拉取最近 100 条消息取最新 user 消息 ID；`Err` 表示查询失败
+    /// （对应 JS 的 `{ ok: false }`），`Ok(None)` 表示会话尚无 user 消息。
     async fn latest_user_message_id(
         &self,
         session_id: &str,
@@ -214,6 +283,9 @@ impl SessionService {
     }
 
     /// JS `latestCompletedAssistantMessageID`.
+    ///
+    /// 中文说明：取最新一条已完成（`time.completed` 为有限数）的 assistant
+    /// 消息 ID，作为 send/fork 前的基线，供前端判断增量回复。
     async fn latest_completed_assistant_message_id(
         &self,
         session_id: &str,
@@ -260,6 +332,9 @@ impl SessionService {
 
     /// JS `waitForPromptLanded`: confirm the accepted prompt was recorded; a
     /// failed lookup is not authoritative evidence of loss.
+    ///
+    /// 中文说明：轮询确认被接受的 prompt 已出现在会话中（最新 user 消息 ID
+    /// 相对基线发生变化）；查询失败不构成丢失证据，直接视为已落地。
     async fn wait_for_prompt_landed(
         &self,
         session_id: &str,
@@ -285,6 +360,9 @@ impl SessionService {
     }
 
     /// JS `fetchLastUserSelection`: newest user message carrying a model.
+    ///
+    /// 中文说明：从最近 20 条消息里找最新一条携带 model 的 user 消息，返回
+    /// (model, agent, variant) 三元组，用于复用既有会话的 selection。
     async fn fetch_last_user_selection(
         &self,
         session_id: &str,
@@ -327,6 +405,10 @@ impl SessionService {
 
     /// JS `dispatchPrompt` — selection resolution, goal creation, command or
     /// prompt dispatch, and the landed confirmation.
+    ///
+    /// 中文说明：selection 解析（复用会话历史 → 设置默认 → 引擎配置默认）→
+    /// snippet 展开 → slash 命令识别 →（可选）goal 创建 → 按 command 或
+    /// prompt_async 派发 → 确认 prompt 落地。
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_prompt(
         &self,
@@ -499,6 +581,11 @@ impl SessionService {
     }
 
     /// JS `create`.
+    ///
+    /// 中文说明：完整建会话流程——校验 goal/model/worktree 输入、解析目录、
+    /// 等待 engine 就绪、（有 prompt 时）校验 selection、（可选）创建
+    /// worktree 并等待 bootstrap、创建会话、派发初始 prompt、组装响应并
+    /// 广播 session-created 事件（事件发送永不使请求失败）。
     pub async fn create(&self, payload: &Value) -> Result<Value, SvcError> {
         let title = as_non_empty_string(payload.get("title"));
         let prompt = as_non_empty_string(payload.get("prompt"));
@@ -692,6 +779,11 @@ impl SessionService {
 
     /// JS `runExisting` — the shared body of `send` and `fork`, including
     /// the partial-failure catch.
+    ///
+    /// 中文说明：`send`/`fork` 的共享主体——校验 sessionId/prompt/goal 输入、
+    /// 解析目录、fork 时先复制会话、记录基线 assistant 消息、派发 prompt、
+    /// 组装响应（fork 成功还广播事件）；失败路径保留内部状态码，并在 fork
+    /// 已创建或 goal 已配置时附加 partial 细节。
     pub async fn run_existing(
         &self,
         action: &str,
@@ -908,15 +1000,18 @@ impl SessionService {
         }
     }
 
+    /// 向既有会话派发 prompt（`action = "send"`）。
     pub async fn send(&self, session_id: &str, payload: &Value) -> Result<Value, SvcError> {
         self.run_existing("send", session_id, payload).await
     }
 
+    /// fork 既有会话后向新会话派发 prompt（`action = "fork"`）。
     pub async fn fork(&self, session_id: &str, payload: &Value) -> Result<Value, SvcError> {
         self.run_existing("fork", session_id, payload).await
     }
 }
 
+/// 当前 Unix 时间戳（毫秒），用于事件负载的 `createdAt` 字段。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -927,6 +1022,10 @@ fn now_ms() -> u64 {
 /// Shared tail of `latestUserMessageID` / `latestCompletedAssistantMessageID`:
 /// newest message of `role` by `time.created` (ties keep the later entry,
 /// matching the JS `>=` comparison).
+///
+/// 中文说明：`latestUserMessageID` / `latestCompletedAssistantMessageID`
+/// 的共用尾部——按 `time.created` 取指定角色的最新消息 ID，平局保留靠后
+/// 条目（对齐 JS 的 `>=` 比较）。
 fn latest_message_id(reply: &EngineReply, role: &str) -> Option<String> {
     let messages = reply.data.as_ref().and_then(Value::as_array)?;
     let mut latest: Option<&Value> = None;

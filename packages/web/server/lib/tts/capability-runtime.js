@@ -1,3 +1,14 @@
+/**
+ * macOS say TTS 能力探测：启动期执行 `say -v "?"` 解析已安装 voice 清单
+ * （名称 + locale），供 /api/tts/say/* 路由与按语言选 voice 使用。
+ */
+/**
+ * 探测 say 命令可用性：仅 darwin 平台实际执行；成功返回
+ * { available: true, voices: [{name, locale}] }，失败或非 macOS 返回
+ * 带 reason 的不可用结果（不抛错）。
+ * @param {NodeJS.Process} processLike 进程抽象（默认 process，便于测试注入 platform）
+ * @returns {Promise<{ available: boolean, voices: Array<{name: string, locale: string}>, reason?: string }>}
+ */
 export const detectSayTtsCapability = async (processLike) => {
   let sayTTSCapability = { available: false, voices: [], reason: 'Not checked' };
 

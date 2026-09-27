@@ -4,6 +4,16 @@
 // (see packages/ui/src/lib/opencode/wire). Features with no omp equivalent
 // respond with stable, explicit errors instead of pretending success.
 
+/**
+ * omp host 的 OpenCode 兼容端点实现（Node 参考实现；Rust 版见 server-rs）。
+ *
+ * 职责：把 OmpHostEngine 的能力挂载为 wire client（packages/ui/src/lib/opencode/wire）
+ * 认识的 OpenCode 路由 —— session 生命周期、prompt 分发、SSE 事件流、config 与
+ * provider 面板、file/find 工作区浏览，以及 /omp/* 的 omp 原生端点。没有 omp 对应
+ * 实现的路由以稳定的 501/404/空集合显式应答，绝不伪装成功。跨模块关系：host.ts
+ * 负责 Basic auth 与路由分发并调用 registerEndpoints；domain-* 模块注册各自的
+ * /api/omp/* 子域路由；engine.ts 提供全部业务能力；events.ts 提供 SSE 事件总线。
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -29,12 +39,19 @@ import type { ProjectedMessage } from './projection.ts';
  * Engine face defaultModelPointer consumes: just the lazy settings store
  * (structural — the parity tests inject a one-method stub).
  */
+/**
+ * defaultModelPointer 消费的最小引擎表面（structural typing）：只需懒加载就绪的
+ * settings store；parity 测试会注入一个单方法 stub 替代真实引擎。
+ */
 export interface DefaultModelPointerEngine {
+  /** 懒就绪的 keyed Settings store；boot 降级路径上可能解析为 null。 */
   settingsStoreReady: () => Promise<{ settingsFor: (directory?: string) => Promise<Settings> } | null>;
 }
 
 /** Wire default-model pointer: `{ model: 'provider/id' }` or `{}`. */
+/** wire 协议的默认模型指针：{ model: 'provider/id' } 或空对象（未解析出时省略键）。 */
 export interface DefaultModelPointer {
+  /** 'provider/id' 形式的默认模型标识；省略即无角色默认值。 */
   model?: string;
 }
 
@@ -43,6 +60,12 @@ export interface DefaultModelPointer {
  * through the keyed Settings instance (spec 01 §5.3/GAP-03). Falls back to
  * omitting the key when no role default resolves — never pins the
  * alphabetically-first provider model.
+ */
+/**
+ * 从 keyed Settings 的 modelRoles.default 解析 wire config 的默认模型指针：
+ * 成功得到 provider 与 id 才返回 { model: 'provider/id' }；解析不到角色默认值、
+ * settings 抛错或 store 为 null 时都返回空对象（省略 model 键），绝不退化为按
+ * 字母序排在第一位的 provider 模型（spec 01 §5.3/GAP-03）。
  */
 export const defaultModelPointer = async (engine: DefaultModelPointerEngine): Promise<DefaultModelPointer> => {
   try {
@@ -59,14 +82,19 @@ export const defaultModelPointer = async (engine: DefaultModelPointerEngine): Pr
   return {};
 };
 /** What `Response.json` itself accepts — this helper only forwards to it. */
+/** Response.json 原生接受的负载类型 —— json helper 只做纯转发。 */
 type ResponseJsonData = Parameters<typeof Response.json>[0];
 
+/** 统一的 JSON Response 构造器：所有 handler 经此构造应答，保证负载形状一致。 */
 const json = (data: ResponseJsonData, init?: ResponseInit): Response => Response.json(data, init);
 
+/** promisify 后的 execFile：为 git() 提供 promise 化的子进程调用。 */
 const execFileAsync = promisify(execFile);
 
 // Domain errors from the prompt path (e.g. persona-not-found 404, 02 §5.1
 // R2-M3) answer with their own status; anything else stays a 500 in host.js.
+/** 把 prompt 路径的领域错误翻译成自带状态码的 Response（如 persona 不存在 → 404）；
+ * 非领域异常原样上抛，由 host.js 统一按 500 处理。 */
 const domainErrorsToResponse = async <T>(run: () => Promise<T>): Promise<T | Response> => {
   try {
     return await run();
@@ -75,18 +103,26 @@ const domainErrorsToResponse = async <T>(run: () => Promise<T>): Promise<T | Res
     throw error;
   }
 };
+/** 404 应答：OpenCode wire 错误负载 { name: 'UnknownError', data: { message } }。 */
 const notFound = (message: string): Response =>
   json({ name: 'UnknownError', data: { message } }, { status: 404 });
 
+/** 400 应答：同一 wire 错误负载形状，用于参数缺失/非法等请求侧错误。 */
 const badRequest = (message: string): Response =>
   json({ name: 'UnknownError', data: { message } }, { status: 400 });
 
+/** 501 应答：该能力在 omp 中没有对应实现，明确拒绝而非假装成功。 */
 const unsupported = (message: string): Response =>
   json({ name: 'UnknownError', data: { message } }, { status: 501 });
 
 // Wire JSON body parse (same parse-time assertion convention as the domain
 // modules — domain-modes.ts readJsonBody): the call-site type parameter is
 // the contract; every field is runtime-validated by the handler.
+/**
+ * 解析请求 JSON body。约定与 domain 模块一致：调用点的类型参数即契约，字段由
+ * handler 使用前逐个做运行时校验；body 非法或非 JSON 时降级为空对象（满足
+ * T extends object 约束），handler 将缺失字段视为未提供。
+ */
 const readJsonBody = async <T extends object>(request: Request): Promise<T> => {
   try {
     // SAFETY: parse-time assertion convention — the call-site type parameter
@@ -105,9 +141,13 @@ const readJsonBody = async <T extends object>(request: Request): Promise<T> => {
  * Wire agent-mention source span (the generated AgentPart.source shape):
  * the mention text plus the character offsets it occupies.
  */
+/** wire agent 提及（mention）的 source 跨度：提及文本及其在原文中的字符偏移。 */
 export interface WirePromptPartSource {
+  /** 提及的原文文本（如 '@scout'）。 */
   value?: string;
+  /** 提及起点的字符偏移。 */
   start?: number;
+  /** 提及终点的字符偏移。 */
   end?: number;
 }
 
@@ -116,14 +156,24 @@ export interface WirePromptPartSource {
  * subtask variants, plus the span fields that ride along with agent
  * mentions). Fields are runtime-validated per variant before use.
  */
+/** wire prompt 的单个 part（SessionPromptAsyncData 的超集：text/file/agent/subtask
+ * 变体，外加随 agent 提及同行的跨度字段）；各字段按变体在使用前逐个运行时校验。 */
 export interface WirePromptPart {
+  /** part 变体标记：'text' | 'file' | 'agent' | 'subtask'。 */
   type?: unknown;
+  /** text/subtask 变体携带的文本内容。 */
   text?: unknown;
+  /** file 变体的 data: URL 载荷。 */
   url?: unknown;
+  /** agent 变体中被提及者的名称。 */
   name?: unknown;
+  /** file 变体的原始文件名（内联 <file> 块时展示）。 */
   filename?: unknown;
+  /** file 变体的 MIME 类型（data URL meta 缺失时的兜底）。 */
   mime?: string;
+  /** subtask 变体的子任务提示词。 */
   prompt?: unknown;
+  /** agent 变体的提及跨度（可选，即 AgentPart.source 形状）。 */
   source?: WirePromptPartSource | null;
 }
 
@@ -131,22 +181,34 @@ export interface WirePromptPart {
  * Prompt-endpoint JSON body: the parts-based SessionPromptAsyncData shape
  * plus the legacy `{ prompt: { text, files } }` form.
  */
+/** prompt 端点的 JSON body：parts 形态（SessionPromptAsyncData）叠加 legacy 的
+ * { prompt: { text, files } } 形态，两种形态由 promptPayloadFromWire 统一归并。 */
 export interface WirePromptBody {
+  /** 客户端指定的消息 id（对账/幂等用，可选）。 */
   messageID?: unknown;
+  /** 新形态：part 数组（text/file/agent/subtask 变体）。 */
   parts?: WirePromptPart[] | null;
+  /** legacy 形态：文本 + base64 文件列表（data + mime）。 */
   prompt?: { text?: string; files?: { data?: unknown; mime?: string }[] } | null;
 }
 
 /** Base64 image input the engine's prompt consumes. */
+/** 引擎 prompt 消费的 base64 图片输入。 */
 export interface PromptImage {
+  /** base64 编码的图片字节。 */
   data: string;
+  /** 图片 MIME 类型；可能为 undefined，由引擎侧兜底。 */
   mimeType: string | undefined;
 }
 
 /** Prompt inputs parsed from a wire body (promptPayloadFromWire's return). */
+/** promptPayloadFromWire 的返回值：从 wire body 解析出的引擎 prompt 输入。 */
 export interface PromptPayload {
+  /** 归并后的完整文本（text 块与内联 <file> 块以空行连接）。 */
   text: string;
+  /** 图片载荷数组（仅收 image/* 且非 SVG 的 part）。 */
   images: PromptImage[];
+  /** 透传的客户端消息 id；未提供时为 undefined。 */
   messageID: string | undefined;
 }
 
@@ -154,6 +216,8 @@ export interface PromptPayload {
  * Image MIME check for the prompt's image channel. `image/svg+xml` is XML
  * text — providers reject it as an image payload, so it inlines as text.
  */
+/** 判定 MIME 能否进入图片通道：image/* 且排除 SVG —— SVG 是 XML 文本，provider
+ * 会拒绝其作为图片载荷，因此改走文本内联路径。 */
 const isImageMime = (mimeType: string): boolean =>
   mimeType.toLowerCase().startsWith('image/') && mimeType.toLowerCase() !== 'image/svg+xml';
 
@@ -161,9 +225,12 @@ const isImageMime = (mimeType: string): boolean =>
  * Attachment types whose bytes can never be inlined as text. Anything not on
  * this list still has to pass the byte sniff before it inlines.
  */
+/** 一票判定为二进制的附件 MIME 前缀（pdf/zip/音视频/字体等）；不在列表内的类型
+ * 仍需通过字节嗅探才允许内联为文本。 */
 const BINARY_ATTACHMENT_MIME =
   /^(application\/(pdf|zip|x-[^/]+|gzip|msword|vnd\.|oasis\.)|audio\/|video\/|font\/)/i;
 
+/** 字节嗅探的采样上限：只检查前 4KiB 即足以判定文本/二进制。 */
 const ATTACHMENT_TEXT_SAMPLE_BYTES = 4096;
 
 /**
@@ -171,6 +238,8 @@ const ATTACHMENT_TEXT_SAMPLE_BYTES = 4096;
  * control bytes → binary), re-checked server-side so a mislabeled part never
  * reaches the provider as an image.
  */
+/** 服务端复检的字节嗅探启发式（与 UI 附件管线一致：出现 NUL 判二进制，控制字节
+ * 占比超 30% 判二进制），确保被误标的 part 永不以图片身份抵达 provider。 */
 const looksLikeUtf8Text = (bytes: Buffer): boolean => {
   const sample = bytes.subarray(0, ATTACHMENT_TEXT_SAMPLE_BYTES);
   let control = 0;
@@ -182,11 +251,19 @@ const looksLikeUtf8Text = (bytes: Buffer): boolean => {
 };
 
 /** Decoded data-URL file part: raw bytes plus the effective MIME type. */
+/** data URL 解码结果：原始字节加上生效的 MIME 类型。 */
 interface WireFilePayload {
+  /** 解码后的原始字节（base64 或 percent-decoded UTF-8）。 */
   bytes: Buffer;
+  /** 生效 MIME：data URL meta 优先，其次 fallback，最后 octet-stream。 */
   mimeType: string;
 }
 
+/**
+ * 解析 data: URL 文件 part 为原始字节。base64 形态直接解码；非 base64 形态按
+ * RFC 2397 视为 percent-encoded UTF-8，解码失败时保留原始载荷而非让整个
+ * prompt 失败。空载荷返回 null，调用方跳过该 part。
+ */
 const wireFileFromDataUrl = (url: string, fallbackMime: string | undefined): WireFilePayload | null => {
   const comma = url.indexOf(',');
   const meta = url.slice(5, comma === -1 ? url.length : comma);
@@ -209,6 +286,7 @@ const wireFileFromDataUrl = (url: string, fallbackMime: string | undefined): Wir
   return bytes.length > 0 ? { bytes, mimeType } : null;
 };
 
+/** 转义会破坏 <file name="..."> 属性的四个字符（& " < >）。 */
 const escapeFileAttr = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -219,6 +297,9 @@ const escapeFileAttr = (value: string): string =>
  * `.txt`/`.pdf` attachment 400 against vision providers and then poison every
  * subsequent turn by replaying the bad block from session history.
  */
+/** 非图片附件的文本块形态：可解码为文本时内联原始内容，否则给出显式省略标注。
+ * 不能静默丢块或塞进 images —— 那曾让 .txt/.pdf 附件在 vision provider 上 400，
+ * 并因会话历史回放坏块污染后续每一轮。 */
 const fileAttachmentText = (filename: string | undefined, mimeType: string, bytes: Buffer): string => {
   const name = escapeFileAttr(filename && filename.length > 0 ? filename : 'attachment');
   if (!BINARY_ATTACHMENT_MIME.test(mimeType) && looksLikeUtf8Text(bytes)) {
@@ -233,6 +314,8 @@ const fileAttachmentText = (filename: string | undefined, mimeType: string, byte
  * values in untrusted request JSON. Generic so callers can probe any declared
  * field type; the tag check does the verification.
  */
+/** 运行时字符串探针（不依赖 typeof）：值确为字符串时原样返回，其余一律
+ * undefined —— 用于逐字段校验不可信请求 JSON 中声明类型与运行时不符的值。 */
 const stringOf = <T,>(value: T): string | undefined =>
   Object.prototype.toString.call(value) === '[object String]' ? String(value) : undefined;
 
@@ -250,6 +333,14 @@ const stringOf = <T,>(value: T): string | undefined =>
  * hard-fails the request against vision models and leaves a poisoned block
  * in session history. Text-decodable files inline as `<file>` blocks;
  * binaries degrade to an explicit omission note.
+ */
+/**
+ * 把 wire prompt body 归并为引擎 prompt 输入。parts 形态逐个处理 text/file/
+ * agent/subtask 变体；parts 为空时回落到 legacy { prompt: { text, files } }。
+ * 只有 image/*（非 SVG）的 file part 进入 images —— session.prompt 会把 images
+ * 原样转发给 provider，非图片伪装成图片会让 vision 模型硬失败并在会话历史留下
+ * 坏块；可解码文本内联为 <file> 块，二进制降级为省略标注；agent 提及仅补一条
+ * 未重复出现的 mention 文本。text 各块以空行连接。
  */
 export const promptPayloadFromWire = (body: WirePromptBody): PromptPayload => {
   const messageID = stringOf(body?.messageID) || undefined;
@@ -300,6 +391,9 @@ export const promptPayloadFromWire = (body: WirePromptBody): PromptPayload => {
   return { text: texts.join('\n\n'), images, messageID };
 };
 
+/** 从请求解析目录作用域：优先 query 的 directory / location[directory]，其次
+ * x-opencode-directory header（percent-decode 后），统一过 normalizeDirectoryKey；
+ * 两处皆无时返回 null，由调用方决定兜底。 */
 const directoryFromRequest = ({ url, headers }: { url?: URL; headers?: Headers }): string | null => {
   const fromQuery = url?.searchParams.get('directory') ?? url?.searchParams.get('location[directory]');
   const fromHeader = headers?.get('x-opencode-directory');
@@ -307,6 +401,8 @@ const directoryFromRequest = ({ url, headers }: { url?: URL; headers?: Headers }
   return raw ? normalizeDirectoryKey(raw) : null;
 };
 
+/** 在指定目录执行 git 子命令，返回 trimmed stdout；任何失败（非 git 仓库、命令
+ * 报错等）返回 null，调用方按无 git 信息处理。 */
 const git = async (cwd: string, ...args: string[]): Promise<string | null> => {
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
@@ -322,6 +418,8 @@ const git = async (cwd: string, ...args: string[]): Promise<string | null> => {
  * (upstream-reader) compare it on connect; in-band consumers read the
  * `omp.stream.boot` frame instead.
  */
+/** SSE 流式应答的 ResponseInit：no-cache/keep-alive/x-accel-buffering 等让 Bun
+ * 不因空闲上限断连的头；x-omp-epoch 携带 boot 身份供 raw-fetch 读取端比对。 */
 const sseResponseInit = (epoch: string): ResponseInit => ({
   status: 200,
   headers: {
@@ -334,8 +432,10 @@ const sseResponseInit = (epoch: string): ResponseInit => ({
 });
 
 /** Queued-but-undrained bytes beyond this mark a dead-slow consumer. */
+/** 慢消费者阈值：队列中未排空字节超过 16MiB 即判定死慢连接并关闭。 */
 const MAX_SSE_BACKLOG_BYTES = 16 * 1024 * 1024;
 /** A frame this large is only fatal while the connection is already behind. */
+/** 单帧阈值：仅在连接本已落后时，超过 8MiB 的帧才视为致命。 */
 const MAX_SSE_BACKLOG_FRAME_BYTES = 8 * 1024 * 1024;
 
 
@@ -349,6 +449,13 @@ const MAX_SSE_BACKLOG_FRAME_BYTES = 8 * 1024 * 1024;
  * reconnects into the gap/resync contract instead of silently queuing
  * gigabytes). desiredSize here counts BYTES (the size function returns
  * byteLength), never chunk count.
+ */
+/**
+ * 共享的 SSE 连接生命周期：send() 入队，入队失败、请求 abort 或积压超限时确定性
+ * 收尾（清心跳、退订、关闭 controller）。ReadableStream.enqueue 不携带网络背压，
+ * 停止排空的客户端会无界缓冲；size 函数按字节计数使 desiredSize 成为未排空字节
+ * 信号，超限即关连接让客户端转入重连的 gap/resync 契约。onReady 返回的退订函数
+ * 在流已死于初始回放时会被立即调用，防止订阅泄漏。
  */
 const startSseStream = (
   request: Request,
@@ -422,16 +529,23 @@ const startSseStream = (
 };
 
 /** Structural bus face the resume planner needs. */
+/** 断线续传规划所需的最小总线表面（structural typing）。 */
 interface ResumableBus {
+  /** 当前 boot 的事件流身份标识（epoch）。 */
   readonly epoch: string;
+  /** 查询某 Last-Event-ID 在回放环中的可续传状态。 */
   replayState(lastEventId: number): ReplayState;
+  /** 回放环尾部的最新事件 id；空环返回 null。 */
   tailEventId(): number | null;
 }
 
+/** planResume 的判定结果：是否 resync、订阅基线与回放环状态。 */
 interface ResumePlan {
+  /** true 表示先发 omp.stream.resync 控制帧并让客户端丢弃旧游标。 */
   resync: boolean;
   /** Subscription baseline: the client cursor when provable, else the tail. */
   baseline: number;
+  /** 回放环对该游标的判定状态（ok / 被逐出 / 客户端领先等）。 */
   state: ReplayState;
 }
 
@@ -447,6 +561,12 @@ interface ResumePlan {
  *   the ring is empty): replaying the old suffix would deliver the very
  *   half-events the control frame just disavowed.
  */
+/**
+ * 为 SSE 续连决定回放还是 resync：全新连接（无游标）回放整个保留环；环无法
+ * 桥接的游标（被逐出/空洞/重启）resync；带游标但无本 boot epoch 的客户端无法
+ * 证明游标属于本进程，安全降级为丢弃式 resync；一旦判定 resync，基线切换到
+ * 真实尾部（空环为 0），避免重放出控制帧刚声明作废的半截事件。
+ */
 const planResume = (bus: ResumableBus, lastEventId: number, clientEpoch: string | null): ResumePlan => {
   const state: ReplayState = lastEventId > 0 ? bus.replayState(lastEventId) : { status: 'ok' };
   const epochMismatch = lastEventId > 0 && clientEpoch !== bus.epoch;
@@ -458,10 +578,15 @@ const planResume = (bus: ResumableBus, lastEventId: number, clientEpoch: string 
  * Per-request route context host.ts dispatches into every registered
  * handler (host.ts fetch: handler(request, { params, url, headers, engine })).
  */
+/** host.ts 分发给每个已注册 handler 的每请求路由上下文。 */
 export interface RouteContext {
+  /** 路由模式中的命名参数（如 {sessionID}）。 */
   params: Record<string, string>;
+  /** 已解析的请求 URL（含 query）。 */
   url: URL;
+  /** 原始请求头。 */
   headers: Headers;
+  /** 宿主引擎实例（所有业务能力的入口）。 */
   engine: OmpHostEngine;
 }
 
@@ -471,18 +596,25 @@ export interface RouteContext {
  * resolves without a Response exactly as it did pre-rename; host.ts answers
  * those requests at the Bun.serve boundary.
  */
+/** omp-host 路由 handler 签名（Basic auth 由 host.ts 在这些 handler 之外统一
+ * 强制）；Promise<void> 分支仅服务于 legacy 的 /session/{id}/command —— 它与
+ * 改名前一样不带 Response 结束，由 host.ts 在 Bun.serve 边界应答。 */
 export type RouteHandler = (
   request: Request,
   ctx: RouteContext,
 ) => Response | Promise<Response | void>;
 
 /** `route(method, pattern, handler)` registration callback (host.ts). */
+/** host.ts 提供的 route(method, pattern, handler) 注册回调。 */
 export type RouteMount = (method: string, pattern: string, handler: RouteHandler) => void;
 
 /** SSE upgrade handler host.ts routes /event and /global/event into. */
+/** host.ts 把 /event 与 /global/event 路由到的 SSE handler；options.global
+ * 为 true 时不按目录过滤事件。 */
 export type SseHandler = (request: Request, options: { global: boolean }) => Response;
 
 /** Context host.ts supplies to registerEndpoints. */
+/** host.ts 传给 registerEndpoints 的上下文；本模块自身只消费 version。 */
 export interface EndpointOptions {
   /** Host version echoed by /global/config and /global/health. */
   version: string;
@@ -492,9 +624,13 @@ export interface EndpointOptions {
 }
 
 /** JSON body of POST /session (session create). */
+/** POST /session（创建会话）的 JSON body。 */
 export interface SessionInitBody {
+  /** 会话归属目录；缺省由请求上下文推导。 */
   directory?: string;
+  /** 初始标题（可选）。 */
   title?: string;
+  /** 父会话 id（派生会话时提供）。 */
   parentID?: string;
 }
 /**
@@ -502,39 +638,59 @@ export interface SessionInitBody {
  * opaquely (the host stores and returns them verbatim, never reading
  * individual entries).
  */
+/** 透传 registry.ts 的会话元数据值类型：host 原样存取、从不逐项读取的任意 JSON。 */
 export type { SessionMetadataValue };
 
 /** JSON body of PATCH /session/{sessionID}. */
+/** PATCH /session/{sessionID} 的 JSON body。 */
 export interface SessionUpdateBody {
+  /** 目标目录（优先于请求上下文推导）。 */
   directory?: string;
+  /** 新标题（可选）。 */
   title?: string;
+  /** 整体替换的元数据映射。 */
   metadata?: Record<string, SessionMetadataValue>;
+  /** 时间戳字段；archived 非空即归档时间。 */
   time?: { archived?: number };
 }
 
 /** JSON body of the prompt-family routes (message, prompt_async, command). */
+/** prompt 族路由（message、prompt_async、command）共用的 JSON body。 */
 export interface SessionPromptBody extends WirePromptBody {
+  /** 目标目录（优先于请求上下文推导）。 */
   directory?: string;
+  /** legacy 显式模型选择（providerID/modelID）。 */
   model?: { providerID?: string; modelID?: string };
+  /** 指定的 agent/persona 名称（可选）。 */
   agent?: string;
+  /** 递交模式（如 'queue' 映射为 followUp）。 */
   delivery?: string;
+  /** command 路由的斜杠命令文本。 */
   command?: string;
 }
 
 /** JSON body of POST /session/{sessionID}/revert. */
+/** POST /session/{sessionID}/revert 的 JSON body。 */
 export interface SessionRevertBody {
+  /** 目标目录。 */
   directory?: string;
+  /** 回退边界消息 id（必填，缺失即 400）。 */
   messageID?: string;
 }
 
 /** JSON body of POST /experimental/control-plane/move-session. */
+/** POST /experimental/control-plane/move-session 的 JSON body。 */
 export interface MoveSessionBody {
+  /** 待迁移的会话 id。 */
   sessionID?: string;
+  /** 目标位置（当前只消费 directory 字段）。 */
   destination?: { directory?: string };
 }
 
 /** JSON body of the directory-scoped session POST routes (unrevert, summarize, fork). */
+/** 目录作用域会话 POST 路由（unrevert、summarize、fork）共用的 body。 */
 export interface SessionDirectoryBody {
+  /** 目标目录。 */
   directory?: string;
   /** Fork boundary (wire message id): present bounds the fork at that
    * message (TUI /branch); absent forks the whole transcript (TUI /fork). */
@@ -542,17 +698,25 @@ export interface SessionDirectoryBody {
 }
 
 /** JSON body of POST /omp/sessions/{id}/model (spec 01 GAP-02/04). */
+/** POST /omp/sessions/{id}/model 的 JSON body（spec 01 GAP-02/04）。 */
 export interface SessionModelBody {
+  /** 目标模型 { providerID, modelID }；运行时校验为对象后才使用。 */
   model?: unknown;
+  /** 思考档位；'inherit' 为清除显式设置的哨兵值。 */
   thinkingLevel?: string;
 }
 
 
 /** Wire app/skills row (AppSkillsResponses 200 element, types.gen.d.ts). */
+/** wire app/skills 行（AppSkillsResponses 的 200 元素，见 types.gen.d.ts）。 */
 export interface WireSkillRow {
+  /** 技能名。 */
   name: string;
+  /** frontmatter 描述；缺失时为空字符串。 */
   description: string;
+  /** SKILL.md 文件路径（wire 字段名；SDK 侧称 filePath）。 */
   location: string;
+  /** 去 frontmatter 后的正文；读取失败降级为空串。 */
   content: string;
 }
 
@@ -563,6 +727,8 @@ export interface WireSkillRow {
  * `content` with the parseFrontmatter body). A file without frontmatter is
  * returned verbatim.
  */
+/** 剥离 SKILL.md 开头的 YAML frontmatter 块（--- ... ---）；无 frontmatter 的
+ * 文件原样返回。与 SDK 展示层语义一致。 */
 const stripSkillFrontmatter = (content: string): string =>
   content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '');
 
@@ -574,6 +740,9 @@ const stripSkillFrontmatter = (content: string): string =>
  * dropping the row: discovery just scanned it, so one vanished file must
  * not hide the surviving skills behind the route-wide `[]` fallback.
  */
+/** 把 SDK 发现的技能投影为 wire app/skills 行：location 即 SKILL.md 路径，
+ * content 为去 frontmatter 的正文；单个文件读取失败降级为空 content 而非丢行
+ * （一个消失的文件不能把其余技能藏进路由级 [] 兜底）。 */
 export const wireSkillRows = async (skills: readonly Pick<Skill, 'name' | 'description' | 'filePath'>[]): Promise<WireSkillRow[]> =>
   Promise.all(
     skills.map(async (skill) => ({
@@ -591,7 +760,14 @@ export const wireSkillRows = async (skills: readonly Pick<Skill, 'name' | 'descr
  * Register every consumed route.
  * @param {(method: string, pattern: string, handler: Function) => void} route
  */
+/**
+ * 注册 wire client 消费的全部路由（host.js 启动时调用一次）。顺序：global →
+ * session 族 → permission/question → config/app/skill → provider/auth → mcp →
+ * path/project/vcs/file/find → experimental → domain-* 模块 → /omp 原生端点与
+ * SSE。返回 { sseHandler } 供 host.ts 挂载 /event 与 /global/event。
+ */
 export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { version }: EndpointOptions) => {
+  // 构造 wire providers 载荷：把 engine 可用模型按 provider 分组（env 恒为空——尚无 env 透传）。
   const providersPayload = async () => {
     await engine.ready();
     const models = engine.availableModels();
@@ -616,6 +792,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return providers;
   };
 
+  // 构造 wire config 载荷：版本号 + defaultModelPointer 解析的默认模型指针。
   const configPayload = async () => {
     await engine.ready();
     return {
@@ -633,20 +810,26 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     };
   };
 
+  // 推导请求的项目目录：directoryFromRequest（query/header）优先，兜底 process.cwd()。
   const projectDirectory = (requestContext: { url?: URL }) =>
     directoryFromRequest(requestContext) ?? process.cwd();
 
   // ---- global ----
+  // 健康检查：healthy 常量 + 版本与进程 uptime。
   route('GET', '/global/health', async () => json({ healthy: true, version, uptime: process.uptime() }));
+  // 整机 dispose：先应答空对象，下一个事件循环退出进程（给响应留出冲刷窗口）。
   route('POST', '/global/dispose', async () => {
     setTimeout(() => process.exit(0), 0);
     return json({});
   });
+  // 实例级 dispose：与 /global/dispose 同语义（旧客户端兼容路径）。
   route('POST', '/instance/dispose', async () => {
     setTimeout(() => process.exit(0), 0);
     return json({});
   });
+  // 读取 wire config 载荷（版本 + 默认模型指针）。
   route('GET', '/global/config', async () => json(await configPayload()));
+  // PATCH 面仅回读 config 载荷：omp 自持配置，host 不接受写。
   route('PATCH', '/global/config', async () => json(await configPayload()));
 
   // Counters-only observation port (plan §9.1, phase 0 slice; decision D9):
@@ -667,11 +850,13 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   });
 
   // ---- sessions ----
+  // 列出目录作用域内的会话。
   route('GET', '/session', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const sessions = await engine.listSessions({ directory });
     return json(sessions);
   });
+  // 创建会话：body.directory 优先于请求推导；agent/model 显式置空交给 createSession 解构。
   route('POST', '/session', async (request, ctx) => {
     const body = await readJsonBody<SessionInitBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
@@ -687,15 +872,18 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     });
     return json(session);
   });
+  // 目录内全部会话的 busy/idle 状态快照。
   route('GET', '/session/status', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     return json(await engine.getSessionStatuses({ directory }));
   });
+  // 读取单个会话；不存在答 404。
   route('GET', '/session/{sessionID}', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const session = await engine.getSession({ sessionID: ctx.params.sessionID, directory });
     return session ? json(session) : notFound('session not found');
   });
+  // 更新标题/元数据/归档时间；不存在答 404。
   route('PATCH', '/session/{sessionID}', async (request, ctx) => {
     const body = await readJsonBody<SessionUpdateBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
@@ -708,21 +896,25 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     });
     return session ? json(session) : notFound('session not found');
   });
+  // 删除会话：目录取 header/query，兜底 cwd；恒答 true。
   route('DELETE', '/session/{sessionID}', async (request, ctx) => {
     const url = ctx.url;
     const directory = directoryFromRequest(ctx) ?? url.searchParams.get('directory') ?? process.cwd();
     await engine.deleteSession({ sessionID: ctx.params.sessionID, directory });
     return json(true);
   });
+  // 列出某会话的子会话（按 parentID 过滤目录会话列表）。
   route('GET', '/session/{sessionID}/children', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const all = await engine.listSessions({ directory });
     return json(all.filter((s) => s.parentID === ctx.params.sessionID));
   });
+  // 读取会话最新 TodoPhase 并投影为 wire todo。
   route('GET', '/session/{sessionID}/todo', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     return json(await engine.getTodos({ sessionID: ctx.params.sessionID, directory }));
   });
+  // 分页读取消息：limit/before query，下一页游标经 x-next-cursor 响应头返回。
   route('GET', '/session/{sessionID}/message', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const limitParam = Number(ctx.url.searchParams.get('limit'));
@@ -757,6 +949,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const messages = await engine.getMessages({ sessionID: ctx.params.sessionID, directory });
     return json(messages ?? [wire]);
   });
+  // 异步 prompt 主入口：解析 wire body → engine.prompt，应答 wire.info 载荷；
+  // 领域错误（如 persona 404）由 domainErrorsToResponse 转为对应状态码的 Response。
   route('POST', '/session/{sessionID}/prompt_async', async (request, ctx) => {
     const body = await readJsonBody<SessionPromptBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
@@ -803,9 +997,11 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const directory = directoryFromRequest(ctx);
     return json(await engine.abort({ sessionID: ctx.params.sessionID, directory: directory ?? undefined }));
   });
+  // 交互式 shell 会话：omp 引擎不暴露，答 501。
   route('POST', '/session/{sessionID}/shell', async (request, ctx) => {
     return unsupported('Interactive session shells are not exposed by the omp engine.');
   });
+  // 回退到指定消息：messageID 必填（缺失 400）；会话不存在答 404。
   route('POST', '/session/{sessionID}/revert', async (request, ctx) => {
     const body = await readJsonBody<SessionRevertBody>(request);
     if (!body?.messageID) return badRequest('messageID is required');
@@ -817,12 +1013,14 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     });
     return session ? json(session) : notFound('session not found');
   });
+  // 撤销上一次回退；会话不存在答 404。
   route('POST', '/session/{sessionID}/unrevert', async (request, ctx) => {
     const body = await readJsonBody<SessionDirectoryBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
     const session = await engine.unrevert({ sessionID: ctx.params.sessionID, directory });
     return session ? json(session) : notFound('session not found');
   });
+  // 触发会话总结后回读会话；引擎无返回时兜底空对象。
   route('POST', '/session/{sessionID}/summarize', async (request, ctx) => {
     const body = await readJsonBody<SessionDirectoryBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
@@ -842,27 +1040,38 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     });
     return session ? json(session) : notFound('session not found');
   });
+  // 公开分享是 OpenCode 云端功能，omp 无对应实现 → 501。
   route('POST', '/session/{sessionID}/share', async () =>
     unsupported('Sharing sessions publicly is an OpenCode cloud feature with no omp equivalent.'),
   );
+  // 取消分享：同上，omp 无对应实现 → 501。
   route('DELETE', '/session/{sessionID}/share', async () =>
     unsupported('Sharing sessions publicly is an OpenCode cloud feature with no omp equivalent.'),
   );
+  // 会话文件 diff：omp 暂不提供，答空数组保持面板稳定。
   route('GET', '/session/{sessionID}/diff', async () => json([]));
 
   // ---- permissions / questions ----
   // The omp engine runs tools with its own approval policy; OMPChamber's
   // permission/question protocol has no live producer yet, so these answer
   // authoritatively empty until the approval bridge lands.
+  // 权限等待队列为空（approval bridge 未落地，立场见上方组注释）。
   route('GET', '/permission', async () => json([]));
+  // 权限应答：无生产者，答空对象。
   route('POST', '/permission/{requestID}/reply', async () => json({}));
+  // 逐会话权限判定：一律 deny，与空队列立场一致。
   route('POST', '/api/session/{sessionID}/permission', async () => json({ id: '', effect: 'deny' }));
+  // 单条权限请求查询：无挂起权限，答 404。
   route('GET', '/api/session/{sessionID}/permission/{requestID}', async () => notFound('no pending permission'));
+  // 问题等待队列为空（同权限组立场）。
   route('GET', '/question', async () => json([]));
+  // 问题应答：无生产者，答空对象。
   route('POST', '/question/{requestID}/reply', async () => json({}));
+  // 问题拒绝：无生产者，答空对象。
   route('POST', '/question/{requestID}/reject', async () => json({}));
 
   // ---- config / app / commands / tools ----
+  // /config 与 /global/config 同载荷（wire client 两处都会拉取）。
   route('GET', '/config', async () => json(await configPayload()));
   route('PATCH', '/config', async () => {
     // The agents write branch is gone (02 §5.8): agent definitions are the
@@ -870,6 +1079,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     // legacy PATCH surface keeps answering the config payload unchanged.
     return json(await configPayload());
   });
+  // provider 面板：providers 载荷 + 首个 provider 作为默认值。
   route('GET', '/config/providers', async () => {
     const providers = await providersPayload();
     return json({ providers, default: providers[0]?.id ?? '' });
@@ -936,6 +1146,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   route('DELETE', '/mcp/{name}/auth', async () => json({}));
 
   // ---- path / project / vcs / file / find ----
+  // 工作区信息：cwd + git 根/分支探测（detached 时 branch 报 'HEAD'）。
   route('GET', '/path', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const gitRoot = await git(directory, 'rev-parse', '--show-toplevel');
@@ -951,6 +1162,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
         : undefined,
     });
   });
+  // 项目列表：单一项目行（id 由引擎按目录推导；恒非 worktree）。
   route('GET', '/project', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     return json([
@@ -962,6 +1174,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       },
     ]);
   });
+  // 当前项目：与 /project 同源数据的对象形态。
   route('GET', '/project/current', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     return json({
@@ -971,11 +1184,13 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       worktree: false,
     });
   });
+  // VCS 状态：仅当前分支；非 git 目录答空对象。
   route('GET', '/vcs', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     const branch = await git(directory, 'branch', '--show-current');
     return json(branch ? { branch } : {});
   });
+  // 目录浏览：单层非隐藏条目（name/path/type/absolute）；读目录失败答 []。
   route('GET', '/file', async (request, ctx) => {
     const directory = projectDirectory(ctx);
     try {
@@ -994,6 +1209,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       return json([]);
     }
   });
+  // 读文件内容（path query 必填）：缺失 400，读不到 404。
   route('GET', '/file/content', async (request, ctx) => {
     const filePath = ctx.url.searchParams.get('path');
     if (!filePath) return badRequest('path is required');
@@ -1004,7 +1220,9 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
       return notFound('file not found');
     }
   });
+  // 文件 VCS 状态：omp 未接，答空 entries。
   route('GET', '/file/status', async () => json({ entries: {} }));
+  // 文件名模糊搜索：深度 ≤6、命中 ≤50 的同步遍历（跳过隐藏与 node_modules）。
   route('GET', '/find/file', async (request, ctx) => {
     const query = (ctx.url.searchParams.get('pattern') ?? ctx.url.searchParams.get('query') ?? '').toLowerCase();
     const directory = projectDirectory(ctx);
@@ -1038,6 +1256,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   });
 
   // ---- experimental ----
+  // 实验性跨目录会话列表：默认 limit 500、按更新时间倒序；directory 参数严格
+  // 过滤归属（防外目录记录污染各目录的子 store）。
   route('GET', '/experimental/session', async (request, ctx) => {
     const archived = ctx.url.searchParams.get('archived');
     const directory = ctx.url.searchParams.get('directory');
@@ -1061,6 +1281,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     const page = Number.isFinite(limit) && limit > 0 ? all.slice(0, limit) : all;
     return json(page);
   });
+  // 控制面会话迁移：sessionID 与 destination.directory 必填（缺失 400）；
+  // 引擎找不到会话时答空对象。
   route('POST', '/experimental/control-plane/move-session', async (request) => {
     const body = await readJsonBody<MoveSessionBody>(request);
     const sessionID = body.sessionID;
@@ -1070,6 +1292,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return json(moved ?? {});
   });
   // ---- domain modules (specs 01/02/03/04/06; public /api/omp/*) ----
+  // 把引擎 ompBus.publish 适配为 domain 模块统一消费的 PublishFn。
   const ompPublish: PublishFn = (type, payload, scope) => engine.ompBus.publish(type, payload, scope);
   registerModelSettingsRoutes(route, {
     store: {
@@ -1137,8 +1360,10 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   // import the SDK (it runs under Node; the SDK is Bun/TS-only), so this is
   // the authoritative resolution point.
   route('GET', '/agent-dir', async () => json({ agentDir: getAgentDir() }));
+  // omp parity 能力声明（feature flags）。
   route('GET', '/omp/capabilities', async () => json(buildCapabilities()));
 
+  // 会话自定义消息（custom entries 投影）：directory 必填（400），无会话 404。
   route('GET', '/omp/sessions/{id}/custom-messages', async (request, ctx) => {
     const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
     if (!directory) return badRequest('directory is required');
@@ -1149,6 +1374,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return messages ? json(messages) : notFound('session not found');
   });
 
+  // 会话遥测读取：directory 必填（400），无会话 404。
   route('GET', '/omp/sessions/{id}/telemetry', async (request, ctx) => {
     const directory = directoryFromRequest({ url: new URL(request.url), headers: request.headers });
     if (!directory) return badRequest('directory is required');
@@ -1156,6 +1382,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return telemetry ? json(telemetry) : notFound('session not found');
   });
 
+  // 会话原始 entry 读取：kinds query 逗号分隔过滤；directory 必填，无会话 404。
   route('GET', '/omp/sessions/{id}/entries', async (request, ctx) => {
     const url = new URL(request.url);
     const directory = directoryFromRequest({ url, headers: request.headers });
@@ -1170,6 +1397,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return entries ? json(entries) : notFound('session not found');
   });
 
+  // 会话级模型/思考档位切换（modelRoles.v1 特性门控；未启用答 featureUnavailable）。
   route('POST', '/omp/sessions/{id}/model', async (request, ctx) => {
     if (ompFeatures()['modelRoles.v1'] !== true) {
       return featureUnavailable('modelRoles.v1');
@@ -1188,6 +1416,8 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
     return json(result);
   });
 
+  // '!' 本地 shell 执行（bash.v1 门控）：由会话自身 BashRunner 执行并持久化
+  // bashExecution 记录，运行中投影为卡片更新。
   route('POST', '/omp/sessions/{id}/bash', async (request, ctx) => {
     if (ompFeatures()['bash.v1'] !== true) {
       return featureUnavailable('bash.v1');
@@ -1258,6 +1488,7 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   });
 
   // ---- SSE ----
+  // wire SSE handler（/event 与 /global/event 共用）：global 时不按目录过滤。
   const sseHandler = (request: Request, { global }: { global: boolean }) => {
     const bus = engine.bus;
     const directory = global ? null : directoryFromRequest({ url: new URL(request.url), headers: request.headers });

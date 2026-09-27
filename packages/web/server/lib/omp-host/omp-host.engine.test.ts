@@ -1,15 +1,27 @@
+/**
+ * OmpHostEngine 契约套件（bun:test）：以 mock.module 替换 SDK 层后直接驱动引擎。
+ * 覆盖面：agent-runs 聚合器与 registry 脑裂修复、子代理会话只读解析、重启后
+ * 磁盘扫描与缓存失效、消费时再水化、prompt 分发与状态投影（busy/idle、模型与
+ * 思考档位、todo、materialize 接线）、abort/teardown 语义、updateSession 目录
+ * 归属守卫、local:// 每会话根目录、fork 血缘与边界、'!' 本地 shell（executeBash）。
+ * 断言对象是引擎对外暴露的 wire 行为，而非 SDK 内部实现。
+ */
 import { describe, test, expect, mock, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { WireEventEnvelope } from './events.ts';
 
+/** 每个测试进程独立的临时 agent 目录（afterAll 递归清理）。 */
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-engine-test-'));
 /** Failure guard only: resolves late so a missing signal fails the test
  * instead of hanging it. The pass path awaits the real event above. */
+/** 失败保护定时器：超时先 resolve，让等待真实信号的断言以失败而非挂起收场。 */
 const guardAfter = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+/** 会话 transcripts 根目录（<agentDir>/sessions）。 */
 const sessionDir = path.join(agentDir, 'sessions');
 
+/** mock SessionManager.list 返回的会话清单；s3 显式归属 /repo，供跨目录寻址测试。 */
 const sessionFiles = [
   { id: 's1', path: path.join(sessionDir, 's1.jsonl') },
   { id: 's2', path: path.join(sessionDir, 's2.jsonl') },
@@ -18,46 +30,74 @@ const sessionFiles = [
   // the pre-existing mock behavior for the other ids).
   { id: 's3', path: path.join(sessionDir, 's3.jsonl'), cwd: '/repo' },
 ];
+/** fork 假件的四条消息链（e1→e4），供 /branch 边界断言按序比对。 */
 const fakeForkEntries = [
   { type: 'message', id: 'e1', parentId: null, message: { role: 'user', timestamp: 1, content: 'first' } },
   { type: 'message', id: 'e2', parentId: 'e1', message: { role: 'assistant', timestamp: 2, content: 'reply' } },
   { type: 'message', id: 'e3', parentId: 'e2', message: { role: 'user', timestamp: 3, content: 'second' } },
   { type: 'message', id: 'e4', parentId: 'e3', message: { role: 'assistant', timestamp: 4, content: 'reply 2' } },
 ];
+/** fork 假件记录的变更操作（branch/resetLeaf/marker），断言按序比对。 */
 type ForkMutation = { op: string; leafId?: string; customType?: string; data?: unknown };
 /** Registry-event frame the stateful mock hands to engine subscribers. */
+/** 状态化 mock 交给引擎订阅者的 registry 事件帧。 */
 type MockRegistryEvent = { type: string; ref: { id: string; sessionFile?: string } };
 /** Module-scope handles onto the mocked global registry instance, captured at
  * construction — no type casts needed at the call sites. */
+/** 向被 mock 的全局 registry 单例广播事件的句柄（构造时绑定，调用点免类型断言）。 */
 let emitGlobalRegistryEvent: (event: MockRegistryEvent) => void = () => {};
+/** 清空全局 registry refs 的句柄（测试间隔离用）。 */
 let clearGlobalRegistryRefs: () => void = () => {};
 /** Mock registry shapes: what the engine's projections and this file's
  * assertions read off a rehydrated ref (SDK AgentRef subset). */
+/** mock registry 形状：引擎投影与断言从再水化 ref 上读取的 metrics/outputPath 子集。 */
 type MockRegistryHistory = { metrics?: { tokens?: number }; outputPath?: string };
+/** mock registry 的 ref 形状（SDK AgentRef 子集），供状态化假件与断言共同消费。 */
 type MockRegistryRef = {
+  /** 运行 id（即 agentId）。 */
   id: string;
+  /** 展示名（下钻标题）。 */
   displayName?: string;
+  /** ref 种类（'sub' 等标记子代理）。 */
   kind?: string;
+  /** 父 id（部分场景模拟用）。 */
   parentId?: string;
+  /** 运行状态（running/parked 等）。 */
   status: string;
+  /** 活动会话对象（可为 null）。 */
   session: unknown;
+  /** 会话 transcript 路径（归属映射的关键字段）。 */
   sessionFile?: string;
+  /** 当前活动描述（可选）。 */
   activity?: string;
+  /** 创建时间戳。 */
   createdAt?: number;
+  /** 最近活动时间戳。 */
   lastActivity?: number;
+  /** 再水化写回的 history 子集。 */
   history?: MockRegistryHistory;
 };
+/** mock buildSessionContext 的返回形状。 */
 type FakeSessionContext = { messages: unknown[] };
 
+/** fork 假件累计的变更序列（各测试开头清零）。 */
 const forkMutations: ForkMutation[] = [];
+/** mock getEntries 返回的 transcript 条目（测试内 push/清空）。 */
 const fakeManagerEntries: unknown[] = [];
+/** createAgentSession 假件收到的 options 类型（断言按字段读取）。 */
 type CreatedOptions = { cwd?: string; sessionManager?: { getSessionId?: () => string }; localProtocolOptions?: { getSessionId: () => string; getArtifactsDir: () => string }; toolNames?: string[]; systemPrompt?: string; model?: unknown; agentRegistry?: unknown; settings?: unknown; hasUI?: boolean; planYolo?: boolean };
+/** 每次 createAgentSession 调用捕获的 options（按序追加）。 */
 const createdOptions: CreatedOptions[] = [];
+/** 构造过的全部 AgentRegistry 实例（含每会话私有实例）。 */
 const registries: unknown[] = [];
+/** setToolUIContext 调用记录（uiContext + hasUI 快照）。 */
 const toolUiContextCalls: Array<{ uiContext: unknown; hasUI: boolean }> = [];
+/** initializeExtensions 假件的单次调用记录形状。 */
 type ExtensionInitCall = { session: unknown; options: { mode?: string; uiContext?: { askDialog?: unknown } } };
+/** initializeExtensions 假件的调用记录（断言扩展 UI 上下文接线）。 */
 const extensionUiInitCalls: ExtensionInitCall[] = [];
 
+/** 构造指定 id 的假 SDK agent session（mock 方法供调用断言）。 */
 const makeFakeSession = (id: string) => ({
   model: { provider: 'p1', id: 'current-model' },
   isStreaming: false,
@@ -91,24 +131,33 @@ const makeFakeSession = (id: string) => ({
   dispose: mock(async () => {}),
 });
 
+/** id → 假会话缓存：跨测试共享，可变状态由各测试自行重置。 */
 const fakeSessions = new Map();
+/** 取（或惰性创建）指定 id 的假会话。 */
 const sessionFor = (id: string) => {
   if (!fakeSessions.has(id)) fakeSessions.set(id, makeFakeSession(id));
   return fakeSessions.get(id);
 };
 
+/** 真实 SDK 模块：作为 mock.module 的展开基底，保留未替换的导出。 */
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+/** 真实 runtime-init 模块：仅替换 initializeExtensions 时的展开基底。 */
 const realRuntimeInit = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
+// 仅替换 initializeExtensions：记录扩展 UI 上下文的注入调用，其余导出原样保留。
 mock.module('@oh-my-pi/pi-coding-agent/modes/runtime-init', () => ({
   ...realRuntimeInit,
   initializeExtensions: async (session: { id?: string }, options: ExtensionInitCall['options']) => {
     extensionUiInitCalls.push({ session, options });
   },
 }));
+// 核心 SDK mock：AgentRegistry/ModelRegistry/SessionManager/Settings/createAgentSession
+// 全部替换为受控假件，未动过的导出经真实模块展开透传。
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
+// 状态化 AgentRegistry 假件：global() 提供引擎订阅的单例，构造的实例被登记。
   AgentRegistry: class {
     static #instance: InstanceType<typeof this> | undefined;
+    // 单例访问：每次查找都把模块级句柄重新绑到该实例（防每会话实例抢走句柄）。
     static global() {
       this.#instance ??= new this();
       // Bind the module-scope handles to the singleton on every lookup: the
@@ -122,22 +171,27 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
     // rehydration tests, so register/setHistory/emit must behave like the SDK's.
     #refs = new Map<string, MockRegistryRef>();
     #listeners = new Set<(event: { type: string; ref: unknown }) => void>();
+    // 构造即登记：让"每会话私有 registry"断言能数出实例。
     constructor() {
       // SAFETY: test fixture narrowing — the asserted shape is the harness contract this test reads.
       registries.push(this);
     }
+    // 列出全部 refs。
     list() {
       return [...this.#refs.values()];
     }
+    // 按 id 取 ref。
     get(id: string) {
       return this.#refs.get(id);
     }
+    // 登记新 ref（默认 running + null session）并广播 registered。
     register(input: Omit<MockRegistryRef, 'status' | 'session'> & Partial<Pick<MockRegistryRef, 'status' | 'session'>>) {
       const ref: MockRegistryRef = { status: 'running', session: null, ...input };
       this.#refs.set(ref.id, ref);
       this.#emit({ type: 'registered', ref });
       return ref;
     }
+    // 合并写入 history；expectedSessionFile 不匹配时拒绝（返回 false）。
     setHistory(id: string, history: MockRegistryHistory, expectedSessionFile?: string) {
       const ref = this.#refs.get(id);
       if (!ref || (expectedSessionFile !== undefined && ref.sessionFile !== expectedSessionFile)) return false;
@@ -145,6 +199,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       this.#emit({ type: 'metadata_changed', ref });
       return true;
     }
+    // 移除 ref 并广播 removed。
     unregister(id: string) {
       const ref = this.#refs.get(id);
       if (!ref) return false;
@@ -152,10 +207,12 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       this.#emit({ type: 'removed', ref });
       return true;
     }
+    // 订阅 registry 事件，返回退订函数。
     onChange(listener: (event: { type: string; ref: unknown }) => void) {
       this.#listeners.add(listener);
       return () => this.#listeners.delete(listener);
     }
+    // 向所有监听者广播事件；单个监听者抛错不中断循环。
     #emit(event: MockRegistryEvent) {
       for (const listener of this.#listeners) {
         try {
@@ -166,16 +223,21 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       }
     }
   },
+// ModelRegistry 假件：静态模型清单，无需刷新。
   ModelRegistry: class {
     constructor() {}
+    // 刷新 no-op（假件数据静态）。
     async refresh() {}
+    // 固定返回两个模型；current-model 刻意不在首位（暴露"默认取首个"回归）。
     getAvailable() {
       return [{ provider: 'p1', id: 'zzz-first' }, { provider: 'p1', id: 'current-model' }];
     }
   },
+// SessionManager 假件：open/list/forkFrom 三条静态路径（open 供空闲会话读取）。
   SessionManager: Object.assign(
     class {},
     {
+      // 打开（假）transcript：sessionId 取文件基名，条目来自 fakeManagerEntries。
       async open(file: string) {
         return {
           getSessionId: () => path.basename(file, '.jsonl'),
@@ -191,10 +253,13 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
           close: async () => {},
         };
       },
+      // 列出会话文件；带 cwd 的文件仅在目录匹配时返回。
       async list(cwd?: string) {
         return sessionFiles.filter((file) => !file.cwd || !cwd || file.cwd === cwd);
       },
+      // 会话目录常量。
       getDefaultSessionDir: () => sessionDir,
+      // fork 假件：记录 branch/resetLeaf/marker 变更，条目来自 fakeForkEntries。
       async forkFrom(filePath: string) {
         return {
           getSessionId: () => `${path.basename(filePath, '.jsonl')}_fork`,
@@ -211,6 +276,7 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       },
     },
   ),
+  // createAgentSession 假件：捕获 options，返回缓存假会话 + setToolUIContext 记录器。
   createAgentSession: async (options: CreatedOptions) => {
     createdOptions.push(options);
     return {
@@ -223,7 +289,9 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   // only serves the `Settings.init` seam, and the stub it returns already
   // carries every member the boot path touches — so a standalone class
   // replaces the extends with zero runtime change.
+  // Settings 假件：SDK 构造器是私有类型门禁，stub 只需覆盖 boot 路径触到的成员。
   Settings: class {
+    // boot 路径只需 getCwd/cloneForCwd 两个成员。
     static async init() {
       return {
         getCwd: () => 'C:/stub-boot',
@@ -243,8 +311,10 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   BUILTIN_TOOLS: [] as string[],
 }));
 
+// 在 SDK mock 就位后导入被测引擎（mock.module 必须先注册）。
 const { OmpHostEngine } = await import('./engine.ts');
 
+// 套件收尾：递归删除临时 agent 目录（重试容忍句柄延迟释放）。
 afterAll(() => {
   rmSync(agentDir, { recursive: true, force: true, maxRetries: 5 });
 });
@@ -253,6 +323,7 @@ afterAll(() => {
 // required in the synthesized parameter type); calls that omit optional
 // fields pad them with `undefined` — the destructured values are identical.
 
+// 聚合器：全局 registry 的子代理 ref 经 sessionFile 映射回宿主会话（脑裂修复）。
 describe('agent-runs aggregator: process-global registry mapping (registry split-brain fix)', () => {
 
   test('global-registry subagent refs map to their owning live session via sessionFile', async () => {
@@ -295,7 +366,9 @@ describe('agent-runs aggregator: process-global registry mapping (registry split
   });
 });
 
+// 子代理会话的只读下钻解析（getSession/getMessagesPage 按自身 sessionID）。
 describe('subagent session read resolution (read-only drill-in)', () => {
+  // 本组共享的子代理 transcript 路径（<ts>_s2/ScoutRun.jsonl）。
   const subFile = path.join(sessionDir, '2026-09-04T00-00-00-000Z_s2', 'ScoutRun.jsonl');
 
   test('getSession resolves a subagent transcript by its own sessionID with wire parentID', async () => {
@@ -354,6 +427,7 @@ describe('subagent session read resolution (read-only drill-in)', () => {
   });
 });
 
+// 磁盘扫描：重启后把嵌套 transcript 产出为 historical 运行行。
 describe('disk scan: historical run rows (restart persistence)', () => {
   test('ensureDirectory surfaces nested transcripts as historical rows with childSessionID', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -402,6 +476,7 @@ describe('disk scan: historical run rows (restart persistence)', () => {
   });
 });
 
+// 消费时再水化：会话物化时重建已结算/被回收子代理的 registry ref。
 describe('consumption-time subagent rehydration (materialization)', () => {
   test('materializing a session re-registers settled runs with history and child ids', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -533,6 +608,7 @@ describe('consumption-time subagent rehydration (materialization)', () => {
   });
 });
 
+// 磁盘行缓存失效：registered 事件丢弃一次性缓存，迟到 transcript 得以浮出。
 describe('disk-row cache invalidation on new runs', () => {
   test('a registry registered event drops the one-shot cache so late transcripts surface', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -556,6 +632,7 @@ describe('disk-row cache invalidation on new runs', () => {
   });
 });
 
+// prompt 分发契约：steer 语义、状态投影、模型/档位切换与 materialize 接线。
 describe('OmpHostEngine prompt dispatch', () => {
   test('submits with TUI steer semantics and does not reject while streaming', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -992,6 +1069,7 @@ describe('OmpHostEngine prompt dispatch', () => {
 });
 
 
+// local:// 每会话根目录接线（spec 04 §5.2.3，TUI 对齐）。
 describe('local:// per-session root wiring (spec 04 §5.2.3, TUI parity)', () => {
   test('cold resolve pins the session-private artifacts dir, never the project session dir', async () => {
     const engine = new OmpHostEngine({ agentDir });
@@ -1056,6 +1134,7 @@ describe('local:// per-session root wiring (spec 04 §5.2.3, TUI parity)', () =>
     expect(await unknown.json()).toMatchObject({ error: 'session-not-found' });
   });
 });
+// fork 血缘：forkParentID 记录血统，绝不写 subagent 语义的 parentID。
 describe('OmpHostEngine fork lineage', () => {
   test('records forkParentID lineage and never emits subagent parentID', async () => {
     // engine.fork must NOT write wire `parentID`: the shared UI treats a
@@ -1079,6 +1158,7 @@ describe('OmpHostEngine fork lineage', () => {
   });
 });
 
+// fork 边界：wire messageID 的 /branch 语义（含未知边界的回退）。
 describe('OmpHostEngine fork boundary (wire messageID)', () => {
   test('bounds the fork before the selected message (omp /branch semantics)', async () => {
     forkMutations.length = 0;
@@ -1127,7 +1207,9 @@ describe('OmpHostEngine fork boundary (wire messageID)', () => {
   });
 });
 
+// '!' 本地 shell：executeBash 的卡片投影、状态机与生命周期。
 describe('OmpHostEngine executeBash (`!` local shell)', () => {
+  // 构造一条持久化的 bashExecution 记录（overrides 合并覆盖默认值）。
   const bashRecord = (overrides = {}) => ({
     role: 'bashExecution',
     command: 'pwd',
@@ -1138,6 +1220,7 @@ describe('OmpHostEngine executeBash (`!` local shell)', () => {
     timestamp: 0,
     ...overrides,
   });
+  // 构造 executeBash 的结果对象（overrides 合并覆盖默认值）。
   const bashResult = (overrides = {}) => ({
     output: '/repo\n',
     exitCode: 0,
@@ -1150,6 +1233,7 @@ describe('OmpHostEngine executeBash (`!` local shell)', () => {
     ...overrides,
   });
 
+  // 断言读取的 message.part.updated 载荷视图（仅 shellAction 相关字段）。
   type PartView = { messageID?: string; shellAction?: { command?: string; output?: string; status?: string } };
 
   test('runs the session bash runner, emits running→settled cards, and echo-bridges the persisted row', async () => {

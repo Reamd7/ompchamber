@@ -9,6 +9,12 @@ import { createTerminalRuntime } from './runtime.js';
 import { createTerminalWsControlFrame, readTerminalWsControlFrame } from './terminal-ws-protocol.js';
 
 /**
+ * （中文套件说明）服务端 grid 解析 feed 的契约测试：真实 WS 协议上验证
+ * grid-fed attachment 收到解析后的 grid 帧而非原始输出、重连快照来自
+ * 解析后的屏幕（无字节历史）、resize/restart 的行为，以及 byte feed
+ * 的序号不受 grid 能力影响。
+ */
+/**
  * Server-side parsing feed (GridCore) contract tests over the real terminal
  * WS protocol: grid-fed attachments receive parsed grid frames instead of
  * raw output, snapshots reconcile them from the parsed screen, and the byte
@@ -18,6 +24,7 @@ import { createTerminalWsControlFrame, readTerminalWsControlFrame } from './term
  * ws over loopback) — verified equivalent before these cases were written.
  */
 
+/** 构建挂载在给定 server 上的终端运行时，overrides 用于替换 app 或 PTY provider。 */
 function createRuntime(server, overrides = {}) {
   const app = overrides.app ?? { post() {}, get() {}, delete() {} };
   return createTerminalRuntime({
@@ -33,8 +40,10 @@ function createRuntime(server, overrides = {}) {
   });
 }
 
+/** 把一行 cell 数组还原成去除行尾空白的文本（cell[0] 为字符码点）。 */
 const rowText = (cells) => cells.map((cell) => (cell[0] >= 32 ? String.fromCodePoint(cell[0]) : ' ')).join('').trimEnd();
 
+/** 启动真实 http+express+ws 回环测试环境：假 PTY provider 记录进程并在 emitData 时模拟输出。 */
 const createHarness = async () => {
   const app = express();
   app.use(express.json());
@@ -115,11 +124,13 @@ const createHarness = async () => {
   };
 };
 
+/** 以 bytes（默认）或 grid feed 发送 attach 控制帧。 */
 const attach = (client, sessionId, feed) =>
   client.socket.send(createTerminalWsControlFrame(
     feed === 'grid' ? { t: 'attach', v: 3, s: sessionId, feed: 'grid' } : { t: 'attach', v: 3, s: sessionId }
   ));
 
+// 终端运行时 grid feed：同一会话上 grid 与 byte 两种订阅模式的行为契约。
 describe('terminal runtime grid feed', () => {
   it('delivers parsed grid frames to grid-fed attachments and raw output to byte-fed ones on the same session', async () => {
     const harness = await createHarness();

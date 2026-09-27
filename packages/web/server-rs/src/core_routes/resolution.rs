@@ -9,6 +9,12 @@
 //! `OPENCODE_BINARY` after startup, so the "detected now" correction dance the
 //! JS performs (restore the previous source, re-detect, un-shadow env-set
 //! values) collapses to a single fresh detection.
+//!
+//! 中文说明：本模块负责解析启动 omp host（托管引擎进程）所需的运行时与
+//! 启动参数，产出与 JS 端 `getOpenCodeResolutionSnapshot` 同构的快照，并由
+//! `opencode_resolution` 路由对外提供。解析顺序为：显式环境变量 → PATH
+//! 查找 → 常见安装位置回退；结果经 `LazyLock` 按进程生命周期缓存，与
+//! JS 端模块级变量"只解析一次"的语义保持一致。
 
 use std::path::{Path, PathBuf};
 
@@ -26,24 +32,34 @@ pub(crate) struct EngineResolution {
     pub resolved: Option<PathBuf>,
     /// `resolvedOpencodeBinarySource`: `env` | `path` | `fallback`.
     pub source: Option<&'static str>,
+    /// `launchBinary`：实际执行的二进制（Windows 的 `.cmd`/`.bat` shim 会换成 cmd.exe）。
     pub launch_binary: Option<String>,
+    /// `launchArgs`：传给 `launch_binary` 的参数（cmd 包装时为 `/d /s /c call <bin>`）。
     pub launch_args: Vec<String>,
+    /// `launchWrapperType`：启动包装类型标记；目前仅 `"cmd-wrapper"`，其余为 None。
     pub launch_wrapper_type: Option<&'static str>,
+    /// `node`：EnvRuntime 中懒解析缓存的 node 二进制路径。
     pub node: Option<PathBuf>,
+    /// `bun`：EnvRuntime 中懒解析缓存的 bun 二进制路径。
     pub bun: Option<PathBuf>,
 }
 
+/// `EngineResolution` 的解析入口与 JSON 序列化实现。
 impl EngineResolution {
     /// JS semantics: the binary-resolution snapshot lives in module-level
     /// variables resolved once (env-runtime `resolvedOpencodeBinary` etc.) —
     /// /health and the resolution route read the CACHED values, they do not
     /// re-scan PATH per request.
     pub(crate) fn resolve() -> Self {
+        // 进程级缓存：对应 JS 的模块级变量，首次访问时探测一次，之后复用。
         static CACHED: std::sync::LazyLock<EngineResolution> =
             std::sync::LazyLock::new(EngineResolution::resolve_uncached);
         (*CACHED).clone()
     }
 
+    /// 不走缓存的完整探测：解析 omp host 运行时、读取 EnvRuntime 缓存的
+    /// node/bun 状态，并基于解析结果推导启动 spec。仅在 `LazyLock` 首次
+    /// 初始化时执行一次。
     fn resolve_uncached() -> Self {
         let (resolved, source) = resolve_omp_host_runtime(
             std::env::var("OMPCHAMBER_OMP_HOST_RUNTIME").ok().as_deref(),
@@ -73,14 +89,17 @@ impl EngineResolution {
         }
     }
 
+    /// `resolved` 的字符串形式（路径有损转换为 UTF-8），供 JSON 输出使用。
     pub(crate) fn resolved_display(&self) -> Option<String> {
         self.resolved.as_ref().map(|path| path_to_string(path))
     }
 
+    /// `node` 的字符串形式，供 JSON 输出使用。
     pub(crate) fn node_display(&self) -> Option<String> {
         self.node.as_ref().map(|path| path_to_string(path))
     }
 
+    /// `bun` 的字符串形式，供 JSON 输出使用。
     pub(crate) fn bun_display(&self) -> Option<String> {
         self.bun.as_ref().map(|path| path_to_string(path))
     }
@@ -102,6 +121,7 @@ impl EngineResolution {
     }
 }
 
+/// 路径转有损 UTF-8 字符串（无效字节替换为 U+FFFD），避免 JSON 序列化失败。
 fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -118,6 +138,8 @@ fn strip_wrapping_quotes(value: &str) -> &str {
     trimmed
 }
 
+/// 判断路径是否可执行：必须是常规文件，且 Unix 上任一执行位已置位；
+/// 非 Unix 平台只检查是否为常规文件。
 fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -146,6 +168,7 @@ fn search_path_for(binary: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// 取用户主目录；统一转发到 `crate::config::home_dir()`。
 fn home_dir() -> Option<PathBuf> {
     crate::config::home_dir()
 }
@@ -293,11 +316,13 @@ pub(crate) async fn opencode_resolution(State(_ctx): State<RouterContext>) -> Re
     (StatusCode::OK, Json(resolution.snapshot_json())).into_response()
 }
 
+/// 单元测试：运行时解析的优先级与引号剥离、启动 spec 推导、快照 JSON 的字段契约。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core_routes::tests::temp_dir;
 
+    /// 验证：显式指定的可执行文件优先胜出（source=`env`），且引号包裹的值会先剥壳再判定。
     #[test]
     fn omp_host_runtime_prefers_explicit_executable_env() {
         let dir = temp_dir("resolution-env");
@@ -316,6 +341,8 @@ mod tests {
         assert_eq!(resolved.as_deref(), Some(binary.as_path()));
     }
 
+    /// 验证：显式值不可用时回退到 PATH/常见位置查找——结果要么真实存在，
+    /// 要么整体为 None（source 同步为 None），绝不返回不存在的路径。
     #[test]
     fn omp_host_runtime_falls_back_to_path_search() {
         // With no usable explicit values the PATH search decides; on test
@@ -328,6 +355,7 @@ mod tests {
         }
     }
 
+    /// 验证：只有成对包裹的引号才被剥除；裸值仅做 trim，空串保持为空。
     #[test]
     fn strip_quotes_only_when_wrapped() {
         assert_eq!(strip_wrapping_quotes("  '/a/b' "), "/a/b");
@@ -336,15 +364,18 @@ mod tests {
         assert_eq!(strip_wrapping_quotes(""), "");
     }
 
+    /// Unix 下为测试产物补上执行位（chmod 0o755），满足 `is_executable` 判定。
     #[cfg(unix)]
     fn make_executable(path: &Path) {
 use crate::os_compat::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 
+    /// 非 Unix 平台无执行位概念，空实现。
     #[cfg(not(unix))]
     fn make_executable(_path: &Path) {}
 
+    /// 验证：非 Windows 平台启动 spec 直接使用原二进制，无额外参数与包装类型。
     #[test]
     fn managed_launch_spec_is_direct_on_unix() {
         let spec = managed_launch_spec(Path::new("/usr/local/bin/bun"));
@@ -353,6 +384,8 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(spec.2, None);
     }
 
+    /// 验证：快照 JSON 与 JS 端字段集逐一对齐（resolved/resolvedDir/source/
+    /// detectedNow/detectedSourceNow/launch 系列/node/bun）。
     #[test]
     fn resolution_snapshot_has_js_field_set() {
         let resolution = EngineResolution {
@@ -377,6 +410,8 @@ use crate::os_compat::PermissionsExt;
         assert_eq!(body["bun"], "/usr/local/bin/bun");
     }
 
+    /// 验证：路由 `/api/config/opencode-resolution` 返回 200，且响应包含
+    /// 全部快照字段（`launchArgs` 为数组）。
     #[tokio::test]
     async fn opencode_resolution_route_returns_snapshot() {
         use crate::core_routes::router;

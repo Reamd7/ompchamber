@@ -1,5 +1,9 @@
 //! Port of `server/lib/quota/providers/wafer.js` — Wafer.ai quota via
 //! `GET https://pass.wafer.ai/v1/inference/quota` (15s timeout).
+//!
+//! 中文概览：Wafer.ai 配额提供方——以 bearer API key 请求
+//! pass.wafer.ai/v1/inference/quota（15 秒超时），由剩余/限额请求数、
+//! 超额计数与当前周期用量百分比组装单个用量窗口。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -12,14 +16,22 @@ use crate::quota::utils::{
     resolve_window_label, to_number, to_timestamp, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "wafer";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "Wafer.ai";
+/// auth.json 中识别本提供方的别名列表（四种等价写法）。
 pub const ALIASES: [&str; 4] = ["wafer", "wafer-ai", "wafer_ai", "wafer.ai"];
 
+/// 配额查询端点 URL。
 const WAFER_QUOTA_URL: &str = "https://pass.wafer.ai/v1/inference/quota";
+/// 窗口起止时间缺失时使用的默认窗口时长（5 小时）。
 const WAFER_WINDOW_SECONDS: f64 = 5.0 * 3600.0;
+/// 请求超时时间（毫秒）。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
+/// 从 auth.json 的 wafer 别名条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -31,10 +43,15 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key → 请求配额端点 → 由 remaining/limit/overage/
+/// used_percent 组装单个窗口（存在超额请求时百分比不封顶），
+/// 标签依次拼接套餐档位、"N / M left" 与 "+N overage"；
+/// 四类数据全部缺失时按失败处理。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

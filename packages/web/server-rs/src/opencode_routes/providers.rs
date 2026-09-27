@@ -1,6 +1,11 @@
 //! Port of `opencode/providers.js`: custom provider config validation,
 //! persistence into the user/project/custom JSONC layers, and source
 //! reporting. Secrets stay in `auth.json` (handled by `auth.rs`).
+//!
+//! 中文说明：移植 `opencode/providers.js`：自定义 provider 配置的
+//! 校验（ID/名称/npm 包白名单/baseURL/模型表/凭据来源）、按 scope
+//! 持久化到 user/project/custom JSONC 配置层，以及来源存在性报告。
+//! 密钥只存于 auth.json（见 `auth.rs`），本模块不落盘任何 secret。
 
 use std::path::PathBuf;
 
@@ -10,6 +15,8 @@ use super::OpenCodeEnv;
 use super::config_layers::{config_for_path, is_plain_object, read_config_layers, write_config};
 
 /// `^[a-z0-9][a-z0-9-_]*$`.
+/// 中文：provider ID 合法性：非空、首字符为小写字母/数字，其余字符
+/// 允许小写字母/数字/`-`/`_`（JS 正则 `^[a-z0-9][a-z0-9-_]*$`）。
 fn valid_provider_id(provider_id: &str) -> bool {
     let bytes = provider_id.as_bytes();
     if bytes.is_empty() {
@@ -23,6 +30,8 @@ fn valid_provider_id(provider_id: &str) -> bool {
     head && tail
 }
 
+/// 中文：自定义 provider 允许的 npm 适配包白名单：
+/// `@ai-sdk/openai-compatible` / `@ai-sdk/openai` / `@ai-sdk/anthropic`。
 fn custom_npm_allowed(npm: &str) -> bool {
     matches!(
         npm,
@@ -33,6 +42,10 @@ fn custom_npm_allowed(npm: &str) -> bool {
 /// `getProviderSources` — returns the inner `sources` object
 /// (`{ auth, user, project, custom }`); `auth.exists` is filled in by the
 /// route (auth.json / Claude CLI probe).
+/// 中文：组装 provider 的 `sources` 报告对象（auth/user/project/custom
+/// 四层，各含 `exists` 与配置文件 `path`）；`provider` 与 `providers`
+/// 两种小节名都识别。`auth.exists` 恒为 false，由路由层用 auth.json /
+/// Claude CLI 探测结果回填。
 pub(crate) fn get_provider_sources(
     env: &OpenCodeEnv,
     provider_id: &str,
@@ -68,13 +81,24 @@ pub(crate) fn get_provider_sources(
     }))
 }
 /// `validateCustomProviderConfig` outcome.
+/// 中文：自定义 provider 配置校验的结果：成功携带归一化后的
+/// provider_id 与配置，失败携带错误文案。
 #[derive(Debug)]
 pub(crate) enum ProviderValidation {
+    /// 校验通过：provider ID 与归一化后的最小配置。
     Ok { provider_id: String, config: Value },
+    /// 校验失败：面向 400 响应的错误文案。
     Err(String),
 }
 
 /// `validateCustomProviderConfig`.
+/// 中文：校验自定义 provider 配置并产出归一化形态：检查 ID 格式、
+/// 配置必须为对象、`name` 必填、`npm` 限白名单（缺省
+/// openai-compatible）、`options.baseURL` 必须是 http(s) URL、
+/// `models` 至少一个且每个模型需非空 name（只保留 name）、`env` 为
+/// 非空字符串数组、options.headers 清洗空键/空值。`env` 与已存凭据
+/// （`has_stored_auth`）都缺时判为缺少凭据。归一化输出仅保留
+/// npm/name/options(baseURL[,headers])/models/env 字段。
 pub(crate) fn validate_custom_provider_config(
     provider_id: &str,
     config: &Value,
@@ -221,19 +245,32 @@ pub(crate) fn validate_custom_provider_config(
 
 /// `upsertProviderConfig` outcome (the `statusCode: 400` shape of the JS
 /// validation error is reproduced by the `Validation` variant).
+/// 中文：upsert 成功结果：最终 provider ID、写入的配置文件路径与
+/// 归一化后的配置。
 pub(crate) struct UpsertOutcome {
+    /// 归一化后的 provider ID。
     pub provider_id: String,
+    /// 实际写入的配置文件路径。
     pub path: PathBuf,
+    /// 归一化后的 provider 配置（回显给客户端）。
     pub config: Value,
 }
 
+/// 中文：upsert 失败分类：`Validation` 对应 JS 中 statusCode 400 的
+/// 校验错误，`Other` 为读写配置层等内部错误。
 #[derive(Debug)]
 pub(crate) enum UpsertError {
+    /// 校验失败（HTTP 400 语义）。
     Validation(String),
+    /// 其他错误（配置层读写失败等）。
     Other(String),
 }
 
 /// `upsertProviderConfig`.
+/// 中文：新增/更新自定义 provider 配置：先校验归一化；按 scope 选
+/// 目标层（project 需工作目录、custom 需 `$OPENCODE_CONFIG`，缺省
+/// user），把配置写入该层的 `provider` 小节，并从 `disabled_providers`
+/// 中移除该 provider；目标路径为空时回退用户级 config.json。
 pub(crate) fn upsert_provider_config(
     env: &OpenCodeEnv,
     provider_id: &str,
@@ -305,6 +342,9 @@ pub(crate) fn upsert_provider_config(
 }
 
 /// `removeProviderConfig`.
+/// 中文：按 scope 从目标层移除 provider 配置（`provider` 与 `providers`
+/// 两种小节都查；小节清空后连键一起删除）。未找到返回 `Ok(false)`
+/// 不写文件；custom 层未配置时同样返回 `Ok(false)`。
 pub(crate) fn remove_provider_config(
     env: &OpenCodeEnv,
     provider_id: &str,

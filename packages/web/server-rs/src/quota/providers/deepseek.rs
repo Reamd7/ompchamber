@@ -1,5 +1,9 @@
 //! Port of `server/lib/quota/providers/deepseek.js` — DeepSeek balance via
 //! `GET https://api.deepseek.com/user/balance` (15s timeout, USD preferred).
+//!
+//! 中文概览：DeepSeek 余额提供方——以 bearer API key 请求
+//! api.deepseek.com/user/balance（15 秒超时），从 balance_infos 中
+//! 优先取 USD（回退 CNY）条目的 total_balance，展示为余额标签窗口。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
@@ -12,13 +16,20 @@ use crate::quota::utils::{
     to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "deepseek";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "DeepSeek";
+/// auth.json 中识别本提供方的别名列表。
 pub const ALIASES: [&str; 1] = ["deepseek"];
 
+/// 余额查询端点 URL。
 const DEEPSEEK_QUOTA_URL: &str = "https://api.deepseek.com/user/balance";
+/// 请求超时时间（毫秒）。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
+/// 从 auth.json 的 deepseek 条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -30,10 +41,14 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key → 请求余额端点（401/403 提示重新认证）→
+/// 选币种条目并读取 total_balance（空串/缺失视为无数据失败）→
+/// 组装 credits_balance 展示窗口（CNY 用 ¥ 前缀，否则 $）。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

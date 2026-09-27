@@ -1,11 +1,27 @@
+/**
+ * 优雅关闭（graceful shutdown）运行时工厂。
+ *
+ * runShutdown 按固定顺序停掉各子运行时：会话类运行时与健康检查 -> 终端 ->
+ * 消息流 -> OpenCode 子进程与端口回收 -> HTTP server（带超时兜底）-> UI 鉴权
+ * 与隧道。外层 gracefulShutdown 做并发去重并挂看门狗：超过
+ * shutdownWatchdogTimeoutMs 仍在关闭时，若允许退出则强制 exit(1)，
+ * 否则复位关闭状态以便重试。
+ */
 // Every WebSocket upgrade listener (terminal, message stream, dictation) is
 // removed early in this sequence, well before the stages that can hang on
 // external processes. A shutdown wedged at one of those awaits therefore keeps
 // serving HTTP while rejecting all realtime upgrades — a half-dead backend the
 // next dev run happily proxies to. The watchdog exists to make that state
 // impossible to linger in.
+// 中文补充：所有 WebSocket upgrade 监听在本序列早期即被移除，若后续阶段卡死，
+// 服务会呈现「HTTP 可用但拒绝实时升级」的半死状态；看门狗用于杜绝这种状态滞留。
 const DEFAULT_SHUTDOWN_WATCHDOG_TIMEOUT_MS = 30_000;
 
+/**
+ * 创建优雅关闭运行时：dependencies 注入 process、超时配置、退出开关与各子
+ * 运行时的存取回调（watcher、session、终端、消息流、OpenCode 进程/端口、
+ * HTTP server、UI 鉴权、隧道等）；返回 gracefulShutdown 单一入口。
+ */
 export const createGracefulShutdownRuntime = (dependencies) => {
   const {
     process,
@@ -41,12 +57,23 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     tunnelAuthController,
   } = dependencies;
 
+  // 进行中的关闭 Promise：并发调用 gracefulShutdown 时复用同一实例。
   let shutdownPromise = null;
+  // 当前关闭阶段标签；看门狗超时日志用它报告卡在哪个阶段。
   let shutdownPhase = 'starting';
+  /** 更新关闭阶段标签（仅用于诊断日志）。 */
   const enterShutdownPhase = (phase) => {
     shutdownPhase = phase;
   };
 
+  /**
+   * 执行完整关闭序列（幂等：已在关闭中则直接返回）。依次停止 watcher/会话/
+   * 辅助/目标/上下文/定时任务运行时与健康检查定时器，关闭终端与消息流运行时；
+   * 除非显式跳过（外部 server 模式），关闭 OpenCode 子进程、强杀端口占用进程
+   * 并等待端口释放（5 秒超时仅告警）；关闭 HTTP server（与 shutdownTimeoutMs
+   * 竞速，超时强制继续）；释放 UI 鉴权与活动隧道。全部完成后按配置决定是否
+   * process.exit(0)。
+   */
   const runShutdown = async (options = {}) => {
     if (getIsShuttingDown()) return;
 
@@ -161,6 +188,12 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     }
   };
 
+  /**
+   * 对外的关闭入口（并发安全）：已在关闭中则复用 shutdownPromise；
+   * 为本次关闭挂看门狗 —— 超过 shutdownWatchdogTimeoutMs 时报告当前阶段，
+   * 允许退出则强制 exit(1)，否则清空 shutdownPromise 允许再次尝试。
+   * options.exitProcess 可覆盖默认的退出策略。
+   */
   const gracefulShutdown = (options = {}) => {
     if (shutdownPromise) return shutdownPromise;
 

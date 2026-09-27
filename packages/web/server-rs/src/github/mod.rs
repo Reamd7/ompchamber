@@ -4,14 +4,28 @@
 //! Octokit is replaced by [`client::GithubClient`]; every route preserves the
 //! JS response shapes, status codes, conditional JSON keys, and the route-level
 //! caches (90s PR-status cache, 30s PR-context cache, memoized auth login).
+//!
+//! 中文说明：本模块把旧 JS server 的 `server/lib/github/routes.js`
+//! （`registerGitHubRoutes`，即全部 `/api/github/*` Express 路由）移植到
+//! axum。Octokit 被替换为 [`client::GithubClient`]；每个路由都保持与
+//! JS 版一致的响应结构、状态码、条件性 JSON 键以及路由级缓存
+//! （pr/status 90 秒缓存、pulls/context 30 秒缓存、认证登录名 memo 化）。
 
+/// GitHub OAuth 凭据的持久化存储（token、scope、多账号与 gh CLI 开关）。
 mod auth;
+/// GitHub REST/GraphQL 客户端封装（替代 Octokit），含错误类型与响应头工具。
 mod client;
+/// GitHub OAuth device flow（设备码换 token）的表单提交实现。
 mod device_flow;
+/// 读取本机 gh CLI 凭据（token 缓存 + `gh auth token` 兜底）的适配层。
 mod gh_cli;
+/// 目录级 git 操作（tracking branch、remote 名称列表等异步封装）。
 mod git_ops;
+/// PR status 解析引擎：从 git 目录/remote 解析仓库并查找分支对应的 PR。
 mod pr_status;
+/// GitHub API 全局速率限制门（429/retry-after 探测与冷却期降级）。
 mod rate_limit;
+/// 仓库解析：目录 remote URL → `RepoRef`，以及 fork/upstream 网络缓存。
 mod repo;
 
 use std::collections::HashMap;
@@ -34,69 +48,110 @@ use pr_status::PrStatusEngine;
 use rate_limit::{GLOBAL_GATE, RateLimitGate};
 use repo::{NetworkRepo, RepoNetworkCache, RepoRef};
 
+/// pr/status 路由级缓存的 TTL（毫秒），与 JS 版的 90 秒一致。
 const PR_STATUS_CACHE_TTL_MS: i64 = 90_000;
+/// pr/status 缓存的最大条目数；超出且写入新键时淘汰最旧条目。
 const PR_STATUS_CACHE_MAX_ENTRIES: usize = 200;
+/// pr/status 解析阶段的超时（毫秒），对应 JS 的 `withTimeout` 12 秒。
 const PR_STATUS_RESOLVE_TIMEOUT_MS: u64 = 12_000;
+/// pulls/context 路由级缓存的 TTL（毫秒），与 JS 版的 30 秒一致。
 const PR_CONTEXT_CACHE_TTL_MS: i64 = 30_000;
+/// pulls/context 缓存（Vec + FIFO 淘汰）的最大条目数。
 const PR_CONTEXT_CACHE_MAX_ENTRIES: usize = 50;
 
+/// 由 token 构造 [`GithubClient`] 的工厂；生产环境用 [`GithubClient::new`]，
+/// 测试用它注入 fake transport。
 type TransportFactory = Arc<dyn Fn(&str) -> GithubClient + Send + Sync>;
 
 /// Route-level error mirroring the JS catch blocks.
+/// 中文说明：GitHub API 错误或解析超时，二者决定不同的降级路径
+/// （清除凭据 / 回退缓存 / 503）。
 enum HandlerError {
+    /// GitHub API 请求失败（携带状态码、响应头与可选响应体）。
     Github(GithubError),
     /// `withTimeout` rejection (`error.code === 'ETIMEDOUT'`).
+    /// 中文说明：超时时优先回退到任何已缓存数据，否则返回 503。
     TimedOut,
 }
 
+/// 让 `?` 运算符把 [`GithubError`] 自动包装成 [`HandlerError::Github`]。
 impl From<GithubError> for HandlerError {
     fn from(error: GithubError) -> Self {
         HandlerError::Github(error)
     }
 }
 
+/// 401/403 视为 token 失效或权限不足，调用方据此清除本地存储的凭据。
 fn is_github_auth_invalid(error: &GithubError) -> bool {
     error.status == Some(401) || error.status == Some(403)
 }
 
+/// 403/404 视为资源不可见（私有仓库无权限或不存在），调用方据此返回
+/// "已连接但无仓库/无 PR" 的降级载荷。
 fn is_github_resource_unavailable(error: &GithubError) -> bool {
     error.status == Some(403) || error.status == Some(404)
 }
 
+/// pr/status 缓存条目：完整响应体与写入时刻。
 struct PrStatusCacheEntry {
+    /// 缓存的完整 JSON 响应体。
     data: Value,
+    /// 写入时的毫秒时间戳，用于 TTL 判断与最旧条目淘汰。
     fetched_at: i64,
 }
 
+/// pulls/context 缓存条目：响应体、是否含 check 明细与写入时刻。
 struct PrContextCacheEntry {
+    /// 缓存的完整 JSON 响应体。
     data: Value,
+    /// 生成该条目时是否请求了 checkDetails：含明细的缓存可服务
+    /// 不带明细的请求，反之不可复用。
     include_check_details: bool,
+    /// 写入时的毫秒时间戳，用于 TTL 判断。
     fetched_at: i64,
 }
 
+/// memo 化的认证登录名状态：未解析/上次失败（Idle）或已解析（可能为空）。
 enum ResolvedAuthLogin {
     /// No attempt yet (or the last attempt failed — JS resets the memoized
     /// promise on failure so the next call retries).
+    /// 中文说明：失败后回退到该状态，下次调用会重新发起请求。
     Idle,
+    /// 已成功解析；`None` 表示响应中没有非空 `login`。
     Resolved(Option<String>),
 }
 
+/// 全部 `/api/github/*` 路由共享的状态：凭据存储、客户端工厂、
+/// 各类缓存（pr/status、pulls/context、登录名 memo）与限流门。
 pub struct GithubState {
+    /// 路由上下文（数据目录等；路由实现暂未直接使用，保留供扩展）。
     #[allow(dead_code)]
     ctx: RouterContext,
+    /// GitHub 凭据持久化存储（token、账号列表、gh CLI 开关）。
     auth: AuthStore,
+    /// PR status 解析引擎（自带 repo→pulls 缓存）。
     engine: Arc<PrStatusEngine>,
+    /// fork/upstream 仓库网络解析缓存。
     repo_network: Arc<RepoNetworkCache>,
+    /// 全局 GitHub 速率限制门（生产环境共享 `GLOBAL_GATE`）。
     gate: Arc<RateLimitGate>,
+    /// 本机 gh CLI 凭据读取器（带内部 token 缓存）。
     gh_cli: Arc<GhCliCredential>,
+    /// 由 token 构造客户端的工厂（测试注入 fake transport 的接缝）。
     transport_factory: TransportFactory,
+    /// device flow 的表单提交函数（测试可注入 fake）。
     form_poster: FormPoster,
+    /// pr/status 路由级缓存：`directory::branch::remote` → 条目。
     pr_status_cache: Mutex<HashMap<String, PrStatusCacheEntry>>,
+    /// pulls/context 路由级缓存（Vec 存储，超限 FIFO 淘汰）。
     pr_context_cache: Mutex<Vec<(String, PrContextCacheEntry)>>,
+    /// memo 化的认证登录名（成功缓存、失败重试）。
     resolved_auth_login: Mutex<ResolvedAuthLogin>,
 }
 
+/// [`GithubState`] 的构造（生产/测试接缝）、token 选择与缓存读写。
 impl GithubState {
+    /// 生产构造：真实 transport 工厂、全局限流门与 gh CLI 全局实例。
     fn from_ctx(ctx: RouterContext) -> Arc<Self> {
         Arc::new(Self {
             auth: AuthStore::new(ctx.config.data_dir.clone()),
@@ -114,6 +169,8 @@ impl GithubState {
     }
 
     /// Test seams: fake transport factory, form poster, gh fetcher, gate.
+    /// 中文说明：用临时数据目录 + 注入组件组装状态，不依赖真实
+    /// 配置文件与网络。
     #[allow(clippy::too_many_arguments)]
     fn with_seams(
         data_dir: PathBuf,
@@ -157,6 +214,8 @@ impl GithubState {
     }
 
     /// `getOctokitOrNull`.
+    /// 中文说明：gh CLI 激活时优先其 token、否则优先自有 token，
+    /// 另一方作为兜底；两者皆无时返回 `None`（未连接）。
     fn get_octokit_or_null(&self) -> Option<GithubClient> {
         let gh_token = if !self.auth.is_gh_cli_disabled() {
             self.gh_cli.token()
@@ -172,6 +231,7 @@ impl GithubState {
         token.map(|token| (self.transport_factory)(&token))
     }
 
+    /// 写入 pr/status 缓存；达到上限且是新键时先淘汰 `fetched_at` 最旧的条目。
     fn set_pr_status_cache(&self, key: &str, data: Value, fetched_at: i64) {
         let mut cache = self
             .pr_status_cache
@@ -189,6 +249,7 @@ impl GithubState {
         cache.insert(key.to_string(), PrStatusCacheEntry { data, fetched_at });
     }
 
+    /// 读取 TTL 内的 pr/status 缓存；命中返回响应体克隆。
     fn cached_pr_status(&self, key: &str, now: i64) -> Option<Value> {
         let cache = self
             .pr_status_cache
@@ -200,6 +261,7 @@ impl GithubState {
             .map(|e| e.data.clone())
     }
 
+    /// 读取 pr/status 缓存但不校验 TTL——限流/超时时的降级数据源。
     fn any_cached_pr_status(&self, key: &str) -> Option<Value> {
         self.pr_status_cache
             .lock()
@@ -210,6 +272,8 @@ impl GithubState {
 
     /// The route's `res.json` override: stamp `fetchedAt` and cache
     /// `connected: true` payloads before sending.
+    /// 中文说明：`connected:true` 的载荷补上 `fetchedAt` 并写入缓存，
+    /// 断连载荷不缓存。
     fn send_pr_status(&self, cache_key: &str, mut data: Value) -> Response {
         if data.get("connected") == Some(&Value::Bool(true)) {
             if data.get("fetchedAt").and_then(Value::as_i64).is_none()
@@ -227,6 +291,7 @@ impl GithubState {
     }
 
     /// The pulls/context `res.json` override: cache payloads that carry `pr`.
+    /// 中文说明：带非空 `pr` 的载荷补上 `fetchedAt` 并写入 FIFO 缓存。
     fn send_pr_context(
         &self,
         cache_key: &str,
@@ -264,6 +329,8 @@ impl GithubState {
     }
 
     /// `invalidatePrContextCache`.
+    /// 中文说明：缓存键是 `[directory, number]` 的 JSON 序列化，
+    /// `number` 为 `None` 时清空该目录下全部条目。
     fn invalidate_pr_context_cache(&self, directory: &str, number: Option<i64>) {
         self.pr_context_cache
             .lock()
@@ -281,6 +348,8 @@ impl GithubState {
     }
 
     /// `getGitHubUserSummary`: authenticated user + verified email fallback.
+    /// 中文说明：profile 未公开 email 时，从邮箱列表里依次尝试
+    /// "已验证且 primary" → "已验证" 的回退。
     async fn get_github_user_summary(client: &GithubClient) -> Result<Value, GithubError> {
         let me = client.users_get_authenticated().await?;
 
@@ -314,6 +383,7 @@ impl GithubState {
 
     /// Memoized `octokit.rest.users.getAuthenticated()` login (JS
     /// `resolvedAuthLoginPromise`): cached on success, retried after failure.
+    /// 中文说明：并发下可能重复请求，但成功后所有调用共享缓存结果。
     async fn resolve_auth_login(&self, client: &GithubClient) -> Option<String> {
         {
             let memo = self
@@ -349,6 +419,7 @@ impl GithubState {
     }
 
     /// `getRequestedRepo`.
+    /// 中文说明：`owner`/`repo` 任一为空（或缺失）即视为未指定。
     fn requested_repo(query: &HashMap<String, String>) -> Option<RepoRef> {
         let owner = query
             .get("owner")
@@ -373,6 +444,8 @@ impl GithubState {
     }
 
     /// `resolveRepoForRequest`.
+    /// 中文说明：显式仓库与目录仓库不一致时，需出现在 fork 网络内
+    /// 才被接受，否则返回 `None`（调用方回退为无仓库载荷）。
     async fn resolve_repo_for_request(
         &self,
         client: &GithubClient,
@@ -403,16 +476,19 @@ impl GithubState {
 }
 
 /// JSON helper: insert only when `Some` (JS `undefined` keys are omitted).
+/// 中文说明：仅在 `Some` 时插入键值，模拟 JS 对象里 `undefined` 键被省略的行为。
 fn set_opt(map: &mut Map<String, Value>, key: &str, value: Option<Value>) {
     if let Some(value) = value {
         map.insert(key.to_string(), value);
     }
 }
 
+/// 构造 `{"error": message}` 形式的 JSON 错误响应（带指定状态码）。
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
+/// 记录 error 日志并返回 500；message 为空时使用 fallback 文案。
 fn internal_error(message: String, fallback: &str) -> Response {
     tracing::error!("{message}");
     error_response(
@@ -431,6 +507,8 @@ fn internal_error(message: String, fallback: &str) -> Response {
 // ============================================================================
 
 /// GitHub's UI shows only the latest run per (app, name); mirror that.
+/// 中文说明：按 `app id::name` 分组，保留 `started_at` 最新（相同时
+/// id 更大）的那条，供汇总计数不重复。
 fn dedupe_check_runs(check_runs: &[Value]) -> Vec<Value> {
     // (key, started_at_epoch, id, run)
     let mut by_name: Vec<(String, f64, i64, Value)> = Vec::new();
@@ -463,6 +541,8 @@ fn dedupe_check_runs(check_runs: &[Value]) -> Vec<Value> {
 
 /// `Date.parse` for ISO-8601 shapes GitHub returns (all UTC `Z` forms);
 /// 0.0 when unparseable (matching `Date.parse(...) || 0`).
+/// 中文说明：支持 `YYYY-MM-DD`、`[T ]HH:MM[:SS[.fff]][Z|±HH:MM]` 等
+/// GitHub 返回的形态；无法解析时按 JS `Date.parse(...) || 0` 语义返回 0.0。
 fn parse_iso_ms(value: &str) -> f64 {
     let value = value.trim();
     if value.is_empty() {
@@ -554,6 +634,9 @@ fn parse_iso_ms(value: &str) -> f64 {
     seconds as f64 * 1000.0 + millis
 }
 
+/// 把 check-run 列表汇总为计数对象：success/failure/pending（细分
+/// inProgress/queued）、最早的 startedAt（仅未完成 run 参与）与聚合
+/// state（failure > pending > success > unknown）。
 fn summarize_check_runs(check_runs: &[Value]) -> Value {
     let mut success = 0i64;
     let mut failure = 0i64;
@@ -619,6 +702,8 @@ fn summarize_check_runs(check_runs: &[Value]) -> Value {
     summary
 }
 
+/// 把 legacy commit status 列表汇总为与 check-runs 相同的形状；
+/// error 计入 failure，inProgress 复用 pending、queued 恒为 0。
 fn summarize_combined_statuses(statuses: &[Value]) -> Value {
     let mut success = 0i64;
     let mut failure = 0i64;
@@ -656,6 +741,7 @@ fn summarize_combined_statuses(statuses: &[Value]) -> Value {
 // Routes
 // ============================================================================
 
+/// 注册全部 `/api/github/*` 路由并注入共享的 [`GithubState`]。
 pub fn router(ctx: RouterContext) -> Router {
     let state = GithubState::from_ctx(ctx);
     Router::new()
@@ -682,6 +768,7 @@ pub fn router(ctx: RouterContext) -> Router {
 }
 
 /// GET /api/github/auth/status
+/// 中文说明：汇总存储账号与 gh CLI 账号、当前用户与 token 有效性。
 async fn auth_status(State(state): State<Arc<GithubState>>) -> Response {
     match auth_status_inner(&state).await {
         Ok(response) => response,
@@ -689,6 +776,8 @@ async fn auth_status(State(state): State<Arc<GithubState>>) -> Response {
     }
 }
 
+/// auth/status 主体：拼装账号列表（含 gh CLI 虚拟账号），自有 token
+/// 失效时清除存储并返回未连接。
 async fn auth_status_inner(state: &GithubState) -> Result<Response, String> {
     let auth = state.auth.get_github_auth();
     let mut accounts: Vec<Value> = state
@@ -809,6 +898,7 @@ async fn auth_status_inner(state: &GithubState) -> Result<Response, String> {
 }
 
 /// POST /api/github/auth/gh-cli
+/// 中文说明：disabled 标志持久化，gh CLI token 缓存立即清空。
 async fn auth_gh_cli(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let disabled = body
         .get("disabled")
@@ -820,6 +910,7 @@ async fn auth_gh_cli(State(state): State<Arc<GithubState>>, Json(body): Json<Val
 }
 
 /// POST /api/github/auth/start
+/// 中文说明：client id 未配置时直接 400。
 async fn auth_start(State(state): State<Arc<GithubState>>) -> Response {
     let client_id = state.auth.get_github_client_id();
     if client_id.is_empty() {
@@ -848,6 +939,8 @@ async fn auth_start(State(state): State<Arc<GithubState>>) -> Response {
 }
 
 /// POST /api/github/auth/complete
+/// 中文说明：deviceCode 缺失 400；GitHub 返回 error 时透传
+/// `connected:false` + 错误码；成功则拉取用户并持久化 token。
 async fn auth_complete(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let client_id = state.auth.get_github_client_id();
     if client_id.is_empty() {
@@ -932,6 +1025,7 @@ async fn auth_complete(State(state): State<Arc<GithubState>>, Json(body): Json<V
 }
 
 /// Map the user-summary JSON back into the stored `AuthUser` shape.
+/// 中文说明：非对象输入返回 `None`；字段缺失即为 `None`。
 fn auth_user_from_summary(user: &Value) -> Option<AuthUser> {
     if !user.is_object() {
         return None;
@@ -947,6 +1041,7 @@ fn auth_user_from_summary(user: &Value) -> Option<AuthUser> {
 }
 
 /// POST /api/github/auth/activate
+/// 中文说明：gh CLI 账号激活后其余存储账号全部置为非当前。
 async fn auth_activate(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let account_id = body
         .get("accountId")
@@ -1090,12 +1185,14 @@ async fn auth_activate(State(state): State<Arc<GithubState>>, Json(body): Json<V
 }
 
 /// DELETE /api/github/auth
+/// 中文说明：返回 `success:true` 与是否确实移除了凭据。
 async fn auth_delete(State(state): State<Arc<GithubState>>) -> Response {
     let removed = state.auth.clear_github_auth();
     Json(json!({ "success": true, "removed": removed })).into_response()
 }
 
 /// GET /api/github/me
+/// 中文说明：401/403 视为 token 失效——清除凭据后返回 401。
 async fn me(State(state): State<Arc<GithubState>>) -> Response {
     let Some(octokit) = state.get_octokit_or_null() else {
         return error_response(StatusCode::UNAUTHORIZED, "GitHub not connected");
@@ -1111,6 +1208,8 @@ async fn me(State(state): State<Arc<GithubState>>) -> Response {
 }
 
 /// GET /api/github/pr/status
+/// 中文说明：directory+branch 必填；限流/超时时回退任何已缓存数据，
+/// 403/404 返回"已连接但无仓库"的降级载荷。
 async fn pr_status_route(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -1196,6 +1295,8 @@ async fn pr_status_route(
     }
 }
 
+/// pr/status 主体：解析仓库与 PR、汇总 checks（check-runs 优先、
+/// legacy statuses 兜底）、判定协作权限得出 canMerge，组装完整载荷。
 async fn pr_status_inner(
     state: &GithubState,
     directory: &str,
@@ -1376,6 +1477,7 @@ async fn pr_status_inner(
 }
 
 /// POST /api/github/pr/create
+/// 中文说明：参数校验 400、未连接 401、head 校验失败 400、其余 500。
 async fn pr_create(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     match pr_create_inner(&state, &body).await {
         Ok(response) => response,
@@ -1390,14 +1492,21 @@ async fn pr_create(State(state): State<Arc<GithubState>>, Json(body): Json<Value
     }
 }
 
+/// pr/create 的内部错误分类，决定路由层映射到的 HTTP 状态码。
 enum PrCreateError {
+    /// 参数校验失败（缺必填字段、仓库无法解析等）→ 400。
     Validation(String),
+    /// 未连接 GitHub（无可用 token）→ 401。
     Unauthorized,
+    /// head 分支校验失败（常见于 fork PR 无源仓库写权限）→ 400。
     HeadAccess(String),
+    /// 其它内部错误 → 500。
     Internal(String),
 }
 
 /// pr/create's `normalizeBranchRef`.
+/// 归一化分支引用：依次剥离 `refs/heads/`、`heads/`、`remotes/` 前缀，
+/// 再剥离已知的 remote 名前缀（剥离后为空则保留原值）。
 fn normalize_branch_ref(value: &str, remote_names: &std::collections::HashSet<String>) -> String {
     let mut normalized = value.trim().to_string();
     if let Some(stripped) = normalized.strip_prefix("refs/heads/") {
@@ -1423,6 +1532,8 @@ fn normalize_branch_ref(value: &str, remote_names: &std::collections::HashSet<St
     normalized
 }
 
+/// pr/create 主体：解析目标仓库与 head 来源 remote、处理 fork 的
+/// `owner:branch` 形式、调用 pulls/create，并失效相关缓存。
 async fn pr_create_inner(state: &GithubState, body: &Value) -> Result<Response, PrCreateError> {
     let text = |key: &str| {
         body.get(key)
@@ -1621,6 +1732,8 @@ async fn pr_create_inner(state: &GithubState, body: &Value) -> Result<Response, 
 }
 
 /// The shared PR summary shape (`pr/create`, `pr/update` responses).
+/// 中文说明：把 PR 响应裁剪为 create/update 共用的摘要形状，
+/// 状态归一为 merged/closed/open。
 fn pr_summary_json(pr: &Value) -> Value {
     let state = if pr.get("merged_at").map(|v| !v.is_null()).unwrap_or(false) {
         "merged"
@@ -1645,6 +1758,8 @@ fn pr_summary_json(pr: &Value) -> Value {
 }
 
 /// POST /api/github/pr/update
+/// 更新 PR 的标题（可选正文）；401/403/404/422 分别映射为
+/// 未连接/无权限/不存在/校验错误响应。
 async fn pr_update(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let directory = body
         .get("directory")
@@ -1741,6 +1856,8 @@ async fn pr_update(State(state): State<Arc<GithubState>>, Json(body): Json<Value
 }
 
 /// POST /api/github/pr/merge
+/// 按 method（merge/squash/rebase）合并 PR；405/409 冲突时返回
+/// 200 + `merged:false` 载荷而非错误。
 async fn pr_merge(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let directory = body
         .get("directory")
@@ -1793,6 +1910,8 @@ async fn pr_merge(State(state): State<Arc<GithubState>>, Json(body): Json<Value>
 }
 
 /// POST /api/github/pr/ready
+/// 通过 GraphQL `markPullRequestReadyForReview` mutation 把 draft PR
+/// 标记为 ready for review；非 draft 直接幂等返回 ready:true。
 async fn pr_ready(State(state): State<Arc<GithubState>>, Json(body): Json<Value>) -> Response {
     let directory = body
         .get("directory")
@@ -1839,6 +1958,7 @@ async fn pr_ready(State(state): State<Arc<GithubState>>, Json(body): Json<Value>
         return Json(json!({ "ready": true })).into_response();
     }
 
+    // markPullRequestReadyForReview 的 GraphQL mutation（按 Node ID 调用）。
     const MARK_READY_MUTATION: &str = "mutation($pullRequestId: ID!) {\n  markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {\n    pullRequest {\n      id\n      isDraft\n    }\n  }\n}";
     if let Err(error) = octokit
         .graphql(MARK_READY_MUTATION, json!({ "pullRequestId": node_id }))
@@ -1858,6 +1978,8 @@ async fn pr_ready(State(state): State<Arc<GithubState>>, Json(body): Json<Value>
 }
 
 /// GET /api/github/repo/upstream
+/// 检测目录 remote 是否为 fork，并返回 upstream 仓库的默认分支、
+/// head SHA 与本地指向它的 remote 名。
 async fn repo_upstream(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -1950,6 +2072,8 @@ async fn repo_upstream(
 }
 
 /// GET /api/github/repo/branches
+/// 分页拉取仓库全部分支名（每页 100 条，最多 500 页的防御上限），
+/// 返回 `{ "branches": [name...] }`。
 async fn repo_branches(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2003,15 +2127,18 @@ async fn repo_branches(
     Json(json!({ "branches": branches })).into_response()
 }
 
+/// 取查询参数原始值，缺失返回空字符串。
 fn query_string(query: &HashMap<String, String>, key: &str) -> String {
     query.get(key).cloned().unwrap_or_default()
 }
 
+/// 取查询参数并去除首尾空白，缺失返回空字符串。
 fn query_trimmed(query: &HashMap<String, String>, key: &str) -> String {
     query_string(query, key).trim().to_string()
 }
 
 /// JS `Number(req.query.number)`: NaN/0 falsy → validation error later.
+/// 中文说明：空白、非数值、NaN 及 0 都视为 `None`，与 JS 的 falsy 语义一致。
 fn query_number(query: &HashMap<String, String>, key: &str) -> Option<f64> {
     let raw = query_string(query, key);
     if raw.trim().is_empty() {
@@ -2025,6 +2152,7 @@ fn query_number(query: &HashMap<String, String>, key: &str) -> Option<f64> {
 }
 
 /// Number rendered the way JS would interpolate it (integers without `.0`).
+/// 中文说明：整数值去掉 `.0` 后缀，避免路径中出现 `15.0` 这类 JS 不会产生的形式。
 fn number_string(number: f64) -> String {
     if number.fract() == 0.0 {
         format!("{}", number as i64)
@@ -2034,6 +2162,8 @@ fn number_string(number: f64) -> String {
 }
 
 /// GET /api/github/issues/list
+/// 列出 fork 网络内各仓库的开放 issue（过滤 PR）；带 `query` 时改走
+/// 搜索 API 并按仓库限定符限定范围。
 async fn issues_list(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2206,11 +2336,16 @@ async fn issues_list(
     .into_response()
 }
 
+/// 辅助 trait：仓库列表为空时回退压入一个默认仓库（复刻 JS 的
+/// `if (!repos.length)` 逻辑）。
 trait IfEmptyPush {
+    /// `self` 为空时压入 fallback 元组并返回，否则原样返回。
     fn if_empty_push(self, fallback: (String, String, &'static str)) -> Self;
 }
 
+/// 对 `(owner, repo, source)` 三元组向量的 [`IfEmptyPush`] 实现。
 impl IfEmptyPush for Vec<(String, String, &'static str)> {
+    /// 空列表时压入 fallback（通常是目录 origin 仓库）。
     fn if_empty_push(mut self, fallback: (String, String, &'static str)) -> Self {
         if self.is_empty() {
             self.push(fallback);
@@ -2219,6 +2354,8 @@ impl IfEmptyPush for Vec<(String, String, &'static str)> {
     }
 }
 
+/// 把 issue/PR 的 labels 映射为 `{name, color?}` 数组；
+/// 跳过纯字符串标签与空名标签。
 fn map_labels(item: &Value) -> Value {
     let Some(labels) = item.get("labels").and_then(Value::as_array) else {
         return json!([]);
@@ -2246,6 +2383,8 @@ fn map_labels(item: &Value) -> Value {
 }
 
 /// GET /api/github/issues/get
+/// 获取单个 issue 详情（显式 `owner/repo` 需在网络内校验通过）；
+/// 对 PR 返回 400 "Not a GitHub issue"。
 async fn issues_get(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2314,6 +2453,7 @@ async fn issues_get(
 }
 
 /// GET /api/github/issues/comments
+/// 列出指定 issue 的评论，映射为前端使用的精简形状。
 async fn issues_comments(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2349,6 +2489,8 @@ async fn issues_comments(
     }
 }
 
+/// 把评论数组映射为 `{id,url,body,createdAt,updatedAt,author}` 列表，
+/// 非 JSON 数组输入返回空数组。
 fn map_issue_comments(result: &Value) -> Value {
     Value::Array(
         result
@@ -2375,6 +2517,8 @@ fn map_issue_comments(result: &Value) -> Value {
 }
 
 /// GET /api/github/pulls/list
+/// 列出 fork 网络内各仓库的开放 PR；带 `query` 时走搜索 API，
+/// 再按编号逐个拉取完整 PR 详情。
 async fn pulls_list(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2605,6 +2749,8 @@ async fn pulls_list(
 }
 
 /// GET /api/github/pulls/context
+/// 获取 PR 的完整上下文（详情、两类评论、文件、checks 摘要，
+/// 可选 diff 与 check 明细）；带 30 秒路由级缓存。
 async fn pulls_context(
     State(state): State<Arc<GithubState>>,
     Query(query): Query<HashMap<String, String>>,
@@ -2676,6 +2822,8 @@ async fn pulls_context(
     }
 }
 
+/// 把 PR 响应裁剪为 pulls/context 使用的详细形状（含 headRepo 完整性
+/// 校验、body 与创建/更新时间）。
 fn pr_context_pr_json(pr_data: &Value) -> Value {
     let merged_state = if pr_data
         .get("merged")
@@ -2727,6 +2875,9 @@ fn pr_context_pr_json(pr_data: &Value) -> Value {
     })
 }
 
+/// pulls/context 主体：解析目标仓库后拉取 PR、issue/review 评论与文件，
+/// 汇总 checks（可选 Actions job 步骤与失败 run 的 annotations），
+/// 可选附上 diff，最后经缓存覆写返回。
 #[allow(clippy::too_many_arguments)]
 async fn pulls_context_inner(
     state: &GithubState,
@@ -3065,6 +3216,7 @@ async fn pulls_context_inner(
 }
 
 /// `/actions/runs/(\d+)(?:/job/(\d+))?` from a check-run `details_url`.
+/// 中文说明：仅识别 GitHub Actions 的 URL 形态，非数字或非正 id 返回 `None`。
 fn parse_actions_details_url(details_url: &str) -> Option<(i64, Option<i64>)> {
     let position = details_url.find("/actions/runs/")?;
     let rest = &details_url[position + "/actions/runs/".len()..];
@@ -3079,6 +3231,9 @@ fn parse_actions_details_url(details_url: &str) -> Option<(i64, Option<i64>)> {
     };
     Some((run_id, job_id))
 }
+/// 单元测试：聚合函数的变换规则、各路由的响应形状与状态码映射、
+/// 缓存复用与限流降级；全部通过注入 fake transport / form poster /
+/// gate 完成，不访问真实 GitHub。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3089,7 +3244,9 @@ mod tests {
 
     // ---- fixtures & helpers -------------------------------------------------
 
+    /// 创建唯一的临时目录（tag + 进程号 + 时间戳 + 计数器），先清理再新建。
     fn temp_dir(tag: &str) -> PathBuf {
+        // 并发计数器：保证并发测试下临时目录名不冲突。
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
@@ -3102,6 +3259,7 @@ mod tests {
         dir
     }
 
+    /// 构造 status 200、JSON 内容的 transport 成功结果。
     fn json_ok(body: Value) -> Result<GithubResponse, GithubError> {
         Ok(GithubResponse {
             status: 200,
@@ -3113,6 +3271,7 @@ mod tests {
         })
     }
 
+    /// 构造指定状态码的 [`GithubError`]，message 取响应体的 `message` 字段。
     fn json_error(status: u16, body: Value) -> Result<GithubResponse, GithubError> {
         let response = GithubResponse {
             status,
@@ -3136,9 +3295,11 @@ mod tests {
 
     /// A fake transport answering from a route table keyed by
     /// `(method, path)` with optional query matching.
+    /// fake transport 的应答函数类型：按请求返回成功响应或错误。
     type Responder =
         Box<dyn Fn(&GithubRequest) -> Result<GithubResponse, GithubError> + Send + Sync>;
 
+    /// 用应答函数构造同步应答的 [`GithubClient`]。
     fn client_with(responder: Responder) -> GithubClient {
         GithubClient::with_transport(Arc::new(move |req: GithubRequest| {
             let result = responder(&req);
@@ -3146,6 +3307,7 @@ mod tests {
         }))
     }
 
+    /// 同 [`client_with`]，但把每次 transport 调用计入 `calls` 计数器。
     fn counting_client(calls: Arc<AtomicI64>, responder: Responder) -> GithubClient {
         GithubClient::with_transport(Arc::new(move |req: GithubRequest| {
             calls.fetch_add(1, Ordering::SeqCst);
@@ -3154,6 +3316,7 @@ mod tests {
         }))
     }
 
+    /// 组装带 fake transport 的测试状态（真实临时目录 + 独立限流门）。
     fn make_state(tag: &str, responder: Responder) -> (Arc<GithubState>, PathBuf) {
         let dir = temp_dir(tag);
         let gate = Arc::new(RateLimitGate::new());
@@ -3169,6 +3332,7 @@ mod tests {
         (state, dir)
     }
 
+    /// 读取响应体并解析为 JSON（解析失败时得 `null`）。
     async fn body_json(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -3176,6 +3340,7 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     }
 
+    /// 初始化带指定 origin remote 的临时 git 仓库目录。
     fn git_dir(tag: &str, remote_url: &str) -> PathBuf {
         let dir = temp_dir(tag);
         let output = std::process::Command::new("git")
@@ -3195,6 +3360,7 @@ mod tests {
 
     // ---- aggregation transforms on fixture payloads -------------------------
 
+    /// 构造单个 check-run 的 fixture JSON。
     fn check_run(
         id: i64,
         name: &str,
@@ -3212,6 +3378,7 @@ mod tests {
         })
     }
 
+    /// 验证汇总把 in_progress/queued 计入 pending 并记录最早的 startedAt。
     #[test]
     fn summarize_check_runs_counts_pending_split_and_started_at() {
         let runs = vec![
@@ -3252,6 +3419,7 @@ mod tests {
         assert_eq!(summary["startedAt"], "2026-01-01T00:05:00Z");
     }
 
+    /// 验证无失败但有未完成 run 时聚合 state 为 pending。
     #[test]
     fn summarize_check_runs_pending_state_without_failures() {
         let runs = vec![check_run(
@@ -3266,6 +3434,7 @@ mod tests {
         assert_eq!(summary["total"], 1);
     }
 
+    /// 验证按 (app, name) 去重时保留 started_at 最新的 run。
     #[test]
     fn dedupe_check_runs_keeps_latest_run_per_app_and_name() {
         let runs = vec![
@@ -3291,6 +3460,7 @@ mod tests {
         assert_eq!(build["id"], 12); // newer started_at wins
     }
 
+    /// 验证 started_at 相同时以更大的 run id 决胜。
     #[test]
     fn dedupe_check_runs_breaks_ties_by_run_id() {
         let runs = vec![
@@ -3302,6 +3472,7 @@ mod tests {
         assert_eq!(deduped[0]["id"], 9);
     }
 
+    /// 验证 legacy commit status 的 error 计入 failure。
     #[test]
     fn summarize_combined_statuses_maps_error_to_failure() {
         let statuses = json!([
@@ -3320,6 +3491,7 @@ mod tests {
         assert_eq!(summary["total"], 3);
     }
 
+    /// 验证 ISO-8601 各形态（纯日期、毫秒、时区偏移）解析为正确毫秒时间戳。
     #[test]
     fn parse_iso_ms_handles_github_shapes() {
         assert_eq!(parse_iso_ms("1970-01-01T00:00:00Z"), 0.0);
@@ -3329,6 +3501,7 @@ mod tests {
         assert!(parse_iso_ms("not-a-date").is_nan());
     }
 
+    /// 验证 details_url 的 run/job id 解析及非法输入返回 `None`。
     #[test]
     fn parse_actions_details_url_shapes() {
         assert_eq!(
@@ -3342,6 +3515,7 @@ mod tests {
         assert_eq!(parse_actions_details_url("https://example.com/nope"), None);
     }
 
+    /// 验证 refs/heads、heads、remotes 及已知 remote 名前缀的剥离规则。
     #[test]
     fn normalize_branch_ref_strips_prefixes_and_remote_names() {
         let names: std::collections::HashSet<String> = ["origin", "upstream"]
@@ -3359,6 +3533,7 @@ mod tests {
 
     // ---- route shapes via oneshot -------------------------------------------
 
+    /// 构建与生产 router 相同路由表的测试 Router（oneshot 驱动）。
     fn app_for(state: Arc<GithubState>) -> Router {
         Router::new()
             .route("/api/github/auth/status", get(auth_status))
@@ -3383,15 +3558,18 @@ mod tests {
             .with_state(state)
     }
 
+    /// 把应答函数包装成忽略 token 的 [`TransportFactory`]。
     fn fake_transport(responder: Responder) -> TransportFactory {
         let client = client_with(responder);
         Arc::new(move |_token: &str| client.clone())
     }
 
+    /// 新建独立限流门，避免测试间相互影响。
     fn fresh_gate() -> Arc<RateLimitGate> {
         Arc::new(RateLimitGate::new())
     }
 
+    /// 验证未连接 GitHub 时 /me 返回 401 与固定错误文案。
     #[tokio::test]
     async fn me_returns_401_when_not_connected() {
         let (state, _dir) = make_state(
@@ -3415,13 +3593,19 @@ mod tests {
     }
 
     /// Minimal request helper (avoids importing http::Request builders directly).
+    /// 构造测试用 HTTP 请求的最小助手（GET/POST/DELETE + JSON body）。
     struct RequestBuilder {
+        /// HTTP 方法。
         method: axum::http::Method,
+        /// 请求 URI（含查询串）。
         uri: String,
+        /// 可选的 JSON 请求体。
         body: Option<Value>,
     }
 
+    /// [`RequestBuilder`] 的便捷构造与 `http::Request` 转换。
     impl RequestBuilder {
+        /// 构造无 body 的 GET 请求。
         fn get(uri: impl Into<String>) -> Self {
             Self {
                 method: axum::http::Method::GET,
@@ -3429,6 +3613,7 @@ mod tests {
                 body: None,
             }
         }
+        /// 构造带 JSON body 的 POST 请求。
         fn post(uri: impl Into<String>, body: Value) -> Self {
             Self {
                 method: axum::http::Method::POST,
@@ -3436,6 +3621,7 @@ mod tests {
                 body: Some(body),
             }
         }
+        /// 构造无 body 的 DELETE 请求。
         fn delete(uri: impl Into<String>) -> Self {
             Self {
                 method: axum::http::Method::DELETE,
@@ -3443,6 +3629,7 @@ mod tests {
                 body: None,
             }
         }
+        /// 转成 `http::Request`；带 body 时自动设置 JSON content-type。
         fn build(self) -> axum::http::Request<Body> {
             let mut builder = axum::http::Request::builder()
                 .method(self.method)
@@ -3458,6 +3645,7 @@ mod tests {
         }
     }
 
+    /// 验证存有自有 token 时 auth/status 返回 connected:true、账号与 scope 信息。
     #[tokio::test]
     async fn auth_status_reflects_connected_own_token_account() {
         let dir = temp_dir("authstatus");
@@ -3521,6 +3709,7 @@ mod tests {
         assert!(body["ghCli"].get("user").is_none() || body["ghCli"]["user"].is_null());
     }
 
+    /// 验证无任何凭据时 auth/status 返回 connected:false 与空账号列表。
     #[tokio::test]
     async fn auth_status_disconnected_without_tokens() {
         let (state, _dir) = make_state("disconnected", Box::new(|_| json_ok(json!({}))));
@@ -3534,6 +3723,7 @@ mod tests {
         assert_eq!(body["accounts"].as_array().map(Vec::len), Some(0));
     }
 
+    /// 验证 gh-cli 开关写入后回读生效，并同步清空 token 缓存。
     #[tokio::test]
     async fn auth_gh_cli_toggles_disabled_flag() {
         let (state, _dir) = make_state("ghclitoggle", Box::new(|_| json_ok(json!({}))));
@@ -3549,6 +3739,7 @@ mod tests {
         assert_eq!(body["disabled"], true);
     }
 
+    /// 验证 auth/start 返回 device flow 的驼峰化字段（deviceCode 等）。
     #[tokio::test]
     async fn auth_start_returns_device_flow_fields() {
         let dir = temp_dir("authstart");
@@ -3586,6 +3777,8 @@ mod tests {
         assert_eq!(body["scope"], "repo read:org workflow read:user user:email");
     }
 
+    /// 验证 device code 尚未完成授权时 auth/complete 返回
+    /// connected:false 与 `authorization_pending` 状态码。
     #[tokio::test]
     async fn auth_complete_reports_pending_authorization() {
         let dir = temp_dir("authpending");
@@ -3616,6 +3809,7 @@ mod tests {
         assert_eq!(body["error"], "authorization_pending");
     }
 
+    /// 验证 auth/complete 缺少 deviceCode 时返回 400。
     #[tokio::test]
     async fn auth_complete_requires_device_code() {
         let (state, _dir) = make_state("complete400", Box::new(|_| json_ok(json!({}))));
@@ -3628,6 +3822,7 @@ mod tests {
         assert_eq!(body["error"], "deviceCode is required");
     }
 
+    /// 验证 DELETE /auth 清除存储凭据并返回 success:true / removed:true。
     #[tokio::test]
     async fn auth_delete_clears_the_account() {
         let dir = temp_dir("authdelete");
@@ -3652,6 +3847,7 @@ mod tests {
         assert_eq!(body["removed"], true);
     }
 
+    /// 开放 PR 的最小 fixture JSON（含 head 分支、sha 与 head 仓库信息）。
     const PR_FIXTURE: &str = r#"{
         "number": 15,
         "title": "Add feature",
@@ -3678,10 +3874,13 @@ mod tests {
         }
     }"#;
 
+    /// 把 [`PR_FIXTURE`] 解析成 `Value`，供各 pr/status 场景复用。
     fn open_pr_fixture() -> Value {
         serde_json::from_str(PR_FIXTURE).unwrap()
     }
 
+    /// 构造 pr/status 场景的 fake transport：预置仓库元数据、PR 列表/详情、
+    /// check-runs 与协作权限的路由表，并把每次调用计入 `calls`。
     fn pr_status_transport(dir: PathBuf, calls: Arc<AtomicI64>) -> (TransportFactory, PathBuf) {
         let auth = AuthStore::new(dir.clone());
         auth.set_github_auth(
@@ -3742,6 +3941,7 @@ mod tests {
         (transport, dir)
     }
 
+    /// 用给定 transport 与独立限流门组装 pr/status 测试状态。
     fn pr_status_state(transport: TransportFactory, dir: PathBuf) -> Arc<GithubState> {
         GithubState::with_seams(
             dir,
@@ -3753,6 +3953,8 @@ mod tests {
         )
     }
 
+    /// 验证 pr/status 的完整响应形状，以及 TTL 内二次请求命中缓存
+    /// （transport 调用计数不增长）。
     #[tokio::test]
     async fn pr_status_full_shape_and_cache_reuse() {
         let dir = temp_dir("prstatus");
@@ -3810,6 +4012,8 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), calls_after_first);
     }
 
+    /// 与 JS `encodeURIComponent` 等价的百分号编码（额外保留 `/`），
+    /// 用于把目录路径拼进测试查询串。
     fn urlencoding_encode(value: &str) -> String {
         let mut out = String::new();
         for byte in value.bytes() {
@@ -3823,6 +4027,7 @@ mod tests {
         out
     }
 
+    /// 验证 pr/status 缺少 directory 或 branch 时返回 400。
     #[tokio::test]
     async fn pr_status_requires_directory_and_branch() {
         let (state, _dir) = make_state("pr400", Box::new(|_| json_ok(json!({}))));
@@ -3835,6 +4040,7 @@ mod tests {
         assert_eq!(body["error"], "directory and branch are required");
     }
 
+    /// 验证无任何 token 时 pr/status 返回 `connected:false` 而不报错。
     #[tokio::test]
     async fn pr_status_disconnected_without_token() {
         let (state, _dir) = make_state("prdisc", Box::new(|_| json_ok(json!({}))));
@@ -3852,6 +4058,7 @@ mod tests {
         assert_eq!(body["connected"], false);
     }
 
+    /// 验证限流冷却期内且无缓存时 pr/status 返回 503 与固定文案。
     #[tokio::test]
     async fn pr_status_rate_limited_serves_503_without_cache() {
         let dir = temp_dir("prrl");
@@ -3884,6 +4091,7 @@ mod tests {
         assert_eq!(body["error"], "GitHub rate limited");
     }
 
+    /// 验证 pr/update 把 422 响应的 message 与 errors[0] 用 `·` 拼接后返回。
     #[tokio::test]
     async fn pr_update_maps_422_to_joined_message() {
         let dir = temp_dir("pr422");
@@ -3930,6 +4138,7 @@ mod tests {
         assert_eq!(body["error"], "Validation Failed · title is too long");
     }
 
+    /// 验证 pr/merge 的 409 冲突映射为 200 + `merged:false` 载荷而非错误。
     #[tokio::test]
     async fn pr_merge_conflict_maps_to_merged_false() {
         let dir = temp_dir("prmerge409");
@@ -3968,6 +4177,7 @@ mod tests {
         assert_eq!(body["message"], "Pull Request is not mergeable");
     }
 
+    /// 验证 pr/create 缺少必填字段（directory/title/head/base）时返回 400。
     #[tokio::test]
     async fn pr_create_validates_required_fields() {
         let (state, _dir) = make_state("prcreate400", Box::new(|_| json_ok(json!({}))));
@@ -3986,6 +4196,7 @@ mod tests {
         assert_eq!(body["error"], "directory, title, head, base are required");
     }
 
+    /// 验证 repo/branches 按页拉取分支名，直到出现不满页（<100）时停止。
     #[tokio::test]
     async fn repo_branches_paginates_until_short_page() {
         let dir = temp_dir("branches");
@@ -4034,6 +4245,8 @@ mod tests {
         assert_eq!(pages.load(Ordering::SeqCst), 2);
     }
 
+    /// 验证 pulls/context 的完整载荷形状（评论/文件/checks 摘要），
+    /// 以及 TTL 内二次请求命中缓存（transport 调用数不增长）。
     #[tokio::test]
     async fn pulls_context_caches_within_ttl() {
         let dir = temp_dir("ctxcache");
@@ -4121,6 +4334,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), calls_after_first);
     }
 
+    /// 验证 `diff=1` 时 pulls/context 响应携带 `diff` 字段。
     #[tokio::test]
     async fn pulls_context_includes_diff_when_requested() {
         let dir = temp_dir("ctxdiff");
@@ -4194,6 +4408,7 @@ mod tests {
         assert_eq!(body["diff"], "diff --git a/x b/x");
     }
 
+    /// 验证 auth/activate 对未知 accountId 返回 404。
     #[tokio::test]
     async fn auth_activate_unknown_account_is_404() {
         let (state, _dir) = make_state("activate404", Box::new(|_| json_ok(json!({}))));
@@ -4212,6 +4427,7 @@ mod tests {
         assert_eq!(body["error"], "GitHub account not found");
     }
 
+    /// 验证 issues/get 对 PR（带 pull_request 字段）返回 400 "Not a GitHub issue"。
     #[tokio::test]
     async fn issues_get_rejects_pull_requests() {
         let dir = temp_dir("issuepr");
@@ -4252,6 +4468,7 @@ mod tests {
         assert_eq!(body["error"], "Not a GitHub issue");
     }
 
+    /// 验证 counting_client 对每次 API 调用递增计数器。
     #[tokio::test]
     async fn counting_client_counts_transport_calls() {
         let calls = Arc::new(AtomicI64::new(0));

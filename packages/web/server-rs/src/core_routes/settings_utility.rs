@@ -5,6 +5,13 @@
 //! Theme discovery reads `~/.config/ompchamber/themes` (JS
 //! `OMPCHAMBER_USER_THEMES_DIR` — deliberately NOT the data dir) with the
 //! 512 KiB per-file cap (`MAX_THEME_JSON_BYTES`).
+//! opencode/core-routes.js 的 `registerSettingsUtilityRoutes` 移植：
+//! `GET /api/config/themes`（theme-runtime.js）与
+//! `POST /api/config/reload`（`refreshOpenCodeAfterConfigChange` 子集）。
+//!
+//! 主题发现读取 `~/.config/ompchamber/themes`（JS 的
+//! `OMPCHAMBER_USER_THEMES_DIR`——刻意不落在 data 目录），单文件
+//! 512 KiB 上限。
 
 use std::path::{Path, PathBuf};
 
@@ -16,14 +23,18 @@ use serde_json::Value;
 
 use crate::context::RouterContext;
 
+/// 单个主题 JSON 文件的大小上限，超限直接跳过，防止读入超大文件。
 const MAX_THEME_JSON_BYTES: u64 = 512 * 1024;
 
 /// `index.js` `OMPCHAMBER_USER_THEMES_DIR` (`~/.config/ompchamber/themes` on
 /// every platform — independent of `OMPCHAMBER_DATA_DIR`).
+/// index.js 的 `OMPCHAMBER_USER_THEMES_DIR`：各平台统一为
+/// `~/.config/ompchamber/themes`，与 `OMPCHAMBER_DATA_DIR` 无关。
 fn user_themes_dir() -> Option<PathBuf> {
     crate::config::home_dir().map(|home| home.join(".config").join("ompchamber").join("themes"))
 }
 
+/// 值是 trim 后非空的字符串才返回 true。
 fn is_non_empty_string(value: Option<&Value>) -> bool {
     value
         .and_then(|value| value.as_str())
@@ -33,6 +44,10 @@ fn is_non_empty_string(value: Option<&Value>) -> bool {
 
 /// `normalizeThemeJson` (theme-runtime.js): validate the metadata/colors shape
 /// and normalize the metadata block; extra top-level fields pass through.
+/// theme-runtime.js 的 `normalizeThemeJson`：校验 metadata/colors 的
+/// 必填形态（全部必需颜色键、variant ∈ {light,dark}、id/name 非空），
+/// 归一 metadata 块（trim、补默认 description/version、清洗 tags）；
+/// 顶层额外字段透传，不合法返回 None。
 pub(crate) fn normalize_theme_json(raw: &Value) -> Option<Value> {
     let obj = raw.as_object()?;
     let metadata = obj.get("metadata")?.as_object()?;
@@ -164,6 +179,9 @@ pub(crate) fn normalize_theme_json(raw: &Value) -> Option<Value> {
 
 /// `readCustomThemesFromDisk` (theme-runtime.js): every failure degrades to
 /// an empty list (a missing dir is fine); per-file failures skip the file.
+/// theme-runtime.js 的 `readCustomThemesFromDisk`：目录缺失或不可读
+/// 一律降级为空列表；逐文件跳过非 .json、非普通文件、超大、解析失败、
+/// 校验失败与重复 id 的条目，其余按文件名排序收集。
 pub(crate) fn read_custom_themes_from_disk(themes_dir: &Path, max_bytes: u64) -> Vec<Value> {
     let entries = match std::fs::read_dir(themes_dir) {
         Ok(entries) => entries,
@@ -220,6 +238,7 @@ pub(crate) fn read_custom_themes_from_disk(themes_dir: &Path, max_bytes: u64) ->
 }
 
 /// `GET /api/config/themes`.
+/// `GET /api/config/themes`：返回用户主题目录下收集到的主题列表。
 pub(crate) async fn themes() -> Response {
     let themes = user_themes_dir()
         .map(|dir| read_custom_themes_from_disk(&dir, MAX_THEME_JSON_BYTES))
@@ -231,6 +250,8 @@ pub(crate) async fn themes() -> Response {
         .into_response()
 }
 
+/// config-mutation-response.js 的 `buildExternalManualRestartResponse`：
+/// 操作成功但需用户手动重启的响应体。
 fn external_manual_restart_response(message: &str) -> Value {
     // `buildExternalManualRestartResponse` (config-mutation-response.js).
     serde_json::json!({
@@ -246,6 +267,10 @@ fn external_manual_restart_response(message: &str) -> Value {
 /// config until the user restarts it, so report an honest manual restart.
 /// Managed engine restart is a documented engine.rs gap; here the route
 /// verifies the engine is ready and reports the JS reload response.
+/// `POST /api/config/reload`：应用累积的延迟 OpenCode 配置变更。
+/// External 引擎下运行中的服务沿用启动时缓存的配置，需用户自行重启，
+/// 因此如实返回手动重启提示；托管引擎的重启是 engine.rs 已记录的
+/// 缺口，这里只等待引擎就绪（12 秒）并返回 JS 形态的 reload 响应。
 pub(crate) async fn reload(State(ctx): State<RouterContext>) -> Response {
     tracing::info!("[Server] Manual configuration reload requested");
     let external = ctx.engine.mode() == crate::engine::EngineModeKind::External;
@@ -284,6 +309,7 @@ pub(crate) async fn reload(State(ctx): State<RouterContext>) -> Response {
     }
 }
 
+/// settings_utility 路由与主题归一的测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +319,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request as HttpRequest};
 
+/// 一份字段齐全的合法主题 JSON 样例（含待归一的空白 id 与非法 tags 项）。
     fn valid_theme_json() -> Value {
         serde_json::json!({
             "metadata": { "id": "  midnight ", "name": "Midnight", "variant": "dark",
@@ -319,6 +346,8 @@ mod tests {
         })
     }
 
+/// 验证合法主题被接受且 metadata 被归一（trim id、默认 version、
+/// 过滤空 tags），顶层额外字段保留。
     #[test]
     fn normalize_theme_json_accepts_and_normalizes_valid_theme() {
         let normalized = normalize_theme_json(&valid_theme_json()).expect("valid theme");
@@ -332,6 +361,7 @@ mod tests {
         assert_eq!(normalized["customExtra"], "kept");
     }
 
+/// 验证缺颜色键、非法 variant、空 name、缺块的主题一律被拒绝。
     #[test]
     fn normalize_theme_json_rejects_incomplete_themes() {
         let mut missing_color = valid_theme_json();
@@ -352,6 +382,8 @@ mod tests {
         assert!(normalize_theme_json(&Value::Null).is_none());
     }
 
+/// 验证目录扫描跳过非法、重复 id、损坏 JSON、非 JSON 文件与子目录，
+/// 只保留首个合法主题。
     #[test]
     fn read_custom_themes_skips_invalid_and_duplicate_entries() {
         let dir = temp_dir("themes");
@@ -388,6 +420,7 @@ mod tests {
         assert_eq!(themes[0]["metadata"]["name"], "Midnight");
     }
 
+/// 验证超过 max_bytes 的主题文件被跳过，恰好等于上限时保留。
     #[test]
     fn read_custom_themes_enforces_size_cap() {
         let dir = temp_dir("themes-size");
@@ -406,6 +439,7 @@ mod tests {
         assert_eq!(themes.len(), 1);
     }
 
+/// 验证主题目录缺失时安全返回空列表。
     #[test]
     fn read_custom_themes_missing_dir_is_empty() {
         let themes = read_custom_themes_from_disk(
@@ -415,6 +449,7 @@ mod tests {
         assert!(themes.is_empty());
     }
 
+/// 验证 External 引擎的 reload 响应要求手动重启（与 JS 形态逐字段一致）。
     #[tokio::test]
     async fn reload_external_engine_requires_manual_restart() {
         let ctx = test_ctx(
@@ -442,6 +477,7 @@ mod tests {
         );
     }
 
+/// 验证真实用户主题目录收集结果的每条都带 metadata（只断言形态）。
     #[test]
     fn themes_route_shape() {
         // The handler reads the real user themes dir; assert only the shape.
@@ -451,6 +487,7 @@ mod tests {
         assert!(themes.iter().all(|theme| theme.get("metadata").is_some()));
     }
 
+/// 验证手动重启响应体的四个字段形态。
     #[test]
     fn external_manual_restart_response_matches_config_mutation_shape() {
         let response = external_manual_restart_response("msg");

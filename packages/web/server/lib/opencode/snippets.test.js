@@ -1,3 +1,10 @@
+/**
+ * snippets 模块的单元测试。
+ *
+ * 覆盖：snippet/snippets 两个目录的加载与优先级、frontmatter 别名与
+ * 描述、同名冲突时规范名优先于别名、增删改、递归展开（prepend/append
+ * 块）以及对非法 snippet 名称的拒绝。每个用例使用独立的临时项目目录。
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
@@ -11,14 +18,17 @@ import {
   updateSnippet,
 } from './snippets.js';
 
+// 每个用例独占的临时项目目录（beforeEach 创建、afterEach 递归删除）
 let projectDir;
 
+/** 在临时项目目录内写出 snippet markdown 文件（自动创建父目录）。 */
 function writeSnippet(relativePath, content) {
   const filePath = path.join(projectDir, relativePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, 'utf8');
 }
 
+// snippet 的加载、解析、冲突优先级、增删改与展开行为
 describe('snippets', () => {
   beforeEach(() => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-snippets-'));

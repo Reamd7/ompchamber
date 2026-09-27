@@ -1,3 +1,10 @@
+/**
+ * Linear 会话状态评论（status.js）的测试套件。
+ *
+ * 验证 origin 校验与公网可达判定、评论开关关闭时跳过、仅作者可达的 origin 跳过、
+ * 去重记录裁剪、评论文案的 markdown 链接形态（含 issue 标题带括号时的稳健性）、
+ * 未连接返回 disconnected，以及 started/completed 只发一次与先后顺序约束。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -12,13 +19,16 @@ import {
   readSessionOrigin,
 } from './status.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-status-'));
 
+/** 把对象包装成 JSON Response，模拟 Linear GraphQL 的 fetch 返回。 */
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 测试数据：一条标准的 Linear issue GraphQL 节点。 */
 const issueNode = {
   id: 'issue-uuid-1',
   identifier: 'ENG-12',
@@ -31,6 +41,7 @@ const issueNode = {
   comments: { nodes: [] },
 };
 
+/** 构造 stub 的 fetch：按 GraphQL 查询名分流返回 issue 详情与评论创建结果。 */
 function stubLinearGraphql({ commentId = 'comment-1' } = {}) {
   return vi.fn(async (_url, options) => {
     const body = JSON.parse(options.body);
@@ -53,6 +64,7 @@ function stubLinearGraphql({ commentId = 'comment-1' } = {}) {
   });
 }
 
+/** 会话状态评论的发布条件、去重与文案构造行为。 */
 describe('Linear session status comments', () => {
   let dataDir;
   let previousDataDir;

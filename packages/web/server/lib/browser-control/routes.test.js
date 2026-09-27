@@ -1,3 +1,11 @@
+/**
+ * 浏览器控制结果路由 routes.js 的测试套件。
+ *
+ * 刻意跑在真实的 express 应用上：本服务的 body 解析按路由挂载，漏挂
+ * 的路由注册时不出错、只在客户端真正 POST 时失败——对 agent 表现为无
+ * 来由的超时。这里覆盖结果回传、大快照的 body 上限、失败传播与未知
+ * id 的宽容处理。
+ */
 import { describe, expect, it } from 'vitest';
 import express from 'express';
 import request from 'supertest';
@@ -10,6 +18,10 @@ import { registerBrowserControlRoutes } from './routes.js';
  * parsing per route, so a route that forgets it still *registers* fine and only
  * fails when a client posts to it — which surfaces to the agent as an
  * unexplained timeout, nowhere near the cause.
+ */
+/**
+ * 组装被测应用（中文补充）：记录型 emitRequest 桩 + 真实路由注册；
+ * listeners 控制有多少客户端在听。返回 { app, broker, emitted }。
  */
 const createApp = ({ listeners = 1 } = {}) => {
   const emitted = [];
@@ -30,6 +42,7 @@ const createApp = ({ listeners = 1 } = {}) => {
   return { app, broker, emitted };
 };
 
+// 结果回传路由：JSON 解析、成功与失败的传播、超时后的迟到响应与坏请求。
 describe('browser control result route', () => {
   it('parses a posted JSON body and resolves the waiting request', async () => {
     const { app, broker, emitted } = createApp();

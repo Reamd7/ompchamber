@@ -9,6 +9,11 @@
 //! task and are keyed by repository + source — a client that comes back
 //! attaches to the running job instead of starting a second one, and
 //! cancelling is an explicit request rather than a side effect of leaving.
+//!
+//! 中文说明：walkthrough 生成始终由用户显式发起、绝不自动触发（每次生成
+//! 都要花 token）。生成任务跑在独立的 tokio task 上，以「仓库根 + source」
+//! 为键注册：客户端回来时附着到运行中的任务而不是再起一个；取消是显式
+//! 请求，而不是断开连接的副作用。
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -38,10 +43,15 @@ use super::store::{CacheEntry, Pointer, Store, build_cache_key};
 /// wastes real money and minutes, while an over-long deadline only holds a
 /// job slot, so this errs long. It scales because a three-hunk edit and a
 /// 500-hunk pull request have no business sharing a deadline.
+/// 基础超时（毫秒）：即使 diff 很小也至少给模型这么多时间。
 pub const GENERATION_TIMEOUT_BASE_MS: u64 = 120_000;
+/// 每个 hunk 追加的超时（毫秒）：diff 越大，模型需要的时间越长。
 pub const GENERATION_TIMEOUT_PER_HUNK_MS: u64 = 1_000;
+/// 超时上限（毫秒）：防止超大 diff 无限期占住任务槽位。
 pub const GENERATION_TIMEOUT_MAX_MS: u64 = 900_000;
 
+/// 依据 hunk 数量计算生成超时：基础值按 hunk 数线性增长，并夹在上限内；
+/// 负的 hunk 数按 0 计。
 pub fn generation_timeout_ms(hunk_count: i64) -> u64 {
     GENERATION_TIMEOUT_MAX_MS
         .min(GENERATION_TIMEOUT_BASE_MS + hunk_count.max(0) as u64 * GENERATION_TIMEOUT_PER_HUNK_MS)
@@ -58,19 +68,24 @@ pub fn generation_timeout_ms(hunk_count: i64) -> u64 {
 // The reserve subtracted from the input budget is the same number, always:
 // ask for more than was reserved and a large diff overruns the context
 // mid-answer, which surfaces as a truncation bug rather than a budgeting one.
+/// 输出 token 下限：本功能历来固定申请的数量，也是从输入预算中扣除的储备值。
 pub const MIN_OUTPUT_TOKENS: i64 = 24_000;
 // A ceiling, because the reserve is taken out of the input allowance: a model
 // that would let us ask for 384k tokens of answer would also let us spend a
 // third of a million tokens of context reserving them, and no walkthrough
 // needs that much thinking.
+/// 输出 token 上限：储备从输入预算里扣，要得太多反而挤占 diff 的空间。
 pub const MAX_OUTPUT_TOKENS: i64 = 96_000;
 // Above this share of the context, the reserve starts costing more diff than
 // the extra room is worth.
+/// 输出预算占上下文窗口的比例上限；超过该份额，储备就开始得不偿失。
 pub const OUTPUT_CONTEXT_SHARE: f64 = 0.25;
 
 /// Answer allowance for a specific model: as much as it admits it can emit,
 /// bounded by a share of its context and never below what this feature always
 /// asked for.
+/// 中文补充：先取「上下文份额」与上限的较小值，再与下限取大，最后被模型
+/// 自报的输出上限截断；返回值同时就是发给模型的 max_output_tokens。
 pub fn walkthrough_output_tokens(context_tokens: i64, output_token_limit: Option<i64>) -> i64 {
     let context = context_tokens.max(0);
     let wanted = MAX_OUTPUT_TOKENS
@@ -85,6 +100,8 @@ pub fn walkthrough_output_tokens(context_tokens: i64, output_token_limit: Option
 }
 
 /// The reserve rule handed to model resolution.
+/// 中文补充：把该规则交给模型解析，保证「预留的储备」与「请求的上限」
+/// 始终是同一个数字。
 fn output_reserve_rule() -> Arc<dyn Fn(i64, Option<i64>) -> i64 + Send + Sync> {
     Arc::new(|context_tokens, output_token_limit| {
         walkthrough_output_tokens(context_tokens, output_token_limit)
@@ -92,6 +109,7 @@ fn output_reserve_rule() -> Arc<dyn Fn(i64, Option<i64>) -> i64 + Send + Sync> {
 }
 
 /// JS `.length` counts UTF-16 code units; readiness is measured in that unit.
+/// 中文补充：用于 readiness 的字符预算（prompt + system 的长度）。
 pub fn utf16_len(text: &str) -> i64 {
     text.encode_utf16().count() as i64
 }
@@ -100,15 +118,22 @@ pub fn utf16_len(text: &str) -> i64 {
 /// can actually wait on are named: building the digest and reading the cache
 /// take single-digit milliseconds, so they get no rows. `retrying` appears
 /// only when a provider rejects the schema and the prompt-side fallback runs.
+/// 中文补充：阶段由任务自身在关键节点推进，轮询接口只读内存。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
+/// 收集 diff、构建 digest 的阶段。
     Collecting,
+/// 已发出首次（带 schema）模型请求。
     Asking,
+/// provider 拒绝 schema 后，改走 prompt 内嵌形状说明的重试。
     Retrying,
+/// 模型已返回，正在解析、归一化并写入缓存。
     Assembling,
 }
 
+/// 阶段与协议字符串的映射。
 impl Stage {
+/// 返回该阶段在前端轮询接口中的字符串标识。
     pub fn as_str(self) -> &'static str {
         match self {
             Stage::Collecting => "collecting",
@@ -119,33 +144,50 @@ impl Stage {
     }
 }
 
+/// 任务结果句柄：`Arc` 让多个等待者廉价克隆同一份 `Result`。
 type JobOutcome = Arc<Result<Value, WalkthroughError>>;
+/// `Shared` 包装的 boxed future：同一任务可被多个请求同时 await，结果克隆给每个等待者。
 type SharedJobFuture = futures::future::Shared<futures::future::BoxFuture<'static, JobOutcome>>;
 
+/// 一次进行中的生成任务：取消信号、当前阶段与共享结果 future。
 struct Job {
+/// 显式取消信号；仅 `cancelGeneration` 请求会触发。
     cancel: CancelSignal,
+/// 当前阶段，供轮询接口读取。
     stage: Mutex<Stage>,
+/// 共享结果 future；后到的请求直接 await 它以附着到本任务。
     result: SharedJobFuture,
 }
 
 /// The walkthrough service: job registry, schema-refusal memory, and the
 /// store, wired to the git/small-model/PR seams.
+/// 中文补充：三个接缝（git / 小模型 / PR diff）均以闭包注入，测试可在
+/// 不启动网络与真实 git 的情况下驱动完整流程。
 pub struct WalkthroughService {
+    /// 持久化存储：指针与缓存条目。
     store: Store,
+    /// 数据目录；读取 walkthrough 模型覆盖设置时使用。
     data_dir: PathBuf,
+    /// git 接缝：仓库根解析与各类 diff。
     git: GitDeps,
+    /// 小模型接缝：模型描述与文本生成。
     small_model: SmallModelSeam,
+    /// PR diff 接缝；`None` 表示当前环境不支持 PR diff。
     pr_diff: Option<PrDiffFn>,
     /// JS module-level `jobs` map. Keyed by `repoRoot\0sourceKey`.
+    /// 中文补充：任务结束即从表中移除，重连客户端据此判断是否还有进度可显示。
     jobs: Mutex<HashMap<String, Arc<Job>>>,
     /// JS module-level `schemaRefusedBy` set: providers that answered a
     /// schema request with a 4xx. Process-lifetime only, on purpose — a
     /// provider that gains structured-output support should not need a
     /// settings change to be tried again, and a restart is enough.
+    /// 中文补充：避免对已知会拒绝的 provider 反复付出注定失败的一次调用。
     schema_refused_by: Mutex<HashSet<String>>,
 }
 
+/// 服务的全部编排逻辑：读取、生成、取消、阶段上报与后台清理。
 impl WalkthroughService {
+    /// 构造服务：初始化 store、任务注册表与 schema 拒绝记忆。
     pub fn new(
         data_dir: PathBuf,
         git: GitDeps,
@@ -163,14 +205,17 @@ impl WalkthroughService {
         })
     }
 
+    /// 暴露内部 store，供路由层直接读写指针/缓存（如 housekeeping）。
     pub fn store(&self) -> &Store {
         &self.store
     }
 
+    /// 拼接任务注册键：`repo_root` 与 `source_key` 以 NUL 分隔，避免歧义。
     fn job_key(repo_root: &str, source_key: &str) -> String {
         format!("{repo_root}\0{source_key}")
     }
 
+    /// 更新指定任务的阶段；任务可能已被移除，届时静默忽略。
     fn set_stage(&self, job_key: &str, stage: Stage) {
         let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(job) = jobs.get(job_key) {
@@ -181,6 +226,7 @@ impl WalkthroughService {
     /// `getGenerationStage`: current stage of a running generation, or `None`
     /// when nothing is running. Reads memory only — no git, no network — so
     /// it is cheap to poll.
+    /// 中文补充：只读内存（无 git、无网络），可被前端高频轮询。
     pub fn generation_stage(&self, repo_root: &str, source_key: &str) -> Option<&'static str> {
         let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         jobs.get(&Self::job_key(repo_root, source_key))
@@ -190,6 +236,7 @@ impl WalkthroughService {
     /// `isGenerating`: whether a generation is currently running for a
     /// source. Lets a reconnecting client show progress instead of an empty
     /// panel.
+    /// 中文补充：键与生成任务一致，重连后据此决定显示进度还是空面板。
     pub fn is_generating(&self, repo_root: &str, source_key: &str) -> bool {
         let jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         jobs.contains_key(&Self::job_key(repo_root, source_key))
@@ -197,6 +244,7 @@ impl WalkthroughService {
 
     /// `getRepositoryRootFor`: resolve the pair the job registry is keyed by,
     /// for callers that need to look a job up without doing any diff work.
+    /// 中文补充：不做任何 diff 工作，只解析 source 并询问 git 仓库根。
     pub async fn repository_root_for(
         &self,
         directory: &str,
@@ -211,6 +259,7 @@ impl WalkthroughService {
 
     /// `cancelWalkthroughGeneration`: stop a running generation. Only an
     /// explicit request does this — leaving the page does not.
+    /// 中文补充：返回 `{"cancelled": true|false}` 表示是否真的取消了任务。
     pub async fn cancel_generation(
         &self,
         directory: &str,
@@ -235,6 +284,7 @@ impl WalkthroughService {
     /// setting, which in turn outranks the small-model chain — the user
     /// picking a roomier model for a risky change is the most specific intent
     /// there is.
+    /// 中文补充：解析结果缓存于 ModelDescription，输出储备已按规则扣减。
     async fn resolve_model(
         &self,
         directory: &str,
@@ -254,6 +304,7 @@ impl WalkthroughService {
 
     /// `loadCurrentDiff`: current diff for a source, parsed into files and
     /// hunks.
+    /// 中文补充：section 组装与 digest 构建遵循 sources/digest 模块规则。
     async fn load_current_diff(
         &self,
         directory: &str,
@@ -266,6 +317,8 @@ impl WalkthroughService {
 
     /// `getWalkthrough`: read the last walkthrough for a source, resolved
     /// against the current diff. Never generates and never spends tokens.
+    /// 中文补充：优先返回「本次请求的模型+语言」对应的缓存条目，指针仅作
+    /// 回退；命中后指针会被更新为本次读取的条目。
     pub async fn get_walkthrough(
         &self,
         directory: &str,
@@ -382,6 +435,8 @@ impl WalkthroughService {
 
     /// `computeReadiness`: whether the resolved model can do this job,
     /// computed from a digest the caller already built.
+    /// 中文补充：readiness 用与真实生成相同的 prompt（含语言指令）测算字符
+    /// 预算，保证回答的就是即将发出的那次请求。
     fn compute_readiness(
         &self,
         built: &DigestBuild,
@@ -466,6 +521,8 @@ impl WalkthroughService {
     /// which also means returning to a previous state of the working tree
     /// costs nothing. A concurrent call for the same source attaches to the
     /// running job.
+    /// 中文补充：命中缓存时同步刷新指针并附带陈旧度信息；未命中时任务在
+    /// 独立 task 中运行，本 future 与任务共享同一结果。
     pub async fn generate_walkthrough(
         self: &Arc<Self>,
         directory: &str,
@@ -564,6 +621,9 @@ impl WalkthroughService {
             Err(error) => Err(error.clone()),
         }
     }
+    /// 生成任务主体：模型与登录校验 → digest 与缓存判断 → prompt 构建 →
+    /// schema 尝试（必要时降级重试）→ 解析归一化 → 写缓存与指针。
+    /// 任何一步失败都以结构化错误返回，任务结束时会注销注册。
     #[allow(clippy::too_many_arguments)]
     async fn run_generation(
         &self,
@@ -876,6 +936,7 @@ impl WalkthroughService {
 
 /// `serializeHunks`: the client's hunk index (id → patch) alongside the
 /// walkthrough, so the client never recomputes ids.
+/// 中文补充：hunk id 是内容哈希，客户端用它对照 walkthrough 锚点。
 fn serialize_hunks(files: &[super::digest::DigestFile]) -> Value {
     let hunks: Vec<Value> = files
         .iter()
@@ -906,6 +967,8 @@ fn serialize_hunks(files: &[super::digest::DigestFile]) -> Value {
 /// content, so an anchor that no longer resolves is proof that the code it
 /// described has changed or gone. Anchors that still resolve are still
 /// accurate.
+/// 中文补充：同时计算「未被任何 stop 覆盖的 hunk」，让读者始终能回答
+/// 「改动是否都看过了」。
 fn resolve_against_current(walkthrough: &Value, hunk_index: &HunkIndex) -> Staleness {
     let mut missing_hunk_ids: Vec<String> = Vec::new();
     let mut stale_stop_ids: Vec<String> = Vec::new();
@@ -977,16 +1040,22 @@ fn resolve_against_current(walkthrough: &Value, hunk_index: &HunkIndex) -> Stale
     }
 }
 
+/// 陈旧度计算结果：缺失锚点、失配 stop 与未覆盖 hunk 的集合。
 struct Staleness {
+    /// 是否存在缺失的 hunk 锚点。
     is_stale: bool,
+    /// walkthrough 引用但当前 diff 中已不存在的 hunk id。
     missing_hunk_ids: Vec<String>,
+    /// 含缺失锚点的 stop id。
     stale_stop_ids: Vec<String>,
+    /// 当前 diff 中未被任何 stop 覆盖的 hunk id。
     uncovered_hunk_ids: Vec<String>,
 }
 
 /// `pruneMissingRepositories` housekeeping, deferred off the request path —
 /// the JS module scheduled it on first import; here the router spawn defers
 /// it behind startup.
+/// 中文补充：由 router 在启动后触发，避免占用请求线程。
 pub fn spawn_housekeeping(store: Arc<Store>) {
     tokio::spawn(async move {
         // Housekeeping failing is not worth surfacing or retrying.

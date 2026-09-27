@@ -6,13 +6,22 @@
 //! plain scalars (YAML 1.2 core-schema typing), block scalars (`|`, `|-`,
 //! `>`, `>-`) and comments. Anchors, tags, complex keys, and multi-document
 //! streams are rejected — none appear in OpenCode frontmatter.
+//!
+//! 中文概述：frontmatter 专用 YAML 子集实现——`parse_yaml_object` 解析、
+//! `stringify_yaml` 序列化；锚点、tag、复杂键与多文档流一律报错，
+//! 因为 OpenCode frontmatter 中不会出现这些形态。
 
 use serde_json::{Map, Value};
 
+/// 解析失败错误：仅携带人读的错误描述文本（对应 JS 侧抛出的 Error 消息）；
+/// 元组字段即该文本。
 #[derive(Debug)]
 pub(crate) struct YamlError(pub String);
 
 /// `yaml.parse(text) || {}` — an empty document reads as an empty object.
+///
+/// 中文：把整份 frontmatter 文本解析为 JSON 映射——空文档与纯注释文档
+/// 返回空映射；顶层不是映射、或解析后仍有剩余内容即报错。
 pub(crate) fn parse_yaml_object(text: &str) -> Result<Map<String, Value>, YamlError> {
     let lines = split_lines(text);
     let mut parser = Parser { lines, pos: 0 };
@@ -34,6 +43,9 @@ pub(crate) fn parse_yaml_object(text: &str) -> Result<Map<String, Value>, YamlEr
 }
 
 /// `yaml.stringify(map)` — two-space indent, block style, trailing newline.
+///
+/// 中文：把 JSON 映射序列化为 YAML 文本——两空格缩进、块风格，
+/// 空映射输出 `{}`，末尾带换行（与 JS `yaml.stringify` 输出逐字节一致）。
 pub(crate) fn stringify_yaml(map: &Map<String, Value>) -> String {
     if map.is_empty() {
         return "{}\n".to_string();
@@ -47,11 +59,15 @@ pub(crate) fn stringify_yaml(map: &Map<String, Value>) -> String {
 // Parser
 // ---------------------------------------------------------------------------
 
+/// 预切分后的源码行：缩进列数与去掉回车符的原始行文本。
 struct RawLine {
+    /// 行首空格数（本实现只支持空格缩进）。
     indent: usize,
+    /// 原始行文本（含缩进空格，不含换行符）。
     text: String,
 }
 
+/// 把整段文本按换行符切成行：剥离行尾回车符，并统计每行缩进空格数。
 fn split_lines(text: &str) -> Vec<RawLine> {
     let mut lines = Vec::new();
     for raw in text.split('\n') {
@@ -65,14 +81,20 @@ fn split_lines(text: &str) -> Vec<RawLine> {
     lines
 }
 
+/// 逐行递归下降解析器：维护行列表与消费游标，按缩进驱动块结构。
 struct Parser {
+    /// 全部预切分行。
     lines: Vec<RawLine>,
+    /// 当前消费位置（peek 会跳过空行/注释行并推进此游标）。
     pos: usize,
 }
 
+/// 解析器的游标操作与块/序列/映射/块标量的解析方法组。
 impl Parser {
     /// Next meaningful line (blank/comment-only lines are skipped and
     /// consumed); the returned line itself is not consumed.
+    ///
+    /// 中文：返回下一条有意义行的（缩进, 去缩进内容）二元组；文件耗尽返回 `None`。
     fn peek(&mut self) -> Option<(usize, String)> {
         while self.pos < self.lines.len() {
             let line = &self.lines[self.pos];
@@ -87,16 +109,21 @@ impl Parser {
         None
     }
 
+    /// 消费当前行（仅把游标前移一行）。
     fn advance(&mut self) {
         self.pos += 1;
     }
 
     /// Raw line at the current position (blank/comment lines included) for
     /// block-scalar consumption.
+    ///
+    /// 中文：取当前位置的原始行（空行/注释行也可见），供块标量消费；越界返回 `None`。
     fn raw_current(&self) -> Option<&RawLine> {
         self.lines.get(self.pos)
     }
 
+    /// 在不小于 `min_indent` 的缩进上解析一个块：`-` 开头走序列，否则按映射解析；
+    /// 缩进不足或输入耗尽时返回 `Null`。
     fn parse_block(&mut self, min_indent: usize) -> Result<Value, YamlError> {
         let Some((indent, content)) = self.peek() else {
             return Ok(Value::Null);
@@ -111,6 +138,8 @@ impl Parser {
         }
     }
 
+    /// 解析同缩进的 `- ` 序列项：破折号后为空按嵌套块递归；
+    /// 行内项通过重锚定当前行（改写其缩进与文本）复用映射/标量解析路径。
     fn parse_sequence(&mut self, indent: usize) -> Result<Value, YamlError> {
         let mut items = Vec::new();
         loop {
@@ -149,6 +178,8 @@ impl Parser {
         Ok(Value::Array(items))
     }
 
+    /// 解析同缩进的键值映射：`key:` 空值按“更深缩进嵌套块 / 同缩进序列 / null”
+    /// 三分处理；值为 `|`/`>` 走块标量，其余走行内标量/flow 解析；缩进变深即报错。
     fn parse_mapping(&mut self, indent: usize) -> Result<Map<String, Value>, YamlError> {
         let mut map = Map::new();
         loop {
@@ -194,6 +225,9 @@ impl Parser {
 
     /// Block scalar (`|`/`>` with optional `-`/`+` chomping): consume the
     /// following lines indented deeper than the key.
+    ///
+    /// 中文：块标量以首个非空内容行确定内容缩进；折叠样式用空格连接行，
+    /// 字面样式保留换行；chomping `-` 去尾换行、`+` 额外保留尾空行。
     fn parse_block_scalar(&mut self, header: &str, key_indent: usize) -> Result<Value, YamlError> {
         let folded = header.starts_with('>');
         let chomp_strip = header.contains('-');
@@ -255,16 +289,21 @@ impl Parser {
     }
 }
 
+/// 统计行首空格数（本实现不支持制表符缩进）。
 fn indent_of(text: &str) -> usize {
     text.len() - text.trim_start_matches(' ').len()
 }
 
+/// 判断内容是否像 `key: value` 形式的映射起始（能切出键即算）。
 fn is_mapping_start(content: &str) -> bool {
     split_key(content).is_ok()
 }
 
 /// Split `key: rest` respecting quoted keys; the colon must be followed by a
 /// space or end of line (YAML plain-key rule).
+///
+/// 中文：切出（键, 冒号后的剩余文本）；支持引号键（单引号 doubling、
+/// 双引号反斜杠转义），未加引号时要求冒号后跟空格或行尾（YAML 普通键规则）。
 fn split_key(content: &str) -> Result<(String, String), YamlError> {
     let bytes = content.as_bytes();
     let mut i = 0;
@@ -319,6 +358,10 @@ fn split_key(content: &str) -> Result<(String, String), YamlError> {
 }
 
 /// Parse a scalar/flow value from the text after `key: `.
+///
+/// 中文：解析冒号之后的行内值——flow 集合与引号标量优先，其余按
+/// core-schema 类型（null/bool/int/float）识别，最后落到普通字符串；
+/// 普通标量含冒号加空格、或以冒号结尾时报错，交由上层宽松回退处理。
 fn parse_scalar_value(text: &str) -> Result<Value, YamlError> {
     let trimmed = text.trim();
     if trimmed.starts_with('{') || trimmed.starts_with('[') {
@@ -362,6 +405,8 @@ fn parse_scalar_value(text: &str) -> Result<Value, YamlError> {
     Ok(Value::String(scalar.to_string()))
 }
 
+/// 剥离行尾 ` #...` 注释：`#` 前必须是空格/制表符或行首，且不在引号内；
+/// 无注释时原样返回。
 fn strip_trailing_comment(text: &str) -> &str {
     let bytes = text.as_bytes();
     let mut in_double = false;
@@ -384,11 +429,14 @@ fn strip_trailing_comment(text: &str) -> &str {
     text
 }
 
+/// 判断文本是否形如整数（可带正负号，其余全为 ASCII 数字）。
 fn looks_like_integer(text: &str) -> bool {
     let body = text.strip_prefix(['-', '+']).unwrap_or(text);
     !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// 判断文本是否形如浮点数：可选符号 + 数字（至多一个小数点，可带科学计数
+/// 部分）；纯数字串（无小数点也无指数）不算浮点。
 fn looks_like_float(text: &str) -> bool {
     let body = text.strip_prefix(['-', '+']).unwrap_or(text);
     if body.is_empty() {
@@ -414,6 +462,9 @@ fn looks_like_float(text: &str) -> bool {
     saw_digit && (saw_dot || saw_exp)
 }
 
+/// 去除引号并解码转义：单引号串把连续两个单引号折叠为一个；双引号串
+/// 支持 n、t、r、0、引号、斜杠、反斜杠与 uXXXX 十六进制转义；
+/// 其余转义或结尾悬空反斜杠报错。
 fn unquote_scalar(text: &str) -> Result<String, YamlError> {
     let bytes = text.as_bytes();
     if bytes.first() == Some(&b'\'') {
@@ -458,6 +509,9 @@ fn unquote_scalar(text: &str) -> Result<String, YamlError> {
 }
 
 /// Flow collections (`[a, b]`, `{k: v}`) with JSON-ish scalars inside.
+///
+/// 中文：解析 flow 集合（方括号数组 / 花括号映射）；要求整段文本恰好被
+/// 一个值耗尽，残留内容报“trailing flow content”。
 fn parse_flow(text: &str) -> Result<Value, YamlError> {
     let mut parser = FlowParser {
         chars: text.chars().collect(),
@@ -471,18 +525,24 @@ fn parse_flow(text: &str) -> Result<Value, YamlError> {
     Ok(value)
 }
 
+/// flow 集合的字符级解析器：在预收集的字符数组上前进。
 struct FlowParser {
+    /// 预收集的字符序列。
     chars: Vec<char>,
+    /// 当前读取位置。
     pos: usize,
 }
 
+/// flow 数组/映射/标量的递归解析方法组。
 impl FlowParser {
+    /// 跳过空格与制表符。
     fn skip_ws(&mut self) {
         while matches!(self.chars.get(self.pos), Some(' ') | Some('\t')) {
             self.pos += 1;
         }
     }
 
+    /// 按首字符分派：`[` 走数组、`{` 走映射，其余按标量解析。
     fn parse_value(&mut self) -> Result<Value, YamlError> {
         self.skip_ws();
         match self.chars.get(self.pos) {
@@ -492,6 +552,8 @@ impl FlowParser {
         }
     }
 
+    /// 解析 `[a, b, c]`：逐项递归解析并以逗号分隔，遇 `]` 结束；未闭合或
+    /// 分隔符缺失报错。
     fn parse_array(&mut self) -> Result<Value, YamlError> {
         self.pos += 1;
         let mut items = Vec::new();
@@ -521,6 +583,8 @@ impl FlowParser {
         Ok(Value::Array(items))
     }
 
+    /// 解析 `{k: v, ...}`：键按标量文本读取，冒号后递归解析值；
+    /// 未闭合、缺冒号或分隔符缺失报错。
     fn parse_map(&mut self) -> Result<Value, YamlError> {
         self.pos += 1;
         let mut map = Map::new();
@@ -557,11 +621,14 @@ impl FlowParser {
         Ok(Value::Object(map))
     }
 
+    /// 解析一个 flow 标量并复用 [`parse_scalar_value`] 做 core-schema 类型判定。
     fn parse_scalar(&mut self) -> Result<Value, YamlError> {
         let text = self.parse_scalar_string()?;
         parse_scalar_value(&text)
     }
 
+    /// 读取一个标量的原始文本：引号形式按配对引号取整段（保留引号本身），
+    /// 普通形式读到逗号/右花括号/右方括号/冒号停止并去首尾空白。
     fn parse_scalar_string(&mut self) -> Result<String, YamlError> {
         self.skip_ws();
         let start = self.pos;
@@ -601,6 +668,8 @@ impl FlowParser {
 // Emitter
 // ---------------------------------------------------------------------------
 
+/// 以块风格输出映射：非空嵌套映射/数组换行并降两级缩进递归，
+/// 空集合输出 `{}` / `[]`，标量走 [`emit_inline`]。
 fn emit_map(map: &Map<String, Value>, indent: usize, out: &mut String) {
     let pad = " ".repeat(indent);
     for (key, value) in map {
@@ -623,6 +692,8 @@ fn emit_map(map: &Map<String, Value>, indent: usize, out: &mut String) {
     }
 }
 
+/// 输出一个 `- ` 序列项：非空映射首行并入 `- ` 之后、其余行对齐缩进；
+/// 嵌套数组再降级缩进，空集合输出 `- {}` / `- []`。
 fn emit_sequence_item(value: &Value, indent: usize, out: &mut String) {
     let pad = " ".repeat(indent);
     match value {
@@ -649,6 +720,7 @@ fn emit_sequence_item(value: &Value, indent: usize, out: &mut String) {
     }
 }
 
+/// 把标量或嵌套集合输出为单行 flow 形式（数组/映射内联展开）。
 fn emit_inline(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
@@ -669,6 +741,7 @@ fn emit_inline(value: &Value) -> String {
     }
 }
 
+/// 输出字符串标量：可安全作为普通标量则原样输出，否则加双引号转义。
 fn emit_scalar_string(text: &str) -> String {
     if is_safe_plain_scalar(text) {
         text.to_string()
@@ -677,6 +750,9 @@ fn emit_scalar_string(text: &str) -> String {
     }
 }
 
+/// 判断字符串能否不加引号安全输出：排除 YAML 指示符开头、首尾空白、
+/// 冒号加空格/` #`/控制字符/换行，以及会被识别为 null/bool/数字或
+/// 文档标记（`---`、`...`）的字面量。
 fn is_safe_plain_scalar(text: &str) -> bool {
     if text.is_empty() {
         return false;
@@ -712,6 +788,8 @@ fn is_safe_plain_scalar(text: &str) -> bool {
     true
 }
 
+/// 双引号转义输出：引号、反斜杠与常见控制字符转义为短形式，
+/// 其余控制字符输出为 uXXXX 形式。
 fn double_quote(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
@@ -730,15 +808,19 @@ fn double_quote(text: &str) -> String {
     out
 }
 
+/// YAML 子集的单测：解析各形态（嵌套/序列/flow/块标量）与序列化输出，
+/// 逐字节对齐 JS `yaml` 包的既有行为。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 辅助：解析文本并在失败时 panic，便于断言直接取映射。
     fn parse_map(text: &str) -> Map<String, Value> {
         parse_yaml_object(text).expect("parse")
     }
 
+    /// 验证标准 frontmatter 的三个字符串字段正确解析。
     #[test]
     fn parses_standard_frontmatter() {
         let map = parse_map(
@@ -749,6 +831,7 @@ mod tests {
         assert_eq!(map.get("mode"), Some(&json!("primary")));
     }
 
+    /// 验证嵌套映射、浮点数与布尔值的 core-schema 类型解析。
     #[test]
     fn parses_nested_maps_numbers_and_bools() {
         let map =
@@ -760,6 +843,7 @@ mod tests {
         );
     }
 
+    /// 验证序列解析：与键同缩进的 `- ` 项与更深缩进项两种写法等价。
     #[test]
     fn parses_sequences_same_indent_and_nested() {
         let map = parse_map("tools:\n- write\n- edit\nother:\n  - a\n  - b\n");
@@ -767,6 +851,7 @@ mod tests {
         assert_eq!(map.get("other"), Some(&json!(["a", "b"])));
     }
 
+    /// 验证 flow 集合与引号标量（含值中带冒号的引号字符串）。
     #[test]
     fn parses_flow_collections_and_quoted_scalars() {
         let map = parse_map("a: {x: 1, y: \"two\"}\nb: [1, 'q']\nc: \"a: b\"\n");
@@ -775,6 +860,7 @@ mod tests {
         assert_eq!(map.get("c"), Some(&json!("a: b")));
     }
 
+    /// 验证块标量 `|-`：尾部换行被剥离，且内容中的冒号按字面保留。
     #[test]
     fn parses_block_scalars() {
         let map = parse_map("description: |-\n  Build agent: creates builds\nmodel: x\n");
@@ -784,17 +870,20 @@ mod tests {
         );
     }
 
+    /// 验证普通标量值含未引用冒号时解析报错（触发上层宽松回退路径）。
     #[test]
     fn rejects_unquoted_colons_in_plain_scalars() {
         assert!(parse_yaml_object("description: Build agent: creates builds\n").is_err());
     }
 
+    /// 验证空文档与纯注释文档均解析为空映射。
     #[test]
     fn empty_document_is_empty_object() {
         assert!(parse_map("").is_empty());
         assert!(parse_map("\n  \n# only a comment\n").is_empty());
     }
 
+    /// 验证序列化输出与 JS yaml.stringify 逐字节一致，且可无损重解析。
     #[test]
     fn stringify_round_trips() {
         let mut map = Map::new();
@@ -819,11 +908,13 @@ mod tests {
         assert_eq!(Value::Object(reparsed), Value::Object(map));
     }
 
+    /// 验证空映射序列化为花括号空对象加换行（对齐 JS yaml 包）。
     #[test]
     fn stringify_empty_map_matches_js_yaml() {
         assert_eq!(stringify_yaml(&Map::new()), "{}\n");
     }
 
+    /// 验证会被误判为布尔/数字的字符串、空串与含冒号串统一加引号且可往返。
     #[test]
     fn stringify_quotes_ambiguous_scalars() {
         let mut map = Map::new();

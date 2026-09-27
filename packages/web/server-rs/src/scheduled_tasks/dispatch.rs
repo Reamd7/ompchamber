@@ -10,6 +10,12 @@
 //!
 //! Known gap: long objectives are trimmed to the 5 000-char limit instead of
 //! being distilled by the small-model service (module not ported yet).
+//!
+//! 计划任务运行期与 OpenCode 引擎之间的调度边界：JS 版 runTaskWithWatchdog
+//! 依赖的引擎调用（建会话、列命令、执行命令、prompt_async、session goal、
+//! permission 自动放行）在这里统一收敛为 [`EngineDispatch`] trait，
+//! 使 runtime/service 可用假实现测试；[`HttpEngineDispatch`] 是真实实现。
+//! 已知缺口：超长 objective 以截断适配而非小模型提炼（模块未移植）。
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -22,26 +28,41 @@ use serde_json::{Value, json};
 use crate::engine::EngineState;
 use crate::projects::Execution;
 
+/// goal objective 文本的最大字符数；超限部分被截断而非拒收。
 pub const GOAL_OBJECTIVE_CHAR_LIMIT: usize = 5_000;
+/// objective 中段截断时插入的说明文本，告知审计方完整内容已随聊天消息送达。
 const TRIM_MARKER: &str = "\n\n[… objective trimmed for the auditor — the full prompt was delivered in the chat message …]\n\n";
 
+/// 装箱 future 别名：trait 方法需要返回固定大小、可 Send 的异步值。
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A resolved slash command (name + raw arguments + engine template).
+/// 已解析的斜杠命令（名称 + 原始参数 + 引擎模板）。
 #[derive(Debug, Clone)]
 pub struct ScheduledCommand {
+    /// 命令名（不含前导斜杠）。
     pub command: String,
+    /// 传给命令的原始参数串（可为空）。
     pub arguments: String,
+    /// 引擎提供的模板文本；引擎未列出模板时为 None。
     pub template: Option<String>,
 }
 
 /// Engine operations used by one scheduled run (JS: local-engine-client +
 /// fetch + createSessionGoal + setSessionAutoAccept + waitForOpenCodeReady).
+/// 单次计划任务运行所需的全部引擎操作集合；真实副作用只经此 trait
+/// 发生，测试以假实现（如 testing::RecordingDispatch）替换。
 pub trait EngineDispatch: Send + Sync {
+    /// 等待引擎就绪（waitForOpenCodeReady）；超时或失败返回 Err。
     fn wait_ready(&self) -> BoxFut<'_, Result<(), String>>;
+    /// 在 directory 下创建标题为 title 的新会话，返回会话 id。
     fn create_session(&self, directory: &str, title: &str) -> BoxFut<'_, Result<String, String>>;
     /// Commands carrying a `template` (empty when the engine lists none).
+    /// 列出引擎可用斜杠命令；带 template 的命令可按模板执行，
+    /// 引擎未列出时返回空表。
     fn list_commands(&self, directory: &str) -> BoxFut<'_, Result<Vec<ScheduledCommand>, String>>;
+    /// 在既有会话上执行一条斜杠命令（POST /session/:id/command）；
+    /// 按 execution 附带 agent/model/variant。
     fn run_session_command(
         &self,
         session_id: &str,
@@ -49,12 +70,16 @@ pub trait EngineDispatch: Send + Sync {
         command: &ScheduledCommand,
         execution: &Execution,
     ) -> BoxFut<'_, Result<(), String>>;
+    /// 异步投递一条 prompt（prompt_async），payload 为完整请求 JSON；
+    /// 只等送达，不等生成完成。
     fn prompt_async(
         &self,
         session_id: &str,
         directory: &str,
         payload: &Value,
     ) -> BoxFut<'_, Result<(), String>>;
+    /// 为会话创建 goal：objective 落盘到 goals 目录并 PATCH 会话
+    /// metadata；token 预算与 provider/model 可选。
     fn create_session_goal(
         &self,
         session_id: &str,
@@ -64,6 +89,7 @@ pub trait EngineDispatch: Send + Sync {
         provider_id: Option<&str>,
         model_id: Option<&str>,
     ) -> BoxFut<'_, Result<(), String>>;
+    /// 开/关会话的 permission 自动放行策略；模块未配置时静默成功。
     fn set_session_auto_accept(
         &self,
         session_id: &str,
@@ -74,13 +100,19 @@ pub trait EngineDispatch: Send + Sync {
 
 /// Engine-backed implementation. `goals_dir` is `<data_dir>/goals`
 /// (session-goal/objectives.js `goalsDir`).
+/// 经 EngineState 直连引擎的 HTTP 实现；goals_dir 用于 objective 文件落盘。
 pub struct HttpEngineDispatch {
+    /// 引擎连接状态：base URL、bearer token 与共享 HTTP 客户端来源。
     engine: Arc<EngineState>,
+    /// objective 文件目录（<data_dir>/goals，对应 JS goalsDir）。
     goals_dir: PathBuf,
+    /// permission 自动放行模块句柄；None 表示该部署未启用。
     auto_accept: Option<Arc<crate::permission_auto_accept::PermissionAutoAccept>>,
 }
 
+/// 构造辅助与共享的 HTTP 请求底座。
 impl HttpEngineDispatch {
+    /// 以引擎状态、goals 目录与可选自动放行模块构造分发器。
     pub fn new(
         engine: Arc<EngineState>,
         goals_dir: PathBuf,
@@ -93,6 +125,7 @@ impl HttpEngineDispatch {
         }
     }
 
+    /// 返回去尾斜杠的引擎 base URL；引擎不可用（空 URL）时报错。
     fn base(&self) -> Result<String, String> {
         let base = self.engine.base_url().unwrap_or_default();
         let trimmed = base.trim_end_matches('/');
@@ -102,10 +135,13 @@ impl HttpEngineDispatch {
         Ok(trimmed.to_string())
     }
 
+    /// 引擎的 authorization 头（bearer token）；未配置时为 None。
     fn auth_header(&self) -> Option<String> {
         self.engine.auth_header()
     }
 
+    /// 统一 JSON 请求：附加可选 auth 与 body，返回
+    /// (是否 2xx/3xx, 状态码, 响应文本)；网络错误映射为 Err(消息)。
     async fn request_json(
         &self,
         method: reqwest::Method,
@@ -129,6 +165,7 @@ impl HttpEngineDispatch {
     }
 }
 
+/// 按 RFC 3986 unreserved 集合做路径段百分号编码，其余字节转大写 %XX。
 fn encode_path_segment(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -142,13 +179,16 @@ fn encode_path_segment(value: &str) -> String {
     out
 }
 
+/// 构造 directory=... 的 form-urlencoded 查询串。
 fn query(directory: &str) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("directory", directory);
     serializer.finish()
 }
 
+/// EngineDispatch 的 HTTP 实现：每个方法把参数克隆进 async 块后请求引擎。
 impl EngineDispatch for HttpEngineDispatch {
+    /// 委托 EngineState::wait_ready，最多等待 10 秒。
     fn wait_ready(&self) -> BoxFut<'_, Result<(), String>> {
         let engine = Arc::clone(&self.engine);
         Box::pin(async move {
@@ -159,6 +199,8 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// POST /session 创建会话；从 data.id（或顶层 id）取会话 id，
+    /// 缺失时报 "failed to create session"（对齐 JS）。
     fn create_session(&self, directory: &str, title: &str) -> BoxFut<'_, Result<String, String>> {
         let directory = directory.to_string();
         let title = title.to_string();
@@ -186,6 +228,8 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// GET /command 列出命令并映射为 name+template；
+    /// 非 2xx 或非法 JSON 返回 Err。
     fn list_commands(&self, directory: &str) -> BoxFut<'_, Result<Vec<ScheduledCommand>, String>> {
         let directory = directory.to_string();
         Box::pin(async move {
@@ -221,6 +265,8 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// POST /session/:id/command 执行命令；仅传输失败上抛，
+    /// 业务错误信封按 JS 行为忽略。
     fn run_session_command(
         &self,
         session_id: &str,
@@ -261,6 +307,8 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// POST /session/:id/prompt_async 异步投递 prompt；
+    /// 非 2xx 时带状态码与响应体报错。
     fn prompt_async(
         &self,
         session_id: &str,
@@ -292,6 +340,8 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// 落盘 objective 文件并 PATCH metadata.ompchamber.goal：
+    /// objective 为空报错；文件写失败回退为内联文本。
     fn create_session_goal(
         &self,
         session_id: &str,
@@ -368,6 +418,7 @@ impl EngineDispatch for HttpEngineDispatch {
         })
     }
 
+    /// 调 permission 自动放行模块设置会话策略；模块缺失时直接成功。
     fn set_session_auto_accept(
         &self,
         session_id: &str,
@@ -391,6 +442,8 @@ impl EngineDispatch for HttpEngineDispatch {
 
 /// `fitObjective` without the small-model distiller (module not ported):
 /// short objectives pass through, long ones are middle-trimmed.
+/// objective 适配（无小模型提炼版）：不超上限原样通过；超限时保留
+/// 首尾各半、中段以 TRIM_MARKER 替代，总长压回上限内。
 fn fit_objective(objective: &str) -> Option<String> {
     if objective.chars().count() <= GOAL_OBJECTIVE_CHAR_LIMIT {
         return Some(objective.to_string());
@@ -403,6 +456,7 @@ fn fit_objective(objective: &str) -> Option<String> {
     Some(format!("{head}{TRIM_MARKER}{tail}"))
 }
 
+/// 当前 Unix 毫秒时间戳；系统时钟早于 epoch 时退化为 0。
 fn crate_time_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -410,7 +464,9 @@ fn crate_time_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// u64 转 base36 字符串（小写），与 JS Number.toString(36) 对齐。
 fn base36(mut value: u64) -> String {
+    // base36 字母表（0-9a-z）。
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut out = Vec::new();
     loop {
@@ -424,8 +480,10 @@ fn base36(mut value: u64) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// 生成 count 位随机 base36 字符，用作 goal id 的随机后缀。
 fn random_base36(count: usize) -> String {
     use rand::Rng;
+    // base36 字母表（0-9a-z）。
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut rng = rand::rng();
     (0..count)
@@ -435,6 +493,8 @@ fn random_base36(count: usize) -> String {
 
 /// OpenCode session ids are URL-safe tokens; anything else is rejected before
 /// touching the filesystem (`isValidObjectiveKey`).
+/// 会话 id 白名单校验（4..=128 位字母数字/_/-）；在触碰文件系统前
+/// 拒绝路径穿越等非法 id。
 fn session_id_is_valid(id: &str) -> bool {
     let len = id.chars().count();
     (4..=128).contains(&len)
@@ -443,10 +503,12 @@ fn session_id_is_valid(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// dispatch 纯函数（objective 适配、id 校验、URL 编码、base36）的测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证短 objective 原样通过、超长 objective 被中段截断并压回上限。
     #[test]
     fn fit_objective_passes_short_and_trims_long() {
         assert_eq!(fit_objective("short").as_deref(), Some("short"));
@@ -456,6 +518,7 @@ mod tests {
         assert!(fitted.contains("objective trimmed"));
     }
 
+    /// 验证会话 id 校验放行合法 token、拒绝过短与含穿越/空白的输入。
     #[test]
     fn session_id_pattern_gates_file_paths() {
         assert!(session_id_is_valid("ses_1234"));
@@ -465,6 +528,7 @@ mod tests {
         assert!(!session_id_is_valid("has space"));
     }
 
+    /// 验证路径段百分号编码与 directory 查询串的编码形状。
     #[test]
     fn encodes_segments_and_queries() {
         assert_eq!(encode_path_segment("ses_1"), "ses_1");
@@ -472,6 +536,7 @@ mod tests {
         assert_eq!(query("/repo x"), "directory=%2Frepo+x");
     }
 
+    /// 验证 base36 输出与 JS toString(36) 基准值一致。
     #[test]
     fn base36_matches_js_tostring36() {
         assert_eq!(base36(0), "0");

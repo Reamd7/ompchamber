@@ -13,6 +13,13 @@
 //!   grid drain task.
 //! - Shared concurrent creates → a watch channel per pending id (JS stores
 //!   the in-flight promise).
+//!
+//! 中文概述：终端运行时核心。维护会话（Session）、连接（Connection）
+//! 与每连接 attachment 三层状态；驱动 PTY 进程的创建/重启/终止、输出
+//! 事件泵与有界滚动回放；实现发送侧流控（lag 抑制 + ack 恢复 + 快照
+//! 重同步）、视口尺寸协商（DRIVEN 强制所有权 / IDLE 最窄隐式所有者）、
+//! 空闲会话回收，以及 v3 二进制 WebSocket 控制帧协议
+//!（attach/write/ack/claimViewport 等）。
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -39,19 +46,29 @@ use crate::terminal::shells::{Platform, ShellDeps, ShellResolver, get_terminal_s
 use crate::terminal::theme::{Appearance, consume_terminal_theme_queries};
 use crate::terminal::{MAX_INPUT_CHARS, protocol};
 
+/// 并发终端会话上限；超出时报 Maximum terminal sessions reached（HTTP 429）。
 pub const MAX_SESSIONS: usize = 20;
+/// 发送侧流控：未确认字节积压超过该值（4 MiB）进入抑制，暂停直发。
 pub const SEND_LAG_ENTER_BYTES: u64 = 4 * 1024 * 1024;
+/// 发送侧流控：积压降回该值（1 MiB）以下才解除抑制并补发快照。
 pub const SEND_LAG_EXIT_BYTES: u64 = 1024 * 1024;
+/// 客户端从未 ack 过时的兜底抑制阈值（8 MiB），防只收不读的连接。
 pub const SEND_LAG_FALLBACK_BYTES: u64 = 8 * 1024 * 1024;
+/// 无 attachment 且无活动（写输入/claim）的会话空闲回收时限：30 分钟。
 pub const IDLE_TIMEOUT_MS: u64 = 30 * 60 * 1000;
+/// 默认终止宽限：SIGTERM 后 1 秒未退出升级为 SIGKILL。
 pub const TERMINATION_GRACE_MS: u64 = 1000;
+/// 空闲清扫任务的轮询间隔：5 分钟。
 const IDLE_SWEEP_INTERVAL_MS: u64 = 5 * 60 * 1000;
+/// shell 集成注入的临时目录延迟 60 秒清理，留出 shell 读取时间。
 const SHELL_INTEGRATION_CLEANUP_MS: u64 = 60_000;
 /// JS snapshot `runtime` field reports the hosting process (`'node'` |
 /// `'bun'`); the Rust server keeps the node-classic value so the UI's
 /// declared union (`'node' | 'bun'`) stays satisfied.
+/// 中文：Rust 实现固定上报 node。
 pub const RUNTIME_NAME: &str = "node";
 
+/// 当前 Unix 时间戳（毫秒）；时钟早于 epoch 等异常情况返回 0。
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -59,6 +76,8 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 生成 v4 UUID 字符串：16 个随机字节手工置 version/variant 位后，
+/// 格式化为 8-4-4-4-12 十六进制段。
 pub fn random_uuid() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
@@ -79,6 +98,8 @@ pub fn random_uuid() -> String {
 /// Lexical `path.resolve`: make absolute against the cwd and normalize `.`
 /// and `..` without touching symlinks (the JS path module semantics the
 /// runtime compares working directories with).
+/// 中文：相对 std::fs::canonicalize 不解析符号链接；current_dir 获取
+/// 失败时按输入原样处理。
 pub fn resolve_path(input: &str) -> String {
     use std::path::{Component, Path};
     let path = Path::new(input);
@@ -110,13 +131,18 @@ pub fn resolve_path(input: &str) -> String {
     resolved
 }
 
+/// PTY 进程生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
+    /// 进程运行中，可接受 write 输入。
     Running,
+    /// 进程已退出，保留 exitCode/signal 供快照查询。
     Exited,
 }
 
+/// SessionStatus 与协议字符串的编码映射。
 impl SessionStatus {
+    /// 输出快照/事件使用的 running/exited 字符串。
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             SessionStatus::Running => "running",
@@ -125,13 +151,19 @@ impl SessionStatus {
     }
 }
 
+/// 终端主题模式：决定子进程 COLORFGBG 取值与主题变更上报内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeMode {
+    /// 浅色模式。
     Light,
+    /// 深色模式（默认）。
     Dark,
 }
 
+/// ThemeMode 的 JS 字符串编解码。
 impl ThemeMode {
+    /// 按请求字符串解析：仅 light 命中浅色，其余（含缺失）一律按深色
+    /// 处理，与 JS 三元写法一致。
     fn from_js(value: Option<&str>) -> ThemeMode {
         if value == Some("light") {
             ThemeMode::Light
@@ -140,6 +172,7 @@ impl ThemeMode {
         }
     }
 
+    /// 序列化为协议字符串 light/dark。
     fn as_str(self) -> &'static str {
         match self {
             ThemeMode::Light => "light",
@@ -148,32 +181,51 @@ impl ThemeMode {
     }
 }
 
+/// attachment 的输出订阅模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feed {
+    /// 字节流：history 回放 + output 增量事件。
     Bytes,
+    /// 网格：整屏 grid frame + 增量 grid 事件。
     Grid,
 }
 
+/// DRIVEN 模式下的视口驱动者：网格尺寸锁定为该连接上报的有效视口。
 #[derive(Debug, Clone)]
 pub struct ViewportDriver {
+    /// 驱动者连接 id。
     pub connection_id: String,
+    /// 驱动者声明的列数。
     pub cols: u16,
+    /// 驱动者声明的行数。
     pub rows: u16,
 }
 
+/// 单个连接对单个会话的订阅状态与发送侧流控记账。
 pub struct Attachment {
+    /// attach 握手进行中：事件先入 pending 缓冲，快照发出后转实时投递。
     pub initializing: bool,
+    /// 握手期间缓冲的事件，快照发出后按序补发。
     pub pending: Vec<Value>,
+    /// 客户端上报的视口列数，0 表示尚未上报。
     pub cols: u16,
+    /// 客户端上报的视口行数，0 表示尚未上报。
     pub rows: u16,
+    /// 已发送未确认的（事件序号, 字节数）队列，lag 的来源。
     pub pending_acks: Vec<(u64, u64)>,
+    /// 是否收到过至少一次 ack。
     pub acked_once: bool,
+    /// 慢客户端抑制中：暂停直发，待 ack 降档后用快照重同步。
     pub suppressed: bool,
+    /// 累计已发送字节（含快照），未 ack 连接的兜底抑制依据。
     pub sent_bytes: u64,
+    /// 订阅模式：字节流或网格。
     pub feed: Feed,
 }
 
+/// Attachment 的构造与流控指标计算。
 impl Attachment {
+    /// 以指定 feed 构造：初始处于 initializing、零尺寸、零积压。
     fn new(feed: Feed) -> Self {
         Self {
             initializing: true,
@@ -188,59 +240,105 @@ impl Attachment {
         }
     }
 
+    /// 当前未确认字节积压：pending_acks 中字节数之和。
     fn lag(&self) -> u64 {
         self.pending_acks.iter().map(|(_, bytes)| *bytes).sum()
     }
 }
 
+/// 一条终端 WebSocket 连接：出站消息通道与其全部 attachment。
 pub struct Connection {
+    /// 连接唯一标识，随 hello 帧下发给客户端。
     pub connection_id: String,
+    /// 出站消息通道，由 socket writer 任务消费后写回 WebSocket。
     pub tx: mpsc::UnboundedSender<Message>,
+    /// 本连接的 attachment 表：sessionId → Attachment。
     pub attachments: Mutex<HashMap<String, Attachment>>,
 }
 
+/// 会话全部可变状态，由 Session::inner 互斥锁保护。
 pub struct SessionInner {
+    /// 每会话事件序号：publish 时自增并写入帧的 q 字段。
     pub sequence: u64,
+    /// 会话工作目录（spawn/restart 时设置）。
     pub cwd: String,
+    /// 当前列数，随视口协商或 restart 变化。
     pub cols: u16,
+    /// 当前行数，随视口协商或 restart 变化。
     pub rows: u16,
+    /// 进程运行状态。
     pub status: SessionStatus,
+    /// 退出码，进程退出后写入。
     pub exit_code: Option<i32>,
+    /// 致死信号编号，进程被信号杀死时写入。
     pub signal: Option<i32>,
+    /// PTY 后端标识，随快照上报。
     pub backend: String,
+    /// 归一化后的 shell id。
     pub shell: String,
+    /// 是否以 login shell 模式启动。
     pub login_shell: bool,
+    /// 当前主题模式。
     pub theme_mode: ThemeMode,
+    /// 客户端上报的终端背景色，用于应答 OSC 11 查询。
     pub terminal_background: Option<String>,
+    /// 客户端上报的终端前景色，用于应答 OSC 10 查询。
     pub terminal_foreground: Option<String>,
+    /// shell 是否已通过 CSI ? 2031 h 订阅主题模式；仅订阅且外观变化时
+    /// 才向 PTY 写模式上报。
     pub theme_mode_enabled: bool,
+    /// 是否应答 primary DA 探测；使用自带 conpty.dll 时关闭，避免应答
+    /// 写入 shell 输入行。
     pub respond_primary_da: bool,
+    /// 历史清洗器的跨 chunk 携带缓冲（转义序列截断时续拼）。
     pub pending_history: Vec<u8>,
+    /// 主题查询扫描器的跨 chunk 携带缓冲（转义序列截断时续拼）。
     pub pending_theme: Vec<u8>,
     /// UTF-8 assembly carry so split codepoints never reach `output.d` as
     /// replacement characters (node-pty's StringDecoder behavior).
+    /// 中文：等价 node-pty 的 StringDecoder 行为。
     pub pending_utf8: Vec<u8>,
+    /// 有界滚动回放缓冲，attach 快照 history 字段的数据源。
     pub history: HistoryBuf,
+    /// 最近一次客户端活动时间戳（写输入/创建/重启），空闲回收依据。
     pub last_activity: u64,
+    /// 最近一次输出时间戳；输出不计入空闲判定，仅供观测。
     pub last_output_at: u64,
+    /// 会话创建时间戳；同 id 复用会话对象时保留。
     pub created_at: u64,
+    /// 客户端 claim 保活记录（claimant → 时间戳）；存在活跃 claim 的
+    /// 会话在 DELETE 时存活，过期 claim 在释放时清理。
     pub claims: HashMap<String, u64>,
+    /// 当前视口驱动者；Some 表示 DRIVEN 模式。
     pub viewport_driver: Option<ViewportDriver>,
+    /// IDLE 模式下当前隐式所有者连接 id（最窄视口）。
     pub implicit_owner_id: Option<String>,
+    /// 服务端网格状态机，grid feed 的数据源。
     pub grid: GridCore,
+    /// 网格代际令牌：restart/重置时自增，使旧的延迟 drain 任务失效。
     pub grid_token: u64,
+    /// 是否已有挂起的延迟 grid drain 任务（每会话至多一个）。
     pub grid_drain_pending: bool,
+    /// 当前 PTY 进程句柄；退出后置 None，重启时被替换。
     pub process: Option<Arc<dyn PtyProcess>>,
+    /// OSC 133 命令边界扫描器，产出 command-finished 事件。
     pub osc133: Osc133Scanner,
 }
 
+/// 一个终端会话：稳定 id、PTY 事件入口与受锁保护的可变状态。
 pub struct Session {
+    /// 会话唯一 id（客户端指定或随机生成）。
     pub id: String,
+    /// PTY 事件发送端：进程输出/退出事件由此进入会话事件泵。
     pub event_tx: mpsc::UnboundedSender<PtyEvent>,
+    /// 会话可变状态。
     pub inner: Mutex<SessionInner>,
 }
 
+/// Session 的构造与只读视图辅助。
 impl Session {
+    /// 创建会话对象与其事件 channel，返回（会话, 事件接收端）；初始
+    /// 尺寸同时用于 GridCore。
     fn new(id: String, cols: u16, rows: u16) -> (Arc<Self>, mpsc::UnboundedReceiver<PtyEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let inner = SessionInner {
@@ -285,6 +383,7 @@ impl Session {
         )
     }
 
+    /// 用 inner 当前值组装主题查询应答所需的 Appearance 快照。
     fn appearance(&self, inner: &SessionInner) -> Appearance {
         Appearance {
             theme_mode: inner.theme_mode.as_str().to_string(),
@@ -295,15 +394,22 @@ impl Session {
     }
 }
 
+/// 终端运行时可调选项。
 pub struct TerminalOptions {
+    /// WebSocket 心跳 ping 间隔（毫秒）。
     pub heartbeat_interval_ms: u64,
+    /// SIGTERM 后等待退出、再升级 SIGKILL 的宽限（毫秒）。
     pub termination_grace_ms: u64,
     /// JS skips shell-integration injection when the injected fs lacks sync
     /// writers (its test seam); Rust tests flip this flag instead.
+    /// 中文：Rust 测试将该开关置 false 以跳过注入。
     pub shell_integration: bool,
 }
 
+/// 默认选项：心跳取 protocol 常量，宽限取 TERMINATION_GRACE_MS，默认
+/// 启用 shell 集成。
 impl Default for TerminalOptions {
+    /// 构造默认值。
     fn default() -> Self {
         Self {
             heartbeat_interval_ms: protocol::TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS,
@@ -313,25 +419,43 @@ impl Default for TerminalOptions {
     }
 }
 
+/// 一个进行中的会话创建：记录创建参数，并持有 watch Sender 让并发
+/// 同 id 请求等待并复用首个创建者的结果。
 pub struct PendingCreate {
+    /// 已解析的绝对工作目录；并发请求 cwd 不一致则拒绝。
     cwd: String,
+    /// shell 选择；并发请求 shell 不一致则拒绝。
     shell: String,
+    /// login shell 模式；并发请求不一致则拒绝。
     login_shell: bool,
+    /// 结果通道：首个创建者发送 Some(Ok/Err) 唤醒所有等待者。
     tx: watch::Sender<Option<Result<Arc<Session>, String>>>,
 }
 
+/// 终端运行时全局状态：选项、PTY 工厂、shell 解析器，以及会话、并发
+/// 创建、重启锁、连接四张表与停机标志。
 pub struct TerminalState {
+    /// 运行时选项（心跳、终止宽限、shell 集成开关）。
     pub opts: TerminalOptions,
+    /// 平台 PTY 工厂（真实实现或测试桩）。
     pub provider: Arc<dyn PtyProvider>,
+    /// shell 选择解析与增强 PATH 计算。
     pub shell_resolver: ShellResolver,
+    /// 会话表：sessionId → Session。
     pub sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// 进行中的并发创建表：id → PendingCreate（跨 await 持有，用 tokio Mutex）。
     pub pending_creates: tokio::sync::Mutex<HashMap<String, PendingCreate>>,
+    /// 每会话的 restart 串行锁表。
     pub restart_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// 活跃连接表：connectionId → Connection。
     pub connections: Mutex<HashMap<String, Arc<Connection>>>,
+    /// 停机标志：置位后空闲清扫任务退出。
     pub shutting_down: AtomicBool,
 }
 
+/// TerminalState 的构造、生命周期管理与查询辅助。
 impl TerminalState {
+    /// 构造全局状态并立即启动空闲清扫后台任务。
     pub fn new(
         opts: TerminalOptions,
         provider: Arc<dyn PtyProvider>,
@@ -351,6 +475,7 @@ impl TerminalState {
         state
     }
 
+    /// 启动周期空闲清扫后台任务；shutting_down 置位后退出循环。
     fn spawn_idle_sweep(self: &Arc<Self>) {
         let state = Arc::clone(self);
         tokio::spawn(async move {
@@ -366,6 +491,8 @@ impl TerminalState {
         });
     }
 
+    /// 找出无 attachment 且空闲超过 IDLE_TIMEOUT_MS 的会话，以
+    /// IDLE_TIMEOUT 终止码在后台强制回收。
     fn idle_sweep(&self) {
         let now = now_ms();
         let reapable: Vec<String> = {
@@ -392,6 +519,7 @@ impl TerminalState {
         }
     }
 
+    /// 是否仍有任一连接 attach 着该会话。
     fn is_attached(&self, session_id: &str) -> bool {
         let connections = self.connections.lock().unwrap_or_else(|e| e.into_inner());
         connections.values().any(|connection| {
@@ -407,6 +535,8 @@ impl TerminalState {
     /// send the fatal scoped closure, and hand the termination future to the
     /// caller — DELETE awaits it; idle sweep and force-kill run it in the
     /// background, exactly like the JS.
+    /// 中文：返回的 Future 由调用方决定 await（DELETE）或后台执行（空闲
+    /// 回收/强杀）；返回 None 表示会话本就不存在。
     pub fn remove_session(
         &self,
         session_id: &str,
@@ -438,6 +568,7 @@ impl TerminalState {
                     as Pin<Box<dyn Future<Output = ()> + Send>>
             })
     }
+    /// 取出或创建该会话的 restart 串行锁，避免同会话重启交错。
     fn restart_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.restart_locks.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(locks.entry(session_id.to_string()).or_default())
@@ -446,6 +577,7 @@ impl TerminalState {
     /// `shutdown`: stop the idle sweep, force-terminate every session, drop
     /// every socket channel (writers end → sockets close), and mark the
     /// runtime down. Callers own wiring this into the process lifecycle.
+    /// 中文：进程终止任务在后台执行，不阻塞调用方。
     pub fn shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
         let sessions: Vec<Arc<Session>> = {
@@ -477,15 +609,20 @@ impl TerminalState {
 // Socket send seam
 // ---------------------------------------------------------------------------
 
+/// 打包并投递一帧控制消息到 socket writer 的 unbounded channel；
+/// channel 已关闭（连接拆除中）返回 false。
 fn send_value(tx: &mpsc::UnboundedSender<Message>, payload: &Value) -> bool {
     let frame = protocol::create_terminal_ws_control_frame(payload);
     tx.send(Message::Binary(frame.into())).is_ok()
 }
 
+/// send_value 的连接封装：写入该连接的出站通道。
 fn send_to(connection: &Connection, payload: &Value) -> bool {
     send_value(&connection.tx, payload)
 }
 
+/// 对所有连接移除该会话的 attachment，并向受影响连接发送带 code/
+/// message 的 fatal error 帧（如 IDLE_TIMEOUT、SESSION_NOT_FOUND）。
 fn close_attachments(state: &TerminalState, session_id: &str, code: &str, message: &str) {
     let connections = state.connections.lock().unwrap_or_else(|e| e.into_inner());
     for connection in connections.values() {
@@ -508,6 +645,8 @@ fn close_attachments(state: &TerminalState, session_id: &str, code: &str, messag
 // Publish / snapshot / flow control
 // ---------------------------------------------------------------------------
 
+/// 是否存在任一以 grid feed 订阅该会话的 attachment（决定是否发布
+/// grid 帧）。
 fn has_grid_attachment(state: &TerminalState, session_id: &str) -> bool {
     let connections = state.connections.lock().unwrap_or_else(|e| e.into_inner());
     connections.values().any(|connection| {
@@ -520,6 +659,8 @@ fn has_grid_attachment(state: &TerminalState, session_id: &str) -> bool {
     })
 }
 
+/// 收集已上报有效视口尺寸的 attachment，返回（connectionId, cols, rows）
+/// 列表，供 IDLE 模式的隐式所有者协商使用。
 fn collect_viewport_sizes(state: &TerminalState, session_id: &str) -> Vec<(String, u16, u16)> {
     let connections = state.connections.lock().unwrap_or_else(|e| e.into_inner());
     let mut sizes = Vec::new();
@@ -542,6 +683,8 @@ fn collect_viewport_sizes(state: &TerminalState, session_id: &str) -> Vec<(Strin
     sizes
 }
 
+/// 构造 attach 时的初始 snapshot 帧：字节 feed 携带 history 文本，
+/// grid feed 携带整屏 frame；返回（帧, 计入流控的估算字节数）。
 fn build_snapshot(session: &Session, inner: &mut SessionInner, grid: bool) -> (Value, u64) {
     let mut snapshot = json!({
         "t": "snapshot", "v": 3, "s": session.id, "q": inner.sequence,
@@ -567,6 +710,9 @@ fn build_snapshot(session: &Session, inner: &mut SessionInner, grid: bool) -> (V
 
 /// `publish`: advance the per-terminal sequence and fan the event out with
 /// send-side flow control (output/grid frames only).
+/// 中文：initializing 中的 attachment 先入 pending 队列等快照；
+/// output/grid 帧计入 pending_acks 并按 SEND_LAG 阈值抑制慢端；
+/// 其余事件（exit/resized/driverChanged 等）直发且不计流控。
 pub(crate) fn publish(
     state: &TerminalState,
     session: &Session,
@@ -645,6 +791,8 @@ pub(crate) fn publish(
 /// An attachment recovers (lag drained) by acknowledgment: prune the
 /// acknowledged prefix, and if it was suppressed, resynchronize it with a
 /// snapshot before live output resumes.
+/// 中文：q 及之前的事件全部出队；仍被抑制但积压已降到
+/// SEND_LAG_EXIT_BYTES 以下时解除抑制并补发快照。
 fn apply_ack(state: &TerminalState, connection: &Arc<Connection>, session_id: &str, q: f64) {
     let needs_snapshot = {
         let mut attachments = connection
@@ -682,6 +830,8 @@ fn apply_ack(state: &TerminalState, connection: &Arc<Connection>, session_id: &s
 
 /// Send a snapshot to one attachment and account for its bytes like any other
 /// frame, so a client that attaches and never reads is bounded too.
+/// 中文：已 detach 或仍处于握手中的 attachment 直接跳过；快照字节数
+/// 计入 sent_bytes 与 pending_acks，同样受流控约束。
 fn send_snapshot_to(connection: &Arc<Connection>, session: &Arc<Session>) {
     let feed = {
         let attachments = connection
@@ -717,6 +867,10 @@ fn send_snapshot_to(connection: &Arc<Connection>, session: &Arc<Session>) {
 // Viewport negotiation
 // ---------------------------------------------------------------------------
 
+/// 重算会话网格尺寸并按需 resize PTY 与 GridCore。DRIVEN 模式（有
+/// viewport_driver）：网格锁定驱动者尺寸并跟随其变化；IDLE 模式：取
+/// 所有已上报视口中最窄者为隐式所有者。尺寸变化分别发布
+/// driverChanged / resized 事件。
 pub(crate) fn recompute_grid(state: &Arc<TerminalState>, session: &Arc<Session>) {
     let mut inner = session.inner.lock().unwrap_or_else(|e| e.into_inner());
     // DRIVEN (forced ownership): the grid is locked to the claimer's effective
@@ -778,6 +932,8 @@ pub(crate) fn recompute_grid(state: &Arc<TerminalState>, session: &Arc<Session>)
     );
 }
 
+/// 广播当前驱动状态：有驱动者时携带 driverId/cols/rows；无驱动者时
+/// driverId 为 null 并回退到会话当前尺寸。
 pub(crate) fn broadcast_driver_changed(state: &Arc<TerminalState>, session: &Arc<Session>) {
     let mut inner = session.inner.lock().unwrap_or_else(|e| e.into_inner());
     let event = match &inner.viewport_driver {
@@ -798,6 +954,9 @@ pub(crate) fn broadcast_driver_changed(state: &Arc<TerminalState>, session: &Arc
 // Session event pump
 // ---------------------------------------------------------------------------
 
+/// 启动会话事件泵任务：以 Weak 引用消费 PTY 事件，Output 交
+/// process_output 处理，Exit 校验 process id 后更新状态并发布 exit
+/// 事件；会话对象销毁时泵随之退出，被替换进程的陈旧事件按 id 丢弃。
 fn spawn_session_pump(
     state: &Arc<TerminalState>,
     session: &Arc<Session>,
@@ -837,6 +996,7 @@ fn spawn_session_pump(
 
 /// Split the longest valid UTF-8 prefix; the incomplete tail carries over.
 /// Malformed bytes mid-stream are skipped (never buffered forever).
+/// 中文：返回（有效前缀长度, 需携带到下个 chunk 的尾部字节数）。
 fn split_utf8_prefix(input: &[u8]) -> (usize, usize) {
     match std::str::from_utf8(input) {
         Ok(_) => (input.len(), 0),
@@ -852,6 +1012,10 @@ fn split_utf8_prefix(input: &[u8]) -> (usize, usize) {
     }
 }
 
+/// 消费一段 PTY 原始输出（仅当 process id 匹配当前进程）：应答主题/
+/// 能力查询、清洗并追加滚动历史、组装跨 chunk 的 UTF-8 后发布 output
+/// 事件（清洗改变内容时附 r 字段）、写入 GridCore 并调度 grid drain、
+/// 扫描 OSC 133 命令边界发布 command-finished。
 fn process_output(
     state: &Arc<TerminalState>,
     session: &Arc<Session>,
@@ -918,6 +1082,8 @@ fn process_output(
 /// sequence numbers drift for events they cannot observe. Like the JS
 /// `setTimeout(0)` drain, the frame materializes after the current burst so
 /// consecutive outputs coalesce into one frame.
+/// 中文：同一会话同时只挂起一个 drain 任务；grid_token 不匹配说明网格
+/// 已被 restart/重置换代，任务直接放弃，由新网格接管标志位。
 pub(crate) fn schedule_grid_drain(
     state: &Arc<TerminalState>,
     session: &Arc<Session>,
@@ -954,17 +1120,25 @@ pub(crate) fn schedule_grid_drain(
 // Process spawning
 // ---------------------------------------------------------------------------
 
+/// 一次成功 PTY spawn 的结果与元信息。
 pub struct SpawnOutcome {
+    /// 新启动的 PTY 进程句柄。
     pub process: Arc<dyn PtyProcess>,
+    /// PTY 后端标识。
     pub backend: &'static str,
+    /// 实际使用的归一化 shell id。
     pub shell_id: String,
+    /// 是否以 login shell 模式启动。
     pub login_shell: bool,
+    /// 是否使用随应用分发的 conpty.dll（决定 primary DA 应答开关）。
     pub conpty_dll: bool,
 }
 
 /// Full replacement environment for PTY children (`spawnPty` env assembly).
 /// `NODE_CHANNEL_FD` is cleared (daemon IPC descriptors are host-private) and
 /// AppImage `ARGV0` plus host-private shell vars are stripped.
+/// 中文：同时覆写 PATH/TERM/COLORTERM，按主题设置 COLORFGBG，并清除
+/// 宿主私有的 BASH_XTRACEFD/BASH_ENV/ENV/ELECTRON_RUN_AS_NODE。
 pub fn build_child_env(
     parent: &HashMap<String, String>,
     augmented_path: &str,
@@ -991,6 +1165,8 @@ pub fn build_child_env(
     env
 }
 
+/// 拷贝宿主进程全部环境变量（OsString 经 lossy 转 String），作为 PTY
+/// 子进程环境的基底。
 fn parent_process_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
     for (key, value) in std::env::vars_os() {
@@ -1002,6 +1178,8 @@ fn parent_process_env() -> HashMap<String, String> {
     env
 }
 
+/// 在系统临时目录创建 前缀+随机 uuid 目录；名字碰撞最多重试 8 次，
+/// 其他 IO 错误直接返回 None。
 fn mktemp_dir(prefix: &str) -> Option<std::path::PathBuf> {
     for _ in 0..8 {
         let candidate = std::env::temp_dir().join(format!("{prefix}{}", random_uuid()));
@@ -1014,6 +1192,8 @@ fn mktemp_dir(prefix: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// 延迟 SHELL_INTEGRATION_CLEANUP_MS 后删除临时目录，给 shell 读取注入
+/// 文件留出时间；删除失败静默忽略。
 fn schedule_cleanup(dir: std::path::PathBuf) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(SHELL_INTEGRATION_CLEANUP_MS)).await;
@@ -1028,6 +1208,8 @@ fn schedule_cleanup(dir: std::path::PathBuf) {
 /// best-effort: skipped on Windows, for login shells, when the runtime
 /// disabled the seam, or when the user opts out.
 /// Returns the (possibly rewritten) argv.
+/// 中文：zsh 借临时 ZDOTDIR 的 .zshenv 注入，bash 改写为 --rcfile 启动，
+/// 其余 shell 原样返回 argv；任一环节失败都降级为不注入，绝不阻断启动。
 fn inject_shell_integration(
     opts: &TerminalOptions,
     shell_id: &str,
@@ -1092,6 +1274,9 @@ fn inject_shell_integration(
     args.to_vec()
 }
 
+/// 解析 shell 并逐个候选可执行文件尝试启动 PTY：组装 login 参数与子
+/// 进程环境、注入 shell 集成、处理 Linux PTY 启动包装；任一候选成功
+/// 即返回 SpawnOutcome，全部失败时返回最后一个错误文案。
 fn spawn_pty(
     state: &TerminalState,
     event_tx: &mpsc::UnboundedSender<PtyEvent>,
@@ -1163,6 +1348,8 @@ fn spawn_pty(
 
 /// `terminateProcess`: SIGTERM first, bounded SIGKILL escalation on grace
 /// timeout, immediate SIGKILL when `force`.
+/// 中文：force 为 true 直接强杀；否则先优雅终止，宽限（至少 1ms）内
+/// 未退出再升级为强杀。
 pub async fn terminate_process(process: Arc<dyn PtyProcess>, force: bool, grace_ms: u64) {
     if force {
         process.kill(true);
@@ -1181,6 +1368,7 @@ pub async fn terminate_process(process: Arc<dyn PtyProcess>, force: bool, grace_
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
+/// 校验 cwd：trim 后非空且必须是已存在的目录；错误文案与 JS 实现一致。
 async fn validate_cwd(cwd: &str) -> Result<(), String> {
     if cwd.trim().is_empty() {
         return Err("cwd is required".to_string());
@@ -1193,6 +1381,8 @@ async fn validate_cwd(cwd: &str) -> Result<(), String> {
 
 /// Apply an appearance update; write the mode report to the PTY when the
 /// subscribed mode is enabled and something actually changed.
+/// 中文：仅接受合法取值（themeMode 只认 light/dark）；无实际变化或
+/// shell 未订阅主题模式时不写 PTY，避免污染输入行。
 pub(crate) fn apply_appearance(inner: &mut SessionInner, body: &Value) {
     let previous = (
         inner.theme_mode,
@@ -1232,6 +1422,8 @@ pub(crate) fn apply_appearance(inner: &mut SessionInner, body: &Value) {
 
 /// `startSession`: spawn the PTY and (re)initialize the session record.
 /// `clear` resets replay/pending state (create + restart both clear).
+/// 中文：成功时重置会话字段、重建 GridCore 并自增 grid_token（使旧
+/// drain 失效）；使用自带 conpty.dll 时关闭 primary DA 应答。
 async fn start_session(
     state: &Arc<TerminalState>,
     session: &Arc<Session>,
@@ -1292,13 +1484,20 @@ async fn start_session(
 /// JS field presence semantics: parameter defaults apply only to `undefined`;
 /// `null` and other mismatched types keep their (invalid) value so the type
 /// validators reject them with the exact JS messages.
+/// 中文：Rust 侧用三态枚举区分字段缺失、合法、非法，精确复刻 JS
+/// 默认参数只对 undefined 生效的行为。
 pub enum JsField<T> {
+    /// 字段缺失（JS undefined），参数默认值生效。
     Absent,
+    /// 字段存在且类型匹配。
     Present(T),
+    /// 字段存在但类型不匹配；保留原值交给校验器按 JS 文案拒绝。
     Invalid,
 }
 
+/// JsField 的取值辅助。
 impl<T> JsField<T> {
+    /// Absent 或 Invalid 时取 fallback，Present 取内部值。
     fn value_or(self, fallback: T) -> T {
         match self {
             JsField::Absent | JsField::Invalid => fallback,
@@ -1307,20 +1506,31 @@ impl<T> JsField<T> {
     }
 }
 
+/// createSession 请求体的解码结果；字段三态语义见 JsField。
 pub struct CreateSessionRequest {
+    /// 客户端指定的会话 id；缺省随机生成，超长（>128）拒绝。
     pub session_id: Option<String>,
+    /// 工作目录，必填（空值报 cwd is required）。
     pub cwd: Option<String>,
+    /// 列数；Absent 默认 80，上限 1000。
     pub cols: JsField<f64>,
+    /// 行数；Absent 默认 24，上限 500。
     pub rows: JsField<f64>,
+    /// 主题模式字符串；非 "light" 一律按 dark 处理。
     pub theme_mode: Option<String>,
+    /// 客户端上报的终端背景色。
     pub terminal_background: Option<String>,
+    /// 客户端上报的终端前景色。
     pub terminal_foreground: Option<String>,
+    /// shell 选择；Absent 视为 auto，Present 值须能归一化。
     pub shell: JsField<String>,
+    /// 是否以 login shell 启动。
     pub login_shell: JsField<bool>,
 }
 
 /// JS `validateSize`: `Number.isInteger(value) && value >= 1 && value <= max`.
 /// `Invalid` (present non-number) and in-range failures both reject.
+/// 中文：Absent 视为通过（默认 80x24）。
 fn validate_size(value: &JsField<f64>, max: u16) -> bool {
     match value {
         JsField::Absent => true, // the defaulted size (80x24) always passes
@@ -1331,6 +1541,8 @@ fn validate_size(value: &JsField<f64>, max: u16) -> bool {
 
 /// `createSession`. Errors carry the JS message text; the caller maps
 /// `Maximum terminal sessions reached` to 429, everything else to 400.
+/// 中文：同 id 运行中会话校验 cwd 一致后直接复用；并发同 id 创建经
+/// watch channel 等待并复用首个创建者的结果；总量按 已建+在建 判定上限。
 pub async fn create_session(
     state: &Arc<TerminalState>,
     request: CreateSessionRequest,
@@ -1510,6 +1722,8 @@ pub async fn create_session(
     Ok(session)
 }
 
+/// 从创建请求提取 themeMode/terminalBackground/terminalForeground，
+/// 组装成 apply_appearance 可直接消费的 JSON body。
 fn appearance_body(request: &CreateSessionRequest) -> Value {
     json!({
         "themeMode": request.theme_mode,
@@ -1520,6 +1734,9 @@ fn appearance_body(request: &CreateSessionRequest) -> Value {
 
 /// `POST /api/terminal/:sessionId/restart`: serialized per terminal, spawning
 /// and wiring the replacement before terminating the old process.
+/// 中文：各字段回退值在排队前按 JS 的 nullish 语义捕获；替换进程就绪
+/// 后原子切换会话状态并重置回放/网格，旧进程后台优雅终止，最后广播
+/// restarted 事件。
 pub async fn restart_session(
     state: &Arc<TerminalState>,
     session: Arc<Session>,
@@ -1530,6 +1747,7 @@ pub async fn restart_session(
     // `??` falls through for undefined AND null; other mismatched types keep
     // their value so the validators below reject them in the JS order
     // (cwd, dimensions, login mode).
+    // JS ?? 语义的数值版本：undefined/null 回退，数字取值，其余记 NaN 交校验拒绝。
     let coalesce_number = |key: &str, fallback: f64| -> f64 {
         match body.get(key) {
             None | Some(Value::Null) => fallback,
@@ -1653,6 +1871,11 @@ pub async fn restart_session(
 // WebSocket transport
 // ---------------------------------------------------------------------------
 
+/// 单条终端 WebSocket 连接的完整生命周期：注册 Connection 并下发
+/// hello（含 connectionId）、按间隔发送心跳 ping，出站消息经 unbounded
+/// channel 由独立 writer 任务写回 socket；文本帧回 BAD_FRAME 错误，
+/// 二进制帧交 handle_ws_frame 处理，Close 或断开后中止 writer 并执行
+/// cleanup_connection。
 pub async fn run_socket(state: Arc<TerminalState>, socket: WebSocket) {
     let connection_id = random_uuid();
     let (tx, rx) = mpsc::unbounded_channel::<Message>();
@@ -1715,6 +1938,9 @@ pub async fn run_socket(state: Arc<TerminalState>, socket: WebSocket) {
     cleanup_connection(&state, &connection);
 }
 
+/// 连接关闭后的清理：摘除该连接全部 attachment、从连接表注销，并对
+/// 每个曾 attach 的会话释放驱动角色；随后兜底扫描所有会话，释放因
+/// detach/claim 竞争遗留的驱动角色——从未驱动过的会话不触发重算与广播。
 fn cleanup_connection(state: &Arc<TerminalState>, connection: &Arc<Connection>) {
     let attached: Vec<String> = {
         let mut attachments = connection
@@ -1757,6 +1983,9 @@ fn cleanup_connection(state: &Arc<TerminalState>, connection: &Arc<Connection>) 
         }
     }
 }
+/// 释放指定连接在该会话上的 viewport 驱动角色：若确为当前驱动者，
+/// 清空 viewport_driver、重算网格并广播 driverChanged；否则仅重算网格
+///（隐式所有者集合可能已变化）。
 fn release_driver_role(state: &Arc<TerminalState>, session: &Arc<Session>, connection_id: &str) {
     let was_driver = {
         let inner = session.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -1776,6 +2005,9 @@ fn release_driver_role(state: &Arc<TerminalState>, session: &Arc<Session>, conne
 }
 
 /// One inbound binary control frame (the `wsServer.on('message')` handler).
+/// 中文：先校验帧格式与 v/t 字段（ping 回 pong、hello 忽略），再按 t
+/// 分发 attach/viewport/claimViewport/releaseViewport/resync/ack/write/detach；
+/// 未知会话回致命 SESSION_NOT_FOUND，非法输入回非致命错误帧。
 fn handle_ws_frame(state: &Arc<TerminalState>, connection: &Arc<Connection>, raw: &[u8]) {
     let Some(message) = protocol::read_terminal_ws_control_frame(raw) else {
         send_to(

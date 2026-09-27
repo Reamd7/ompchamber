@@ -1,8 +1,23 @@
+/**
+ * GitHub PR 状态解析模块。
+ *
+ * 负责把本地 worktree 分支解析为对应的 GitHub PR：从目录的 git remotes 出发，
+ * 沿 fork 网络（parent/source）扩展候选仓库，按优先级在其中查找该分支的
+ * open PR 或最近一条 closed/merged 历史 PR，并附带仓库默认分支等元信息。
+ * 内部维护多级 TTL 缓存（repo 级 PR 列表、默认分支、repo 元数据、历史 PR、
+ * 搜索未命中）以摊平轮询之间的 GitHub API 调用；遇到 rate limit 时经
+ * rate-limit.js 的全局冷却门避让。模块入口为 resolveGitHubPrStatus。
+ */
 import { stat } from 'node:fs/promises';
 import { getRemotes, getStatus } from '../git/index.js';
 import { resolveGitHubRepoFromDirectory } from './repo/index.js';
 import { noteIfGitHubRateLimit } from './rate-limit.js';
 
+/**
+ * 判断目录是否仍然存在（stat 探测）。
+ * 已删除的 worktree 仍可能被侧栏会话轮询 PR 状态，先在此拦截，避免对
+ * 已消失的路径浪费 git 与 GitHub 调用；任何 stat 错误都按 false 处理。
+ */
 const directoryExists = async (dir) => {
   if (!dir) return false;
   try {
@@ -13,12 +28,21 @@ const directoryExists = async (dir) => {
   }
 };
 
+/** 仓库默认分支缓存的 TTL：5 分钟（见 defaultBranchCache）。 */
 const REPO_DEFAULT_BRANCH_TTL_MS = 5 * 60_000;
+/** 默认分支缓存：repoKey（小写 owner/repo）→ { defaultBranch, fetchedAt }。 */
 const defaultBranchCache = new Map();
+/** 仓库完整元数据缓存：repoKey → { data: repos.get 响应, fetchedAt }，TTL 同上。 */
 const repoMetadataCache = new Map();
 
+/** 把任意值规整为去除首尾空白的字符串；非字符串一律返回空串。 */
 const normalizeText = (value) => typeof value === 'string' ? value.trim() : '';
+/** 在 normalizeText 基础上再转小写，用于大小写不敏感的 owner/repo/分支比较。 */
 const normalizeLower = (value) => normalizeText(value).toLowerCase();
+/**
+ * 生成归一化的仓库键 `owner/repo`（两侧 trim + 小写）。
+ * 任一侧为空时返回空串，调用方据此跳过无效条目。
+ */
 const normalizeRepoKey = (owner, repo) => {
   const normalizedOwner = normalizeLower(owner);
   const normalizedRepo = normalizeLower(repo);
@@ -27,6 +51,10 @@ const normalizeRepoKey = (owner, repo) => {
   }
   return `${normalizedOwner}/${normalizedRepo}`;
 };
+/**
+ * 从 git 的 upstream 跟踪引用（如 `origin/feature`）中提取 remote 名。
+ * 无 `/` 或 `/` 位于首位时返回空串，表示没有可用的跟踪信息。
+ */
 const parseTrackingRemoteName = (trackingBranch) => {
   const normalized = normalizeText(trackingBranch);
   if (!normalized) {
@@ -39,6 +67,10 @@ const parseTrackingRemoteName = (trackingBranch) => {
   return normalized.slice(0, slashIndex).trim();
 };
 
+/**
+ * 从 git 的 upstream 跟踪引用（如 `origin/feature`）中提取分支名部分。
+ * 格式不合法（无分隔符、以分隔符结尾）时返回空串。
+ */
 const parseTrackingBranchName = (trackingBranch) => {
   const normalized = normalizeText(trackingBranch);
   if (!normalized) {
@@ -51,6 +83,10 @@ const parseTrackingBranchName = (trackingBranch) => {
   return normalized.slice(slashIndex + 1).trim();
 };
 
+/**
+ * 按 keyFn 归一化键去重后把 value 追加进 collection（原地修改）。
+ * 空值或归一化键为空时忽略；已存在相同键的元素时跳过，保证列表无重复。
+ */
 const pushUnique = (collection, value, keyFn = normalizeLower) => {
   const normalizedValue = normalizeText(value);
   if (!normalizedValue) {
@@ -66,6 +102,10 @@ const pushUnique = (collection, value, keyFn = normalizeLower) => {
   collection.push(normalizedValue);
 };
 
+/**
+ * 为候选 remote 名排序：显式指定的 remote 最先，其次是分支的跟踪 remote，
+ * 再是约定俗成的 origin/upstream，最后按 git 配置顺序补齐其余 remote。
+ */
 const rankRemoteNames = (remoteNames, explicitRemoteName, trackingRemoteName) => {
   const ranked = [];
   pushUnique(ranked, explicitRemoteName);
@@ -80,6 +120,11 @@ const rankRemoteNames = (remoteNames, explicitRemoteName, trackingRemoteName) =>
   return ranked;
 };
 
+/**
+ * 提取 PR head 侧的 owner 登录名。
+ * 依次尝试 head.repo.owner.login → head.user.login → head.label 冒号前缀，
+ * 全部缺失时返回空串。
+ */
 const getHeadOwner = (pr) => {
   const repoOwner = normalizeText(pr?.head?.repo?.owner?.login);
   if (repoOwner) {
@@ -96,7 +141,13 @@ const getHeadOwner = (pr) => {
   }
   return '';
 };
+/**
+ * 提取 PR head 侧的归一化仓库键。
+ * 优先 head.repo 的 owner+name；否则用 head.label 的 owner 段配合
+ * fallbackRepoName（目标仓库的名）拼出键；无法确定时返回空串。
+ */
 
+/** 提取 PR head 侧的归一化仓库键（owner/repo 形式），供来源匹配与排序使用。 */
 const getHeadRepoKey = (pr, fallbackRepoName) => {
   const repoOwner = normalizeText(pr?.head?.repo?.owner?.login);
   const repoName = normalizeText(pr?.head?.repo?.name);
@@ -114,6 +165,12 @@ const getHeadRepoKey = (pr, fallbackRepoName) => {
   return '';
 };
 
+/**
+ * 根据分支真正的来源仓库候选（sourceCandidates，按优先级排序）构建匹配器。
+ * matches 判断某个 PR 的 head 是否来自这些来源仓库（先精确匹配 repo 键，
+ * 再退化为仅匹配 owner）；compare 按同一优先级给 PR 排序，来源排名越靠前
+ * 得分越小，不属于任何来源的 PR 排最后（Number.POSITIVE_INFINITY）。
+ */
 const buildSourceMatcher = (sourceCandidates) => {
   const repoRank = new Map();
   const ownerRank = new Map();
@@ -161,6 +218,11 @@ const buildSourceMatcher = (sourceCandidates) => {
   return { matches, compare };
 };
 
+/**
+ * 查询仓库默认分支（main/master 等），带 5 分钟 TTL 缓存。
+ * 命中 repoMetadataCache 时直接复用元数据，省去一次重复的 repos.get；
+ * 请求失败时上报 rate limit 并返回 null（默认分支缺失只影响过滤，不致命）。
+ */
 const getRepoDefaultBranch = async (octokit, repo) => {
   const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
   if (!repoKey) {
@@ -200,6 +262,11 @@ const getRepoDefaultBranch = async (octokit, repo) => {
   }
 };
 
+/**
+ * 查询仓库完整元数据（含 fork 的 parent/source），带 TTL 缓存。
+ * 403/404 视为"确认拿不到"并缓存 null，短 TTL 内不再重试；其它错误在
+ * 上报 rate limit 后原样抛出，由调用方决定是否继续。
+ */
 const getRepoMetadata = async (octokit, repo) => {
   const repoKey = normalizeRepoKey(repo?.owner, repo?.repo);
   if (!repoKey) {
@@ -235,6 +302,11 @@ const getRepoMetadata = async (octokit, repo) => {
   }
 };
 
+/**
+ * 并发解析每个候选 remote 对应的 GitHub 仓库，再按传入的排名顺序以
+ * 归一化 repoKey 去重。任一 remote 解析失败只贡献 null 并被过滤，
+ * 不影响其余候选。
+ */
 const resolveRemoteCandidates = async (directory, rankedRemoteNames) => {
   // Resolve every ranked remote concurrently — they're independent git lookups.
   // Dedup afterwards in rank order so the result is identical to the previous
@@ -261,6 +333,12 @@ const resolveRemoteCandidates = async (directory, rankedRemoteNames) => {
   return results;
 };
 
+/**
+ * 把 remote 解析出的仓库候选扩展为完整查询目标集：并发拉取各候选的
+ * 元数据，把每个仓库连同其 fork parent（priority +0.1）与 source
+ * （priority +0.2）一并纳入，按 repoKey 去重后按 priority 升序返回，
+ * 使 fork 检出也能查到 upstream 上的 PR。
+ */
 const expandRepoNetwork = async (octokit, candidates) => {
   const expanded = [];
   const seenRepoKeys = new Set();
@@ -312,6 +390,11 @@ const expandRepoNetwork = async (octokit, candidates) => {
   return expanded.sort((left, right) => left.priority - right.priority);
 };
 
+/**
+ * 安全包装 octokit.rest.pulls.list 并返回 data 数组。
+ * 404/403（仓库不存在、无权限、rate limit）吞掉并返回空数组——列表缺失
+ * 只是减少候选，不应中断整个解析；其它错误继续抛出。
+ */
 const safeListPulls = async (octokit, options) => {
   try {
     const response = await octokit.rest.pulls.list(options);
@@ -325,13 +408,20 @@ const safeListPulls = async (octokit, options) => {
   }
 };
 
+/** repo 级 PR 列表缓存的 TTL：45 秒（见 repoPullsCache）。 */
 // Repo-level pull list, shared across every branch resolution. Ten worktree
 // branches of one repo need ONE pulls.list per state per TTL window, not ten
 // per-branch query fans. In-flight requests coalesce so concurrent branch
 // resolutions share a single GitHub call.
 const REPO_PULLS_CACHE_TTL_MS = 45_000;
+/**
+ * repo 级 pull 列表缓存：`owner/repo::state` → 在途 promise 或
+ * { fetchedAt, prs, complete } 结果。complete 表示第一页已覆盖全部 PR，
+ * 列表未命中即可视为权威结论。
+ */
 const repoPullsCache = new Map();
 
+/** 命中历史 PR（closed/merged）记录的缓存 TTL：6 小时，此类记录几乎不再变化。 */
 // Remembered answer to "what is the newest closed/merged PR for this head?",
 // so discovery polls do not re-ask GitHub every few minutes.
 //
@@ -341,10 +431,17 @@ const repoPullsCache = new Map();
 // merging a PR elsewhere flips it, so it expires far sooner. Either way, doing
 // it from OMPChamber invalidates the entry immediately.
 const HISTORICAL_PR_FOUND_TTL_MS = 6 * 60 * 60 * 1000;
+/** "该 head 尚无历史 PR"这一易变结论的缓存 TTL：10 分钟。 */
 const HISTORICAL_PR_ABSENT_TTL_MS = 10 * 60 * 1000;
+/** 历史 PR 缓存的最大条目数，超出后按插入序淘汰最旧条目。 */
 const HISTORICAL_PR_CACHE_MAX_ENTRIES = 500;
+/** 历史 PR 记忆缓存：`owner/repo::branch` → { pr, fetchedAt }，pr 为 null 表示查过且无历史。 */
 const _historicalPrCache = new Map();
 
+/**
+ * 判断历史 PR 缓存条目是否仍新鲜：有记录用长 TTL，无记录（pr 为 null）
+ * 用短 TTL，与两种结论的稳定性差异对应。
+ */
 const isHistoricalPrCacheFresh = (entry) => {
   if (!entry) {
     return false;
@@ -353,6 +450,10 @@ const isHistoricalPrCacheFresh = (entry) => {
   return Date.now() - entry.fetchedAt < ttl;
 };
 
+/**
+ * 写入历史 PR 缓存（pr 可为 null 表示"无历史"），先 delete 再 set 刷新
+ * LRU 位置，超限时淘汰最旧条目。
+ */
 const rememberHistoricalPr = (key, pr) => {
   _historicalPrCache.delete(key);
   _historicalPrCache.set(key, { pr, fetchedAt: Date.now() });
@@ -364,6 +465,11 @@ const rememberHistoricalPr = (key, pr) => {
   }
 };
 
+/**
+ * 作废指定仓库的 PR 相关缓存（在 OMPChamber 内创建 PR、合并、关闭后调用）：
+ * repo 级 pull 列表、该仓库的搜索未命中记录、以及历史 PR 记忆，
+ * 确保下一轮轮询立即看到最新状态。
+ */
 export const invalidateRepoPullsCache = (owner, repo) => {
   const prefix = `${normalizeText(owner)}/${normalizeText(repo)}::`;
   for (const key of repoPullsCache.keys()) {
@@ -388,6 +494,12 @@ export const invalidateRepoPullsCache = (owner, repo) => {
   }
 };
 
+/**
+ * 获取某仓库某 state 的 PR 列表（repo 级共享缓存）。
+ * 在途请求会被合并：并发调用共享同一个 promise；命中未过期缓存直接返回；
+ * force 为 true 时绕过 TTL 强制刷新。返回 { fetchedAt, prs, complete }，
+ * 失败时删除缓存条目并把错误抛给所有共享者。
+ */
 const getRepoPulls = (octokit, repo, state, { force = false } = {}) => {
   const key = `${normalizeText(repo.owner)}/${normalizeText(repo.repo)}::${state}`;
   const cached = repoPullsCache.get(key);
@@ -417,6 +529,10 @@ const getRepoPulls = (octokit, repo, state, { force = false } = {}) => {
   return promise;
 };
 
+/**
+ * 从 GitHub API URL（如 https://api.github.com/repos/OWNER/REPO）解析出
+ * { owner, repo }；路径不是 /repos/OWNER/REPO 结构或 URL 非法时返回 null。
+ */
 const parseRepoFromApiUrl = (value) => {
   const normalized = normalizeText(value);
   if (!normalized) {
@@ -439,17 +555,23 @@ const parseRepoFromApiUrl = (value) => {
   }
 };
 
+/** 记录 Search API 返回 403 的 repo 集合（token 缺少对应 org 权限），键为排序后的 repo 名集合。 */
 // Track repos where the GitHub Search API returned 403 (token lacks scope for that org)
 const _searchApiDisabledRepos = new Map();
+/** Search API 对某 repo 集合被禁用后的重试间隔：5 分钟。 */
 const SEARCH_API_RETRY_MS = 5 * 60 * 1000; // retry after 5 minutes
 
+/** 搜索未命中的退避间隔：10 分钟内同一 repo 集合加分支不再重复搜索。 */
 // The Search API has its own tiny quota (30/min). A branch that has no PR
 // would otherwise re-search on every poll; a miss is extremely unlikely to
 // change within minutes, so remember it per repo+branch and back off.
 const SEARCH_MISS_RETRY_MS = 10 * 60 * 1000;
+/** 搜索未命中缓存的最大条目数，超出后淘汰最旧条目。 */
 const SEARCH_MISS_CACHE_MAX_ENTRIES = 500;
+/** 搜索未命中缓存：`repoKey::branch` → 上次未命中的时间戳。 */
 const _searchMissCache = new Map();
 
+/** 记录一次搜索未命中（delete + set 刷新 LRU 位置并淘汰超限最旧条目）。 */
 const rememberSearchMiss = (key) => {
   _searchMissCache.delete(key);
   _searchMissCache.set(key, Date.now());
@@ -461,6 +583,14 @@ const rememberSearchMiss = (key) => {
   }
 };
 
+/**
+ * 列表查询全部落空后的 Search API 兜底：按 `is:pr state:open head:branch`
+ * 全局搜索，过滤出候选 repo 名内的结果，再逐条 pulls.get 验证 head ref
+ * 确为该分支，返回 { repo, pr } 或 null。
+ * 为保护 Search API 的小配额（30 次/分钟）：403 的 repo 集合 5 分钟内
+ * 不再尝试，404 与完全未命中记入 miss 缓存退避 10 分钟；rate limit
+ * 会上报全局冷却门。
+ */
 const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
   // Build a repo key to check/store 403 status per-repo
   const repoKey = [...repoNames].sort().join(',').toLowerCase();
@@ -541,8 +671,16 @@ const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
   return null;
 };
 
+/** 判断 PR 是否已终局（closed 或已 merged），用于区分实时状态与历史记录。 */
 const isTerminalPr = (pr) => Boolean(pr) && (pr.state === 'closed' || Boolean(pr.merged_at));
 
+/**
+ * 在单个目标仓库中解析分支关联的 PR，返回 { open, historical }：
+ * open 是该分支的实时状态，historical 是同一 head 最近一条 closed/merged
+ * 的 PR。调用方必须让"任意目标的 open PR"优先于"历史 PR"，否则已合并的
+ * fork PR 会遮住 upstream 上仍 open 的 PR。includeHistory 默认关闭且仅
+ * 应对主目标开启——实时状态值得搜索整个 fork 网络，历史不值得。
+ */
 /**
  * Resolve the PRs a branch is associated with in one repo target.
  *
@@ -632,6 +770,18 @@ const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidate
 // Exported for focused unit tests of open-versus-historical branch matching.
 export { findBranchPrCandidates };
 
+/**
+ * 解析某 worktree 目录某分支的 GitHub PR 状态（模块主入口）。
+ *
+ * 流程：确认目录存在 → 并发读取 git status/remotes → 由显式 remote、
+ * 跟踪 remote、origin/upstream 与全部 remote 排出候选 → 解析并沿 fork
+ * 网络扩展目标仓库 → 逐目标、逐分支候选（本地分支名与跟踪分支名）查找
+ * PR，无跨仓库来源时跳过默认分支 → 列表结论不权威时再用 Search API 兜底。
+ *
+ * 返回 { repo, pr, defaultBranch, resolvedRemoteName }：pr 优先为 open PR，
+ * 其次为首个找到的历史 PR，最后退化为无 PR 的仓库信息；目录不存在或
+ * 无可解析目标时各字段为 null。
+ */
 export async function resolveGitHubPrStatus({ octokit, directory, branch, remoteName, force = false }) {
   // A deleted worktree can still have a session in the sidebar that keeps
   // requesting its PR status. Bail before touching git or GitHub for a

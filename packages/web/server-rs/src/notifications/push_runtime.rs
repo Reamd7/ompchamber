@@ -3,6 +3,11 @@
 //! key lifecycle, web-push sending (RFC 8291 + 8292, see
 //! [`crate::notifications::crypto`]), and the UI visibility heartbeat
 //! model (30s TTL).
+//!
+//! 中文说明：本模块是 `server/lib/notifications/push-runtime.js` 的
+//! Rust 移植，负责 Web Push 订阅持久化（数据目录下的
+//! push-subscriptions.json）、VAPID 密钥生命周期、按 RFC 8291/8292 的
+//! 加密发送（实现在 crypto 模块），以及 30 秒 TTL 的 UI 可见性心跳模型。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,55 +20,87 @@ use crate::notifications::crypto;
 use crate::notifications::transport::HttpPost;
 use crate::settings::SettingsStore;
 
+/// push-subscriptions.json 的持久化格式版本；版本不匹配时整文件按空处理。
 pub const PUSH_SUBSCRIPTIONS_VERSION: u64 = 1;
+/// UI 可见性心跳的有效期（毫秒）：超过 30 秒未刷新即视为不可见。
 pub const UI_VISIBILITY_TTL_MS: u64 = 30_000;
+/// 每个 UI 会话最多保留的订阅条数（新订阅插到队头并截断）。
 const MAX_SUBSCRIPTIONS_PER_SESSION: usize = 10;
 
 /// `isLoopbackHttpOrigin` (push-runtime.js).
+///
+/// 中文说明：localhost / 127.0.0.1 / [::1] 的明文 http origin——
+/// 这类地址不能用作 VAPID subject，需回落到 mailto。
 fn is_loopback_http_origin(value: &str) -> bool {
     value.starts_with("http://localhost")
         || value.starts_with("http://127.0.0.1")
         || value.starts_with("http://[::1]")
 }
 
+/// 当前 Unix 毫秒时间戳（转发 crypto::now_ms，统一时钟来源）。
 fn now_ms() -> u64 {
     crypto::now_ms()
 }
 
 /// A client is "mobile" if it reports a native mobile platform; anything
 /// else (web, desktop, vscode, older clients) counts as interactive.
+///
+/// 中文说明：仅 ios/android 算移动端；web/desktop/vscode 及未上报平台
+/// 的旧客户端一律按交互式客户端对待。
 fn is_mobile_platform(platform: Option<&str>) -> bool {
     matches!(platform, Some("ios") | Some("android"))
 }
 
+/// 单个 UI 会话 token 的可见性心跳状态。
 #[derive(Debug, Clone)]
 struct VisibilityState {
+    /// 最近一次心跳是否前台可见。
     visible: bool,
+    /// 最近一次心跳的毫秒时间戳（TTL 判定依据）。
     updated_at: u64,
+    /// 上报的客户端平台（心跳省略时沿用旧值）。
     platform: Option<String>,
 }
 
 /// The `webPush.setVapidDetails(subject, publicKey, privateKey)` state.
+///
+/// 中文说明：VAPID 三元组——公私钥持久化在 settings 的 `vapidKeys` 下，
+/// 初始化完成后缓存在运行时内。
 #[derive(Debug, Clone)]
 pub struct VapidDetails {
+    /// VAPID subject：mailto 地址或 public origin。
     pub subject: String,
+    /// base64url 编码的 P-256 公钥（下发给浏览器）。
     pub public_key: String,
+    /// base64url 编码的 P-256 私钥（仅服务端持有）。
     pub private_key: String,
 }
 
 /// `normalizePushSubscriptions`: only entries whose endpoint/p256dh/auth
 /// are strings survive; `createdAt` becomes null when not a number, and
 /// `lastSeenAt`/`userAgent` do not survive normalization (as in JS).
+///
+/// 中文说明：规范化后的订阅记录——endpoint/p256dh/auth 任一不是字符串
+/// 即整条丢弃；createdAt 非数字时为 None；lastSeenAt/userAgent
+/// 不在规范化结果中保留（与 JS normalizePushSubscriptions 一致）。
 #[derive(Debug, Clone)]
 pub struct PushSubscription {
+    /// push 服务的订阅端点 URL（去重与删除的主键）。
     pub endpoint: String,
+    /// 浏览器生成的 P-256 公钥（base64url），载荷加密的接收公钥。
     pub p256dh: String,
+    /// 订阅的 auth secret（base64url），用于派生内容加密密钥。
     pub auth: String,
+    /// 订阅创建时间（毫秒），仅持久化时使用。
     pub created_at: Option<u64>,
+    /// 注册时上报的平台，决定 presence 门控策略。
     pub platform: Option<String>,
 }
 
+/// 订阅记录的 JSON 序列化实现。
 impl PushSubscription {
+    /// 序列化为 push-subscriptions.json 里的单条记录（保留平台与创建
+    /// 时间，不含规范化时丢弃的 lastSeenAt/userAgent）。
     fn to_json(&self) -> Value {
         json!({
             "endpoint": self.endpoint,
@@ -75,18 +112,30 @@ impl PushSubscription {
     }
 }
 
+/// Web Push 运行时：订阅持久化、VAPID 密钥生命周期、加密发送与
+/// UI 可见性追踪。
 pub struct PushRuntime {
+    /// push-subscriptions.json 的路径（位于数据目录下）。
     subscriptions_path: PathBuf,
+    /// settings 存储：VAPID 密钥与 publicOrigin 的存取。
     store: Arc<SettingsStore>,
+    /// 注入的 HTTP POST 传输缝（生产为 reqwest，测试为桩）。
     transport: HttpPost,
     /// Serializes read-modify-write cycles (the JS `persistPushSubscriptionsLock`).
+    ///
+    /// 中文说明：串行化订阅文件的读-改-写循环。
     persist_lock: tokio::sync::Mutex<()>,
+    /// 已初始化的 VAPID 详情；None 表示尚未初始化。
     vapid: tokio::sync::Mutex<Option<VapidDetails>>,
+    /// 初始化完成标记；publicOrigin 变更后由路由层复位以强制重建。
     push_initialized: AtomicBool,
+    /// UI 会话 token → 可见性状态的心跳表。
     visibility: Mutex<HashMap<String, VisibilityState>>,
 }
 
+/// 订阅持久化、VAPID 生命周期、发送与可见性的实现集合。
 impl PushRuntime {
+    /// 构造 push 运行时（返回 `Arc` 供路由与触发器共享）。
     pub fn new(
         subscriptions_path: PathBuf,
         store: Arc<SettingsStore>,
@@ -107,6 +156,8 @@ impl PushRuntime {
     // Subscription persistence
     // -----------------------------------------------------------------------
 
+    /// 读取并校验订阅文件，返回 `subscriptionsBySession` 映射。
+    /// 文件缺失、JSON 损坏、非对象或版本不匹配一律返回空 map（容错降级）。
     async fn read_subscriptions_from_disk(&self) -> Map<String, Value> {
         let raw = match tokio::fs::read_to_string(&self.subscriptions_path).await {
             Ok(raw) => raw,
@@ -138,6 +189,8 @@ impl PushRuntime {
         }
     }
 
+    /// 把会话映射写回磁盘（带版本头）；先确保父目录存在，
+    /// 写失败仅记日志、不向调用方报错。
     async fn write_subscriptions_to_disk(&self, sessions: &Map<String, Value>) {
         let document = json!({
             "version": PUSH_SUBSCRIPTIONS_VERSION,
@@ -153,6 +206,9 @@ impl PushRuntime {
     }
 
     /// `persistPushSubscriptionUpdate`: serialized read → mutate → write.
+    ///
+    /// 中文说明：在持久化锁内执行 读盘 → mutate → 写盘，
+    /// 避免并发更新互相覆盖（对应 JS 的 persistPushSubscriptionsLock）。
     async fn persist_update<F>(&self, mutate: F)
     where
         F: FnOnce(Map<String, Value>) -> Map<String, Value> + Send,
@@ -163,6 +219,8 @@ impl PushRuntime {
         self.write_subscriptions_to_disk(&next).await;
     }
 
+    /// 把某会话的原始 JSON 数组规范化为 `Vec<PushSubscription>`：
+    /// 非对象条目或字段缺失/类型不符的条目被静默丢弃。
     fn normalize_subscriptions(record: &Value) -> Vec<PushSubscription> {
         let Some(entries) = record.as_array() else {
             return Vec::new();
@@ -188,6 +246,10 @@ impl PushRuntime {
     }
 
     /// `addOrUpdatePushSubscription`.
+    ///
+    /// 中文说明：空 token 直接返回；同 endpoint 重新注册会移动到队头、
+    /// 刷新 createdAt/lastSeenAt 并继承旧平台；每会话最多保留
+    /// MAX_SUBSCRIPTIONS_PER_SESSION 条。
     pub async fn add_or_update_push_subscription(
         &self,
         ui_session_token: &str,
@@ -249,6 +311,8 @@ impl PushRuntime {
     }
 
     /// `removePushSubscription`.
+    ///
+    /// 中文说明：删除该会话下指定 endpoint 的订阅；删空后整个会话键移除。
     pub async fn remove_push_subscription(&self, ui_session_token: &str, endpoint: &str) {
         if ui_session_token.is_empty() || endpoint.is_empty() {
             return;
@@ -274,6 +338,8 @@ impl PushRuntime {
     }
 
     /// `removePushSubscriptionFromAllSessions`.
+    ///
+    /// 中文说明：push 服务返回 410/404 后，把该 endpoint 从所有会话清除。
     pub async fn remove_push_subscription_from_all_sessions(&self, endpoint: &str) {
         if endpoint.is_empty() {
             return;
@@ -309,6 +375,9 @@ impl PushRuntime {
 
     /// `getOrCreateVapidKeys`: persisted under `settings.vapidKeys`,
     /// generated on first use.
+    ///
+    /// 中文说明：优先复用 settings.vapidKeys 里已持久化的密钥对；
+    /// 缺失时新生成并写回（写失败映射为 io::Error 返回）。
     pub async fn get_or_create_vapid_keys(&self) -> Result<(String, String), std::io::Error> {
         let settings = self.store.read_migrated().await.unwrap_or_default();
         if let Some(keys) = settings.get("vapidKeys").and_then(Value::as_object) {
@@ -335,6 +404,10 @@ impl PushRuntime {
     }
 
     /// `resolveVapidSubject`.
+    ///
+    /// 中文说明：优先级 OMPCHAMBER_VAPID_SUBJECT > OMPCHAMBER_PUBLIC_ORIGIN
+    /// > settings.publicOrigin；回环 http 地址不能当 subject，
+    /// 统一回落 mailto:ompchamber@localhost。
     async fn resolve_vapid_subject(&self) -> String {
         let trimmed_env = |name: &str| {
             std::env::var(name)
@@ -367,6 +440,10 @@ impl PushRuntime {
     }
 
     /// `ensurePushInitialized`.
+    ///
+    /// 中文说明：幂等初始化——读取/生成密钥并解析 subject 后填入 VAPID
+    /// 详情；subject 回落 mailto 时打警告提示配置 publicOrigin。
+    /// 失败则保持未初始化，下次调用重试。
     pub async fn ensure_push_initialized(&self) {
         if self.push_initialized.load(Ordering::SeqCst) {
             return;
@@ -393,11 +470,15 @@ impl PushRuntime {
     }
 
     /// `setPushInitialized`.
+    ///
+    /// 中文说明：publicOrigin 更新后由路由层调用，强制下次重新初始化。
     pub fn set_push_initialized(&self, value: bool) {
         self.push_initialized.store(value, Ordering::SeqCst);
     }
 
     /// Test access to the initialized VAPID details.
+    ///
+    /// 中文说明：测试读取已初始化的 VAPID 详情。
     #[cfg(test)]
     pub async fn vapid_details_for_test(&self) -> Option<VapidDetails> {
         self.vapid.lock().await.clone()
@@ -410,6 +491,10 @@ impl PushRuntime {
     /// `sendPushToSubscription`: encrypt + POST. Returns the push-service
     /// status code, or `None` for pre-send failures and transport errors
     /// (which never drop the subscription).
+    ///
+    /// 中文说明：先确保初始化，再按 RFC 8291 加密载荷、生成 VAPID
+    /// Authorization 头并 POST 到订阅端点；返回 push 服务状态码。
+    /// 加密/签名失败或网络错误返回 None（这类失败不删除订阅）。
     async fn send_push_to_subscription(
         &self,
         subscription: &PushSubscription,
@@ -450,6 +535,10 @@ impl PushRuntime {
     /// `sendPushToAllUiSessions`: dedupe by endpoint across sessions, apply
     /// the `requireNoSse` presence gate per platform, send in parallel.
     /// 410/404 responses remove the endpoint from every session.
+    ///
+    /// 中文说明：跨会话按 endpoint 去重后并行发送；require_no_sse 时按
+    /// 平台做 presence 门控（移动端仅在交互式客户端可见时抑制，
+    /// 桌面/网页端任一可见即抑制）；410/404 会把端点从所有会话删除。
     pub async fn send_push_to_all_ui_sessions(
         self: &Arc<Self>,
         payload: &Value,
@@ -513,6 +602,8 @@ impl PushRuntime {
     // -----------------------------------------------------------------------
 
     /// `updateUiVisibility`.
+    ///
+    /// 中文说明：记录一次前后台心跳；平台缺省时沿用上次值，空 token 忽略。
     pub fn update_ui_visibility(&self, token: &str, visible: bool, platform: Option<&str>) {
         if token.is_empty() {
             return;
@@ -535,12 +626,15 @@ impl PushRuntime {
         );
     }
 
+    /// 清掉超过 TTL 未刷新的心跳条目（惰性清理，每次查询前调用）。
     fn prune_ui_visibility(&self, now: u64) {
         let mut visibility = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
         visibility.retain(|_, state| now.saturating_sub(state.updated_at) <= UI_VISIBILITY_TTL_MS);
     }
 
     /// `isAnyUiVisible`.
+    ///
+    /// 中文说明：任一会话的心跳仍有效且可见即返回 true。
     pub fn is_any_ui_visible(&self) -> bool {
         let now = now_ms();
         self.prune_ui_visibility(now);
@@ -550,6 +644,8 @@ impl PushRuntime {
 
     /// `isAnyInteractiveClientVisible`: at least one non-mobile client is
     /// currently visible.
+    ///
+    /// 中文说明：存在可见且非移动平台的客户端（移动端前台不抑制桌面推送）。
     pub fn is_any_interactive_client_visible(&self) -> bool {
         let now = now_ms();
         self.prune_ui_visibility(now);
@@ -560,6 +656,8 @@ impl PushRuntime {
     }
 
     /// `isUiVisible`.
+    ///
+    /// 中文说明：查询指定会话的可见性（心跳过期视为不可见）。
     pub fn is_ui_visible(&self, token: &str) -> bool {
         let now = now_ms();
         self.prune_ui_visibility(now);
@@ -568,6 +666,8 @@ impl PushRuntime {
     }
 
     /// Test hook: age every visibility beacon past the TTL.
+    ///
+    /// 中文说明：把所有心跳时间戳回拨超过 TTL，模拟全部过期。
     #[cfg(test)]
     pub fn expire_visibility_for_test(&self) {
         let mut visibility = self.visibility.lock().unwrap_or_else(|e| e.into_inner());
@@ -577,10 +677,13 @@ impl PushRuntime {
     }
 }
 
+/// 取订阅端点（发送任务里先抓取值，避免跨 await 持有借用）。
 fn runtime_endpoint(subscription: &PushSubscription) -> String {
     subscription.endpoint.clone()
 }
 
+/// push 运行时测试：可见性模型、订阅持久化规范化、VAPID 生命周期、
+/// RFC 8291 加密发送与 presence 门控。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,10 +691,14 @@ mod tests {
 
     /// Canonical base64url auth secret (browsers emit canonical base64;
     /// strict engines reject sloppy trailing bits).
+    ///
+    /// 中文说明：规范的 base64url auth secret——浏览器输出规范 base64url，
+    /// 严格实现会拒绝填充位不规范的输入。
     const AUTH_SECRET_B64: &str = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo";
     use crate::notifications::transport::HttpPostResponse;
     use std::time::Duration;
 
+    /// 创建一次性临时目录。
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "notif-push-{}-{}",
@@ -602,10 +709,13 @@ mod tests {
         dir
     }
 
+    /// 为临时目录构造指向 settings.json 的存储。
     fn store_for(dir: &PathBuf) -> Arc<SettingsStore> {
         crate::settings::store_for_path(&dir.join("settings.json"))
     }
 
+    /// 返回固定状态码的 transport 桩，并记录每次请求的
+    /// `(url, headers, body)` 供断言。
     fn fake_transport(
         status: u16,
     ) -> (
@@ -632,6 +742,7 @@ mod tests {
         (transport, requests)
     }
 
+    /// 验证多客户端可见性并存判定，且 TTL 过期后统一视为不可见。
     #[tokio::test]
     async fn keeps_visible_ui_state_when_another_client_reports_hidden() {
         let dir = temp_dir();
@@ -650,6 +761,7 @@ mod tests {
         assert!(!runtime.is_ui_visible("visible-client"));
     }
 
+    /// 验证仅 ios/android 算移动端；未上报平台按交互式保守处理。
     #[tokio::test]
     async fn only_mobile_platforms_are_non_interactive() {
         let dir = temp_dir();
@@ -671,6 +783,7 @@ mod tests {
         assert!(runtime.is_any_interactive_client_visible());
     }
 
+    /// 验证心跳省略平台时沿用上次上报的平台。
     #[tokio::test]
     async fn remembers_the_last_platform_when_a_heartbeat_omits_it() {
         let dir = temp_dir();
@@ -681,6 +794,7 @@ mod tests {
         assert!(!runtime.is_any_interactive_client_visible());
     }
 
+    /// 验证重注册继承平台、按 endpoint 去重并截断到每会话上限。
     #[tokio::test]
     async fn persists_subscriptions_with_platform_inheritance_and_cap() {
         let dir = temp_dir();
@@ -733,6 +847,7 @@ mod tests {
         assert_eq!(parsed["version"], json!(1));
     }
 
+    /// 验证删除最后一个订阅后整条会话键被移除。
     #[tokio::test]
     async fn removal_drops_the_session_key_when_empty() {
         let dir = temp_dir();
@@ -756,6 +871,7 @@ mod tests {
         );
     }
 
+    /// 验证 VAPID 密钥只生成一次并正确持久化/回读。
     #[tokio::test]
     async fn vapid_keys_generate_once_and_round_trip_through_settings() {
         let dir = temp_dir();
@@ -771,6 +887,7 @@ mod tests {
         assert_eq!(settings["vapidKeys"]["privateKey"], json!(private_key));
     }
 
+    /// 验证真实密钥下的 aes128gcm 加密发送头，以及 410 响应清理端点。
     #[tokio::test]
     async fn sends_encrypted_web_push_and_drops_dead_endpoints() {
         let dir = temp_dir();
@@ -844,6 +961,7 @@ mod tests {
         assert!(sessions.is_empty(), "410 removes the subscription");
     }
 
+    /// 验证 requireNoSse 下按平台差异化的抑制逻辑。
     #[tokio::test]
     async fn presence_gate_suppresses_only_matching_platforms() {
         let dir = temp_dir();
@@ -894,6 +1012,7 @@ mod tests {
         assert_eq!(recorded[0].0, "https://push/m");
     }
 
+    /// 验证 keyid 内嵌的临时公钥是合法 P-256 点（完整解密 KAT 在 crypto 模块）。
     #[tokio::test]
     async fn web_push_send_uses_real_subscription_keys() {
         // A receiver built from the subscription keys can parse the frame
@@ -926,6 +1045,7 @@ mod tests {
         assert!(p256::PublicKey::from_sec1_bytes(&body[21..86]).is_ok());
     }
 
+    /// 验证初始化填充 VAPID 详情，且复位后能从持久化密钥重建。
     #[tokio::test]
     async fn ensure_push_initialized_populates_vapid_details() {
         let dir = temp_dir();

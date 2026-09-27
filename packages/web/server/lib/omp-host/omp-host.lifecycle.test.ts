@@ -1,3 +1,10 @@
+/**
+ * LiveSession 生命周期矩阵测试（docs/plan.md §3.2-3.4/§4、验收 §10.1
+ * 「live 生命周期」）：目录键、逐出状态机、等待式 disposal、隔离墓碑、
+ * 活动守卫与 delete/move/shutdown 串行化。引擎注入假单调时钟与 agent
+ * 工厂；SessionManager 以 mock.module 打桩（接缝同 omp-host.engine.test），
+ * 引擎值在 mock.module 之后动态加载，以绑定桩化的 SDK 面。
+ */
 import { describe, expect, mock, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,15 +18,22 @@ import type { OmpHostEngine } from './engine.ts';
 // agent factory; SessionManager is module-mocked like omp-host.engine.test.
 // The engine VALUE loads dynamically after mock.module so it binds the
 // mocked SDK surface (same seam as omp-host.engine.test.ts).
+// 真实 SDK 面：mock 展开在其上，仅替换被桩成员。
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+// 真实 runtime-init 面：仅替换 initializeExtensions。
 const realRuntimeInit = await import('@oh-my-pi/pi-coding-agent/modes/runtime-init');
 
 // Per-harness state the top-level module mocks close over (registered before
 // any engine import so bun's mock.module applies to engine.ts's bindings).
+/** 顶层模块 mock 闭包引用的逐 harness 状态（在任何 engine import 之前
+ * 登记好，bun 的 mock.module 才能命中 engine.ts 的绑定）。 */
 interface LifecycleMockState {
+  // 当前 harness 的 agent 根目录（getDefaultSessionDir 用）。
   agentDir: string;
+  // SessionManager.list 返回的假会话文件清单。
   files: Array<{ path: string; cwd: string }>;
 }
+/** 顶层 mock 状态单例（createHarness 每次整体重置）。 */
 const mockState: LifecycleMockState = {
   agentDir: '',
   files: [],
@@ -77,34 +91,57 @@ mock.module('@oh-my-pi/pi-coding-agent/modes/runtime-init', () => ({
   initializeExtensions: async () => {},
 }));
 
+/** 引擎所需会话替身的鸭子类型：本套件断言触及的全部状态与行为面。 */
 interface FixtureSession {
+  // 名字/artifacts 目录查询与改名回调。
   sessionManager: {
     getSessionName: () => string;
     getArtifactsDir: () => string;
     onSessionNameChanged: (cb: () => void) => (() => void) | undefined;
   };
+  // 当前模型（provider/id）。
   model: { provider: string; id: string };
+  // 会话消息列表（本套件不填充内容）。
   messages: unknown[];
+  // 是否正在流式生成。
   isStreaming: boolean;
+  // 是否正在中止。
   isAborting: boolean;
+  // 是否正在自动重试。
   isRetrying: boolean;
+  // 是否正在压缩上下文。
   isCompacting: boolean;
+  // 是否正在生成 handoff。
   isGeneratingHandoff: boolean;
+  // 是否有 bash 执行中。
   isBashRunning: boolean;
+  // 是否有 eval 执行中。
   isEvalRunning: boolean;
+  // 是否有待决 bash 消息。
   hasPendingBashMessages: boolean;
+  // 是否有待决 Python 消息。
   hasPendingPythonMessages: boolean;
+  // prompt 之后是否仍有未完工作。
   hasPostPromptWork: boolean;
+  // 排队消息数。
   queuedMessageCount: number;
+  // 事件订阅（替身返回空注销函数）。
   subscribe: () => () => void;
+  // 异步工作是否未清空（disposal 等待依据）。
   hasPendingAsyncWork: () => boolean;
+  // 开始销毁的标记回调。
   beginDispose: () => void;
+  // 等待式销毁（可带 drain 超时）。
   dispose: (options?: { drainTimeoutMs?: number }) => Promise<void>;
+  // 提交一条 prompt。
   prompt: () => Promise<boolean>;
+  // 中止当前生成。
   abort: () => Promise<void>;
+  // 标题生成触发钩子。
   maybeStartTitleGeneration: () => void;
 }
 
+/** 构造一个默认全静默的会话替身（全部状态字段取安全缺省值）。 */
 const makeFixtureSession = (id: string, dir: string): FixtureSession => ({
   sessionManager: {
     getSessionName: () => `name-${id}`,
@@ -133,14 +170,22 @@ const makeFixtureSession = (id: string, dir: string): FixtureSession => ({
   maybeStartTitleGeneration: () => {},
 });
 
+/** 单个 harness 的测试操作面：引擎、假时钟、替身会话表与真实落盘路径。 */
 interface Harness {
+  // 被测引擎实例。
   engine: OmpHostEngine;
+  // 可手动推进的时间源（now 毫秒）。
   clock: { now: number };
+  // 按 sessionID 索引的替身会话。
   sessions: Map<string, FixtureSession>;
+  // 临时 agent 根目录。
   agentDir: string;
+  // 实际写盘的 .jsonl 路径（清理与断言用）。
   realPaths: string[];
 }
 
+/** 组装隔离 harness：临时 agentDir、假会话文件、假时钟，以及注入 agent
+ * 工厂与短真实时钟界限的引擎；sessionOverrides 可按 id 覆写替身行为。 */
 const createHarness = async ({
   sessionOverrides,
   files: extraFiles,
@@ -189,8 +234,12 @@ const createHarness = async ({
   return { engine, clock, sessions, agentDir, realPaths };
 };
 
+/** 等待真实毫秒让逐出/disposal 的异步清场落定（注册表无公开完成 Promise）。 */
 const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** LiveSessionRegistry 生命周期（plan §3.2-3.4）：空闲 TTL 逐出、UI 租约
+ * 与各类活动信号的逐出否决、disposal 时序与失败隔离墓碑、目录隔离，以及
+ * delete/move/shutdown 的串行化语义。 */
 describe('LiveSessionRegistry lifecycle (plan §3.2-3.4)', () => {
   test('idle TTL evicts a single live session — no live-count gate', async () => {
     const h = await createHarness();

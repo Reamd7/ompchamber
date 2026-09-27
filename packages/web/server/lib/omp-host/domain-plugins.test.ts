@@ -1,3 +1,8 @@
+/**
+ * OMP plugin 域测试：不透明 id 的编解码、capability 门控（关闭时不触
+ * list 源）、manifest 扩展投影（加载态与项目覆盖权限）、目录作用域的
+ * 列表透传，以及 revealCommand 的三平台文件管理器定位命令。
+ */
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,14 +16,17 @@ import {
 } from './domain-plugins.ts';
 import type { PluginListResult } from './domain-plugins.ts';
 
+/** 构造捕获 (method, pattern) → handler 的路由表替身。 */
 const makeRoute = () => {
   const handlers = new Map<string, unknown>();
   const route = (method: string, pattern: string, handler: import('./domain-plugins.ts').DomainRouteHandler) => handlers.set(`${method} ${pattern}`, handler);
   return { handlers, route };
 };
 
+/** 按 URL（可带 init）构造最小 Request。 */
 const request = (url: string, init?: RequestInit) => new Request(url, init);
 
+/** 插件域主套件：id 编解码、501 门控、投影与目录作用域列表。 */
 describe('OMP plugin domain', () => {
   test('uses opaque ids that preserve plugin kind, scope, and name', () => {
     const id = encodePluginId('npm', 'user', '@scope/example');
@@ -96,6 +104,7 @@ describe('OMP plugin domain', () => {
   });
 });
 
+/** revealCommand：darwin/linux/win32 三平台的「在文件管理器中显示」。 */
 describe('revealCommand', () => {
   test('darwin uses open -R for selection', () => {
     expect(revealCommand('darwin', '/repo/plug/index.ts')).toEqual({

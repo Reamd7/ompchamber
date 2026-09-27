@@ -1,7 +1,15 @@
+/**
+ * startup-pipeline-runtime 模块的单元测试。
+ *
+ * 验证启动管线的阶段顺序：监听（并拿到实际端口）→ 把端口发布给隧道
+ * 上下文 → 调度 OpenCode API 探测 → 最后才引导托管 OpenCode，确保
+ * 引导期间对外已有可用的监听端口。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import { createStartupPipelineRuntime } from './startup-pipeline-runtime.js';
 
+// 启动管线各阶段的执行顺序
 describe('startup pipeline runtime', () => {
   it('publishes the listening port before bootstrapping managed OpenCode', async () => {
     const order = [];

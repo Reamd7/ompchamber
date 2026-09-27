@@ -1,14 +1,28 @@
+/**
+ * 服务端启动运行时工厂：端口绑定（含 EADDRINUSE 有限重试）、监听成功后的
+ * 就绪 IPC 通知与可选隧道启动，以及进程级信号/异常处理器的挂接。
+ * 全部依赖（server、隧道控制器、gracefulShutdown 等）经 dependencies 注入。
+ */
 /** One stray uncaught exception is survivable; a storm means the process is broken. */
+// 中文补充：60 秒窗口内未捕获异常超过上限即判定为异常风暴，触发优雅停机。
 const UNCAUGHT_STORM_LIMIT = 10;
 const UNCAUGHT_STORM_WINDOW_MS = 60_000;
 // A restart races the previous instance's graceful shutdown, which can hold
 // the port for seconds (OpenCode teardown, socket drain). Without a bounded
 // EADDRINUSE retry the new instance dies instantly and nodemon parks in
 // "app crashed", leaving the dev proxy pointed at nothing.
+// 中文补充：绑定重试的默认间隔与总窗口 —— 上一个实例的优雅关闭可能占用端口
+// 数秒，新实例必须有限重试而不是立即退出（否则 nodemon 会停在崩溃态）。
 const DEFAULT_BIND_RETRY_INTERVAL_MS = 500;
 const DEFAULT_BIND_RETRY_WINDOW_MS = 20_000;
 
 
+/**
+ * 创建服务端启动运行时：dependencies 注入 process/crypto/server、隧道
+ * bootstrap TTL 归一化、设置读取、隧道鉴权与启动器、gracefulShutdown、信号
+ * 挂接状态存取、HMR 同步、隧道模式常量，以及可覆盖的绑定重试间隔/窗口；
+ * 返回 resolveBindHost、startListeningAndMaybeTunnel 与 attachProcessHandlers。
+ */
 export const createServerStartupRuntime = (dependencies) => {
   const {
     process,
@@ -29,16 +43,27 @@ export const createServerStartupRuntime = (dependencies) => {
     bindRetryWindowMs = DEFAULT_BIND_RETRY_WINDOW_MS,
   } = dependencies;
 
+  /**
+   * 解析实际绑定主机：显式 host 优先，其次环境变量 OMPCHAMBER_HOST（非空白），
+   * 最后回退 127.0.0.1（默认只监听本机，避免意外暴露）。
+   */
   const resolveBindHost = (host) =>
     host
     || (typeof process.env.OMPCHAMBER_HOST === 'string' && process.env.OMPCHAMBER_HOST.trim().length > 0
       ? process.env.OMPCHAMBER_HOST.trim()
       : '127.0.0.1');
 
+  /** 等待 ms 毫秒后 resolve；setTimeout 句柄尽可能 unref，不阻塞进程退出。 */
   const wait = (ms) => new Promise((resolve) => {
     setTimeout(resolve, ms).unref?.();
   });
 
+  /**
+   * 监听端口并在 EADDRINUSE 时有限重试：按 bindRetryIntervalMs 间隔重试，
+   * 直至超过 bindRetryWindowMs 窗口或出现其它错误才抛出；首次遇到端口占用
+   * 打一条日志（仅一次）。监听成功后 resolve，onListening 作为回调传给
+   * server.listen。
+   */
   const listenWithBindRetry = async ({ port, bindHost, onListening }) => {
     const deadline = Date.now() + bindRetryWindowMs;
     let busyLogged = false;
@@ -76,6 +101,14 @@ export const createServerStartupRuntime = (dependencies) => {
     }
   };
 
+  /**
+   * 监听端口并执行启动期动作，返回 { activePort }（请求端口为 0 时是实际
+   * 分配端口）。监听成功后：若运行于 IPC 子进程模式，先经 process.send 发送
+   * ompchamber:ready 与端口（通道已断开则直接失败）；打印监听与健康检查地址；
+   * 若携带 startupTunnelRequest 则按其模式启动隧道 —— 成功后登记活动隧道、
+   * 签发一次性 bootstrap token 并生成 connect URL（经 onTunnelReady 回调或
+   * 打印日志），失败仅告警并继续无隧道运行。
+   */
   const startListeningAndMaybeTunnel = async ({
     port,
     bindHost,
@@ -174,8 +207,16 @@ export const createServerStartupRuntime = (dependencies) => {
     return { activePort };
   };
 
+  /**
+   * 挂接进程级处理器：按需注册信号处理器（SIGTERM/SIGINT/SIGQUIT/SIGHUP/
+   * SIGUSR2 一律走 gracefulShutdown，确保托管的 OpenCode 子进程被优雅回收
+   * 而非成为孤儿）；unhandledRejection 只记日志不退出；uncaughtException
+   * 记日志并做 60 秒滑动窗口计数，超过 UNCAUGHT_STORM_LIMIT 个才触发停机
+   * （孤立的偶发异常不至于让实例失联）。
+   */
   const attachProcessHandlers = ({ attachSignals }) => {
     if (attachSignals && !getSignalsAttached()) {
+      /** 信号统一入口：等待优雅关闭完成。 */
       const handleSignal = async () => {
         await gracefulShutdown();
       };

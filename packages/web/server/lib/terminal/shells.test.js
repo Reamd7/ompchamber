@@ -1,7 +1,13 @@
+/**
+ * （中文套件说明）终端 shell 解析器测试：从增强 PATH 与 /etc/shells
+ * 发现 shell、Windows 的 PATH 安装发现、auto 模式的环境覆盖优先级，
+ * 以及各平台登录参数的正确取值。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createTerminalShellResolver, getTerminalShellLoginArgs } from './shells.js';
 
+/** 构建注入了假 fs/path/PATH 检索的 shell 解析器，并记录每次 PATH 搜索。 */
 const createResolver = ({ platform = 'linux', env = {}, augmentedPath = '/augmented/bin', executables = [] } = {}) => {
   const available = new Set(executables);
   const path = {
@@ -32,6 +38,7 @@ const createResolver = ({ platform = 'linux', env = {}, augmentedPath = '/augmen
   };
 };
 
+// 终端 shell 解析器：发现顺序、平台差异与登录参数。
 describe('terminal shell resolver', () => {
   it('discovers shells from the augmented PTY PATH', async () => {
     const { resolver, searches } = createResolver({ executables: ['/augmented/bin/fish'] });

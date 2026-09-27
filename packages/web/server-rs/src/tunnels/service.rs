@@ -1,6 +1,11 @@
 //! Port of `server/lib/tunnels/index.js` (`createTunnelService`): provider
 //! orchestration with the start mutex, replace-on-change semantics, and
 //! missing-dependency / startup-failure error mapping.
+//! （中文说明）provider 编排服务（createTunnelService 的移植）：以互斥
+//! 锁串行化启动请求；mode 与 provider 未变时复用现有隧道，变化时先停
+//! 旧再启新；启动前检查依赖可用性，并把各类失败映射为带稳定错误码的
+//! TunnelServiceError（provider_unsupported、missing_dependency、
+//! startup_failed 等）。
 
 use std::sync::{Arc, Mutex};
 
@@ -16,25 +21,40 @@ use super::types::{
     normalize_tunnel_start_request, validate_tunnel_start_request,
 };
 
+/// tunnel 生命周期编排服务：包装 provider registry 与共享的活动隧道
+/// 槽位，对外提供 start/stop 与状态查询。
 pub struct TunnelService {
+    /// 已注册的 provider 集合（构造后只读）。
     registry: Arc<TunnelProviderRegistry>,
+    /// 与外部共享的活动隧道槽位（支持服务层之外的停机路径）。
     controller: Arc<Mutex<Option<TunnelController>>>,
+    /// 返回当前会话活动端口的回调，用于构造 origin URL。
     get_active_port: Arc<dyn Fn() -> Option<u16> + Send + Sync>,
+    /// quick 模式启动成功后的告警回调（提示临时隧道不稳定的横幅）。
     on_quick_tunnel_warning: Option<Arc<dyn Fn() + Send + Sync>>,
     /// `startLock`: JS promise-chain mutex preventing concurrent starts from
     /// orphaning child processes.
+    /// （中文）启动互斥锁：同一时刻只允许一个 start 流程，防止并发启动
+    /// 泄漏孤儿子进程。
     start_lock: tokio::sync::Mutex<()>,
 }
 
+/// start 成功的结果，路由层据此构造响应。
 #[derive(Debug)]
 pub struct StartOutcome {
+    /// 当前有效的公开 URL。
     pub public_url: String,
+    /// 当前活动 mode。
     pub active_mode: String,
+    /// provider 标识。
     pub provider: String,
+    /// provider 附加元数据（无则为 null）。
     pub provider_metadata: Value,
 }
 
+/// 生命周期管理与状态查询实现。
 impl TunnelService {
+    /// 注入 registry、共享槽位、端口回调与告警回调构造服务。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Arc<TunnelProviderRegistry>,
@@ -51,6 +71,8 @@ impl TunnelService {
         }
     }
 
+    /// 克隆当前活动 controller（无隧道为 None）；锁中毒时取回内部值
+    /// 继续而不是 panic。
     fn current_controller(&self) -> Option<TunnelController> {
         self.controller
             .lock()
@@ -58,6 +80,7 @@ impl TunnelService {
             .clone()
     }
 
+    /// 替换活动槽位；传入 None 表示清除。
     fn set_controller(&self, next: Option<TunnelController>) {
         *self
             .controller
@@ -66,6 +89,9 @@ impl TunnelService {
     }
 
     /// `stop()` — returns whether an active tunnel was stopped.
+    /// （中文）停止活动隧道：优先委托对应 provider 的 stop 实现，无
+    /// provider 时直接调用 controller 的 stop 句柄；随后清空槽位。
+    /// 返回是否确有隧道被停止。
     pub fn stop(&self) -> bool {
         let Some(controller) = self.current_controller() else {
             return false;
@@ -84,6 +110,8 @@ impl TunnelService {
     }
 
     /// `checkAvailability(providerId)`.
+    /// （中文）查询指定 provider 的可用性；未知 provider 返回
+    /// provider_unsupported 错误。
     pub async fn check_availability(
         &self,
         provider_id: &str,
@@ -98,17 +126,21 @@ impl TunnelService {
     }
 
     /// `resolveActiveMode()`.
+    /// （中文）当前隧道的 mode；无活动隧道返回 None。
     pub fn resolve_active_mode(&self) -> Option<String> {
         self.current_controller().map(|controller| controller.mode)
     }
 
     /// `resolveActiveProvider()`.
+    /// （中文）当前隧道的 provider 标识；无活动隧道返回 None。
     pub fn resolve_active_provider(&self) -> Option<String> {
         self.current_controller()
             .and_then(|controller| controller.provider)
     }
 
     /// `getPublicUrl()`.
+    /// （中文）当前公开 URL：有注册 provider 时委托其 resolve_public_url
+    /// （managed 模式可动态推导），否则直接读 controller 存储值。
     pub fn get_public_url(&self) -> Option<String> {
         let controller = self.current_controller()?;
         match controller
@@ -122,6 +154,8 @@ impl TunnelService {
     }
 
     /// `getProviderMetadata()`.
+    /// （中文）当前 provider 元数据：委托 provider 的 get_metadata；
+    /// 无隧道或无 provider 返回 null。
     pub fn get_provider_metadata(&self) -> Value {
         let Some(controller) = self.current_controller() else {
             return Value::Null;
@@ -137,6 +171,14 @@ impl TunnelService {
     }
 
     /// `start(rawRequest)`.
+    /// （中文）启动或复用隧道，整体流程：持锁串行、归一化请求、解析
+    /// provider（未知报 provider_unsupported）、按能力表校验；若现有
+    /// 隧道与请求的 mode/provider 一致则直接复用其 URL，否则先停旧
+    /// 隧道，检查依赖可用性（不可用报 missing_dependency 并附安装
+    /// 指引），以活动端口构造 origin 调用 provider.start（服务错误
+    /// 透传、原始错误包装为 startup_failed），落位槽位并回填 provider；
+    /// 启动后仍无公开 URL 则停掉并报 startup_failed。quick 模式成功后
+    /// 触发告警回调。返回 URL、mode、provider 与元数据。
     pub async fn start(&self, raw_request: Value) -> Result<StartOutcome, TunnelServiceError> {
         // Serialize starts (JS awaits the previous startLock holder).
         let _guard = self.start_lock.lock().await;
@@ -249,6 +291,8 @@ impl TunnelService {
     }
 }
 
+/// 服务编排行为测试：启动错误透传、provider 变化时替换、同参数复用、
+/// 未知 provider 与依赖缺失的错误码，以及空停机。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,14 +304,21 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    /// 可编程的 provider 桩：可控可用性与启动失败，并统计启动次数。
     struct FakeProvider {
+        /// provider 标识。
         id: &'static str,
+        /// check_availability 报告的可用性。
         available: bool,
+        /// start 被调用的次数（原子计数）。
         started: AtomicUsize,
+        /// 非空时 start 返回该消息对应的原始失败。
         start_error: Option<String>,
     }
 
+    /// 三种预设构造：默认可用、不可用、启动必败。
     impl FakeProvider {
+        /// 默认可用且不注入失败的桩。
         fn new(id: &'static str) -> Arc<Self> {
             Arc::new(Self {
                 id,
@@ -277,6 +328,7 @@ mod tests {
             })
         }
 
+        /// 报告依赖不可用的桩（触发 missing_dependency 路径）。
         fn unavailable(id: &'static str) -> Arc<Self> {
             Arc::new(Self {
                 id,
@@ -286,6 +338,7 @@ mod tests {
             })
         }
 
+        /// start 时返回固定原始错误的桩（触发 startup_failed 包装）。
         fn failing(id: &'static str, message: &str) -> Arc<Self> {
             Arc::new(Self {
                 id,
@@ -296,16 +349,22 @@ mod tests {
         }
     }
 
+    /// TunnelProvider 的最小桩实现：能力表仅含 quick 模式。
     impl TunnelProvider for FakeProvider {
+        /// 返回桩的固定标识。
         fn id(&self) -> &'static str {
             self.id
         }
 
+        /// 返回最小 capabilities JSON。
         fn capabilities_json(&self) -> Value {
             json!({ "provider": self.id })
         }
 
+        /// 返回静态单元素 quick 能力表。
         fn mode_descriptors(&self) -> &'static [super::super::types::ModeDescriptor] {
+            // 静态能力表：trait 方法需返回 'static 生命周期切片，用常量
+            // 表满足（编译期构造，无运行时开销）。
             static MODES: [super::super::types::ModeDescriptor; 1] =
                 [super::super::types::ModeDescriptor {
                     key: "quick",
@@ -318,6 +377,7 @@ mod tests {
             &MODES
         }
 
+        /// 返回构造时设定的可用性，其余字段留空。
         fn check_availability(&self) -> BoxFuture<'static, AvailabilityInfo> {
             let available = self.available;
             Box::pin(async move {
@@ -333,10 +393,13 @@ mod tests {
             })
         }
 
+        /// 返回空的诊断结构。
         fn diagnose(&self, _request: DiagnoseRequest) -> BoxFuture<'static, Value> {
             Box::pin(async { json!({ "providerChecks": [], "modes": [] }) })
         }
 
+        /// 计数后按注入返回失败，或返回以 provider 命名的示例 URL 的
+        /// controller。
         fn start(
             &self,
             request: TunnelStartRequest,
@@ -360,15 +423,19 @@ mod tests {
             })
         }
 
+        /// 调用 controller 自带的 stop 句柄。
         fn stop(&self, controller: &TunnelController) {
             controller.stop();
         }
 
+        /// 恒返回 null。
         fn get_metadata(&self, _controller: Option<&TunnelController>) -> Value {
             Value::Null
         }
     }
 
+    /// 用给定 provider 构建注册表与服务（固定活动端口 3000、无告警
+    /// 回调），返回服务与共享槽位。
     fn service_with(
         providers: Vec<Arc<dyn TunnelProvider>>,
     ) -> (Arc<TunnelService>, Arc<Mutex<Option<TunnelController>>>) {
@@ -387,6 +454,8 @@ mod tests {
         (service, slot)
     }
 
+    /// provider 的原始启动错误被包装为 startup_failed 并把消息透传给
+    /// 路由调用方。
     #[tokio::test]
     async fn returns_provider_startup_errors_to_route_callers() {
         // JS index.test.js: 'returns provider startup errors to route callers'.
@@ -401,6 +470,8 @@ mod tests {
         assert_eq!(error.message, "ngrok authtoken is not configured");
     }
 
+    /// provider 变化时先停止旧隧道（stop 句柄被调用）再用新 provider
+    /// 启动。
     #[tokio::test]
     async fn replaces_an_active_quick_tunnel_when_the_provider_changes() {
         // JS index.test.js: 'replaces an active quick tunnel when the provider
@@ -446,6 +517,7 @@ mod tests {
         assert_eq!(result.public_url, "https://ngrok.example-tunnel.dev");
     }
 
+    /// mode 与 provider 均未变化时复用现有 URL，不触发新的 start。
     #[tokio::test]
     async fn reuses_active_tunnel_for_same_mode_and_provider() {
         let cloudflare = FakeProvider::new("cloudflare");
@@ -467,6 +539,7 @@ mod tests {
         assert_eq!(cloudflare.started.load(Ordering::SeqCst), 0, "no restart");
     }
 
+    /// 未注册的 provider 返回 provider_unsupported 错误码与消息。
     #[tokio::test]
     async fn unknown_provider_is_rejected() {
         let (service, _slot) = service_with(vec![
@@ -480,6 +553,7 @@ mod tests {
         assert_eq!(error.message, "Unsupported tunnel provider: ngrok");
     }
 
+    /// 依赖不可用时返回 missing_dependency 且消息包含安装指引。
     #[tokio::test]
     async fn missing_dependency_reports_install_message() {
         let (service, _slot) = service_with(vec![
@@ -497,6 +571,7 @@ mod tests {
         );
     }
 
+    /// 无活动隧道时 stop 返回 false。
     #[tokio::test]
     async fn stop_without_active_tunnel_returns_false() {
         let (service, _slot) = service_with(vec![
@@ -505,6 +580,7 @@ mod tests {
         assert!(!service.stop());
     }
 
+    /// 冒烟：quick 隧道告警横幅可正常打印（不逐字节断言输出）。
     #[test]
     fn print_tunnel_warning_writes_banner() {
         // Smoke: mirrors JS console.log output; not asserted byte-for-byte.

@@ -1,3 +1,10 @@
+/**
+ * 隧道服务（createTunnelService）测试套件。
+ *
+ * 覆盖服务编排的两个核心行为：提供商启动异常向路由调用方透传
+ * （普通 Error 被包装为 TunnelServiceError/startup_failed 且保留原始消息），
+ * 以及切换提供商时对活动隧道的替换（先停旧隧道再启动新提供商的隧道）。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import { createTunnelService } from './index.js';
@@ -8,6 +15,8 @@ import {
   TUNNEL_PROVIDER_NGROK,
 } from './types.js';
 
+/** 构造满足服务协议的最小提供商桩：capabilities 声明 quick 模式，
+ *  start/stop/resolvePublicUrl 可按用例定制，默认实现均可用。 */
 const createProvider = ({ provider, start, stop, resolvePublicUrl }) => ({
   id: provider,
   capabilities: {
@@ -20,10 +29,12 @@ const createProvider = ({ provider, start, stop, resolvePublicUrl }) => ({
   resolvePublicUrl: resolvePublicUrl || ((controller) => controller?.getPublicUrl?.() ?? null),
 });
 
+/** 构造以普通对象为底的注册表桩（仅需 get 方法）。 */
 const createRegistry = (providers) => ({
   get: (providerId) => providers[providerId] ?? null,
 });
 
+/** 服务编排行为：启动错误透传与跨提供商替换。 */
 describe('createTunnelService', () => {
   it('returns provider startup errors to route callers', async () => {
     let controller = null;

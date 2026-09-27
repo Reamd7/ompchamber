@@ -1,8 +1,15 @@
+/**
+ * 【测试套件】relay service 的被动托管（passive hosting）策略：禁用被动托管时
+ * 不抢占锁、不启动 host 并保持 standby；显式配对（ensureEnabledForPairing）
+ * 即使在被动托管禁用下仍 forceClaim 抢占。service 以预置签名密钥 + mock hostLock 构建，
+ * 避免测试期间重新生成签名密钥。
+ */
 import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 
 import { createRelayService } from './service.js';
 
+/** 构建被测 relay service：预生成 ECDSA 签名密钥的内存 settings + 全绿 mock hostLock，返回 { service, hostLock, getSettings }。 */
 const makeService = (options = {}) => {
   // In-memory settings store with a pre-seeded relay identity so the service
   // never regenerates a signing key during the test.
@@ -36,6 +43,7 @@ const makeService = (options = {}) => {
   return { service, hostLock, getSettings: () => settings };
 };
 
+// 主 describe：被动托管的开关语义与显式配对的强制抢占路径。
 describe('relay service passive hosting', () => {
   it('never claims or starts the host passively when passive hosting is disabled', async () => {
     const { service, hostLock } = makeService({ allowPassiveHost: false });

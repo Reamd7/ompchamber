@@ -1,10 +1,18 @@
+/**
+ * session-runtime.js 的单元测试套件：OpenCode SSE 载荷处理与 attention 广播、
+ * 活跃会话计数的幂等性、重启后 busy 会话的中断与终态事件去重、活动冷却状态机
+ * 以及 dispose 时的状态释放。运行时实例统一登记以便 afterEach 释放。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSessionRuntime } from './session-runtime.js';
 
+/** 验证会话运行时对 SSE 事件、attention 通知、busy 中断与活动冷却状态机的处理。 */
 describe('session runtime', () => {
+  // 登记每个用例创建的运行时实例，afterEach 统一 dispose 防止句柄泄漏。
   const runtimes = [];
 
+  // 逐个释放登记的运行时并清空登记表。
   afterEach(() => {
     for (const runtime of runtimes) {
       runtime.dispose();

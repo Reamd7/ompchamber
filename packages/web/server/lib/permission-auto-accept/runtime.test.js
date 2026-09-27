@@ -1,6 +1,17 @@
+/**
+ * 权限自动放行运行时的单元测试。
+ *
+ * 覆盖：策略跨运行时重启持久化与 revision 单调递增；子代理沿祖先链
+ * 继承最近的显式策略（必要时先拉取会话信息补全血缘）；放行请求的瞬时
+ * 失败重试与并发事件去重；重连后以及开启会话开关后的存量权限对账。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import { createPermissionAutoAcceptRuntime } from './runtime.js';
 
+/**
+ * 构造被测运行时：内存版 settings 读写、捕获事件/状态回调的 event hub
+ * stub 与可注入的 fetchImpl；start() 后返回 runtime 与 emit/connect 触发器。
+ */
 const createRuntime = ({ stored, fetchImpl, retryDelaysMs = [0] } = {}) => {
   let settings = stored ?? { permissionAutoAccept: { sessions: {} } };
   let eventHandler;
@@ -26,10 +37,12 @@ const createRuntime = ({ stored, fetchImpl, retryDelaysMs = [0] } = {}) => {
   };
 };
 
+/** 连续 await 若干轮微任务，让后台 promise 链（重试/对账）跑完。 */
 const flush = async () => {
   for (let index = 0; index < 20; index += 1) await Promise.resolve();
 };
 
+// 权限自动放行运行时的策略继承、重试与对账行为
 describe('permission auto-accept runtime', () => {
   it('persists explicit session policies across runtime restarts', async () => {
     const first = createRuntime();

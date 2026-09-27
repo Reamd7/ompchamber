@@ -6,6 +6,13 @@
 // - SessionManager.appendModeChange(mode, data?) — session-manager.ts:2179.
 // - preparePlanForReview result — agent-session.ts:933-948:
 //   { content:[{type:'text',...}], details:{planFilePath,title,planExists} }.
+/**
+ * domain-modes 域的测试套件（spec 02）：mode tracker 状态机与投影、agent
+ * 定义 CRUD（.md 存储 + 真实 SDK 解析器往返）、sidecar 迁移、personas、
+ * plan review 桥，以及域组装与路由挂载。被测模块依赖的 SDK 经 mock.module
+ * 注入：仅替换 BUILTIN_TOOLS，其余保持真实导出；文件头列出的 SDK 形态
+ * 均已对照安装源码核实出处。
+ */
 
 import { describe, test, expect, mock, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -35,13 +42,17 @@ import type {
   PreparePlanReviewResult,
 } from './domain-modes.ts';
 
+/** 动态加载真实 SDK 的全部导出，作为下方 mock.module 替换的基底。 */
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+/** 真实 SDK 的 agent frontmatter 解析器：harness 用它对写入的 .md 做解析往返（round-trip）校验。 */
 const { parseAgent } = await import('@oh-my-pi/pi-coding-agent/task/agents');
+// 用真实导出展开 + 空 BUILTIN_TOOLS 替换 SDK 模块，避免构造 handler 时实例化内置工具类。
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
   BUILTIN_TOOLS: { read: class {}, bash: class {}, write: class {}, task: class {} },
 }));
 
+/** 被测模块的全部导出；在 mock.module 生效后动态 import，确保其内部依赖拿到替换后的 SDK。 */
 const {
   createModeTracker,
   ModeDomainError,
@@ -58,7 +69,9 @@ const {
   DEFAULT_PLAN_FILE_PATH,
 } = await import('./domain-modes.ts');
 
+/** 套件共享的临时根目录（mkdtemp 生成），afterAll 递归清理。 */
 const tmpRoot = mkdtempSync(path.join(tmpdir(), 'omp-domain-modes-'));
+// 递归清理临时根目录（重试 5 次以容忍文件系统句柄延迟释放）。
 afterAll(() => {
   rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 5 });
 });
@@ -68,12 +81,17 @@ afterAll(() => {
 // ---------------------------------------------------------------------------
 
 /** Recorded omp.mode.changed envelope — the payload shape tracker assertions read. */
+/** 录制到的 omp.mode.changed 事件信封：tracker 断言读取的 payload 形态。 */
 interface ModeChangedEvent {
+  /** 事件类型名（恒为 omp.mode.changed）。 */
   type: string;
+  /** 模式切换负载：目标 mode 与可选 data。 */
   payload: { mode: string; data?: ModeChangeData };
+  /** 发布选项（durable 持久化标志）。 */
   opts?: { durable?: boolean };
 }
 
+/** 事件/条目录制器：publish 与 appendEntry 桩把调用记入数组，modeEvents() 过滤出 omp.mode.changed。 */
 const recorder = () => {
   const events: Array<{ type: string; payload: OmpEventPayload; opts?: { durable?: boolean } }> = [];
   const appended: Array<{ mode: string; data: ModeChangeData | undefined }> = [];
@@ -92,16 +110,20 @@ const recorder = () => {
   };
 };
 
+/** 构造 JSON POST Request（body 缺省为空对象）。 */
 const post = <T>(url: string, body?: T) =>
   new Request(url, {
     method: 'POST',
     body: JSON.stringify(body ?? {}),
     headers: { 'content-type': 'application/json' },
   });
+/** 构造 JSON PUT Request（body 缺省为空对象）。 */
 const put = <T>(url: string, body?: T) => new Request(url, { method: 'PUT', body: JSON.stringify(body ?? {}) });
+/** 按 url 构造空参数的路由 ctx。 */
 const ctxFor = (url: string): ModesRouteContext => ({ params: {}, url: new URL(url), headers: new Headers() });
 
 /** Yield long enough for async bridge prepares to resolve and register pending. */
+/** 等待约 5ms，让异步 prepare 完成并把 pending 提案注册进桥。 */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 
@@ -110,6 +132,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 // 2. Mode tracker — transitions, persistence, projection
 // ---------------------------------------------------------------------------
 
+/** §5.4 mode tracker：plan/goal/vibe/loop 的进入、暂停、恢复、退出状态机，互斥冲突 409、append 持久化差异与冷启动恢复。 */
 describe('createModeTracker transitions (spec 02 §5.4)', () => {
   test('plan enter persists a mode_change entry and publishes omp.mode.changed (durable)', () => {
     const rec = recorder();
@@ -341,6 +364,7 @@ describe('createModeTracker transitions (spec 02 §5.4)', () => {
 // In-memory discovery + fs fake: writes land in a files Map, discovery
 // re-parses them with the REAL SDK parser (round-trip fidelity), bundled
 // agents stay read-only, and project/user dirs mirror the engine adapters.
+/** agent 定义 CRUD 的内存 harness：写入落进 files Map，发现链用真实 SDK 解析器重解析（写读往返保真）。 */
 const definitionHarness = (overrides: Partial<AgentDefinitionHandlersOptions> = {}) => {
   const refreshCalls: Array<string | null> = [];
   const revealCalls: string[] = [];
@@ -398,15 +422,19 @@ const definitionHarness = (overrides: Partial<AgentDefinitionHandlersOptions> = 
 };
 
 /** Handler-invocation stub: CRUD handlers read only ctx + body fields. */
+/** handler 调用的占位 Request：CRUD handler 只读取 ctx 与 body 字段。 */
 const dummyRequest = (): Request => new Request('http://x/omp/agent-definitions');
 
+/** 构造带 name 路径参数与 directory 查询参数的路由 ctx。 */
 const ctxForName = (name: string | undefined, directory: string): ModesRouteContext => ({
   params: { name },
   url: new URL(`http://x/omp/agent-definitions/${name ?? ''}?directory=${encodeURIComponent(directory)}`),
   headers: new Headers(),
 });
 
+/** §5.2 agent 定义 CRUD：发现链合并、.md 落盘与 frontmatter 保留、tools/thinkingLevel/必填校验、project 域门禁与热刷新回调。 */
 describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storage)', () => {
+  // project 域用例统一使用的目录常量。
   const PROJ_DIR = '/tmp/wire-proj';
 
   test('create writes the .md, re-discovers the record (201); list joins sources; delete → 204', async () => {
@@ -742,7 +770,9 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
   });
 });
 
+/** §6.2 sidecar 迁移：逐条写 .md 并镜像 persona，已存在则跳过；写失败不标 done，保证幂等重试。 */
 describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirror)', () => {
+  // 按名字生成一条 sidecar 记录 fixture。
   const record = (name: string) => ({ name, description: `${name} desc`, prompt: `${name} prompt.`, tools: ['read'] });
 
   test('writes every record, mirrors personas, and marks the sidecar done', async () => {
@@ -816,22 +846,28 @@ describe('migrateSidecarAgents (spec 02 §6.2 — sidecar → .md + persona mirr
 
 
 /** PersonaHandlers as invoked below: `list()` passes no request (route context is optional). */
+/** 下方实际调用形态的 PersonaHandlers：list() 不传 request（路由 ctx 为可选参数）。 */
 type LoosePersonaHandlers = {
   [K in keyof PersonaHandlers]: (request: Request, ctx?: ModesRouteContext) => Response | Promise<Response>;
 };
 
 /** personaHandlers harness product: the sidecar store plus the loose route handlers. */
+/** personaHandlers harness 的产物：sidecar store 与松化类型后的路由 handler。 */
 interface PersonaHarness {
+  /** 基于 jsonFileStore 的 persona 持久层。 */
   store: PersonaStore;
+  /** createPersonaHandlers 产出的路由 handler（list 可无参调用）。 */
   handlers: LoosePersonaHandlers;
 }
 
+/** 基于 jsonFileStore 与 read/bash 工具白名单构造 persona 路由 handler。 */
 const personaHandlers = (): PersonaHarness => {
   const file = path.join(tmpRoot, 'personas.json');
   const store = jsonFileStore(file, 'personas');
   return { store, handlers: createPersonaHandlers({ store, allowedTools: new Set(['read', 'bash']) }) };
 };
 
+/** §5.2a personas：默认空列表、CRUD 往返、重名 409 与工具白名单校验。 */
 describe('personas (spec 02 §5.2a)', () => {
   test('default none: empty list; CRUD round-trip', async () => {
     const { handlers } = personaHandlers();
@@ -881,7 +917,9 @@ describe('personas (spec 02 §5.2a)', () => {
   });
 });
 
+/** personaFor 物化叠层契约：standard/active/missing 三态判定，legacy meta.agent 同样参与名字解析。 */
 describe('personaFor — materialize overlay contract (02 §5.1 D-B2, §6.1 migration)', () => {
+  // persona 列表 fixture：一个带 systemPrompt/tools，一个仅含名字。
   const personas: OmpPersona[] = [
     { name: 'reviewer-persona', systemPrompt: 'Only review.', tools: ['read'] },
     { name: 'bare' },
@@ -920,16 +958,20 @@ describe('personaFor — materialize overlay contract (02 §5.1 D-B2, §6.1 migr
 // 5. Plan review bridge
 // ---------------------------------------------------------------------------
 
+/** plan review prepare 钩子的固定返回：文本块 + 计划文件路径/标题/存在性详情。 */
 const PREPARE_RESULT: PreparePlanReviewResult = {
   content: [{ type: 'text', text: 'Plan ready for review.' }],
   details: { planFilePath: 'local://auth-plan.md', title: 'auth', planExists: true },
 };
 
 /** Bridge results always settle with a leading text block (domain-modes.ts SUPERSEDED_RESULT). */
+/** 桥的所有结算路径都以文本块开头（对应 domain-modes.ts 的 SUPERSEDED_RESULT 约定）。 */
 interface PlanReviewTextResult extends PlanReviewToolResult {
+  /** 结算文本块数组，断言只读 content[0]。 */
   content: Array<{ type: string; text: string }>;
 }
 
+/** §5.5 plan review 桥：hook 发布 durable 的 review_requested 并挂起 pending；decide 各选项的结算文本、supersede 语义与无 pending/非法选项错误。 */
 describe('planReviewBridge (spec 02 §5.5)', () => {
   test('hook publishes omp.plan.review_requested (durable) with the PlanApprovalDetails and holds pending', async () => {
     const events: unknown[] = [];
@@ -1025,18 +1067,23 @@ describe('planReviewBridge (spec 02 §5.5)', () => {
 // ---------------------------------------------------------------------------
 
 /** mountedDomain options: ModesDomainDeps plus the route registration feature flags. */
+/** mountedDomain 的入参类型：域依赖 ModesDomainDeps 叠加路由注册的特性开关。 */
 type MountedDomainOptions = ModesDomainDeps & ModesRouteRegistrationOptions;
 
+/** 组装 modes 域、把全部路由挂进 Map，并返回 call() 直调助手与 publish/append 调用记录。 */
 const mountedDomain = ({ features, ...domainOptions }: MountedDomainOptions = {}) => {
   const routes = new Map<string, ModesRouteHandler>();
   const route: ModesRouteMount = (method, pattern, handler) => routes.set(`${method} ${pattern}`, handler);
+  // 按会话+目录绑定 omp 事件发布函数，调用记入 domainPublishes。
   const publishFor = (sessionId: string, directory: string): OmpEventPublish => (type, payload, opts) => {
     domainPublishes.push({ sessionId, directory, type, payload, opts });
   };
+  // 按会话绑定 mode_change 追加函数，调用记入 domainAppends。
   const appendFor = (sessionId: string): ModeAppendEntry => (mode, data) => {
     domainAppends.push({ sessionId, mode, data });
     return 'entry';
   };
+  // 域级 publish/append 调用记录，供断言 publishFor/appendFor 的按会话绑定。
   const domainPublishes: Array<{ sessionId: string; directory: string; type: string; payload: OmpEventPayload; opts?: { durable?: boolean } }> = [];
   const domainAppends: Array<{ sessionId: string; mode: string; data: ModeChangeData | undefined }> = [];
   const domain = createModesDomain({
@@ -1066,6 +1113,7 @@ const mountedDomain = ({ features, ...domainOptions }: MountedDomainOptions = {}
     ...domainOptions,
   });
   registerModesDomainRoutes(route, domain, { features: features ?? { 'modes.v1': true, 'agentDefinitions.v1': true, 'personas.v1': true } });
+  // 直调已挂载路由：按 "METHOD pattern" 取 handler，并构造 Request 与路由 ctx。
   const call = async (
     method: string,
     pattern: string,
@@ -1081,6 +1129,7 @@ const mountedDomain = ({ features, ...domainOptions }: MountedDomainOptions = {}
   return { domain, call, domainPublishes, domainAppends };
 };
 
+/** 域组装与路由挂载：特性门禁 501、mode 路由的目录隔离、事件发布绑定、冷启动恢复缓存与 release 清理。 */
 describe('modes domain + route mounting', () => {
   test('gated-off capabilities answer explicit 501s (master R2)', async () => {
     const { call } = mountedDomain({ features: {} });

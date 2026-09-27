@@ -7,6 +7,11 @@
 //! shared repo-level pulls cache with in-flight coalescing, remembered
 //! closed/merged history (6h found / 10m absent), Search-API fallback with
 //! 403 backoff and miss caching, and open-PR-wins-over-historical ordering.
+//!
+//! 中文概述：为本地分支解析 GitHub PR 状态的引擎。跨 remote（显式指定、跟踪
+//! remote、origin/upstream 及其余）、fork 网络与上游仓库查找与分支关联的
+//! open PR；找不到时回退到已关闭/已合并的历史 PR。缓存与降级策略（列表 TTL、
+//! 在途合并、Search 403 退避、未命中记忆）均与 JS 版 pr-status.js 对齐。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -19,27 +24,40 @@ use crate::github::git_ops;
 use crate::github::rate_limit::{GLOBAL_GATE, now_ms};
 use crate::github::repo::{RepoRef, normalize_repo_key, resolve_github_repo_from_directory};
 
+/// 仓库默认分支/元数据缓存的 TTL（5 分钟）。
 const REPO_DEFAULT_BRANCH_TTL_MS: i64 = 5 * 60_000;
+/// 仓库级 PR 列表缓存的 TTL（45 秒）。
 const REPO_PULLS_CACHE_TTL_MS: i64 = 45_000;
+/// 历史 PR“命中”记录的缓存 TTL（6 小时）。
 const HISTORICAL_PR_FOUND_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+/// 历史 PR“不存在”记录的缓存 TTL（10 分钟）。
 const HISTORICAL_PR_ABSENT_TTL_MS: i64 = 10 * 60 * 1000;
+/// 历史 PR 缓存的最大条目数（超出后淘汰最旧记录）。
 const HISTORICAL_PR_CACHE_MAX_ENTRIES: usize = 500;
+/// Search API 因 403 被禁用后的重试间隔（5 分钟）。
 const SEARCH_API_RETRY_MS: i64 = 5 * 60 * 1000;
+/// Search 未命中缓存的 TTL（10 分钟内不重查同一分支）。
 const SEARCH_MISS_RETRY_MS: i64 = 10 * 60 * 1000;
+/// Search 未命中缓存的最大条目数。
 const SEARCH_MISS_CACHE_MAX_ENTRIES: usize = 500;
 
+/// 对可选字符串做 trim 归一化；`None` 视为空字符串（JS 版 normalizeText）。
 pub(crate) fn normalize_text(value: Option<&str>) -> String {
     value.unwrap_or("").trim().to_string()
 }
 
+/// 按 JSON Pointer 读取字符串字段；类型不符或缺失返回 `None`。
 fn text_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str)
 }
 
+/// 读取 JSON Pointer 处的字符串并归一化为小写（供大小写不敏感比较）。
 fn normalize_lower_at(value: &Value, pointer: &str) -> String {
     normalize_text(text_at(value, pointer)).to_lowercase()
 }
 
+/// 从 `origin/main` 形式的 upstream 引用解析 remote 名；
+/// 无 `/` 或前缀为空时返回空串。
 pub fn parse_tracking_remote_name(tracking_branch: Option<&str>) -> String {
     let normalized = normalize_text(tracking_branch);
     if normalized.is_empty() {
@@ -51,6 +69,8 @@ pub fn parse_tracking_remote_name(tracking_branch: Option<&str>) -> String {
     }
 }
 
+/// 从 `origin/feat/x` 解析分支名（首个 `/` 之后的全部内容）；
+/// 无分隔符或尾随 `/` 时返回空串。
 pub fn parse_tracking_branch_name(tracking_branch: Option<&str>) -> String {
     let normalized = normalize_text(tracking_branch);
     if normalized.is_empty() {
@@ -65,6 +85,7 @@ pub fn parse_tracking_branch_name(tracking_branch: Option<&str>) -> String {
 }
 
 /// `pushUnique` with the lowercase key function.
+/// 以小写 key 去重地追加元素：空串忽略，保留原大小写，重复跳过。
 fn push_unique_lower(collection: &mut Vec<String>, value: &str) {
     let normalized = normalize_text(Some(value));
     if normalized.is_empty() {
@@ -77,6 +98,8 @@ fn push_unique_lower(collection: &mut Vec<String>, value: &str) {
     collection.push(normalized);
 }
 
+/// 生成 remote 查找优先级：显式 remote > 跟踪 remote > origin > upstream > 其余按传入顺序。
+/// 去重大小写不敏感，保留首次出现的写法。
 pub fn rank_remote_names(remote_names: &[String], explicit: &str, tracking: &str) -> Vec<String> {
     let mut ranked = Vec::new();
     push_unique_lower(&mut ranked, explicit);
@@ -91,6 +114,8 @@ pub fn rank_remote_names(remote_names: &[String], explicit: &str, tracking: &str
     ranked
 }
 
+/// 提取 PR head 的 owner：优先 `head.repo.owner.login`，其次 `head.user.login`，
+/// 最后从 `head.label`（`owner:branch`）截取；全部缺失时返回空串。
 pub fn get_head_owner(pr: &Value) -> String {
     let repo_owner = normalize_text(text_at(pr, "/head/repo/owner/login"));
     if !repo_owner.is_empty() {
@@ -107,6 +132,8 @@ pub fn get_head_owner(pr: &Value) -> String {
     }
 }
 
+/// 生成 PR head 仓库的归一化 key `owner/repo`：优先 head.repo 字段，
+/// 缺失时用 `head.label` 的 owner 拼上 fallback 仓库名；无法确定返回空串。
 pub fn get_head_repo_key(pr: &Value, fallback_repo_name: &str) -> String {
     let repo_owner = normalize_text(text_at(pr, "/head/repo/owner/login"));
     let repo_name = normalize_text(text_at(pr, "/head/repo/name"));
@@ -126,12 +153,17 @@ pub fn get_head_repo_key(pr: &Value, fallback_repo_name: &str) -> String {
 }
 
 /// `buildSourceMatcher`: rank PR head repos/owners by candidate order.
+/// 按候选顺序对 PR head 仓库/owner 建立排名表，供匹配与排序使用。
 pub struct SourceMatcher {
+/// 候选 `owner/repo` key → 候选序号。
     repo_rank: HashMap<String, usize>,
+/// 候选 owner（小写）→ 候选序号。
     owner_rank: HashMap<String, usize>,
 }
 
+/// 构建与查询 head 匹配排名表。
 impl SourceMatcher {
+/// 由 source 候选构建匹配器：同一 key 只记录最先出现的序号。
     pub fn build(source_candidates: &[SourceCandidate]) -> Self {
         let mut repo_rank = HashMap::new();
         let mut owner_rank = HashMap::new();
@@ -151,6 +183,7 @@ impl SourceMatcher {
         }
     }
 
+/// PR 的 head 仓库或 owner 命中任一候选即视为匹配。
     pub fn matches(&self, pr: &Value, fallback_repo_name: &str) -> bool {
         let repo_key = get_head_repo_key(pr, fallback_repo_name);
         if !repo_key.is_empty() && self.repo_rank.contains_key(&repo_key) {
@@ -160,6 +193,8 @@ impl SourceMatcher {
         !owner.is_empty() && self.owner_rank.contains_key(&owner)
     }
 
+/// 比较两个 PR 与候选的贴近程度：先比 head 仓库排名，再比 owner 排名；
+/// 未命中的按 `usize::MAX` 排在最后。
     pub fn compare(
         &self,
         left: &Value,
@@ -193,27 +228,40 @@ impl SourceMatcher {
     }
 }
 
+/// 分支可能的来源仓库（fork 网络中的 head 候选）。
 #[derive(Debug, Clone)]
 pub struct SourceCandidate {
+/// 来源仓库。
     pub repo: RepoRef,
 }
 
+/// 一个待查询的 PR 归属候选：仓库、对应 remote 名与优先级。
 #[derive(Debug, Clone)]
 pub struct Target {
+/// 目标仓库。
     pub repo: RepoRef,
+/// 该仓库对应的本地 remote 名。
     pub remote_name: String,
+/// 查询优先级（越小越先查；fork 网络扩展时按 parent/source 递增）。
     pub priority: f64,
 }
 
+/// 分支 PR 状态解析结果：open 或历史 PR、归属仓库、默认分支与命中的 remote。
 #[derive(Debug, Clone)]
 pub struct ResolvedStatus {
+/// 命中的仓库（完全无候选时为 `None`）。
     pub repo: Option<RepoRef>,
+/// 命中的 PR（open 优先，否则为已关闭/已合并的历史 PR）。
     pub pr: Option<Value>,
+/// 命中仓库的默认分支名。
     pub default_branch: Option<String>,
+/// 命中候选对应的 remote 名；经 Search 回退命中的为 `None`。
     pub resolved_remote_name: Option<String>,
 }
 
+/// 空结果的构造。
 impl ResolvedStatus {
+/// 全字段为 `None` 的空状态（目录不存在、无任何候选等场景）。
     fn empty() -> Self {
         Self {
             repo: None,
@@ -224,12 +272,15 @@ impl ResolvedStatus {
     }
 }
 
+/// PR 是否已终止：state 为 closed，或 `merged_at` 非空（已合并）。
 pub fn is_terminal_pr(pr: &Value) -> bool {
     pr.get("state").and_then(Value::as_str) == Some("closed")
         || pr.get("merged_at").map(|v| !v.is_null()).unwrap_or(false)
 }
 
 /// `safeListPulls`: pulls.list; 404/403 → empty, other errors propagate.
+/// 调用 pulls.list：404（仓库不存在）与 403（无权限/限流）吞掉并返回空列表，
+/// 其余错误向上传播；限流错误同时上报全局 gate。
 async fn safe_list_pulls(
     engine: &PrStatusEngine,
     client: &GithubClient,
@@ -254,39 +305,60 @@ async fn safe_list_pulls(
     }
 }
 
+/// 仓库级 PR 列表缓存条目。
 #[derive(Debug, Clone)]
 pub struct RepoPullsEntry {
+/// 拉取时间戳（毫秒），用于 TTL 判断。
     pub fetched_at: i64,
+/// 缓存的 PR JSON 数组。
     pub prs: Vec<Value>,
     /// First page held everything, so a miss is authoritative.
+/// 为 true 表示第一页已包含全部结果，列表未命中即可下权威结论。
     pub complete: bool,
 }
 
+/// 同一 repo+state 的在途合并门闩：等待者通过 completed 计数判断能否共享结果。
 struct PullsGate {
+/// 串行化实际 GitHub 调用的异步锁。
     lock: tokio::sync::Mutex<()>,
+/// 已完成的拉取次数，供等待者检测“等锁期间已有新结果”。
     completed: AtomicU64,
 }
 
+/// 可注入的时钟函数（返回毫秒时间戳）；测试用假时钟推进 TTL 边界。
 type Clock = Box<dyn Fn() -> i64 + Send + Sync>;
 
 /// The PR resolution engine plus every module-level cache from pr-status.js.
+/// PR 解析引擎：集中持有 pr-status.js 的全部模块级缓存——默认分支、仓库元数据、
+/// PR 列表（含在途合并门闩）、历史 PR 记忆、Search 禁用与未命中记录。
 pub struct PrStatusEngine {
+/// 注入的时钟。
     now: Clock,
+/// repo key → (默认分支, 拉取时间)。
     default_branch_cache: Mutex<HashMap<String, (Option<String>, i64)>>,
+/// repo key → (仓库元数据, 拉取时间)；元数据为 `None` 表示 403/404 已缓存。
     repo_metadata_cache: Mutex<HashMap<String, (Option<Value>, i64)>>,
+/// `owner/repo::state` → PR 列表条目。
     repo_pulls_cache: Mutex<HashMap<String, RepoPullsEntry>>,
+/// `owner/repo::state` → 在途合并门闩。
     pulls_gates: Mutex<HashMap<String, Arc<PullsGate>>>,
+/// 历史 PR 记忆表 (key, PR, 时间)，FIFO 容量淘汰。
     historical_pr_cache: Mutex<Vec<(String, Option<Value>, i64)>>,
+/// repo 集合 key → Search API 被 403 禁用至的时间点。
     search_api_disabled: Mutex<HashMap<String, i64>>,
+/// Search 未命中记录 (key, 时间)，避免反复搜索同一分支。
     search_miss_cache: Mutex<Vec<(String, i64)>>,
 }
 
+/// 解析入口与各缓存的生命周期管理。
 impl PrStatusEngine {
+/// 使用系统时钟构造引擎。
     pub fn new() -> Self {
         Self::with_clock(Box::new(now_ms))
     }
 
     /// Injectable clock (JS tests use fake timers).
+/// 以自定义时钟构造（测试注入假时间以穿越 TTL 边界）。
     pub fn with_clock(now: Clock) -> Self {
         Self {
             now,
@@ -300,10 +372,12 @@ impl PrStatusEngine {
         }
     }
 
+/// 当前注入时钟的毫秒时间戳。
     fn now(&self) -> i64 {
         (self.now)()
     }
 
+/// 读取未过期的默认分支缓存；未命中或已过期返回 `None`。
     fn get_repo_default_branch_cached(&self, repo_key: &str) -> Option<Option<String>> {
         let (branch, fetched_at) = self
             .default_branch_cache
@@ -318,6 +392,8 @@ impl PrStatusEngine {
     }
 
     /// `getRepoDefaultBranch`: metadata-backed, all errors → null.
+/// 查询仓库默认分支：先查专用缓存，再复用新鲜的元数据缓存，
+/// 最后才请求 repos API；任何错误（含限流）都归一化为 `None`。
     pub async fn get_repo_default_branch(
         &self,
         client: &GithubClient,
@@ -373,6 +449,8 @@ impl PrStatusEngine {
 
     /// `getRepoMetadata`: 403/404 → cached null; rate-limit noted; other
     /// errors propagate.
+/// 读取仓库元数据并写入 TTL 缓存：403/404 缓存为 `None`，
+/// 限流错误上报 gate，其余错误向上传播。
     pub async fn get_repo_metadata(
         &self,
         client: &GithubClient,
@@ -415,6 +493,7 @@ impl PrStatusEngine {
     }
 
     /// `resolveRemoteCandidates`: resolve each ranked remote, dedup by repo.
+/// 并发解析各 remote 指向的 GitHub 仓库，按输入顺序以 repo key 去重保留首个。
     pub async fn resolve_remote_candidates(
         &self,
         directory: &str,
@@ -443,6 +522,8 @@ impl PrStatusEngine {
 
     /// `expandRepoNetwork`: candidate repos plus parent/source upstreams,
     /// deduped, priority-ordered.
+/// 候选网络扩展：并发取元数据后补上 `parent`(+0.1)/`source`(+0.2) 上游，
+/// 去重并按 priority 升序排序（越小越优先）。
     pub async fn expand_repo_network(
         &self,
         client: &GithubClient,
@@ -522,6 +603,8 @@ impl PrStatusEngine {
 
     /// `getRepoPulls`: shared per-repo+state pull list with TTL and in-flight
     /// coalescing (concurrent branch resolutions share one GitHub call).
+/// 读取（或拉取）`owner/repo::state` 的 PR 列表：TTL 缓存 + 在途合并，
+/// 首页不足 100 条时标记 complete（此时未命中即权威）。
     pub async fn get_repo_pulls(
         &self,
         client: &GithubClient,
@@ -582,6 +665,7 @@ impl PrStatusEngine {
         Ok(entry)
     }
 
+/// 记录某 repo+branch 的历史 PR 结论（含“不存在”）：同 key 覆盖，超容量淘汰最旧。
     fn remember_historical_pr(&self, key: &str, pr: Option<Value>) {
         let mut cache = self
             .historical_pr_cache
@@ -594,6 +678,8 @@ impl PrStatusEngine {
         }
     }
 
+/// 查询未过期的历史 PR 缓存：命中记录 6 小时有效，“不存在”记录 10 分钟有效；
+/// 未命中或已过期返回 `None`（外层会重新查询）。
     fn historical_pr_fresh(&self, key: &str) -> Option<Option<Value>> {
         let cache = self
             .historical_pr_cache
@@ -613,6 +699,8 @@ impl PrStatusEngine {
 
     /// `invalidateRepoPullsCache`: drop the repo's pull lists, remembered
     /// search misses, and remembered history.
+/// 清空指定仓库的 PR 列表缓存、Search 未命中记录与历史 PR 记忆，
+/// 用于 PR 创建/关闭等变更后强制下次轮询重新拉取。
     pub fn invalidate_repo_pulls_cache(&self, owner: &str, repo: &str) {
         let prefix = format!("{}/{}::", owner.trim(), repo.trim());
         self.repo_pulls_cache
@@ -634,6 +722,7 @@ impl PrStatusEngine {
             .retain(|(key, _, _)| !key.starts_with(&historical_prefix));
     }
 
+/// 记录一次 Search 未命中（repo 集合 + 分支）；同 key 覆盖，超容量淘汰最旧。
     fn remember_search_miss(&self, key: &str) {
         let mut cache = self
             .search_miss_cache
@@ -647,6 +736,8 @@ impl PrStatusEngine {
     }
 
     /// `parseRepoFromApiUrl`: `…/repos/{owner}/{repo}` → parts.
+/// 从 `https://api.github.com/repos/{owner}/{repo}` 解析出 owner/repo；
+/// URL 非法或路径形状不符返回 `None`。
     fn parse_repo_from_api_url(value: &str) -> Option<(String, String)> {
         let normalized = value.trim();
         if normalized.is_empty() {
@@ -672,6 +763,9 @@ impl PrStatusEngine {
 
     /// `searchFallbackPr`: Search-API fallback for a branch with no PR found
     /// in any repo list (only when coverage was not authoritative).
+/// Search API 回退：按 `is:pr state:open head:{branch}` 搜索并逐个用
+/// pulls.get 验证 head ref，要求结果落在候选仓库名集合内。
+/// 403 时把该 repo 集合禁用 5 分钟；无结果时记录未命中 10 分钟。
     pub async fn search_fallback_pr(
         &self,
         client: &GithubClient,
@@ -789,6 +883,9 @@ impl PrStatusEngine {
     }
 
     /// `findBranchPrCandidates`: the open/historical pair for one target.
+/// 对单个目标仓库解析 (open PR, 历史 PR)：先查共享 open 列表，未权威时再按
+/// source owner 逐个精确查询 `owner:branch`；open 一旦命中立即返回，
+/// 历史记录仅在 include_history（主关联）时查询并写入记忆缓存。
     pub async fn find_branch_pr_candidates(
         &self,
         client: &GithubClient,
@@ -903,6 +1000,9 @@ impl PrStatusEngine {
     }
 
     /// `resolveGitHubPrStatus`.
+/// 完整解析流程：目录存在性检查 → remote 排序 → 候选解析 → fork 网络扩展 →
+/// 逐候选逐分支查询（跳过默认分支）→ 覆盖不权威时 Search 回退 →
+/// open 优先、历史次之，最后兜底返回首个候选仓库。
     pub async fn resolve_github_pr_status(
         &self,
         client: &GithubClient,
@@ -1064,12 +1164,15 @@ impl PrStatusEngine {
     }
 }
 
+/// Default 转发到 `new`。
 impl Default for PrStatusEngine {
+/// 与 `PrStatusEngine::new` 等价。
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// PR 状态解析引擎的单元测试（fake transport + 可推进的假时钟）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,10 +1180,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
 
+/// 把 PR 数组包成 pulls.list 的 JSON 响应体。
     fn json_pulls(prs: Vec<Value>) -> Value {
         Value::Array(prs)
     }
 
+/// 构造 200 + JSON content-type 的响应。
     fn json_ok(body: Value) -> GithubResponse {
         GithubResponse {
             status: 200,
@@ -1092,6 +1197,7 @@ mod tests {
         }
     }
 
+/// 造一条 open 状态、head 为 `acme:feature` 的 PR。
     fn open_pr() -> Value {
         serde_json::json!({
             "number": 15,
@@ -1105,6 +1211,7 @@ mod tests {
         })
     }
 
+/// 造一条已合并（state=closed 且 merged_at 非空）的 PR，编号可指定。
     fn merged_pr(number: i64) -> Value {
         serde_json::json!({
             "number": number,
@@ -1120,6 +1227,8 @@ mod tests {
     }
 
     /// Fake transport answering pulls.list by (state, head presence).
+/// 构造按 (state, 是否带 head 参数) 应答 pulls.list 的 fake 客户端；
+/// 返回值附带请求计数器供断言调用次数。
     fn pulls_client(
         state_to_prs: impl Fn(&str, bool) -> Vec<Value> + Send + Sync + 'static,
     ) -> (GithubClient, Arc<AtomicI64>) {
@@ -1154,6 +1263,7 @@ mod tests {
         (client, calls)
     }
 
+/// 标准查询目标：acme/app @ origin。
     fn target() -> Target {
         Target {
             repo: RepoRef {
@@ -1166,6 +1276,7 @@ mod tests {
         }
     }
 
+/// 标准来源候选：acme/app。
     fn source_candidates() -> Vec<SourceCandidate> {
         vec![SourceCandidate {
             repo: RepoRef {
@@ -1176,6 +1287,7 @@ mod tests {
         }]
     }
 
+/// 以标准 target/候选调用 find_branch_pr_candidates 的测试捷径。
     async fn call(
         engine: &PrStatusEngine,
         client: &GithubClient,
@@ -1196,6 +1308,7 @@ mod tests {
             .unwrap()
     }
 
+/// 构造带可控假时钟（AtomicI64）的新引擎；测试推进时间即可穿越 TTL。
     fn fresh_engine() -> (PrStatusEngine, Arc<AtomicI64>) {
         let now = Arc::new(AtomicI64::new(1_000_000));
         let clock = {
@@ -1205,6 +1318,7 @@ mod tests {
         (PrStatusEngine::with_clock(clock), now)
     }
 
+/// 验证：open PR 命中即返回，不再额外查询历史。
     #[tokio::test]
     async fn open_pr_wins_and_no_history_lookup_is_spent() {
         let (engine, _) = fresh_engine();
@@ -1223,6 +1337,7 @@ mod tests {
         assert!(observed >= 1);
     }
 
+/// 验证：共享 open 列表（100 条封顶）漏掉目标时，按 head 的精确查询仍能找回 open PR。
     #[tokio::test]
     async fn open_pr_still_wins_when_shared_open_list_missed_it() {
         let (engine, _) = fresh_engine();
@@ -1241,6 +1356,7 @@ mod tests {
         assert!(historical.is_none());
     }
 
+/// 验证：无 open PR 时返回该分支最近一条已合并的历史 PR。
     #[tokio::test]
     async fn returns_branch_history_when_no_open_pr_exists() {
         let (engine, _) = fresh_engine();
@@ -1257,6 +1373,7 @@ mod tests {
         assert_eq!(historical.unwrap()["number"], 12);
     }
 
+/// 验证：分支从未有过 PR 时 open 与历史均为空，且历史查询使用 state=all。
     #[tokio::test]
     async fn no_history_for_branch_that_never_had_a_pr() {
         let (engine, _) = fresh_engine();
@@ -1269,6 +1386,7 @@ mod tests {
         assert!(transport_state_all_seen);
     }
 
+/// 验证：次级关联（不查历史）在共享 open 列表已权威时只花一次调用。
     #[tokio::test]
     async fn spends_no_call_on_history_for_secondary_target() {
         let (engine, _) = fresh_engine();
@@ -1286,6 +1404,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+/// 验证：轮询复用历史缓存，不重复发起 GitHub 查询。
     #[tokio::test]
     async fn reuses_cached_history_instead_of_requerying_every_poll() {
         let (engine, _) = fresh_engine();
@@ -1305,6 +1424,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), calls_after_first);
     }
 
+/// 验证：命中记录的 6 小时 TTL 长于“不存在”的 10 分钟，短暂过期后仍可从缓存读到。
     #[tokio::test]
     async fn found_record_outlives_the_shorter_no_history_window() {
         let (engine, now) = fresh_engine();
@@ -1327,6 +1447,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), calls_after_first + 1);
     }
 
+/// 验证：“不存在”记录的 10 分钟窗口过期后会重新查询该分支。
     #[tokio::test]
     async fn requeries_branch_with_no_history_once_shorter_window_passes() {
         let (engine, now) = fresh_engine();
@@ -1339,6 +1460,7 @@ mod tests {
         assert!(calls.load(Ordering::SeqCst) > calls_after_first + 1);
     }
 
+/// 验证：tracking 引用的 remote/分支名解析与 JS 版边界行为一致。
     #[test]
     fn tracking_parsers_match_js() {
         assert_eq!(parse_tracking_remote_name(Some(" origin/main ")), "origin");
@@ -1349,6 +1471,7 @@ mod tests {
         assert_eq!(parse_tracking_branch_name(Some("origin")), "");
     }
 
+/// 验证：remote 排序为显式 > 跟踪 > origin > upstream > 其余。
     #[test]
     fn rank_remote_names_orders_explicit_tracking_origin_upstream_then_rest() {
         let remotes = vec!["fork".to_string(), "origin".to_string()];
@@ -1356,6 +1479,7 @@ mod tests {
         assert_eq!(ranked, vec!["upstream", "fork", "origin"]);
     }
 
+/// 验证：API URL 的 repos 路径解析成功与非法形状的拒绝。
     #[test]
     fn parse_repo_from_api_url_shapes() {
         assert_eq!(

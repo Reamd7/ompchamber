@@ -1,5 +1,8 @@
 //! Port of `server/lib/small-model/resolve.js`: model selection mirroring
 //! OpenCode's `getSmallModel` fallback chain.
+//!
+//! 中文说明：`server/lib/small-model/resolve.js` 的移植——按 OpenCode
+//! getSmallModel 的 fallback 链选择小模型。
 
 use serde_json::Value;
 
@@ -7,12 +10,19 @@ use serde_json::Value;
 /// 1. `small_model` from the merged config layers ("provider/model").
 /// 2. GitHub Copilot's hidden utility models when Copilot is logged in.
 /// 3. Family-priority scan of the authenticated providers' catalog models.
+///
+/// 中文补充：家族扫描顺序从高到低为 gemini-flash、gpt-nano、claude-haiku。
 const FAMILY_PRIORITY: [&str; 3] = ["gemini-flash", "gpt-nano", "claude-haiku"];
+/// GitHub Copilot 的隐藏工具模型清单（不出现在目录中）；取首个作为小模型。
 const COPILOT_UTILITY_MODELS: [&str; 4] = ["gpt-5.4-nano", "gpt-4.1", "gpt-4o", "gpt-4o-mini"];
 /// The ChatGPT-plan codex backend only accepts a small allowlist of models
 /// (nano/API-key models are rejected with 400) — this is its cheapest one.
+///
+/// 中文补充：ChatGPT 套餐的 codex 后端只接受一个小模型白名单（nano 与 API-key
+/// 模型会被 400 拒绝），这是其中最便宜的一个。
 const OPENAI_OAUTH_SMALL_MODEL: &str = "gpt-5.4-mini";
 
+/// 返回 provider 在 auth.json 中可能出现的键名序列（含历史别名，如裸的 copilot）。
 fn auth_provider_aliases(provider_id: &str) -> Vec<&str> {
     match provider_id {
         "github-copilot" => vec!["github-copilot", "copilot"],
@@ -22,6 +32,8 @@ fn auth_provider_aliases(provider_id: &str) -> Vec<&str> {
 
 /// `getAuthEntryForProvider`: alias-aware auth.json lookup (legacy entries
 /// may sit under the bare `copilot` key).
+///
+/// 中文补充：按别名顺序在 auth 顶层查找第一个对象型条目。
 pub fn get_auth_entry_for_provider<'a>(auth: &'a Value, provider_id: &str) -> Option<&'a Value> {
     auth.as_object()?;
     for alias in auth_provider_aliases(provider_id) {
@@ -34,11 +46,14 @@ pub fn get_auth_entry_for_provider<'a>(auth: &'a Value, provider_id: &str) -> Op
     None
 }
 
+/// Some 且非空字符串时才返回 true。
 fn non_empty_string(value: Option<&str>) -> bool {
     value.is_some_and(|text| !text.is_empty())
 }
 
 /// `isUsableAuthEntry`.
+///
+/// 中文补充：判断 auth 条目是否携带可用凭据（type/key/access token 等）。
 pub fn is_usable_auth_entry(entry: &Value) -> bool {
     let Some(object) = entry.as_object() else {
         return false;
@@ -56,6 +71,8 @@ pub fn is_usable_auth_entry(entry: &Value) -> bool {
 }
 
 /// `parseModelRef`: `provider/model` split on the first slash.
+///
+/// 中文补充：按首个斜杠拆分为 (provider, model)；没有斜杠则返回 None。
 pub fn parse_model_ref(value: &str) -> Option<(String, String)> {
     let trimmed = value.trim();
     let slash = trimmed.find('/')?;
@@ -70,6 +87,9 @@ pub fn parse_model_ref(value: &str) -> Option<(String, String)> {
 
 /// Sorted matches by `release_date` descending (JS `String.localeCompare`
 /// on the raw strings; lexicographic here), newest first.
+///
+/// 中文补充：同族模型按 release_date 降序取最新（JS 用字符串 localeCompare，
+/// 此处为字典序比较）。
 fn pick_by_family<'a>(
     models: &'a serde_json::Map<String, Value>,
     family: &str,
@@ -94,21 +114,30 @@ fn pick_by_family<'a>(
 }
 
 /// `getCatalogProvider`: object entry or null.
+///
+/// 中文补充：目录顶层的对象型条目才有效，否则视为不存在。
 pub fn get_catalog_provider<'a>(catalog: &'a Value, provider_id: &str) -> Option<&'a Value> {
     let entry = catalog.get(provider_id)?;
     entry.as_object().map(|_| entry)
 }
 
+/// 解析出的小模型：provider/model 标识加上说明其来源的静态标签。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedModel {
+    /// provider 标识（auth.json / 目录中的键名）。
     pub provider_id: String,
+    /// 模型 ID。
     pub model_id: String,
+    /// 来源标签（settings/config/session-model/codex-small/copilot-utility/family-scan）。
     pub source: &'static str,
 }
 
 /// Small-model candidates within ONE provider, by family priority. Copilot and
 /// ChatGPT-plan OpenAI have fixed small models that never appear in the
 /// catalog; everyone else is scanned through the catalog families.
+///
+/// 中文补充：Copilot 与 ChatGPT 套餐 OpenAI 的小模型是固定的（不查目录），
+/// 其余 provider 走目录的家族扫描。
 fn pick_within_provider(
     provider_id: &str,
     auth: &Value,
@@ -149,16 +178,27 @@ fn pick_within_provider(
     })
 }
 
+/// 解析入参：auth.json 与目录快照，加上各覆盖层与 session 上下文。
 pub struct ResolveParams<'a> {
+    /// ~/.local/share/opencode/auth.json 的内容。
     pub auth: &'a Value,
+    /// models.dev 目录快照。
     pub catalog: &'a Value,
+    /// OMPChamber 设置中的小模型覆盖，优先级最高。
     pub settings_small_model: Option<&'a str>,
+    /// OpenCode 合并配置里的 small_model。
     pub config_small_model: Option<&'a str>,
+    /// session 所在 provider；有 session 上下文时优先在它内部选。
     pub preferred_provider_id: Option<&'a str>,
+    /// session 当前模型 ID；provider 内家族扫描全部落空时的兜底。
     pub preferred_model_id: Option<&'a str>,
 }
 
 /// `resolveSmallModel`.
+///
+/// 中文补充：优先级依次为——设置覆盖 → OpenCode 配置 → session provider 的家族
+/// 扫描/当前模型 → 全部已认证 provider 的家族扫描 → Copilot 工具模型兜底；
+/// 全部落空返回 None。
 pub fn resolve_small_model(params: ResolveParams<'_>) -> Option<ResolvedModel> {
     let ResolveParams {
         auth,

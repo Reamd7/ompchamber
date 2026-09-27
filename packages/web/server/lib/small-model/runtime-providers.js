@@ -22,8 +22,16 @@
 // simply have no `/models` route. A provider that vanishes from the picker
 // explains nothing; one that fails on use says why. So this module reports
 // what it knows and leaves the verdict to the call itself.
+/**
+ * 维护只存在于运行中 OpenCode 进程内的 provider 状态：插件注册的
+ * provider 与凭证不落盘，只能通过 GET /provider 观测。快照带 30 秒 TTL，
+ * 并发读取合并为单次请求（single-flight）；拉取失败时返回 null 表示
+ * "未知"，调用方应回落到基于 auth.json 的文件解析。
+ */
 
+/** 快照缓存有效期（毫秒）：过期后下一次读取触发重新拉取。 */
 const SNAPSHOT_TTL_MS = 30_000;
+/** 拉取 /provider 的超时（毫秒），避免 OpenCode 无响应时拖住调用方。 */
 const SNAPSHOT_TIMEOUT_MS = 5_000;
 
 // opencode zen hands out this sentinel instead of a key when the user has no
@@ -31,11 +39,16 @@ const SNAPSHOT_TIMEOUT_MS = 5_000;
 // own subsidised infrastructure and are meant to be reached through OpenCode,
 // not by us. Treating the sentinel as a credential would do exactly that, so
 // it is never accepted as one.
+/** opencode zen 的匿名哨兵值：出现即代表没有真实凭证，绝不能当作 apiKey 使用。 */
 export const ZEN_ANONYMOUS_API_KEY = 'public';
 
+/** 与运行中 OpenCode 的连接（buildOpenCodeUrl / getOpenCodeAuthHeaders）；null 表示未接线。 */
 let connection = null;
+/** 最近一次成功拉取的快照；null 表示尚无缓存。 */
 let snapshot = null;
+/** 快照落地时间戳（毫秒），用于 TTL 判断。 */
 let snapshotAt = 0;
+/** 进行中的拉取 Promise，并发读取去重用（single-flight）。 */
 let inflight = null;
 
 /**
@@ -43,6 +56,7 @@ let inflight = null;
  * startup; pass `null` to detach. Until it is wired every lookup answers
  * "nothing known", which leaves the file-based resolution unchanged.
  */
+/** 接入 OpenCode 连接（传 null 解除绑定）；接线或换连接时同步清空全部缓存。 */
 export function configureOpenCodeRuntimeProviders(next) {
   connection = next ?? null;
   resetOpenCodeRuntimeProviders();
@@ -52,6 +66,7 @@ export function configureOpenCodeRuntimeProviders(next) {
  * Drops every cached answer. OpenCode restarts reload plugins, which can
  * change ports, keys and the provider list itself.
  */
+/** 清空快照与进行中的请求；OpenCode 重启后必须调用，因为插件、端口与密钥都可能变化。 */
 export function resetOpenCodeRuntimeProviders() {
   snapshot = null;
   snapshotAt = 0;
@@ -69,13 +84,21 @@ export function resetOpenCodeRuntimeProviders() {
  * OpenCode itself sends, while `key` only carries env/auth.json values this
  * server can already read from disk.
  */
+/**
+ * 把 /provider 响应归一化为内部快照：providers（Map，id 到条目）与
+ * connected（Set）。所有字段校验与清洗（trim、去尾部斜杠、剔除 zen 哨兵）
+ * 都集中在此，下游拿到的都是稳定值。
+ */
 function parseProviderListing(payload) {
   const providers = new Map();
   const connected = new Set();
   if (!payload || typeof payload !== 'object') return { providers, connected };
 
+  // 归一化字符串：非字符串或纯空白返回 null。
   const text = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);
+  // 归一化记录：非对象返回空对象，便于安全地链式取字段。
   const record = (value) => (value && typeof value === 'object' ? value : {});
+  // 归一化端点：去掉末尾斜杠。
   const endpoint = (value) => text(value)?.replace(/\/+$/, '') ?? null;
 
   for (const raw of Array.isArray(payload.all) ? payload.all : []) {
@@ -105,6 +128,10 @@ function parseProviderListing(payload) {
   return { providers, connected };
 }
 
+/**
+ * 实际执行 GET /provider 并解析为快照；非 2xx 或网络失败时抛错，
+ * 缓存回退策略由 getRuntimeProviderSnapshot 决定。
+ */
 const fetchSnapshot = async () => {
   const response = await fetch(connection.buildOpenCodeUrl('/provider', ''), {
     headers: { Accept: 'application/json', ...connection.getOpenCodeAuthHeaders() },
@@ -123,6 +150,12 @@ const fetchSnapshot = async () => {
  * `null` means "unknown", never "no providers": callers must fall back to
  * their file-based resolution rather than treat an unreachable OpenCode as an
  * empty provider list.
+ */
+/**
+ * 读取当前运行时 provider 快照（TTL 缓存 + 单飞合并）。
+ * @returns {Promise<{providers: Map<string, Object>, connected: Set<string>}|null>}
+ *   null 表示 "未知"（未接线，或拉取失败且无旧快照）：调用方必须回落到
+ *   文件解析，绝不能当作空 provider 列表处理。
  */
 export async function getRuntimeProviderSnapshot() {
   if (!connection) return null;
@@ -148,6 +181,7 @@ export async function getRuntimeProviderSnapshot() {
  * Runtime credential and endpoint for one provider, or `null` when OpenCode
  * knows nothing about it.
  */
+/** 取单个 provider 的运行时凭证与端点；OpenCode 不了解该 provider 时返回 null。 */
 export async function getRuntimeProvider(providerID) {
   const current = await getRuntimeProviderSnapshot();
   return current?.providers.get(providerID) ?? null;

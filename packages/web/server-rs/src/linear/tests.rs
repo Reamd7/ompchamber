@@ -3,6 +3,12 @@
 //! `mapping.test.js`, `teams.test.js`, `status.test.js`,
 //! `status-runtime.test.js`) with a fake transport in place of the stubbed
 //! global `fetch`.
+//!
+//! 本文件是 linear 模块 Rust 移植版的集成测试，逐一镜像 JS vitest 套件
+//! （oauth/auth/routes/issues/mapping/teams/status/status-runtime.test.js），
+//! 以可注入的 FakeTransport 取代 JS 版中被 stub 的全局 fetch，在不触网的
+//! 前提下锁定 OAuth PKCE 授权、多 workspace 凭据存储、GraphQL issue/team
+//! 查询、session 状态评论以及 axum 路由层的行为契约。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,8 +42,11 @@ use super::{LinearError, LinearState};
 // helpers
 // ---------------------------------------------------------------------------
 
+/// 临时目录序号计数器：与进程 id 组合，保证并发运行的每个测试拿到唯一目录。
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+/// 创建一次性的临时数据目录（名称由 ompchamber-linear、tag、进程 id 与自增
+/// 序号拼接而成），让每个测试的 LinearState 在隔离目录里落盘 auth/mapping 等文件。
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-linear-{tag}-{}-{}",
@@ -48,6 +57,8 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// 把 (name, value) 键值对数组收集成 HashMap，用作 LinearState 的环境变量，
+/// 便于在测试中覆盖 client id、redirect URI、broker URL 等配置。
 fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
         .iter()
@@ -55,6 +66,8 @@ fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         .collect()
 }
 
+/// 组装被测核心对象：在独立临时目录上构造 LinearState，注入环境变量与
+/// fake transport；返回 (state, 数据目录)，目录可用来直接检查落盘文件内容。
 fn state_with(
     tag: &str,
     env_pairs: &[(&str, &str)],
@@ -69,6 +82,8 @@ fn state_with(
     (state, dir)
 }
 
+/// 把 JSON payload 序列化成 status 200 的 HttpResponse，是 FakeTransport
+/// 应答闭包中最常用的成功响应构造器。
 fn json_ok(payload: Value) -> Result<HttpResponse, String> {
     Ok(HttpResponse {
         status: 200,
@@ -76,10 +91,14 @@ fn json_ok(payload: Value) -> Result<HttpResponse, String> {
     })
 }
 
+/// 构造任何调用都报错的 transport：被测路径若意外发起 HTTP 请求，闭包会
+/// 返回 Err 使测试失败，从而证明该路径确实不触网。
 fn transport_always_error() -> Arc<FakeTransport> {
     FakeTransport::new(|_| Err("unexpected transport call".to_string()))
 }
 
+/// 让 state 直接进入已连接状态：写入指定 access token，并附带 refresh token、
+/// 24 小时后才过期的 expires_at 与标准 scope，跳过真实 OAuth 交换流程。
 fn set_connected(state: &LinearState, token: &str) {
     state
         .set_auth(
@@ -96,6 +115,8 @@ fn set_connected(state: &LinearState, token: &str) {
         .expect("set auth");
 }
 
+/// 把请求体（JSON 或 Form 文本）解析为 serde_json 的 Value；解析失败或无
+/// body 时返回 Null，让后续的下标断言可以安全进行。
 fn body_json(request: &HttpRequest) -> Value {
     match &request.body {
         HttpBody::Json(body) | HttpBody::Form(body) => {
@@ -105,6 +126,8 @@ fn body_json(request: &HttpRequest) -> Value {
     }
 }
 
+/// 将 application/x-www-form-urlencoded 请求体解码为 (键, 值) 列表；
+/// 非 Form body 返回空列表，用于检查 OAuth token 与 revoke 请求的参数。
 fn form_pairs(request: &HttpRequest) -> Vec<(String, String)> {
     match &request.body {
         HttpBody::Form(body) => url::form_urlencoded::parse(body.as_bytes())
@@ -114,6 +137,8 @@ fn form_pairs(request: &HttpRequest) -> Vec<(String, String)> {
     }
 }
 
+/// 从 Form 请求体中取出第一个匹配键的值，用于断言 code_verifier、
+/// grant_type 等 OAuth 参数是否按契约发送。
 fn form_get<'a>(request: &'a HttpRequest, key: &str) -> Option<String> {
     form_pairs(request)
         .into_iter()
@@ -121,6 +146,8 @@ fn form_get<'a>(request: &'a HttpRequest, key: &str) -> Option<String> {
         .map(|(_, value)| value)
 }
 
+/// 解析 URL 并返回指定 query 参数（缺失时为空字符串），用于从授权 URL 中
+/// 提取 state、code_challenge 等字段做断言。
 fn url_query_param(url: &str, key: &str) -> String {
     url::Url::parse(url)
         .expect("url")
@@ -130,6 +157,7 @@ fn url_query_param(url: &str, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 读取 axum 响应的完整 body 并按 UTF-8 解码为字符串，供检查 HTML 回调页。
 async fn body_string(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -137,11 +165,15 @@ async fn body_string(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf-8")
 }
 
+/// 读取 axum 响应 body 并解析为 JSON（失败退化为 Null），与状态码一起
+/// 构成路由测试统一的返回形态。
 async fn body_json_response(response: axum::response::Response) -> Value {
     let text = body_string(response).await;
     serde_json::from_str(&text).unwrap_or(Value::Null)
 }
 
+/// 构造标准的 Linear issue GraphQL 节点 fixture（ENG-12，含 state、
+/// assignee、team、labels），供列表、搜索、详情、更新等用例复用。
 fn issue_node() -> Value {
     json!({
         "id": "issue-uuid-1",
@@ -160,6 +192,9 @@ fn issue_node() -> Value {
 // parse
 // ---------------------------------------------------------------------------
 
+/// 验证 parse_linear_issue_ref 的解析契约：能识别 team key 标识符（大小写
+/// 不敏感）、Linear issue URL 与裸 UUID；自由文本和残缺路径返回 None。
+/// 与 JS 版保持一致，正则未锚定，外域 URL 中内嵌的 Linear 路径同样命中。
 #[test]
 fn parse_linear_issue_ref_reads_identifiers_urls_uuids() {
     assert_eq!(
@@ -202,6 +237,9 @@ fn parse_linear_issue_ref_reads_identifiers_urls_uuids() {
 // oauth
 // ---------------------------------------------------------------------------
 
+/// 验证 start_authorization 产出的授权 URL：指向 linear.app 的 oauth/authorize，
+/// 携带固定 client_id、redirect_uri、S256 方式的 43 字符 code_challenge、
+/// actor=user 与 prompt=consent，并在返回 JSON 中带 scope 与 600 秒有效期。
 #[tokio::test]
 async fn oauth_authorize_url_uses_s256_and_stores_pending() {
     let (state, _dir) = state_with(
@@ -242,6 +280,8 @@ async fn oauth_authorize_url_uses_s256_and_stores_pending() {
     assert_eq!(started["expiresIn"], json!(600));
 }
 
+/// 验证回调携带未知 state（伪造）时以 UNKNOWN_STATE 拒绝；配合任何调用都
+/// 报错的 transport，同时证明拒绝路径不会发起 token 交换请求。
 #[tokio::test]
 async fn oauth_rejects_unknown_state_without_transport_call() {
     let (state, _dir) = state_with(
@@ -263,6 +303,9 @@ async fn oauth_rejects_unknown_state_without_transport_call() {
     assert_eq!(error.code.as_deref(), Some("UNKNOWN_STATE"));
 }
 
+/// 验证授权码交换的完整契约：POST oauth/token 使用 form 编码，携带
+/// grant_type=authorization_code、code 与 43 字符 code_verifier，且不含
+/// client_secret；pending state 一次性消费，重放同一回调被拒绝且不再发请求。
 #[tokio::test]
 async fn oauth_exchanges_code_with_pkce_verifier_once() {
     let transport = FakeTransport::new(|request| {
@@ -328,6 +371,9 @@ async fn oauth_exchanges_code_with_pkce_verifier_once() {
     assert_eq!(transport.call_count(), 1);
 }
 
+/// 验证 refresh token 轮换：refresh_access_token 以 grant_type=refresh_token
+/// 换回新的 access/refresh token；传入空白 refresh token 时以
+/// MISSING_REFRESH_TOKEN 报错且不发起请求。
 #[tokio::test]
 async fn oauth_refresh_rotates_token() {
     let transport = FakeTransport::new(|_request| {
@@ -360,6 +406,9 @@ async fn oauth_refresh_rotates_token() {
     assert_eq!(error.code.as_deref(), Some("MISSING_REFRESH_TOKEN"));
 }
 
+/// 验证桌面端 broker 授权全流程：start 提交 43 字符 state 与 claimSecret、
+/// 拿到 broker 回调地址；poll 取回授权码后向 Linear 换 token（redirect_uri
+/// 指向 broker 回调、带 PKCE verifier）；complete 上报收据，全程恰好 4 次调用。
 #[tokio::test]
 async fn oauth_broker_flow_start_poll_complete() {
     let transport = FakeTransport::new(|request| match request.url.as_str() {
@@ -420,6 +469,8 @@ async fn oauth_broker_flow_start_poll_complete() {
     assert_eq!(transport.call_count(), 4);
 }
 
+/// 验证 broker poll 收到 202（尚未完成）时返回 None 让调用方继续轮询，
+/// 不会提前触发 token 交换（transport 调用数停留在 start 与 poll 两次）。
 #[tokio::test]
 async fn oauth_broker_poll_waits_on_202() {
     let transport = FakeTransport::new(|request| {
@@ -445,6 +496,10 @@ async fn oauth_broker_poll_waits_on_202() {
 // auth store
 // ---------------------------------------------------------------------------
 
+/// 验证凭据存储结构与公开状态：初始未连接时 status 只有 connected:false；
+/// set_auth 写入后 linear-auth.json 采用多 workspace 结构（accessToken 只在
+/// workspaces 数组内），对外 JSON 不泄漏任何 token，并包含 scope 与数值型
+/// authorizedAt。
 #[test]
 fn auth_store_shapes_and_public_status() {
     let (state, dir) = state_with("auth-shapes", &[], transport_always_error());
@@ -503,6 +558,9 @@ fn auth_store_shapes_and_public_status() {
     assert!(raw["workspaces"][0]["expiresAt"].is_number());
 }
 
+/// 验证 refresh token 的三态语义：字段缺省（None）保留已存储的旧值、
+/// Some(None) 显式清空、传入时覆盖；缺少 accessToken 的写入被拒绝并报
+/// "accessToken is required"。
 #[test]
 fn auth_refresh_token_semantics() {
     let (state, _dir) = state_with("auth-refresh", &[], transport_always_error());
@@ -556,6 +614,9 @@ fn auth_refresh_token_semantics() {
     assert_eq!(error.message, "accessToken is required");
 }
 
+/// 验证 token 过期判定与 OAuth 客户端配置：is_access_token_stale 对缺失或
+/// 已过期的 expires_at 返回 true；默认使用内置 client id 与线上 broker 回调，
+/// 环境变量可覆盖 client id、redirect URI，broker URL 的尾部斜杠会被归一化。
 #[test]
 fn auth_stale_detection_and_client_config() {
     assert!(super::auth::is_access_token_stale(None, super::now_ms()));
@@ -601,6 +662,8 @@ fn auth_stale_detection_and_client_config() {
     );
 }
 
+/// 验证 clear_auth 的行为契约：删除 linear-auth.json 文件本身，随后
+/// get_auth 返回 None，状态回到未连接。
 #[test]
 fn auth_clear_deletes_file_and_returns_disconnected() {
     let (state, dir) = state_with("auth-clear", &[], transport_always_error());
@@ -620,6 +683,9 @@ fn auth_clear_deletes_file_and_returns_disconnected() {
     assert!(state.get_auth().is_none());
 }
 
+/// 验证旧版单 workspace 格式的 linear-auth.json 在读取时被自动迁移为
+/// workspaces 数组：token、用户与组织信息保留，标记为 current，顶层冗余
+/// 字段不再出现。
 #[test]
 fn auth_migrates_legacy_single_workspace_file() {
     let (state, dir) = state_with("auth-legacy", &[], transport_always_error());
@@ -646,6 +712,8 @@ fn auth_migrates_legacy_single_workspace_file() {
     assert!(raw.get("accessToken").is_none());
 }
 
+/// 辅助函数：用给定 token 写入一个属于指定组织的凭据（org id 同时充当
+/// 用户与组织的标识），用于构造多 workspace 测试场景。
 fn auth_with_org(state: &LinearState, token: &str, org: &str) {
     state
         .set_auth(
@@ -670,6 +738,9 @@ fn auth_with_org(state: &LinearState, token: &str, org: &str) {
         .unwrap();
 }
 
+/// 验证多 workspace 语义：第二次授权追加而非覆盖；auth_workspaces 按写入
+/// 顺序列出；activate_auth 切换当前 workspace；不带参数的 clear_auth 只删除
+/// 当前 workspace；激活不存在的组织返回 false。
 #[test]
 fn auth_multiple_workspaces_activate_and_scoped_clear() {
     let (state, _dir) = state_with("auth-multi", &[], transport_always_error());
@@ -698,6 +769,8 @@ fn auth_multiple_workspaces_activate_and_scoped_clear() {
     assert!(!state.activate_auth("missing"));
 }
 
+/// 验证对已有 workspace 的静默刷新（activate=false）不会改写 authorizedAt：
+/// 先把磁盘上的值篡改为 111，重新写入 token 后读回的仍是 111。
 #[test]
 fn auth_authorized_at_not_bumped_without_activate() {
     let (state, dir) = state_with("auth-authorized-at", &[], transport_always_error());
@@ -735,6 +808,8 @@ fn auth_authorized_at_not_bumped_without_activate() {
     assert!(auth.current);
 }
 
+/// 验证 session 评论偏好开关：默认关闭，set_session_comments_enabled 写入
+/// 后立即生效并可读回。
 #[test]
 fn auth_session_comments_preference_roundtrip() {
     let (state, _dir) = state_with("auth-comments", &[], transport_always_error());
@@ -747,6 +822,8 @@ fn auth_session_comments_preference_roundtrip() {
 // mapping
 // ---------------------------------------------------------------------------
 
+/// 验证 mapping 存取契约：文件缺失时读出空切片；写入时剔除全空白的路径项，
+/// 落盘文件权限必须是 0600（内容含本机路径信息）；再次读取与写入值相等。
 #[test]
 fn mapping_missing_file_roundtrip_and_permissions() {
     let (state, dir) = state_with("mapping-roundtrip", &[], transport_always_error());
@@ -780,6 +857,9 @@ fn mapping_missing_file_roundtrip_and_permissions() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+/// 验证 mapping 的整体替换语义：写入空对象会清掉之前的默认路径与团队路径；
+/// 非对象 body 以 INVALID（Mapping body must be an object）拒绝，且已存储
+/// 内容不受失败写入影响。
 #[test]
 fn mapping_replaces_previous_and_rejects_invalid_body() {
     let (state, _dir) = state_with("mapping-replace", &[], transport_always_error());
@@ -805,6 +885,8 @@ fn mapping_replaces_previous_and_rejects_invalid_body() {
     );
 }
 
+/// 验证磁盘上的 mapping 文件损坏时读取向调用方返回 MALFORMED 错误，
+/// 而不是被当成空 mapping 静默吞掉。
 #[test]
 fn mapping_malformed_file_is_an_error_not_empty() {
     let (state, dir) = state_with("mapping-malformed", &[], transport_always_error());
@@ -814,6 +896,9 @@ fn mapping_malformed_file_is_an_error_not_empty() {
     assert_eq!(error.message, "Linear mapping file is malformed");
 }
 
+/// 验证 mapping 视图合并与路径解析：merge_linear_mapping_view 把存储的默认
+/// 路径与团队路径叠加到团队列表；resolve_mapped_project_path 优先团队专属
+/// 路径，其次默认路径，未提供团队时仍返回默认路径。
 #[test]
 fn mapping_merge_and_resolve() {
     let stored = MappingSlice {
@@ -857,6 +942,8 @@ fn mapping_merge_and_resolve() {
     );
 }
 
+/// 验证 mapping 按 workspace 隔离：org-b 的写入不影响 org-a 的切片；切回
+/// org-a 后读到的仍是它自己的默认路径与团队路径。
 #[test]
 fn mapping_slices_stay_per_workspace() {
     let (state, _dir) = state_with("mapping-slices", &[], transport_always_error());
@@ -888,6 +975,8 @@ fn mapping_slices_stay_per_workspace() {
 // issues (transport level)
 // ---------------------------------------------------------------------------
 
+/// 验证未连接时 list_linear_issues 直接返回 connected:false，不发起任何
+/// transport 调用。
 #[tokio::test]
 async fn issues_disconnected_without_transport_calls() {
     let (state, _dir) = state_with("issues-disconnected", &[], transport_always_error());
@@ -899,6 +988,9 @@ async fn issues_disconnected_without_transport_calls() {
     );
 }
 
+/// 验证 issue 列表请求契约：打到 Linear graphql 端点、携带 Bearer token 与
+/// public-file-urls-expire-in 请求头、默认过滤终态且分页大小为 50；响应透传
+/// cursor 与 hasMore，label 颜色归一化为井号前缀小写，输出不泄漏 token。
 #[tokio::test]
 async fn issues_list_shape_headers_and_pagination_fields() {
     let transport = FakeTransport::new(|request| {
@@ -951,6 +1043,8 @@ async fn issues_list_shape_headers_and_pagination_fields() {
     assert!(!result.to_string().contains("access-1"));
 }
 
+/// 验证对服务端脏数据的清洗：超出枚举范围的 priority 置为 null；颜色非
+/// 十六进制的 label 颜色置 null；缺少 id 的 label 整条丢弃。
 #[tokio::test]
 async fn issues_drop_invalid_priority_and_label_colors() {
     let transport = FakeTransport::new(|_| {
@@ -989,6 +1083,9 @@ async fn issues_drop_invalid_priority_and_label_colors() {
     );
 }
 
+/// 验证两条查询路径：普通关键词走 SearchLinearIssues 查询（term 变量）；
+/// query 是 Linear URL 时被识别为标识符，改走 GetLinearIssue 直查，返回
+/// 单条结果且不带分页游标。
 #[tokio::test]
 async fn issues_search_and_identifier_direct_lookup() {
     let transport = FakeTransport::new(|request| {
@@ -1061,6 +1158,10 @@ async fn issues_search_and_identifier_direct_lookup() {
     assert_eq!(by_url["cursor"], Value::Null);
 }
 
+/// 验证 status 参数到 GraphQL state 过滤的映射表：open、backlog、todo、
+/// started（排除 In Review）、inReview、completed、canceled（排除 Duplicate）
+/// 与 duplicate（or 组合）逐项对照；all 与未知 status 不加 state 过滤；
+/// 同时验证 assignee、team、priority 的组合过滤与优先级名称到数值的换算。
 #[tokio::test]
 async fn issues_status_filter_table() {
     let (state, _dir) = state_with("issues-filters", &[], transport_always_error());
@@ -1148,6 +1249,8 @@ async fn issues_status_filter_table() {
     );
 }
 
+/// 验证 query 为标识符时的直查路径：GetLinearIssue 请求只带 id 变量，
+/// status、assignee、team、priority 等列表过滤参数一律不进入请求。
 #[tokio::test]
 async fn issues_identifier_lookup_ignores_list_filters() {
     let transport = FakeTransport::new(|request| {
@@ -1175,6 +1278,8 @@ async fn issues_identifier_lookup_ignores_list_filters() {
     assert_eq!(result["issues"][0]["identifier"], json!("ENG-12"));
 }
 
+/// 验证 issue 详情包含 description 与评论数组（评论含作者、时间与头像）；
+/// 空白 id 直接返回 connected:true 且 issue 为 null，全程不触网。
 #[tokio::test]
 async fn issues_get_includes_comments_and_description() {
     let transport = FakeTransport::new(|_| {
@@ -1223,6 +1328,9 @@ async fn issues_get_includes_comments_and_description() {
     assert_eq!(empty, json!({ "connected": true, "issue": Value::Null }));
 }
 
+/// 验证团队工作流状态按 Linear 习惯排序：Backlog、Todo、In Progress、
+/// In Review、Done、Canceled、Duplicate（同类内按 position）；空白 teamId
+/// 以 INVALID（teamId is required）拒绝。
 #[tokio::test]
 async fn issues_workflow_states_ordered_like_linear() {
     let transport = FakeTransport::new(|_| {
@@ -1269,6 +1377,9 @@ async fn issues_workflow_states_ordered_like_linear() {
     assert_eq!(error.message, "teamId is required");
 }
 
+/// 验证更新 issue 的两段式契约：先用 GetLinearIssue 把 ENG-12 解析成 UUID，
+/// 再用 IssueUpdate mutation 提交 stateId 并返回更新后的 issue；空白 stateId
+/// 报 "id and stateId are required"。
 #[tokio::test]
 async fn issues_update_resolves_identifier_then_mutates() {
     let transport = FakeTransport::new(|request| {
@@ -1326,6 +1437,8 @@ async fn issues_update_resolves_identifier_then_mutates() {
     assert_eq!(error.message, "id and stateId are required");
 }
 
+/// 验证创建评论：issue 标识符先解析为 UUID，再以 CommentCreate 提交
+/// issueId 与 body，返回 connected 与新评论 id。
 #[tokio::test]
 async fn issues_comment_create_resolves_uuid() {
     let transport = FakeTransport::new(|request| {
@@ -1363,6 +1476,8 @@ async fn issues_comment_create_resolves_uuid() {
     );
 }
 
+/// 验证 GraphQL 401 的自愈路径：清空当前 workspace 凭据，当次与后续调用
+/// 都返回 connected:false，且不再产生新的 transport 调用。
 #[tokio::test]
 async fn issues_graphql_401_clears_workspace() {
     let transport = FakeTransport::new(|_| {
@@ -1390,6 +1505,8 @@ async fn issues_graphql_401_clears_workspace() {
     assert_eq!(transport.call_count(), 1);
 }
 
+/// 验证 Linear 参数校验错误的透传契约：userPresentableMessage 成为
+/// error.message，user_error 置位，HTTP 状态映射为 400。
 #[tokio::test]
 async fn issues_validation_errors_surface_as_user_errors() {
     let transport = FakeTransport::new(|_| {
@@ -1423,6 +1540,8 @@ async fn issues_validation_errors_surface_as_user_errors() {
 // teams
 // ---------------------------------------------------------------------------
 
+/// 验证团队列表翻页：首页 hasNextPage 时以 endCursor 续查第二页并合并
+/// 结果；输出 JSON 不泄漏 token，transport 总调用数为 2。
 #[tokio::test]
 async fn teams_list_across_pages() {
     let transport = FakeTransport::new(|request| {
@@ -1472,6 +1591,7 @@ async fn teams_list_across_pages() {
     assert_eq!(transport.call_count(), 2);
 }
 
+/// 验证团队列表遇到 401 时同样清空凭据并返回 connected:false。
 #[tokio::test]
 async fn teams_graphql_401_clears_and_disconnects() {
     let transport = FakeTransport::new(|_| {
@@ -1493,6 +1613,10 @@ async fn teams_graphql_401_clears_and_disconnects() {
 // status
 // ---------------------------------------------------------------------------
 
+/// 验证 session origin 的解析与收敛：只接受不带路径与查询的 http(s) origin
+///（尾部斜杠被剥离）；javascript: 协议、带路径或查询、自定义协议与空串
+/// 一律归为空。build_linear_session_open_url 生成带 session 参数的打开链接，
+/// origin 为空时返回空串。
 #[test]
 fn status_origin_parsing() {
     assert_eq!(
@@ -1515,6 +1639,9 @@ fn status_origin_parsing() {
     assert_eq!(build_linear_session_open_url("ses_1", ""), "");
 }
 
+/// 验证公网 origin 判定：域名（含带端口）与公网 IP 通过；localhost、IPv4/
+/// IPv6 环回、私有网段、链路本地、CGNAT、ULA 地址、.local 与裸主机名、
+/// 自定义协议与空串一律拒绝，防止把内网地址写进 Linear 评论。
 #[test]
 fn status_public_origin_classification() {
     assert!(is_public_session_origin("https://chamber.example.com"));
@@ -1536,6 +1663,8 @@ fn status_public_origin_classification() {
     assert!(!is_public_session_origin(""));
 }
 
+/// 验证状态评论正文恰是一条 Markdown 链接：started、completed、failure
+/// 对应不同文案且共用同一个会话链接；没有 URL 时退化为纯文本。
 #[test]
 fn status_comment_body_is_one_link() {
     let url = "https://app.example.com/?session=ses_1";
@@ -1557,6 +1686,8 @@ fn status_comment_body_is_one_link() {
     );
 }
 
+/// 验证状态记录裁剪的保序性：按插入顺序保留最新 N 条（与键名字典序无关），
+/// 落盘 JSON 的顶层键顺序与之一致，因此重载后再裁剪结果不变。
 #[test]
 fn status_prune_keeps_newest_by_insertion_order() {
     let mut records = Vec::new();
@@ -1599,6 +1730,8 @@ fn status_prune_keeps_newest_by_insertion_order() {
     );
 }
 
+/// 构造 status 用例的通用 transport：GetLinearIssue 返回标准 issue 节点，
+/// CommentCreate 返回指定 id 的新评论，并对两条请求的入参做断言。
 fn status_transport(comment_id: &str) -> Arc<FakeTransport> {
     let comment_id = comment_id.to_string();
     FakeTransport::new(move |request| {
@@ -1635,6 +1768,8 @@ fn status_transport(comment_id: &str) -> Arc<FakeTransport> {
     })
 }
 
+/// post_linear_session_status 的薄封装：把 kind（started/completed/failure）、
+/// session id、issue 标识与 origin 组装成 SessionStatusInput 后提交。
 async fn post_status(
     state: &Arc<LinearState>,
     kind: &str,
@@ -1655,6 +1790,8 @@ async fn post_status(
     .await
 }
 
+/// 验证发帖的跳过路径：评论开关关闭时 skipped 为 disabled；origin 非公网
+///（环回地址或空）时 skipped 为 origin-not-public；两者都保持连接且不发评论。
 #[tokio::test]
 async fn status_skips_when_disabled_or_origin_not_public() {
     let (state, _dir) = state_with("status-skip", &[], transport_always_error());
@@ -1694,6 +1831,9 @@ async fn status_skips_when_disabled_or_origin_not_public() {
     );
 }
 
+/// 验证 started 只发一次：首次返回 posted:true 与 commentId，重复请求
+/// skipped 为 already-posted；发出的评论正文是带 session 打开链接的
+/// Markdown 链接，响应 JSON 不含 token。
 #[tokio::test]
 async fn status_started_posts_once_and_dedupes() {
     let transport = status_transport("comment-1");
@@ -1748,6 +1888,9 @@ async fn status_started_posts_once_and_dedupes() {
     );
     assert!(!first.to_string().contains("access-1"));
 }
+/// 验证 completed 的前置条件与状态复用：没有 started 记录时 skipped 为
+/// not-started；started 之后 completed 无需再传 issue 与 origin（复用存储值），
+/// 且同样只发一次。
 #[tokio::test]
 async fn status_completed_reuses_stored_origin_and_requires_started() {
     let transport = status_transport("comment-done");
@@ -1817,6 +1960,9 @@ async fn status_completed_reuses_stored_origin_and_requires_started() {
 // status runtime
 // ---------------------------------------------------------------------------
 
+/// 验证 runtime 对 session.status 为 idle 的处理：先通过状态接口种下
+/// started 记录，首次 idle 触发一条 session completed 评论，第二次 idle
+/// 去重不再发送；结束后 stop() 停掉 runtime。
 #[tokio::test]
 async fn runtime_posts_completed_once_on_idle() {
     let (state, _dir) = state_with("runtime-idle", &[], status_transport("started"));
@@ -1887,6 +2033,8 @@ async fn runtime_posts_completed_once_on_idle() {
     runtime.stop();
 }
 
+/// 验证 session.error 的分流：用户主动中止（MessageAbortedError）不创建
+/// 任务、不发评论；真实失败（ProviderError）则发布 session failed 评论。
 #[tokio::test]
 async fn runtime_posts_failure_and_skips_user_abort() {
     let transport = status_transport("fail");
@@ -1945,6 +2093,8 @@ async fn runtime_posts_failure_and_skips_user_abort() {
     runtime.stop();
 }
 
+/// 验证 runtime 的忽略与停止契约：busy 状态不产生任务；stop() 之后即使
+/// 再收到 idle 也不再处理，全程零 transport 调用。
 #[tokio::test]
 async fn runtime_ignores_busy_and_stops() {
     let transport = status_transport("none");
@@ -1970,6 +2120,8 @@ async fn runtime_ignores_busy_and_stops() {
 // routes (oneshot)
 // ---------------------------------------------------------------------------
 
+/// 组装路由层被测对象：用固定 redirect URI 环境变量构造 LinearState 并挂上
+/// super::routes::router，返回 (axum Router, state) 供 oneshot 请求使用。
 fn route_state(tag: &str, transport: Arc<dyn HttpTransport>) -> (axum::Router, Arc<LinearState>) {
     let (state, _dir) = state_with(
         tag,
@@ -1982,6 +2134,7 @@ fn route_state(tag: &str, transport: Arc<dyn HttpTransport>) -> (axum::Router, A
     (super::routes::router(state.clone()), state)
 }
 
+/// 用 tower 的 oneshot 向 Router 发一条 GET，返回 (状态码, 响应 JSON)。
 async fn get_json(app: axum::Router, uri: &str) -> (axum::http::StatusCode, Value) {
     let response = app
         .oneshot(
@@ -1995,6 +2148,8 @@ async fn get_json(app: axum::Router, uri: &str) -> (axum::http::StatusCode, Valu
     (status, body_json_response(response).await)
 }
 
+/// 用 tower 的 oneshot 向 Router 发一条指定 method 的 JSON 请求，
+/// 返回 (状态码, 响应 JSON)。
 async fn send_json(
     app: axum::Router,
     method: &str,
@@ -2016,6 +2171,9 @@ async fn send_json(
     (status, body_json_response(response).await)
 }
 
+/// 构造"token 交换 + viewer 查询"两步都成功的 transport：oauth/token 返回
+/// access-1，graphql 返回 viewer 用户与组织信息，供走完整 OAuth 回调的路由
+/// 测试复用。
 fn token_and_viewer_transport() -> Arc<FakeTransport> {
     FakeTransport::new(|request| match request.url.as_str() {
         "https://api.linear.app/oauth/token" => json_ok(json!({
@@ -2041,6 +2199,8 @@ fn token_and_viewer_transport() -> Arc<FakeTransport> {
     })
 }
 
+/// 通过 POST /api/linear/auth/start 启动授权，并从返回的 authorizationUrl
+/// 中提取 state 参数，供随后模拟 OAuth 回调。
 async fn connect_through_callback(app: &axum::Router, origin: &str) -> String {
     let (status, payload) = send_json(
         app.clone(),
@@ -2054,6 +2214,9 @@ async fn connect_through_callback(app: &axum::Router, origin: &str) -> String {
     url_query_param(url, "state")
 }
 
+/// 验证路由层的完整 OAuth 流：start 启动、回调页展示成功文案并含桌面端
+/// openchamber:// 深链、/auth/status 返回连接态（用户、组织、scope、
+/// workspace 列表，不泄漏 token），且重复查询不会刷新 authorizedAt。
 #[tokio::test]
 async fn route_full_oauth_flow_status_and_stable_authorized_at() {
     let (app, state) = route_state("route-flow", token_and_viewer_transport());
@@ -2101,6 +2264,8 @@ async fn route_full_oauth_flow_status_and_stable_authorized_at() {
     let _ = state;
 }
 
+/// 验证伪造 state 的回调渲染 400 Authorization Failed 页面，且页面不含
+/// openchamber:// 深链，避免为攻击者提供触发客户端聚焦的机会。
 #[tokio::test]
 async fn route_unknown_state_is_400_page_without_deep_link() {
     let (app, _state) = route_state("route-unknown", transport_always_error());
@@ -2118,6 +2283,7 @@ async fn route_unknown_state_is_400_page_without_deep_link() {
     assert!(!page.contains("openchamber://"));
 }
 
+/// 验证 web origin 的回调成功页不包含桌面端 openchamber:// 深链。
 #[tokio::test]
 async fn route_web_origin_omits_desktop_deep_link() {
     let (app, _state) = route_state("route-web", token_and_viewer_transport());
@@ -2139,6 +2305,9 @@ async fn route_web_origin_omits_desktop_deep_link() {
     assert!(!page.contains("openchamber://"));
 }
 
+/// 验证 DELETE /api/linear/auth 的完整语义：先向 Linear 的 oauth/revoke
+/// 吊销 refresh token（token_type_hint 为 refresh_token），再删除本地凭据，
+/// 随后状态回到未连接。
 #[tokio::test]
 async fn route_disconnect_revokes_refresh_token() {
     let transport = FakeTransport::new(|request| match request.url.as_str() {
@@ -2191,6 +2360,9 @@ async fn route_disconnect_revokes_refresh_token() {
     assert_eq!(body, json!({ "connected": false }));
 }
 
+/// 验证双 workspace 的路由流：两次 OAuth 回调累积两个组织；activate 缺参
+/// 返回 400、未知组织返回 404、命中后切换当前组织；DELETE 只移除当前
+/// workspace，另一个保持连接。
 #[tokio::test]
 async fn route_two_workspaces_switch_and_partial_disconnect() {
     let transport = FakeTransport::new(|request| {
@@ -2277,6 +2449,10 @@ async fn route_two_workspaces_switch_and_partial_disconnect() {
     assert_eq!(remaining["workspaces"].as_array().map(Vec::len), Some(1));
 }
 
+/// 验证 issue 相关路由的行为：/issues/list 正常返回列表；/issues/get 缺 id
+/// 为 400、带 id 返回详情（含描述）；/issues/states 缺 teamId 为 400、正常
+/// 返回工作流状态；/issues/update 缺参为 400，正常时走解析加 mutation
+/// 返回更新后的 issue。
 #[tokio::test]
 async fn route_issues_list_get_and_validation_errors() {
     let transport = FakeTransport::new(|request| {
@@ -2399,6 +2575,8 @@ async fn route_issues_list_get_and_validation_errors() {
     assert_eq!(updated["issue"]["identifier"], json!("ENG-12"));
 }
 
+/// 验证 Linear 侧 userError（Team 不存在、stateId 非 UUID）经路由层透传为
+/// 400 状态码与 userPresentableMessage 文案。
 #[tokio::test]
 async fn route_linear_validation_errors_are_400() {
     let transport = FakeTransport::new(|request| {
@@ -2451,6 +2629,8 @@ async fn route_linear_validation_errors_are_400() {
     assert_eq!(updated["error"], json!("stateId must be a UUID."));
 }
 
+/// 验证未连接时各路由统一退化为 200 加 connected:false（issue 列表、详情、
+/// 工作流状态、更新、mapping 读写与 session-status），既不报错也不触网。
 #[tokio::test]
 async fn route_disconnected_shapes() {
     let (app, _state) = route_state("route-disconnected", transport_always_error());
@@ -2501,6 +2681,8 @@ async fn route_disconnected_shapes() {
     assert_eq!(session, json!({ "connected": false }));
 }
 
+/// 验证 mapping 路由的读写往返：GET 返回默认路径与团队列表（未存储时路径
+/// 为 null）；PUT 保存后 GET 能读回默认路径与团队专属路径。
 #[tokio::test]
 async fn route_mapping_roundtrip() {
     let transport = FakeTransport::new(|_| {
@@ -2565,6 +2747,8 @@ async fn route_mapping_roundtrip() {
     let _ = state;
 }
 
+/// 验证 POST /api/linear/session-status：缺少 kind 或 sessionId 返回 400；
+/// 参数齐全时发布评论并返回 posted:true 与 commentId。
 #[tokio::test]
 async fn route_session_status_post_shape() {
     let transport = status_transport("comment-1");
@@ -2601,6 +2785,8 @@ async fn route_session_status_post_shape() {
     );
 }
 
+/// 验证偏好路由：GET 默认 sessionComments 为 false；PUT 传非布尔值返回 400，
+/// 传布尔值则持久化并可经 GET 读回。
 #[tokio::test]
 async fn route_preferences_roundtrip_and_validation() {
     let (app, _state) = route_state("route-prefs", transport_always_error());
@@ -2631,6 +2817,8 @@ async fn route_preferences_roundtrip_and_validation() {
     assert_eq!(reread, json!({ "sessionComments": true }));
 }
 
+/// 验证 PUT /api/linear/mapping 收到非对象 body 时返回 400 与
+/// "Mapping body must be an object" 错误文案。
 #[tokio::test]
 async fn route_mapping_invalid_body_is_400() {
     let transport = FakeTransport::new(|_| {

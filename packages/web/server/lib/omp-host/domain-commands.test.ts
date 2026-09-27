@@ -9,6 +9,14 @@
 // - buildAvailableSlashCommands(session) (available-commands.ts:31-97)
 //   aggregates skills (gated by skillsSettings.enableSkillCommands), extension
 //   and custom commands, and file commands from sessionManager.getCwd().
+/**
+ * omp 斜杠命令发现域测试（spec 08 §5.4，master R2）。
+ *
+ * 断言的 SDK 事实已对照安装源码验证：BUILTIN_SLASH_COMMANDS_INTERNAL
+ * 是完整的保留名注册表（含 TUI-only 的 debug 等）；buildAvailableSlash
+ * Commands 聚合 skills/扩展/自定义与 file 命令。覆盖投影、Tier A 保留、
+ * 聚合降级、capability 门控与 live 扩展命令合并。
+ */
 
 import { describe, test, expect } from 'bun:test';
 import {
@@ -19,6 +27,7 @@ import {
   registerCommandsDomainRoutes,
 } from './domain-commands.ts';
 
+/** projectOmpCommand：source→tier 映射、参数模板提取与非法行拒绝。 */
 describe('projectOmpCommand', () => {
   test('maps source→tier and extracts the argument template', () => {
     expect(projectOmpCommand({
@@ -46,6 +55,7 @@ describe('projectOmpCommand', () => {
   });
 });
 
+/** Tier A 保留：覆盖全注册表（含 TUI-only 名），且不含 composer 本地名。 */
 describe('builtinOmpCommands (Tier A reservation)', () => {
   test('covers the full registry including TUI-only names, all client-builtin', () => {
     const rows = builtinOmpCommands();
@@ -62,6 +72,7 @@ describe('builtinOmpCommands (Tier A reservation)', () => {
   });
 });
 
+/** listOmpCommands 聚合：内建先行、按名去重、目录作用域与失败降级。 */
 describe('listOmpCommands aggregation', () => {
   test('appends engine rows after builtins, name-deduped, directory-scoped', async () => {
     const seenCwds: string[] = [];
@@ -117,12 +128,15 @@ describe('listOmpCommands aggregation', () => {
   });
 });
 
+/** registerCommandsDomainRoutes：commands.v1 门控（关闭 501、开启透传目录）。 */
 describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
+  /** 构造捕获 (method, pattern) → handler 的路由表替身。 */
   const makeRoute = () => {
     const handlers = new Map();
     const route = (method: string, pattern: string, handler: (request: Request) => Response | Promise<Response>) => handlers.set(`${method} ${pattern}`, handler);
     return { handlers, route };
   };
+  /** 按 URL 构造最小 Request。 */
   const request = (url: string) => new Request(url);
 
   test('capability off answers an explicit 501 without calling the loader', async () => {
@@ -165,6 +179,7 @@ describe('registerCommandsDomainRoutes (commands.v1 gate)', () => {
 // Live-session extension commands merge (09 §5.4 discovery gap)
 // ---------------------------------------------------------------------------
 
+/** loadLiveCommands 合并（09 §5.4 发现空缺）：live 扩展命令追加、去重与降级。 */
 describe('listOmpCommands — loadLiveCommands', () => {
   test('live extension commands append after builtins, deduped by name', async () => {
     const commands = await listOmpCommands({

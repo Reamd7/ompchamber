@@ -1,3 +1,10 @@
+/**
+ * 事件流跨层重放/重同步（resync）契约测试，运行于 vitest。
+ *
+ * 覆盖（docs/plan.md §5.4、phase-1 验收标准）：全局 hub 的字节/条数
+ * 双重回放上限、gap 与 ok 后缀的区分判定、上游 epoch 变更引发的重启
+ * 隔离，以及 resync 控制帧经全局/目录两个 WS 桥接的扇出行为。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
@@ -9,6 +16,10 @@ import { acceptDirectoryMessageStreamWsConnection } from './directory-ws-bridge.
 // byte-capped hub replay, distinguishable gap vs ok, upstream epoch change
 // isolation, control-frame fan-out through both WS bridges.
 
+/**
+ * 构造伪造的 SSE fetch 响应：依次返回文本块，可选响应头携带上游
+ * epoch（x-omp-epoch）；holdOpen 时读完块后永久挂起。
+ */
 function createSseResponse({ blocks = [], holdOpen = false, epoch = null } = {}) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -34,6 +45,7 @@ function createSseResponse({ blocks = [], holdOpen = false, epoch = null } = {})
   };
 }
 
+/** 在 1 秒时限内每 10ms 重试一次断言，通过即返回；超时抛出最后一次错误。 */
 async function waitForAssertion(assertion) {
   const deadline = Date.now() + 1000;
   let lastError;
@@ -51,9 +63,11 @@ async function waitForAssertion(assertion) {
   throw lastError;
 }
 
+/** 生成一个带 id 与 data 的业务事件 SSE 块。 */
 const eventBlock = (id, type, extra = '{}') =>
   `id: ${id}\ndata: {"type":"${type}","properties":${extra}}\n\n`;
 
+/** hub 回放环形缓冲的容量上限与 gap/ok 判定语义。 */
 describe('global hub replay caps and gap semantics', () => {
   it('bounds retained replay by bytes and entries simultaneously', async () => {
     const hub = createGlobalMessageStreamHub({
@@ -119,6 +133,7 @@ describe('global hub replay caps and gap semantics', () => {
   });
 });
 
+/** hub 对上游控制帧的处理与 epoch 变更的跨代隔离。 */
 describe('global hub upstream controls and epoch isolation', () => {
   it('clears replay and notifies restart on an upstream resync control; controls never fan out', async () => {
     const events = [];
@@ -258,6 +273,7 @@ describe('global hub upstream controls and epoch isolation', () => {
   });
 });
 
+/** 构造带 send 记录与心跳/关闭方法的最小 WebSocket 伪造对象。 */
 const makeSocket = () => {
   const socket = new EventEmitter();
   socket.readyState = 1;
@@ -273,7 +289,9 @@ const makeSocket = () => {
   return socket;
 };
 
+/** 全局 WS 桥的 resync 控制帧扇出与客户端 epoch 校验。 */
 describe('global WS bridge resync fan-out', () => {
+  /** 按给定的重放结果/尾部 id/epoch 构造伪造 hub，并暴露状态推送句柄。 */
   const makeHub = (replayResult, tail, epoch) => {
     let statusSubscriber = null;
     return {
@@ -384,6 +402,7 @@ describe('global WS bridge resync fan-out', () => {
   });
 });
 
+/** 目录 WS 桥对上游控制帧的转发（resync 不作为业务事件下发）。 */
 describe('directory WS bridge control forwarding', () => {
   it('relays a data-less omp.stream.resync as a resync control frame', async () => {
     const socket = makeSocket();

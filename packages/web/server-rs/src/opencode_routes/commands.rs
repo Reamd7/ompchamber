@@ -1,5 +1,9 @@
 //! Port of `opencode/commands.js`: command config CRUD across project/user
 //! `.md` files and the JSONC config layers.
+//! 中文说明:本模块移植自 `opencode/commands.js`,实现 command(斜杠
+//! 命令)配置的增删改查:项目/用户目录下的 `.md` 定义与 JSONC 配置
+//! 层中的 `command` 段;路径解析、作用域与写回规则与 agents 模块保持
+//! 一致,本模块只做纯逻辑与磁盘读写,HTTP 路由在 entity_routes 中。
 
 use std::path::{Path, PathBuf};
 
@@ -17,9 +21,14 @@ use super::md_file::{
 };
 use super::webutil::{js_to_string, object_keys};
 
+/// command 模块统一的结果别名:错误为携带用户可读消息的 `String`,
+/// 由路由层转换为 HTTP 错误响应。
 pub(crate) type CommandResult<T> = Result<T, String>;
 
 /// `ensureProjectCommandDir` — creates both the plural and legacy dirs.
+/// 创建项目级 command 的两个目录:新版复数 `.opencode/commands` 与
+/// 旧版单数 `.opencode/command`,返回复数目录路径;已存在则跳过,
+/// 创建失败静默忽略(错误延迟到写文件时才暴露)。
 fn ensure_project_command_dir(working_directory: &Path) -> PathBuf {
     let dir = working_directory.join(".opencode").join("commands");
     if !dir.exists() {
@@ -33,6 +42,9 @@ fn ensure_project_command_dir(working_directory: &Path) -> PathBuf {
 }
 
 /// `getProjectCommandPath`.
+/// 计算项目级 command 的 `.md` 路径:默认复数形式
+/// `.opencode/commands/<name>.md`,仅当旧版单数路径存在且复数路径
+/// 不存在时回退到旧版。
 fn project_command_path(working_directory: &Path, command_name: &str) -> PathBuf {
     let plural = working_directory
         .join(".opencode")
@@ -49,6 +61,8 @@ fn project_command_path(working_directory: &Path, command_name: &str) -> PathBuf
 }
 
 /// `getUserCommandPath`.
+/// 计算用户级 command 的 `.md` 路径:默认 command 目录下的复数形式,
+/// 仅当旧版 `config/command/<name>.md` 存在且新路径不存在时回退。
 fn user_command_path(env: &OpenCodeEnv, command_name: &str) -> PathBuf {
     let plural = env.command_dir().join(format!("{command_name}.md"));
     let legacy = env
@@ -62,6 +76,9 @@ fn user_command_path(env: &OpenCodeEnv, command_name: &str) -> PathBuf {
 }
 
 /// `getCommandScope`.
+/// 判定 command 当前归属的作用域:先查项目级 `.md`(命中返回
+/// project),再查用户级 `.md`(返回 user);都不存在返回
+/// `(None, None)`。返回元组为 (作用域标签, 文件路径)。
 fn command_scope(
     env: &OpenCodeEnv,
     command_name: &str,
@@ -81,6 +98,9 @@ fn command_scope(
 }
 
 /// `getCommandWritePath`.
+/// 计算 command 更新时的写入路径:已有定义沿用其作用域与路径;
+/// 否则显式请求 project 作用域且有工作目录时落到项目路径,默认
+/// 用户级路径。
 fn command_write_path(
     env: &OpenCodeEnv,
     command_name: &str,
@@ -105,6 +125,11 @@ fn command_write_path(
 }
 
 /// `getCommandSources`.
+/// 汇总 command 在 Markdown 与 JSON 两类存储中的来源信息,返回
+/// `md`/`json`/`projectMd`/`userMd` 四组(各含 exists/path/scope/
+/// fields;`.md` 非空正文以 `template` 字段名出现)。JSON 来源经
+/// `get_json_entry_source` 解析,无条目时 path 依次回退
+/// custom → project → user 层;配置层读取或 `.md` 解析失败向上返回 Err。
 pub(crate) fn get_command_sources(
     env: &OpenCodeEnv,
     command_name: &str,
@@ -192,6 +217,11 @@ pub(crate) fn get_command_sources(
 }
 
 /// `createCommand`.
+/// 新建 command:先确保目录存在,再检查项目 `.md`、用户 `.md` 与
+/// JSON 层三处均无同名定义(重复即报错);随后按请求的 scope 选择
+/// 写入路径(未指定或无工作目录时默认用户级,project 作用域会先
+/// 创建项目目录)。写入内容:剥离 `template`/`scope` 键后的字段作为
+/// frontmatter,正文取 `template` 字符串;成功后记录日志。
 pub(crate) fn create_command(
     env: &OpenCodeEnv,
     command_name: &str,
@@ -258,6 +288,13 @@ pub(crate) fn create_command(
 }
 
 /// `updateCommand`.
+/// 按 JS `updateCommand` 语义逐字段更新 command。`.md` 与 JSON 均无
+/// 定义时视为内建覆盖(is_builtin_override),新建用户级 `.md`;JSON
+/// 写入目标在无既有条目但有项目目录时优先 project 层。字段路由:
+/// `template` 写 `.md` 正文或 JSON 条目(JSON 侧 template 为文件引用
+/// 时改写引用文件);其它字段按当前所在存储就地更新(in_json →
+/// JSON;in_md 或新建 → `.md`;都没有 → JSON)。循环结束后按
+/// md_modified/json_modified 标志分别落盘并记录日志。
 pub(crate) fn update_command(
     env: &OpenCodeEnv,
     command_name: &str,
@@ -394,6 +431,9 @@ pub(crate) fn update_command(
 }
 
 /// `deleteCommand`.
+/// 删除 command:依次删除项目 `.md`、用户 `.md`,再从条目所在 JSON
+/// 层删除条目(三步独立执行,能删尽删,任一成功即计入);全部未
+/// 命中返回 Err("not found");文件删除或配置写回失败同样返回 Err。
 pub(crate) fn delete_command(
     env: &OpenCodeEnv,
     command_name: &str,

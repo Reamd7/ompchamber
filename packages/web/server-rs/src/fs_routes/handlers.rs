@@ -1,6 +1,8 @@
 //! Route handlers — direct port of the handlers registered by
 //! `server/lib/fs/routes.js` `registerFsRoutes`. Status codes, JSON shapes,
 //! and error strings mirror the JS exactly.
+//! 路由处理器 —— 对 `server/lib/fs/routes.js` 中 `registerFsRoutes`
+//! 所注册处理器的直接移植：状态码、JSON 结构与错误文案均与 JS 版逐字对齐。
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -26,12 +28,18 @@ use super::workspace::{
     ReadPathError, git_binary, resolve_read_path_from_context, resolve_workspace_path_from_context,
 };
 
+/// `/api/fs/serve` 允许读入内存并返回的最大文件大小（100 MiB），
+/// 超限直接返回 413，避免超大文件拖垮服务进程。
 const MAX_SERVE_BYTES: u64 = 100 * 1024 * 1024;
 /// registerCommonRequestMiddleware mounts `express.json({ limit: '50mb' })`
 /// for `/api/fs` paths.
+/// `/api/fs` 路径 JSON 请求体的 50 MiB 上限，对齐 JS 端
+/// `express.json({ limit: '50mb' })` 中间件的配置。
 pub const JSON_BODY_LIMIT: usize = 50 * 1024 * 1024;
 
 /// routes.js `FILE_MIME_MAP` (used by `/api/fs/serve`).
+/// 按小写扩展名（不含点）返回 `/api/fs/serve` 的 Content-Type；
+/// 未识别的扩展名回退为 `application/octet-stream`。
 fn serve_mime(extension: &str) -> &'static str {
     match extension {
         "html" | "htm" => "text/html",
@@ -63,6 +71,8 @@ fn serve_mime(extension: &str) -> &'static str {
 }
 
 /// The smaller inline mime map on `/api/fs/raw`.
+/// `/api/fs/raw` 使用的精简内联 MIME 表，仅覆盖图片与 PDF 等常用类型，
+/// 其余扩展名回退为 `application/octet-stream`。
 fn raw_mime(extension: &str) -> &'static str {
     match extension {
         "png" => "image/png",
@@ -82,14 +92,18 @@ fn raw_mime(extension: &str) -> &'static str {
 // Response helpers (JS `res.status(...).json({ error, ... reason? })`)
 // ---------------------------------------------------------------------------
 
+/// 以指定状态码返回 JSON 响应，等价 JS 端 `res.status(...).json(...)`。
 fn json_response(status: StatusCode, value: Value) -> Response {
     (status, Json(value)).into_response()
 }
 
+/// 构造 `{"error": message}` 形状的 JSON 错误响应。
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
     json_response(status, json!({ "error": message.into() }))
 }
 
+/// 构造 `{"error": message, "reason": reason}` 形状的错误响应，
+/// reason 供客户端按机器可读的类别区分失败原因。
 fn error_response_with_reason(
     status: StatusCode,
     message: impl Into<String>,
@@ -100,14 +114,18 @@ fn error_response_with_reason(
 
 /// routes.js `sendOsPermissionDenied` — `{ error, reason: 'os-permission' }`.
 /// Covers both JS EACCES and EPERM (io::ErrorKind::PermissionDenied).
+/// 统一封装 OS 层权限拒绝：403 且 `reason: "os-permission"`，
+/// 同时覆盖 JS 端的 EACCES 与 EPERM 两种错误码。
 fn os_permission_denied(message: &str) -> Response {
     error_response_with_reason(StatusCode::FORBIDDEN, message, "os-permission")
 }
 
+/// 判断 IO 错误是否为 NotFound，对应 JS 端 `error.code === 'ENOENT'`。
 fn is_not_found(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::NotFound
 }
 
+/// 判断 IO 错误是否为 PermissionDenied，对应 JS 端的 EACCES/EPERM。
 fn is_permission(error: &std::io::Error) -> bool {
     error.kind() == ErrorKind::PermissionDenied
 }
@@ -115,6 +133,9 @@ fn is_permission(error: &std::io::Error) -> bool {
 /// Body parsing: `express.json` + the global `express.urlencoded` from
 /// registerCommonRequestMiddleware. Other content types read as `null`
 /// (Express leaves `req.body` undefined and the handlers see `req.body ?? {}`).
+/// 按请求头 Content-Type 解析请求体：JSON（含 `+json` 后缀类型）与
+/// urlencoded 转为 `Value`，其它类型返回 `Value::Null`，对应 JS 端
+/// `req.body ?? {}` 的缺省语义；JSON 解析失败返回 400。
 pub async fn parse_body(headers: &HeaderMap, body: Bytes) -> Result<Value, Response> {
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -137,14 +158,19 @@ pub async fn parse_body(headers: &HeaderMap, body: Bytes) -> Result<Value, Respo
     Ok(Value::Null)
 }
 
+/// 读取查询参数布尔标志：仅当值恰为字符串 "true" 时为真，
+/// 与 JS 端 `params.x === 'true'` 的严格比较一致。
 fn query_flag(params: &HashMap<String, String>, key: &str) -> bool {
     params.get(key).map(String::as_str) == Some("true")
 }
 
+/// 将路径无损转换为 `String`（无效 UTF-8 以 U+FFFD 替换），供 JSON 输出使用。
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// 将文件修改时间换算为自 Unix 纪元起的毫秒数（f64，对应 Node 的 `mtimeMs`）；
+/// 无法取得时间时返回 0.0。
 fn mtime_ms(metadata: &std::fs::Metadata) -> f64 {
     metadata
         .modified()
@@ -154,6 +180,8 @@ fn mtime_ms(metadata: &std::fs::Metadata) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// 构造 200 + 指定 Content-Type 的二进制响应；extra 中的附加头若含
+/// 非法头值会被静默跳过而不是报错。
 fn bytes_response(mime: &str, extra: &[(header::HeaderName, &str)], bytes: Vec<u8>) -> Response {
     let mut response = Response::new(Body::from(bytes));
     *response.status_mut() = StatusCode::OK;
@@ -172,6 +200,7 @@ fn bytes_response(mime: &str, extra: &[(header::HeaderName, &str)], bytes: Vec<u
 // GET /api/fs/home
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/home`：返回当前用户主目录；无法解析时返回 500。
 pub async fn home() -> Response {
     match crate::config::home_dir() {
         Some(home) if !home.as_os_str().is_empty() => {
@@ -188,6 +217,9 @@ pub async fn home() -> Response {
 // POST /api/fs/mkdir
 // ---------------------------------------------------------------------------
 
+/// `POST /api/fs/mkdir`：在工作区内递归创建目录（`create_dir_all`）。
+/// 请求体需携带 `path`；`allowOutsideWorkspace` 一律拒绝（403，需 grant），
+/// 路径越界返回 400，权限拒绝返回 403 os-permission，其余 IO 失败返回 500。
 pub async fn mkdir(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -238,6 +270,9 @@ pub async fn mkdir(
 // GET /api/fs/stat
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/stat`：返回文件元信息（规范路径、isFile、size、mtimeMs）。
+/// `optional=true` 时缺失文件以 200 + `{"exists": false}` 应答而非 404；
+/// 目标不是普通文件时返回 400。
 pub async fn stat(
     State(state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -289,6 +324,8 @@ pub async fn stat(
     )
 }
 
+/// 统一处理 stat 路径的 IO 错误：NotFound 按 optional 语义降级为 200/404，
+/// 权限拒绝映射为 403 os-permission，其余记录日志并返回 500。
 fn stat_io_error(error: &std::io::Error, file_path: &str, optional: bool) -> Response {
     if is_not_found(error) {
         if optional {
@@ -310,6 +347,10 @@ fn stat_io_error(error: &std::io::Error, file_path: &str, optional: bool) -> Res
 // GET /api/fs/read
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/read`：以 UTF-8（无效字节替换为 U+FFFD）读取文本文件，
+/// 以 `text/plain; charset=utf-8` 返回。stat 与 read 之间若被并发写者截断
+/// 导致读到空内容，会按递增退避重试至多 3 次；`optional=true` 时缺失文件
+/// 返回 200 空文本而非 404。
 pub async fn read(
     State(state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -383,11 +424,14 @@ pub async fn read(
         .into_response()
 }
 
+/// 读取整个文件并以 `from_utf8_lossy` 解码：无效 UTF-8 字节被替换而不是报错。
 async fn read_utf8_lossy(path: &Path) -> std::io::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// 统一处理 read 路径的 IO 错误：NotFound 按 optional 语义返回 404 或空 200，
+/// 权限拒绝映射为 403 os-permission，其余记录日志并返回 500。
 fn read_io_error(error: &std::io::Error, optional: bool) -> Response {
     if is_not_found(error) {
         if optional {
@@ -410,6 +454,10 @@ fn read_io_error(error: &std::io::Error, optional: bool) -> Response {
 // GET /api/fs/raw
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/raw`：读取原始字节并按扩展名设置 MIME。
+/// `download=true` 时附加 RFC 5987 编码的 Content-Disposition（含纯 ASCII
+/// 回退文件名）；响应恒带 `Cache-Control: no-store`，经 outside grant 授权
+/// 读取时额外附加 `Referrer-Policy: no-referrer`。
 pub async fn raw(
     State(state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -483,6 +531,8 @@ pub async fn raw(
     bytes_response(mime, &extra, bytes)
 }
 
+/// 统一处理 raw 路径的 IO 错误：NotFound → 404，权限拒绝 → 403 os-permission，
+/// 其余记录日志并返回 500。
 fn raw_io_error(error: &std::io::Error) -> Response {
     if is_not_found(error) {
         return error_response(StatusCode::NOT_FOUND, "File not found");
@@ -498,6 +548,9 @@ fn raw_io_error(error: &std::io::Error) -> Response {
 // GET /api/fs/serve/{*path}
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/serve/{*path}`：静态文件服务。路径先锚定到文件系统根，
+/// `..` 片段无法逃逸；`allowOutsideWorkspace` 被该端点显式禁止（403）；
+/// 超过 MAX_SERVE_BYTES 的文件返回 413。响应恒带 no-store 与 nosniff 头。
 pub async fn serve(
     State(state): State<FsState>,
     AxumPath(raw_path): AxumPath<String>,
@@ -561,6 +614,8 @@ pub async fn serve(
     )
 }
 
+/// 统一处理 serve 路径的 IO 错误：NotFound → 404，权限拒绝 → 403 os-permission，
+/// 其余记录日志并返回 500。
 fn serve_io_error(error: &std::io::Error) -> Response {
     if is_not_found(error) {
         return error_response(StatusCode::NOT_FOUND, "File not found");
@@ -576,6 +631,10 @@ fn serve_io_error(error: &std::io::Error) -> Response {
 // POST /api/fs/write
 // ---------------------------------------------------------------------------
 
+/// `POST /api/fs/write`：原子写入文本文件 —— 先写同目录 `*.tmp-*` 临时文件
+/// 再 rename 落位，读者不会观察到直接覆盖写的截断窗口。目标内容与现有
+/// 文件完全相同时跳过重写；写前自动补齐父目录；规范路径逃逸工作区根时
+/// 返回 403。
 pub async fn write(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -649,6 +708,8 @@ pub async fn write(
     )
 }
 
+/// 统一处理 write 路径的 IO 错误：权限拒绝映射为 403 os-permission，
+/// 其余记录日志并返回 500。
 fn write_io_error(error: &std::io::Error) -> Response {
     if is_permission(error) {
         return os_permission_denied("Access denied");
@@ -661,17 +722,27 @@ fn write_io_error(error: &std::io::Error) -> Response {
 // POST /api/fs/upload
 // ---------------------------------------------------------------------------
 
+/// upload 流程内部的错误分类，最终经 upload_error_response 映射为 HTTP 响应。
 enum UploadError {
+    /// 请求体超过上传大小上限。
     TooLarge,
+    /// 临时文件写入失败（IO 错误，如磁盘已满）。
     Write,
+    /// 请求体流本身出错，携带底层错误消息。
     Body(String),
+    /// 目标文件已存在且未带 overwrite=true。
     Exists,
+    /// 目标父目录不存在。
     Missing,
+    /// OS 层权限拒绝。
     Permission,
+    /// 目标路径是目录。
     Directory,
+    /// 其它 IO 错误，携带原始错误消息。
     Other(String),
 }
 
+/// 将 `std::io::ErrorKind` 归类为 UploadError，让上传各阶段共享统一映射。
 fn upload_error_kind(error: &std::io::Error) -> UploadError {
     match error.kind() {
         ErrorKind::AlreadyExists => UploadError::Exists,
@@ -682,6 +753,8 @@ fn upload_error_kind(error: &std::io::Error) -> UploadError {
     }
 }
 
+/// 将 UploadError 映射为与 JS 一致的 HTTP 响应：413 超限、409 already-exists、
+/// 404 not-found、403 os-permission、400 目录目标、500 其余（含流/写失败）。
 fn upload_error_response(error: UploadError, max_upload_bytes: u64) -> Response {
     match error {
         UploadError::TooLarge => error_response(
@@ -713,10 +786,16 @@ fn upload_error_response(error: UploadError, max_upload_bytes: u64) -> Response 
     }
 }
 
+/// upload_error_kind 与 upload_error_response 的组合：把 IO 错误直接转为响应。
 fn upload_io_error(error: &std::io::Error, max_upload_bytes: u64) -> Response {
     upload_error_response(upload_error_kind(error), max_upload_bytes)
 }
 
+/// `POST /api/fs/upload`：流式接收 `application/octet-stream` 请求体并落盘。
+/// 先校验 Content-Type 与声明的 Content-Length 上限；父目录与目标路径
+/// （含已存在目标的规范路径）都必须位于工作区根内，否则 400/403；
+/// 已存在目标未带 overwrite=true 时返回 409 already-exists，是目录时
+/// 返回 400。实际写入交由 stream_upload_to 原子提交。
 pub async fn upload(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -824,6 +903,9 @@ pub async fn upload(
 /// routes.js `streamUploadBody` + the atomic commit (`rename` on overwrite,
 /// no-replace `link` otherwise). The temp file is always cleaned up on
 /// failure.
+/// 请求体边流式写入临时文件边累计字节数，超限立即中止；全部写完后按
+/// overwrite 选择 rename（可覆盖）或同目录 hard_link（绝不覆盖检查后才
+/// 出现的目标）提交。任何失败路径都会清理临时文件。
 async fn stream_upload_to(
     tmp: &Path,
     write_path: &Path,
@@ -888,6 +970,9 @@ async fn stream_upload_to(
 // POST /api/fs/delete
 // ---------------------------------------------------------------------------
 
+/// `POST /api/fs/delete`：删除文件或目录（递归），语义等价
+/// `rm(recursive: true, force: true)` —— 目标缺失也算成功。
+/// 路径越界返回 400；执行失败按类别映射 404/403 os-permission/500。
 pub async fn delete(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -927,6 +1012,8 @@ pub async fn delete(
     }
 }
 
+/// 强制删除：目标不存在时直接返回 Ok（force 语义）；目录用 remove_dir_all
+/// 递归删除，其余（含符号链接本身）用 remove_file 删除。
 async fn remove_force(path: &Path) -> std::io::Result<()> {
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => {
@@ -945,6 +1032,8 @@ async fn remove_force(path: &Path) -> std::io::Result<()> {
 // POST /api/fs/rename
 // ---------------------------------------------------------------------------
 
+/// `POST /api/fs/rename`：在工作区内重命名/移动路径。oldPath 与 newPath
+/// 必须解析到同一个工作区根，否则 400；源缺失 404；权限拒绝 403。
 pub async fn rename(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -1005,6 +1094,9 @@ pub async fn rename(
 
 /// Pure decision extracted from the JS handler so it is testable without
 /// spawning a desktop launcher. Returns (program, args, wait_for_exit).
+/// 按平台构造文件管理器调用：macOS 用 open（文件加 -R 在 Finder 中选中），
+/// Windows 经 powershell 启动 explorer 并等待退出，其余平台用 xdg-open
+/// 打开目标（或其所在目录）。返回 (程序, 参数列表, 是否等待退出)。
 pub fn reveal_invocation(
     platform: &str,
     resolved: &Path,
@@ -1053,6 +1145,9 @@ pub fn reveal_invocation(
     }
 }
 
+/// `POST /api/fs/reveal`：在系统文件管理器中定位给定路径。
+/// 与 JS 版一致不做工作区校验；路径缺失 404；Windows 分支需等待子进程
+/// 退出以捕获 explorer 启动失败（非零退出码 → 500）。
 pub async fn reveal(
     State(_state): State<FsState>,
     Query(_params): Query<HashMap<String, String>>,
@@ -1131,6 +1226,10 @@ pub async fn reveal(
 // POST /api/fs/exec + GET /api/fs/exec/{jobId}
 // ---------------------------------------------------------------------------
 
+/// `POST /api/fs/exec`：在位于工作区内的 cwd 中同步执行一批 shell 命令。
+/// 校验 commands 非空、cwd 存在且为目录、`background: true` 一律拒绝；
+/// 执行前先清理过期 exec job 与 git 读缓存。命令以内联 job 跑完，
+/// 返回 jobId 与逐条结果（success/stdout/exitCode）。
 pub async fn exec(
     State(state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -1231,6 +1330,8 @@ pub async fn exec(
     )
 }
 
+/// `GET /api/fs/exec/{jobId}`：查询执行 job 的状态与结果，未知 jobId 返回 404；
+/// 每次访问刷新 updated_at 以推迟过期淘汰。
 pub async fn exec_job(
     State(state): State<FsState>,
     AxumPath(job_id): AxumPath<String>,
@@ -1256,6 +1357,8 @@ pub async fn exec_job(
 // GET /api/fs/list
 // ---------------------------------------------------------------------------
 
+/// 判断路径是否指向 `.opencode/plans` 计划目录（兼容反斜杠与尾随斜杠）；
+/// 该目录缺失时 list 端点以空列表 200 应答而非 404。
 fn is_plans_directory(value: &str) -> bool {
     if value.is_empty() {
         return false;
@@ -1265,6 +1368,10 @@ fn is_plans_directory(value: &str) -> bool {
     normalized.ends_with("/.opencode/plans") || normalized.ends_with(".opencode/plans")
 }
 
+/// `GET /api/fs/list`：列出目录内容（缺省为主目录）。经 realpath 缓存解析
+/// 实际目录，但响应中的 path 与条目 path 保持在调用方请求的路径空间
+/// （不展开符号链接，issue 2627）；条目按名称排序以匹配 Node readdir；
+/// `respectGitignore=true` 时用 git check-ignore 过滤被忽略条目。
 pub async fn list(
     State(state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -1352,6 +1459,8 @@ pub async fn list(
     )
 }
 
+/// 统一处理 list 路径的 IO 错误：NotFound 且目标是 plans 目录时返回空 200，
+/// 否则 404 not-found；权限拒绝 403 os-permission；其余记录日志并返回 500。
 fn list_io_error(error: &std::io::Error, requested_path: &Path, raw_path: &str) -> Response {
     if is_not_found(error) {
         let is_plans =
@@ -1379,6 +1488,8 @@ fn list_io_error(error: &std::io::Error, requested_path: &Path, raw_path: &str) 
 
 /// `git check-ignore -- <names>` with the JS kill-on-timeout behavior
 /// (timeout → empty result).
+/// 在 directory 下执行 `git check-ignore -- <names>`，返回被忽略条目的
+/// 完整路径集合；超时、启动失败或非零退出一律返回空集合（不隐藏任何条目）。
 async fn run_check_ignore(
     directory: &Path,
     entries: &[(String, bool, bool, bool)],
@@ -1427,6 +1538,8 @@ async fn run_check_ignore(
 // GET /api/fs/git-dirs
 // ---------------------------------------------------------------------------
 
+/// `GET /api/fs/git-dirs`：扫描工作区目录下的 git 仓库（含指向 worktree 的
+/// `.git` 文件），返回 path/name 列表；目标不是目录返回 400 not-directory。
 pub async fn git_dirs(
     State(_state): State<FsState>,
     Query(params): Query<HashMap<String, String>>,
@@ -1482,6 +1595,8 @@ pub async fn git_dirs(
     }
 }
 
+/// 统一处理 git-dirs 路径的 IO 错误：NotFound → 404 not-found，
+/// 权限拒绝 → 403 os-permission，其余记录日志并返回 500。
 fn git_dirs_io_error(error: &std::io::Error) -> Response {
     if is_not_found(error) {
         return error_response_with_reason(
@@ -1502,6 +1617,8 @@ fn git_dirs_io_error(error: &std::io::Error) -> Response {
 // ---------------------------------------------------------------------------
 
 /// routes.js `deriveCloneDirectoryName`.
+/// 从远端 URL 推断克隆目录名：去掉 query/fragment，取最后一段路径或
+/// scp 风格尾部，剥离 `.git` 后缀；推不出名字时返回空串。
 pub fn derive_clone_directory_name(remote_url: &str) -> String {
     let remote = remote_url.trim();
     if remote.is_empty() {
@@ -1517,21 +1634,29 @@ pub fn derive_clone_directory_name(remote_url: &str) -> String {
     name.trim().to_string()
 }
 
+/// 克隆时携带的 git 身份：用户名、邮箱与可选 SSH 私钥路径。
 struct CloneIdentity {
+    /// 提交时使用的 user.name。
     user_name: String,
+    /// 提交时使用的 user.email。
     user_email: String,
+    /// 可选 SSH 私钥路径，注入 core.sshCommand 用于拉取私有仓库。
     ssh_key: Option<String>,
 }
 
 /// routes.js `resolveCloneGitIdentity` — `global` reads `git config
 /// --global`; named ids resolve against `~/.config/ompchamber/git-identities.json`
 /// (git/identity-storage.js).
+/// 解析 gitIdentityId："global" 读取 `git config --global`（user.name 与
+/// user.email 任一缺失即视为无身份），其它 id 在用户级 git-identities.json
+/// 的 profiles 数组中按 id 匹配；找不到返回 None，克隆退回匿名。
 async fn resolve_clone_git_identity(git_identity_id: &str) -> Option<CloneIdentity> {
     let id = git_identity_id.trim();
     if id.is_empty() {
         return None;
     }
     if id == "global" {
+        /// 读取一条 `git config --global` 配置：命令失败或值为空时返回 None。
         async fn git_config(key: &str) -> Option<String> {
             let output = tokio::process::Command::new(git_binary())
                 .args(["config", "--global", "--get", key])
@@ -1586,6 +1711,9 @@ async fn resolve_clone_git_identity(git_identity_id: &str) -> Option<CloneIdenti
 }
 
 /// routes.js `escapeCloneSshKeyPath`.
+/// 为拼入 core.sshCommand 的私钥路径做单引号转义：拒绝所有 shell 元字符；
+/// Windows 下先把盘符路径改写为 `/c/...` 形式再整体加引号。
+/// 含非法字符时返回 Err，由调用方转为 500。
 pub(crate) fn escape_clone_ssh_key_path(ssh_key_path: &str) -> Result<String, String> {
     let raw = ssh_key_path.trim();
     if raw.is_empty() {
@@ -1642,6 +1770,11 @@ pub(crate) fn escape_clone_ssh_key_path(ssh_key_path: &str) -> Result<String, St
     Ok(format!("'{}'", normalized.replace('\'', "'\\''")))
 }
 
+/// `POST /api/fs/clone`：在目标父目录下执行 `git clone`。目标以分隔符结尾
+/// 或已是目录时从远端 URL 推断目录名；携带 gitIdentityId 时通过
+/// `-c core.sshCommand=...` 注入私钥并设 GIT_TERMINAL_PROMPT=0 禁止交互。
+/// 目标已存在返回 409；克隆成功后尽力写入本地 user.name/user.email/
+/// core.sshCommand 并 unset credential.helper（失败仅告警不影响结果）。
 pub async fn clone(
     State(_state): State<FsState>,
     Query(_params): Query<HashMap<String, String>>,
@@ -1832,6 +1965,7 @@ pub async fn clone(
     )
 }
 
+/// 统一封装 clone 路径的 IO 错误：记录日志并返回 500。
 fn clone_error(error: &std::io::Error) -> Response {
     tracing::error!("Failed to clone repository: {error}");
     error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())

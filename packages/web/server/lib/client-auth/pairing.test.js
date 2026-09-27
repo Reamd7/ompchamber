@@ -1,3 +1,10 @@
+/**
+ * 客户端配对运行时（pairing.js）的行为测试套件。
+ *
+ * 覆盖配对会话的创建与一次性兑换、客户端元数据透传、过期/取消/密钥
+ * 错误/种类不允许的拒绝、签发失败不消费会话，以及下次创建时清扫
+ * 过期未用会话。
+ */
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -6,10 +13,12 @@ import crypto from 'node:crypto';
 
 import { createClientPairingRuntime } from './pairing.js';
 
+/** 构造配对运行时：临时目录存储 + 可注入的远程客户端认证运行时（默认用 mock 记录每次签发的客户端）。 */
 const makeRuntime = async (options = {}) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ompchamber-pairing-test-'));
   const createdClients = [];
   const remoteClientAuthRuntime = options.remoteClientAuthRuntime || {
+    // 默认的 createClient mock：返回递增的 client-N / token-N，并记录到 createdClients 供断言。
     createClient: vi.fn(async (input) => {
       const client = {
         id: `client-${createdClients.length + 1}`,
@@ -34,6 +43,7 @@ const makeRuntime = async (options = {}) => {
   return { dir, runtime, remoteClientAuthRuntime, createdClients };
 };
 
+/** 配对会话生命周期：一次性兑换与元数据透传、各类拒绝路径、失败不消费、过期清扫。 */
 describe('client auth pairing runtime', () => {
   it('redeems a pairing session once and propagates client metadata', async () => {
     const { runtime, remoteClientAuthRuntime } = await makeRuntime();

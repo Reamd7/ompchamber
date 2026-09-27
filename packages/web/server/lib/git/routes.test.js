@@ -1,5 +1,16 @@
+/**
+ * git/routes.js 路由 handler 测试套件。
+ *
+ * 用 vi.mock 将 './index.js' 替换为可控的 git 库 mock（stageFiles、
+ * unstageFiles、isGitRepository、getStatus），并以内存 Map 路由注册表和
+ * 模拟 response 直接调用 handler。覆盖两类行为：stage/unstage 接口对
+ * 旧版单 path 与新版批量 paths 载荷的兼容、非法载荷在触达 git 前返回
+ * 400；status 接口对非 git 目录的软降级、getStatus 抛 GitError 时的
+ * 容错，以及 directory 为 query 数组时取首个值的解析。
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** 被测路由依赖的 git 库函数 mock 集合；用例通过它断言调用参数与次数。 */
 const gitLibraries = {
   stageFiles: vi.fn(),
   unstageFiles: vi.fn(),
@@ -7,6 +18,7 @@ const gitLibraries = {
   getStatus: vi.fn(),
 };
 
+// 将 './index.js' 整体替换为上方 mock 集合；路由内部动态 import 拿到的也是这些 vi.fn。
 vi.mock('./index.js', () => ({
   stageFiles: gitLibraries.stageFiles,
   unstageFiles: gitLibraries.unstageFiles,
@@ -14,8 +26,16 @@ vi.mock('./index.js', () => ({
   getStatus: gitLibraries.getStatus,
 }));
 
+// 在 vi.mock 生效后再动态导入被测模块，保证路由持有的是 mock 版 git 库。
 const { registerGitRoutes } = await import('./routes.js');
 
+/**
+ * 构造极简 Express app 替身：把 handler 按 "METHOD /path" 记入内存 Map。
+ *
+ * @returns {{app: object, getRoute: (method: string, routePath: string) => Function}}
+ *   app 仅实现 get/post/put/delete 四个注册方法；getRoute 取出对应
+ *   handler 供用例直接以 (req, res) 调用
+ */
 const createRouteRegistry = () => {
   const routes = new Map();
 
@@ -40,6 +60,11 @@ const createRouteRegistry = () => {
   };
 };
 
+/**
+ * 构造带链式 status() 与 json() 的 response 替身，记录最终状态码与响应体。
+ *
+ * @returns {{status: Function, json: Function, statusCode: number, body: unknown}}
+ */
 const createMockResponse = () => {
   let statusCode = 200;
   let body = null;
@@ -61,6 +86,7 @@ const createMockResponse = () => {
   };
 };
 
+/** 暂存/取消暂存接口：兼容单 path 与批量 paths 载荷，非法输入在调用 git 前即拒绝。 */
 describe('git routes index mutations', () => {
   beforeEach(() => {
     gitLibraries.stageFiles.mockReset();
@@ -141,6 +167,7 @@ describe('git routes index mutations', () => {
   });
 });
 
+/** status 接口：非 git 目录软降级、GitError 不致 5xx、directory 为数组时取首个值。 */
 describe('git routes status discovery', () => {
   beforeEach(() => {
     gitLibraries.isGitRepository.mockReset();

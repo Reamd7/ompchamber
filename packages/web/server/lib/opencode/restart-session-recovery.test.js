@@ -1,7 +1,15 @@
+/**
+ * 托管 OpenCode 重启后的会话恢复测试。
+ *
+ * 验证重启回调路径：忙碌会话全部被置为 idle，并为每个会话广播
+ * ompchamber:session-status 与 session.error 事件；UI 打断通知只发送
+ * 一条（多会话时文案区分 Chats/Chat），避免通知轰炸。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSessionRuntime } from './session-runtime.js';
 
+// 重启回调：重绑上游、打断忙碌会话、单条打断通知
 describe('managed OpenCode restart session recovery', () => {
   it('settles busy sessions and broadcasts one interruption notification', () => {
     const events = [];

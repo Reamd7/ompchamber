@@ -1,6 +1,12 @@
 //! Trigger runtime tests: settings gates, cooldowns, debounces, subtask
 //! suppression, presence-aware fanout, and the native push badge model —
 //! driven through fake transports and a canned engine seam.
+//!
+//! 中文概述：触发链路端到端测试。经 build_state 搭建真实
+//! NotificationsState（假 HTTP transport + 罐头 engine 应答），直接调用
+//! maybe_send_push_for_trigger / send_goal_settle_push，断言 web-push
+//! 请求、relay 请求体、SSE 广播帧、冷却/去抖与角标行为。所有用例持
+//! ENV_LOCK 串行运行，避免环境变量竞态。
 
 use std::sync::{Arc, Mutex};
 
@@ -14,13 +20,19 @@ use crate::notifications::ENV_LOCK;
 use crate::notifications::crypto;
 
 /// Canonical base64url auth secret.
+/// 中文：即 26 个大写字母的 base64url 编码，形态与 RFC 8291 测试向量
+/// 的 auth secret 一致，仅供测试注册订阅时使用。
 const AUTH_SECRET_B64: &str = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo";
 use crate::notifications::template_runtime::EngineJsonFetch;
 use crate::notifications::transport::{HttpPost, HttpPostResponse};
 use crate::notifications::{NotificationsState, trigger_runtime::GoalSettlePush};
 
+/// 录制槽：假 transport 写入的 (url, headers, body) 三元组列表，
+/// 断言器按 URL 过滤读取。
 type Recorded = Arc<Mutex<Vec<(String, Vec<(String, String)>, Vec<u8>)>>>;
 
+/// 设置或删除环境变量（None 删除）；unsafe 源于 Rust 2024 起
+/// `set_var`/`remove_var` 标记为非线程安全（由 ENV_LOCK 串行化兜底）。
 fn set_env(name: &str, value: Option<&str>) {
     match value {
         Some(value) => unsafe { std::env::set_var(name, value) },
@@ -28,8 +40,12 @@ fn set_env(name: &str, value: Option<&str>) {
     }
 }
 
+/// RAII 守卫：构造时把 relay 环境指向测试 URL 并清掉干扰项
+/// （relay 禁用开关、APNs 环境），析构时还原，防止泄漏到其它用例。
 struct RelayEnvGuard(());
+/// 构造即完成测试环境的设定。
 impl RelayEnvGuard {
+/// 设定三个 OMPCHAMBER_* 环境变量并返回守卫。
     fn new() -> Self {
         set_env(
             "OMPCHAMBER_PUSH_RELAY_URL",
@@ -40,12 +56,16 @@ impl RelayEnvGuard {
         RelayEnvGuard(())
     }
 }
+/// 析构还原：移除本守卫设置的 relay URL。
 impl Drop for RelayEnvGuard {
+/// 删除 relay URL 环境变量（其余项本就设为 None）。
     fn drop(&mut self) {
         set_env("OMPCHAMBER_PUSH_RELAY_URL", None);
     }
 }
 
+/// 为每个用例创建独立临时数据目录（pid + 毫秒时间 + 随机数命名），
+/// settings.json 与订阅文件都写在这里，用例间互不干扰。
 fn temp_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "notif-trigger-{}-{}",
@@ -56,6 +76,8 @@ fn temp_dir() -> std::path::PathBuf {
     dir
 }
 
+/// 构造假 transport：把每次请求原样录进 Recorded，恒返回 201 +
+/// `{ok:true, results:[]}`（推送服务的成功响应形状）。
 fn recording_transport() -> (HttpPost, Recorded) {
     let recorded: Recorded = Arc::new(Mutex::new(Vec::new()));
     let recorded_for_transport = Arc::clone(&recorded);
@@ -77,8 +99,11 @@ fn recording_transport() -> (HttpPost, Recorded) {
 }
 
 /// Canned engine: per-path JSON answers.
+/// 中文：以「(url 前缀, 应答 JSON)」列表模拟 engine HTTP API；
+/// 请求 URL 命中第一个前缀即返回对应 JSON，否则 None。
 type EngineAnswers = Arc<Mutex<Vec<(String, Value)>>>;
 
+/// 把罐头应答表包装成 EngineJsonFetch 闭包，注入 TemplateRuntime。
 fn engine_fetch(answers: EngineAnswers) -> EngineJsonFetch {
     Arc::new(move |url: String, _timeout: u64, _auth: bool| {
         let answers = Arc::clone(&answers);
@@ -92,6 +117,9 @@ fn engine_fetch(answers: EngineAnswers) -> EngineJsonFetch {
     })
 }
 
+/// 组装完整测试状态：先把 settings.json 落盘（必须在任何 store 读取
+/// 之前），再用外部 engine 占位 URL + 录制 transport + 罐头取数构造
+/// NotificationsState，返回 (状态, 录制槽)。
 fn build_state(
     dir: std::path::PathBuf,
     settings: Map<String, Value>,
@@ -130,6 +158,8 @@ fn build_state(
 
 /// Register one web-push subscription + one APNs token so fanouts land on
 /// the recorded transport.
+/// 中文：返回 web-push 订阅的 ua 公钥串，供需要手工解密请求体的
+/// 调用方使用。
 async fn register_targets(state: &NotificationsState) -> String {
     let ua_secret = crypto::generate_secret_key();
     let ua_public = crypto::public_to_b64url(&ua_secret.public_key());
@@ -151,6 +181,8 @@ async fn register_targets(state: &NotificationsState) -> String {
     ua_public
 }
 
+/// 构造一条标准的 ready 触发事件：message.updated + finish=stop 的
+/// assistant 消息（session 标题、模型、正文均可定制）。
 fn ready_payload(session_id: &str, title: &str) -> Value {
     json!({
         "type": "message.updated",
@@ -169,6 +201,7 @@ fn ready_payload(session_id: &str, title: &str) -> Value {
     })
 }
 
+/// 从录制槽过滤出 relay URL 的请求体并解析为 JSON 数组（APNs 断言用）。
 fn relay_send_bodies(recorded: &Recorded) -> Vec<Value> {
     recorded
         .lock()
@@ -179,6 +212,8 @@ fn relay_send_bodies(recorded: &Recorded) -> Vec<Value> {
         .collect()
 }
 
+/// 从录制槽过滤出 web-push endpoint 的原始 (url, headers, body)
+/// 三元组（加密体与 VAPID 头断言用）。
 fn web_push_posts(recorded: &Recorded) -> Vec<(String, Vec<(String, String)>, Vec<u8>)> {
     recorded
         .lock()
@@ -189,10 +224,13 @@ fn web_push_posts(recorded: &Recorded) -> Vec<(String, Vec<(String, String)>, Ve
         .collect()
 }
 
+/// 空 engine 应答表：所有取数返回 None（「engine 无补充信息」路径）。
 fn default_answers() -> EngineAnswers {
     Arc::new(Mutex::new(Vec::new()))
 }
 
+/// 验证 ready 触发的完整 fanout：web-push 带加密体与 VAPID 头、APNs
+/// relay 带默认标题/角标/deep link/collapseId，SSE 帧含模板化标题正文。
 #[tokio::test]
 async fn ready_trigger_fans_out_web_push_and_the_generic_apns_payload() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -248,6 +286,7 @@ async fn ready_trigger_fans_out_web_push_and_the_generic_apns_payload() {
     );
 }
 
+/// 验证同一会话连续两次 ready 触发被冷却窗口合并为一次推送。
 #[tokio::test]
 async fn ready_cooldown_suppresses_the_second_notification() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -266,6 +305,7 @@ async fn ready_cooldown_suppresses_the_second_notification() {
     assert_eq!(relay_send_bodies(&recorded).len(), 1, "cooldown applies");
 }
 
+/// 验证 notifyOnCompletion=false 时 ready 触发对所有推送通道静默。
 #[tokio::test]
 async fn notify_on_completion_false_suppresses_ready() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -282,6 +322,7 @@ async fn notify_on_completion_false_suppresses_ready() {
     assert!(relay_send_bodies(&recorded).is_empty());
 }
 
+/// 验证 engine 会话仍挂着活跃 goal 时抑制 ready 通知（goal 进行中不算完成）。
 #[tokio::test]
 async fn active_session_goal_suppresses_ready_notifications() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -299,6 +340,7 @@ async fn active_session_goal_suppresses_ready_notifications() {
     assert!(relay_send_bodies(&recorded).is_empty());
 }
 
+/// 验证 notifyOnSubtasks=false 抑制子会话通知，根会话照常通知。
 #[tokio::test]
 async fn subtasks_are_suppressed_when_notify_on_subtasks_is_false() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,6 +373,7 @@ async fn subtasks_are_suppressed_when_notify_on_subtasks_is_false() {
     assert_eq!(relay_send_bodies(&recorded).len(), 1);
 }
 
+/// 验证任一交互客户端可见（前台 UI 在用）时同时抑制 web-push 与 APNs。
 #[tokio::test]
 async fn visible_interactive_client_skips_the_apns_fanout() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,6 +390,7 @@ async fn visible_interactive_client_skips_the_apns_fanout() {
     assert!(relay_send_bodies(&recorded).is_empty(), "no APNs push");
 }
 
+/// 验证 session.idle 事件被合成为标准 ready 通知（标题正文取 session 名）。
 #[tokio::test]
 async fn session_idle_synthesizes_a_ready_notification() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -370,6 +414,7 @@ async fn session_idle_synthesizes_a_ready_notification() {
     assert_eq!(sends[0]["body"], json!("Idle session"));
 }
 
+/// 验证 finish=error 走错误模板并使用 error-<session> 的 collapseId。
 #[tokio::test]
 async fn error_finish_uses_the_error_template_and_tag() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -398,6 +443,7 @@ async fn error_finish_uses_the_error_template_and_tag() {
     assert_eq!(sends[0]["collapseId"], json!("error-ses_err"));
 }
 
+/// 验证连续 question.asked 去抖合并为一次推送，计时器触发后清空。
 #[tokio::test]
 async fn question_debounce_coalesces_rapid_asks() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -427,6 +473,7 @@ async fn question_debounce_coalesces_rapid_asks() {
     assert!(!state.trigger.has_question_timer_for_test("ses_q"));
 }
 
+/// 验证 permission.replied 取消同一会话的待发权限通知。
 #[tokio::test]
 async fn permission_reply_cancels_the_pending_notification() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -462,6 +509,7 @@ async fn permission_reply_cancels_the_pending_notification() {
     );
 }
 
+/// 验证处于自动接受模式的会话不产生 permission 推送。
 #[tokio::test]
 async fn permission_auto_accept_suppresses_and_dedupes() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -484,6 +532,8 @@ async fn permission_auto_accept_suppresses_and_dedupes() {
     );
 }
 
+/// 验证 notifyOnQuestion=true 时 permission.asked 触发推送，且
+/// collapseId 按 session 作用域（与原生 tag 对齐）。
 #[tokio::test]
 async fn permission_notification_uses_the_question_toggle_and_fires() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,6 +564,7 @@ async fn permission_notification_uses_the_question_toggle_and_fires() {
     assert_eq!(sends[0]["collapseId"], json!("permission-ses_pp"));
 }
 
+/// 验证角标按未读 tag 数累加，engagement 清零后重新从 1 计数。
 #[tokio::test]
 async fn badge_counts_distinct_tags_and_clears_on_engagement() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -543,6 +594,8 @@ async fn badge_counts_distinct_tags_and_clears_on_engagement() {
     assert_eq!(sends[2]["badge"], json!(1), "badge resets after clearing");
 }
 
+/// 验证 goal 结算推送：APNs 正文只放 session 名（内容无关），完整
+/// goal 文案仅走 web-push 通道。
 #[tokio::test]
 async fn goal_settle_push_uses_the_goal_titles() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -576,6 +629,7 @@ async fn goal_settle_push_uses_the_goal_titles() {
     assert_eq!(pushes.len(), 1, "goal text reaches web push");
 }
 
+/// 验证窗口聚焦抑制推送，但 notificationMode=always 覆盖该门控。
 #[tokio::test]
 async fn window_focus_suppresses_unless_mode_is_always() {
     let _env_lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

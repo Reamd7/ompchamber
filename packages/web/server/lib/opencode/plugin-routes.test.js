@@ -1,3 +1,13 @@
+/**
+ * opencode plugin 路由（plugin-routes.js）的集成测试套件。
+ *
+ * 用 supertest 驱动真实 express app + 真实 plugins.js 实现：测试跑在
+ * 临时目录沙箱里，OPENCODE_CONFIG 指向临时 user 配置以隔离真实环境。
+ * 覆盖面：插件条目与源码文件的完整 CRUD（含 409/404/400 错误路径）、
+ * npm registry 查询的各种结果分类（有更新/无更新/版本缺失/包缺失/
+ * spec 畸形/网络失败/按包名去重/限流），以及延迟重启响应字段。
+ * registry 相关用例通过注入 mock getNpmInfo 隔离真实网络。
+ */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import express from 'express';
 import fs from 'fs';
@@ -7,20 +17,34 @@ import request from 'supertest';
 
 import { registerPluginRoutes } from './plugin-routes.js';
 
+// 当前用例的项目临时目录（beforeEach 重建）。
 let projectDir;
+// user 作用域配置文件路径（OPENCODE_CONFIG 指向，beforeAll 设置）。
 let userConfigPath;
+// 整个套件的临时根目录（beforeAll 创建、afterAll 删除）。
 let rootDir;
+// 真实 plugins.js 模块命名空间（beforeAll 动态导入）。
 let plugins;
+// 注入路由的引擎刷新 mock（beforeEach 重建，断言“未被调用”）。
 let refreshOpenCodeAfterConfigChange;
+// 当前用例使用的 express app（helper 构建）。
 let app;
+// 需要在 afterEach 恢复权限的文件列表（chmod 0 用例登记）。
 let cleanupPaths;
 
+/** 以 root 身份运行时跳过用例的 test 包装：root 总能读到 chmod 0 的文件，“不可读路径”用例会失效。 */
 const testUnlessRoot = typeof process.getuid === 'function' && process.getuid() === 0 ? test.skip : test;
 
+/** 读取并 JSON.parse 指定文件，供断言直接检查落盘内容。 */
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+/**
+ * 构建挂好 plugin 路由的测试 express app：项目目录固定指向临时
+ * projectDir，插件实现取自真实 plugins.js 模块，clientReloadDelayMs
+ * 压到 25ms 加速测试；overrides 可覆盖任意依赖（如 mock getNpmInfo）。
+ */
 function createApp(overrides = {}) {
   const testApp = express();
   testApp.use(express.json());
@@ -44,11 +68,13 @@ function createApp(overrides = {}) {
   return testApp;
 }
 
+/** 用指定 getNpmInfo mock 构建 registry 测试 app 并设为全局 app。 */
 function createRegistryApp(getNpmInfo) {
   app = createApp({ getNpmInfo });
   return app;
 }
 
+/** 辅助：POST 创建一个 user 作用域插件条目（默认 spec 为 “a”），预期 200。 */
 async function createEntry(spec = 'a') {
   return request(app)
     .post('/api/config/plugins/entry')
@@ -56,6 +82,7 @@ async function createEntry(spec = 'a') {
     .expect(200);
 }
 
+/** 辅助：POST 写入一个 user 作用域插件源码文件（默认 test.js），预期 200。 */
 async function createFile(fileName = 'test.js', content = '//x') {
   return request(app)
     .post('/api/config/plugins/file')
@@ -63,7 +90,9 @@ async function createFile(fileName = 'test.js', content = '//x') {
     .expect(200);
 }
 
+/** 插件路由集成测试：registry 查询分类、条目/文件 CRUD 与错误码映射。 */
 describe('opencode plugin routes', () => {
+  // 建立测试根目录，把 OPENCODE_CONFIG 指向临时 user 配置并加载真实 plugins 模块。
   beforeAll(async () => {
     rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-plugin-routes-'));
     userConfigPath = path.join(rootDir, 'user-opencode.json');
@@ -71,6 +100,7 @@ describe('opencode plugin routes', () => {
     plugins = await import('./plugins.js');
   });
 
+  // 每个用例获得独立的 projectDir、干净的 user 配置与 plugins 目录、新的 mock 与 app。
   beforeEach(() => {
     projectDir = fs.mkdtempSync(path.join(rootDir, 'project-'));
     fs.rmSync(userConfigPath, { force: true });
@@ -80,6 +110,7 @@ describe('opencode plugin routes', () => {
     app = createApp();
   });
 
+  // 恢复用例中 chmod 0 的文件权限，避免 afterAll 清理根目录时失败。
   afterEach(() => {
     for (const target of cleanupPaths) {
       try {
@@ -89,6 +120,7 @@ describe('opencode plugin routes', () => {
     }
   });
 
+  // 删除整个测试根目录并还原 OPENCODE_CONFIG 环境变量。
   afterAll(() => {
     fs.rmSync(rootDir, { recursive: true, force: true });
     delete process.env.OPENCODE_CONFIG;

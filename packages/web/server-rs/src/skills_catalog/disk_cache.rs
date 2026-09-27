@@ -1,6 +1,10 @@
 //! Port of `server/lib/skills-catalog/disk-cache.js`: JSON cache persistence
 //! under the OpenChamber data dir (`OMPCHAMBER_DATA_DIR` or
 //! `~/.config/ompchamber`) with atomic temp-file renames and 0600 modes.
+//!
+//! 中文说明：skills-catalog 的 JSON 缓存持久化：文件位于 OpenChamber
+//! 数据目录（`OMPCHAMBER_DATA_DIR` 或 `~/.config/ompchamber`），写入走
+//! 临时文件原子改名且权限位 0600。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,6 +13,8 @@ use serde_json::Value;
 
 /// `resolveDataDir()`: resolved `OMPCHAMBER_DATA_DIR` (relative values are
 /// resolved against the cwd like `path.resolve`) or the default config dir.
+/// 环境变量优先（相对值按 cwd 解析，等价 path.resolve）；否则 home 下
+/// 的 `.config/ompchamber`；拿不到 home 时退到 `.ompchamber-data`。
 pub(crate) fn resolve_data_dir() -> PathBuf {
     let from_env = std::env::var("OMPCHAMBER_DATA_DIR")
         .ok()
@@ -26,6 +32,7 @@ pub(crate) fn resolve_data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".ompchamber-data"))
 }
 
+/// 当前 Unix 毫秒时间戳；时钟早于 epoch 时返回 0。
 pub(crate) fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -35,6 +42,7 @@ pub(crate) fn now_millis() -> u64 {
 
 /// `readDiskCache(fileName)`: parsed object or `None` when missing,
 /// unreadable, malformed, or not a JSON object.
+/// 只接受 JSON 对象；缺失、不可读、畸形或非对象一律 None。
 pub fn read_disk_cache(file_name: &str) -> Option<Value> {
     let path = resolve_data_dir().join(file_name);
     let raw = fs::read_to_string(path).ok()?;
@@ -47,6 +55,8 @@ pub fn read_disk_cache(file_name: &str) -> Option<Value> {
 /// `writeDiskCache(fileName, data)`: atomic temp-file rename into the data
 /// dir (mkdir -p parents, 0600 temp file). Failures unlink the temp file and
 /// report `false`; the in-memory cache stays authoritative.
+/// 序列化后写临时文件再原子改名；失败清理临时文件并返回 false，内存
+/// 缓存仍是权威数据源。
 pub fn write_disk_cache(file_name: &str, data: &Value) -> bool {
     let file_path = resolve_data_dir().join(file_name);
     let base_name = file_path
@@ -66,6 +76,8 @@ pub fn write_disk_cache(file_name: &str, data: &Value) -> bool {
     false
 }
 
+/// 写入核心：建父目录、以 0600 权限写临时文件（unix 分支）、原子改名
+/// 到目标路径；任何一步失败都返回 false。
 fn write_and_rename(file_path: &Path, temp_path: &Path, data: &Value) -> bool {
     let Ok(serialized) = serde_json::to_string(data) else {
         return false;
@@ -96,12 +108,14 @@ use crate::os_compat::OpenOptionsExt;
     .is_ok()
 }
 
+/// 磁盘缓存测试：对象往返、异常输入读 None、父目录创建与原子替换。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::skills_catalog::test_support::{EnvGuard, TEST_LOCK, unique_temp_dir};
     use serde_json::json;
 
+    /// 行为契约：写入的对象能原样读回。
     #[test]
     fn round_trips_an_object() {
         let _guard = TEST_LOCK.blocking_lock();
@@ -114,6 +128,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 行为契约：缺失、畸形、数组与 null 文件都读为 None。
     #[test]
     fn missing_and_malformed_files_read_as_none() {
         let _guard = TEST_LOCK.blocking_lock();
@@ -133,6 +148,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 行为契约：自动创建父目录、替换旧文件且不留临时文件。
     #[test]
     fn creates_parent_directories_and_replaces_atomically() {
         let _guard = TEST_LOCK.blocking_lock();

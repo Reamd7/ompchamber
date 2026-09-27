@@ -27,14 +27,28 @@
 //! - `sessionKnowledgeRuntime` is not ported yet; dispatched prompts carry
 //!   no standing-project context (the JS behavior when the runtime is
 //!   null), and `recordDelivered` is a no-op.
+//!
+//! 中文说明：本目录是 `packages/web/server/lib/openchamber-sessions/` 的
+//! Rust 移植——OMPChamber 会话编排路由：创建会话（可选新 worktree、初始
+//! prompt 与 goal）、向既有会话 `send`、`fork` 后 `send`，统一经本地
+//! engine 客户端派发。本文件（mod.rs）承担组合根职责：装配生产依赖
+//! （HTTP engine 客户端、settings 存储、目录校验、git worktree、goal
+//! 创建器、SSE hub 事件广播）并挂载路由。
 
+/// engine 客户端（SDK 约定 + raw fetch 帮助函数）及其 HTTP 实现。
 mod client;
+/// 控制错误类型与 wire 映射（`OMPChamberControlError` / `sendServiceError`）。
 mod error;
+/// 请求 payload 形状工具与 JS 真值规则。
 mod payload;
+/// axum 路由注册与请求体解析（对应 Express 路由层）。
 mod routes;
+/// selection 默认值推导与请求前校验。
 mod selection;
+/// 会话编排服务主体（`create` / `runExisting` 流程）。
 mod service;
 
+/// 模块级测试（JS routes 测试的移植）。
 #[cfg(test)]
 mod tests;
 
@@ -66,6 +80,9 @@ use service::{
 /// JS `waitForOpenCodeReady(10_000, 250)`: no engine port yet → the JS
 /// `'OpenCode port is not available'` throw; otherwise wait for readiness
 /// and surface the JS timeout message.
+///
+/// 中文说明：engine 尚无端口时报 "OpenCode port is not available"；否则
+/// 等待就绪，10 秒超时报 JS 同款超时消息。
 async fn wait_for_opencode_ready(engine: &EngineState) -> Result<(), String> {
     if engine.base_url().is_none() {
         return Err("OpenCode port is not available".to_string());
@@ -78,6 +95,9 @@ async fn wait_for_opencode_ready(engine: &EngineState) -> Result<(), String> {
 
 /// `project-directory-runtime.js` `validateDirectoryPath`: trim → normalize
 /// (quotes/~) → resolve → stat → canonicalize, with the JS error strings.
+///
+/// 中文说明：trim → 规范化（引号/`~` 展开）→ resolve → stat → canonicalize
+/// 的目录校验链，错误字符串与 JS 保持一致（目录必填/不存在/无权限/非目录）。
 async fn validate_directory_path(candidate: &str) -> Result<String, String> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
@@ -105,11 +125,17 @@ async fn validate_directory_path(candidate: &str) -> Result<String, String> {
 
 /// `git/index.js` `createWorktree` + `getWorktreeBootstrapStatus` over the
 /// ported git service.
+///
+/// 中文说明：用已移植的 git service 实现 `WorktreeOps` 接缝——
+/// `createWorktree` 与 `getWorktreeBootstrapStatus`。
 struct GitWorktreeOps {
+    /// 共享的 git 服务实例。
     service: Arc<GitService>,
 }
 
+/// 把接缝方法适配为 BoxFut 并转发给 git service。
 impl WorktreeOps for GitWorktreeOps {
+    /// 创建 worktree；克隆参数以便 move 进异步块。
     fn create(&self, directory: &str, input: &Value) -> BoxFut<'_, Result<Value, String>> {
         let service = Arc::clone(&self.service);
         let directory = directory.to_string();
@@ -117,6 +143,7 @@ impl WorktreeOps for GitWorktreeOps {
         Box::pin(async move { git_worktrees::create_worktree(&service, &directory, &input).await })
     }
 
+    /// 查询 worktree bootstrap 状态。
     fn bootstrap_status(&self, directory: &str) -> BoxFut<'_, Result<Value, String>> {
         let service = Arc::clone(&self.service);
         let directory = directory.to_string();
@@ -128,6 +155,10 @@ impl WorktreeOps for GitWorktreeOps {
 
 /// `createSessionGoal` — objective file in `<data_dir>/goals` plus the
 /// metadata PATCH through the managed engine (`create.rs` production path).
+///
+/// 中文说明：生产环境的 `createSessionGoal` 闭包——在 `<data_dir>/goals`
+/// 写 objective 文件并经受管 engine PATCH 元数据（复用 `create.rs` 的生产
+/// 路径）；警告走 tracing，engine 不可用时报 "engine unavailable"。
 fn production_goal_creator(engine: Arc<EngineState>, data_dir: &Path) -> GoalCreator {
     let data_dir = data_dir.to_path_buf();
     Arc::new(move |call: GoalCall| {
@@ -165,6 +196,11 @@ fn production_goal_creator(engine: Arc<EngineState>, data_dir: &Path) -> GoalCre
 
 /// `emitSessionCreatedEvent` (server/index.js): forward the wire subset to
 /// every connected OMPChamber SSE client as `ompchamber:session-created`.
+///
+/// 中文说明：对应 server/index.js 的 `emitSessionCreatedEvent`——只转发
+/// wire 子集（sessionId/directory/createdAt/promptDispatched/
+/// dispatchedAsCommand，projectID 与 title 按 JS 真值过滤），以
+/// `ompchamber:session-created` 帧广播给所有连接中的 OMPChamber SSE 客户端。
 fn emit_session_created_via_hub(hub: Arc<EventHub>) -> EmitSessionCreated {
     Arc::new(move |event: &Value| {
         let mut properties = Map::new();
@@ -210,6 +246,8 @@ fn emit_session_created_via_hub(hub: Arc<EventHub>) -> EmitSessionCreated {
     })
 }
 
+/// 组合根：装配全部生产依赖并构造 SessionService，挂载三条路由；对所有
+/// 路由施加 1MB 请求体上限（对应 express.json 的 limit: '1mb'）。
 pub fn router(ctx: RouterContext) -> axum::Router {
     let engine = Arc::clone(&ctx.engine);
     let settings_store = crate::settings::store(&ctx);

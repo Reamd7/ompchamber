@@ -1,6 +1,12 @@
+/**
+ * （中文套件说明）语言检测测试：各语言的整句识别、乌克兰语/俄语短语的
+ * 字母级区分、无字母回退英语、引号外文词不翻转整段语言，
+ * 以及 voice 挑选的优先级与 locale 解析。
+ */
 import { describe, expect, it } from 'vitest';
 import { detectTextLanguage, languageOfLocale, pickVoiceForLanguage } from './language-detect.js';
 
+// 文本语言检测：文字系统、特征字母与停用词计分的综合判定。
 describe('detectTextLanguage', () => {
   it.each([
     ['en', 'The build is green and the tests pass, so you can merge this now.'],
@@ -44,7 +50,9 @@ describe('detectTextLanguage', () => {
   });
 });
 
+// 按语言挑选 say voice：Enhanced 变体与主 locale 优先。
 describe('pickVoiceForLanguage', () => {
+  // 共用的 say 风格 voice 样例列表。
   const voices = [
     { name: 'Samantha', locale: 'en_US' },
     { name: 'Daniel', locale: 'en_GB' },
@@ -67,6 +75,7 @@ describe('pickVoiceForLanguage', () => {
   });
 });
 
+// locale -> 语言子 tag 的解析。
 describe('languageOfLocale', () => {
   it('reads the language subtag', () => {
     expect(languageOfLocale('uk_UA')).toBe('uk');

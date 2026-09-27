@@ -2,6 +2,11 @@
 //! `getCurrentVersion`, the GitHub-releases latest-version check, changelog
 //! slicing, the optional hosted update API, `checkForUpdates`, and the CLI
 //! `executeUpdate` spawn.
+//!
+//! 中文说明：本文件移植 `package-manager.js` 的「更新」半边：`getUpdateCommand`
+//! 命令组装、`getCurrentVersion` 当前版本读取、GitHub Releases 最新版本查询、
+//! CHANGELOG 小节切片、可选的托管更新检查 API、`checkForUpdates` 聚合入口，
+//! 以及 CLI `executeUpdate` 的子进程执行。
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -16,74 +21,110 @@ use super::paths::{
 };
 
 /// JS `checkForUpdates(options)` inputs (route query params / CLI options).
+/// 输入项全部可缺省，缺省时按 JS 语义回退（如 currentVersion 回退到
+/// 服务端 package.json 里的版本）。
 #[derive(Debug, Clone, Default)]
 pub struct CheckForUpdatesOptions {
+    /// 客户端上报的当前版本；为空或缺失时回退到 `getCurrentVersion()`。
     pub current_version: Option<String>,
+    /// 应用类型（web / desktop-electron / vscode / mobile-capacitor）。
     pub app_type: Option<String>,
+    /// 设备类别（mobile / tablet / desktop / unknown），仅用于托管 API 上报。
     pub device_class: Option<String>,
+    /// 客户端平台；仅桌面/VS Code/移动端可信，web 场景强制用宿主平台。
     pub platform: Option<String>,
+    /// 客户端 CPU 架构；信任规则与 platform 相同。
     pub arch: Option<String>,
+    /// 实例模式标识；缺省时上报 "unknown"。
     pub instance_mode: Option<String>,
+    /// 匿名安装 ID；开启用量上报且未提供时会在本地持久化生成。
     pub install_id: Option<String>,
     /// JS `options.reportUsage !== false` — defaults to true.
+    /// 默认 true；设为 false 时上报载荷不含 installId。
     pub report_usage: Option<bool>,
 }
 
 /// JS `executeUpdate(pm, options)` inputs.
+/// version 为 `None` 时安装 latest tarball 链接，silent 抑制进度输出。
 #[derive(Debug, Clone, Default)]
 pub struct ExecuteUpdateOptions {
+    /// 目标版本；`None` 时使用 latest 直链。
     pub version: Option<String>,
+    /// 为 true 时不打印 "Updating..." 进度信息。
     pub silent: bool,
 }
 
 /// JS `checkForUpdates()` result (JSON shape; `undefined` fields are omitted
 /// exactly like `res.json()` drops them).
+/// `None` 字段配合 skip_serializing_if 省略键，与 JS `res.json()`
+/// 丢弃 `undefined` 字段的行为一致。
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateInfo {
+    /// 是否存在比当前更新的版本。
     pub available: bool,
+    /// 最新版本号。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// 检查所用的当前版本（可能是 "unknown"）。
     #[serde(rename = "currentVersion")]
     pub current_version: String,
+    /// 版本区间的 CHANGELOG 摘要文本。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// GitHub release 页面链接。
     #[serde(rename = "releaseUrl", skip_serializing_if = "Option::is_none")]
     pub release_url: Option<String>,
+    /// 直链下载地址（当前仅 Android APK 场景填充）。
     #[serde(rename = "downloadUrl", skip_serializing_if = "Option::is_none")]
     pub download_url: Option<String>,
+    /// 探测到的包管理器名称（npm / pnpm / yarn / bun）。
     #[serde(rename = "packageManager", skip_serializing_if = "Option::is_none")]
     pub package_manager: Option<String>,
+    /// 建议用户执行的升级命令（统一为 `ompchamber update`）。
     #[serde(rename = "updateCommand", skip_serializing_if = "Option::is_none")]
     pub update_command: Option<String>,
+    /// 托管 API 建议的下次检查间隔秒数。
     #[serde(
         rename = "nextSuggestedCheckInSec",
         skip_serializing_if = "Option::is_none"
     )]
     pub next_suggested_check_in_sec: Option<serde_json::Number>,
+    /// 非致命错误信息（如版本无法确定）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 /// JS `executeUpdate()` result.
+/// success 仅在子进程退出码为 0 时为 true。
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateExecution {
+    /// 子进程是否以退出码 0 结束。
     pub success: bool,
+    /// 退出码；启动失败或被信号终止时为 `None`。
     #[serde(rename = "exitCode")]
     pub exit_code: Option<i32>,
 }
 
 /// Internal shape of `checkForUpdatesFromApi`'s successful return.
+/// 由 `checkForUpdatesFromApi` 填充，聚合进 `UpdateInfo`，不直接对外序列化。
 #[derive(Debug, Clone)]
 struct RemoteUpdate {
+    /// 托管 API 判定是否存在更新。
     available: bool,
+    /// 托管 API 返回的最新版本号。
     version: String,
+    /// release 说明（releaseNotes 字段）。
     body: Option<String>,
+    /// release 页面链接（缺省回退 GitHub tag URL）。
     release_url: String,
+    /// 下载直链；仅 Android 移动端场景解析 APK 地址。
     download_url: Option<String>,
+    /// 建议的下次检查间隔（秒）。
     next_suggested_check_in_sec: Option<serde_json::Number>,
 }
 
 /// JS truthiness for decoded JSON values (`Boolean(value)`).
+/// 复刻 JS `Boolean(value)`：null / false / 空字符串 / 数字 0 为假，其余为真。
 fn js_truthy(value: &Value) -> bool {
     !matches!(value, Value::Null | Value::Bool(false))
         && !value.as_str().is_some_and(str::is_empty)
@@ -93,6 +134,8 @@ fn js_truthy(value: &Value) -> bool {
 }
 
 /// JS `/^OMPChamber-.+-android\.apk$/i`.
+/// 判定 asset 文件名是否匹配规范命名 `OMPChamber-<version>-android.apk`
+/// （大小写不敏感，version 段不能为空）。
 fn is_canonical_android_apk(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.starts_with("ompchamber-")
@@ -100,8 +143,11 @@ fn is_canonical_android_apk(name: &str) -> bool {
         && lower.len() > "ompchamber--android.apk".len()
 }
 
+/// 更新相关能力：版本探测、changelog 拉取、托管 API 查询、升级命令组装与执行。
 impl PackageManagerRuntime {
     /// JS `getUpdateCommand(pm = detectPackageManager(), version = null)`.
+    /// 按包管理器选择 add -g / global add / install -g；指定 version 时指向
+    /// 该版本 tarball URL，否则使用 latest 直链。
     pub async fn get_update_command(&self, pm: Option<&str>, version: Option<&str>) -> String {
         let pm = match pm {
             Some(pm) => pm.to_string(),
@@ -124,6 +170,8 @@ impl PackageManagerRuntime {
     }
 
     /// JS `getCurrentVersion()` — reads `<web package>/package.json`.
+    /// 读 `<web 包>/package.json` 的 `version`；文件缺失、解析失败或字段
+    /// 为空时返回 "unknown"。
     pub fn get_current_version(&self) -> String {
         let pkg_path = self.package_root().join("package.json");
         let Ok(content) = std::fs::read_to_string(&pkg_path) else {
@@ -140,6 +188,8 @@ impl PackageManagerRuntime {
     }
 
     /// JS `getLatestVersion()` — latest GitHub release tag (no `v`).
+    /// 查 GitHub Releases `/latest` tag 并去掉 `v` 前缀；网络失败、非 2xx、
+    /// 无 tag 或空 tag 均返回 `None`（对齐 JS catch 路径）。
     async fn get_latest_version(&self) -> Option<String> {
         let request = HttpRequest {
             method: HttpMethod::Get,
@@ -164,6 +214,8 @@ impl PackageManagerRuntime {
     }
 
     /// JS `resolveAndroidApkUrl`.
+    /// candidate_url 以 .apk 结尾则直接采用，否则查 `v<version>` tag 的
+    /// release assets——优先规范命名的 APK，退而取第一个 .apk asset。
     async fn resolve_android_apk_url(
         &self,
         version: &str,
@@ -228,6 +280,8 @@ impl PackageManagerRuntime {
     /// JS `checkForUpdatesFromApi` — the optional hosted update-check API.
     /// Returns `None` when disabled (no `OMPCHAMBER_UPDATE_API_URL`) or when
     /// anything fails, exactly like the JS `catch { return null }` paths.
+    /// 组装 appType/platform/arch/installId 载荷 POST 到托管 API 并比对
+    /// latestVersion；mobile-capacitor + android 场景额外解析 APK 直链。
     async fn check_for_updates_from_api(
         &self,
         current_version: &str,
@@ -349,6 +403,8 @@ impl PackageManagerRuntime {
     }
 
     /// JS `fetchChangelogNotes(fromVersion, toVersion)`.
+    /// 拉取 CHANGELOG.md，切出 `(fromVersion, toVersion]` 区间的小节并重组为
+    /// `## ` 开头的 Markdown；区间为空或请求失败返回 `None`。
     async fn fetch_changelog_notes(&self, from_version: &str, to_version: &str) -> Option<String> {
         let request = HttpRequest {
             method: HttpMethod::Get,
@@ -388,6 +444,7 @@ impl PackageManagerRuntime {
     }
 
     /// Test-only exposure of the private changelog fetch.
+    /// 仅供测试的包装：暴露私有的 `fetch_changelog_notes`。
     #[cfg(test)]
     pub(crate) async fn fetch_changelog_notes_for_tests(
         &self,
@@ -398,6 +455,9 @@ impl PackageManagerRuntime {
     }
 
     /// JS `checkForUpdates(options)`.
+    /// 更新检查入口：优先托管 API（web 场景再用 npm 最新版交叉校验，防 API
+    /// 数据滞后误报），失败回退 GitHub Releases 比对；有更新时附带 changelog
+    /// 摘要，Android 移动端附带 APK 下载地址。
     pub async fn check_for_updates(&self, options: CheckForUpdatesOptions) -> UpdateInfo {
         let current_version = options
             .current_version
@@ -492,6 +552,8 @@ impl PackageManagerRuntime {
     }
 
     /// JS `executeUpdate(pm = detectPackageManager(), options)`.
+    /// Windows 经 `ComSpec /c`、其它平台经 `sh -c` 起子进程运行
+    /// `get_update_command` 的结果；返回退出码与成功标志。
     pub async fn execute_update(
         &self,
         pm: Option<&str>,
@@ -525,6 +587,7 @@ impl PackageManagerRuntime {
         builder.arg(shell_flag).arg(&command);
         #[cfg(windows)]
         {
+            // Windows 下隐藏子进程的控制台窗口（对齐 JS windowsHide）。
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             builder.creation_flags(CREATE_NO_WINDOW);
         }

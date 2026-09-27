@@ -1,3 +1,10 @@
+/**
+ * 托管 OpenCode 进程注册表 + 孤儿回收器。记录本产品自己 spawn 的 engine
+ * 进程 pid（每进程一个 <pid>.json 文件，避免多实例并发写坏共享文件），启动时
+ * 仅回收"确证孤儿"（owner 已死或已被 reparent 到 init）的进程。全部文件与
+ * 子进程操作均为异步，防止阻塞 Electron 主进程事件循环。下方英文注释完整
+ * 保留了设计动机、安全模型与存储格式的原始说明。
+ */
 // Managed OpenCode process registry + orphan reaper.
 //
 // OMPChamber spawns the OpenCode server as an EXTERNAL child binary (on Unix
@@ -51,16 +58,33 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+/** 生产环境默认的异步 execFile 封装（promisify(child_process.execFile)），测试可注入替身。 */
 const defaultExecFileAsync = promisify(execFile);
 
+/**
+ * 解析注册表目录：优先使用 OMPCHAMBER_MANAGED_PROCESS_REGISTRY 环境变量
+ * 覆盖值（去空白后非空才生效），缺省为 ~/.config/ompchamber/managed-opencode。
+ * @returns {string} 注册表目录绝对路径
+ */
 const resolveRegistryDir = () => {
   const override = process.env.OMPCHAMBER_MANAGED_PROCESS_REGISTRY;
   if (override && override.trim()) return override.trim();
   return path.join(os.homedir(), '.config', 'ompchamber', 'managed-opencode');
 };
 
+/**
+ * 计算某个 pid 对应的注册表条目文件路径（<注册表目录>/<pid>.json）。
+ * @param {number} pid 被托管进程的 pid
+ * @returns {string} 条目文件绝对路径
+ */
 const entryFilePath = (pid) => path.join(resolveRegistryDir(), `${pid}.json`);
 
+/**
+ * 用信号 0 探测 pid 是否存活：EPERM 视为存活（进程存在但无权发信号），
+ * 其余异常一律视为已退出。非整数 pid 直接判死。
+ * @param {number} pid 目标进程 id
+ * @returns {boolean} 是否存活
+ */
 const isPidAlive = (pid) => {
   if (!Number.isInteger(pid)) return false;
   try {
@@ -72,12 +96,19 @@ const isPidAlive = (pid) => {
   }
 };
 
+/** Promise 化的毫秒级休眠，用于回收流程中的优雅退出等待。 */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // The managed engine is the omp host: either a compiled `omp-host(.exe)`
 // binary or a Bun runtime launching `.../lib/omp-host/host.ts serve`. Accept
 // the legacy `opencode serve` shape too so an older build's registry entries
 // still reap.
+/**
+ * 判断命令行字符串是否为托管 engine 形态：包含 omp-host 或 opencode 且带
+ * serve 子命令（兼容旧版 opencode serve 的注册表条目）。
+ * @param {string} command 进程完整命令行
+ * @returns {boolean} 是否匹配托管 engine 形态
+ */
 const isManagedEngineIdentifier = (command) => {
   if (typeof command !== 'string') return false;
   const lower = command.toLowerCase();
@@ -88,6 +119,14 @@ const isManagedEngineIdentifier = (command) => {
 // Exported for tests: misidentifying the engine here either leaks orphans
 // forever (this exact bug: `omp-host` never matched the old `opencode` check)
 // or risks reaping a process we do not own.
+/**
+ * 判断 live pid 的命令行是否就是注册表记录的那个 engine：先匹配托管 engine
+ * 形态，再在记录了 port 时要求命令行包含该端口字符串，防止 OS 复用 pid 后
+ * 误把其它实例当成我们的进程。
+ * @param {string} command 进程完整命令行
+ * @param {{ port: number | null }} entry 注册表条目（至少含 port）
+ * @returns {boolean} 是否可确认为我们登记的服务器
+ */
 export const commandIdentifiesOurServer = (command, entry) => {
   if (!isManagedEngineIdentifier(command)) return false;
   // Tie to the exact server we registered when we know its port, so a recycled
@@ -97,6 +136,7 @@ export const commandIdentifiesOurServer = (command, entry) => {
 };
 
 /** Whether a `tasklist` CSV row's image name is a managed engine binary. */
+/** 判断 Windows tasklist CSV 行中的镜像名（如 opencode.exe / omp-host.exe）是否为托管 engine 二进制。 */
 export const windowsImageLooksLikeEngine = (image) => {
   if (typeof image !== 'string') return false;
   const lower = image.toLowerCase();
@@ -108,7 +148,15 @@ export const windowsImageLooksLikeEngine = (image) => {
  * dependencies. Production callers use the default instance exported below;
  * tests pass their own `fs`/`execFileAsync` instead of mocking node builtins.
  */
+/**
+ * 基于可注入的 fs 与 execFileAsync 依赖构建注册表 API（登记 / 注销 / 回收）。
+ * 生产代码使用下方导出的默认实例；测试注入自己的实现，避免 mock node 内建模块。
+ * @param {{ fs?: object, execFileAsync?: Function }=} deps 可选的文件系统与子进程执行依赖
+ * @returns {{ registerManagedProcess: Function, unregisterManagedProcess: Function, reapOrphanedProcesses: Function }}
+ */
 export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = defaultExecFileAsync } = {}) => {
+  // 以"临时文件 + rename"原子写入条目 JSON，避免半写文件被读入；任何失败都
+  // 静默吞掉——注册表写失败绝不能影响 spawn / 关机主流程。
   const writeEntryFile = async (entry) => {
     const dir = resolveRegistryDir();
     try {
@@ -122,6 +170,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
     }
   };
 
+  // 读取目录下全部 .json 条目；pid 非整数、JSON 损坏或半写的文件直接删除并跳过。
   const readAllEntries = async () => {
     const dir = resolveRegistryDir();
     let names = [];
@@ -153,6 +202,8 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   };
 
   /** Record an OpenCode process WE spawned so a future run can reap it if orphaned. */
+  // 登记本进程 spawn 的 engine：ownerPid 缺省取当前进程，记录 pid / 端口 /
+  // 二进制 / 运行时来源与启动时间，供未来启动时判定孤儿。
   const registerManagedProcess = async ({ pid, ownerPid, port, binary, runtime } = {}) => {
     if (!Number.isInteger(pid)) return;
     await writeEntryFile({
@@ -166,6 +217,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   };
 
   /** Drop a pid from the registry (after we have killed/closed it ourselves). */
+  // 注销一条 pid 记录（我们自己已杀死 / 关闭该进程后调用）；文件不存在不算错误。
   const unregisterManagedProcess = async (pid) => {
     if (!Number.isInteger(pid)) return;
     try {
@@ -176,6 +228,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   };
 
   // Returns { ppid, command } for a live pid on Unix, or null if it can't be read.
+  // 在 Unix 上经 ps 读取 pid 的父进程与完整命令行；任何失败返回 null（无法核验）。
   const readUnixProcInfo = async (pid) => {
     try {
       const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'ppid=,command='], {
@@ -194,6 +247,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   };
 
   // Windows image name for a pid (e.g. "opencode.exe"), or null.
+  // 在 Windows 上经 tasklist 读取 pid 的镜像名（CSV 单行，如 "opencode.exe,..."）；失败返回 null。
   const readWindowsImageName = async (pid) => {
     try {
       const { stdout } = await execFileAsync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
@@ -207,6 +261,8 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
     }
   };
 
+  // 杀死孤儿进程：Windows 用 taskkill /T /F 连树终止；Unix 先对整个进程组与
+  // pid 本身发 SIGTERM，轮询等待至多 1.5s，仍存活再发 SIGKILL 并留 300ms 收尾。
   const killOrphan = async (pid) => {
     if (process.platform === 'win32') {
       try {
@@ -221,6 +277,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
       return;
     }
 
+    // 向整个进程组（负 pid）与 pid 本身各发一次信号；两者之一已退出时静默忽略。
     const signalTree = (signal) => {
       try {
         process.kill(-pid, signal);
@@ -245,6 +302,10 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   };
 
   // Decide+act on a single registry entry. Returns true if it was reaped.
+  // 判定并处理单条记录，返回是否完成回收：pid 已死直接 false（由调用方清文件）；
+  // Windows 要求 owner 确证死亡且镜像名仍像 engine 才杀；Unix 要求命令行能对上
+  // 注册信息且已被 reparent 到 init（ppid=1）或 owner 已死，仍在被存活实例
+  // 持有的进程一律不动。
   const processEntry = async (entry, { log }) => {
     // Dead pid → nothing to do (caller drops the file).
     if (!isPidAlive(entry.pid)) return false;
@@ -280,6 +341,8 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
    * prune their registry files. Safe to call at startup before spawning a new
    * server. Returns { inspected, reaped }.
    */
+  // 遍历全部条目逐个判定回收；进程已死或本次被回收的条目文件随即删除，仍存活的
+  // 保留。单条检查异常只记日志不中断整体，最终返回检查 / 回收计数。
   const reapOrphanedProcesses = async ({ log } = {}) => {
     const records = await readAllEntries();
     if (records.length === 0) return { inspected: 0, reaped: 0 };
@@ -311,8 +374,12 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   return { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses };
 };
 
+/** 进程级默认注册表实例（使用真实 fs 与 execFileAsync），生产代码直接复用。 */
 const defaultRegistry = createManagedProcessRegistry();
 
+/** 登记一个本产品 spawn 的托管 engine 进程（默认实例的方法导出）。 */
 export const registerManagedProcess = defaultRegistry.registerManagedProcess;
+/** 注销一个托管进程的注册表条目（默认实例的方法导出）。 */
 export const unregisterManagedProcess = defaultRegistry.unregisterManagedProcess;
+/** 回收确证孤儿的托管 engine 进程并清理其条目（默认实例的方法导出）。 */
 export const reapOrphanedProcesses = defaultRegistry.reapOrphanedProcesses;

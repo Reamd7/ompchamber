@@ -14,6 +14,11 @@
 //! - mutators serialize through an in-process per-project chain
 //!   (`withWriteLock`); the legacy migration deliberately runs unlocked
 //!   because its two writes are atomic renames of identical content.
+//!
+//! 中文说明：项目上下文（notes / todos / plan）存储运行时。清单持久化在
+//! `<projects-dir>/<projectId>/context.json`，plan 正文以 markdown 存于
+//! `plans/` 子目录；读取为严格 JSON 解析，写入走临时文件 + 原子 rename，
+//! 变更操作经按 projectId 的进程内写锁链串行化（详见上方英文说明）。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -27,106 +32,163 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::context::RouterContext;
 use crate::error::{AppError, AppResult};
 
+/// 当前 context.json 的 schema 版本；读取输出始终按此版本重建。
 pub const PROJECT_CONTEXT_VERSION: u8 = 2;
+/// 单条 note 正文的长度上限（UTF-16 码元），清洗时截断。
 const PROJECT_NOTE_BODY_MAX_LENGTH: usize = 3000;
+/// 单个项目允许保留的 note 条数上限，创建超出即报错。
 const PROJECT_NOTE_MAX_ITEMS: usize = 200;
+/// 单条 todo 文本的长度上限（UTF-16 码元）。
 const PROJECT_TODO_TEXT_MAX_LENGTH: usize = 120;
+/// plan 标题的长度上限（UTF-16 码元）。
 const PROJECT_PLAN_TITLE_MAX_LENGTH: usize = 160;
+/// plan 正文（raw markdown）的长度上限（UTF-16 码元）。
 const PROJECT_PLAN_BODY_MAX_LENGTH: usize = 200_000;
+/// 清洗后保留的 todo 条数上限。
 const PROJECT_TODO_MAX_ITEMS: usize = 500;
+/// 清洗后保留的 plan 链接条数上限。
 const PROJECT_PLAN_MAX_ITEMS: usize = 500;
 
 // ---------------------------------------------------------------------------
 // Wire model
 // ---------------------------------------------------------------------------
 
+/// note 的采集来源定位（selection/agent 来源时记录会话与消息）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NoteOrigin {
+    /// 来源会话 id；缺失时整个 origin 被丢弃。
     #[serde(rename = "sessionId")]
     pub session_id: String,
+    /// 可选的来源消息 id；为 None 时序列化省略该字段。
     #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
 }
 
+/// 一条项目便签（note），存储于 context.json 的 notes 数组。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Note {
+    /// 便签 id（创建时由 id 工厂生成）。
     pub id: String,
+    /// 便签正文（trim 后非空，长度受上限约束）。
     pub body: String,
     /// Milliseconds since epoch; stored as a raw JSON number so hand-edited
     /// fractional timestamps round-trip exactly like the JS does.
+    /// 创建时间（epoch 毫秒）。
     #[serde(rename = "createdAt")]
     pub created_at: Number,
+    /// 最近更新时间（epoch 毫秒）；仅修改 body 时刷新。
     #[serde(rename = "updatedAt")]
     pub updated_at: Number,
+    /// 来源标记：manual / selection / agent 之一，非法值清洗为 manual。
     pub source: String,
+    /// 是否置顶。
     pub pinned: bool,
+    /// 可选的采集来源；为 None 时序列化省略该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<NoteOrigin>,
 }
 
+/// 一条待办事项（todo）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Todo {
+    /// 待办 id。
     pub id: String,
+    /// 待办文本（非空，长度受上限约束）。
     pub text: String,
+    /// 是否已完成。
     pub completed: bool,
+    /// 创建时间（epoch 毫秒）。
     #[serde(rename = "createdAt")]
     pub created_at: Number,
 }
 
+/// context.json 中指向 plan markdown 文件的链接（manifest 条目）。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanLink {
+    /// plan id。
     pub id: String,
+    /// plans/ 目录下的 markdown 文件名（仅 base name，须匹配安全模式）。
     pub file: String,
+    /// 标题：从 markdown 首个标题派生，并随内容更新重算。
     pub title: String,
+    /// 创建时间（epoch 毫秒）。
     #[serde(rename = "createdAt")]
     pub created_at: Number,
+    /// 是否置顶。
     pub pinned: bool,
 }
 
+/// 一个项目的完整上下文清单，即 context.json 的内存投影。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProjectContext {
+    /// schema 版本，当前恒为 2。
     pub version: u8,
+    /// 便签列表，最新的排在最前。
     pub notes: Vec<Note>,
+    /// 待办列表，保持写入时的顺序。
     pub todos: Vec<Todo>,
+    /// plan 链接列表，最新的排在最前。
     pub plans: Vec<PlanLink>,
 }
 
 /// `readPlan` result — the parsed projection of one markdown file.
+/// readPlan 的结果：单个 markdown 文件解析出的投影。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanRead {
+    /// plan id（来自清单链接）。
     pub id: String,
+    /// markdown 文件名。
     pub file: String,
+    /// 创建时间（epoch 毫秒）。
     #[serde(rename = "createdAt")]
     pub created_at: Number,
+    /// 从 markdown 派生的标题。
     pub title: String,
+    /// 标题之后的正文部分。
     pub body: String,
+    /// 文件原始内容（未经解析改写）。
     pub raw: String,
 }
 
+/// createNote / updateNote 的返回：被写入的便签与整份最新上下文。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NoteMutation {
+    /// 新建或更新后的便签。
     pub note: Note,
+    /// 写入后的完整上下文。
     pub context: ProjectContext,
 }
 
+/// createPlan 的返回。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanCreateResult {
+    /// 新建的 plan 链接。
     pub plan: PlanLink,
+    /// 写入后的完整上下文。
     pub context: ProjectContext,
 }
 
+/// updatePlan 的返回：链接、上下文与重新解析出的内容。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanSaveResult {
+    /// 更新后的 plan 链接（标题已重算）。
     pub plan: PlanLink,
+    /// 写入后的完整上下文。
     pub context: ProjectContext,
+    /// 从新 raw 重新派生的标题。
     pub title: String,
+    /// 从新 raw 重新派生的正文。
     pub body: String,
+    /// 已写入文件的（截断后）原始内容。
     pub raw: String,
 }
 
+/// deleteNote / deletePlan 的返回。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteOutcome {
+    /// 是否真的删除了目标（未知 id 时为 false）。
     pub deleted: bool,
+    /// 操作后的完整上下文。
     pub context: ProjectContext,
 }
 
@@ -134,6 +196,7 @@ pub struct DeleteOutcome {
 // JS-string semantics helpers
 // ---------------------------------------------------------------------------
 
+/// 当前系统时间（epoch 毫秒）；时钟异常时回退为 0。
 fn system_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -142,6 +205,7 @@ fn system_now_ms() -> u64 {
 }
 
 /// The exact `RegExp \s` class (no `\u{0085}`, includes `\u{feff}`).
+/// 精确复刻 JS RegExp `\s` 字符类（含 BOM，不含 `\u{0085}`）。
 fn is_js_whitespace(c: char) -> bool {
     matches!(
         c,
@@ -157,10 +221,12 @@ fn is_js_whitespace(c: char) -> bool {
 }
 
 /// JS `String.prototype.trim` (Unicode + BOM, per the `\s` class above).
+/// 等价于 JS 的 String.prototype.trim：按上述 `\s` 字符类裁剪两端。
 fn js_trim(value: &str) -> &str {
     value.trim_matches(is_js_whitespace)
 }
 
+/// 返回 `from` 起连续 JS 空白（`\s*`）之后的首个字节下标。
 fn skip_js_whitespace(value: &str, from: usize) -> usize {
     let mut index = from;
     for c in value[from..].chars() {
@@ -175,6 +241,7 @@ fn skip_js_whitespace(value: &str, from: usize) -> usize {
 
 /// JS `value.slice(0, maxLength)` — counts UTF-16 code units, never splitting
 /// a surrogate pair.
+/// 按 UTF-16 码元计数截断，绝不切开代理对。
 fn clamp_length(value: &str, max_length: usize) -> String {
     let mut units = 0usize;
     for (index, c) in value.char_indices() {
@@ -187,6 +254,7 @@ fn clamp_length(value: &str, max_length: usize) -> String {
     value.to_string()
 }
 
+/// 取字符串值并按 JS trim 裁剪；非字符串或裁剪后为空则返回 None。
 fn as_non_empty_string(value: &Value) -> Option<String> {
     let text = value.as_str()?;
     let trimmed = js_trim(text);
@@ -197,10 +265,12 @@ fn as_non_empty_string(value: &Value) -> Option<String> {
     }
 }
 
+/// 判断是否为合法的 note 来源枚举值。
 fn is_note_source(value: &str) -> bool {
     matches!(value, "manual" | "selection" | "agent")
 }
 
+/// 清洗 origin：必须是对象且 sessionId 非空，否则整体丢弃（返回 None）。
 fn sanitize_note_origin(value: &Value) -> Option<NoteOrigin> {
     let object = value.as_object()?;
     let session_id = as_non_empty_string(object.get("sessionId").unwrap_or(&Value::Null))?;
@@ -211,6 +281,7 @@ fn sanitize_note_origin(value: &Value) -> Option<NoteOrigin> {
     })
 }
 
+/// 取非负数字时间戳；值缺失、非数字或为负时回退到 fallback。
 fn timestamp_or(value: Option<&Value>, fallback: Number) -> Number {
     match value.and_then(Value::as_number) {
         Some(number) if number.as_f64().is_some_and(|v| v >= 0.0) => number.clone(),
@@ -218,6 +289,7 @@ fn timestamp_or(value: Option<&Value>, fallback: Number) -> Number {
     }
 }
 
+/// JS 意义上的行终止符（正则 `.` 不匹配它们）。
 fn is_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\u{2028}' | '\u{2029}')
 }
@@ -226,6 +298,8 @@ fn is_line_terminator(c: char) -> bool {
 // Sanitizers (ports of sanitizeNotes / sanitizeTodos / sanitizePlanLinks)
 // ---------------------------------------------------------------------------
 
+/// 移植 sanitizeNotes：兼容 v1 的单字符串便签格式；剔除无 id、空 body、
+/// 重复 id 的条目，截断超长正文，按创建时间降序排列，并限制条数上限。
 fn sanitize_notes(value: &Value, now: &Number) -> Vec<Note> {
     if let Some(text) = value.as_str() {
         // Version 1 stored notes as one string blob.
@@ -294,6 +368,8 @@ fn sanitize_notes(value: &Value, now: &Number) -> Vec<Note> {
     result
 }
 
+/// 移植 sanitizeTodos：剔除无 id、空文本、重复 id 的条目并截断超长文本，
+/// 保留传入顺序。
 fn sanitize_todos(value: &Value, now: &Number) -> Vec<Todo> {
     let Some(entries) = value.as_array() else {
         return Vec::new();
@@ -328,6 +404,7 @@ fn sanitize_todos(value: &Value, now: &Number) -> Vec<Todo> {
     result
 }
 
+/// 清洗 plan 标题：trim 后按上限截断；空值返回空串（回退文案由调用方决定）。
 fn sanitize_plan_title(value: &Value) -> String {
     clamp_length(
         &as_non_empty_string(value).unwrap_or_default(),
@@ -335,6 +412,7 @@ fn sanitize_plan_title(value: &Value) -> String {
     )
 }
 
+/// 校验 plan 文件名匹配 /^[a-zA-Z0-9._-]+\.md$/，防止路径逃逸。
 fn is_plan_file_name(file: &str) -> bool {
     // /^[a-zA-Z0-9._-]+\.md$/
     if !file.ends_with(".md") || file.len() <= 3 {
@@ -345,6 +423,8 @@ fn is_plan_file_name(file: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
+/// 移植 sanitizePlanLinks：剔除无 id、文件名非法、id 或文件重复的条目；
+/// 空标题回退 "Plan"；按创建时间降序排列并限制条数。
 fn sanitize_plan_links(value: &Value, now: &Number) -> Vec<PlanLink> {
     let Some(entries) = value.as_array() else {
         return Vec::new();
@@ -402,12 +482,16 @@ fn sanitize_plan_links(value: &Value, now: &Number) -> Vec<PlanLink> {
 // Plan markdown (port of parsePlanMarkdown / formatPlanMarkdown / slugify)
 // ---------------------------------------------------------------------------
 
+/// parsePlanMarkdown 的输出：从 markdown 派生的标题与正文。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedPlan {
+    /// 标题：首个 `#` 标题或回退行；清洗后为空则回退 "Plan"。
     pub title: String,
+    /// 正文：首个标题之后的内容；无标题时为 trim 后的全文。
     pub body: String,
 }
 
+/// 把 CRLF 与孤立 CR 统一为 LF；不含 `\r` 时原样返回以避免无谓拷贝。
 fn normalize_newlines(raw: &str) -> String {
     if !raw.contains('\r') {
         return raw.to_string();
@@ -416,6 +500,7 @@ fn normalize_newlines(raw: &str) -> String {
 }
 
 /// `\s*(?:\n+|$)` anchored at `at`, returning the match end.
+/// 在 `at` 处匹配该模式并返回匹配结束位置；`\s*` 会回溯让位于 `\n+`。
 fn match_ws_then_newlines_or_eos(value: &str, at: usize) -> Option<usize> {
     let mut end = at;
     let mut first_newline: Option<usize> = None;
@@ -445,6 +530,7 @@ fn match_ws_then_newlines_or_eos(value: &str, at: usize) -> Option<usize> {
 }
 
 /// `(.+?)\s*(?:\n+|$)` with the capture starting at `start`.
+/// 从 `start` 起做该捕获，返回 (整体匹配结束位置, 捕获文本)。
 fn lazy_capture_from(value: &str, start: usize) -> Option<(usize, String)> {
     let mut end = start;
     for c in value[start..].chars() {
@@ -460,6 +546,7 @@ fn lazy_capture_from(value: &str, start: usize) -> Option<(usize, String)> {
 }
 
 /// `/^\s*#\s+(.+?)\s*(?:\n+|$)/` — returns (whole-match end, title capture).
+/// 匹配行首 plan 标题，返回 (整体匹配结束位置, 标题捕获)。
 fn match_plan_heading(value: &str) -> Option<(usize, String)> {
     let after_leading_ws = skip_js_whitespace(value, 0);
     if !value[after_leading_ws..].starts_with('#') {
@@ -486,6 +573,7 @@ fn match_plan_heading(value: &str) -> Option<(usize, String)> {
     None
 }
 
+/// 去掉行首的 `#` 前缀及随后的空白（回退路径提取标题用）。
 fn strip_leading_heading_marks(line: &str) -> &str {
     let without_hashes = line.trim_start_matches('#');
     if without_hashes.len() == line.len() {
@@ -495,6 +583,8 @@ fn strip_leading_heading_marks(line: &str) -> &str {
 }
 
 /// Port of the exported `parsePlanMarkdown`.
+/// 解析 plan markdown：优先取首个 `#` 标题（标题后须有空白），
+/// 否则回退到首个非空行（剥掉 `#` 前缀）；正文为标题之后的内容。
 pub fn parse_plan_markdown(raw: &str) -> ParsedPlan {
     let normalized = normalize_newlines(raw);
     if let Some((match_end, capture)) = match_plan_heading(&normalized) {
@@ -530,6 +620,8 @@ pub fn parse_plan_markdown(raw: &str) -> ParsedPlan {
     }
 }
 
+/// 把标题与正文格式化为规范 markdown：`# 标题` + 空行 + 正文；
+/// 正文为空时只写标题行。标题清洗后为空则回退 "Plan"。
 fn format_plan_markdown(title: &str, body: &str) -> String {
     let normalized_title = {
         let sanitized = sanitize_plan_title(&Value::String(title.to_string()));
@@ -547,6 +639,8 @@ fn format_plan_markdown(title: &str, body: &str) -> String {
     }
 }
 
+/// 移植 slugify：trim + 小写化，剔除 markdown 标点，空白段折叠为 `-`，
+/// 其余非法字符替换为 `-`，最后折叠连续 `-` 并修剪首尾；空结果回退 "plan"。
 fn slugify_plan_title(value: &str) -> String {
     let lowered = js_trim(value).to_lowercase();
     let mut stripped = String::with_capacity(lowered.len());
@@ -615,6 +709,7 @@ fn slugify_plan_title(value: &str) -> String {
     }
 }
 
+/// 构造 version 2 的空上下文。
 fn empty_context() -> ProjectContext {
     ProjectContext {
         version: PROJECT_CONTEXT_VERSION,
@@ -624,11 +719,14 @@ fn empty_context() -> ProjectContext {
     }
 }
 
+/// 取路径最后一段（忽略尾部 `/`），把记录的绝对路径还原为文件名。
 fn path_basename(value: &str) -> String {
     let trimmed = value.trim_end_matches('/');
     trimmed.rsplit('/').next().unwrap_or_default().to_string()
 }
 
+/// 校验 projectId：trim 后必须非空，且仅允许 ASCII 字母数字与 `. _ : -`，
+/// 否则返回错误（防止路径穿越等非法存储路径）。
 fn sanitize_project_id(project_id: &str) -> AppResult<String> {
     let value = as_non_empty_string(&Value::String(project_id.to_string()))
         .ok_or_else(|| AppError::internal("projectId is required"))?;
@@ -647,18 +745,24 @@ fn sanitize_project_id(project_id: &str) -> AppResult<String> {
 // Storage primitives
 // ---------------------------------------------------------------------------
 
+/// read_json 的结果：区分「文件不存在」与「存在但损坏/非对象」两种情形。
 struct ReadJson {
+    /// 文件是否不存在（IO NotFound）。
     missing: bool,
     /// `None` while present means malformed JSON or a non-object root.
+    /// 解析成功且根为对象时才有值。
     value: Option<Map<String, Value>>,
 }
 
 /// Node's `readFile(path, 'utf8')` replaces invalid UTF-8 with U+FFFD.
+/// 行为等同 Node 的 readFile(path, 'utf8')：非法字节替换为 U+FFFD 而非报错。
 async fn read_text_lossy(path: &Path) -> std::io::Result<String> {
     let bytes = tokio::fs::read(path).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// 读取 JSON 文件：NotFound 归一为 missing=true；文件存在但解析失败或
+/// 根不是对象时 value=None（是否报错由调用方决定）；其他 IO 错误传播。
 async fn read_json(path: &Path) -> AppResult<ReadJson> {
     let text = match read_text_lossy(path).await {
         Ok(text) => text,
@@ -680,6 +784,8 @@ async fn read_json(path: &Path) -> AppResult<ReadJson> {
     })
 }
 
+/// 以 2 空格缩进的 pretty JSON 原子写入：先写同目录唯一临时文件再 rename，
+/// 任一步失败时清理临时文件并返回错误。
 async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
     let parent = path
         .parent()
@@ -711,18 +817,26 @@ async fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> AppResult<()
 // ---------------------------------------------------------------------------
 
 /// Port of the object returned by `createProjectContextRuntime`.
+/// 移植 createProjectContextRuntime 返回的对象：项目上下文存储运行时。
 #[derive(Clone)]
 pub struct ProjectContextRuntime {
+    /// 共享内部状态：目录、id 工厂与写锁表。
     inner: Arc<RuntimeInner>,
 }
 
+/// 运行时的共享内部状态（经 Arc 被 clone 共享）。
 struct RuntimeInner {
+    /// projects 根目录，所有项目数据都在其下按 `<projectId>/` 分目录存放。
     projects_dir: PathBuf,
+    /// 生成便签/plan id 的工厂闭包（默认 UUIDv4，可注入）。
     id_factory: Arc<dyn Fn() -> String + Send + Sync>,
+    /// 按 projectId 的写锁链；无等待者时条目被回收。
     write_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 /// JS default id factory (`crypto.randomUUID`), built from `rand`.
+/// 默认 id 工厂：基于 rand 生成带版本/变体位的 UUIDv4 字符串
+/// （对应 JS 的 crypto.randomUUID）。
 fn default_id_factory() -> Arc<dyn Fn() -> String + Send + Sync> {
     Arc::new(|| {
         use rand::RngCore;
@@ -742,7 +856,10 @@ fn default_id_factory() -> Arc<dyn Fn() -> String + Send + Sync> {
     })
 }
 
+/// 项目上下文运行时实现：围绕 context.json 清单与 plans/ 目录提供
+/// 读取（含 legacy 迁移）与 notes/todos/plans 的增删改查。
 impl ProjectContextRuntime {
+    /// 以给定 projects 根目录创建运行时（默认 UUIDv4 id 工厂、空写锁表）。
     pub fn new(projects_dir: PathBuf) -> Self {
         Self {
             inner: Arc::new(RuntimeInner {
@@ -754,11 +871,14 @@ impl ProjectContextRuntime {
     }
 
     /// `<data-dir>/projects` — the JS `OMPCHAMBER_PROJECTS_CONFIG_DIR`.
+    /// 以 `<data-dir>/projects`（JS 的 OMPCHAMBER_PROJECTS_CONFIG_DIR）为根目录。
     pub fn for_context(ctx: &RouterContext) -> Self {
         Self::new(ctx.config.data_dir.join("projects"))
     }
 
     /// Test/dependency seam for the JS `createId` injection.
+    /// 注入自定义 id 工厂（对应 JS 的 createId 缝，测试/依赖注入用）；
+    /// 仅当运行时尚未被共享（Arc 可独占）时可用，否则 panic。
     pub fn with_id_factory(mut self, id_factory: Arc<dyn Fn() -> String + Send + Sync>) -> Self {
         Arc::get_mut(&mut self.inner)
             .expect("runtime not shared yet")
@@ -766,6 +886,7 @@ impl ProjectContextRuntime {
         self
     }
 
+    /// 项目存储目录 `<projects-dir>/<projectId>`（projectId 先经校验）。
     fn storage_dir_for(&self, project_id: &str) -> AppResult<PathBuf> {
         Ok(self
             .inner
@@ -773,14 +894,17 @@ impl ProjectContextRuntime {
             .join(sanitize_project_id(project_id)?))
     }
 
+    /// 项目 context.json 的路径。
     pub fn context_path_for(&self, project_id: &str) -> AppResult<PathBuf> {
         Ok(self.storage_dir_for(project_id)?.join("context.json"))
     }
 
+    /// 项目 plans/ 目录的路径。
     pub fn plans_dir_for(&self, project_id: &str) -> AppResult<PathBuf> {
         Ok(self.storage_dir_for(project_id)?.join("plans"))
     }
 
+    /// 旧版客户端配置 `<projectId>.json` 的路径（迁移数据源）。
     fn legacy_config_path_for(&self, project_id: &str) -> AppResult<PathBuf> {
         Ok(self
             .inner
@@ -788,11 +912,14 @@ impl ProjectContextRuntime {
             .join(format!("{}.json", sanitize_project_id(project_id)?)))
     }
 
+    /// 当前时间（epoch 毫秒）。
     fn now_ms(&self) -> u64 {
         system_now_ms()
     }
 
     /// `withWriteLock` — in-process per-project chain.
+    /// 移植 withWriteLock：按 projectId 串行执行异步变更；结束后在无人
+    /// 等待时回收锁表条目，避免 map 无限增长。
     async fn with_write_lock<T, F>(&self, project_id: &str, mutate: F) -> AppResult<T>
     where
         F: Future<Output = AppResult<T>>,
@@ -827,6 +954,10 @@ impl ProjectContextRuntime {
     /// One-time migration of `projectNotes` / `projectTodos` /
     /// `projectPlanFiles` out of the client-owned `<projectId>.json`.
     /// Runs unlocked on purpose (see module docs).
+    /// 一次性迁移：把 projectNotes/projectTodos/projectPlanFiles 三个
+    /// legacy key 从客户端持有的 `<projectId>.json` 搬入 context.json。
+    /// 记录在 plans/ 目录之外的 markdown 会从原路径抢救回来；markdown
+    /// 已丢失的链接被剔除；旧配置中的其余字段原样保留。
     async fn migrate_from_legacy_config(
         &self,
         project_id: &str,
@@ -919,6 +1050,8 @@ impl ProjectContextRuntime {
 
     /// `readContext` — pub for the session-knowledge port. A missing file is
     /// authoritative empty; malformed JSON is a failure; I/O errors propagate.
+    /// 移植 readContext：读取项目上下文（缺失时按需触发 legacy 迁移）。
+    /// 文件缺失视为权威空数据；JSON 损坏报错；所有条目经清洗后返回。
     pub async fn read_context(&self, project_id: &str) -> AppResult<ProjectContext> {
         let now = Number::from(self.now_ms());
         let stored = read_json(&self.context_path_for(project_id)?).await?;
@@ -951,11 +1084,13 @@ impl ProjectContextRuntime {
         })
     }
 
+    /// 把整份上下文原子写入 context.json。
     async fn write_context(&self, project_id: &str, context: &ProjectContext) -> AppResult<()> {
         write_json_atomic(&self.context_path_for(project_id)?, context).await
     }
 
     /// `saveTodos`.
+    /// 移植 saveTodos：整体替换 todos（经清洗），保留 notes 与 plans。
     pub async fn save_todos(&self, project_id: &str, todos: &Value) -> AppResult<ProjectContext> {
         self.with_write_lock(project_id, async {
             let now = Number::from(self.now_ms());
@@ -973,6 +1108,8 @@ impl ProjectContextRuntime {
     }
 
     /// `createNote`.
+    /// 移植 createNote：新建便签并插入列表首位；body trim 后为空报错，
+    /// 已达条数上限时拒绝扩容。
     pub async fn create_note(&self, project_id: &str, value: &Value) -> AppResult<NoteMutation> {
         let raw_body = value.get("body").and_then(Value::as_str).unwrap_or("");
         let body = js_trim(&clamp_length(raw_body, PROJECT_NOTE_BODY_MAX_LENGTH)).to_string();
@@ -1023,6 +1160,8 @@ impl ProjectContextRuntime {
     }
 
     /// `updateNote` — omitted fields are left alone.
+    /// 移植 updateNote：按 patch 更新 body 和/或 pinned；未提供的字段
+    /// 保持原值；未知 id 返回 Ok(None)。
     pub async fn update_note(
         &self,
         project_id: &str,
@@ -1083,6 +1222,7 @@ impl ProjectContextRuntime {
     }
 
     /// `deleteNote`.
+    /// 移植 deleteNote：删除指定便签；未知 id 时 deleted=false 且不写盘。
     pub async fn delete_note(&self, project_id: &str, note_id: &str) -> AppResult<DeleteOutcome> {
         let id = as_non_empty_string(&Value::String(note_id.to_string()))
             .ok_or_else(|| AppError::internal("noteId is required"))?;
@@ -1119,6 +1259,8 @@ impl ProjectContextRuntime {
 
     /// `readPlan` — pub for the session-knowledge port. `Ok(None)` covers both
     /// a missing link and deleted markdown.
+    /// 移植 readPlan：读取单个 plan 并解析其 markdown；链接不存在或
+    /// markdown 已被删除都返回 Ok(None)，其余 IO 错误向上传播。
     pub async fn read_plan(&self, project_id: &str, plan_id: &str) -> AppResult<Option<PlanRead>> {
         let id = as_non_empty_string(&Value::String(plan_id.to_string()))
             .ok_or_else(|| AppError::internal("planId is required"))?;
@@ -1147,6 +1289,8 @@ impl ProjectContextRuntime {
 
     /// `updatePlan` — overwrites the markdown verbatim (clamped) and
     /// re-derives the manifest title.
+    /// 移植 updatePlan：用给定 raw 原样覆写 markdown（截断到上限），
+    /// 并从新内容重算清单标题；未知 id 或文件已被删除均返回 None。
     pub async fn update_plan(
         &self,
         project_id: &str,
@@ -1205,6 +1349,8 @@ impl ProjectContextRuntime {
     }
 
     /// `createPlan` — markdown file first, then the manifest entry.
+    /// 移植 createPlan：先写 markdown 文件（`<毫秒时间戳>-<slug>.md`，
+    /// 同名时追加 `-1`、`-2` … 后缀），再在清单头部插入链接。
     pub async fn create_plan(
         &self,
         project_id: &str,
@@ -1269,6 +1415,7 @@ impl ProjectContextRuntime {
     }
 
     /// `setPlanPinned`.
+    /// 移植 setPlanPinned：仅更新置顶位，标题与文件保持不变。
     pub async fn set_plan_pinned(
         &self,
         project_id: &str,
@@ -1303,6 +1450,8 @@ impl ProjectContextRuntime {
     }
 
     /// `deletePlan` — manifest entry first, then the (harmless) unlink.
+    /// 移植 deletePlan：先移除清单条目，再删除（可能已不存在的）markdown 文件；
+    /// 未知 id 时 deleted=false 且不写盘。
     pub async fn delete_plan(&self, project_id: &str, plan_id: &str) -> AppResult<DeleteOutcome> {
         let id = as_non_empty_string(&Value::String(plan_id.to_string()))
             .ok_or_else(|| AppError::internal("planId is required"))?;
@@ -1345,14 +1494,19 @@ impl ProjectContextRuntime {
 /// `setPlanPinned` result: `{ plan, context }`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlanPinnedResult {
+    /// 更新置顶后的 plan 链接。
     pub plan: PlanLink,
+    /// 写入后的完整上下文。
     pub context: ProjectContext,
 }
 
 /// Process-wide shared runtime per projects directory, mirroring the JS
 /// module-level `projectContextRuntime` singleton (routes and the
 /// session-knowledge port must share one write-lock map).
+/// 进程级共享单例：按 projects 目录复用同一个运行时实例，保证路由与
+/// session-knowledge 移植共享同一份写锁表；全部引用释放后允许重建。
 pub fn shared(projects_dir: &Path) -> Arc<ProjectContextRuntime> {
+    // 进程级注册表：projects 目录 -> 运行时的弱引用（Weak），无人持有时可被回收。
     static REGISTRY: LazyLock<Mutex<HashMap<PathBuf, Weak<ProjectContextRuntime>>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
     let mut registry = REGISTRY.lock().unwrap_or_else(|error| error.into_inner());

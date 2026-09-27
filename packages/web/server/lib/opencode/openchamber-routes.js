@@ -1,5 +1,21 @@
+/**
+ * OMPChamber 自有运维路由：版本更新检查 / 安装、models.dev 模型元数据代理
+ * 与 Zen 免费模型列表。全部外部能力（fs、path、process、server、设置读取、
+ * Zen 模型拉取）经 registerOMPChamberRoutes 的 dependencies 注入，宿主
+ * （web / desktop / VS Code）可替换实现以便测试与适配运行环境。
+ */
+
+/** 合法 systemd unit 名称的校验正则：限定字符集且必须以 .service 结尾。 */
 const SYSTEMD_SERVICE_UNIT_PATTERN = /^[A-Za-z0-9:_.@-]+\.service$/;
 
+/**
+ * 从进程环境推断当前 OMPChamber 所属的 systemd user service unit 名称。
+ * 仅当存在 INVOCATION_ID（systemd 拉起标志）时才认定运行于 systemd 之下；
+ * 优先取 OMPCHAMBER_SYSTEMD_UNIT 显式配置，缺省回退 ompchamber.service；
+ * 名称不匹配 SYSTEMD_SERVICE_UNIT_PATTERN 时返回 null（视为不受 systemd 管理）。
+ * @param {NodeJS.ProcessEnv} environment 进程环境变量
+ * @returns {string | null} 合法的 unit 名称；不适用时返回 null
+ */
 function resolveSystemdServiceUnit(environment) {
   if (!environment.INVOCATION_ID) {
     return null;
@@ -12,10 +28,25 @@ function resolveSystemdServiceUnit(environment) {
   return SYSTEMD_SERVICE_UNIT_PATTERN.test(unit) ? unit : null;
 }
 
+/**
+ * 按 POSIX shell 单引号规则转义值：内部单引号替换为 '\'' 后整体包裹单引号，
+ * 保证值可安全嵌入 sh 命令行。
+ * @param {*} value 待转义的值（先经 String() 归一）
+ * @returns {string} 带单引号的转义结果
+ */
 function quotePosixShell(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * 在 Express app 上注册 /api/ompchamber 与 /api/zen 系列路由。
+ * @param {import('express').Express} app Express 应用实例
+ * @param {object} dependencies 宿主注入的依赖：fs/path/process、server（取当前端口）、
+ *   __dirname（定位 CLI 入口）、ompchamberDataDir（实例与日志文件根目录）、
+ *   modelsDevApiUrl 与 modelsMetadataCacheTtl（元数据代理参数）、设置读取、
+ *   fetchFreeZenModels / getCachedZenModels（Zen 模型拉取与进程内缓存）
+ * @returns {void}
+ */
 export const registerOMPChamberRoutes = (app, dependencies) => {
   const {
     fs,
@@ -31,16 +62,23 @@ export const registerOMPChamberRoutes = (app, dependencies) => {
     getCachedZenModels,
   } = dependencies;
 
+  // GET /api/ompchamber/update-check：检查是否有新版本。动态加载 package-manager，
+  // 规范化 query 参数（appType / platform / arch / instanceMode / 版本 / installId），
+  // reportUsage 仅在显式 false/0/no 时关闭，否则依据 User-Agent 推断设备类型兜底；
+  // 检查失败时返回 500 且 available:false，不让客户端误判有更新。
   app.get('/api/ompchamber/update-check', async (req, res) => {
     try {
       const { checkForUpdates } = await import('../package-manager.js');
+      // 归一化 query 字符串：非空字符串去空白后返回，否则 undefined。
       const parseString = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined);
+      // 解析 reportUsage：仅显式 false/0/no 视为关闭，其余（含缺省）均为 true。
       const parseReportUsage = (value) => {
         if (typeof value !== 'string') return true;
         const normalized = value.trim().toLowerCase();
         if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
         return true;
       };
+      // 依据 User-Agent 粗分设备类型：tablet（ipad/tablet）> mobile（mobi/android/iphone）> desktop。
       const inferDeviceClass = (ua) => {
         const value = (ua || '').toLowerCase();
         if (!value) return 'unknown';
@@ -70,6 +108,14 @@ export const registerOMPChamberRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/ompchamber/update-install：安装更新并按运行形态分派重启策略。
+  // 无可用更新返回 400；容器环境（/.dockerenv 或 container 标记）detach 执行
+  // 更新命令且不做自动重启；systemd 前台服务必须由服务管理器重启——经
+  // systemd-run --user 排队"更新 + systemctl restart"临时任务（排队失败 409）；
+  // 普通守护进程则拼出"更新 + 自重启（主命令失败时回退 ompchamber CLI）"的
+  // shell 脚本 detached 执行，输出追加到 ompchamberDataDir/update-install.log，
+  // 随后当前进程退出。重启命令按平台用 quotePosix/quoteCmd 转义端口、host、
+  // uiPassword 等参数，避免注入与断词。
   app.post('/api/ompchamber/update-install', async (_req, res) => {
     try {
       const { spawn: spawnChild, spawnSync } = await import('child_process');
@@ -179,7 +225,9 @@ export const registerOMPChamberRoutes = (app, dependencies) => {
       }
 
       const isWindows = process.platform === 'win32';
+      // POSIX 单引号转义（同模块级 quotePosixShell，用于拼 sh 重启命令）。
       const quotePosix = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+      // Windows cmd 双引号转义：内部双引号翻倍。
       const quoteCmd = (value) => {
         const stringValue = String(value);
         return `"${stringValue.replace(/"/g, '""')}"`;
@@ -318,6 +366,9 @@ export const registerOMPChamberRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/ompchamber/models-metadata：代理拉取 models.dev 元数据（带 TTL 缓存）。
+  // 命中且未过期缓存时 Cache-Control max-age=60，否则 300；上游超时/中止返回
+  // 504，其余错误返回 502。
   app.get('/api/ompchamber/models-metadata', async (_req, res) => {
     try {
       const { getModelsMetadata } = await import('./models-metadata.js');
@@ -334,6 +385,8 @@ export const registerOMPChamberRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/zen/models：拉取 Zen 免费模型列表（缓存 5 分钟）。拉取失败时回退
+  // 返回进程内缓存的列表（max-age=60）；仍无缓存则按 AbortError→504、其余→502 报错。
   app.get('/api/zen/models', async (_req, res) => {
     try {
       const models = await fetchFreeZenModels();

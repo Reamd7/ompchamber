@@ -1,3 +1,12 @@
+/**
+ * Linear 集成 HTTP 路由（routes.js）集成测试套件。
+ *
+ * 在独立临时数据目录上构建真实 express app 并用 supertest 驱动：
+ * 覆盖 OAuth 授权发起与公开回调换 token（含 state 校验、多 workspace
+ * 切换、断连时撤销 refresh token）、issue 列表/详情/状态更新路由、
+ * team 与项目路径映射读写、会话状态评论与偏好开关；贯穿断言响应体
+ * 不泄漏 access/refresh token。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
@@ -7,19 +16,23 @@ import path from 'path';
 import { registerLinearRoutes } from './routes.js';
 import { setLinearAuth, setLinearSessionCommentsEnabled } from './auth.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-routes-'));
 
+/** 构建挂载了 Linear 路由的 express 应用实例。 */
 const createApp = () => {
   const app = express();
   registerLinearRoutes(app);
   return app;
 };
 
+/** 把对象包装成 JSON Response，模拟 Linear OAuth/GraphQL 的 fetch 返回。 */
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** Linear 认证与 issue、映射、偏好等路由的端到端行为。 */
 describe('Linear auth routes', () => {
   let dataDir;
   let previousDataDir;

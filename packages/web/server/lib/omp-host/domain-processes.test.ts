@@ -3,6 +3,12 @@
 // Contracts under test: capability gating (501 while the feature or the
 // ledger is unavailable), snapshot/output/kill route shapes, param decoding,
 // and error mapping (not-found / forbidden / unsupported action).
+/**
+ * domain-processes 路由测试，对应
+ * PLAN-session-process-monitor.md §验证：capability 门控（feature 或
+ * ledger 不可用时 501）、snapshot/output/kill 路由形状、参数解码与
+ * 错误映射（not-found / forbidden / 不支持的动作）。
+ */
 
 import { describe, expect, test } from 'bun:test';
 import { createProcessDomain } from './domain-processes.ts';
@@ -10,9 +16,12 @@ import { ProcessLedger } from './process-ledger.ts';
 import type { ProcInfo, ProcessPlatform } from './process-platform.ts';
 import type { UriRoute, UriRouteContext } from './domain-uri.ts';
 
+/** 测试基准目录。 */
 const DIR = '/repo';
+/** 测试会话 id。 */
 const SES = 'ses_1';
 
+/** 全空的进程平台桩：枚举无进程、terminate 恒成功，路由层无需真实 OS。 */
 const platform: ProcessPlatform = {
   enumerateTree: () => Promise.resolve([] satisfies ProcInfo[]),
   sampleStats: () => Promise.resolve(new Map()),
@@ -21,6 +30,7 @@ const platform: ProcessPlatform = {
   terminate: () => Promise.resolve(true),
 };
 
+/** 构造关闭定时器的台账并注入一个打开的 bash 窗口（toolCall c1）。 */
 const makeLedger = () => {
   const ledger = new ProcessLedger({
     platform,
@@ -31,8 +41,10 @@ const makeLedger = () => {
   return ledger;
 };
 
+/** 挂载后 handler 的调用签名（与 UriRoute 的 handler 一致）。 */
 type Handler = (request: Request, ctx?: UriRouteContext) => Response | Promise<Response>;
 
+/** 用给定 ledger/features 挂载进程域，返回 (method path) → handler 表。 */
 const mount = (deps: { ledger: ProcessLedger | null; features?: Record<string, boolean> }) => {
   const routes = new Map<string, Handler>();
   const route: UriRoute = (method, path, handler) => routes.set(`${method} ${path}`, handler);
@@ -40,13 +52,16 @@ const mount = (deps: { ledger: ProcessLedger | null; features?: Record<string, b
   return routes;
 };
 
+/** 以 GET 调用挂载表中指定路径的 handler。 */
 const get = (routes: Map<string, Handler>, path: string, ctx?: UriRouteContext) => {
   const handler = routes.get(`GET ${path}`)!;
   return handler(new Request(`http://x${path}`), ctx);
 };
 
+/** 构造只带 url 的路由上下文（GET 路由只读查询参数）。 */
 const urlCtx = (url: string): UriRouteContext => ({ params: {}, url: new URL(url) });
 
+/** 主套件：门控、参数校验、快照/输出/kill 的状态码与响应体形状。 */
 describe('domain-processes routes', () => {
   test('feature off answers 501', async () => {
     const routes = mount({ ledger: makeLedger(), features: { 'processes.v1': false } });

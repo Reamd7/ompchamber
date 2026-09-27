@@ -1,9 +1,17 @@
+/**
+ * walkthrough 多语言支持的测试：语言标签归一化（平台大小写/地区后缀漂移与
+ * 未知标签回退英文）、提示词中的语言指令（只翻译散文，别名与枚举保持英文）、
+ * 缓存键按语言隔离，以及生成/读取时语言切换不串缓存与回退语义（无该语言
+ * 条目时返回最近一份并如实报告其语言）。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** 临时数据目录：在被测模块 import 前设置以隔离落盘。 */
 const TEMP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'walkthrough-language-'));
+// 先设环境变量再动态导入被测模块。
 process.env.OMPCHAMBER_DATA_DIR = TEMP_DATA_DIR;
 
 vi.mock('../git/service.js', () => ({
@@ -18,15 +26,23 @@ vi.mock('../small-model/index.js', () => ({
   generateSmallModelText: vi.fn(),
 }));
 
+/** 语言工具：归一化与英文名。 */
 const { normalizeLanguage, languageName } = await import('./languages.js');
+/** 提示词构建。 */
 const { buildPrompt } = await import('./prompt.js');
+/** 缓存键构建。 */
 const { buildCacheKey } = await import('./store.js');
+/** 被测的生成/读取入口。 */
 const { generateWalkthrough, getWalkthrough } = await import('./index.js');
+/** small-model mock，供配置模型与回复。 */
 const { describeSmallModel, generateSmallModelText } = await import('../small-model/index.js');
+/** git service 的 getDiff mock。 */
 const { getDiff } = await import('../git/service.js');
 
+/** 测试用来源：working-tree 全部改动。 */
 const SOURCE = { kind: 'working-tree', scope: 'all' };
 
+/** 测试用 diff：单文件单 hunk。 */
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 --- a/src/a.ts
 +++ b/src/a.ts
@@ -34,6 +50,7 @@ const PATCH = `diff --git a/src/a.ts b/src/a.ts
 +const added = true;
 `;
 
+/** 测试用模型回复：一章一停靠点的合法 walkthrough JSON。 */
 const RESPONSE = JSON.stringify({
   title: 'Change',
   focus: 'why',
@@ -45,6 +62,7 @@ const RESPONSE = JSON.stringify({
   }],
 });
 
+/** buildPrompt 的最小输入。 */
 const PROMPT_INPUT = {
   digest: { files: [] },
   fileCount: 1,
@@ -52,7 +70,9 @@ const PROMPT_INPUT = {
   source: SOURCE,
 };
 
+/** 构造缓存键用的最小 files 输入。 */
 const FILES = [{ path: 'src/a.ts', status: 'modified', hunks: [{ id: 'unstaged:src/a.ts:abcd1234' }] }];
+/** 生成指定语言下的缓存键，便于比较不同语言的键是否分离。 */
 const keyFor = (language) => buildCacheKey({
   repoRoot: '/repo',
   sourceKey: 'working-tree:all',
@@ -62,6 +82,7 @@ const keyFor = (language) => buildCacheKey({
   files: FILES,
 });
 
+/** 标签归一化：接受界面标签、容忍平台漂移、未知回退英文。 */
 describe('normalizeLanguage', () => {
   it('accepts the tags the interface uses', () => {
     expect(normalizeLanguage('uk')).toBe('uk');
@@ -90,6 +111,7 @@ describe('normalizeLanguage', () => {
   });
 });
 
+/** 提示词语言指令：默认英文、按需翻译散文、非散文部分保持英文。 */
 describe('prompt language instruction', () => {
   it('says nothing when the prompt language is already the output language', () => {
     const { system } = buildPrompt({ ...PROMPT_INPUT, language: 'en' });
@@ -116,6 +138,7 @@ describe('prompt language instruction', () => {
   });
 });
 
+/** 缓存键：不同语言必须得到不同的键。 */
 describe('cache key', () => {
   // Without the language in the key, asking for a translation is answered with
   // the untranslated entry that was already there.
@@ -128,6 +151,7 @@ describe('cache key', () => {
   });
 });
 
+/** 端到端生成与读取：语言随结果记录、按语言取缓存、来回切换零生成、回退诚实。 */
 describe('generating in a language', () => {
   beforeEach(() => {
     fs.rmSync(path.join(TEMP_DATA_DIR, 'walkthroughs'), { recursive: true, force: true });

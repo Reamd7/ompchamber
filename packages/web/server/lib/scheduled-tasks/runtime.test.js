@@ -1,3 +1,8 @@
+/**
+ * scheduled-tasks 运行时测试套件：覆盖 computeNextRunAt 等纯函数的
+ * 日程计算行为，以及 createScheduledTasksRuntime.syncProject 对 loop
+ * markdown 文件的对账接线（发现、持久化、路径不可解析时的降级）。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import os from 'os';
 import path from 'path';
@@ -11,6 +16,11 @@ import {
 } from './runtime.js';
 import { createProjectConfigRuntime } from '../projects/project-config.js';
 
+/**
+ * 纯 helper 行为验证：时区感知的下一次运行时间计算（daily / weekly /
+ * once 及多时刻取最近）、定时会话标题格式化、斜杠命令 prompt 解析，
+ * 以及命令参数到 goal objective 的展开（$ARGUMENTS / 位置参数 / 无占位符回退）。
+ */
 describe('scheduled-tasks runtime helpers', () => {
   it('computes next daily run in timezone', () => {
     const nowUtc = Date.UTC(2025, 0, 1, 8, 0, 0);
@@ -120,7 +130,13 @@ describe('scheduled-tasks runtime helpers', () => {
   });
 });
 
+/**
+ * syncProject 接线验证：项目路径可解析时把发现的 loop markdown 对账并
+ * 持久化为任务（含 nextRunAt）；路径不可解析（项目未注册）时退化为
+ * 普通列表查询，绝不触发对账。
+ */
 describe('scheduled-tasks runtime syncProject wiring', () => {
+  /** 创建带 .agents/loops 目录的临时项目仓库，返回临时根、仓库路径与 cleanup 清理函数。 */
   const createTempProject = async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-runtime-loop-'));
     const repoPath = path.join(tempRoot, 'repo');
@@ -134,6 +150,7 @@ describe('scheduled-tasks runtime syncProject wiring', () => {
     };
   };
 
+  /** 基于临时目录构造项目配置运行时（固定 taskID 生成器，与真实数据目录隔离）。 */
   const createProjectConfig = async (tempRoot) => createProjectConfigRuntime({
     fsPromises: await import('fs/promises'),
     path,
@@ -141,6 +158,7 @@ describe('scheduled-tasks runtime syncProject wiring', () => {
     createTaskID: () => 'task-fixed-id',
   });
 
+  /** 构造定时任务运行时的最小依赖集；overrides 可替换任意项。 */
   const createRuntimeDeps = (overrides = {}) => ({
     buildOpenCodeUrl: () => 'http://localhost',
     getOpenCodeAuthHeaders: () => ({}),

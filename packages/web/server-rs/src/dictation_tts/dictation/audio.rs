@@ -3,10 +3,16 @@
 //! linear-interpolation resampler that carries one sample across chunk
 //! boundaries. (`pcm16leToFloat32` serves only the sherpa-onnx native path
 //! and is not ported — see `local.rs`.)
+//!
+//! 中文说明：PCM16 音频辅助（移植自 `server/lib/dictation/audio.js`）：
+//! 格式串解析、静音门控用的峰值检测、WAV 封装，以及能跨 chunk 保留一个
+//! 样本的流式线性插值重采样器。数值行为与 JS 实现逐位对齐。
 
 /// `parsePcmRateFromFormat`: pull `rate=<n>` out of
 /// `"audio/pcm;rate=16000;bits=16"` (case-insensitive, `rate` must be a
 /// whole `;`/`,`/whitespace-delimited token, digits terminated likewise).
+///
+/// 中文说明：手写扫描避免分配；`rate` 出现在词中间（如 `bitrate`）不匹配。
 pub fn parse_pcm_rate_from_format(format: &str, fallback: Option<u32>) -> Option<u32> {
     let text = format;
     let bytes = text.as_bytes();
@@ -54,6 +60,8 @@ pub fn parse_pcm_rate_from_format(format: &str, fallback: Option<u32>) -> Option
 
 /// `pcm16lePeakAbs`: peak absolute sample; early-exits at full scale.
 /// Returns an error for odd-length buffers, like the JS throw.
+///
+/// 中文说明：用于 VAD 静音门控；峰值已达满量程时无需继续扫描。
 pub fn pcm16le_peak_abs(pcm16le: &[u8]) -> Result<i32, String> {
     if pcm16le.is_empty() {
         return Ok(0);
@@ -80,6 +88,8 @@ pub fn pcm16le_peak_abs(pcm16le: &[u8]) -> Result<i32, String> {
 
 /// `pcm16ToWav`: wrap raw PCM16LE mono audio in a 44-byte-header WAV
 /// container.
+///
+/// 中文说明：单声道、16 bit；供只接受 WAV 的 HTTP 转写端点使用。
 pub fn pcm16_to_wav(pcm_buffer: &[u8], sample_rate: u32) -> Vec<u8> {
     let channels: u32 = 1;
     let bits_per_sample: u32 = 16;
@@ -108,13 +118,20 @@ pub fn pcm16_to_wav(pcm_buffer: &[u8], sample_rate: u32) -> Vec<u8> {
 /// (`Pcm16MonoResampler`). Math follows the JS exactly: source samples are
 /// stored as f32 (`sample / 32768`), positions advance in f64, and output
 /// samples are `round(clamp(interp, -1, 1) * 32767)`.
+///
+/// 中文说明：跨 chunk 用 carry 样本衔接，保证插值曲线连续、无爆音。
 pub struct Pcm16MonoResampler {
+    /// 每个输出样本推进的源位置步长（input_rate / output_rate）。
     step: f64,
+    /// 当前插值位置（以源样本为单位的 f64 坐标）。
     pos: f64,
+    /// 跨 chunk 保留的最后一个源样本，保证插值连续。
     carry_sample: Option<i16>,
 }
 
+/// 重采样器的构造与逐 chunk 处理。
 impl Pcm16MonoResampler {
+    /// 以输入/输出采样率构造；步长为两者之比。
     pub fn new(input_rate: u32, output_rate: u32) -> Self {
         Self {
             step: input_rate as f64 / output_rate as f64,
@@ -123,11 +140,14 @@ impl Pcm16MonoResampler {
         }
     }
 
+    /// 复位插值位置与保留样本（流重新开始时调用）。
     pub fn reset(&mut self) {
         self.pos = 0.0;
         self.carry_sample = None;
     }
 
+    /// 处理一个 PCM16LE chunk：与上次保留的样本拼接后线性插值，返回
+    /// 输出字节；源样本不足两个时暂存并返回空。奇数长度返回 Err。
     pub fn process_chunk(&mut self, pcm16le: &[u8]) -> Result<Vec<u8>, String> {
         if pcm16le.is_empty() {
             return Ok(Vec::new());
@@ -192,10 +212,13 @@ impl Pcm16MonoResampler {
     }
 }
 
+/// 音频辅助契约测试：格式解析、峰值、WAV 头与重采样数值行为。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证：rate 解析接受多种分隔符与大小写；`rate` 须为独立 token；
+    /// rate=0 与解析失败回退 fallback。
     #[test]
     fn parses_rates_with_delimiters() {
         assert_eq!(
@@ -217,6 +240,8 @@ mod tests {
         assert_eq!(parse_pcm_rate_from_format("", Some(48000)), Some(48000));
     }
 
+    /// 验证：峰值取绝对值最大样本；空输入为 0；奇数长度报错；
+    /// 满量程提前退出但仍返回 32767。
     #[test]
     fn peak_abs_finds_the_loudest_sample() {
         let samples = [100i16, -5000, 30, 0];
@@ -230,6 +255,7 @@ mod tests {
         assert_eq!(pcm16le_peak_abs(&bytes).unwrap(), 32767);
     }
 
+    /// 验证：WAV 头 44 字节且 RIFF/大小/采样率/声道/位深字段正确。
     #[test]
     fn wav_header_has_the_expected_fields() {
         let pcm = vec![0u8, 0, 1, 0];
@@ -245,10 +271,12 @@ mod tests {
         assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()), 16);
     }
 
+    /// 把 i16 样本序列编码为 PCM16LE 字节。
     fn pcm(bytes: &[i16]) -> Vec<u8> {
         bytes.iter().flat_map(|s| s.to_le_bytes()).collect()
     }
 
+    /// 验证：输入输出采样率相同时近似逐样本直通、无增益。
     #[test]
     fn passthrough_when_rates_match_has_no_gain() {
         // inputRate == outputRate → the manager never constructs a resampler;
@@ -262,6 +290,8 @@ mod tests {
         assert_eq!(samples, vec![1000, -2000]);
     }
 
+    /// 验证：16k→48k 约 3 倍、48k→16k 约 1/3 的输出量级；
+    /// reset 清零位置与保留样本。
     #[test]
     fn upsampling_and_downsampling_stay_continuous() {
         // 16000 → 48000: ~3 output samples per input sample (the exact count
@@ -282,6 +312,7 @@ mod tests {
         assert_eq!(down.pos, 0.0);
     }
 
+    /// 验证：奇数字节长度的 chunk 返回 Err（与 JS throw 一致）。
     #[test]
     fn resampler_rejects_odd_chunks() {
         let mut resampler = Pcm16MonoResampler::new(16000, 48000);

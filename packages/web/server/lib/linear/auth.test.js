@@ -1,3 +1,10 @@
+/**
+ * Linear 授权存储（auth.js）的测试套件。
+ *
+ * 在独立临时数据目录下验证：凭据持久化与公开状态脱敏（不泄漏 token）、
+ * refresh token 的保留与轮换、token 过期判定、client id/回调地址的配置优先级、
+ * 清除行为、旧版单账号数据迁移，以及多 workspace 的激活与隔离清除。
+ */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -16,8 +23,10 @@ import {
   DEFAULT_LINEAR_CLIENT_ID_VALUE,
 } from './auth.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-auth-'));
 
+/** Linear 授权存储的持久化、迁移与多 workspace 管理行为。 */
 describe('Linear auth storage', () => {
   let dataDir;
   let previousDataDir;
@@ -233,6 +242,7 @@ describe('Linear auth storage', () => {
   });
 });
 
+/** 恢复环境变量：previous 为 undefined 表示原本不存在，直接删除该变量。 */
 function restoreEnv(name, previous) {
   if (previous === undefined) {
     delete process.env[name];

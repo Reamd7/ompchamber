@@ -1,9 +1,18 @@
+/**
+ * network-runtime 模块的单元测试。
+ *
+ * 覆盖：就绪探测在 fetch 直接拒绝时返回 false 而不是抛错；
+ * buildOpenCodeUrl 默认对 IPv4 回环拼接 URL、外部 baseUrl 保持权威、
+ * 通配（0.0.0.0）与 IPv6（::1）绑定地址在本地连接时被归一化。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createOpenCodeNetworkRuntime } from './network-runtime.js';
 
+// 保存全局 fetch，afterEach 恢复，避免用例间互相污染
 const originalFetch = globalThis.fetch;
 
+/** 以可覆盖的 state 与 configuredOpenCodeHostname 构造被测网络运行时。 */
 const createRuntime = (overrides = {}) => createOpenCodeNetworkRuntime({
   state: {
     openCodePort: 4096,
@@ -17,6 +26,7 @@ const createRuntime = (overrides = {}) => createOpenCodeNetworkRuntime({
   configuredOpenCodeHostname: overrides.configuredOpenCodeHostname,
 });
 
+// OpenCode 网络运行时的就绪探测与 URL 构建
 describe('OpenCode network runtime', () => {
   afterEach(() => {
     vi.useRealTimers();

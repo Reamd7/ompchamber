@@ -1,3 +1,8 @@
+/**
+ * 【测试套件】relay 身份运行时（identity.js）：serverId 从签名公钥稳定派生、
+ * 签名/加密两把密钥对的持久化、已有签名密钥的复用（serverId 跨安装稳定），
+ * 以及 signRelayAuth 产出的 ECDSA 签名可被公钥验证。
+ */
 import { describe, expect, it } from 'bun:test';
 import crypto from 'node:crypto';
 
@@ -5,6 +10,7 @@ import { createRelayIdentityRuntime } from './identity.js';
 import { canonicalPublicJwkString } from './signing-key.js';
 
 // In-memory settings store standing in for the on-disk settings file.
+// 内存版 settings 存储器，替代磁盘 settings 文件（含 peek 供断言读取当前值）。
 const makeSettingsStore = (initial = {}) => {
   let settings = { ...initial };
   return {
@@ -16,6 +22,7 @@ const makeSettingsStore = (initial = {}) => {
   };
 };
 
+// 主 describe：身份派生、密钥持久化与复用、鉴权签名可验证性。
 describe('relay identity', () => {
   it('derives a stable serverId from the signing key and persists both keypairs', async () => {
     const store = makeSettingsStore();

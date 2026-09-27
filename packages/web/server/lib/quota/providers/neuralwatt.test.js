@@ -1,3 +1,10 @@
+/**
+ * NeuralWatt 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，验证文档化响应的
+ * 各种形态（订阅窗口、allowance 限额、credits 兜底）能否正确组装成
+ * 窗口，以及 401、JSON 解析失败、空数据等错误路径的文案映射。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +17,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 构造最小可用的 fetch Response 替身：默认 200 + JSON 体，可被 init 覆盖。 */
 const mockResponse = (body, init = {}) => ({
   ok: true,
   status: 200,
@@ -17,6 +25,7 @@ const mockResponse = (body, init = {}) => ({
   ...init,
 });
 
+/** 官方文档示例的完整配额载荷，作为各用例构造变体的公共基底。 */
 // Documented payload shape from https://portal.neuralwatt.com/docs/api/quota
 // Subscription has kwh_included=20.0, kwh_used=13.9023, plan="standard".
 const DOCUMENTED_SUBSCRIPTION_PAYLOAD = {
@@ -39,6 +48,7 @@ const DOCUMENTED_SUBSCRIPTION_PAYLOAD = {
   key: { name: 'my-production-key', allowance: null },
 };
 
+/** NeuralWatt provider 的窗口组装与错误映射行为。 */
 describe('NeuralWatt quota provider', () => {
   it('builds subscription window from documented payload (keyed by plan name)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(DOCUMENTED_SUBSCRIPTION_PAYLOAD)));

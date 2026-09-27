@@ -1,3 +1,12 @@
+/**
+ * proxy.js 代理基础设施的单元测试（vitest）。
+ *
+ * 覆盖三部分：createDirectoryQueryCanonicalizer 对 directory 查询参数的
+ * realpath 规范化（缓存、并发去重、失败回退）；normalizeForwardedDirectoryHeaders
+ * 对 URI 编码目录头的解码与直连客户端百分号序列的保留；createOpenCodeProxyAgent
+ * 的 keep-alive socket 复用、http/https agent 选择，以及 http-proxy-middleware
+ * 对 getter 形式 agent 选项逐请求重读的行为回归。
+ */
 import http from 'node:http';
 import https from 'node:https';
 
@@ -10,6 +19,7 @@ import {
   normalizeForwardedDirectoryHeaders,
 } from './proxy.js';
 
+// 套件：directory 查询参数规范化器的规范化、缓存、并发去重与失败回退。
 describe('createDirectoryQueryCanonicalizer', () => {
   it('canonicalizes directory query params and preserves other params', async () => {
     const canonicalize = createDirectoryQueryCanonicalizer({
@@ -79,6 +89,7 @@ describe('createDirectoryQueryCanonicalizer', () => {
   });
 });
 
+// 套件：转发目录请求头的解码规则 —— 仅解码带 x-opencode-directory-encoding 标记的头。
 describe('normalizeForwardedDirectoryHeaders', () => {
   it('decodes marked directory headers before forwarding to OpenCode', () => {
     const headers = normalizeForwardedDirectoryHeaders({
@@ -102,6 +113,7 @@ describe('normalizeForwardedDirectoryHeaders', () => {
   });
 });
 
+/** 在 127.0.0.1 上监听随机端口，resolve 端口号；监听出错则 reject。 */
 const listen = (server) => new Promise((resolve, reject) => {
   server.once('error', reject);
   server.listen(0, '127.0.0.1', () => {
@@ -110,10 +122,12 @@ const listen = (server) => new Promise((resolve, reject) => {
   });
 });
 
+/** 关闭 server 并在完成后 resolve（总是成功）。 */
 const closeServer = (server) => new Promise((resolve) => {
   server.close(resolve);
 });
 
+/** 用指定 agent 向 127.0.0.1:port 的根路径发起 GET，等响应结束后 resolve。 */
 const request = (port, agent) => new Promise((resolve, reject) => {
   const req = http.request({ host: '127.0.0.1', port, path: '/', method: 'GET', agent }, (res) => {
     res.resume();
@@ -127,6 +141,9 @@ const request = (port, agent) => new Promise((resolve, reject) => {
 /**
  * Proxies two sequential requests through `createProxyMiddleware` and reports
  * what the upstream server observed for each one.
+ * 中文补充：搭建「上游 + 前置代理」两个本地 http server，用同一个 keep-alive
+ * 客户端 agent 连发两次请求，收集上游观察到的 Connection 头与 remotePort，
+ * 用于断言代理是否复用同一条上游 socket；结束后销毁 agent 并关闭两个 server。
  */
 const proxyTwoRequests = async (proxyAgent) => {
   const seen = [];
@@ -163,6 +180,7 @@ const proxyTwoRequests = async (proxyAgent) => {
   return seen;
 };
 
+// 套件：OpenCode 代理 agent 的 socket 复用、协议选择与逐请求重读行为。
 describe('createOpenCodeProxyAgent', () => {
   it('reuses a single upstream socket across sequential proxied requests', async () => {
     const seen = await proxyTwoRequests(createOpenCodeProxyAgent('http://127.0.0.1'));

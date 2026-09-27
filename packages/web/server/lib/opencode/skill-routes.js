@@ -1,3 +1,12 @@
+/**
+ * OpenCode 技能配置的 HTTP 路由层。
+ *
+ * 注册 /api/config/skills 下的全部端点：技能列表与元数据、支撑文件读写、
+ * 技能 CRUD 与改名、目录（catalog）源列表、仓库扫描与安装。文件系统操作全部
+ * 委托给注入的 skills.js 函数与 shared.js 工具；引擎侧数据通过本地引擎客户端
+ * 拉取后与本地扫描结果合并（引擎优先）。写操作成功后统一返回“延迟重启”响应
+ * （buildDeferredRestartResponse），提示客户端重启引擎后生效。
+ */
 import { createLocalEngineClient } from './local-engine-client.js';
 import { buildDeferredRestartResponse } from './config-mutation-response.js';
 
@@ -5,12 +14,27 @@ import { buildDeferredRestartResponse } from './config-mutation-response.js';
  * Matches how OpenCode reads its own boolean env flags: any value other than
  * unset, empty, "0" or "false" enables the flag.
  */
+/**
+ * 按 OpenCode 自身的约定解析布尔环境变量：未设置、空串、"0" 或 "false"
+ * （忽略大小写与首尾空白）视为关闭，其余任何取值都视为开启。
+ */
 const isEnvFlagEnabled = (value) => {
   if (typeof value !== 'string') return false;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 && normalized !== '0' && normalized !== 'false';
 };
 
+/**
+ * 向 Express app 注册技能相关的全部 REST 路由（/api/config/skills 及其子路径）。
+ *
+ * 所有外部能力经 dependencies 注入：文件系统与路径工具、技能 CRUD
+ * （skills.js 的导出）、OpenCode 引擎客户端参数、catalog 扫描与安装、
+ * git 身份、项目目录解析等，便于测试整体替换。注册路由前还会构造少量
+ * 内部辅助函数（worktree 根查找、scope/source 推断、引擎技能拉取、
+ * 请求目录解析兜底等）。
+ * @param {import('express').Express} app Express 应用实例
+ * @param {object} dependencies 上述依赖集合
+ */
 export const registerSkillRoutes = (app, dependencies) => {
   const {
     fs,
@@ -49,6 +73,10 @@ export const registerSkillRoutes = (app, dependencies) => {
     getProfile,
   } = dependencies;
 
+  /**
+   * 向上查找包含 .git 的最近祖先目录作为 worktree 根；找不到返回 null。
+   * 项目级技能的扫描边界与 scope 推断都以它为上限。
+   */
   const findWorktreeRootForSkills = (workingDirectory) => {
     if (!workingDirectory) return null;
     let current = path.resolve(workingDirectory);
@@ -64,6 +92,10 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 列出从 workingDirectory 逐级向上直至 worktree 根（含自身）的所有目录；
+   * 没有 worktree 根时仅包含工作目录本身。用于在多级仓库结构中查找项目级技能。
+   */
   const getSkillProjectAncestors = (workingDirectory) => {
     if (!workingDirectory) return [];
     const result = [];
@@ -79,6 +111,10 @@ export const registerSkillRoutes = (app, dependencies) => {
     return result;
   };
 
+  /**
+   * 判断解析后的 candidatePath 是否等于 parentPath 或位于其目录树内；
+   * 前缀匹配强制带路径分隔符，避免同名前缀目录（/foo/bar 与 /foo/bar-baz）误判。
+   */
   const isPathInside = (candidatePath, parentPath) => {
     if (!candidatePath || !parentPath) return false;
     const normalizedCandidate = path.resolve(candidatePath);
@@ -86,6 +122,14 @@ export const registerSkillRoutes = (app, dependencies) => {
     return normalizedCandidate === normalizedParent || normalizedCandidate.startsWith(`${normalizedParent}${path.sep}`);
   };
 
+  /**
+   * 从技能的绝对路径反推其 scope 与 source。
+   * source 按路径片段判断：位于 `.agents/skills` 下为 'agents'，`.claude/skills`
+   * 下为 'claude'，否则为 'opencode'。scope：路径落在任一项目祖先的
+   * .opencode、.claude/skills、.agents/skills 或 .omp/skills 内为 project，
+   * 落在用户级配置根（含 OPENCODE_CONFIG_DIR 覆盖值）内为 user；
+   * 无法判定时保守地按 user 处理。
+   */
   const inferSkillScopeAndSourceFromPath = (skillPath, workingDirectory) => {
     const resolvedPath = typeof skillPath === 'string' ? path.resolve(skillPath) : '';
     const home = os.homedir();
@@ -125,6 +169,13 @@ export const registerSkillRoutes = (app, dependencies) => {
     return { scope: SKILL_SCOPE.USER, source };
   };
 
+  /**
+   * 调用本地 OpenCode 引擎的 skills 接口，拉取引擎实际发现的技能（8 秒超时）。
+   * 引擎未运行（无端口）、响应异常或请求失败时返回空数组（仅记录错误日志），
+   * 保证本地文件系统扫描结果仍然可用。location 为 '<built-in>' 的条目映射为
+   * 不可落盘读写的内置技能对象；其余条目按路径推断 scope/source，
+   * 引擎附带 content 时原样透传。
+   */
   const fetchOpenCodeDiscoveredSkills = async (workingDirectory) => {
     if (!getOpenCodePort()) {
       return [];
@@ -185,6 +236,10 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 列出可供选择的 git 身份（仅 id 与 name），附加在认证失败的响应里；
+   * 读取 profiles 失败时返回空数组。
+   */
   const listGitIdentitiesForResponse = () => {
     try {
       const profiles = getProfiles();
@@ -194,6 +249,11 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 把 profileId 解析为仓库操作所需的 SSH 身份（取 profile 配置的 sshKey）；
+   * 无 profileId、profile 不存在、未配置 sshKey 或读取失败时返回 null，
+   * 走默认的无认证访问路径。
+   */
   const resolveGitIdentity = (profileId) => {
     if (!profileId) {
       return null;
@@ -213,6 +273,12 @@ export const registerSkillRoutes = (app, dependencies) => {
   // Prefer an explicit request directory, then soft-fallback to the active
   // project / lastDirectory so repository-local skills stay visible when the
   // client omits `directory` (create already used resolveProjectDirectory).
+  /**
+   * 解析请求关联的工作目录：优先采用请求显式携带的目录
+   * （resolveOptionalProjectDirectory），为空时软兜底到当前激活项目或
+   * lastDirectory。兜底解析抛错可容忍——仅浏览用户级技能时没有项目目录
+   * 也是合法状态。返回 { directory, error }，error 非空表示目录参数非法。
+   */
   const resolveSkillsDirectory = async (req) => {
     const optional = await resolveOptionalProjectDirectory(req);
     if (optional.error) {
@@ -234,6 +300,14 @@ export const registerSkillRoutes = (app, dependencies) => {
     return { directory: null, error: null };
   };
 
+  /**
+   * GET /api/config/skills — 列出当前可用的全部技能。
+   *
+   * 合并引擎上报技能与本地扫描结果（引擎优先），并为每项附加 sources 元数据与
+   * renamable 标记（路径位于托管目录内且非内置技能才可改名）。同时返回
+   * OPENCODE_DISABLE_* 环境标志的生效状态（externalSkills），供客户端过滤掉
+   * 引擎实际不会加载的外部技能。目录参数非法返回 400，扫描异常返回 500。
+   */
   app.get('/api/config/skills', async (req, res) => {
     try {
       const { directory, error } = await resolveSkillsDirectory(req);
@@ -282,6 +356,14 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * GET /api/config/skills/catalog — 列出技能目录（catalog）的安装源。
+   *
+   * 合并内置精选源与用户设置里的自定义源（经 sanitizeSkillCatalogs 清洗），
+   * 并为 github.com 源批量附加 star 数与仓库更新时间（fetchGitHubRepoMetas）。
+   * 响应固定携带 itemsBySource 空对象；目录项改由 source 端点按需加载。
+   * 目录参数非法返回 400，其余异常返回 500。
+   */
   app.get('/api/config/skills/catalog', async (req, res) => {
     try {
       const { error } = await resolveOptionalProjectDirectory(req);
@@ -329,6 +411,15 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * GET /api/config/skills/catalog/source?sourceId=&refresh= — 加载某个目录源中
+   * 可安装的技能条目。
+   *
+   * 按 sourceId 匹配精选或自定义源，解析仓库坐标后经 scanWithCache 扫描
+   * （refresh=true 绕过缓存强制重扫），再把每个条目与本地已安装技能按名称
+   * 比对，标注 installed 及其 scope/source。缺 sourceId 或源坐标非法返回 400，
+   * 未知 sourceId 返回 404，扫描失败返回 500。
+   */
   app.get('/api/config/skills/catalog/source', async (req, res) => {
     try {
       const { directory, error } = await resolveSkillsDirectory(req);
@@ -418,6 +509,13 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * POST /api/config/skills/scan — 按需扫描任意技能仓库（添加目录源流程使用）。
+   *
+   * 请求体为 { source, subpath, gitIdentityId }。仓库需要 SSH 认证时返回 401
+   * 并附上可用 git 身份列表（identities）；其余扫描错误返回 400；
+   * 成功返回条目列表。服务器异常返回 500。
+   */
   app.post('/api/config/skills/scan', async (req, res) => {
     try {
       const { source, subpath, gitIdentityId } = req.body || {};
@@ -450,6 +548,15 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * POST /api/config/skills/install — 从技能仓库安装选中的技能。
+   *
+   * scope 为 project 时必须能解析出项目目录，否则 400。安装出现同名冲突时
+   * 返回 409 并携带冲突详情（供 conflictDecisions 决策后重试）；仓库需要
+   * 认证返回 401（附身份列表）；其他失败返回 400。只要有技能被安装，
+   * 响应就附带延迟重启提示（buildDeferredRestartResponse），否则返回
+   * “未安装任何技能”的普通消息。服务器异常返回 500。
+   */
   app.post('/api/config/skills/install', async (req, res) => {
     try {
       const {
@@ -529,6 +636,13 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * GET /api/config/skills/:name — 读取单个技能的来源元数据。
+   *
+   * 返回 name、sources（各候选位置与当前生效来源的详情）、scope、source 与
+   * exists；引擎发现结果优先，用于补全内置技能等无本地文件的条目。
+   * 目录参数非法返回 400，读取异常返回 500。
+   */
   app.get('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -553,6 +667,13 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * GET /api/config/skills/:name/files/*filePath — 读取技能的支撑文件内容。
+   *
+   * 相对路径经 isUnsafeSkillRelativePath 校验（拒绝绝对路径与目录穿越）并
+   * decodeURIComponent 解码后，从技能目录读取。技能或文件不存在返回 404；
+   * EACCES/EPERM 返回 403；其余异常返回 500。
+   */
   app.get('/api/config/skills/:name/files/*filePath', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -587,6 +708,14 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * POST /api/config/skills/:name — 创建技能。
+   *
+   * 请求体除技能内容（description、instructions、supportingFiles 及其余
+   * frontmatter 字段）外可携带 scope 与 source。project scope 必须能解析出
+   * 项目目录，否则 400。成功返回延迟重启提示（需重启引擎生效）；
+   * 创建失败（重名、描述缺失、名称非法等）返回 500 与错误消息。
+   */
   app.post('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -611,6 +740,14 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * PATCH /api/config/skills/:name — 更新技能；updates.renameTo 非空时走改名分支。
+   *
+   * 改名分支：renameSkill 成功后调用 refreshOpenCodeAfterConfigChange 刷新引擎，
+   * 返回 requiresReload 与 reloadDelayMs，让客户端延迟后自行刷新界面。
+   * 普通更新分支：updateSkill 处理 frontmatter、正文与支撑文件，
+   * 返回延迟重启提示。两个分支的失败均返回 500 与错误消息。
+   */
   app.patch('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -649,6 +786,12 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * PUT /api/config/skills/:name/files/*filePath — 新建或覆盖支撑文件。
+   *
+   * 相对路径安全校验同 GET 端点；技能不存在返回 404；content 缺省按空字符串
+   * 写入（即清空文件）。EACCES/EPERM 返回 403，其余异常返回 500。
+   */
   app.put('/api/config/skills/:name/files/*filePath', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -684,6 +827,12 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * DELETE /api/config/skills/:name/files/*filePath — 删除支撑文件。
+   *
+   * 相对路径安全校验同 GET 端点；技能不存在返回 404；EACCES/EPERM 返回 403，
+   * 其余异常返回 500。
+   */
   app.delete('/api/config/skills/:name/files/*filePath', async (req, res) => {
     try {
       const skillName = req.params.name;
@@ -718,6 +867,12 @@ export const registerSkillRoutes = (app, dependencies) => {
     }
   });
 
+  /**
+   * DELETE /api/config/skills/:name — 删除技能。
+   *
+   * 移除各约定位置下同名技能的整个目录；成功返回延迟重启提示，
+   * 技能不存在等原因抛错时返回 500 与错误消息。
+   */
   app.delete('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;

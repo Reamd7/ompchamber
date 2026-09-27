@@ -8,6 +8,13 @@
 //! `Sec-WebSocket-Accept` verification, masked client frames, unmasked
 //! server frames, ping/pong). `wss://` (TLS) is not implementable with the
 //! allowed crates and fails fast with an explicit error.
+//!
+//! 中文说明：本模块是 dev-tunnel 的双端实现——宿主侧在 `/api/dev-tunnel`
+//! 上把 WebSocket 字节管道接到 loopback dev server；本地侧客户端为每个
+//! 目标端口绑定 loopback 监听器，并把每条连接经一条 WebSocket 透传。
+//! 由于允许的依赖集合中没有 WebSocket 客户端 crate，客户端基于
+//! TcpStream 手写 RFC 6455：握手时校验 Sec-WebSocket-Accept、客户端帧
+//! 加掩码、处理 ping/pong；wss://（TLS）无法实现，遇到即快速失败。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,16 +26,22 @@ use futures::future::BoxFuture;
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// dev-tunnel WebSocket 升级路径常量（同时也是端口 query 参数的宿主路径）。
 pub const DEV_TUNNEL_WS_PATH: &str = "/api/dev-tunnel";
 /// One page load opens many sockets; the cap is per host, not per page.
+/// 中文补充：上限按宿主进程计，而非按页面计。
 const MAX_CONCURRENT_SOCKETS: usize = 64;
+/// 连接 loopback dev server 的 TCP 超时（毫秒）。
 const CONNECT_TIMEOUT_MS: u64 = 5_000;
 
 /// What one connection may buffer while its WebSocket is still connecting.
+/// 中文补充：超限即断开本地连接，防止桌面应用内存无限增长。
 const MAX_PENDING_BYTES: usize = 256 * 1024;
 /// A handshake that has not completed by now is not going to.
+/// 中文补充：防止对端永久挂起的握手僵死。
 const HANDSHAKE_TIMEOUT_MS: u64 = 15_000;
 
+/// wss://（TLS）不被本构建支持时的固定错误消息（client.open 直接返回）。
 pub const WSS_UNSUPPORTED_MESSAGE: &str =
     "TLS (wss://) dev-tunnel connections are not supported by this build; use an http:// base URL";
 
@@ -37,6 +50,7 @@ pub const WSS_UNSUPPORTED_MESSAGE: &str =
 // ---------------------------------------------------------------------------
 
 /// `parseRequestedPort(url)`: the port query param on this exact path.
+/// 中文补充：仅接受 1..=65535 的合法端口值，缺失或越界返回 None。
 pub fn parse_requested_port(uri: &axum::http::Uri) -> Option<u16> {
     if uri.path() != DEV_TUNNEL_WS_PATH {
         return None;
@@ -55,6 +69,8 @@ pub fn parse_requested_port(uri: &axum::http::Uri) -> Option<u16> {
 }
 
 /// `isDevTunnelPath(url)`: only claims its own upgrade path.
+/// 中文补充：把相对 URL 解析到 localhost base 后比对路径，避免误认带
+/// 相同前缀的其它 WS 路由。
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn is_dev_tunnel_path(url: &str) -> bool {
     let Ok(base) = url::Url::parse("http://localhost") else {
@@ -67,30 +83,45 @@ pub fn is_dev_tunnel_path(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 升级请求的鉴权通过类型（决定无 Origin 请求的处理策略）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthKind {
+    /// 显式 bearer token 的客户端凭据。
     Client,
+    /// 浏览器会话（cookie/URL token 等环境凭据）。
     Session,
 }
 
+/// 端口发现闭包的返回结果。
 #[derive(Debug, Clone)]
 pub enum DiscoverOutcome {
+    /// 当前探测到的可用 dev server 端口列表。
     Available(Vec<u16>),
+    /// 发现阶段不可用（如 dev server 扫描失败），一切端口均拒绝。
     Unavailable,
 }
 
+/// 端口发现闭包类型：异步返回当前可用的 dev server 端口集合。
 pub type DiscoverFn = Arc<dyn Fn() -> BoxFuture<'static, DiscoverOutcome> + Send + Sync>;
+/// 鉴权解析闭包类型：从请求 Parts 同步判定凭据类型；None 表示未认证。
 pub type ResolveAuthFn = Arc<dyn Fn(&axum::http::request::Parts) -> Option<AuthKind> + Send + Sync>;
 
+/// dev-tunnel 宿主侧共享状态：并发计数、端口发现、鉴权开关与凭据解析。
 #[derive(Clone)]
 pub struct DevTunnelState {
+    /// 当前打开的隧道 socket 数（AtomicUsize，配合并发上限判断）。
     pub open_sockets: Arc<AtomicUsize>,
+    /// 端口发现闭包，每次升级实时调用。
     pub discover: DiscoverFn,
+    /// 是否启用 UI 鉴权（配置了非空 ui_password 时为 true）。
     pub auth_enabled: bool,
+    /// 凭据解析闭包（同步子集：会话 cookie / URL token）。
     pub resolve_auth: ResolveAuthFn,
 }
 
+/// DevTunnelState 的辅助方法。
 impl DevTunnelState {
+    /// 读取当前打开 socket 数（SeqCst）。
     pub fn open_socket_count(&self) -> usize {
         self.open_sockets.load(Ordering::SeqCst)
     }
@@ -98,6 +129,7 @@ impl DevTunnelState {
 
 /// Auth + port preflight (JS `upgradeHandler`): `Ok(port)` proceeds to the
 /// WebSocket upgrade, `Err(response)` rejects it with the JS status/message.
+/// 中文补充：鉴权失败 401/403、非法端口 400、并发超限 503、未发现端口 403。
 pub async fn dev_tunnel_preflight(
     state: &DevTunnelState,
     parts: &axum::http::request::Parts,
@@ -149,6 +181,7 @@ pub async fn dev_tunnel_preflight(
 
 /// A port is reachable only while discovery still reports it; re-checked on
 /// every upgrade rather than cached.
+/// 中文补充：发现不可用（Unavailable）同样视为不允许。
 async fn is_allowed_port(state: &DevTunnelState, port: u16) -> bool {
     match (state.discover)().await {
         DiscoverOutcome::Available(ports) => ports.contains(&port),
@@ -158,6 +191,8 @@ async fn is_allowed_port(state: &DevTunnelState, port: u16) -> bool {
 
 /// Post-upgrade pipe: connect TCP to the loopback dev server and pipe bytes
 /// both ways; closing either end closes the other.
+/// 中文补充：TCP 连接超时则回 Close 帧并释放计数；任一方向出错/关闭即
+/// 结束 join，双向随之退出。
 pub async fn pipe_dev_tunnel_socket(state: DevTunnelState, port: u16, socket: WebSocket) {
     state.open_sockets.fetch_add(1, Ordering::SeqCst);
     let connect = tokio::net::TcpStream::connect(("127.0.0.1", port));
@@ -224,10 +259,12 @@ pub async fn pipe_dev_tunnel_socket(state: DevTunnelState, port: u16, socket: We
 // WS client primitives (RFC 6455 over TcpStream)
 // ---------------------------------------------------------------------------
 
+/// RFC 6455 握手固定 GUID，参与 Sec-WebSocket-Accept 计算。
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// SHA-1 (needed only for `Sec-WebSocket-Accept`; sha2 covers SHA-256 but
 /// not SHA-1).
+/// 中文补充：标准分组消息填充 + 80 轮压缩轮换，输出 20 字节摘要。
 pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
     let bit_len = (data.len() as u64) * 8;
@@ -281,6 +318,7 @@ pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
     digest
 }
 
+/// 计算 Sec-WebSocket-Accept：base64(SHA-1(client_key + GUID))。
 fn ws_accept_key(client_key: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD
@@ -289,6 +327,7 @@ fn ws_accept_key(client_key: &str) -> String {
 
 /// `toWebSocketUrl(baseUrl, port)`: resolves `/api/dev-tunnel` against the
 /// base, rejects non-http(s) schemes, swaps to ws(s), appends the port.
+/// 中文补充：非法 base URL、无法解析的路径或非 http(s) scheme 均返回 Err。
 pub fn to_websocket_url(base_url: &str, port: u16) -> Result<String, String> {
     let Ok(base) = url::Url::parse(base_url) else {
         return Err(format!("Invalid remote base URL: {base_url}"));
@@ -315,14 +354,20 @@ pub fn to_websocket_url(base_url: &str, port: u16) -> Result<String, String> {
     ))
 }
 
+/// 服务端 WS 帧解码后的消息形态。
 #[derive(Debug)]
 enum ClientFrame {
+    /// 二进制数据帧（dev-tunnel 的载荷通道）。
     Binary(Vec<u8>),
+    /// 服务端 ping，需要回 pong。
     Ping(Vec<u8>),
+    /// 关闭帧或连接结束。
     Close,
 }
 
 /// Writes a masked client frame (clients must mask).
+/// 中文补充：随机 4 字节掩码，按 RFC 6455 的 7/16/64 位长度编码写头部，
+/// 载荷与掩码异或后输出。
 fn encode_client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
     use rand::RngCore;
     let mut mask = [0u8; 4];
@@ -347,6 +392,8 @@ fn encode_client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
 }
 
 /// Reads one complete (defragmented) server message.
+/// 中文补充：处理分片（continuation）消息、ping/pong 与控制帧；对流干净
+/// 关闭（EOF）返回 Ok(None)，中途协议错误返回 Err。
 async fn read_server_frame<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<ClientFrame>> {
@@ -452,6 +499,9 @@ async fn read_server_frame<R: tokio::io::AsyncRead + Unpin>(
 }
 
 /// One piped local connection: local TCP ↔ one WebSocket to the host.
+/// 中文补充：完成 RFC 6455 客户端握手（校验 101 与 Sec-WebSocket-Accept），
+/// 之后本地读、WS 写、WS 读三个任务并发泵送；握手失败或任一方向关闭
+/// 即整体退出。等待上行的 pending 字节数超限直接断开。
 async fn pipe_client_connection(
     ws_url: &url::Url,
     extra_headers: &[(String, String)],
@@ -556,8 +606,11 @@ async fn pipe_client_connection(
 
     // Pipe phase: the local socket was held back while there was nowhere to
     // put its bytes; the pending buffer is bounded by `max_pending_bytes`.
+    // 本地连接产出的上行消息：数据载荷或对 ping 的 pong 应答。
     enum ToServer {
+        // 本地 socket 读到的数据字节。
         Data(Vec<u8>),
+        // 对服务端 ping 的 pong 载荷。
         Pong(Vec<u8>),
     }
     let (to_server_tx, mut to_server_rx) = tokio::sync::mpsc::channel::<ToServer>(64);
@@ -629,42 +682,62 @@ async fn pipe_client_connection(
 // Client (client.js)
 // ---------------------------------------------------------------------------
 
+/// list() 输出的隧道摘要（序列化为 camelCase JSON）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ListedTunnel {
+    /// 本地侧监听端口（浏览器连接它）。
     #[serde(rename = "localPort")]
     pub local_port: u16,
+    /// 远端被代理的 dev server 端口。
     #[serde(rename = "remotePort")]
     pub remote_port: u16,
+    /// 远端 base URL（去尾斜杠后的字符串形式）。
     #[serde(rename = "baseUrl")]
     pub base_url: String,
 }
 
+/// tunnels 表中的活跃隧道条目。
 struct TunnelEntry {
+    /// 本地侧监听端口。
     local_port: u16,
+    /// 远端被代理的端口。
     remote_port: u16,
+    /// 远端 base URL（构造 key 的一部分）。
     base_url: String,
+    /// 关停信号：send(true) 让接受循环退出。
     shutdown: tokio::sync::watch::Sender<bool>,
 }
 
+/// 本地端 dev-tunnel 客户端：维护 (baseUrl, port) → 本地监听器的隧道表。
 pub struct DevTunnelClient {
+    /// 活跃隧道表，key 为 `base|port`。
     tunnels: Arc<Mutex<HashMap<String, TunnelEntry>>>,
+    /// 单连接握手超时。
     handshake_timeout: Duration,
+    /// 握手期间允许缓存的最大 pending 字节数。
     max_pending_bytes: usize,
 }
 
+/// open() 的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenOutcome {
+    /// 本次（或复用的）本地监听端口。
     pub local_port: u16,
+    /// 是否复用了已存在的隧道。
     pub reused: bool,
 }
 
+/// 默认构造：等价 new()。
 impl Default for DevTunnelClient {
+    /// 委托给 new()（使用默认超时配置）。
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// 隧道的打开、关闭与列举。
 impl DevTunnelClient {
+    /// 以默认握手超时（15s）与 pending 上限（256 KiB）构造客户端。
     pub fn new() -> Self {
         Self {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
@@ -673,6 +746,7 @@ impl DevTunnelClient {
         }
     }
 
+    /// 以自定义握手超时与 pending 上限构造客户端（测试用）。
     pub fn with_timeouts(handshake_timeout: Duration, max_pending_bytes: usize) -> Self {
         Self {
             tunnels: Arc::new(Mutex::new(HashMap::new())),
@@ -683,6 +757,9 @@ impl DevTunnelClient {
 
     /// `open({ baseUrl, port, headers })`: opens (or reuses) a tunnel and
     /// resolves with the local port to browse.
+    /// 中文补充：先做端口与 base URL 校验，再按 `base|port` 复用已有隧道；
+    /// wss:// 显式拒绝；随后绑定 loopback 随机端口并 spawn 接受循环
+    /// （每条本地连接各走一条 WebSocket），登记后返回本地端口。
     pub async fn open(
         &self,
         base_url: &str,
@@ -779,11 +856,13 @@ impl DevTunnelClient {
     }
 
     /// `close({ baseUrl, port })`: returns whether a tunnel was closed.
+    /// 中文补充：命中 key 才移除条目并触发关停信号。
     pub fn close(&self, base_url: &str, port: u16) -> bool {
         let key = format!("{}|{port}", base_url.trim());
         self.close_key(&key)
     }
 
+    /// 按 key 移除隧道并发送关停信号；条目不存在返回 false。
     fn close_key(&self, key: &str) -> bool {
         let mut tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = tunnels.remove(key) else {
@@ -794,6 +873,7 @@ impl DevTunnelClient {
     }
 
     /// `closeAll()`.
+    /// 中文补充：逐个 close_key，表最终清空。
     pub fn close_all(&self) {
         let keys: Vec<String> = {
             let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
@@ -805,6 +885,7 @@ impl DevTunnelClient {
     }
 
     /// `list()`.
+    /// 中文补充：返回全部活跃隧道的 camelCase 摘要。
     pub fn list(&self) -> Vec<ListedTunnel> {
         let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
         tunnels
@@ -818,10 +899,12 @@ impl DevTunnelClient {
     }
 }
 
+/// 模块内单元测试（测试体位于 dev_tunnel_tests.rs）。
 #[cfg(test)]
 #[path = "dev_tunnel_tests.rs"]
 mod dev_tunnel_tests;
 
+/// 测试可见的内部直通（把私有 sha1 以 test_exports::sha1_for_tests 暴露）。
 #[cfg(test)]
 pub(crate) mod test_exports {
     //! Test-visible shims for the WS client internals.

@@ -1,3 +1,9 @@
+/**
+ * 事件流协议层测试套件：验证 WS 路径常量、SSE 块解析（包裹与非
+ * 包裹 payload、控制帧、注释与 malformed 块）、通用帧与事件帧的
+ * 序列化，以及慢客户端断开与背压预警（一次性告警、排空后复位）。
+ */
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -10,6 +16,7 @@ import {
   sendMessageStreamWsFrame,
 } from './protocol.js';
 
+// 覆盖 protocol.js 的路径常量、SSE 解析与 WS 帧发送策略。
 describe('event stream protocol helpers', () => {
   it('exports stable websocket paths', () => {
     expect(MESSAGE_STREAM_GLOBAL_WS_PATH).toBe('/api/global/event/ws');

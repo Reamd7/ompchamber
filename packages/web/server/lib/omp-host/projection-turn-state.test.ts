@@ -7,6 +7,13 @@
  * it was sent with: the engine passes the effective level on live sends,
  * and buildTurnStateStamper folds the entry log for replays.
  */
+/**
+ * 用户消息上的回合状态快照测试（GAP-06 历史尾部）：omp SDK 不在用户
+ * 消息上持久化 model/thinking level（只有 model_change /
+ * thinking_level_change 转录项），因此线缆投影必须给每条用户消息盖上
+ * 发送当时的准确状态——live 发送由引擎传递生效级别，重放由
+ * buildTurnStateStamper 折叠条目日志。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import {
@@ -19,11 +26,14 @@ import {
 import type { SessionEntry } from '@oh-my-pi/pi-coding-agent';
 import type { UserMessageInput } from './projection.ts';
 
+/** 测试基准时间戳（固定值，保证确定性 wireId）。 */
 const now = 1_787_811_000_000;
 
+/** 构造一条用户消息输入（默认使用基准时间戳）。 */
 const userMessage = (text: string, timestamp: number = now): UserMessageInput =>
   ({ role: 'user', content: text, timestamp });
 
+/** projectUserMessage：thinking level 盖为 model.variant，未知时省略。 */
 describe('projectUserMessage thinking snapshot', () => {
   test('stamps the thinking level as model.variant and omits it when unknown', () => {
     const stamped = projectUserMessage(userMessage('hi'), {
@@ -48,6 +58,7 @@ describe('projectUserMessage thinking snapshot', () => {
   });
 });
 
+/** buildTurnStateStamper：把 model/thinking 变更折叠为逐消息发送时状态。 */
 describe('buildTurnStateStamper', () => {
   test('folds model and thinking changes into per-message send-time state', () => {
     const first = userMessage('one', now);
@@ -84,6 +95,7 @@ describe('buildTurnStateStamper', () => {
   });
 });
 
+/** projectConversation：回合状态覆盖投影级 model 并补充 variant。 */
 describe('projectConversation turn-state threading', () => {
   test('turn state overrides the projection-wide model and adds the variant', () => {
     const first = userMessage('one', now);
@@ -114,6 +126,7 @@ describe('projectConversation turn-state threading', () => {
   });
 });
 
+/** projectTurnEventDivider：model/mode 变更项投影为分隔符消息或跳过。 */
 describe('projectTurnEventDivider', () => {
   // Transcript entries persist ISO string timestamps — the numeric-only guard
   // once silently dropped every real entry.

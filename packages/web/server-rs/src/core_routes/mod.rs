@@ -17,10 +17,22 @@
 //!   (`project-directory-runtime.js` subset + minimal settings persistence).
 //! - [`settings_utility`]: `GET /api/config/themes` (`theme-runtime.js`) and
 //!   `POST /api/config/reload`.
+//! server/lib/opencode/core-routes.js（status/system/settings-utility
+//! 路由）及本模块承接的四条引擎侧路由（`/api/opencode/health`、
+//! `/api/opencode/version`、`/api/opencode/directory`、
+//! `/api/config/opencode-resolution`）的移植。
+//!
+//! settings 归属与 auth/access 路由的暂缓原因见上方英文说明：
+//! `GET/PUT /api/config/settings` 属 settings 模块；依赖 ui-auth /
+//! client-auth 运行时的路由待接线后落地。
 
+/// `POST /api/opencode/directory` 及其依赖的目录校验与 settings 持久化子集。
 pub mod directory;
+/// `/api/opencode/health` 与 `/api/opencode/version` 处理器。
 mod engine_info;
+/// 引擎二进制解析快照（opencode-resolution-runtime.js + env-runtime.js 子集）。
 mod resolution;
+/// `GET /api/config/themes`（theme-runtime.js）与 `POST /api/config/reload`。
 mod settings_utility;
 
 use std::path::PathBuf;
@@ -37,16 +49,22 @@ use axum::{Json, Router};
 use crate::context::RouterContext;
 
 /// `index.js` `CLIENT_RELOAD_DELAY_MS`.
+/// index.js 的 `CLIENT_RELOAD_DELAY_MS`：reload 响应告知客户端的刷新延迟（毫秒）。
 const CLIENT_RELOAD_DELAY_MS: u64 = 800;
 /// `express.json({ limit: '64kb' })` on the dev-shutdown route.
+/// dev-shutdown 路由的请求体上限（`express.json({ limit: '64kb' })`）。
 const DEV_SHUTDOWN_BODY_LIMIT: usize = 64 * 1024;
 /// `express.json({ limit: '50mb' })` applied to `/api/opencode` bodies by the
 /// common request middleware.
+/// `/api/opencode` 路由族的请求体上限（`express.json({ limit: '50mb' })`）。
 const OPENCODE_BODY_LIMIT: usize = 50 * 1024 * 1024;
 
 /// Process start marker (`index.js` `serverStartedAt`), captured on first use.
+/// 进程启动时刻（unix 毫秒），首次访问时捕获一次，等价 index.js 的
+/// `serverStartedAt`。
 static STARTED_AT_UNIX_MILLIS: LazyLock<i64> = LazyLock::new(now_unix_millis);
 
+/// 当前 unix 毫秒；系统时钟早于 epoch 时返回 0。
 pub(crate) fn now_unix_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -56,6 +74,8 @@ pub(crate) fn now_unix_millis() -> i64 {
 
 /// ISO-8601 UTC timestamp (`new Date().toISOString()` shape, millisecond
 /// precision). Same civil-from-days algorithm as `engine.rs`.
+/// unix 毫秒转 ISO-8601 UTC 字符串（毫秒精度）；历法换算与 engine.rs
+/// 共用同一 civil-from-days 算法族。
 pub(crate) fn iso_utc_from_unix_millis(unix_millis: i64) -> String {
     let secs = unix_millis.div_euclid(1000);
     let millis = unix_millis.rem_euclid(1000);
@@ -66,6 +86,7 @@ pub(crate) fn iso_utc_from_unix_millis(unix_millis: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
+/// epoch 起始天数转 (年, 月, 日)（Howard Hinnant 算法）。
 fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -79,12 +100,15 @@ fn epoch_days_to_ymd(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// 进程启动时刻的 ISO 字符串；基于 LazyLock，进程内取值恒定。
 fn started_at_iso() -> String {
     iso_utc_from_unix_millis(*STARTED_AT_UNIX_MILLIS)
 }
 
 /// `index.js` `OMPCHAMBER_VERSION`: the version field of the web package
 /// manifest, `'unknown'` when unreadable.
+/// index.js 的 `OMPCHAMBER_VERSION`：web 包 manifest 的 version 字段，
+/// 读取失败或为空时为 'unknown'；结果进程内缓存。
 pub(crate) fn ompchamber_version() -> String {
     static VERSION: LazyLock<String> = LazyLock::new(|| {
         let package_json = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -105,6 +129,7 @@ pub(crate) fn ompchamber_version() -> String {
 }
 
 /// `runtimeName: process.env.OMPCHAMBER_RUNTIME || 'web'`.
+/// `process.env.OMPCHAMBER_RUNTIME`（trim 后非空才采用），缺省 'web'。
 pub(crate) fn runtime_name() -> String {
     std::env::var("OMPCHAMBER_RUNTIME")
         .ok()
@@ -115,6 +140,8 @@ pub(crate) fn runtime_name() -> String {
 
 /// `isEnvFlagEnabled` from `index.js`: `'1'`/`'true'` (case-insensitive,
 /// trimmed) enable a flag.
+/// index.js 的 `isEnvFlagEnabled`：值 trim、忽略大小写后为 '1' 或
+/// 'true' 即视为开启。
 pub(crate) fn env_flag_enabled(name: &str) -> bool {
     let Some(raw) = std::env::var(name).ok() else {
         return false;
@@ -124,6 +151,7 @@ pub(crate) fn env_flag_enabled(name: &str) -> bool {
 }
 
 /// `core-routes.js` `compatibility` capability block (immutable contract).
+/// core-routes.js 的 `compatibility` 能力块（对外不可变的契约字段）。
 fn compatibility() -> serde_json::Value {
     serde_json::json!({
         "apiVersion": 1,
@@ -140,6 +168,8 @@ fn compatibility() -> serde_json::Value {
 }
 
 /// `ENV_DESKTOP_NOTIFY` from `index.js`.
+/// index.js 的 `ENV_DESKTOP_NOTIFY`：显式 'true'、runtime 为 desktop、
+/// 或 argv 前两项含 ompchamber-server 任一命中即开启。
 fn desktop_notify_enabled() -> bool {
     if std::env::var("OMPCHAMBER_DESKTOP_NOTIFY")
         .ok()
@@ -159,6 +189,8 @@ fn desktop_notify_enabled() -> bool {
 }
 
 /// `PLAN_MODE_EXPERIMENT_ENABLED` from `index.js`.
+/// index.js 的 `PLAN_MODE_EXPERIMENT_ENABLED`：PLAN_MODE 专用实验开关
+/// 或总实验开关任一开启。
 fn plan_mode_experimental_enabled() -> bool {
     env_flag_enabled("OPENCODE_EXPERIMENTAL_PLAN_MODE") || env_flag_enabled("OPENCODE_EXPERIMENTAL")
 }
@@ -167,6 +199,9 @@ fn plan_mode_experimental_enabled() -> bool {
 /// into `GET /health`, derived from `ctx.engine.snapshot()` plus the runtime
 /// resolution snapshot. `null` fields mark values the Rust engine does not
 /// track yet (see PORT-MANIFEST.md).
+/// 引擎侧 `getHealthSnapshot()` 字段的移植：由 ctx.engine.snapshot()
+/// 与运行时解析快照推导；Rust 引擎尚未跟踪的字段以 null 标记（见
+/// PORT-MANIFEST.md）。
 fn health_snapshot(ctx: &RouterContext, snapshot: &serde_json::Value) -> serde_json::Value {
     let base_url = snapshot
         .get("baseUrl")
@@ -216,6 +251,9 @@ fn health_snapshot(ctx: &RouterContext, snapshot: &serde_json::Value) -> serde_j
 
 /// `GET /health` — JS shape from `registerServerStatusRoutes` plus the richer
 /// engine snapshot (`mode`/`ready`/`baseUrl`/`lastError`/`lastLaunch`).
+/// `GET /health`：registerServerStatusRoutes 的 JS 形态，叠加更丰富的
+/// 引擎快照（mode/ready/baseUrl/lastError/lastLaunch）；relay serverId
+/// 存在时附带。
 async fn health(State(ctx): State<RouterContext>) -> Response {
     let snapshot = ctx.engine.snapshot();
     let server_id = crate::relay::server_id(&ctx).await;
@@ -242,6 +280,8 @@ async fn health(State(ctx): State<RouterContext>) -> Response {
 }
 
 /// `GET /api/version`.
+/// `GET /api/version`：版本、runtime、启动时间与能力块；有 serverId
+/// 时附带。
 async fn api_version(State(ctx): State<RouterContext>) -> Response {
     let server_id = crate::relay::server_id(&ctx).await;
     let mut body = serde_json::json!({
@@ -260,6 +300,8 @@ async fn api_version(State(ctx): State<RouterContext>) -> Response {
 }
 
 /// `GET /api/system/info`.
+/// `GET /api/system/info`：pid、端口、启动时间等进程信息；tunnelUrl
+/// 待 tunnels 移植接线，暂为 null。
 async fn system_info(State(ctx): State<RouterContext>) -> Response {
     (
         StatusCode::OK,
@@ -278,6 +320,8 @@ async fn system_info(State(ctx): State<RouterContext>) -> Response {
 }
 
 /// `GET /api/system/free-port` — best-effort free TCP port hint on 127.0.0.1.
+/// `GET /api/system/free-port`：在 127.0.0.1 绑定 :0 探测一个可用 TCP
+/// 端口（尽力而为的提示值）。
 async fn free_port() -> Response {
     match tokio::net::TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => match listener.local_addr() {
@@ -306,6 +350,11 @@ async fn free_port() -> Response {
 /// classification lands with the tunnels port, so every request takes the
 /// local `requireAuth` path via [`crate::ui_auth::guard`] (a no-op pass when
 /// no UI password is configured, mirroring unconfigured JS wiring).
+/// `POST /api/system/shutdown`：先应答，再异步关闭引擎并退出进程
+/// （延迟 150ms 让响应先冲刷）。JS 在应答前内联执行 `requireShutdownAuth`
+/// （UI 会话或隧道会话）；隧道作用域分类随 tunnels 移植落地，这里所有
+/// 请求走本地 `requireAuth` 路径——未配置 UI 密码时直通，与未配置的
+/// JS 接线一致。
 async fn system_shutdown(State(ctx): State<RouterContext>, request: Request) -> Response {
     let (parts, _body) = request.into_parts();
     if let Err(denied) = crate::ui_auth::guard(&ctx, &parts).await {
@@ -322,6 +371,8 @@ async fn system_shutdown(State(ctx): State<RouterContext>, request: Request) -> 
 }
 
 /// `isDevShutdownAllowed`: `OMPCHAMBER_DEV_SHUTDOWN === 'true'`.
+/// `isDevShutdownAllowed`：`OMPCHAMBER_DEV_SHUTDOWN` trim 后严格等于
+/// 'true' 才放行。
 fn dev_shutdown_allowed(env_value: Option<&str>) -> bool {
     matches!(env_value.map(str::trim), Some("true"))
 }
@@ -329,6 +380,8 @@ fn dev_shutdown_allowed(env_value: Option<&str>) -> bool {
 /// `isSameOriginRequest`: the Origin header's authority (`host[:port]`, default
 /// ports elided per WHATWG URL — `new URL(...).host`) must equal the Host
 /// header.
+/// `isSameOriginRequest`：Origin 的 authority（host[:port]，默认端口按
+/// WHATWG URL 规则省略）必须与 Host 头相等；任一头缺失即拒绝。
 fn is_same_origin_request(origin: Option<&str>, host: Option<&str>) -> bool {
     let (Some(raw_origin), Some(raw_host)) = (origin, host) else {
         return false;
@@ -353,6 +406,9 @@ fn is_same_origin_request(origin: Option<&str>, host: Option<&str>) -> bool {
 
 /// `parseLoopbackUrl` + port extraction from `core-routes.js`: http(s) URL on a
 /// loopback host, returning its effective port.
+/// core-routes.js 的 `parseLoopbackUrl` + 端口提取：http(s) 且主机为
+/// loopback（localhost/127.0.0.1/::1/0.0.0.0，接受带括号的 IPv6 写法）
+/// 时返回有效端口。
 pub(crate) fn parse_loopback_port(raw: &str) -> Option<u16> {
     let url = url::Url::parse(raw).ok()?;
     if url.scheme() != "http" && url.scheme() != "https" {
@@ -371,6 +427,8 @@ pub(crate) fn parse_loopback_port(raw: &str) -> Option<u16> {
 
 /// `killListenPort` — SIGTERM the PIDs listening on a loopback port (lsof),
 /// then SIGKILL after a grace delay. Best-effort, dev-only.
+/// `killListenPort`：lsof 找出监听 loopback 端口的进程（排除自身），
+/// 先 SIGTERM、宽限 1.2s 后 SIGKILL；尽力而为，仅 dev 使用。
 async fn kill_listen_port(port: u16) {
     if cfg!(windows) {
         return;
@@ -410,6 +468,8 @@ async fn kill_listen_port(port: u16) {
 }
 
 /// `resolveProcessGroupId` — `ps -o pgid= -p <pid>`.
+/// `resolveProcessGroupId`：`ps -o pgid= -p <pid>` 查询进程组 id；
+/// 失败或结果为 0 返回 None。
 fn resolve_process_group_id(pid: u32) -> Option<u32> {
     if pid == 0 {
         return None;
@@ -428,6 +488,7 @@ fn resolve_process_group_id(pid: u32) -> Option<u32> {
         .filter(|pgid| *pgid > 0)
 }
 
+/// 向整个进程组（负 pgid）发送指定信号；输出丢弃，尽力而为。
 fn kill_process_group_signal(pgid: u32, signal: &str) {
     let _ = std::process::Command::new("kill")
         .args([signal, &format!("-{pgid}")])
@@ -438,6 +499,9 @@ fn kill_process_group_signal(pgid: u32, signal: &str) {
 
 /// `POST /api/system/dev-shutdown` — dev-only escape hatch terminating the
 /// whole dev process group.
+/// `POST /api/system/dev-shutdown`：dev 专用逃生通道。校验环境开关与
+/// 同源 Origin 后，异步清理 previewUrls 中 loopback 端口的监听进程，
+/// TERM 再 KILL 本进程与父进程所在的进程组，最终强制退出。
 async fn dev_shutdown(State(ctx): State<RouterContext>, request: Request) -> Response {
     if !dev_shutdown_allowed(std::env::var("OMPCHAMBER_DEV_SHUTDOWN").ok().as_deref()) {
         return (
@@ -513,6 +577,9 @@ async fn dev_shutdown(State(ctx): State<RouterContext>, request: Request) -> Res
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 
+/// 组装本模块路由，保持 JS 注册顺序：status/system 路由在 /api 鉴权门
+/// 之前；settings-utility 与 opencode 路由在其后并套 ui_auth gate 层
+/// （未配置 UI 密码时直通）。
 pub fn router(ctx: RouterContext) -> Router {
     // JS registration order (bootstrap-runtime.js:77 status routes, :96 the
     // `app.use('/api', requireApiAuth)` gate; feature-routes-runtime.js:136/144
@@ -550,6 +617,8 @@ pub fn router(ctx: RouterContext) -> Router {
     status_routes.merge(gated_routes)
 }
 
+/// core_routes 的路由与工具测试，含供子模块复用的测试脚手架
+/// （temp_dir/test_ctx/json_response）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +630,8 @@ mod tests {
     use std::path::PathBuf;
     use tower::ServiceExt;
 
+/// 以进程 id + 后缀命名新建一个干净临时目录（先清旧残留），供测试
+/// 隔离数据目录。
     pub(crate) fn temp_dir(suffix: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-core-routes-{}-{suffix}",
@@ -571,6 +642,8 @@ mod tests {
         dir
     }
 
+/// 构造测试用 RouterContext：固定端口、External 引擎指向不可达地址、
+/// 无 UI 密码。
     pub(crate) fn test_ctx(data_dir: PathBuf, engine: Arc<EngineState>) -> RouterContext {
         RouterContext {
             config: Arc::new(ServerConfig {
@@ -591,6 +664,8 @@ mod tests {
         }
     }
 
+/// 用 tower oneshot 发送请求并解析 JSON 响应为 (状态码, body)；空 body
+/// 记为 Null。
     pub(crate) async fn json_response(
         router: Router,
         request: HttpRequest<Body>,
@@ -608,6 +683,7 @@ mod tests {
         (status, json)
     }
 
+/// 验证 ISO 时间戳以毫秒精度渲染 UTC 形态。
     #[test]
     fn iso_timestamp_renders_utc_with_milliseconds() {
         // 2026-09-26T00:00:00Z == 1790380800000 ms.
@@ -617,6 +693,7 @@ mod tests {
         );
     }
 
+/// 验证 dev-shutdown 开关只接受精确 'true'（大小写与 '1' 均拒绝）。
     #[test]
     fn dev_shutdown_gate_requires_exact_true() {
         assert!(dev_shutdown_allowed(Some("true")));
@@ -625,6 +702,8 @@ mod tests {
         assert!(!dev_shutdown_allowed(None));
     }
 
+/// 验证同源判定按 authority 匹配：默认端口省略、跨源拒绝、Origin/Host
+/// 缺失拒绝。
     #[test]
     fn same_origin_matches_host_authority() {
         assert!(is_same_origin_request(
@@ -648,6 +727,8 @@ mod tests {
         ));
     }
 
+/// 验证 loopback URL 端口提取与 JS 一致：IPv6、默认端口、非 loopback
+/// 与非 http(s) 均正确处理。
     #[test]
     fn loopback_port_parsing_mirrors_js() {
         assert_eq!(parse_loopback_port("http://localhost:4321/"), Some(4321));
@@ -659,6 +740,7 @@ mod tests {
         assert_eq!(parse_loopback_port("not a url"), None);
     }
 
+/// 验证版本号读取自 web 包 manifest（非 'unknown'、非空）。
     #[test]
     fn version_string_comes_from_web_package_manifest() {
         let version = ompchamber_version();
@@ -669,6 +751,7 @@ mod tests {
         );
     }
 
+/// 验证 /health 返回 JS 形态并平铺引擎快照字段，且不带 engine 对象。
     #[tokio::test]
     async fn health_returns_js_shape_with_engine_snapshot() {
         let engine =
@@ -714,6 +797,8 @@ mod tests {
         assert!(body.get("engine").is_none());
     }
 
+/// 验证未就绪引擎的字段映射：openCodeRunning/isOpenCodeReady 为假，
+/// 错误与启动诊断透传。
     #[tokio::test]
     async fn health_snapshot_maps_a_not_ready_engine() {
         // Not-ready engines cannot be constructed through the public
@@ -757,6 +842,7 @@ mod tests {
         }
     }
 
+/// 验证 /api/version 的 JS 响应形态。
     #[tokio::test]
     async fn api_version_returns_js_shape() {
         let ctx = test_ctx(
@@ -778,6 +864,7 @@ mod tests {
         assert_eq!(body["compatibility"]["apiVersion"], 1);
     }
 
+/// 验证 /api/system/info 返回进程 pid、端口与版本数据。
     #[tokio::test]
     async fn system_info_returns_process_and_port_data() {
         let ctx = test_ctx(
@@ -799,6 +886,7 @@ mod tests {
         assert_eq!(body["ompchamberVersion"], ompchamber_version());
     }
 
+/// 验证 /api/system/free-port 返回 1..=65535 范围内的端口。
     #[tokio::test]
     async fn free_port_returns_a_usable_loopback_port() {
         let (status, body) = json_response(
@@ -817,6 +905,8 @@ mod tests {
         assert!((1..=65_535).contains(&port));
     }
 
+/// 验证缺环境开关或缺 Origin 头的 dev-shutdown 一律 403，且不会触发
+/// 进程退出。
     #[tokio::test]
     async fn dev_shutdown_is_forbidden_without_origin_or_gate() {
         // With the gate off: disabled error; with the gate on but no Origin

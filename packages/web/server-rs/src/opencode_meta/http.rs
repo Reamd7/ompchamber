@@ -6,6 +6,11 @@
 //! responses. The Rust port routes every outbound call through [`HttpFetch`]
 //! so tests inject the same fakes; the production transport is reqwest +
 //! rustls.
+//!
+//! 中文说明：`opencode_meta` 模块的 HTTP 传输接缝。models.dev 目录与 npm
+//! registry 的全部出站请求都经由 [`HttpFetch`] 函数对象发出，生产实现为
+//! 共享 reqwest 客户端直连，测试注入 canned 响应，与 JS vitest 桩
+//! global fetch 的做法一一对应。
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -15,15 +20,21 @@ use futures::future::BoxFuture;
 /// One outbound request, mirroring the `fetch` options the JS uses.
 #[derive(Debug, Clone)]
 pub(crate) struct HttpRequest {
+/// HTTP 方法名（"GET"/"POST" 等字符串）。
     pub method: String,
+/// 完整目标 URL。
     pub url: String,
+/// 请求头列表（保持插入顺序，允许同名重复）。
     pub headers: Vec<(String, String)>,
+/// 请求体字节；GET 请求为 `None`。
     pub body: Option<Vec<u8>>,
     /// `AbortSignal.timeout(ms)`.
     pub timeout_ms: Option<u64>,
 }
 
+/// 请求构造器：链式便捷方法对应 JS fetch 的 options 拼装。
 impl HttpRequest {
+/// 构造无头、无体、无超时的 GET 请求。
     pub(crate) fn get(url: impl Into<String>) -> Self {
         Self {
             method: "GET".to_string(),
@@ -34,24 +45,31 @@ impl HttpRequest {
         }
     }
 
+/// 追加一个请求头（builder 风格：消耗自身并返回新值）。
     pub(crate) fn header(mut self, name: &str, value: impl Into<String>) -> Self {
         self.headers.push((name.to_string(), value.into()));
         self
     }
 
+/// 设置整体请求超时，等价 JS 的 `AbortSignal.timeout(ms)`。
     pub(crate) fn timeout(mut self, ms: u64) -> Self {
         self.timeout_ms = Some(ms);
         self
     }
 }
 
+/// 一次入站响应：状态码、响应头与原始字节体。
 #[derive(Debug, Clone)]
 pub(crate) struct HttpResponse {
+/// HTTP 状态码（如 200、404）。
     pub status: u16,
+/// 响应头列表（查找按不区分大小写处理，同 fetch 的 headers.get）。
     pub headers: Vec<(String, String)>,
+/// 原始响应体字节（文本场景由 [`HttpResponse::text`] 转换）。
     pub body: Vec<u8>,
 }
 
+/// JS `Response` 语义的只读辅助方法。
 impl HttpResponse {
     /// Case-insensitive header lookup (first match, like `headers.get`).
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
@@ -77,11 +95,15 @@ impl HttpResponse {
 /// network failure.
 #[derive(Debug, Clone)]
 pub(crate) enum HttpError {
+/// 请求超时：JS 的 `TimeoutError`/`AbortError` 对应物，路由层映射为 504。
     Timeout,
+/// 其它传输层失败，携带底层错误文本。
     Other(String),
 }
 
+/// 错误文本与超时类别探测辅助。
 impl HttpError {
+/// 返回错误 message；`Timeout` 使用 JS 同款文案 "The operation timed out"。
     pub(crate) fn message(&self) -> String {
         match self {
             HttpError::Timeout => "The operation timed out".to_string(),
@@ -98,9 +120,12 @@ impl HttpError {
     }
 }
 
+/// 可注入的传输函数类型：吃进 [`HttpRequest`]，返回异步 [`HttpResponse`]
+/// 或 [`HttpError`]；测试用它注入 canned 响应。
 pub(crate) type HttpFetch =
     Arc<dyn Fn(HttpRequest) -> BoxFuture<'static, Result<HttpResponse, HttpError>> + Send + Sync>;
 
+/// 进程级共享的 reqwest 客户端（复用连接池）。
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 /// Production transport (direct, no proxy — the proxy retry path in
@@ -145,6 +170,7 @@ pub(crate) fn default_fetch() -> HttpFetch {
     })
 }
 
+/// 将 reqwest 错误归类：超时映射为 [`HttpError::Timeout`]，其余归 [`HttpError::Other`]。
 fn map_reqwest_error(error: reqwest::Error) -> HttpError {
     if error.is_timeout() {
         HttpError::Timeout

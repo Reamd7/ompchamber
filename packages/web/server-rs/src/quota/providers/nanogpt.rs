@@ -1,5 +1,10 @@
 //! Port of `server/lib/quota/providers/nanogpt.js` — NanoGPT subscription
 //! usage via `GET https://nano-gpt.com/api/subscription/v1/usage`.
+//!
+//! 中文概览：NanoGPT 订阅配额提供方——以 bearer API key 请求
+//! nano-gpt.com 的 subscription/v1/usage 端点，把响应中的 daily 与
+//! monthly 两块组装成统一的用量窗口；订阅 state 非 active 时在窗口
+//! 标签上附加 "(state)" 后缀。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
@@ -12,13 +17,20 @@ use crate::quota::utils::{
     to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "nano-gpt";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "NanoGPT";
+/// auth.json 中识别本提供方的别名列表（nano-gpt/nanogpt/nano_gpt 三种写法）。
 pub const ALIASES: [&str; 3] = ["nano-gpt", "nanogpt", "nano_gpt"];
 
+/// 用量查询端点 URL。
 const USAGE_URL: &str = "https://nano-gpt.com/api/subscription/v1/usage";
+/// daily 窗口的固定时长（一天，API 未返回窗口秒数）。
 const DAILY_WINDOW_SECONDS: f64 = 86_400.0;
 
+/// 从 auth.json 的 nano-gpt 别名条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -30,12 +42,16 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
 /// `percentUsed` is a 0-1 fraction; the used/limit fallback computes one
 /// (`block.limit ?? block.limits.<limits_key>`).
+/// 计算单个用量块的已用百分比：优先用 percentUsed（0-1 小数，乘 100 并
+/// 夹取到 [0,100]）；否则回退 used / limit（limit 缺失时取
+/// limits.<limits_key>）；无法计算返回 None。
 fn window_used_percent(block: &Value, limits_key: &str) -> Option<f64> {
     if let Some(percent_used) = field(block, "percentUsed").and_then(Value::as_f64) {
         return Some((percent_used * 100.0).clamp(0.0, 100.0));
@@ -51,6 +67,9 @@ fn window_used_percent(block: &Value, limits_key: &str) -> Option<f64> {
     }
 }
 
+/// 注册表入口：读 key（缺失视为未配置）→ 请求用量端点 → 组装 daily
+/// （固定 24 小时窗口）与 monthly（reset 缺失时回退 period.currentPeriodEnd）
+/// 窗口，非 active 状态附加状态标签，返回统一结果。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

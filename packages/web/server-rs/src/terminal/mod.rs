@@ -9,15 +9,32 @@
 //! upgrade handler mirrors the JS `upgradeHandler` origin check (only while a
 //! UI password is configured — no origin shortcuts added or skipped).
 
+//!
+//! 中文说明：本模块移植 JS 版 `server/lib/terminal/` 的 HTTP 与 WebSocket
+//! 接口（runtime.js 的路由注册与 `/api/terminal/ws` 传输层）。本文件负责
+//! 路由装配、请求体/查询参数的 express 语义提取，以及各生命周期端点的
+//! 处理器；会话状态机与 socket 循环在 `runtime` 子模块，PTY 抽象在
+//! `pty` 子模块。鉴权沿用与 proxy/fs/event-stream 相同的
+//! `ui_auth::middleware` 门层，WS 升级仅在配置了 UI 密码时做 origin 校验。
+
+/// 终端网格解析（GridCore 移植）：把 PTY 字节流解析为 full/rows/cursor 差分帧。
 pub mod grid;
+/// 有界滚动历史与重放缓冲：剥离渲染器无法应答的查询序列，供快照恢复与重连对账。
 pub mod history;
+/// WS 二进制控制帧协议：单 tag 字节 + UTF-8 JSON 文档的编解码与常量。
 pub mod protocol;
+/// PTY 依赖注入缝：portable-pty 真实后端、测试 fake，以及真实文件系统/PATH 依赖。
 pub mod pty;
+/// 会话运行时核心：身份、状态机、会话泵、流控、视口协商与 WS socket 循环。
 pub mod runtime;
+/// OSC 133 shell 集成：注入的包装脚本发出命令边界标记，驱动 command-finished 事件。
 pub mod shell_integration;
+/// shell 家族发现与持久化 shell id 解析（createTerminalShellResolver 移植）。
 pub mod shells;
+/// 主题/能力应答：PTY 直接回应 DA1、OSC 10/11 等查询，启动握手不依赖渲染器。
 pub mod theme;
 
+/// 运行时集成测试：Router::oneshot 驱动 HTTP 路由 + 真实回环 WS 传输的最小客户端。
 #[cfg(test)]
 mod testing;
 
@@ -38,13 +55,18 @@ use runtime::{CreateSessionRequest, JsField, SessionStatus, TerminalOptions, Ter
 use shells::{Platform, ShellDeps};
 
 /// `MAX_INPUT_CHARS` (runtime.js): input cap for one `write` frame.
+/// 中文补充：单个 `write` 帧输入的字符上限，超出即拒绝，防止滥用 WS 写入。
 pub const MAX_INPUT_CHARS: usize = 65_536;
 /// `express.json()` default body limit.
+/// 中文补充：JSON 请求体上限 100 KiB，对齐 express.json() 的默认限制。
 const JSON_BODY_LIMIT_BYTES: usize = 100 * 1024;
 /// Module state: the terminal runtime plus whether UI auth is configured
 /// (JS `uiAuthController?.enabled` — governs the upgrade origin check).
+/// 中文补充：运行时状态 + 鉴权开关的二元组，本模块所有处理器的共享 state。
 type ModuleState = (Arc<TerminalState>, bool);
 
+/// 组装生产路由：创建 TerminalState（真实 PTY provider 与真实 shell 依赖），
+/// 并按 JS 的注册顺序把共享 ui_auth 门层叠加在本模块路由表之上。
 pub fn router(ctx: RouterContext) -> axum::Router {
     // The JS auth gate applies to every `/api` route registered after
     // `registerAuthAndAccessRoutes`; layering the shared gate over this
@@ -67,6 +89,7 @@ pub fn router(ctx: RouterContext) -> axum::Router {
 
 /// Route table shared by the production router (gated) and the test harness
 /// (auth disabled, fake PTY provider).
+/// 中文补充：生产（带门层）与测试装配（无鉴权 + fake PTY）共用的路由表本体。
 fn routes() -> Router<ModuleState> {
     Router::new()
         .route("/api/terminal/ws", get(terminal_ws))
@@ -84,12 +107,14 @@ fn routes() -> Router<ModuleState> {
         .route("/api/terminal/{sessionId}", delete(close_terminal))
 }
 
+/// 测试装配：复用同一张路由表，但关闭鉴权，state 由调用方注入（通常挂 fake PTY）。
 #[cfg(test)]
 pub(crate) fn test_router(state: Arc<TerminalState>) -> Router {
     routes().with_state((state, false))
 }
 /// Real shell-discovery deps (env-runtime.js subset; the login-shell PATH
 /// augmentation lands with that port — PATH passes through unchanged).
+/// 中文补充：环境查询用 std::env（空值视为缺省），PATH 与文件系统检测走 pty 模块的真实实现。
 fn real_shell_deps() -> ShellDeps {
     ShellDeps {
         platform: Platform::current(),
@@ -105,6 +130,9 @@ fn real_shell_deps() -> ShellDeps {
 // WebSocket transport
 // ---------------------------------------------------------------------------
 
+/// `GET /api/terminal/ws` 升级处理器：仅在配置了 UI 鉴权时做 origin 校验
+/// （对齐 JS upgradeHandler；401 token 检查已在门层完成），随后限制单帧
+/// 上限并把 socket 移交 runtime::run_socket。
 async fn terminal_ws(
     State(state): State<ModuleState>,
     ws: WebSocketUpgrade,
@@ -130,6 +158,7 @@ async fn terminal_ws(
 // ---------------------------------------------------------------------------
 
 /// `GET /api/terminal/shells` — available shell ids on the active server.
+/// 中文补充：返回当前服务器可用 shell 的 id、展示名与是否支持登录模式。
 async fn list_shells(State(state): State<ModuleState>) -> Response {
     let (terminal, _) = state;
     let shells: Vec<Value> = terminal
@@ -145,6 +174,7 @@ async fn list_shells(State(state): State<ModuleState>) -> Response {
 
 /// `GET /api/terminal/sessions?cwd=` — live sessions, optionally filtered by
 /// resolved cwd so clients can adopt terminals from other devices.
+/// 中文补充：cwd 过滤按解析后的路径比较，客户端借此认领同一仓库的终端。
 async fn list_sessions(State(state): State<ModuleState>, RawQuery(raw): RawQuery) -> Response {
     let (terminal, _) = state;
     let cwd_filter = single_query_value(raw.as_deref(), "cwd")
@@ -171,6 +201,7 @@ async fn list_sessions(State(state): State<ModuleState>, RawQuery(raw): RawQuery
 
 /// `POST /api/terminal/touch` — refresh `lastActivity` for listed ids; a
 /// `claimant` records a per-window claim that conditional deletes release.
+/// 中文补充：claimant 长度限制 128 并 trim；非字符串 id 与未知 id 静默跳过。
 async fn touch_sessions(State(state): State<ModuleState>, body: JsonBody) -> Response {
     let (terminal, _) = state;
     let raw_ids = body
@@ -204,6 +235,7 @@ async fn touch_sessions(State(state): State<ModuleState>, body: JsonBody) -> Res
 }
 
 /// `POST /api/terminal/create`.
+/// 中文补充：成功回显会话 id/尺寸/状态；会话数达上限映射 429，其余错误映射 400。
 async fn create_terminal(State(state): State<ModuleState>, body: JsonBody) -> Response {
     let (terminal, _) = state;
     let request = parse_create_request(&body.0);
@@ -232,6 +264,7 @@ async fn create_terminal(State(state): State<ModuleState>, body: JsonBody) -> Re
 /// JS field presence semantics for typed extraction: parameter defaults apply
 /// only to `undefined`; `null` and mismatched types read as invalid so the
 /// validators reject them with the exact JS messages.
+/// 中文补充：三态区分缺省、合法值与非法值，让校验器产出与 JS 逐字一致的报错。
 fn js_string_field(body: &Value, key: &str) -> JsField<String> {
     match body.get(key) {
         None => JsField::Absent,
@@ -240,6 +273,7 @@ fn js_string_field(body: &Value, key: &str) -> JsField<String> {
     }
 }
 
+/// 提取数字字段（f64）；非数字类型记为 Invalid，供校验器以 JS 文案拒绝。
 fn js_number_field(body: &Value, key: &str) -> JsField<f64> {
     match body.get(key) {
         None => JsField::Absent,
@@ -248,6 +282,7 @@ fn js_number_field(body: &Value, key: &str) -> JsField<f64> {
     }
 }
 
+/// 提取布尔字段；非布尔类型记为 Invalid，与 JS presence 语义一致。
 fn js_bool_field(body: &Value, key: &str) -> JsField<bool> {
     match body.get(key) {
         None => JsField::Absent,
@@ -256,6 +291,8 @@ fn js_bool_field(body: &Value, key: &str) -> JsField<bool> {
     }
 }
 
+/// 把 create 请求体映射为 CreateSessionRequest：非字符串 sessionId 回退为
+/// 生成的 UUID，各可选字段经三态提取器保留缺省/非法信息。
 fn parse_create_request(body: &Value) -> CreateSessionRequest {
     CreateSessionRequest {
         // Non-string sessionIds fall back to a generated UUID, like the JS.
@@ -284,6 +321,8 @@ fn parse_create_request(body: &Value) -> CreateSessionRequest {
 }
 
 /// `POST /api/terminal/:sessionId/resize`.
+/// 中文补充：尺寸必须是 1..=1000 列、1..=500 行的整数；本路由只应用尺寸，
+/// 不做下限保护——尺寸策略归协商模型所有，改动会广播给所有附件。
 async fn resize_terminal(
     State(state): State<ModuleState>,
     Path(session_id): Path<String>,
@@ -334,6 +373,7 @@ async fn resize_terminal(
 }
 
 /// `POST /api/terminal/:sessionId/appearance`.
+/// 中文补充：主题/前景/背景由 runtime::apply_appearance 应用并推送给已订阅的 TUI。
 async fn update_appearance(
     State(state): State<ModuleState>,
     Path(session_id): Path<String>,
@@ -349,6 +389,7 @@ async fn update_appearance(
 }
 
 /// `POST /api/terminal/:sessionId/restart`.
+/// 中文补充：restart_session 先验证替代配置再原子替换；失败时旧进程原样保留。
 async fn restart_terminal(
     State(state): State<ModuleState>,
     Path(session_id): Path<String>,
@@ -378,6 +419,7 @@ async fn restart_terminal(
 /// `DELETE /api/terminal/:sessionId?claimant=` — a claimant-scoped delete is a
 /// tab close (release exactly that claim, kill only when no live claim
 /// remains); without a claimant it is an explicit destructive kill.
+/// 中文补充：剩余认领还需未超 IDLE_TIMEOUT_MS 才算存活，过期认领不阻止击杀。
 async fn close_terminal(
     State(state): State<ModuleState>,
     Path(session_id): Path<String>,
@@ -410,6 +452,8 @@ async fn close_terminal(
 }
 
 /// `POST /api/terminal/force-kill` — terminate matching sessions immediately.
+/// 中文补充：sessionId 优先于 cwd，二者皆缺省时匹配全部会话；终止异步进行，
+/// 响应立即返回被杀 id 列表。
 async fn force_kill(State(state): State<ModuleState>, body: JsonBody) -> Response {
     let (terminal, _) = state;
     let session_id = body
@@ -456,6 +500,7 @@ async fn force_kill(State(state): State<ModuleState>, body: JsonBody) -> Respons
     .into_response()
 }
 
+/// 按 id 从会话表查找并克隆 Arc 句柄；不存在返回 None。
 fn lookup_session(
     terminal: &Arc<TerminalState>,
     session_id: &str,
@@ -468,10 +513,12 @@ fn lookup_session(
         .cloned()
 }
 
+/// 构造 404 JSON 错误响应。
 fn not_found(message: &str) -> Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": message }))).into_response()
 }
 
+/// 构造 400 JSON 错误响应。
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }
@@ -479,6 +526,7 @@ fn bad_request(message: &str) -> Response {
 /// First value for `key` in a raw query string. Express turns duplicates into
 /// arrays (which its consumers treat as non-strings), so repeated keys read as
 /// absent here.
+/// 中文补充：重复键第一次命中即返回，但 seen 计数使其后置为缺失，模拟 Express 行为。
 fn single_query_value(raw: Option<&str>, key: &str) -> Option<String> {
     let raw = raw?;
     let mut seen = 0;
@@ -501,20 +549,27 @@ fn single_query_value(raw: Option<&str>, key: &str) -> Option<String> {
 /// `express.json()` semantics: bodies are parsed only for `application/json`
 /// content types; anything else reads as an absent body (handlers treat it as
 /// `{}`). Malformed JSON is a 400 JSON error.
+/// 中文补充：超限返回 413，坏 JSON 返回 400，均带 JSON 错误体。
 struct JsonBody(Value);
 
+/// JsonBody 的固有辅助方法。
 impl JsonBody {
+    /// 以 Null 表示“无请求体”，处理器按字段缺省语义对待。
     fn absent() -> Self {
         Self(Value::Null)
     }
 }
 
+/// express.json() 语义的 axum FromRequest 实现。
 impl<S> axum::extract::FromRequest<S> for JsonBody
 where
     S: Send + Sync,
 {
+    /// 拒绝类型直接是完整 Response（错误响应在此构造完毕）。
     type Rejection = Response;
 
+    /// 提取流程：读体（100 KiB 上限）→ 非 application/json 或空体视为缺省 →
+    /// 解析 JSON，失败返回 400。
     async fn from_request(
         request: axum::http::Request<axum::body::Body>,
         _state: &S,

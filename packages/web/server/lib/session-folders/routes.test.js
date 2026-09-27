@@ -1,8 +1,15 @@
+/**
+ * 会话文件夹快照路由测试套件：验证持久化安全——并发保存使用唯一临时
+ * 文件、rename 失败时清理临时文件、磁盘文件缺失不被当作权威空快照、
+ * 磁盘状态畸形 / 结构非法时返回 500 而非清空浏览器端有效状态，以及
+ * updatedAt 单调性（旧快照与同版本异数据晚到都被忽略）。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import path from 'path';
 
 import { registerSessionFoldersRoutes } from './routes.js';
 
+/** 用 Map 模拟 express app，只登记 get / post 注册的处理器，便于按方法与路径直接调用。 */
 const createRouteRegistry = () => {
   const routes = new Map();
 
@@ -21,6 +28,7 @@ const createRouteRegistry = () => {
   };
 };
 
+/** 最小 mock res：记录 status / json 调用，通过 getter 暴露 statusCode 与 body。 */
 const createMockResponse = () => {
   let statusCode = 200;
   let body = null;
@@ -43,12 +51,14 @@ const createMockResponse = () => {
   };
 };
 
+/** 总是抛 ENOENT 错误的 readFile 替身，模拟磁盘上还没有快照文件。 */
 const missingFile = async () => {
   const error = new Error('missing');
   error.code = 'ENOENT';
   throw error;
 };
 
+/** 构造一份结构合法的快照载荷，仅 updatedAt 可变。 */
 const folderPayload = (updatedAt) => ({
   version: 1,
   foldersMap: {},
@@ -56,6 +66,7 @@ const folderPayload = (updatedAt) => ({
   updatedAt,
 });
 
+/** 快照读写、原子落盘与损坏 / 并发场景的行为验证。 */
 describe('session folders routes', () => {
   it('uses unique temp files for concurrent saves', async () => {
     const { app, getRoute } = createRouteRegistry();

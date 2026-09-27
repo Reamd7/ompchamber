@@ -1,3 +1,11 @@
+/**
+ * executable-search 模块测试套件。
+ *
+ * 覆盖可执行文件搜索的 Windows 特有行为：搜索目录解析（自动追加 WindowsApps
+ * 别名目录、Path 大小写变体读取）、PATH 查找（Store 应用别名 + PATHEXT 扩展名
+ * 展开）、启动目标解析（stat 失败时回退原始命令名并注入净化 PATH），以及
+ * 环境副本中 PATH/Path/path 三变体的一致性。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -7,6 +15,7 @@ import {
   resolveExecutableLaunchTarget,
 } from './executable-search.js';
 
+/** 搜索目录解析：验证 Windows 平台自动追加 WindowsApps 目录与 Path 变体读取。 */
 describe('getExecutableSearchDirectories', () => {
   it('adds the WindowsApps app-alias directory on Windows', () => {
     const directories = getExecutableSearchDirectories({
@@ -34,6 +43,7 @@ describe('getExecutableSearchDirectories', () => {
   });
 });
 
+/** PATH 查找：验证即使 PATH 未包含 WindowsApps 也能借注入目录找到 Store 应用别名。 */
 describe('findExecutableOnPath', () => {
   it('finds Windows Store app execution aliases even when PATH omits WindowsApps', () => {
     const aliasPath = 'C:\\Users\\Ada\\AppData\\Local\\Microsoft\\WindowsApps\\ngrok.exe';
@@ -61,6 +71,7 @@ describe('findExecutableOnPath', () => {
   });
 });
 
+/** 启动目标：验证 stat 全部失败（EACCES）时回退原始命令名，且 PATH 含 WindowsApps。 */
 describe('resolveExecutableLaunchTarget', () => {
   it('returns a Windows launch target with WindowsApps on PATH when stat lookup fails', () => {
     const target = resolveExecutableLaunchTarget('ngrok', {
@@ -80,6 +91,7 @@ describe('resolveExecutableLaunchTarget', () => {
   });
 });
 
+/** 环境副本：验证 Windows 下 PATH/Path/path 三个大小写变体保持同步。 */
 describe('createExecutableSearchEnv', () => {
   it('keeps Windows PATH variants in sync', () => {
     const env = createExecutableSearchEnv({

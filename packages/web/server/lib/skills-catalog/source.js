@@ -1,6 +1,15 @@
+/**
+ * 技能仓库源解析：把用户输入的仓库标识（HTTPS URL、SSH URL 或
+ * owner/repo 简写，简写可再带 /subpath）解析为统一的仓库描述（owner、
+ * repo、host、SSH/HTTPS 克隆地址、normalizedRepo、effectiveSubpath），
+ * 供扫描（scan.js）与安装（install.js）共用。
+ */
+
+/** 简写格式默认按 GitHub 解析时使用的主机名。 */
 const GITHUB_HOST = 'github.com';
 
 
+/** 归一化 owner/repo：trim、去掉 repo 的 .git 后缀；任一为空返回 null。 */
 function normalizeGitOwnerRepo(owner, repo) {
   const normalizedOwner = String(owner || '').trim();
   const normalizedRepo = String(repo || '').trim().replace(/\.git$/i, '');
@@ -11,6 +20,13 @@ function normalizeGitOwnerRepo(owner, repo) {
 }
 
 
+/**
+ * 解析仓库源字符串。支持三种形式：https://host/owner/repo(.git)、
+ * git@host:owner/repo(.git)、owner/repo[/subpath...]（默认 host 为 github.com）。
+ * subpath 可经 options.subpath 显式传入；简写形式的路径尾部也作为 subpath。
+ * 解析成功返回含克隆地址与 normalizedRepo 的对象，失败返回
+ * { ok: false, error: { kind: 'invalidSource', message } }。
+ */
 export function parseSkillRepoSource(input, options = {}) {
   const raw = typeof input === 'string' ? input.trim() : '';
   if (!raw) {

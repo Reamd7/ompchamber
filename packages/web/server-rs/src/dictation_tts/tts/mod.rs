@@ -8,10 +8,25 @@
 //! `registerAuthAndAccessRoutes`) puts these routes behind the `/api` auth
 //! gate — mirrored by layering `ui_auth::middleware` over this router.
 
+//! 中文说明：本模块把旧 JS server `server/lib/tts/` 的 HTTP 面移植为 axum 路由，
+//! 注册 `/api/voice/token`、`/api/tts/speak`、`/api/text/summarize`、
+//! `/api/tts/status`、`/api/tts/say/status`、`/api/tts/say/speak`、
+//! `/api/stt/transcribe` 七个端点，并托管 base_url（自定义 OpenAI 兼容 URL 的
+//! 校验与规范化）、capability（macOS `say` 能力探测）、language_detect（语言
+//! 检测与 voice 挑选）、service（语音合成）、stt（语音转写 proxy）五个子模块。
+//! 整个 router 被 `ui_auth::middleware` 包裹，因此全部路由都位于 `/api` 鉴权门
+//! 之后，与 JS 版 `bootstrap-runtime.js` 在 `registerAuthAndAccessRoutes` 之后
+//! 注册的顺序保持一致。
+/// 自定义 OpenAI 兼容 base URL 的校验与规范化（默认仅放行本地主机）。
 pub mod base_url;
+/// macOS `say` 命令能力探测：启动时执行一次 `say -v '?'` 并共享唯一结果。
 pub mod capability;
+/// 无第三方依赖的语言检测，以及按语言挑选 `say` voice 的逻辑。
 pub mod language_detect;
+/// OpenAI（或 OpenAI 兼容服务器）语音合成服务封装。
 pub mod service;
+/// 语音转写（STT）proxy：把音频以 multipart 转发到 OpenAI 兼容的
+/// `/v1/audio/transcriptions` 端点。
 pub mod stt;
 
 use std::sync::Arc;
@@ -34,12 +49,16 @@ use stt::{HttpTranscriber, TranscribeParams, Transcriber};
 
 /// `registerCommonRequestMiddleware` gives `/api/voice`, `/api/tts`, and
 /// `/api/text` bodies `express.json({ limit: '50mb' })`.
+/// 即 50 MiB；超限的请求体按 413 拒绝。
 const JSON_BODY_LIMIT_BYTES: usize = 50 * 1024 * 1024;
 /// `express.raw({ limit: '20mb' })` on `/api/stt/transcribe`.
 const STT_BODY_LIMIT_BYTES: usize = 20 * 1024 * 1024;
+/// 即 20 MiB；超限的音频 body 按 413 拒绝。
+/// 请求未携带 `x-model` 头时 STT 转写使用的默认 whisper 模型。
 const DEFAULT_STT_MODEL: &str = "deepdml/faster-whisper-large-v3-turbo-ct2";
 
 /// `process.platform` seam (tests drive the non-macOS branch deterministically).
+/// 编译期定值：macOS 目标返回 `"darwin"`，其余返回 `"linux"`。
 fn production_platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "darwin"
@@ -48,18 +67,29 @@ fn production_platform() -> &'static str {
     }
 }
 
+/// 各路由共享的状态：语音合成服务、`say` 能力探测、转写器、平台名与
+/// 环境变量读取接缝。
 #[derive(Clone)]
 struct TtsState {
+    /// OpenAI 语音合成服务（内含 provider 与 API key 来源）。
     service: Arc<TtsService>,
+    /// `say` 能力探测的共享结果（所有请求等待同一次探测）。
     say: SayCapabilityProbe,
+    /// STT 转写器（生产为 HTTP 实现，测试注入 fake）。
     transcriber: Arc<dyn Transcriber>,
+    /// 当前平台名；`say` 相关端点仅在 `"darwin"` 上可用。
     platform: &'static str,
     /// Env read seam for the base-URL policy (production: `std::env`).
+    /// 测试注入固定映射表即可驱动 base URL 策略的各分支。
     env_reader: EnvReader,
 }
 
+/// 按 key 名返回非空环境值的函数指针；抽象成 `Arc<dyn Fn>` 以便测试替换
+/// `std::env`。
 type EnvReader = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// 生产实现：读 `std::env::var` 并把空白值视为未设置（与 JS 侧仅非空值
+/// 生效的语义一致）。
 fn production_env_reader() -> EnvReader {
     Arc::new(|key: &str| {
         std::env::var(key)
@@ -67,6 +97,9 @@ fn production_env_reader() -> EnvReader {
             .filter(|value| !value.trim().is_empty())
     })
 }
+/// 构建生产 router：装配真实 [`TtsService`]、按平台启动的 `say` 探测、HTTP
+/// 转写器与 `std::env` 读取器，并把 `ui_auth::middleware(ctx)` 叠加在全部
+/// 路由之上（`/api` 鉴权门）。
 pub fn router(ctx: RouterContext) -> axum::Router {
     let state = TtsState {
         service: TtsService::production(),
@@ -80,6 +113,8 @@ pub fn router(ctx: RouterContext) -> axum::Router {
         .with_state(state)
 }
 
+/// 注册全部七个 TTS/STT 路由（自身不挂鉴权层，由调用方叠加）；状态类型为
+/// [`TtsState`]。
 fn routes() -> Router<TtsState> {
     Router::new()
         .route("/api/voice/token", post(voice_token))
@@ -91,6 +126,7 @@ fn routes() -> Router<TtsState> {
         .route("/api/stt/transcribe", post(stt_transcribe))
 }
 
+/// 测试入口：把给定状态直接绑定到 `routes()`，不经过鉴权中间件。
 #[cfg(test)]
 pub(crate) fn test_router(state: TtsState) -> Router {
     routes().with_state(state)
@@ -101,6 +137,9 @@ pub(crate) fn test_router(state: TtsState) -> Router {
 // only — JSON `null` survives as `null`)
 // ---------------------------------------------------------------------------
 
+/// 读取并解析 JSON 请求体：空体按 `express.json()` 语义返回空对象 `{}`；
+/// 超过 [`JSON_BODY_LIMIT_BYTES`] 返回 413，非法 JSON 返回 400（错误以
+/// `Err(response)` 形式交还给调用方直接返回）。
 async fn read_json_body(request: Request) -> Result<Value, Response> {
     let bytes = to_bytes(request.into_body(), JSON_BODY_LIMIT_BYTES)
         .await
@@ -113,11 +152,13 @@ async fn read_json_body(request: Request) -> Result<Value, Response> {
         .map_err(|_| json_error(StatusCode::BAD_REQUEST, "Invalid JSON body"))
 }
 
+/// 构造 `{ "error": message }` 形式的 JSON 错误响应。
 fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
 /// JS truthiness over a JSON value.
+/// 数字 0 与 0.0 为假；数组与对象即使为空也为真。
 fn js_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -130,6 +171,7 @@ fn js_truthy(value: &Value) -> bool {
 
 /// JS `const { key = default } = body` — a missing key takes the default,
 /// every present value (including `null`) passes through.
+/// 因此字段"存在但为 `null`"与"缺失"在这里是两种不同结果。
 fn field_or(body: &Value, key: &str, default: Value) -> Value {
     match body.get(key) {
         Some(value) => value.clone(),
@@ -137,11 +179,13 @@ fn field_or(body: &Value, key: &str, default: Value) -> Value {
     }
 }
 
+/// 读取 body 中某个键的字符串值；键缺失或不是字符串时返回 `None`。
 fn str_field<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
     body.get(key).and_then(Value::as_str)
 }
 
 /// JS template-literal interpolation of a JSON value (`${rate}`).
+/// 字符串原样返回，其余类型按 JS 规则转字符串（如 `null` → "null"）。
 fn js_template_string(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
@@ -152,6 +196,8 @@ fn js_template_string(value: &Value) -> String {
     }
 }
 
+/// 按 JS `String(number)` 的规则格式化：整数值不带小数点；绝对值小于 1e21
+/// 且无小数部分的浮点数也压成整数形式，其余用 `Display` 输出。
 fn js_number_string(number: &serde_json::Number) -> String {
     if let Some(integer) = number.as_i64() {
         return integer.to_string();
@@ -169,6 +215,8 @@ fn js_number_string(number: &serde_json::Number) -> String {
 
 /// Pure body of the route: only `process.env.OPENAI_API_KEY` decides (the
 /// auth file is never consulted here).
+///
+/// 有 key 返回 200 与 provider 信息；无 key（含空串）返回 503 与配置提示。
 fn voice_token_response(openai_api_key: Option<&str>) -> Response {
     match openai_api_key.filter(|key| !key.is_empty()) {
         Some(_) => Json(json!({
@@ -188,6 +236,8 @@ fn voice_token_response(openai_api_key: Option<&str>) -> Response {
     }
 }
 
+/// POST `/api/voice/token` 处理器：以进程环境中的 `OPENAI_API_KEY` 生成
+/// 可用性响应。
 async fn voice_token(_request: Request) -> Response {
     voice_token_response(std::env::var("OPENAI_API_KEY").ok().as_deref())
 }
@@ -196,6 +246,12 @@ async fn voice_token(_request: Request) -> Response {
 // POST /api/tts/speak
 // ---------------------------------------------------------------------------
 
+/// POST `/api/tts/speak` 处理器：校验文本与自定义 base URL 后调用 OpenAI
+///（或自定义服务器）合成语音。可用性三选一：服务端配置的 key、请求体
+/// `apiKey`、自定义 `baseURL`；三者皆无时返回 503。成功时以音频内容类型
+/// 回传字节并附 `Cache-Control: no-cache` 与 Content-Length；provider 失败
+/// 时返回 500，`detail` 回显原始 `model`/`voice` 字段与 `hasBaseURL` 布尔值
+///（与 JS 的 JSON 序列化丢弃 `undefined` 的行为一致）。
 async fn tts_speak(State(state): State<TtsState>, request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -297,6 +353,10 @@ async fn tts_speak(State(state): State<TtsState>, request: Request) -> Response 
 // POST /api/text/summarize
 // ---------------------------------------------------------------------------
 
+/// POST `/api/text/summarize` 处理器：走本地摘要兜底（模型摘要 provider 已
+/// 退役，历史请求字段被忽略）。`threshold` 缺省 200、`maxLength` 缺省 500、
+/// `mode` 缺省 `"tts"`；核心语义在
+/// `crate::small_model::summarization::summarize_text_simple`。
 async fn text_summarize(request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -343,6 +403,8 @@ async fn text_summarize(request: Request) -> Response {
 // GET /api/tts/status · GET /api/tts/say/status
 // ---------------------------------------------------------------------------
 
+/// GET `/api/tts/status` 处理器：返回服务端 OpenAI TTS 可用性与固定 voice
+/// 列表（[`service::TTS_VOICES`]）。
 async fn tts_status(State(state): State<TtsState>) -> Response {
     Json(json!({
         "available": state.service.is_available(),
@@ -351,6 +413,8 @@ async fn tts_status(State(state): State<TtsState>) -> Response {
     .into_response()
 }
 
+/// GET `/api/tts/say/status` 处理器：等待启动时那次 `say` 探测的权威结果并
+/// 原样返回。
 async fn say_status(State(state): State<TtsState>) -> Response {
     // The startup probe runs concurrently with server bootstrap; an early
     // status request waits for that same authoritative result.
@@ -361,6 +425,8 @@ async fn say_status(State(state): State<TtsState>) -> Response {
 // POST /api/tts/say/speak
 // ---------------------------------------------------------------------------
 
+/// 当前 Unix 时间戳（毫秒），用于生成 `say` 输出临时文件名；时钟早于纪元时
+/// 返回 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -370,6 +436,11 @@ fn now_ms() -> u64 {
 
 /// The `language: 'auto'` resolution: keep the chosen voice while it speaks
 /// the text's language, otherwise switch to an installed voice that does.
+///
+/// 返回 (最终 voice, 检测到的语言)。非 `"auto"` 时原样返回且语言为 `None`；
+/// `auto` 时对样本（`languageSample` 前 4000 字符，空白则回退正文）做语言
+/// 检测，若所选 voice 的 locale 不说该语言且已安装 voice 中有会说的，就切换
+/// 到那个 voice。
 pub(crate) fn resolve_say_voice(
     voice: &str,
     language: Option<&str>,
@@ -398,6 +469,9 @@ pub(crate) fn resolve_say_voice(
     (resolved, Some(detected))
 }
 
+/// 从 `say` 能力 JSON 的 `voices` 数组提取 [`VoiceEntry`] 列表；`voices` 不是
+/// 数组或条目缺少 `name`/`locale` 字符串字段时，对应条目被跳过（整体缺失
+/// 返回空表）。
 fn capability_voices(capability: &Value) -> Vec<VoiceEntry> {
     capability
         .get("voices")
@@ -416,6 +490,11 @@ fn capability_voices(capability: &Value) -> Vec<VoiceEntry> {
         .unwrap_or_default()
 }
 
+/// POST `/api/tts/say/speak` 处理器：仅 macOS 可用（其余平台 503）。voice
+/// 缺省 "Samantha"；`language: 'auto'` 时先解析 voice 与语言，随后以 argv
+/// 形式调用 `say -v <voice> -r <rate> -o <临时文件> --data-format=aac <text>`
+/// 合成 AAC 音频，读回文件内容（尽力删除临时文件）后以 `audio/mp4` 返回，
+/// 并附 `X-Speech-Voice` 与（auto 时）`X-Speech-Language` 响应头。
 async fn say_speak(State(state): State<TtsState>, request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -514,6 +593,10 @@ async fn say_speak(State(state): State<TtsState>, request: Request) -> Response 
 // POST /api/stt/transcribe
 // ---------------------------------------------------------------------------
 
+/// POST `/api/stt/transcribe` 处理器：要求 `Content-Type` 以 `audio/` 开头、
+/// body 非空且携带 `x-base-url` 头（违反任一返回 400）；`x-model` 缺省
+/// [`DEFAULT_STT_MODEL`]，bearer token 取自 `Authorization` 头。参数交给
+/// [`Transcriber`] 转写，成功返回 `{ "transcript": ... }`，失败 500。
 async fn stt_transcribe(State(state): State<TtsState>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let content_type = parts
@@ -581,6 +664,7 @@ async fn stt_transcribe(State(state): State<TtsState>, request: Request) -> Resp
 
 /// A request header as a trimmed, non-empty string (JS
 /// `typeof req.headers[name] === 'string' ? value.trim() : ''`).
+/// 头缺失、非 ASCII 或 trim 后为空都返回 `None`（模拟 JS 空串的 falsy 语义）。
 fn trimmed_header(headers: &axum::http::HeaderMap, name: &'static str) -> Option<String> {
     headers
         .get(name)
@@ -590,6 +674,8 @@ fn trimmed_header(headers: &axum::http::HeaderMap, name: &'static str) -> Option
         .map(str::to_string)
 }
 
+/// 路由层测试：以注入的 fake provider/transcriber 验证各端点的状态码、响应
+/// 形状与转发参数。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,12 +686,17 @@ mod tests {
 
     use service::{SpeechOutput, SpeechProvider, SpeechRequest};
 
+    /// 测试用语音合成 fake：记录收到的请求并返回预设结果。
     struct FakeSpeech {
+        /// 预设结果（音频字节或错误消息）。
         result: Result<Vec<u8>, String>,
+        /// 收到的 `SpeechRequest` 记录（供断言转发参数）。
         requests: Mutex<Vec<SpeechRequest>>,
     }
 
+    /// fake 的 trait 实现：入队请求后返回预设结果。
     impl SpeechProvider for FakeSpeech {
+        /// 记录请求并异步返回预设的合成结果。
         fn generate_speech(&self, request: SpeechRequest) -> service::SpeechFuture {
             self.requests
                 .lock()
@@ -621,12 +712,17 @@ mod tests {
         }
     }
 
+    /// 测试用转写 fake：记录调用参数并返回预设转写文本。
     struct FakeTranscriber {
+        /// 预设结果（转写文本或错误消息）。
         result: Result<String, String>,
+        /// 收到的 `TranscribeParams` 记录。
         calls: Mutex<Vec<TranscribeParams>>,
     }
 
+    /// fake 的 trait 实现：入队参数后返回预设结果。
     impl Transcriber for FakeTranscriber {
+        /// 记录参数并异步返回预设转写结果。
         fn transcribe(&self, params: TranscribeParams) -> stt::TranscribeFuture {
             self.calls
                 .lock()
@@ -636,12 +732,17 @@ mod tests {
             Box::pin(async move { result })
         }
     }
+    /// 一次路由测试的装配件：测试 router 与两个 fake 的共享句柄。
     struct Fixture {
+        /// 已绑定状态的 router（未挂鉴权层）。
         router: Router,
+        /// 语音合成 fake。
         speech: Arc<FakeSpeech>,
+        /// 转写 fake。
         transcriber: Arc<FakeTranscriber>,
     }
 
+    /// 用给定的合成结果、服务端 key、`say` 能力 JSON 与平台名组装测试装配件。
     fn fixture(
         speech_result: Result<Vec<u8>, String>,
         key: Option<&str>,
@@ -674,6 +775,7 @@ mod tests {
         }
     }
 
+    /// 默认装配件：合成成功、配置了 server key、`say` 探测不可用、平台 linux。
     fn default_fixture() -> Fixture {
         fixture(
             Ok(vec![1, 2, 3]),
@@ -683,6 +785,8 @@ mod tests {
         )
     }
 
+    /// 以 one-shot 方式调用 router，解出 (状态码, JSON body 或 `Value::Null`,
+    /// 原始字节)。
     async fn call(router: &Router, request: Request<Body>) -> (StatusCode, Value, Vec<u8>) {
         let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status();
@@ -703,6 +807,7 @@ mod tests {
         (status, value, body)
     }
 
+    /// 构造带 `application/json` 头的 POST 请求。
     fn post_json(path: &str, body: Value) -> Request<Body> {
         HttpRequest::post(path)
             .header(header::CONTENT_TYPE, "application/json")
@@ -712,6 +817,7 @@ mod tests {
 
     // -- voice/token ------------------------------------------------------
 
+    /// 验证 voice/token：有环境 key 返回 200，无 key 返回 503。
     #[test]
     fn voice_token_maps_env_key_presence() {
         let unconfigured = voice_token_response(None);
@@ -720,6 +826,7 @@ mod tests {
         assert_eq!(configured.status(), StatusCode::OK);
     }
 
+    /// 验证空白 `OPENAI_API_KEY` 等同未配置（503）。
     #[test]
     fn voice_token_treats_blank_env_as_unconfigured() {
         assert_eq!(
@@ -730,6 +837,7 @@ mod tests {
 
     // -- tts/speak --------------------------------------------------------
 
+    /// 验证无任何 key 与自定义 URL 时 `/api/tts/speak` 返回 503 及固定错误文案。
     #[tokio::test]
     async fn speak_returns_503_without_any_key_or_custom_url() {
         let fixture = fixture(
@@ -750,6 +858,7 @@ mod tests {
         );
     }
 
+    /// 验证空白文本返回 400 "Text is required"，且远程自定义 URL 被策略拒绝。
     #[tokio::test]
     async fn speak_validates_text_and_base_url() {
         let fixture = default_fixture();
@@ -778,6 +887,8 @@ mod tests {
         );
     }
 
+    /// 验证成功路径：返回音频字节与 Content-Type/Cache-Control/Content-Length
+    /// 头，且默认 voice/model/speed 与服务端 key 被正确转发。
     #[tokio::test]
     async fn speak_streams_audio_with_headers() {
         let fixture = default_fixture();
@@ -816,6 +927,8 @@ mod tests {
         assert_eq!(request.api_key, "server-key");
     }
 
+    /// 验证 provider 失败映射为 500，`detail` 回显原始 `model`/`voice` 字段与
+    /// `hasBaseURL`。
     #[tokio::test]
     async fn speak_maps_provider_errors_to_detail_shape() {
         let fixture = fixture(
@@ -844,6 +957,7 @@ mod tests {
 
     // -- text/summarize ---------------------------------------------------
 
+    /// 验证 note 模式摘要兜底：取首句并标记 `summarized: false` 与原因。
     #[tokio::test]
     async fn summarize_returns_local_note_fallback() {
         let router = default_fixture().router;
@@ -866,6 +980,7 @@ mod tests {
         assert_eq!(body["reason"], "Model summarization provider unavailable");
     }
 
+    /// 验证 notification 模式兜底：原文原样返回且 `summarized: false`。
     #[tokio::test]
     async fn summarize_notification_fallback_returns_text() {
         let router = default_fixture().router;
@@ -891,6 +1006,7 @@ mod tests {
         assert_eq!(body["reason"], "Model summarization provider unavailable");
     }
 
+    /// 验证缺失文本返回 400 "Text is required"。
     #[tokio::test]
     async fn summarize_requires_text() {
         let router = default_fixture().router;
@@ -903,6 +1019,7 @@ mod tests {
         assert_eq!(body["error"], "Text is required");
     }
 
+    /// 验证文本长度低于 threshold 时返回 "Text under threshold" 原因。
     #[tokio::test]
     async fn summarize_under_threshold_reason() {
         let router = default_fixture().router;
@@ -920,6 +1037,7 @@ mod tests {
 
     // -- status routes ----------------------------------------------------
 
+    /// 验证 `/api/tts/status` 返回可用性与 13 个固定 voice。
     #[tokio::test]
     async fn tts_status_reports_availability_and_voices() {
         let router = default_fixture().router;
@@ -937,6 +1055,7 @@ mod tests {
         assert_eq!(body["voices"][12], "cedar");
     }
 
+    /// 验证 `/api/tts/say/status` 等待并原样返回探测结果 JSON。
     #[tokio::test]
     async fn say_status_waits_for_the_authoritative_capability() {
         let capability = json!({
@@ -957,6 +1076,7 @@ mod tests {
 
     // -- tts/say/speak ----------------------------------------------------
 
+    /// 验证非 macOS 平台 `/api/tts/say/speak` 返回 503。
     #[tokio::test]
     async fn say_speak_refuses_off_macos() {
         let router = default_fixture().router;
@@ -972,6 +1092,7 @@ mod tests {
         );
     }
 
+    /// 验证缺失文本返回 400 "Text is required"。
     #[tokio::test]
     async fn say_speak_requires_text() {
         let router = default_fixture().router;
@@ -980,6 +1101,8 @@ mod tests {
         assert_eq!(body["error"], "Text is required");
     }
 
+    /// 验证 `auto` 语言解析：乌克兰语文本切换到会该语言的 Enhanced voice、英文
+    /// 保持原 voice、非 auto 时原样返回且语言为 `None`。
     #[test]
     fn resolves_say_voice_for_the_texts_language() {
         let voices = vec![
@@ -1018,6 +1141,7 @@ mod tests {
         assert_eq!(language, None);
     }
 
+    ///（仅 macOS）验证真实 `say` 合成返回非空 `audio/mp4` 与 voice/语言响应头。
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn say_speak_synthesizes_on_macos_with_resolved_voice() {
@@ -1051,6 +1175,7 @@ mod tests {
 
     // -- stt/transcribe ---------------------------------------------------
 
+    /// 验证非 `audio/` Content-Type 返回 400 "Audio data is required"。
     #[tokio::test]
     async fn stt_requires_audio_content_type() {
         let fixture = default_fixture();
@@ -1063,6 +1188,7 @@ mod tests {
         assert_eq!(body["error"], "Audio data is required");
     }
 
+    /// 验证空音频 body 返回 400 "Audio data is required"。
     #[tokio::test]
     async fn stt_requires_nonempty_audio() {
         let fixture = default_fixture();
@@ -1075,6 +1201,7 @@ mod tests {
         assert_eq!(body["error"], "Audio data is required");
     }
 
+    /// 验证缺失 `x-base-url` 头返回 400 "X-Base-URL header is required"。
     #[tokio::test]
     async fn stt_requires_base_url_header() {
         let fixture = default_fixture();
@@ -1087,6 +1214,8 @@ mod tests {
         assert_eq!(body["error"], "X-Base-URL header is required");
     }
 
+    /// 验证头参数（trim 后的 base URL、model、language、Bearer token）与音频
+    /// 字节被原样转发，MIME 参数部分保留。
     #[tokio::test]
     async fn stt_proxies_to_the_transcriber_with_headers() {
         let fixture = default_fixture();
@@ -1118,6 +1247,7 @@ mod tests {
         assert_eq!(params.api_key.as_deref(), Some("sk-test"));
     }
 
+    /// 验证转写器错误映射为 500 且 `error` 消息透传。
     #[tokio::test]
     async fn stt_maps_transcriber_errors_to_500() {
         let speech = Arc::new(FakeSpeech {
@@ -1149,6 +1279,7 @@ mod tests {
         assert_eq!(body["error"], "upstream broke");
     }
 
+    /// 验证缺失 `x-model` 头时使用 `DEFAULT_STT_MODEL`，且 language/api key 为空。
     #[tokio::test]
     async fn stt_applies_default_model_when_header_missing() {
         let fixture = default_fixture();

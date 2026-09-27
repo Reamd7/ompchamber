@@ -2,6 +2,9 @@
 //! (atomic write with restrictive permissions), startup migrations (legacy
 //! keys, deterministic project ids, project-scoped storage moves, orphan
 //! recovery), and the serialized persist pipeline.
+//! （中文概要）settings.json 磁盘 IO（原子写 + 收紧权限）、启动迁移
+//! （遗留键清理、确定性项目 id、项目作用域存储搬迁、孤儿恢复）与
+//! 串行化的 persist 流水线。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,11 +24,16 @@ use super::normalization::{
 };
 use crate::error::AppError;
 
+/// 项目图标支持的扩展名，图标迁移时逐个尝试改名。
 const PROJECT_ICON_EXTENSIONS: [&str; 5] = ["png", "jpg", "svg", "webp", "ico"];
 
+/// 缺少亮色偏好时的默认亮色主题 id。
 const DEFAULT_LIGHT_THEME_ID: &str = "flexoki-light";
+/// 缺少暗色偏好时的默认暗色主题 id。
 const DEFAULT_DARK_THEME_ID: &str = "flexoki-dark";
 
+/// 四类通知事件（completion/error/question/subtask）的默认模板，键为
+/// 事件名，值为含 title/message 占位符字符串的对象。
 fn default_notification_templates() -> Map<String, Value> {
     let mut templates = Map::new();
     let mut insert = |event: &str, title: &str, message: &str| {
@@ -51,6 +59,8 @@ fn default_notification_templates() -> Map<String, Value> {
 
 /// `ensureNotificationTemplateShape` — fills missing/invalid entries and
 /// reports whether anything changed.
+/// 逐事件补齐缺失/非法的 title、message 字段并回落默认值，返回
+/// （修复后的模板表, 是否有改动）。
 fn ensure_notification_template_shape(templates: Option<&Value>) -> (Map<String, Value>, bool) {
     let input = templates.filter(|v| v.as_object().is_some());
     let mut changed = false;
@@ -91,6 +101,7 @@ fn ensure_notification_template_shape(templates: Option<&Value>) -> (Map<String,
     (next, changed)
 }
 
+/// 当前 Unix 毫秒时间戳；时钟异常时返回 0。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -104,6 +115,8 @@ fn now_ms() -> u64 {
 
 /// `readJsonFile`: `None` for a missing file or non-object payload, error for
 /// anything else (malformed JSON included).
+/// 读 JSON 文件：文件不存在或顶层不是对象/数组返回 None；其余失败
+/// （含 JSON 解析错误）返回 Err。
 async fn read_json_file(path: &Path) -> Result<Option<Value>, AppError> {
     let raw = match tokio::fs::read_to_string(path).await {
         Ok(raw) => raw,
@@ -121,6 +134,8 @@ async fn read_json_file(path: &Path) -> Result<Option<Value>, AppError> {
 
 /// `writeJsonFile`: mkdir parents + pretty-printed write (not atomic — that
 /// is reserved for settings.json itself via [`SettingsStore::write_raw`]).
+/// 写 JSON 文件：先创建父目录再 pretty 写入；非原子写——原子性仅保留
+/// 给 settings.json 本身（见 SettingsStore::write_raw）。
 async fn write_json_file(path: &Path, value: &Value) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -131,6 +146,7 @@ async fn write_json_file(path: &Path, value: &Value) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 删除文件，文件不存在视为成功；供迁移清理使用。
 async fn remove_file_force(path: &Path) -> Result<(), AppError> {
     match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
@@ -139,6 +155,7 @@ async fn remove_file_force(path: &Path) -> Result<(), AppError> {
     }
 }
 
+/// 递归删除目录，目录不存在视为成功。
 async fn remove_dir_force(path: &Path) -> Result<(), AppError> {
     match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
@@ -151,6 +168,7 @@ async fn remove_dir_force(path: &Path) -> Result<(), AppError> {
 // Project-scoped storage migration (settings-runtime.js)
 // ---------------------------------------------------------------------------
 
+/// 取 JSON 值的对象形态克隆；非对象（含 null）得空 Map。
 fn value_object(v: Option<&Value>) -> Map<String, Value> {
     match v {
         Some(Value::Object(map)) => map.clone(),
@@ -159,6 +177,8 @@ fn value_object(v: Option<&Value>) -> Map<String, Value> {
 }
 
 /// `mergeByKey`: new items first, then old, deduped by an identity key.
+/// 按身份键去重合并两个条目数组：新条目在前、旧条目补后；身份键取
+/// key_fields 中首个命中且非空的字符串字段，无键或非对象条目被丢弃。
 fn merge_by_key(
     old_items: Option<&Vec<Value>>,
     new_items: Option<&Vec<Value>>,
@@ -193,6 +213,8 @@ fn merge_by_key(
 
 /// `remapPlanPaths`: rewrite plan file paths that live under `from_dir` to
 /// live under `to_dir`.
+/// 把位于 from_dir 下的 plan 文件路径改写到 to_dir 下；无 path 字段或
+/// 相对路径越界（以 .. 开头或为绝对路径）的条目原样保留。
 fn remap_plan_paths(entries: Option<&Value>, from_dir: &str, to_dir: &str) -> Vec<Value> {
     let Some(items) = entries.and_then(Value::as_array) else {
         return Vec::new();
@@ -229,6 +251,10 @@ fn remap_plan_paths(entries: Option<&Value>, from_dir: &str, to_dir: &str) -> Ve
 
 /// `mergeProjectConfigData`: identity-merge the server-owned project config
 /// across a storage directory change.
+/// 跨存储目录变更合并服务端拥有的项目配置：新旧对象 spread 后按字段
+/// 规则合并——projectPath 修正为当前路径、notes 取非空一侧、
+/// setup-worktree 去重拼接、todos/actions/scheduledTasks/planFiles 按键
+/// 去重（新条目优先）、primaryId 取新侧回退旧侧。
 fn merge_project_config_data(
     old_config: Option<&Value>,
     new_config: Option<&Value>,
@@ -341,6 +367,9 @@ fn merge_project_config_data(
 
 /// `moveDirectoryContents`: rename everything that does not already exist at
 /// the destination, then drop the source directory.
+/// 把 from_dir 的内容并入 to_dir：子目录递归、目标已存在的文件跳过
+/// （对齐 JS access 判定）、其余 rename，最后删除源目录；源目录不存在
+/// 直接视为成功。
 async fn move_directory_contents(from_dir: &Path, to_dir: &Path) -> Result<(), AppError> {
     let entries = match tokio::fs::read_dir(from_dir).await {
         Ok(entries) => entries,
@@ -369,6 +398,8 @@ async fn move_directory_contents(from_dir: &Path, to_dir: &Path) -> Result<(), A
 }
 
 /// `migrateProjectIconFiles`: move `project-<sha1(id)>.<ext>` icons.
+/// 迁移项目图标：把 project-<sha1(id)>.<ext> 逐扩展名改名到新 id；
+/// 新图标已存在时直接删除旧图标。
 async fn migrate_project_icon_files(
     icons_dir: &Path,
     old_id: &str,
@@ -400,6 +431,10 @@ async fn migrate_project_icon_files(
 
 /// `mergeProjectContextFiles`: merge server-owned context.json (notes/todos/
 /// plans) across a project id change so neither side loses entries.
+/// 跨项目 id 变更合并 context.json（notes/todos/plans）：两侧都有文件时
+/// 按身份键去重合并（v1 字符串形态的 notes 优先保留数组、双侧都是
+/// 字符串时取新侧），结果写回新路径并删除旧文件；任一侧缺失时交给
+/// 纯目录搬迁处理。
 async fn merge_project_context_files(
     old_storage_dir: &Path,
     new_storage_dir: &Path,
@@ -456,6 +491,8 @@ async fn merge_project_context_files(
 
 /// `migrateProjectScopedStorage`: move `<projectsRoot>/<id>.json` + the
 /// per-project storage directory across a project id change.
+/// 迁移项目作用域存储：合并新旧 <id>.json 配置、合并 context.json、
+/// 搬迁剩余目录内容并删除旧配置文件；新旧 id 相同或为空则直接跳过。
 async fn migrate_project_scoped_storage(
     projects_root: &Path,
     old_id: &str,
@@ -493,6 +530,7 @@ async fn migrate_project_scoped_storage(
 // Orphan recovery
 // ---------------------------------------------------------------------------
 
+/// 取路径最后一段并小写（统一把 `\` 视为分隔符），供孤儿指纹匹配使用。
 fn basename_of(project_path: Option<&str>) -> String {
     let Some(path) = project_path else {
         return String::new();
@@ -506,6 +544,9 @@ fn basename_of(project_path: Option<&str>) -> String {
 /// Scan `$ROOT_PROJECT_PATH/…` / `$ROOT_WORKTREE_PATH/…` references in
 /// setup-worktree commands and project action commands (JS regex
 /// `/\$(?:\{)?ROOT_(?:PROJECT|WORKTREE)_PATH\}?\/([A-Za-z0-9._/-]+)/g`).
+/// 从 setup-worktree 与 projectActions 命令里扫描
+/// $ROOT_PROJECT_PATH/…、$ROOT_WORKTREE_PATH/… 引用，返回去重后的
+/// 相对路径片段（手写扫描等价 JS 正则，避免正则引擎差异）。
 fn extract_root_rel_paths(orphan: &Value) -> Vec<String> {
     let mut commands: Vec<&str> = Vec::new();
     if let Some(setup) = orphan.get("setup-worktree").and_then(Value::as_array) {
@@ -564,10 +605,14 @@ fn extract_root_rel_paths(orphan: &Value) -> Vec<String> {
     results
 }
 
+/// 路径可访问（metadata 成功）即视为存在。
 async fn file_exists(path: &Path) -> bool {
     tokio::fs::metadata(path).await.is_ok()
 }
 
+/// 判定孤儿配置是否指向给定项目：先看 ROOT_PROJECT_PATH/ROOT_WORKTREE_PATH
+/// 引用的相对路径是否存在于项目目录下，再看命令与动作文本是否包含
+/// 项目目录名（小写包含匹配）。
 async fn orphan_matches_project(orphan: &Value, project: &Value) -> bool {
     let Some(project_path) = project
         .get("path")
@@ -616,6 +661,9 @@ async fn orphan_matches_project(orphan: &Value, project: &Value) -> bool {
 
 /// `recoverOrphanProjectFiles`: match unreferenced random-UUID project
 /// configs to canonical projects by their setup-worktree fingerprints.
+/// 孤儿恢复：扫描 projects 根下未被引用的随机 UUID 配置（跳过 path_
+/// 前缀与已知 id），只处理含 notes/todos/actions/setup/plan 内容的文件；
+/// 指纹唯一命中某个规范项目时合并配置并搬迁存储目录，其余记告警。
 async fn recover_orphan_project_files(
     projects_root: &Path,
     canonical_projects: &[Value],
@@ -780,14 +828,17 @@ async fn recover_orphan_project_files(
 // Settings migrations
 // ---------------------------------------------------------------------------
 
+/// 各迁移函数的统一返回：迁移后的 settings 与是否发生改动。
 type MigrationResult = Result<(Map<String, Value>, bool), AppError>;
 
+/// 取 settings 中某键的字符串值；非字符串得 None。
 fn settings_str<'a>(settings: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     settings.get(key).and_then(Value::as_str)
 }
 
 /// `resolveDirectoryCandidate` (project-directory-runtime.js): trim,
 /// normalize, resolve — no filesystem access.
+/// 目录候选解析：trim → 规范化 → resolve，全程不做文件系统访问。
 fn resolve_directory_candidate(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -797,12 +848,16 @@ fn resolve_directory_candidate(value: &str) -> Option<String> {
     Some(path_resolve(&normalized).to_string_lossy().into_owned())
 }
 
+/// 路径存在且为目录。
 async fn is_directory(path: &str) -> bool {
     matches!(tokio::fs::metadata(path).await, Ok(md) if md.is_dir())
 }
 
 /// Migration 1: seed projects from the legacy `lastDirectory` key and keep
 /// `activeProjectId` pointing at a live project.
+/// 项目列表为空且 lastDirectory 仍指向现存目录时，以其播种首个项目并
+/// 设为激活；同时保证 activeProjectId 始终指向存活项目（否则改指首个，
+/// 无项目时清除）。
 async fn migrate_settings_from_legacy_last_directory(
     settings: &Map<String, Value>,
 ) -> MigrationResult {
@@ -871,6 +926,8 @@ async fn migrate_settings_from_legacy_last_directory(
 }
 
 /// Migration 2: split the legacy single-theme preference into light/dark ids.
+/// 把单一 themeId/themeVariant 偏好拆成 lightThemeId 与 darkThemeId：
+/// 变体匹配时沿用旧主题 id，否则填默认主题；两侧齐备则不改动。
 fn migrate_settings_from_legacy_theme_preferences(
     settings: &Map<String, Value>,
 ) -> MigrationResult {
@@ -920,6 +977,8 @@ fn migrate_settings_from_legacy_theme_preferences(
 }
 
 /// Migration 3: fold `collapsedProjects` into per-project `sidebarCollapsed`.
+/// 把旧版全局 collapsedProjects id 列表折叠进各项目的 sidebarCollapsed
+/// 布尔位，并移除遗留键。
 fn migrate_settings_from_legacy_collapsed_projects(
     settings: &Map<String, Value>,
 ) -> MigrationResult {
@@ -980,6 +1039,8 @@ fn migrate_settings_from_legacy_collapsed_projects(
 }
 
 /// Migration 4: default notification booleans + template shape.
+/// 补齐四类通知开关的布尔默认值（缺省 true），并修复
+/// notificationTemplates 的形状（见 ensure_notification_template_shape）。
 fn migrate_settings_notification_defaults(settings: &Map<String, Value>) -> MigrationResult {
     let mut next = settings.clone();
     let mut changed = false;
@@ -1011,6 +1072,8 @@ fn migrate_settings_notification_defaults(settings: &Map<String, Value>) -> Migr
 }
 
 /// Migration 5: rename `namedTunnel*` keys to `managedRemoteTunnel*`.
+/// 五个 namedTunnel* 遗留键改名为 managedRemoteTunnel*：改名前先经
+/// normalization 清洗，非法值不落新键，最后删除全部遗留键。
 fn migrate_settings_from_legacy_named_tunnel_keys(
     settings: &Map<String, Value>,
 ) -> MigrationResult {
@@ -1113,6 +1176,9 @@ fn migrate_settings_from_legacy_named_tunnel_keys(
 
 /// Migration 7: move project ids (and their scoped storage) to the
 /// deterministic `path_<base64url>` ids.
+/// 项目 id（及其作用域存储、图标文件）迁移到路径派生的确定性
+/// path_<base64url> id；迁移途中顺带做一次性孤儿恢复，最后按映射表
+/// 重定向 activeProjectId。
 async fn migrate_settings_to_deterministic_project_ids(
     projects_root: &Path,
     icons_dir: &Path,
@@ -1192,6 +1258,7 @@ async fn migrate_settings_to_deterministic_project_ids(
 }
 
 /// Migration 8: `approvedDirectories` was a write-only registry — strip it.
+/// 删除只写不读的 approvedDirectories 注册表键。
 fn migrate_settings_remove_approved_directories(settings: &Map<String, Value>) -> MigrationResult {
     if !settings.contains_key("approvedDirectories") {
         return Ok((settings.clone(), false));
@@ -1202,6 +1269,7 @@ fn migrate_settings_remove_approved_directories(settings: &Map<String, Value>) -
 }
 
 /// Migration 9: drop the retired OpenCode update notification state.
+/// 删除已退役的 OpenCode 更新通知状态键。
 fn migrate_settings_remove_opencode_update_state(settings: &Map<String, Value>) -> MigrationResult {
     let legacy_keys = [
         "showOpenCodeUpdateNotifications",
@@ -1219,6 +1287,8 @@ fn migrate_settings_remove_opencode_update_state(settings: &Map<String, Value>) 
 
 /// `validateProjectEntries`: drop projects whose path is missing or no longer
 /// a directory (keep them on transient/permission errors).
+/// 校验项目条目：path 缺失、为空或不再是目录的条目剔除并告警；权限等
+/// 瞬态错误保留条目，避免误删用户项目。
 async fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
     let mut validated = Vec::new();
     for project in projects {
@@ -1259,17 +1329,26 @@ async fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
 /// Owns settings.json persistence for one data directory. Retrieve shared
 /// instances through [`super::store_for_path`] so the persist lock and the
 /// one-shot migration flags are process-wide (JS module-level state).
+/// 负责单个 data 目录下 settings.json 的持久化；经 super::store_for_path
+/// 获取共享实例，使持久化锁与一次性迁移标志在进程内唯一（对应 JS 的
+/// 模块级状态）。
 pub struct SettingsStore {
+    /// settings.json 完整路径；projects/ 与 project-icons/ 目录由其父目录派生。
     settings_path: PathBuf,
     /// JS `persistSettingsLock`: serializes read-modify-write cycles.
+    /// 串行化读-改-写持久化周期。
     persist_lock: tokio::sync::Mutex<()>,
     /// JS `hasCleanedOrphanedTempFiles`.
+    /// 是否已执行过孤儿临时文件清理（一次性）。
     cleaned_orphaned_temp_files: AtomicBool,
     /// JS `orphanRecoveryDone`.
+    /// 是否已执行过孤儿项目恢复（一次性）。
     orphan_recovery_done: AtomicBool,
 }
 
+/// settings.json 的读取、迁移与原子持久化入口。
 impl SettingsStore {
+    /// 以 settings.json 路径构建存储；各一次性标志初始为未执行。
     pub fn new(settings_path: PathBuf) -> Self {
         Self {
             settings_path,
@@ -1279,10 +1358,12 @@ impl SettingsStore {
         }
     }
 
+    /// settings.json 路径访问器。
     pub fn settings_path(&self) -> &Path {
         &self.settings_path
     }
 
+    /// 项目配置根 `<data>/projects`（settings.json 的兄弟目录）。
     fn projects_root(&self) -> PathBuf {
         self.settings_path
             .parent()
@@ -1290,6 +1371,7 @@ impl SettingsStore {
             .join("projects")
     }
 
+    /// 项目图标目录 `<data>/project-icons`（settings.json 的兄弟目录）。
     fn project_icons_dir(&self) -> PathBuf {
         self.settings_path
             .parent()
@@ -1299,6 +1381,7 @@ impl SettingsStore {
 
     /// `readSettingsFromDisk` (lenient): missing file, malformed JSON, and
     /// non-object payloads all read as empty settings.
+    /// 宽松读取：文件缺失、JSON 损坏或顶层非对象一律返回空 settings（仅告警）。
     pub async fn read_raw(&self) -> Map<String, Value> {
         let raw = match tokio::fs::read_to_string(&self.settings_path).await {
             Ok(raw) => raw,
@@ -1322,6 +1405,8 @@ impl SettingsStore {
     /// settings"; malformed JSON or a non-object payload is an error so
     /// callers that regenerate persisted identity never treat corruption as
     /// a first run.
+    /// 严格读取：仅"文件确实不存在"代表无 settings；JSON 损坏或顶层非对象
+    /// 返回 Err，避免持久化身份的调用方把损坏误判为首次运行。
     pub async fn read_strict(&self) -> Result<Map<String, Value>, AppError> {
         let raw = match tokio::fs::read_to_string(&self.settings_path).await {
             Ok(raw) => raw,
@@ -1339,6 +1424,7 @@ impl SettingsStore {
     }
 
     /// Typed view over the lenient raw read for module consumers.
+    /// 宽松原始读取的强类型视图，供模块内消费方使用；解析失败按内部错误上报。
     pub async fn read_typed(&self) -> Result<Settings, AppError> {
         let raw = self.read_raw().await;
         serde_json::from_value(Value::Object(raw))
@@ -1347,6 +1433,7 @@ impl SettingsStore {
 
     /// `cleanupOrphanedSettingsTempFiles`: best-effort removal of leftover
     /// `settings.json.tmp-*` files from crashed writes.
+    /// 尽力清除崩溃写入残留的 settings.json.tmp-* 文件；任何失败静默忽略。
     async fn cleanup_orphaned_settings_temp_files(&self) {
         let Some(dir) = self.settings_path.parent() else {
             return;
@@ -1366,6 +1453,9 @@ impl SettingsStore {
 
     /// `writeSettingsToDisk`: atomic replace via temp file + rename with
     /// restrictive permissions (0o700 dir, 0o600 file).
+    /// 原子写 settings.json：temp 文件（0o600）+ rename 替换，目录权限 0o700；
+    /// 其它进程以普通 readFile+JSON.parse 读取并把解析错误当作空对象，因此
+    /// 必须避免写入中途被读到半截 JSON 而在下次读-改-写时清空配置。
     pub async fn write_raw(&self, settings: &Map<String, Value>) -> Result<(), AppError> {
         let settings_directory = self
             .settings_path
@@ -1417,6 +1507,8 @@ use crate::os_compat::PermissionsExt;
 
     /// `readSettingsFromDiskMigrated`: lenient read + all startup migrations,
     /// persisting the migrated settings when anything changed.
+    /// 宽松读取后依次执行全部启动迁移（含一次性的临时文件清理与孤儿恢复），
+    /// 任一迁移产生改动则立即落盘。
     pub async fn read_migrated(&self) -> Result<Map<String, Value>, AppError> {
         if !self
             .cleaned_orphaned_temp_files
@@ -1451,6 +1543,9 @@ use crate::os_compat::PermissionsExt;
     /// `persistSettings`: sanitize an incoming update, merge it into the
     /// persisted settings, run path/id migrations, keep the active project
     /// sane, write atomically, and return the formatted response.
+    /// persistSettings：加锁 → 清洗更新 → 合并 → 路径与项目 id 迁移 → 校验
+    /// 项目条目 → 修正 activeProjectId → 原子写盘，返回格式化响应；日志只
+    /// 记字段名，防止凭据（密码/隧道 token 等）落盘。
     pub async fn persist(&self, changes: &Value) -> Result<Value, AppError> {
         let _guard = self.persist_lock.lock().await;
         // Log field names only — changes can carry credentials (UI password,
@@ -1550,6 +1645,9 @@ use crate::os_compat::PermissionsExt;
 
 /// Write a file with 0o600 permissions (mode applies on create; an explicit
 /// chmod defeats umask, mirroring the JS sequence).
+/// 以 0o600 权限写文件：创建时指定 mode 并显式 chmod 压过 umask；
+/// tokio File 需 flush 完成后才返回，保证同进程的同步读者不会观察到
+/// 截断/空内容。
 async fn write_file_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     #[cfg(unix)]
     {

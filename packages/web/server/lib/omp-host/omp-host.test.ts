@@ -1,3 +1,9 @@
+/**
+ * omp-host 域模块的单元测试：wire 投影（projection.ts，冷路径
+ * projectConversation 与热路径 StreamProjector）、事件总线
+ * （events.ts 的 WireEventBus）、会话元数据注册表（registry.ts）、
+ * 提示载荷与技能行投影（endpoints.ts）。
+ */
 import { describe, expect, test, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -26,30 +32,43 @@ import type {
   WireMessageInfo,
 } from './projection.ts';
 
+/** 测试内收集的发射事件：wire 事件类型名 + 对应属性（按事件类型收窄读取）。 */
 type EmittedEvent = {
+  /** wire 事件类型（message.updated / message.part.updated / …）。 */
   type: string;
+  /** 事件属性：消息或部件的 updated/delta 载荷形状。 */
   properties: import('./projection.ts').WireMessageUpdatedProperties | import('./projection.ts').WirePartUpdatedProperties | import('./projection.ts').WirePartDeltaProperties;
 };
 
+/** 固定的时间基准（ms）：让 id 派生与时间断言完全确定。 */
 const now = 1_700_000_000_000;
 
+/** 构造用户消息 fixture：纯文本内容 + 可选时间戳（缺省基准 now）。 */
 const userMessage = (text: string, timestamp: number = now): UserMessageInput => ({
   role: 'user',
   content: text,
   timestamp,
 });
 
+/** 助手消息 fixture：在投影契约之外携带惰性的 api 标记。 */
 /** Assistant transcript fixture — carries the inert `api` marker alongside the projection contract. */
 interface AssistantFixture extends AssistantMessageInput {
+  /** SDK 侧来源标记；投影契约不消费。 */
   api?: string;
 }
 
+/** 工具结果 fixture：在配对契约之外携带惰性的 toolName 标签。 */
 /** Tool-result fixture — carries the inert `toolName` label alongside the pairing contract. */
 interface ToolResultFixture extends ToolResultMessageInput {
+  /** SDK 侧工具名标签；配对走 toolCallId，不读它。 */
   toolName?: string;
 }
 
 
+/**
+ * 构造助手消息 fixture：可覆写时间戳/模型/stopReason/usage/
+ * errorMessage；缺省 usage 提供全套 token 计数（input/output/cache/推理）。
+ */
 const assistantMessage = (
   content?: readonly ProjectedContentBlock[],
   {
@@ -76,6 +95,7 @@ const assistantMessage = (
   ...(errorMessage ? { errorMessage } : {}),
   timestamp,
 });
+/** 构造工具结果 fixture：按 callID 与助手 toolCall 配对，可标记错误与时间戳。 */
 const toolResult = (
   callID: string,
   text: string,
@@ -89,6 +109,7 @@ const toolResult = (
   timestamp,
 });
 
+/** 让 wire parentID 可同时按字符串或 .id 形状读取的测试页视图（服务被冻结的 wireIdFor 断言）。 */
 /**
  * Wire `parentID` is a bare string, but the frozen wireIdFor assertion reads it
  * through `parentID?.id ?? parentID`. This view keeps the string while exposing
@@ -101,6 +122,7 @@ type ChainableParentPage = Array<
   }
 >;
 
+// 投影契约：冷路径 projectConversation / projectUserMessage 与热路径 StreamProjector 的消息与部件形状。
 describe('projection', () => {
   test('splits model selectors', () => {
     expect(splitModelSelector('anthropic/claude-x')).toEqual({ providerID: 'anthropic', modelID: 'claude-x' });
@@ -580,6 +602,7 @@ describe('projection', () => {
   });
 });
 
+// WireEventBus：SSE 事件重放、Last-Event-ID 续订与目录过滤订阅语义。
 describe('WireEventBus', () => {
   test('replays events after Last-Event-ID and filters by directory', () => {
     const bus = new WireEventBus();
@@ -610,10 +633,14 @@ describe('WireEventBus', () => {
   });
 });
 
+// SessionMetaRegistry：目录键归一化、磁盘往返、fork 血缘迁移与跨目录 move。
 describe('SessionMetaRegistry', () => {
+  // 每个用例的临时 agentDir（beforeEach 重建）。
   let dir: string | undefined;
+  // 被测注册表实例（beforeEach 重建）。
   let registry: import('./registry.ts').SessionMetaRegistry | undefined;
 
+  // 非空读取器：registry 未初始化时快速失败。
   const reg = (): import('./registry.ts').SessionMetaRegistry => {
     if (!registry) throw new Error('registry not initialized');
     return registry;
@@ -663,8 +690,11 @@ describe('SessionMetaRegistry', () => {
   });
 });
 
+// paginateProjectedMessages：尾部截断、cursor 链回溯与边界输入行为。
 describe('paginateProjectedMessages', () => {
+  // 提取页内消息 id 序列的断言辅助。
   const ids = (page: ProjectedMessagePage) => page.messages.map((message) => message.info.id);
+  // 升序 stub 消息窗：分页只读 info.id，其余字段填充契约即可。
   // Pagination only reads info.id; the remaining wire-info fields pad the
   // ProjectedMessage contract (inert stubs for these tests).
   const ascending: ProjectedMessage[] = ['m1', 'm2', 'm3', 'm4', 'm5'].map((id) => ({
@@ -707,6 +737,7 @@ describe('paginateProjectedMessages', () => {
   });
 });
 
+// promptPayloadFromWire：wire 部件还原为 SDK prompt（文本 + 图片/附件内联）。
 describe('promptPayloadFromWire', () => {
   test('parses wire parts into joined text and decoded images', () => {
     const png = Buffer.from('fake-png').toString('base64');
@@ -798,6 +829,7 @@ describe('promptPayloadFromWire', () => {
   });
 });
 
+// wireSkillRows：技能发现行投影为线上行（frontmatter 剥离与读取容错）。
 describe('wireSkillRows', () => {
   test('projects discovered skills onto wire rows with frontmatter-stripped content', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-host-skills-'));

@@ -2,6 +2,11 @@
 //! (`createFsSearchRuntime.searchFilesystemFiles`). Used by non-fs routes
 //! (project icon discovery); exposed here as a library function with the JS
 //! scoring/ordering semantics intact.
+//!
+//! 中文说明：模糊文件系统搜索运行时。BFS 按批次（并发 5）遍历目录，
+//! 跳过隐藏目录与排除清单（不区分大小写），可选地用
+//! `git check-ignore` 过滤被忽略的条目；候选按"子串优先、否则子序列"
+//! 的模糊评分排序。语义（评分、排序、limit 行为）与 JS 版逐一对齐。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -10,7 +15,9 @@ use serde::Serialize;
 
 use super::workspace::git_binary;
 
+/// 每批并发读取的目录数上限（JS `queue.splice(0, 5)` 的批大小）。
 const FILE_SEARCH_MAX_CONCURRENCY: usize = 5;
+/// 永不进入的目录名清单（匹配时不区分大小写）。
 const FILE_SEARCH_EXCLUDED_DIRS: [&str; 10] = [
     "node_modules",
     ".git",
@@ -24,36 +31,61 @@ const FILE_SEARCH_EXCLUDED_DIRS: [&str; 10] = [
     "logs",
 ];
 
+/// 搜索参数；对应 JS `searchFilesystemFiles` 的 options 对象。
 #[derive(Debug, Clone, Default)]
 pub struct SearchOptions {
+    /// 返回结果的最大条数；0 表示直接返回空结果。
     pub limit: usize,
+    /// 搜索词（内部会 trim 并转小写；空串表示罗列全部文件）。
     pub query: String,
+    /// 是否包含点号开头的隐藏文件/目录。
     pub include_hidden: bool,
     /// Defaults to true in the JS (`respectGitignore !== false`).
+    ///
+    /// 中文说明：JS 中默认为 true（`respectGitignore !== false`），
+    /// 置 false 可跳过 `git check-ignore` 子进程调用。
     pub respect_gitignore: bool,
 }
 
+/// 单条搜索命中，序列化形状与 JS 返回对象一致（camelCase，
+/// extension 缺省时省略，score 不下发）。
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
+    /// 文件名（含扩展名）。
     pub name: String,
+    /// 绝对路径字符串。
     pub path: String,
+    /// 相对搜索根的路径（以 `/` 分隔）。
     #[serde(rename = "relativePath")]
     pub relative_path: String,
     /// None when the file name has no extension (JS `extension: undefined`).
+    ///
+    /// 中文说明：文件名不含点号时无扩展名，序列化时整个字段省略
+    /// （对齐 JS `extension: undefined`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension: Option<String>,
+    /// 模糊匹配得分，仅用于排序，不随 JSON 下发。
     #[serde(skip_serializing)]
     pub score: i64,
 }
 
+/// 目录项的轻量描述（名称 + 类型标志），供遍历与 gitignore 过滤复用。
 struct WalkDirent {
+    /// 目录项名称。
     name: String,
+    /// 是否为目录。
     is_dir: bool,
+    /// 是否为普通文件。
     is_file: bool,
+    /// 是否为符号链接。
     is_symlink: bool,
 }
 
 /// search.js `normalizeRelativeSearchPath`.
+///
+/// 中文说明：计算 `target_path` 相对 `root_path` 的展示路径：先各自
+/// 词法 resolve，再求相对路径；目标恰为根时取 basename；统一把平台
+/// 分隔符替换为 `/`。
 fn normalize_relative_search_path(root_path: &Path, target_path: &Path) -> String {
     let root_text = root_path.to_string_lossy();
     let target_text = target_path.to_string_lossy();
@@ -67,6 +99,9 @@ fn normalize_relative_search_path(root_path: &Path, target_path: &Path) -> Strin
 }
 
 /// search.js `shouldSkipSearchDirectory`.
+///
+/// 中文说明：目录是否应被跳过——空名不跳过；未开启隐藏包含时点号
+/// 开头的目录跳过；命中排除清单（小写比较）恒跳过。
 fn should_skip_search_directory(name: &str, include_hidden: bool) -> bool {
     if name.is_empty() {
         return false;
@@ -78,6 +113,9 @@ fn should_skip_search_directory(name: &str, include_hidden: bool) -> bool {
 }
 
 /// search.js `listDirectoryEntries` — unreadable directories read as empty.
+///
+/// 中文说明：同步读取一层目录并降级为 `WalkDirent` 列表；目录不可读
+/// 或单个条目获取类型失败时按不存在处理（条目被静默丢弃）。
 fn list_directory_entries(dir_path: &Path) -> Vec<WalkDirent> {
     let Ok(entries) = std::fs::read_dir(dir_path) else {
         return Vec::new();
@@ -101,6 +139,11 @@ fn list_directory_entries(dir_path: &Path) -> Vec<WalkDirent> {
 
 /// search.js `fuzzyMatchScoreNormalized` — substring fast path plus a
 /// subsequence scorer; None means "no match".
+///
+/// 中文说明：模糊评分（大小写不敏感）。查询为空串时恒得 0 分；
+/// 候选包含完整子串时走快路径（100 基分 + 开头/分隔符加成 − 位置
+/// 与长度惩罚）；否则按子序列逐字符计分（连续、靠前、分隔符后
+/// 均有加成），任一字符缺失即返回 None（不匹配）。
 pub fn fuzzy_match_score_normalized(normalized_query: &str, candidate: &str) -> Option<i64> {
     if normalized_query.is_empty() {
         return Some(0);
@@ -181,6 +224,12 @@ pub fn fuzzy_match_score_normalized(normalized_query: &str, candidate: &str) -> 
 
 /// search.js `searchFilesystemFiles`. `limit: 0` yields an empty result (the
 /// JS collect-limit comparison is false from the start).
+///
+/// 中文说明：BFS 搜索 `root_path` 下的文件。空查询罗列全部文件
+/// （score 全 0）；非空查询收集上限为 limit×3（至少 200）以便排序后
+/// 截断仍够数。目录访问不可读即跳过；`respect_gitignore` 开启时每批
+/// 目录用一次 `git check-ignore` 过滤。最终按 score 降序、相对路径
+/// 长度、字典序排序并截断到 limit。
 pub async fn search_filesystem_files(root_path: &Path, options: &SearchOptions) -> Vec<SearchHit> {
     let include_hidden_entries = options.include_hidden;
     let normalized_query = options.query.trim().to_lowercase();
@@ -289,6 +338,10 @@ pub async fn search_filesystem_files(root_path: &Path, options: &SearchOptions) 
 
 /// `git check-ignore -- <names>` in `dir`; failures read as "nothing
 /// ignored" (search.js resolves '' on spawn error or close).
+///
+/// 中文说明：在 `dir` 中运行 `git check-ignore -- <names>`，返回被
+/// 忽略的条目名集合；spawn 失败或非零退出（含"无忽略项"的退出码 1）
+/// 一律读作空集合，不阻塞搜索。
 async fn run_git_check_ignore(dir: &Path, dirents: &[WalkDirent]) -> HashSet<String> {
     let names: Vec<&str> = dirents
         .iter()
@@ -322,10 +375,12 @@ async fn run_git_check_ignore(dir: &Path, dirents: &[WalkDirent]) -> HashSet<Str
         .collect()
 }
 
+/// 搜索运行时的评分、跳过规则与端到端行为测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证子串快路径的位置/分隔符加成与子序列回退的评分数值。
     #[test]
     fn substring_match_scores_with_positional_bonus() {
         // "readme.md" is 9 chars: floor(9/5) = 1.
@@ -346,6 +401,8 @@ mod tests {
         assert_eq!(fuzzy_match_score_normalized("", "anything"), Some(0));
     }
 
+    /// 验证目录跳过规则与 JS 一致：排除清单大小写不敏感、隐藏目录
+    /// 仅在未开启包含时跳过。
     #[test]
     fn skip_directory_rules_match_js() {
         assert!(should_skip_search_directory("node_modules", true));
@@ -359,6 +416,7 @@ mod tests {
         assert!(!should_skip_search_directory("", false));
     }
 
+    /// 创建带进程号隔离的临时目录，避免测试间相互污染。
     fn unique_temp_dir(label: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("fsport-search-{label}-{}", std::process::id()));
@@ -367,6 +425,7 @@ mod tests {
         dir
     }
 
+    /// 写入文件（自动创建父目录）的测试辅助。
     fn write(path: &Path, content: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -374,6 +433,8 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
+    /// 验证搜索命中匹配文件、跳过 node_modules 与隐藏文件，
+    /// 且 extension/relative_path 字段形状正确。
     #[tokio::test]
     async fn search_finds_matches_and_misses_excluded_directories() {
         let root = unique_temp_dir("find");
@@ -410,6 +471,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证排序契约：分隔符加成与更短路径让 `a/logo.png` 排在
+    /// `zz_logo.png` 之前。
     #[tokio::test]
     async fn search_orders_by_score_then_path_length() {
         let root = unique_temp_dir("order");
@@ -432,6 +495,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证空查询（trim 后为空）罗列全部文件直到 limit，且 score 全 0。
     #[tokio::test]
     async fn match_all_lists_every_file_up_to_limit() {
         let root = unique_temp_dir("all");

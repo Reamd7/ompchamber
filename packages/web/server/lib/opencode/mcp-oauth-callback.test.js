@@ -1,10 +1,19 @@
+/**
+ * MCP OAuth 浏览器回调路由测试：验证 /mcp/oauth/callback 只为已登记的
+ * state 换取授权码（伪造 state 被拒且不触达上游）、桌面端来源附带
+ * ompchamber:// 深链、provider 错误信息转义渲染、上游拒绝映射为 502
+ * 失败页，以及回调完成后 pending state 被清除。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { registerOpenCodeRoutes } from './routes.js';
 
+// 中文补充：故意不挂全局 body parser——真实服务器按路由各自解析 JSON，
+// 若 pending 路由再次丢失自己的 parser，这些测试必须失败。
 // No global body parser on purpose: the real server parses JSON per-route, so
 // these tests must fail if the pending route loses its own parser again.
+/** 构造挂好被测路由的 express app；overrides 可替换 URL 构造与认证头依赖。 */
 const createApp = (overrides = {}) => {
   const app = express();
   const dependencies = {
@@ -16,16 +25,19 @@ const createApp = (overrides = {}) => {
   return { app, dependencies };
 };
 
+/** 向 pending 登记端点入队一个 OAuth state 并断言返回 200。 */
 const queuePending = (app, { state, name, directory = null, origin = null }) =>
   request(app)
     .post('/api/mcp/auth/pending')
     .send({ state, name, directory, origin })
     .expect(200);
 
+// 用例收尾：解除全局 fetch 桩。
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// MCP OAuth 回调主套件。
 describe('MCP OAuth browser callback route', () => {
   it('completes authorization server-side for a parked state and clears it', async () => {
     const upstreamFetch = vi.fn(async () => new Response(JSON.stringify({ success: true }), { status: 200 }));
