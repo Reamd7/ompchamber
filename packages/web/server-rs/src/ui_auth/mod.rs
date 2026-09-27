@@ -973,7 +973,76 @@ fn unauthorized_response(headers: &HeaderMap, path: &str, cookie_name: &str) -> 
 /// unported remote-client controller and never authenticate. Disabled (no
 /// password) is a pass-through because `requireClientAuth` is false in this
 /// port.
-fn check_require_auth(
+fn iso_now_plus_ms(ms: u64) -> String {
+    // JS: new Date(Date.now() + ttlMs).toISOString() — same civil-from-days
+    // algorithm as engine_env::managed_process_registry.
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64 + ms)
+        .unwrap_or(ms);
+    let secs = (millis / 1000) as i64;
+    let frac = (millis % 1000) as u32;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (rem / 3600, rem % 3600 / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{frac:03}Z")
+}
+
+/// JS `getBearerTokenFromRequest` + the transport pick from
+/// `remote-clients.js` (`x-ompchamber-relay-connection` truthiness).
+fn bearer_credential(
+    headers: &HeaderMap,
+) -> Option<(String, crate::client_auth::remote_clients::Transport)> {
+    let value = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?
+        .trim();
+    let token = value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let transport = if headers
+        .get("x-ompchamber-relay-connection")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        crate::client_auth::remote_clients::Transport::Relay
+    } else {
+        crate::client_auth::remote_clients::Transport::Direct
+    };
+    Some((token.to_string(), transport))
+}
+
+/// JS `authenticateClientRequest` bearer leg: a valid desktop/remote client
+/// token authenticates the gate when the session cookie is absent (the
+/// packaged desktop UI loads from `ompchamber-ui://app`, a cross-site origin
+/// whose fetches never carry the SameSite=Strict session cookie).
+async fn bearer_authenticates(state: &UiAuthState, headers: &HeaderMap) -> bool {
+    let Some((token, transport)) = bearer_credential(headers) else {
+        return false;
+    };
+    let clients =
+        crate::client_auth::state_for_data_dir(&state.data_dir).remote_clients.clone();
+    clients
+        .authenticate_bearer_token(&token, transport)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+async fn check_require_auth(
     state: &UiAuthState,
     method: &Method,
     uri: &Uri,
@@ -994,6 +1063,12 @@ fn check_require_auth(
         .authenticate_url_token(method, uri.path(), headers, uri)
         .is_some()
     {
+        return Ok(());
+    }
+    // JS `requireAuth` client-auth fallback (`ui-auth.js:731`): bearer token
+    // from the client-auth controller. Without this the packaged desktop UI
+    // is locked out of every gated route after unlock.
+    if bearer_authenticates(state, headers).await {
         return Ok(());
     }
     Err(unauthorized_response(
@@ -1032,9 +1107,39 @@ fn require_session_auth(
 /// Standalone JS `requireAuth` equivalent for modules that handle `/api`
 /// routes themselves (proxy, fs, event-stream, terminal): `Err(response)` is
 /// the ready-to-send 401. Consumes only headers — never the body.
-pub fn guard(ctx: &RouterContext, parts: &axum::http::request::Parts) -> Result<(), Response> {
+pub async fn guard(ctx: &RouterContext, parts: &axum::http::request::Parts) -> Result<(), Response> {
     let state = shared_state(ctx);
-    check_require_auth(&state, &parts.method, &parts.uri, &parts.headers)
+    check_require_auth(&state, &parts.method, &parts.uri, &parts.headers).await
+}
+
+/// Synchronous subset (session cookie + URL token only) for call sites that
+/// cannot await — the dev-tunnel auth closure. The dev-tunnel WebSocket
+/// handshake authenticates with the session cookie or URL token, never a
+/// client bearer credential, so this keeps JS parity for that surface.
+pub fn guard_sync(ctx: &RouterContext, parts: &axum::http::request::Parts) -> Result<(), Response> {
+    let state = shared_state(ctx);
+    if state.gate.is_none() {
+        return Ok(());
+    }
+    if parts.method == Method::OPTIONS {
+        return Ok(());
+    }
+    if let Some(token) = cookie_value(&parts.headers, state.cookie_name)
+        && state.verify_session_token(&token)
+    {
+        return Ok(());
+    }
+    if state
+        .authenticate_url_token(&parts.method, parts.uri.path(), &parts.headers, &parts.uri)
+        .is_some()
+    {
+        return Ok(());
+    }
+    Err(unauthorized_response(
+        &parts.headers,
+        parts.uri.path(),
+        state.cookie_name,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,12 +1217,20 @@ where
     fn call(&mut self, req: Request) -> Self::Future {
         let path = req.uri().path();
         if is_api_mount_path(path) && !is_pre_gate_public(req.method(), path) {
-            let state = shared_state(&self.ctx);
-            if let Err(response) =
-                check_require_auth(&state, req.method(), req.uri(), req.headers())
-            {
-                return Box::pin(async move { Ok(response) });
-            }
+            let mut inner = self.inner.clone();
+            let ctx = self.ctx.clone();
+            let method = req.method().clone();
+            let uri = req.uri().clone();
+            let headers = req.headers().clone();
+            return Box::pin(async move {
+                let state = shared_state(&ctx);
+                if let Err(response) =
+                    check_require_auth(&state, &method, &uri, &headers).await
+                {
+                    return Ok(response);
+                }
+                inner.call(req).await
+            });
         }
         Box::pin(self.inner.call(req))
     }
@@ -1293,14 +1406,16 @@ async fn session_status(State(state): State<Arc<UiAuthState>>, req: Request) -> 
         return Json(serde_json::json!({ "authenticated": true, "disabled": true }))
             .into_response();
     }
-    // An explicit bearer credential decides on its own; the remote client auth
-    // controller is not ported, so a bearer probe is always unauthenticated.
-    let authorization = parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    if authorization.to_ascii_lowercase().starts_with("bearer ") {
+    // An explicit bearer credential decides on its own: success answers
+    // `{"authenticated":true,"scope":"client"}`, failure 401 with no cookie
+    // fallback (JS `ui-auth.js:751-766`).
+    if bearer_credential(&parts.headers).is_some() {
+        if bearer_authenticates(&state, &parts.headers).await {
+            return Json(
+                serde_json::json!({ "authenticated": true, "scope": "client" }),
+            )
+                .into_response();
+        }
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "authenticated": false, "locked": true })),
@@ -1389,11 +1504,46 @@ async fn session_create(State(state): State<Arc<UiAuthState>>, req: Request) -> 
         state.session_ttl_ms
     };
     let token = state.issue_session_token(ttl_ms);
-    let mut response = (
-        StatusCode::OK,
-        Json(serde_json::json!({ "authenticated": true })),
-    )
-        .into_response();
+    // JS `handleSessionCreate` issueClientToken leg (`ui-auth.js:840`): mint a
+    // remote-client bearer token alongside the session cookie. The packaged
+    // desktop UI (cross-site `ompchamber-ui://app` origin) authenticates every
+    // gated request with this token — the SameSite=Strict cookie never
+    // crosses origins.
+    let client_result = if payload.get("issueClientToken") == Some(&serde_json::Value::Bool(true)) {
+        let clients =
+            crate::client_auth::state_for_data_dir(&state.data_dir).remote_clients.clone();
+        let str_field = |key: &str| {
+            payload
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string())
+        };
+        let expires_at = iso_now_plus_ms(ttl_ms);
+        let input = crate::client_auth::remote_clients::CreateClientInput {
+            fallback_label: str_field("clientLabel"),
+            expires_at: Some(expires_at),
+            client_kind: str_field("clientKind"),
+            dedupe_key: str_field("dedupeKey"),
+            auth_method: Some("password".to_string()),
+            device_name: str_field("deviceName"),
+            device_platform: str_field("devicePlatform"),
+            device_model: str_field("deviceModel"),
+            app_version: str_field("appVersion"),
+            ..Default::default()
+        };
+        clients.create_client(input).await.ok()
+    } else {
+        None
+    };
+    let body = match &client_result {
+        Some(created) => serde_json::json!({
+            "authenticated": true,
+            "clientToken": created.token,
+            "client": created.client,
+        }),
+        None => serde_json::json!({ "authenticated": true }),
+    };
+    let mut response = (StatusCode::OK, Json(body)).into_response();
     add_rate_limit_headers(&mut response, &decision);
     set_cookie(
         &mut response,
@@ -1402,7 +1552,6 @@ async fn session_create(State(state): State<Arc<UiAuthState>>, req: Request) -> 
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    // issueClientToken requires the remote client auth controller (unported).
     response
 }
 
@@ -1427,16 +1576,31 @@ async fn url_token(State(state): State<Arc<UiAuthState>>, req: Request) -> Respo
             }
         }
     } else {
-        // Password mode: only the session cookie (client bearer and URL token
-        // issuance paths need the unported controller).
+        // Password mode: the session cookie, or the client bearer credential
+        // (JS `resolveAuthenticatedSessionToken` → `clientSessionToken`) when
+        // the cookie is absent — the packaged desktop case.
         let token = cookie_value(&parts.headers, state.cookie_name);
-        if !token
+        if token
             .as_deref()
             .is_some_and(|token| state.verify_session_token(token))
         {
+            (token.unwrap_or_default(), None)
+        } else if let Some((client_token, transport)) = bearer_credential(&parts.headers) {
+            let clients =
+                crate::client_auth::state_for_data_dir(&state.data_dir).remote_clients.clone();
+            match clients.authenticate_bearer_token(&client_token, transport).await {
+                Ok(Some(auth)) => (auth.session_token, None),
+                _ => {
+                    return unauthorized_response(
+                        &parts.headers,
+                        "/auth/url-token",
+                        state.cookie_name,
+                    );
+                }
+            }
+        } else {
             return unauthorized_response(&parts.headers, "/auth/url-token", state.cookie_name);
         }
-        (token.unwrap_or_default(), None)
     };
 
     let (token, expires_at) = state.issue_url_token(&session_token);
@@ -1953,6 +2117,144 @@ mod tests {
 
     // -- gate middleware ----------------------------------------------------
 
+    // -- desktop client bearer auth (packaged `ompchamber-ui://app` origin) --
+
+    async fn desktop_bearer(password: &str) -> (axum::Router, RouterContext, PathBuf, String) {
+        let (ctx, dir) = test_context(Some(password));
+        let clients = crate::client_auth::state_for_data_dir(&dir).remote_clients.clone();
+        let created = clients
+            .create_client(crate::client_auth::remote_clients::CreateClientInput {
+                fallback_label: Some("OMPChamber Desktop".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("create client");
+        (router(ctx.clone()), ctx, dir, created.token)
+    }
+
+    #[tokio::test]
+    async fn gate_accepts_client_bearer_without_session_cookie() {
+        let (app, ctx, dir, token) = desktop_bearer("secret").await;
+        let gated = app
+            .clone()
+            .route("/api/session/status", any(ok_handler))
+            .layer(middleware(ctx.clone()));
+
+        // The exact desktop case: no cookie, only the bearer credential.
+        let response = send(
+            &gated,
+            request(
+                Method::GET,
+                "/api/session/status",
+                &[("authorization", &format!("Bearer {token}"))],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // A bad token stays locked out.
+        let response = send(
+            &gated,
+            request(
+                Method::GET,
+                "/api/session/status",
+                &[("authorization", "Bearer oc_client_wrong")],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn session_status_bearer_decides_on_its_own() {
+        let (app, _ctx, dir, token) = desktop_bearer("secret").await;
+        let auth = format!("Bearer {token}");
+        let response = send(
+            &app,
+            request(Method::GET, "/auth/session", &[("authorization", &auth)]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await,
+            serde_json::json!({ "authenticated": true, "scope": "client" })
+        );
+
+        let response = send(
+            &app,
+            request(
+                Method::GET,
+                "/auth/session",
+                &[("authorization", "Bearer oc_client_wrong")],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn login_issues_client_token_on_request() {
+        let (app, ctx, dir, _token) = desktop_bearer("secret").await;
+
+        // Desktop unlock: issueClientToken mints a usable bearer alongside
+        // the session cookie.
+        let response = send(
+            &app,
+            json_request(
+                Method::POST,
+                "/auth/session",
+                &serde_json::json!({
+                    "password": "secret",
+                    "issueClientToken": true,
+                    "clientLabel": "OMPChamber Desktop"
+                }),
+                &[],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = body_json(response).await;
+        let minted = payload
+            .get("clientToken")
+            .and_then(|v| v.as_str())
+            .expect("clientToken in login response")
+            .to_string();
+        assert!(minted.starts_with("oc_client_"));
+
+        // The minted token opens the gate without a cookie.
+        let gated = app
+            .route("/api/session/status", any(ok_handler))
+            .layer(middleware(ctx.clone()));
+        let response = send(
+            &gated,
+            request(
+                Method::GET,
+                "/api/session/status",
+                &[("authorization", &format!("Bearer {minted}"))],
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn url_token_endpoint_accepts_client_bearer() {
+        let (app, _ctx, dir, token) = desktop_bearer("secret").await;
+        let auth = format!("Bearer {token}");
+        let response = send(
+            &app,
+            request(Method::POST, "/auth/url-token", &[("authorization", &auth)]),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = body_json(response).await;
+        assert!(payload.get("token").and_then(|v| v.as_str()).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn gate_protects_only_api_mount_paths_like_js() {
         let (ctx, dir) = test_context(Some("secret"));
@@ -2280,7 +2582,7 @@ mod tests {
         )
         .into_parts()
         .0;
-        assert!(guard(&ctx, &parts).is_ok());
+        assert!(guard(&ctx, &parts).await.is_ok());
         let parts = request(
             Method::GET,
             &format!("/api/terminal/ws?oc_url_token={token}"),
@@ -2288,7 +2590,7 @@ mod tests {
         )
         .into_parts()
         .0;
-        assert!(guard(&ctx, &parts).is_err());
+        assert!(guard(&ctx, &parts).await.is_err());
 
         // Expiry: force the entry past its TTL.
         let (token, _) = state.issue_url_token("session-x");
@@ -2305,7 +2607,7 @@ mod tests {
         )
         .into_parts()
         .0;
-        assert!(guard(&ctx, &parts).is_err());
+        assert!(guard(&ctx, &parts).await.is_err());
 
         // URL-token minting requires a session (unauthenticated 401 shape).
         let response = send(
@@ -2398,7 +2700,7 @@ mod tests {
 
         // guard() is a pass-through.
         let parts = request(Method::GET, "/api/session", &[]).into_parts().0;
-        assert!(guard(&ctx, &parts).is_ok());
+        assert!(guard(&ctx, &parts).await.is_ok());
 
         let _ = std::fs::remove_dir_all(dir);
     }

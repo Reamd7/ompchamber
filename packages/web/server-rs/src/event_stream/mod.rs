@@ -196,7 +196,7 @@ async fn global_message_stream(
     request: axum::extract::Request,
 ) -> Response {
     let (parts, _body) = request.into_parts();
-    if let Err(response) = crate::ui_auth::guard(&state.ctx, &parts) {
+    if let Err(response) = crate::ui_auth::guard(&state.ctx, &parts).await {
         return response;
     }
     state.ensure_started();
@@ -209,7 +209,7 @@ async fn directory_message_stream(
     request: axum::extract::Request,
 ) -> Response {
     let (parts, _body) = request.into_parts();
-    if let Err(response) = crate::ui_auth::guard(&state.ctx, &parts) {
+    if let Err(response) = crate::ui_auth::guard(&state.ctx, &parts).await {
         return response;
     }
     state.ensure_started();

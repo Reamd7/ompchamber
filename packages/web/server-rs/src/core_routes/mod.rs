@@ -308,7 +308,7 @@ async fn free_port() -> Response {
 /// no UI password is configured, mirroring unconfigured JS wiring).
 async fn system_shutdown(State(ctx): State<RouterContext>, request: Request) -> Response {
     let (parts, _body) = request.into_parts();
-    if let Err(denied) = crate::ui_auth::guard(&ctx, &parts) {
+    if let Err(denied) = crate::ui_auth::guard(&ctx, &parts).await {
         return denied;
     }
     let engine = Arc::clone(&ctx.engine);

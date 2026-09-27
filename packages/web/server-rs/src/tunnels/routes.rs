@@ -1110,9 +1110,10 @@ pub fn module_state(ctx: RouterContext) -> ModuleState {
 
     let auth_ctx = ctx.clone();
     let resolve_auth: ResolveAuthFn = Arc::new(move |parts: &Parts| {
-        // Client bearer credentials need the remote-client controller
-        // (unported), so every successful resolution here is a session.
-        crate::ui_auth::guard(&auth_ctx, parts)
+        // Sync closure: the session cookie / URL token subset only. Client
+        // bearer credentials need async file-backed auth; the dev-tunnel
+        // handshake never carries one.
+        crate::ui_auth::guard_sync(&auth_ctx, parts)
             .ok()
             .map(|_| AuthKind::Session)
     });
