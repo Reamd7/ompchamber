@@ -201,6 +201,9 @@ async fn global_message_stream(
     }
     state.ensure_started();
     let params = EventStreamParams::from_query(&query_map(parts.uri.query()));
+    if let Some(upgrade) = ws_upgrade(parts.clone()).await {
+        return ws_response(upgrade, Arc::clone(&state), None, params);
+    }
     sse_response(client_stream(Arc::clone(&state), None, params))
 }
 
@@ -214,11 +217,116 @@ async fn directory_message_stream(
     }
     state.ensure_started();
     let params = EventStreamParams::from_query(&query_map(parts.uri.query()));
+    if let Some(upgrade) = ws_upgrade(parts.clone()).await {
+        return ws_response(upgrade, Arc::clone(&state), params.directory.clone(), params);
+    }
     sse_response(client_stream(
         Arc::clone(&state),
         params.directory.clone(),
         params,
     ))
+}
+
+/// Extract the WebSocket upgrade from already-authenticated request parts.
+/// `Option<WebSocketUpgrade>` is not an extractor (axum gives the type a
+/// rejecting `FromRequestParts`), so branch on the handshake headers and
+/// build the upgrade manually.
+async fn ws_upgrade(
+    mut parts: axum::http::request::Parts,
+) -> Option<axum::extract::ws::WebSocketUpgrade> {
+    use axum::extract::FromRequestParts;
+
+    let wants_upgrade = parts
+        .headers
+        .get(header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"))
+        && parts
+            .headers
+            .get(header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.to_ascii_lowercase().contains("websocket"));
+    if !wants_upgrade {
+        return None;
+    }
+    axum::extract::ws::WebSocketUpgrade::from_request_parts(&mut parts, &())
+        .await
+        .ok()
+}
+
+/// `global-ws-bridge.js` / `directory-ws-bridge.js`: the browser contract is
+/// a real WebSocket on these paths — each bridge frame (`ready`, `event`,
+/// `resync`, `error`) is one text message. The frame stream itself
+/// ([`client_frames`]) is transport-agnostic and shared with SSE, so the WS
+/// leg only adds the upgrade plus the `ompchamber:heartbeat` event frame the
+/// JS bridges emit on their interval.
+fn ws_response(
+    upgrade: axum::extract::ws::WebSocketUpgrade,
+    state: Arc<EventStreamState>,
+    client_directory: Option<String>,
+    params: EventStreamParams,
+) -> Response {
+    upgrade.on_upgrade(move |socket| async move {
+        ws_client_loop(socket, state, client_directory, params).await;
+    })
+}
+
+async fn ws_client_loop(
+    mut socket: axum::extract::ws::WebSocket,
+    state: Arc<EventStreamState>,
+    client_directory: Option<String>,
+    params: EventStreamParams,
+) {
+    use axum::extract::ws::Message;
+    use futures::StreamExt;
+
+    let mut frames = Box::pin(client_frames(state, client_directory.clone(), params));
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(
+        MESSAGE_STREAM_WS_HEARTBEAT_INTERVAL_MS as u64,
+    ));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Skip the immediate first tick so a fresh client sees ready/replay
+    // frames before heartbeats (the JS interval also fires only later).
+    heartbeat.tick().await;
+
+    loop {
+        tokio::select! {
+            frame = frames.next() => match frame {
+                Some(frame) => {
+                    let Ok(text) = serde_json::to_string(&frame) else { continue };
+                    if socket.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                None => break,
+            },
+            _ = heartbeat.tick() => {
+                let directory = client_directory.clone().unwrap_or_else(|| "global".to_string());
+                let frame = serde_json::json!({
+                    "type": "event",
+                    "payload": { "type": "ompchamber:heartbeat", "timestamp": now_ms() },
+                    "directory": directory,
+                });
+                let Ok(text) = serde_json::to_string(&frame) else { continue };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            inbound = socket.recv() => match inbound {
+                // The JS bridges only read to observe close; pings are
+                // answered by axum automatically.
+                Some(Ok(_)) => continue,
+                _ => break,
+            },
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 /// Parse a raw query string into a map (mirrors `URL.searchParams`).
