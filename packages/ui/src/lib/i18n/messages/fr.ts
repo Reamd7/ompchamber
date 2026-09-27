@@ -1748,7 +1748,7 @@ export const dict = {
   'helpDialog.item.cycleServicesTab': 'Onglet Services de vélo',
   'helpDialog.item.openSettings': 'Ouvrir les paramètres',
   'helpDialog.keyCombiner.or': 'ou',
-  'helpDialog.proTips.title': 'Conseils de pro :',
+  'helpDialog.proTips.title': 'Pro tips:',
   'helpDialog.proTips.commandPalette': 'Utilisez la palette de commandes ({shortcut}) pour accéder rapidement à toutes les actions',
   'helpDialog.proTips.recentSessions': 'Les 5 sessions les plus récentes apparaissent dans la palette de commandes',
   'helpDialog.proTips.leaderSequences': 'Raccourcis en deux temps : appuyez sur la combinaison, puis sur la seconde touche — Échap annule',

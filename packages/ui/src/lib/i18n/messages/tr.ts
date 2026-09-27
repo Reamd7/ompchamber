@@ -4733,7 +4733,7 @@ export const dict = {
   'helpDialog.item.cycleServicesTab': 'Hizmetler sekmesinde dolaş',
   'helpDialog.item.openSettings': 'Ayarları aç',
   'helpDialog.keyCombiner.or': 'veya',
-  'helpDialog.proTips.title': 'İpuçları:',
+  'helpDialog.proTips.title': 'Pro tips:',
   'helpDialog.proTips.commandPalette': 'Tüm eylemlere hızlıca erişmek için komut paletini ({shortcut}) kullanın',
   'helpDialog.proTips.recentSessions': 'En son 5 session komut paletinde görünür',
   'helpDialog.proTips.leaderSequences': 'İki adımlı kısayollar: önce ilk tuş bileşimine, sonra ikinci tuşa basın — Esc iptal eder',

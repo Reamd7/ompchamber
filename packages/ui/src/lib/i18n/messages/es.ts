@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'helpDialog.proTips.title': 'Pro tips:',
   'sessions.sidebar.session.work.markDone': 'Marcar como hecho',
   'sessions.sidebar.session.work.track': 'Seguir como en curso',
   'mobile.sessions.newSessionInProjectAria': 'Nueva sesión en {label}',
@@ -2005,7 +2006,6 @@ export const dict: Record<I18nKey, string> = {
   "helpDialog.item.toggleServicesMenu": "Mostrar u ocultar menú de servicios",
   "helpDialog.item.openSettings": "Abrir configuración",
   "helpDialog.keyCombiner.or": "o",
-  "helpDialog.proTips.title": "Consejos:",
   "helpDialog.proTips.commandPalette": "Usa la paleta de comandos ({shortcut}) para acceder rápidamente a todas las acciones",
   "helpDialog.proTips.recentSessions": "Las cinco sesiones más recientes aparecen en la paleta de comandos",
     "helpDialog.proTips.leaderSequences": "Atajos en dos pasos: pulsa la combinación y luego la segunda tecla; Esc cancela",

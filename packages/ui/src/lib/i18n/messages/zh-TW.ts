@@ -2039,7 +2039,7 @@ export const dict: Record<I18nKey, string> = {
   'helpDialog.item.cycleServicesTab': '循環服務標籤',
   'helpDialog.item.openSettings': '開啟設定',
   'helpDialog.keyCombiner.or': '或',
-  'helpDialog.proTips.title': '使用提示：',
+  'helpDialog.proTips.title': 'Pro tips:',
   'helpDialog.proTips.commandPalette': '使用命令面板（{shortcut}）可快速存取所有操作',
   'helpDialog.proTips.recentSessions': '最近 5 個會话會顯示在命令面板中',
   'helpDialog.proTips.leaderSequences': '兩段式快捷鍵：先按組合鍵，再按第二個鍵（Esc 取消）',

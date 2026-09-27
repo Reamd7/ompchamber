@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'helpDialog.proTips.title': 'Pro tips:',
   'sessions.sidebar.session.work.markDone': 'Позначити готовим',
   'sessions.sidebar.session.work.track': 'Відстежувати як у роботі',
   'mobile.sessions.newSessionInProjectAria': 'Нова сесія в {label}',
@@ -2006,7 +2007,6 @@ export const dict: Record<I18nKey, string> = {
   "helpDialog.item.toggleServicesMenu": "Перемкнути меню сервісів",
   "helpDialog.item.openSettings": "Відкрити налаштування",
   "helpDialog.keyCombiner.or": "або",
-  "helpDialog.proTips.title": "Поради:",
   "helpDialog.proTips.commandPalette": "Використовуйте палітру команд ({shortcut}), щоб швидко перейти до будь-якої дії",
   "helpDialog.proTips.recentSessions": "5 останніх сесій відображаються на панелі команд",
     "helpDialog.proTips.leaderSequences": "Двокрокові шорткати: натисни комбінацію, потім другу клавішу — Esc скасовує",

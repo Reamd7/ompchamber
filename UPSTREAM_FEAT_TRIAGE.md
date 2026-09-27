@@ -303,7 +303,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `18ca96969` | feat(ui): expand stats with token composition, efficiency and tool calls (#4026) | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `a30029f90` | feat: add Excalidraw editor support and file integration (#4064) | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `220d7e0ae` | feat(settings): bring back the Claude Code integration card | `自身` |  |
-| - [ ] | `f42715c25` | feat(ui): lay out the keyboard shortcuts dialog in two columns | `自身` |  |
+| - [x] | `f42715c25` | feat(ui): lay out the keyboard shortcuts dialog in two columns | `自身` | PORTED(干净织入+i18n 补齐) |
 | - [ ] | `4e5f26d07` | feat(settings): card grids for MCP and plugins, list search, compact model rows on mobile | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `60d836c48` | feat(settings): redesign providers as a card grid with account switching | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `15e51be9e` | feat(settings): add a manual Restart OpenCode action | `自身` |  |
