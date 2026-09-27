@@ -427,6 +427,13 @@ jobs:
           restore-keys: |
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Switch server backend variant
+        working-directory: packages/electron
+        shell: bash
+        run: |
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
+
       - name: Build web assets
         working-directory: packages/electron
         run: bun run build:web-assets
@@ -451,6 +458,7 @@ jobs:
           workspaces: packages/web/server-rs
 
       - name: Build Rust server sidecar
+        if: ${{ matrix.backend == 'rust' }}
         working-directory: packages/electron
         shell: bash
         env:
