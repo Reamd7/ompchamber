@@ -9,7 +9,8 @@
   "dependencies": {
     "electron-context-menu": "^4.1.2",
     "electron-log": "^5.4.3",
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "@ompchamber/web": "workspace:*"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
@@ -45,18 +46,21 @@
     "test:linux-desktop": "node --test ./linux-autostart.test.mjs && node ./scripts/smoke-linux-app-discovery.mjs && node ./scripts/smoke-path-open-utils.mjs",
     "updater:e2e:fixture": "node ./scripts/updater-e2e-fixture.mjs",
     "verify:update-manifest": "node ./scripts/verify-update-manifest.mjs",
-    "package": "bun run build:web-assets && bun run prepare:rust-server && bun run prepare:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
+    "package": "bun run package:rust",
     "finalize:latest-yml": "node ./scripts/finalize-latest-yml.mjs",
     "type-check": "node --check ./main.mjs && node --check ./preload.mjs",
     "lint": "node -e \"process.exit(0)\"",
-    "prepare:rust-server": "node ./scripts/prepare-rust-server.mjs"
+    "prepare:rust-server": "node ./scripts/prepare-rust-server.mjs",
+    "package:rust": "node ./scripts/set-server-backend.mjs rust && bun install && bun run build:web-assets && bun run prepare:rust-server && bun run prepare:omp-host && bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
+    "package:js": "node ./scripts/set-server-backend.mjs js && bun install && bun run build:web-assets && bun run prepare:omp-host && bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs"
   },
   "build": {
     "appId": "dev.ompchamber.desktop",
     "productName": "OMPChamber",
     "files": [
       "dist-bundle/main.mjs",
-      "preload.mjs"
+      "preload.mjs",
+      "server-backend"
     ],
     "extraResources": [
       {

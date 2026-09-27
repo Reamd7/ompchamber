@@ -45,7 +45,7 @@ permissions:
 jobs:
   build-macos-electron:
     if: ${{ inputs.build_macos }}
-    name: Build macOS Electron (${{ matrix.arch }})
+    name: Build macOS Electron (${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }})
     runs-on: macos-26
     strategy:
       fail-fast: false
@@ -54,9 +54,19 @@ jobs:
           - target: aarch64-apple-darwin
             arch: arm64
             platform: darwin-aarch64
+            backend: rust
           - target: x86_64-apple-darwin
             arch: x64
             platform: darwin-x86_64
+            backend: rust
+          - target: aarch64-apple-darwin
+            arch: arm64
+            platform: darwin-aarch64
+            backend: js
+          - target: x86_64-apple-darwin
+            arch: x64
+            platform: darwin-x86_64
+            backend: js
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -114,12 +124,14 @@ jobs:
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
       - name: Setup Rust
+        if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust server build
+        if: ${{ matrix.backend == 'rust' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
@@ -132,8 +144,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
         run: |
+          set -euo pipefail
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
           bun run build:web-assets
-          bun run prepare:rust-server
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            bun run prepare:rust-server
+          fi
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
@@ -141,12 +158,17 @@ jobs:
           # recompile native deps on its own. Rebuild against the target
           # Electron ABI before packaging, matching the release workflow.
           bun run rebuild:native
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            # Legacy variant: distinct artifact names, no updater manifests.
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-mac-\${arch}-js.\${ext}")
+          fi
           if [ "${HAS_APPLE_SIGNING}" = "true" ]; then
-            bunx electron-builder --mac --${{ matrix.arch }} --publish=never
+            bunx electron-builder --mac --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           else
             echo "[electron] Apple signing secrets not set; building unsigned (no notarization)."
             CSC_IDENTITY_AUTO_DISCOVERY=false \
-              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false
+              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false "${ARTIFACT_ARGS[@]}"
           fi
           bun run verify:omp-host:packaged
 
@@ -196,7 +218,7 @@ jobs:
       - name: Upload macOS installable artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-release-smoke-macos-${{ matrix.arch }}
+          name: desktop-release-smoke-macos-${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }}
           path: |
             packages/electron/dist/*.dmg
             packages/electron/dist/*.zip
@@ -207,7 +229,7 @@ jobs:
 
   build-windows-electron:
     if: ${{ inputs.build_windows }}
-    name: Build Windows Electron (${{ matrix.arch }})
+    name: Build Windows Electron (${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }})
     # Match the production release workflow. windows-latest currently resolves
     # to a runner with Visual Studio 18, which this Electron/node-gyp stack does
     # not detect correctly.
@@ -219,9 +241,19 @@ jobs:
           - arch: x64
             target: x86_64-pc-windows-msvc
             platform: win32-x64
+            backend: rust
           - arch: arm64
             target: aarch64-pc-windows-msvc
             platform: win32-arm64
+            backend: rust
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            platform: win32-x64
+            backend: js
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            platform: win32-arm64
+            backend: js
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -257,12 +289,14 @@ jobs:
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Setup Rust
+        if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust server build
+        if: ${{ matrix.backend == 'rust' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
@@ -271,7 +305,15 @@ jobs:
         working-directory: packages/electron
         run: bun run build:web-assets
 
+      - name: Switch server backend variant
+        working-directory: packages/electron
+        shell: bash
+        run: |
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
+
       - name: Build Rust server sidecar
+        if: ${{ matrix.backend == 'rust' }}
         working-directory: packages/electron
         shell: bash
         env:
@@ -304,13 +346,17 @@ jobs:
         working-directory: packages/electron
         shell: bash
         run: |
-          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-win-\${arch}-js.\${ext}")
+          fi
+          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
 
       - name: Upload Windows installable artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-release-smoke-windows-${{ matrix.arch }}
+          name: desktop-release-smoke-windows-${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }}
           path: |
             packages/electron/dist/*.exe
             packages/electron/dist/*.blockmap
@@ -320,7 +366,7 @@ jobs:
 
   build-linux-electron:
     if: ${{ inputs.build_linux }}
-    name: Build Linux Electron (${{ matrix.arch }})
+    name: Build Linux Electron (${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -331,12 +377,28 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_arch: x86_64
             manifest: latest-linux.yml
+            backend: rust
           - runner: ubuntu-24.04-arm
             arch: arm64
             host_arch: aarch64
             target: aarch64-unknown-linux-gnu
             artifact_arch: arm64
             manifest: latest-linux-arm64.yml
+            backend: rust
+          - runner: ubuntu-24.04
+            arch: x64
+            host_arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            artifact_arch: x86_64
+            manifest: latest-linux.yml
+            backend: js
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            host_arch: aarch64
+            target: aarch64-unknown-linux-gnu
+            artifact_arch: arm64
+            manifest: latest-linux-arm64.yml
+            backend: js
     runs-on: ${{ matrix.runner }}
     env:
       # Forks without Apple signing secrets build unsigned (same fallback
@@ -386,12 +448,14 @@ jobs:
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Setup Rust
+        if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust server build
+        if: ${{ matrix.backend == 'rust' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
@@ -408,13 +472,21 @@ jobs:
           OMPCHAMBER_TARGET_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
           bun run build:web-assets
-          bun run prepare:rust-server
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            bun run prepare:rust-server
+          fi
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
           bun run rebuild:native
-          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-linux-\${arch}-js.\${ext}")
+          fi
+          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
           bun run verify:linux-appimage
 

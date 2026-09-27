@@ -164,10 +164,22 @@ jobs:
             arch: arm64
             platform: darwin-aarch64
             runner: macos-26
+            backend: rust
           - target: x86_64-apple-darwin
             arch: x64
             platform: darwin-x86_64
             runner: macos-15-intel
+            backend: rust
+          - target: aarch64-apple-darwin
+            arch: arm64
+            platform: darwin-aarch64
+            runner: macos-26
+            backend: js
+          - target: x86_64-apple-darwin
+            arch: x64
+            platform: darwin-x86_64
+            runner: macos-15-intel
+            backend: js
     env:
       # When both secrets exist the build signs + notarizes; otherwise it
       # falls back to an unsigned build (macOS in-app updates then require a
@@ -205,12 +217,14 @@ jobs:
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Setup Rust
+        if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust server build
+        if: ${{ matrix.backend == 'rust' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
@@ -248,8 +262,13 @@ jobs:
           # cross-building (runner is arm64; x64 matrix needs the hint).
           ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
         run: |
+          set -euo pipefail
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
           bun run build:web-assets
-          bun run prepare:rust-server
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            bun run prepare:rust-server
+          fi
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
@@ -258,12 +277,16 @@ jobs:
           # target Electron ABI before packaging, otherwise node-pty/bun-pty
           # crash on require inside the packaged app.
           bun run rebuild:native
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-mac-\${arch}-js.\${ext}")
+          fi
           if [ "${HAS_APPLE_SIGNING}" = "true" ]; then
-            bunx electron-builder --mac --${{ matrix.arch }} --publish=never
+            bunx electron-builder --mac --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           else
             echo "[electron] Apple signing secrets not set; building unsigned (no notarization)."
             CSC_IDENTITY_AUTO_DISCOVERY=false \
-              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false
+              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false "${ARTIFACT_ARGS[@]}"
           fi
           bun run verify:omp-host:packaged
 
@@ -312,7 +335,8 @@ jobs:
             fi
           done
 
-      - name: Upload DMG / ZIP / blockmaps to release
+      - name: Upload DMG / ZIP / blockmaps to release (rust)
+        if: ${{ matrix.backend == 'rust' }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
@@ -323,7 +347,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upload JS-variant installers to release
+        if: ${{ matrix.backend == 'js' }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: |
+            packages/electron/dist/*-js.dmg
+            packages/electron/dist/*-js.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload per-arch latest-mac.yml for merge
+        if: ${{ matrix.backend == 'rust' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: latest-yml-${{ matrix.target }}
@@ -342,9 +378,19 @@ jobs:
           - arch: x64
             target: x86_64-pc-windows-msvc
             platform: win32-x64
+            backend: rust
           - arch: arm64
             target: aarch64-pc-windows-msvc
             platform: win32-arm64
+            backend: rust
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            platform: win32-x64
+            backend: js
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            platform: win32-arm64
+            backend: js
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -426,10 +472,15 @@ jobs:
         working-directory: packages/electron
         shell: bash
         run: |
-          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-win-\${arch}-js.\${ext}")
+          fi
+          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
 
-      - name: Upload installer to release
+      - name: Upload installer to release (rust)
+        if: ${{ matrix.backend == 'rust' }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
@@ -439,7 +490,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Upload JS-variant installer to release
+        if: ${{ matrix.backend == 'js' }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: |
+            packages/electron/dist/*-js.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload update manifest as artifact
+        if: ${{ matrix.backend == 'rust' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: latest-yml-${{ matrix.target }}
@@ -458,12 +520,28 @@ jobs:
             artifact_arch: x86_64
             manifest: latest-linux.yml
             target: x86_64-unknown-linux-gnu
+            backend: rust
           - runner: ubuntu-24.04-arm
             arch: arm64
             host_arch: aarch64
             artifact_arch: arm64
             manifest: latest-linux-arm64.yml
             target: aarch64-unknown-linux-gnu
+            backend: rust
+          - runner: ubuntu-24.04
+            arch: x64
+            host_arch: x86_64
+            artifact_arch: x86_64
+            manifest: latest-linux.yml
+            target: x86_64-unknown-linux-gnu
+            backend: js
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            host_arch: aarch64
+            artifact_arch: arm64
+            manifest: latest-linux-arm64.yml
+            target: aarch64-unknown-linux-gnu
+            backend: js
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -506,12 +584,14 @@ jobs:
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
       - name: Setup Rust
+        if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache Rust server build
+        if: ${{ matrix.backend == 'rust' }}
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
@@ -528,17 +608,26 @@ jobs:
           OMPCHAMBER_TARGET_ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          node ./scripts/set-server-backend.mjs "${{ matrix.backend }}"
+          bun install
           bun run build:web-assets
-          bun run prepare:rust-server
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            bun run prepare:rust-server
+          fi
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
           bun run rebuild:native
-          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.backend }}" = "js" ]; then
+            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-linux-\${arch}-js.\${ext}")
+          fi
+          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
           bun run verify:linux-appimage
 
       - name: Validate Linux update manifest
+        if: ${{ matrix.backend == 'rust' }}
         working-directory: packages/electron
         env:
           VERSION: ${{ needs.create-release.outputs.version }}
@@ -549,13 +638,24 @@ jobs:
           APPIMAGE="dist/OMPChamber-${VERSION}-linux-${ARTIFACT_ARCH}.AppImage"
           node ./scripts/verify-update-manifest.mjs "dist/${MANIFEST}" "$APPIMAGE" "$VERSION"
 
-      - name: Upload validated Linux release files
+      - name: Upload validated Linux release files (rust)
+        if: ${{ matrix.backend == 'rust' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-release-${{ matrix.arch }}
           path: |
             packages/electron/dist/OMPChamber-${{ needs.create-release.outputs.version }}-linux-${{ matrix.artifact_arch }}.AppImage
             packages/electron/dist/${{ matrix.manifest }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload JS-variant AppImage
+        if: ${{ matrix.backend == 'js' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-release-${{ matrix.arch }}-js
+          path: |
+            packages/electron/dist/*-js.AppImage
           if-no-files-found: error
           retention-days: 1
 
@@ -578,6 +678,18 @@ jobs:
         with:
           name: linux-release-arm64
           path: artifacts/arm64
+
+      - name: Download x64 JS-variant AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-release-x64-js
+          path: artifacts/x64-js
+
+      - name: Download arm64 JS-variant AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-release-arm64-js
+          path: artifacts/arm64-js
 
       - name: Revalidate separate Linux manifests
         env:
@@ -603,6 +715,8 @@ jobs:
             artifacts/x64/latest-linux.yml
             artifacts/arm64/OMPChamber-${{ needs.create-release.outputs.version }}-linux-arm64.AppImage
             artifacts/arm64/latest-linux-arm64.yml
+            artifacts/x64-js/*-js.AppImage
+            artifacts/arm64-js/*-js.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -783,6 +897,12 @@ jobs:
             "latest-linux.yml"
             "OMPChamber-${VERSION}-linux-arm64.AppImage"
             "latest-linux-arm64.yml"
+            "OMPChamber-${VERSION}-mac-arm64-js.dmg"
+            "OMPChamber-${VERSION}-mac-x64-js.dmg"
+            "OMPChamber-${VERSION}-win-x64-js.exe"
+            "OMPChamber-${VERSION}-win-arm64-js.exe"
+            "OMPChamber-${VERSION}-linux-x64-js.AppImage"
+            "OMPChamber-${VERSION}-linux-arm64-js.AppImage"
           )
           # The raw releases/tags API endpoint 404s for this job's token long
           # after publish (observed across three releases) while anonymous

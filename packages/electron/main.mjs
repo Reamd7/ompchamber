@@ -1580,10 +1580,27 @@ const spawnLocalServer = async () => {
   process.env.NO_PROXY = process.env.NO_PROXY || 'localhost,127.0.0.1';
   process.env.no_proxy = process.env.no_proxy || 'localhost,127.0.0.1';
 
-  // Rust sidecar replaces the in-process JS server — see the sidecar block
-  // above for the channel mapping (notifications/quit-risk/focus).
+  // Backend selection: packaged builds carry a `server-backend` marker file
+  // in the app directory (written at packaging time); dev runs use
+  // OMPCHAMBER_SERVER_BACKEND. The JS backend keeps the legacy in-process
+  // server (parity fallback build); the Rust backend spawns server-rs.
+  const backendMarker = path.join(app.getAppPath(), 'server-backend');
+  let serverBackend = 'rust';
+  try {
+    serverBackend = fs.readFileSync(backendMarker, 'utf8').trim() || 'rust';
+  } catch {
+    // no marker — packaged Rust builds and dev default
+  }
+  if (!app.isPackaged) {
+    const override = process.env.OMPCHAMBER_SERVER_BACKEND;
+    if (override === 'js' || override === 'rust') serverBackend = override;
+  }
+  if (serverBackend !== 'js' && serverBackend !== 'rust') serverBackend = 'rust';
+
   state.desktopUiPassword = desktopUiPassword;
-  const handle = await startRustUiServer({ port: chosenPort, host: bindHost });
+  const handle = serverBackend === 'js'
+    ? await startJsUiServer({ port: chosenPort, host: bindHost, uiPassword: desktopUiPassword || null })
+    : await startRustUiServer({ port: chosenPort, host: bindHost });
 
   const port = handle.getPort();
   const url = buildLocalUrl(port);
@@ -1849,6 +1866,35 @@ const resolveRustServerBinary = () => {
     if (fs.existsSync(candidate)) return candidate;
   }
   return 'ompchamber-server';
+};
+
+// Legacy in-process JS server backend (the `-js` build variant): the same
+// startWebUiServer the desktop used before the Rust sidecar, with the same
+// handle surface the Rust path returns. Kept as a parity fallback build.
+const startJsUiServer = async ({ port, host, uiPassword }) => {
+  const { startWebUiServer } = await import('@ompchamber/web/server/index.js');
+  const server = await startWebUiServer({
+    port,
+    host,
+    uiPassword,
+    attachSignals: false,
+    exitOnShutdown: false,
+    apiOnly: false,
+    onDesktopNotification: (payload) => maybeShowNativeNotification(payload),
+    getIsWindowFocused: isAnyWindowFocused,
+    getDesktopRuntimeConfig: () => ({
+      apiBaseUrl: state.apiBaseUrl || '',
+      requestHeaders: sanitizeRuntimeRequestHeaders(state.requestHeaders || {}),
+    }),
+  });
+  log.info(`[electron] in-process JS server ready on :${server.getPort()}`);
+  return {
+    isRustSidecar: false,
+    getPort: () => server.getPort(),
+    getQuitRiskStatus: () => server.getQuitRiskStatus?.() ?? { tunnel: { active: false }, scheduledTasks: {} },
+    getOpenCodeProcessInfo: () => server.getOpenCodeProcessInfo?.() ?? { managed: false },
+    shutdownAndWait: async () => {},
+  };
 };
 
 // Finder/launchd launches carry a bare PATH (no bun, no homebrew) — the
