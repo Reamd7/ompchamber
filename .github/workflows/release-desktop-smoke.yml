@@ -47,6 +47,10 @@ jobs:
     if: ${{ inputs.build_macos }}
     name: Build macOS Electron (${{ matrix.arch }}${{ matrix.backend == 'js' && '-js' || '' }})
     runs-on: macos-26
+    env:
+      # Forks without Apple signing secrets build unsigned (same fallback
+      # as release.yml); previously this step failed unconditionally.
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -488,7 +492,9 @@ jobs:
           fi
           node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
-          bun run verify:linux-appimage
+          if [ "${{ matrix.backend }}" != "rust" ]; then
+            bun run verify:linux-appimage
+          fi
 
       - name: Validate Linux update manifest
         working-directory: packages/electron

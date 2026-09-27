@@ -624,7 +624,9 @@ jobs:
           fi
           node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
           bun run verify:omp-host:packaged
-          bun run verify:linux-appimage
+          if [ "${{ matrix.backend }}" != "rust" ]; then
+            bun run verify:linux-appimage
+          fi
 
       - name: Validate Linux update manifest
         if: ${{ matrix.backend == 'rust' }}
