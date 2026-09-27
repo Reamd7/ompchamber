@@ -165,7 +165,7 @@ jobs:
           if [ "${{ matrix.backend }}" = "js" ]; then
             # macOS runners ship bash 3.2 where set -u rejects empty-array
             # expansions — branch instead of passing an empty args array.
-            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-mac-\${arch}-js.\${ext}"
+            JS_NAME_ARG="-c.mac.artifactName=\${productName}-\${version}-mac-\${arch}-js.\${ext}"
           else
             JS_NAME_ARG=""
           fi
@@ -356,7 +356,7 @@ jobs:
         run: |
           JS_NAME_ARG=""
           if [ "${{ matrix.backend }}" = "js" ]; then
-            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-win-\${arch}-js.\${ext}"
+            JS_NAME_ARG="-c.win.artifactName=\${productName}-\${version}-win-\${arch}-js.\${ext}"
           fi
           # shellcheck disable=SC2086
           node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never $JS_NAME_ARG
@@ -493,7 +493,7 @@ jobs:
           bun run rebuild:native
           JS_NAME_ARG=""
           if [ "${{ matrix.backend }}" = "js" ]; then
-            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-linux-\${arch}-js.\${ext}"
+            JS_NAME_ARG="-c.linux.artifactName=\${productName}-\${version}-linux-\${arch}-js.\${ext}"
           fi
           # shellcheck disable=SC2086
           node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never $JS_NAME_ARG
