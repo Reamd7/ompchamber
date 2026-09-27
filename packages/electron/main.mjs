@@ -1551,10 +1551,9 @@ const spawnLocalServer = async () => {
     chosenPort = await pickUnusedPort(bindHost);
   }
 
-  // The server module reads ENV_DESKTOP_NOTIFY / OMPCHAMBER_DIST_DIR /
-  // OMPCHAMBER_RUNTIME at import time (top-level const), so these must be
-  // set before the first import. After this point, the same env is used by
-  // both the Electron main and the server running inside it.
+  // The Rust sidecar child inherits this env (DIST_DIR/RUNTIME/
+  // DESktop_NOTIFY/UI_PASSWORD/LAN_ACCESS all follow the server-rs env
+  // contract), so everything must be set before the spawn below.
   process.env.OMPCHAMBER_HOST = bindHost;
   process.env.OMPCHAMBER_DESKTOP_LAN_ACCESS_ACTIVE = effectiveLanAccessEnabled ? 'true' : 'false';
   if (lanAccessBlockedByMissingPassword) {
@@ -1580,21 +1579,13 @@ const spawnLocalServer = async () => {
   process.env.NO_PROXY = process.env.NO_PROXY || 'localhost,127.0.0.1';
   process.env.no_proxy = process.env.no_proxy || 'localhost,127.0.0.1';
 
-  const { startWebUiServer } = await import('@ompchamber/web/server/index.js');
-
-  const handle = await startWebUiServer({
+  // Rust sidecar replaces the in-process JS server — see the sidecar block
+  // above for the channel mapping (notifications/quit-risk/focus).
+  state.desktopUiPassword = desktopUiPassword;
+  const handle = await startRustUiServer({
     port: chosenPort,
     host: bindHost,
-    uiPassword: desktopUiPassword || null,
-    attachSignals: false,
-    exitOnShutdown: false,
-    apiOnly: false,
-    onDesktopNotification: (payload) => maybeShowNativeNotification(payload),
-    getIsWindowFocused: isAnyWindowFocused,
-    getDesktopRuntimeConfig: () => ({
-      apiBaseUrl: state.apiBaseUrl || '',
-      requestHeaders: sanitizeRuntimeRequestHeaders(state.requestHeaders || {}),
-    }),
+    uiPassword: desktopUiPassword,
   });
 
   const port = handle.getPort();
@@ -1692,6 +1683,207 @@ Stop-ProcessTree $targetPid $true
     windowsHide: true,
   });
   child.unref();
+};
+
+// ---------------------------------------------------------------------------
+// Rust UI server sidecar (server-rs)
+//
+// The desktop no longer loads the JS server layer in-process; it spawns the
+// ported Rust binary instead. Parity comes from the port (API/CLI parity
+// harnesses in packages/web/server-rs/scripts). Desktop integration moved
+// to process channels:
+//   - native notifications: the server's stdout line protocol
+//     (`[OMPChamberDesktopNotify] <json>`, see emitter_runtime.rs)
+//   - quit-risk status: HTTP (tunnel + scheduled-tasks status routes)
+//   - window-focus suppression: not portable to a child process — the Rust
+//     probe defaults to "unfocused", so native notifications always fire
+// ---------------------------------------------------------------------------
+
+const RUST_DESKTOP_NOTIFY_PREFIX = '[OMPChamberDesktopNotify] ';
+
+const resolveRustServerBinary = () => {
+  const explicit = process.env.OMPCHAMBER_SERVER_BINARY;
+  if (explicit) return explicit;
+  if (!isDev && process.resourcesPath) {
+    const packaged = path.join(process.resourcesPath, 'ompchamber-server');
+    if (fs.existsSync(packaged)) return packaged;
+  }
+  const repoTarget = path.resolve(__dirname, '..', 'web', 'server-rs', 'target');
+  for (const kind of ['release', 'debug']) {
+    const candidate = path.join(repoTarget, kind, process.platform === 'win32' ? 'ompchamber-server.exe' : 'ompchamber-server');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'ompchamber-server';
+};
+
+// Finder/launchd launches carry a bare PATH (no bun, no homebrew) — the
+// engine under the server needs the user's tool locations.
+const hardenDesktopPath = (currentPath) => {
+  const home = os.homedir();
+  const extras = [
+    path.join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
+  const seen = new Set((currentPath || '').split(path.delimiter).filter(Boolean));
+  const additions = extras.filter((entry) => !seen.has(entry));
+  return [...additions, currentPath || ''].filter(Boolean).join(path.delimiter);
+};
+
+const startRustUiServer = async ({ port, host, uiPassword = '' }) => {
+  const binary = resolveRustServerBinary();
+  const headers = sanitizeRuntimeRequestHeaders(state.requestHeaders || {});
+  const runtimeConfigSnapshot = {
+    apiBaseUrl: state.apiBaseUrl || '',
+    requestHeaders: headers,
+  };
+  const childEnv = {
+    ...process.env,
+    PATH: hardenDesktopPath(process.env.PATH),
+    // GUI cold starts of the engine can exceed the server's 30s default;
+    // killing it mid-boot strands the engine (single-instance lock).
+    OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS: '180000',
+    // External-host proxy config: realtime_proxy.rs reads these at boot.
+    ...(runtimeConfigSnapshot.apiBaseUrl
+      ? {
+          OMPCHAMBER_DESKTOP_API_BASE_URL: runtimeConfigSnapshot.apiBaseUrl,
+          ...(Object.keys(runtimeConfigSnapshot.requestHeaders).length
+            ? { OMPCHAMBER_DESKTOP_REQUEST_HEADERS: JSON.stringify(runtimeConfigSnapshot.requestHeaders) }
+            : {}),
+        }
+      : {}),
+  };
+
+  log.info(`[electron] starting rust server: ${binary} serve --foreground --port ${port}`);
+  const child = spawn(
+    binary,
+    ['serve', '--foreground', '--port', String(port), '--host', host],
+    { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+  );
+
+  let exited = false;
+  let exitCode = null;
+  child.on('exit', (code, signal) => {
+    exited = true;
+    exitCode = signal ?? code ?? 'unknown';
+    if (!child.__intentionalExit) {
+      log.error(`[electron] rust server exited unexpectedly (${exitCode})`);
+    }
+  });
+
+  // Native notification channel: one JSON payload per stdout line.
+  let notifyBuffer = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    notifyBuffer += chunk;
+    let newlineIndex;
+    while ((newlineIndex = notifyBuffer.indexOf('\n')) >= 0) {
+      const line = notifyBuffer.slice(0, newlineIndex);
+      notifyBuffer = notifyBuffer.slice(newlineIndex + 1);
+      if (line.startsWith(RUST_DESKTOP_NOTIFY_PREFIX)) {
+        try {
+          maybeShowNativeNotification(JSON.parse(line.slice(RUST_DESKTOP_NOTIFY_PREFIX.length)));
+        } catch (error) {
+          log.warn('[electron] malformed desktop notification line:', error?.message || error);
+        }
+      }
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    for (const line of chunk.split('\n')) {
+      if (line.trim()) log.info(`[server] ${line.trimEnd()}`);
+    }
+  });
+
+  state.rustSidecarConfig = runtimeConfigSnapshot;
+
+  // Wait for /health; fail fast if the child dies during boot.
+  const deadline = Date.now() + 200_000;
+  for (;;) {
+    if (exited) throw new Error(`rust server exited during boot (${exitCode})`);
+    try {
+      const response = await fetch(`http://${host}:${port}/health`, {
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.ok) break;
+    } catch {
+      // not up yet
+    }
+    if (Date.now() > deadline) {
+      child.__intentionalExit = true;
+      child.kill('SIGTERM');
+      throw new Error('rust server did not become healthy within 200s');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  log.info(`[electron] rust server ready on :${port} (pid ${child.pid})`);
+
+  // Session-authenticated JSON fetch: the status routes sit behind the UI
+  // gate. Login is lazy (401 -> POST /auth/session -> retry once); without
+  // a configured password the routes are open.
+  let sessionCookie = '';
+  const loginForSidecarFetch = async () => {
+    if (!uiPassword) return;
+    const response = await fetch(`http://127.0.0.1:${port}/auth/session`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: uiPassword, trustDevice: true }),
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!response.ok) throw new Error(`/auth/session -> ${response.status}`);
+    const [cookie] = response.headers.getSetCookie?.() || [];
+    sessionCookie = (cookie || '').split(';')[0] || '';
+  };
+  const fetchSidecarJson = async (pathname) => {
+    const attempt = async () => fetch(`http://127.0.0.1:${port}${pathname}`, {
+      headers: sessionCookie ? { cookie: sessionCookie } : {},
+      signal: AbortSignal.timeout(3_000),
+    });
+    let response = await attempt();
+    if (response.status === 401 && !sessionCookie) {
+      await loginForSidecarFetch();
+      response = await attempt();
+    }
+    if (!response.ok) throw new Error(`${pathname} -> ${response.status}`);
+    return await response.json();
+  };
+
+  return {
+    isRustSidecar: true,
+    getPort: () => port,
+    // Composes the same shape the in-process handle exposed, over HTTP.
+    getQuitRiskStatus: async () => {
+      const [tunnel, scheduledTasks] = await Promise.all([
+        fetchSidecarJson('/api/ompchamber/tunnel/status'),
+        fetchSidecarJson('/api/ompchamber/scheduled-tasks/status'),
+      ]);
+      return { tunnel: { active: Boolean(tunnel?.active) }, scheduledTasks };
+    },
+    // The detached killer takes pid+port and reaps the whole process group,
+    // which includes the engine under the server.
+    getOpenCodeProcessInfo: () => ({ managed: true, pid: child.pid, port }),
+    shutdownAndWait: async () => {
+      child.__intentionalExit = true;
+      if (exited || !child.pid) return;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        return;
+      }
+      const killDeadline = Date.now() + 10_000;
+      while (!exited && Date.now() < killDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      if (!exited) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+    },
+  };
 };
 
 const killSidecar = () => {
@@ -2682,7 +2874,24 @@ const activateMainWindow = async (url, localOrigin, bootOutcome, runtimeConfig =
   state.apiBaseUrl = typeof runtimeConfig.apiBaseUrl === 'string' ? runtimeConfig.apiBaseUrl : state.apiBaseUrl;
   state.clientToken = typeof runtimeConfig.clientToken === 'string' ? runtimeConfig.clientToken : '';
   state.requestHeaders = sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || {});
-  state.bootOutcome = bootOutcome ?? null;
+  // The Rust sidecar reads external-host proxy config from its environment
+  // at boot; a changed target needs a same-port restart of the child.
+  if (state.serverHandle?.isRustSidecar && state.rustSidecarConfig) {
+    const changed = state.rustSidecarConfig.apiBaseUrl !== (state.apiBaseUrl || '')
+      || JSON.stringify(state.rustSidecarConfig.requestHeaders) !== JSON.stringify(state.requestHeaders || {});
+    if (changed) {
+      const restartPort = state.serverHandle.getPort();
+      log.info('[electron] external-host config changed; restarting rust sidecar');
+      await state.serverHandle.shutdownAndWait();
+      const replacement = await startRustUiServer({
+        port: restartPort,
+        host: process.env.OMPCHAMBER_HOST || '127.0.0.1',
+        uiPassword: state.desktopUiPassword || '',
+      });
+      state.serverHandle = replacement;
+      state.sidecarUrl = buildLocalUrl(restartPort);
+    }
+  }
   const rendererRuntimeConfig = buildRendererRuntimeConfig(url, {
     apiBaseUrl: state.apiBaseUrl || '',
     clientToken: state.clientToken || '',

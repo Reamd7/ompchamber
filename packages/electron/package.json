@@ -46,10 +46,11 @@
     "test:linux-desktop": "node --test ./linux-autostart.test.mjs && node ./scripts/smoke-linux-app-discovery.mjs && node ./scripts/smoke-path-open-utils.mjs",
     "updater:e2e:fixture": "node ./scripts/updater-e2e-fixture.mjs",
     "verify:update-manifest": "node ./scripts/verify-update-manifest.mjs",
-    "package": "bun run build:web-assets && bun run prepare:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
+    "package": "bun run build:web-assets && bun run prepare:rust-server && bun run prepare:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
     "finalize:latest-yml": "node ./scripts/finalize-latest-yml.mjs",
     "type-check": "node --check ./main.mjs && node --check ./preload.mjs",
-    "lint": "node -e \"process.exit(0)\""
+    "lint": "node -e \"process.exit(0)\"",
+    "prepare:rust-server": "node ./scripts/prepare-rust-server.mjs"
   },
   "build": {
     "appId": "dev.ompchamber.desktop",
@@ -59,6 +60,14 @@
       "preload.mjs"
     ],
     "extraResources": [
+      {
+        "from": "resources/ompchamber-server",
+        "to": "ompchamber-server"
+      },
+      {
+        "from": "resources/ompchamber-server.exe",
+        "to": "ompchamber-server.exe"
+      },
       {
         "from": "resources/web-dist",
         "to": "web-dist"

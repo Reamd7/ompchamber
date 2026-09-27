@@ -16,3 +16,5 @@ resources/opencode-cli/*
 .DS_Store
 resources/omp-host/*
 !resources/omp-host/.gitkeep
+resources/ompchamber-server
+resources/ompchamber-server.exe
