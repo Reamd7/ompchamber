@@ -6,6 +6,12 @@ description = "Rust port of the OpenChamber web server (packages/web/server), ex
 license = "MIT"
 publish = false
 
+[features]
+# Native local speech (sherpa-onnx): offline dictation + TTS with the same
+# model archives the JS worker uses. Off by default — the musl CLI builds
+# skip the C library; desktop packaging enables it.
+local-speech = ["dep:sherpa-onnx"]
+
 [dependencies]
 aes-gcm = "0.10"
 anyhow = "1"
@@ -20,6 +26,7 @@ p256 = { version = "0.13", features = ["ecdh", "ecdsa", "jwk"] }
 portable-pty = "0.8"
 rand = "0.9"
 hex = "0.4"
+sherpa-onnx = { version = "1.13", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "charset", "http2", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

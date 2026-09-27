@@ -109,10 +109,17 @@ pub struct DictationService {
 
 impl DictationService {
     pub fn new(models_dir: PathBuf) -> Arc<Self> {
+        #[cfg(feature = "local-speech")]
+        let (recognizer, speaker) = crate::dictation_tts::native_sherpa::engine_pair();
+        #[cfg(not(feature = "local-speech"))]
+        let (recognizer, speaker) = (
+            Arc::new(UnavailableLocalEngine),
+            Arc::new(UnavailableLocalEngine),
+        );
         Self::with_engines(
             models_dir,
-            Arc::new(UnavailableLocalEngine),
-            Arc::new(UnavailableLocalEngine),
+            recognizer,
+            speaker,
             Arc::new(HttpTranscriber::default()),
         )
     }

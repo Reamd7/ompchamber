@@ -306,7 +306,7 @@ pub fn is_local_model_id(model_id: &str) -> bool {
     is_local_stt_model_id(model_id) || is_local_tts_model_id(model_id)
 }
 
-fn catalog_spec(model_id: &str) -> Option<&'static LocalModelSpec> {
+pub(crate) fn catalog_spec(model_id: &str) -> Option<&'static LocalModelSpec> {
     LOCAL_STT_MODEL_CATALOG
         .iter()
         .chain(LOCAL_TTS_MODEL_CATALOG.iter())

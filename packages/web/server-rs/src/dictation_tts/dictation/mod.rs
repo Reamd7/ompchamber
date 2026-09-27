@@ -667,10 +667,18 @@ mod tests {
     #[tokio::test]
     async fn speak_answers_500_when_the_local_engine_throws() {
         // Installed model + Unavailable engine → the JS route's catch.
+        // (with_engines keeps this test independent of the local-speech
+        // feature, which swaps the default engines for the native ones.)
         let dir = temp_dir("speak-500");
         install_kokoro_english(&dir);
+        let service = DictationService::with_engines(
+            dir.clone(),
+            std::sync::Arc::new(super::local::UnavailableLocalEngine),
+            std::sync::Arc::new(super::local::UnavailableLocalEngine),
+            std::sync::Arc::new(crate::dictation_tts::tts::stt::HttpTranscriber::default()),
+        );
         let state = DictationState {
-            service: DictationService::new(dir.clone()),
+            service,
             auth_enabled: false,
         };
         let router = test_router(state);

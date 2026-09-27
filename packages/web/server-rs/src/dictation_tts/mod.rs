@@ -17,3 +17,5 @@ pub mod tts;
 pub fn router(ctx: RouterContext) -> axum::Router {
     tts::router(ctx.clone()).merge(dictation::router(ctx))
 }
+#[cfg(feature = "local-speech")]
+pub mod native_sherpa;
