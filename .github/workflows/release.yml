@@ -861,7 +861,6 @@ jobs:
         with:
           pattern: server-cli-*
           path: artifacts
-          merge-multiple: true
 
       - name: Archive and checksum
         env:
@@ -869,16 +868,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
+          # Artifacts land in per-target directories (same binary filename
+          # inside each — merging would clobber them).
           cd artifacts
           for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-            tar czf "../release/ompchamber-server-${VERSION}-${target}.tar.gz" -C . ompchamber-server
-            rm ompchamber-server
+            tar czf "../release/ompchamber-server-${VERSION}-${target}.tar.gz" -C "server-cli-${target}" ompchamber-server
           done
-          if [ -f ompchamber-server.exe ]; then
-            zip -q "../release/ompchamber-server-${VERSION}-x86_64-pc-windows-msvc.zip" ompchamber-server.exe
-          fi
+          zip -q "../release/ompchamber-server-${VERSION}-x86_64-pc-windows-msvc.zip" server-cli-x86_64-pc-windows-msvc/ompchamber-server.exe
           cd ../release
-          shopt -s globstar
           sha256sum ompchamber-server-* | tee "ompchamber-server-${VERSION}-SHA256SUMS.txt"
 
       - name: Upload to release
