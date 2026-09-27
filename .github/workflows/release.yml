@@ -923,7 +923,7 @@ jobs:
             "OMPChamber-${VERSION}-mac-x64-js.dmg"
             "OMPChamber-${VERSION}-win-x64-js.exe"
             "OMPChamber-${VERSION}-win-arm64-js.exe"
-            "OMPChamber-${VERSION}-linux-x64-js.AppImage"
+            "OMPChamber-${VERSION}-linux-x86_64-js.AppImage"
             "OMPChamber-${VERSION}-linux-arm64-js.AppImage"
           )
           # The raw releases/tags API endpoint 404s for this job's token long
