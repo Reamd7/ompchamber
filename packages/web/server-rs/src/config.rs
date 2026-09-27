@@ -82,10 +82,18 @@ fn default_data_dir() -> PathBuf {
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
+    // Mirror Node's os.homedir(): USERPROFILE on Windows, HOME elsewhere.
+    // HOME alone made /api/fs/home (and the default data dir) fail on
+    // Windows, where HOME is typically unset.
+    let raw = if cfg!(windows) {
+        std::env::var("USERPROFILE")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var("HOME").ok().filter(|v| !v.is_empty()))
+    } else {
+        std::env::var("HOME").ok().filter(|v| !v.is_empty())
+    };
+    raw.map(PathBuf::from)
 }
 
 fn default_dist_dir() -> PathBuf {
