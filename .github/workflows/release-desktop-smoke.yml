@@ -162,17 +162,21 @@ jobs:
           # recompile native deps on its own. Rebuild against the target
           # Electron ABI before packaging, matching the release workflow.
           bun run rebuild:native
-          ARTIFACT_ARGS=()
           if [ "${{ matrix.backend }}" = "js" ]; then
-            # Legacy variant: distinct artifact names, no updater manifests.
-            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-mac-\${arch}-js.\${ext}")
+            # macOS runners ship bash 3.2 where set -u rejects empty-array
+            # expansions — branch instead of passing an empty args array.
+            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-mac-\${arch}-js.\${ext}"
+          else
+            JS_NAME_ARG=""
           fi
           if [ "${HAS_APPLE_SIGNING}" = "true" ]; then
-            bunx electron-builder --mac --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
+            # shellcheck disable=SC2086
+            bunx electron-builder --mac --${{ matrix.arch }} --publish=never $JS_NAME_ARG
           else
             echo "[electron] Apple signing secrets not set; building unsigned (no notarization)."
+            # shellcheck disable=SC2086
             CSC_IDENTITY_AUTO_DISCOVERY=false \
-              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false "${ARTIFACT_ARGS[@]}"
+              bunx electron-builder --mac --${{ matrix.arch }} --publish=never -c.mac.notarize=false $JS_NAME_ARG
           fi
           bun run verify:omp-host:packaged
 
@@ -350,11 +354,12 @@ jobs:
         working-directory: packages/electron
         shell: bash
         run: |
-          ARTIFACT_ARGS=()
+          JS_NAME_ARG=""
           if [ "${{ matrix.backend }}" = "js" ]; then
-            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-win-\${arch}-js.\${ext}")
+            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-win-\${arch}-js.\${ext}"
           fi
-          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
+          # shellcheck disable=SC2086
+          node ./scripts/package.mjs --win --${{ matrix.arch }} --publish=never $JS_NAME_ARG
           bun run verify:omp-host:packaged
 
       - name: Upload Windows installable artifacts
@@ -486,11 +491,12 @@ jobs:
           bun run verify:omp-host
           bun run bundle:main
           bun run rebuild:native
-          ARTIFACT_ARGS=()
+          JS_NAME_ARG=""
           if [ "${{ matrix.backend }}" = "js" ]; then
-            ARTIFACT_ARGS=(-c.artifactName="\${productName}-\${version}-linux-\${arch}-js.\${ext}")
+            JS_NAME_ARG="-c.artifactName=\${productName}-\${version}-linux-\${arch}-js.\${ext}"
           fi
-          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never "${ARTIFACT_ARGS[@]}"
+          # shellcheck disable=SC2086
+          node ./scripts/package.mjs --linux --${{ matrix.arch }} --publish=never $JS_NAME_ARG
           bun run verify:omp-host:packaged
           if [ "${{ matrix.backend }}" != "rust" ]; then
             bun run verify:linux-appimage
