@@ -121,9 +121,16 @@ export const verifyExtractedPayload = ({
 
 const findAppImage = (version, architecture) => {
   const suffix = linuxAppImageArchSuffix(architecture);
-  const expected = path.join(electronRoot, 'dist', `OMPChamber-${version}-linux-${suffix}.AppImage`);
-  if (!fs.existsSync(expected)) throw new Error(`Linux AppImage not found: ${expected}`);
-  return expected;
+  const candidates = [
+    `OMPChamber-${version}-linux-${suffix}.AppImage`,
+    // js-variant builds carry a -js artifact-name suffix
+    `OMPChamber-${version}-linux-${suffix}-js.AppImage`,
+  ];
+  for (const name of candidates) {
+    const candidate = path.join(electronRoot, 'dist', name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(`Linux AppImage not found: ${path.join(electronRoot, 'dist', candidates[0])} (or -js variant)`);
 };
 
 const extractAppImage = (appImagePath, destination) => {

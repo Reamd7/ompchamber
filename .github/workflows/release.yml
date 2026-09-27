@@ -824,7 +824,15 @@ jobs:
           # musl builds must be fully static — verify so a accidental gnu
           # build never ships as "works everywhere".
           if [ "${{ runner.os }}" = "Linux" ]; then
-            ldd "./$BIN" 2>&1 | grep -q "not a dynamic executable" || { echo "::error::binary is not static"; ldd "./$BIN"; exit 1; }
+            # Capture and inspect: piping into grep -q under pipefail misfires
+            # (grep exits early, ldd takes SIGPIPE, the pipeline "fails" even
+            # though the binary is static).
+            LDD_OUT="$(ldd "./$BIN" 2>&1 || true)"
+            echo "$LDD_OUT"
+            case "$LDD_OUT" in
+              *"not a dynamic executable"*) ;;
+              *) echo "::error::binary is not static"; exit 1 ;;
+            esac
           fi
 
       - name: Stage artifact
