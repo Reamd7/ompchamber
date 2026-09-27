@@ -1916,6 +1916,14 @@ const startRustUiServer = async ({ port, host }) => {
   const childEnv = {
     ...process.env,
     PATH: hardenDesktopPath(process.env.PATH),
+    // The packaged engine lives in resources/omp-host; the child has no
+    // process.resourcesPath, so without this env it falls back to the
+    // compile-time source path and dies with "omp host entry missing"
+    // (verified against the released dmg; with the env the bundled engine
+    // resolves and is ready in ~4s).
+    ...(!isDev && process.resourcesPath
+      ? { OMPCHAMBER_BUNDLED_OMP_HOST_DIR: path.join(process.resourcesPath, 'omp-host') }
+      : {}),
     // GUI cold starts of the engine can exceed the server's 30s default;
     // killing it mid-boot strands the engine (single-instance lock).
     OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS: '180000',
