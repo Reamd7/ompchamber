@@ -728,10 +728,46 @@ async fn readiness_from_stdout(
     }
 }
 
-/// Signal a single pid via /bin/kill; `signal` "0" is the liveness probe.
+/// Signal a single pid; `signal` "0" is the liveness probe.
 /// Returns false when the signal could not be delivered (no such process).
+#[cfg(unix)]
 async fn signal_process(pid: u32, signal: &str) -> bool {
     run_kill(&["-".to_string() + signal, pid.to_string()]).await
+}
+
+/// Windows has no /bin/kill — the exit watcher's `kill -0` probe always
+/// failed, so a perfectly healthy engine was recorded as "exited
+/// unexpectedly" right after startup and the readiness gate answered 503
+/// forever (alpha.7 desktop build). Probe liveness with
+/// `tasklist /FI "PID eq n"`; other signals terminate the process tree via
+/// `taskkill /T /F`.
+#[cfg(windows)]
+async fn signal_process(pid: u32, signal: &str) -> bool {
+    if signal == "0" {
+        let output = tokio::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await;
+        return match output {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                // A match lists one process row containing the bare pid;
+                // the no-match case prints an "INFO: No tasks" header.
+                text.split_whitespace().any(|token| token == pid.to_string())
+            }
+            _ => false,
+        };
+    }
+    tokio::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Signal the child's whole process group (negative pid). The host is spawned
@@ -749,11 +785,14 @@ async fn signal_process_group(pid: u32, signal: &str) -> bool {
     }
 }
 
-#[cfg(not(unix))]
-async fn signal_process_group(_pid: u32, _signal: &str) -> bool {
-    false
+#[cfg(windows)]
+async fn signal_process_group(pid: u32, signal: &str) -> bool {
+    // taskkill /T terminates the whole process tree — the detached-group
+    // intent on Windows; the "0" probe has no group meaning.
+    signal_process(pid, signal).await
 }
 
+#[cfg(unix)]
 async fn run_kill(args: &[String]) -> bool {
     match tokio::process::Command::new("/bin/kill")
         .args(args)
