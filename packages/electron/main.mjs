@@ -1855,7 +1855,8 @@ const resolveRustServerBinary = () => {
   const explicit = process.env.OMPCHAMBER_SERVER_BINARY;
   if (explicit) return explicit;
   if (!isDev && process.resourcesPath) {
-    const packaged = path.join(process.resourcesPath, 'ompchamber-server');
+    const exeSuffix = process.platform === 'win32' ? '.exe' : '';
+    const packaged = path.join(process.resourcesPath, `ompchamber-server${exeSuffix}`);
     if (fs.existsSync(packaged)) return packaged;
   }
   // getAppPath() is the package root both for `electron .` (main.mjs) and
