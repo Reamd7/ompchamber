@@ -35,7 +35,7 @@ import {
 import { unsupportedAppSpecificOpenError, validateLocalPath } from './path-open-utils.mjs';
 import { shouldAllowBrowserPanelCertificateError } from './browser-panel-security.mjs';
 import { attachRendererRecovery } from './renderer-recovery.mjs';
-import { mintOutsideFileGrant } from '@ompchamber/web/server/lib/fs/routes.js';
+import { mintOutsideFileGrant } from './lib/web-helpers.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1480,8 +1480,8 @@ const loadShellEnv = () => {
 };
 
 // Merge the user's login-shell env (PATH, etc.) into this process before we
-import { pathLooksUserConfigured, mergePathValues } from '@ompchamber/web/server/lib/opencode/path-utils.js';
-import { clearAppImageArgv0FromProcessEnv } from '@ompchamber/web/server/lib/inherited-env.js';
+import { pathLooksUserConfigured, mergePathValues } from './lib/web-helpers.mjs';
+import { clearAppImageArgv0FromProcessEnv } from './lib/web-helpers.mjs';
 
 // import/start the server in-process. The server and its children (opencode
 // CLI, git, etc.) inherit process.env directly now — there is no sidecar
