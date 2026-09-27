@@ -30,7 +30,12 @@ mod windows_shims {
 
     impl PermissionsExt for Permissions {
         fn from_mode(_mode: u32) -> Permissions {
-            Permissions::readonly(false)
+            // No public Permissions constructor exists; clone a real one.
+            let mut permissions = std::fs::metadata(".")
+                .map(|meta| meta.permissions())
+                .unwrap_or_else(|_| unreachable!("cwd metadata"));
+            permissions.set_readonly(false);
+            permissions
         }
         fn mode(&self) -> u32 {
             // Present owner-writable so existing checks keep passing.
@@ -51,6 +56,7 @@ mod windows_shims {
     pub trait MetadataExt {
         fn dev(&self) -> u64;
         fn ino(&self) -> u64;
+        fn mtime(&self) -> i64;
     }
 
     impl MetadataExt for Metadata {
@@ -61,6 +67,13 @@ mod windows_shims {
         }
         fn ino(&self) -> u64 {
             self.len()
+        }
+        fn mtime(&self) -> i64 {
+            self.modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(0)
         }
     }
 
