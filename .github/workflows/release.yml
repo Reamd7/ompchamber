@@ -204,6 +204,16 @@ jobs:
           restore-keys: |
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Install Apple Certificate
         if: ${{ env.HAS_APPLE_SIGNING == 'true' }}
         env:
@@ -238,6 +248,7 @@ jobs:
           ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
         run: |
           bun run build:web-assets
+          bun run prepare:rust-server
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
@@ -375,6 +386,26 @@ jobs:
           bun run prepare:omp-host
           bun run verify:omp-host
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # arm64 builds cross-compile from the x64 runner.
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
+      - name: Build Rust server sidecar
+        working-directory: packages/electron
+        shell: bash
+        env:
+          # prepare-rust-server resolves the cargo --target from this.
+          ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
+        run: bun run prepare:rust-server
+
       - name: Bundle main process
         working-directory: packages/electron
         run: bun run bundle:main
@@ -471,6 +502,16 @@ jobs:
           restore-keys: |
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Run focused Electron release tests
         working-directory: packages/electron
         run: |
@@ -484,6 +525,7 @@ jobs:
         run: |
           set -euo pipefail
           bun run build:web-assets
+          bun run prepare:rust-server
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
@@ -597,8 +639,82 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  package-server-cli:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-26
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: recursive
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
+      - name: Build ompchamber-server
+        working-directory: packages/web/server-rs
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Smoke test the binary
+        working-directory: packages/web/server-rs
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/ompchamber-server"
+          [ "${{ runner.os }}" = "Windows" ] && BIN="$BIN.exe"
+          "$BIN" --version
+
+      - name: Archive
+        shell: bash
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd packages/web/server-rs/target/${{ matrix.target }}/release
+          BIN=ompchamber-server
+          [ "${{ runner.os }}" = "Windows" ] && BIN=ompchamber-server.exe
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "ompchamber-server-${VERSION}-${{ matrix.target }}.zip" "$BIN"
+          else
+            tar czf "ompchamber-server-${VERSION}-${{ matrix.target }}.tar.gz" "$BIN"
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: v${{ needs.create-release.outputs.version }}
+          files: |
+            packages/web/server-rs/target/${{ matrix.target }}/release/ompchamber-server-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   finalize-release:
-    needs: [create-release, package-cli, build-desktop-electron-macos, build-desktop-electron-windows, build-desktop-electron-linux, publish-electron-linux, combine-electron-manifests]
+    needs: [create-release, package-cli, package-server-cli, build-desktop-electron-macos, build-desktop-electron-windows, build-desktop-electron-linux, publish-electron-linux, combine-electron-manifests]
     runs-on: ubuntu-latest
     steps:
       - name: Verify final release asset inventory
@@ -611,6 +727,11 @@ jobs:
           expected=(
             "ompchamber-web-${VERSION}.tgz"
             "ompchamber-web-latest.tgz"
+            "ompchamber-server-${VERSION}-aarch64-apple-darwin.tar.gz"
+            "ompchamber-server-${VERSION}-x86_64-apple-darwin.tar.gz"
+            "ompchamber-server-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "ompchamber-server-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "ompchamber-server-${VERSION}-x86_64-pc-windows-msvc.zip"
             "OMPChamber-${VERSION}-linux-x86_64.AppImage"
             "latest-linux.yml"
             "OMPChamber-${VERSION}-linux-arm64.AppImage"

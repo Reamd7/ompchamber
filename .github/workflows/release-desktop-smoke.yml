@@ -112,6 +112,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Build Electron app
         working-directory: packages/electron
         env:
@@ -121,6 +131,7 @@ jobs:
           ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
         run: |
           bun run build:web-assets
+          bun run prepare:rust-server
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
@@ -236,9 +247,27 @@ jobs:
           restore-keys: |
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Build web assets
         working-directory: packages/electron
         run: bun run build:web-assets
+
+      - name: Build Rust server sidecar
+        working-directory: packages/electron
+        shell: bash
+        env:
+          ELECTRON_BUILDER_ARCH: ${{ matrix.arch }}
+        run: bun run prepare:rust-server
 
       - name: Prepare bundled OpenCode CLI
         working-directory: packages/electron
@@ -341,6 +370,16 @@ jobs:
           restore-keys: |
             omp-host-${{ runner.os }}-${{ matrix.arch }}-
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Run focused Electron release tests
         working-directory: packages/electron
         run: |
@@ -354,6 +393,7 @@ jobs:
         run: |
           set -euo pipefail
           bun run build:web-assets
+          bun run prepare:rust-server
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main

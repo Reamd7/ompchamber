@@ -74,6 +74,16 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust server build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/web/server-rs
+
       - name: Build Electron app (arm64)
         working-directory: packages/electron
         env:
@@ -83,6 +93,7 @@ jobs:
           ELECTRON_BUILDER_ARCH: arm64
         run: |
           bun run build:web-assets
+          bun run prepare:rust-server
           bun run prepare:omp-host
           bun run verify:omp-host
           bun run bundle:main
