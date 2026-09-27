@@ -29,17 +29,19 @@ const rustTargetMap = {
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'linux-x64': 'x86_64-unknown-linux-gnu',
   'win32-x64': 'x86_64-pc-windows-msvc',
+  'win32-arm64': 'aarch64-pc-windows-msvc',
 };
+// Only genuine cross-builds need `cargo --target`; native builds put the
+// binary in target/release. The output path must follow the flag exactly.
+const runnerArch = process.arch === 'x64' ? 'x64' : process.arch;
+const isCross = targetArchitecture.electronBuilder !== runnerArch;
 const requestedTarget = builderArgs
   .find((argument) => argument.startsWith('--target='))
   ?.slice('--target='.length);
-if (requestedTarget) {
-  cargoArgs.push('--target', requestedTarget);
-} else {
-  const rustTarget = rustTargetMap[`${process.platform}-${targetArchitecture.electronBuilder}`];
-  if (rustTarget && rustTarget !== 'aarch64-apple-darwin') {
-    cargoArgs.push('--target', rustTarget);
-  }
+const cargoTarget = requestedTarget
+  || (isCross ? rustTargetMap[`${process.platform}-${targetArchitecture.electronBuilder}`] : undefined);
+if (cargoTarget) {
+  cargoArgs.push('--target', cargoTarget);
 }
 
 console.log(`[electron] cargo ${cargoArgs.join(' ')} (server-rs)`);
@@ -49,8 +51,8 @@ if (build.status !== 0) {
   process.exit(build.status ?? 1);
 }
 
-const builtPath = requestedTarget
-  ? path.join(serverRoot, 'target', requestedTarget, 'release', outputName)
+const builtPath = cargoTarget
+  ? path.join(serverRoot, 'target', cargoTarget, 'release', outputName)
   : path.join(serverRoot, 'target', 'release', outputName);
 if (!fs.existsSync(builtPath)) {
   console.error(`[electron] expected server binary missing: ${builtPath}`);
