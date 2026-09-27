@@ -1274,6 +1274,7 @@ dependencies = [
  "futures",
  "hex",
  "hkdf",
+ "http",
  "jsonc-parser",
  "once_cell",
  "p256",

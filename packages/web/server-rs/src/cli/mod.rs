@@ -197,6 +197,40 @@ async fn run_parsed(parsed: args::Parsed) -> i32 {
     }
 }
 
+/// The CORS mirror set from the JS server's express middleware: packaged
+/// WebView clients whose origin never matches the server host (desktop
+/// `ompchamber-ui://app`, iOS/Android Capacitor), localhost for local dev,
+/// plus arbitrary localhost/127.0.0.1 dev-server ports. Without these the
+/// packaged desktop UI (loaded from the custom scheme) is blocked by the
+/// browser on every request — reproduced against the alpha.4 app.
+fn packaged_or_local_dev_origin(origin: &str) -> bool {
+    const PACKAGED: [&str; 4] = [
+        "ompchamber-ui://app",
+        "capacitor://localhost",
+        "http://localhost",
+        "https://localhost",
+    ];
+    if PACKAGED.contains(&origin) {
+        return true;
+    }
+    // isLocalDevClientOrigin: http(s)://(localhost|127.0.0.1):<port>
+    let (scheme, rest) = match origin.split_once("://") {
+        Some(pair) => pair,
+        None => return false,
+    };
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let (host, port) = match rest.rsplit_once(':') {
+        Some(pair) => pair,
+        None => return false,
+    };
+    if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    host == "localhost" || host == "127.0.0.1"
+}
+
 /// App composition (moved from main.rs so the CLI owns the single root).
 pub fn compose_app(
     ctx: crate::context::RouterContext,
@@ -214,6 +248,40 @@ pub fn compose_app(
         realtime_proxy, relay, session_assist, session_folders, session_goal, settings,
         skills_catalog, small_model, static_assets, terminal, tunnels, ui_auth, walkthrough,
     };
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+
+    let cors = CorsLayer::new()
+        // Mirror the request origin for packaged WebView clients and local
+        // dev servers (same predicate as the JS express middleware).
+        .allow_origin(AllowOrigin::predicate(|origin, _request_parts| {
+            origin
+                .to_str()
+                .map(packaged_or_local_dev_origin)
+                .unwrap_or(false)
+        }))
+        .allow_credentials(true)
+        .allow_methods([
+            http::Method::GET,
+            http::Method::POST,
+            http::Method::PUT,
+            http::Method::PATCH,
+            http::Method::DELETE,
+            http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            http::header::CONTENT_TYPE,
+            http::header::AUTHORIZATION,
+            http::header::ACCEPT,
+            http::HeaderName::from_static("x-requested-with"),
+            http::header::CACHE_CONTROL,
+            http::HeaderName::from_static("x-opencode-directory"),
+            http::HeaderName::from_static("x-opencode-directory-encoding"),
+            http::HeaderName::from_static("x-omp-epoch"),
+            http::HeaderName::from_static("last-event-id"),
+            http::HeaderName::from_static("ngrok-skip-browser-warning"),
+        ])
+        .expose_headers([http::HeaderName::from_static("x-next-cursor")]);
+
     axum::Router::new()
         .merge(ui_auth::router(ctx.clone()))
         .merge(proxy::router(ctx.clone()))
@@ -254,6 +322,9 @@ pub fn compose_app(
         .merge(scheduled_tasks_router)
         .layer(ui_auth::middleware(ctx))
         .merge(static_assets::router(config))
+        // Applied last so it covers every route merged above (Router::layer
+        // only wraps routes registered before it).
+        .layer(cors)
 }
 
 /// One crate-wide lock for tests that mutate process env (OMPCHAMBER_DATA_DIR,
@@ -293,4 +364,31 @@ fn find_closest_match(input: &str, candidates: &[&'static str]) -> Option<&'stat
         }
     }
     best.filter(|(d, _)| *d <= 3).map(|(_, c)| c)
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::packaged_or_local_dev_origin;
+
+    #[test]
+    fn packaged_webview_origins_are_allowed() {
+        assert!(packaged_or_local_dev_origin("ompchamber-ui://app"));
+        assert!(packaged_or_local_dev_origin("capacitor://localhost"));
+        assert!(packaged_or_local_dev_origin("http://localhost"));
+        assert!(packaged_or_local_dev_origin("https://localhost"));
+    }
+
+    #[test]
+    fn local_dev_server_origins_are_allowed() {
+        assert!(packaged_or_local_dev_origin("http://localhost:5173"));
+        assert!(packaged_or_local_dev_origin("https://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn foreign_origins_are_rejected() {
+        assert!(!packaged_or_local_dev_origin("https://evil.example.com"));
+        assert!(!packaged_or_local_dev_origin("http://example.com:5173"));
+        assert!(!packaged_or_local_dev_origin("file:///tmp"));
+        assert!(!packaged_or_local_dev_origin(""));
+    }
 }
