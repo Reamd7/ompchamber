@@ -23,6 +23,32 @@ const pruneJsBackend = (appPath, platform, arch) => {
     fs.rmSync(path.join(webPackage, entry), { recursive: true, force: true });
   }
 
+  // 1b. Deterministic redundancies:
+  //  - @oh-my-pi/pi-natives-* duplicates the 140 MB addon already staged in
+  //    Resources/omp-host (the engine's SDK loader resolves it there); the
+  //    in-package copy only serves first-boot staging into ~/.omp/natives,
+  //    which degrades to a one-time download at worst.
+  //  - lightningcss/sharp have zero runtime imports in the server (build
+  //    tooling that the dependency closure dragged in).
+  const webRuntimeKeepout = (name) =>
+    /^pi-natives-(darwin|win32|windows|linux)-/.test(name);
+  const buildOnly = new Set(['lightningcss', 'sharp']);
+  let scoped;
+  try {
+    scoped = fs.readdirSync(path.join(nodeModules, '@oh-my-pi'), { withFileTypes: true });
+  } catch {
+    scoped = [];
+  }
+  for (const entry of scoped) {
+    if (entry.isDirectory() && webRuntimeKeepout(entry.name)) {
+      fs.rmSync(path.join(nodeModules, '@oh-my-pi', entry.name), { recursive: true, force: true });
+    }
+  }
+  for (const name of buildOnly) {
+    fs.rmSync(path.join(nodeModules, name), { recursive: true, force: true });
+  }
+  fs.rmSync(path.join(nodeModules, '@img'), { recursive: true, force: true });
+
   // 2. Foreign-platform optional binaries: package names ending in a
   //    platform-arch tag that does not match the build target get removed.
   const platformTags = {
