@@ -640,6 +640,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   package-server-cli:
+    # Rust CLI/server binaries, EasyTier-style: musl-static Linux builds,
+    # per-target artifacts, publish decoupled from build (publish-server-cli).
     needs: create-release
     strategy:
       fail-fast: false
@@ -647,20 +649,20 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-26
-            archive: tar.gz
           - target: x86_64-apple-darwin
             runner: macos-15-intel
-            archive: tar.gz
-          - target: x86_64-unknown-linux-gnu
+          # musl-static Linux: runs on any distro without glibc coupling
+          # (EasyTier ships every linux target this way).
+          - target: x86_64-unknown-linux-musl
             runner: ubuntu-24.04
-            archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
-            archive: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-            archive: zip
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -672,49 +674,89 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Install musl tools
+        if: ${{ contains(matrix.target, 'musl') }}
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Cache Rust server build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/web/server-rs
+          shared-key: server-cli
 
       - name: Build ompchamber-server
         working-directory: packages/web/server-rs
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Smoke test the binary
-        working-directory: packages/web/server-rs
-        shell: bash
+        working-directory: packages/web/server-rs/target/${{ matrix.target }}/release
         run: |
-          BIN="target/${{ matrix.target }}/release/ompchamber-server"
-          [ "${{ runner.os }}" = "Windows" ] && BIN="$BIN.exe"
-          "$BIN" --version
+          BIN=ompchamber-server
+          [ "${{ runner.os }}" = "Windows" ] && BIN=ompchamber-server.exe
+          "./$BIN" --version
+          # musl builds must be fully static — verify so a accidental gnu
+          # build never ships as "works everywhere".
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            ldd "./$BIN" 2>&1 | grep -q "not a dynamic executable" || { echo "::error::binary is not static"; ldd "./$BIN"; exit 1; }
+          fi
 
-      - name: Archive
-        shell: bash
+      - name: Stage artifact
+        working-directory: packages/web/server-rs/target/${{ matrix.target }}/release
+        run: |
+          mkdir -p "$RUNNER_TEMP/stage"
+          BIN=ompchamber-server
+          [ "${{ runner.os }}" = "Windows" ] && BIN=ompchamber-server.exe
+          cp "./$BIN" "$RUNNER_TEMP/stage/"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-cli-${{ matrix.target }}
+          path: ${{ runner.temp }}/stage/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-server-cli:
+    # Archive per target + a sha256 manifest, then attach to the release.
+    needs: [create-release, package-server-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all server-cli artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: server-cli-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Archive and checksum
         env:
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           set -euo pipefail
-          cd packages/web/server-rs/target/${{ matrix.target }}/release
-          BIN=ompchamber-server
-          [ "${{ runner.os }}" = "Windows" ] && BIN=ompchamber-server.exe
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "ompchamber-server-${VERSION}-${{ matrix.target }}.zip" "$BIN"
-          else
-            tar czf "ompchamber-server-${VERSION}-${{ matrix.target }}.tar.gz" "$BIN"
+          mkdir -p release
+          cd artifacts
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            tar czf "../release/ompchamber-server-${VERSION}-${target}.tar.gz" -C . ompchamber-server
+            rm ompchamber-server
+          done
+          if [ -f ompchamber-server.exe ]; then
+            zip -q "../release/ompchamber-server-${VERSION}-x86_64-pc-windows-msvc.zip" ompchamber-server.exe
           fi
+          cd ../release
+          shopt -s globstar
+          sha256sum ompchamber-server-* | tee "ompchamber-server-${VERSION}-SHA256SUMS.txt"
 
       - name: Upload to release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.create-release.outputs.version }}
           files: |
-            packages/web/server-rs/target/${{ matrix.target }}/release/ompchamber-server-*
+            release/ompchamber-server-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   finalize-release:
-    needs: [create-release, package-cli, package-server-cli, build-desktop-electron-macos, build-desktop-electron-windows, build-desktop-electron-linux, publish-electron-linux, combine-electron-manifests]
+    needs: [create-release, package-cli, publish-server-cli, build-desktop-electron-macos, build-desktop-electron-windows, build-desktop-electron-linux, publish-electron-linux, combine-electron-manifests]
     runs-on: ubuntu-latest
     steps:
       - name: Verify final release asset inventory
@@ -729,9 +771,10 @@ jobs:
             "ompchamber-web-latest.tgz"
             "ompchamber-server-${VERSION}-aarch64-apple-darwin.tar.gz"
             "ompchamber-server-${VERSION}-x86_64-apple-darwin.tar.gz"
-            "ompchamber-server-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-            "ompchamber-server-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "ompchamber-server-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+            "ompchamber-server-${VERSION}-aarch64-unknown-linux-musl.tar.gz"
             "ompchamber-server-${VERSION}-x86_64-pc-windows-msvc.zip"
+            "ompchamber-server-${VERSION}-SHA256SUMS.txt"
             "OMPChamber-${VERSION}-linux-x86_64.AppImage"
             "latest-linux.yml"
             "OMPChamber-${VERSION}-linux-arm64.AppImage"
