@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'vscodeLayout.actions.resizeSessionsSidebarAria': 'Redimensionner la barre latérale des sessions',
   ...fileArtifactsI18n.fr,
   'sessions.sidebar.project.folderMissing': 'Le dossier du projet est introuvable ou indisponible',
   'sessions.aiRename.action': 'Renommer avec l’IA',
@@ -2630,8 +2631,7 @@ export const dict = {
   'agentManager.empty.toast.failedToAttach': 'Échec de la connexion de "{fileName}"',
   'agentManager.empty.toast.attachedSingle': 'Fichier {count} joint',
   'agentManager.empty.toast.attachedPlural': 'Fichiers {count} joints',
-  'agentManager.empty.toast.failedToCreateGroup': 'Échec de la création du groupe d\\\'agents',
-  'openInApp.actions.open': 'Ouvrir',
+  'agentManager.empty.toast.failedToCreateGroup': 'Échec de la création du groupe d\\\'agents',  'openInApp.actions.open': 'Ouvrir',
   'openInApp.actions.openInAria': 'Ouvert dans {app}',
   'openInApp.actions.chooseAppAria': 'Choisissez l\\\'application à ouvrir',
   'openInApp.actions.copyPath': 'Copier le chemin',
@@ -2885,7 +2885,6 @@ export const dict = {
   'vscodeLayout.actions.backToSessionsAria': 'Retour aux sessions',
   'vscodeLayout.actions.newSessionAria': 'Nouvelle session',
   'vscodeLayout.actions.openAgentManagerAria': 'Ouvrir le gestionnaire d\\\'agents',
-  'vscodeLayout.actions.resizeSessionsSidebarAria': 'Redimensionner la barre latérale des sessions',
   'vscodeLayout.actions.settingsAria': 'Paramètres',
   'vscodeLayout.quota.title': 'Limites de taux',
   'vscodeLayout.quota.mode.used': 'Utilisé',

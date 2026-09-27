@@ -19,7 +19,6 @@ import type { PermissionRequest } from '@ompchamber/ui/lib/opencode/wire';
 import { focusChatInput } from '@ompchamber/ui/components/chat/composer/editor/dom';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
-type PanelType = 'chat' | 'agentManager';
 
 declare const __OMPCHAMBER_WEBVIEW_BUILD_TIME__: string;
 
@@ -36,17 +35,15 @@ declare global {
       extensionVersion?: string;
       platform?: string;
       arch?: string;
-      panelType?: PanelType;
       viewMode?: 'sidebar' | 'editor';
       initialSessionId?: string | null;
+      initialComposer?: 'parallel' | null;
     };
-    __OMPCHAMBER_VSCODE_THEME__?: VSCodeThemePayload['theme'];
-    __OMPCHAMBER_VSCODE_SHIKI_THEMES__?: { light?: Record<string, unknown>; dark?: Record<string, unknown> } | null;
-    __OMPCHAMBER_CONNECTION__?: { status: ConnectionStatus; error?: string; cliAvailable?: boolean };
-    __OMPCHAMBER_HOME__?: string;
-    __OMPCHAMBER_PANEL_TYPE__?: PanelType;
-    __OMPCHAMBER_VSCODE_WINDOW_FOCUSED__?: boolean;
-  }
+   __OPENCHAMBER_VSCODE_THEME__?: VSCodeThemePayload['theme'];
+    __OPENCHAMBER_VSCODE_SHIKI_THEMES__?: { light?: Record<string, unknown>; dark?: Record<string, unknown> } | null;
+    __OPENCHAMBER_CONNECTION__?: { status: ConnectionStatus; error?: string; cliAvailable?: boolean };
+    __OPENCHAMBER_HOME__?: string;
+    __OPENCHAMBER_VSCODE_WINDOW_FOCUSED__?: boolean;  }
 }
 
 console.log('[OMPChamber] VS Code webview starting...');
@@ -72,9 +69,6 @@ const bootstrapConnectionStatus = () => {
 };
 
 bootstrapConnectionStatus();
-
-// Expose panel type globally for the VS Code app root to conditionally render.
-window.__OMPCHAMBER_PANEL_TYPE__ = (window.__VSCODE_CONFIG__?.panelType as PanelType) || 'chat';
 
 const handleConnectionMessage = (event: MessageEvent) => {
   const msg = event.data;

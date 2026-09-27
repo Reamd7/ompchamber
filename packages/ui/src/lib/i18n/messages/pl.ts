@@ -5,6 +5,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'vscodeLayout.actions.openAgentManagerAria': 'Otwórz menedżer agentów',
   ...fileArtifactsI18n.pl,
   'sessions.sidebar.project.folderMissing': 'Folder projektu nie istnieje lub jest niedostępny',
   'sessions.aiRename.action': 'Zmień nazwę z AI',
@@ -1260,8 +1261,7 @@ export const dict: Record<I18nKey, string> = {
   'agentManager.sidebar.state.noGroupsYet': 'Brak grup agentów',
   'agentManager.sidebar.toast.deletedGroup': 'Usunięto „{group}”',
   'agentManager.sidebar.toast.deletingGroup': 'Usuwanie „{group}”...',
-  'agentManager.sidebar.toast.failedToDeleteGroup': 'Nie udało się całkowicie usunąć „{group}”',
-  'branchPickerDialog.actions.cancelDeleteAria': 'Anuluj usuwanie gałęzi',
+  'agentManager.sidebar.toast.failedToDeleteGroup': 'Nie udało się całkowicie usunąć „{group}”',  'branchPickerDialog.actions.cancelDeleteAria': 'Anuluj usuwanie gałęzi',
   'branchPickerDialog.actions.cancelRenameAria': 'Anuluj zmianę nazwy',
   'branchPickerDialog.actions.confirmDeleteAria': 'Potwierdź usunięcie gałęzi',
   'branchPickerDialog.actions.confirmRenameAria': 'Potwierdź zmianę nazwy',
@@ -3277,7 +3277,6 @@ export const dict: Record<I18nKey, string> = {
   'vscodeLayout.actions.archiveAllError': 'Nie udało się zarchiwizować {count} sesji',
   'vscodeLayout.actions.cancel': 'Anuluj',
   'vscodeLayout.actions.newSessionAria': 'Nowa sesja',
-  'vscodeLayout.actions.openAgentManagerAria': 'Otwórz menedżer agentów',
   'vscodeLayout.actions.resizeSessionsSidebarAria': 'Zmień rozmiar panelu sesji',
   'vscodeLayout.actions.settingsAria': 'Ustawienia',
   'vscodeLayout.quota.actions.rateLimitsAria': 'Limity użycia',

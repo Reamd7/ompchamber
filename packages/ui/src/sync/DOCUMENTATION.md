@@ -139,10 +139,15 @@ Use `useGlobalSessionsStore` when the UI needs a **shared global session cache**
 
 Each full app root owns one global polling lifecycle through
 `useGlobalSessionsPolling`. The web/desktop root and VS Code chat root load once
-when mounted and refresh every 45 seconds so sessions created by another
-OpenCode process are discovered without relying on the sidebar or native tray
-being visible. Embedded chats and the VS Code agent-manager panel do not poll.
-The sidebar and tray consume the same store and must not start their own
+hen mounted and schedule the next refresh 45 seconds after completion, so
+sessions created by another OpenCode process are discovered without relying on
+the sidebar or native tray being visible. Before the first successful global
+load, failures receive at most three earlier retries after 1, 2, and 4 seconds;
+then the normal cadence continues. Store error status, including a chats-root
+lookup failure, drives recovery because the loader returns retained data on
+failure. Runtime changes retire the old timer and start a fresh load immediately;
+late completions cannot restart the old timer or seed the new runtime.
+Embedded chats do not poll.The sidebar and tray consume the same store and must not start their own
 full-list timers. Surface-specific refreshes, such as opening the mobile session
 sheet or returning from suspension, may still request freshness at their
 explicit lifecycle edge; the store coalesces an overlapping in-flight load.

@@ -843,7 +843,6 @@ export interface EditorAPI {
 
 export interface VSCodeAPI {
   executeCommand(command: string, ...args: unknown[]): Promise<unknown>;
-  openAgentManager(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
   pickFiles?(options?: { extensions?: string[] }): Promise<unknown>;
   saveImage?(payload: unknown): Promise<unknown>;

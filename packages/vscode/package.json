@@ -87,7 +87,7 @@
         "command": "ompchamber.openAgentManager",
         "category": "OMPChamber",
         "title": "%command.openAgentManager.title%",
-        "icon": "$(circuit-board)"
+        "icon": "$(repo-forked)"
       },
       {
         "command": "ompchamber.openActiveSessionInEditor",

@@ -14,7 +14,7 @@
 ## What you get
 
 - **Chat beside your code** — responsive layout that adapts to narrow and wide panels
-- **Agent Manager** — run the same prompt across multiple models in parallel, compare results side by side
+- **Run on several models** — send one prompt to several models at once, compare the answers side by side, keep the best or fuse them
 - **Right-click actions** — add context, explain selections, and improve code in-place
 - **Click-to-open** — file paths in tool output open directly in your editor; edit-style results land in a focused diff view
 - **Session editor panel** — keep chat sessions open alongside files
@@ -26,15 +26,14 @@ Plus everything from the shared OMPChamber UI: branchable timeline, smart tool U
 
 | Command | Description |
 |---------|-------------|
-| `OMPChamber: Focus Chat` | Focus the chat panel |
-| `OMPChamber: New Session` | Start a new chat session |
-| `OMPChamber: Open Sidebar` | Open the OMPChamber sidebar |
-| `OMPChamber: Open Agent Manager` | Launch parallel multi-model runs |
-| `OMPChamber: Open Session in Editor` | Open current or new session in an editor tab |
-| `OMPChamber: Settings` | Open extension settings |
-| `OMPChamber: Restart API Connection` | Restart the engine process |
-| `OMPChamber: Show Engine Status` | Debug info for development or bug reports |
-
+ `OpenChamber: Focus Chat` | Focus the chat panel |
+| `OpenChamber: New Session` | Start a new chat session |
+| `OpenChamber: Open Sidebar` | Open the OpenChamber sidebar |
+| `OpenChamber: Run on Several Models` | Open a new tab set up to run one prompt on several models |
+| `OpenChamber: Open Session in Editor` | Open current or new session in an editor tab |
+| `OpenChamber: Settings` | Open extension settings |
+| `OpenChamber: Restart API Connection` | Restart the OpenCode API process |
+| `OpenChamber: Show OpenCode Status` | Debug info for development or bug reports |
 ### Right-click menu
 
 Select code in the editor, right-click, and find the **OMPChamber** submenu:

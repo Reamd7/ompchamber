@@ -80,6 +80,14 @@ so a delayed or lost handshake cannot hide an already-materialized transcript
 
 ### Session / project coordination stores
 
+useMultiRunStore` creates ID-bound multi-run members. Runs are projected from
+the session lists (`lib/multirun/runs.ts`), not kept in a store of their own.
+Membership, fork handling, fusion and legacy compatibility are owned by
+`lib/multirun/DOCUMENTATION.md`.
+
+`useProjectsStore.hasServerSnapshot` distinguishes a server-confirmed project list from persisted startup hints; `serverSnapshotFailed` records a failed settings sync without clearing the last confirmed list. Successful settings adoption clears that failure even for an unchanged list. Runtime switching clears both flags. Extension project subscriptions consume these flags and project records without changing active selection.
+
+Project parsing, project selection, directory navigation, mobile session paths, and the SDK adapter share `lib/pathNormalization.ts` for request paths. Tilde expansion happens before normalization. Windows drive roots retain their slash, and parent navigation stops at drive and UNC share roots. Selecting a spelling variant of the current directory preserves history and its forward entries. Bare drive-relative paths such as `C:` stay distinct from `C:/`; normalization does not guess their filesystem target.
 Examples:
 
 - `useProjectsStore.ts`
