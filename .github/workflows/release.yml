@@ -830,7 +830,7 @@ jobs:
             LDD_OUT="$(ldd "./$BIN" 2>&1 || true)"
             echo "$LDD_OUT"
             case "$LDD_OUT" in
-              *"not a dynamic executable"*) ;;
+              *"not a dynamic executable"*|*"statically linked"*) ;;
               *) echo "::error::binary is not static"; exit 1 ;;
             esac
           fi
