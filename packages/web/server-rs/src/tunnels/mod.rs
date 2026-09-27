@@ -25,6 +25,7 @@ mod managed_config;
 mod ngrok;
 mod registry;
 mod routes;
+pub use routes::tunnel_public_url;
 mod runner;
 mod service;
 mod types;

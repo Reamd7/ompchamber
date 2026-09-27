@@ -249,6 +249,18 @@ impl EngineState {
         &self.http
     }
 
+    /// Desktop-shell process info (control channel `engineInfo`): the
+    /// managed child's pid and engine port when we own the engine.
+    pub fn managed_process_info(&self) -> (bool, Option<u32>, Option<u16>) {
+        let pid = *self.child_pid.read().unwrap_or_else(|e| e.into_inner());
+        let port = self
+            .base_url()
+            .as_deref()
+            .and_then(|url| url.rsplit(':').next())
+            .and_then(|tail| tail.trim_end_matches('/').parse::<u16>().ok());
+        (pid.is_some(), pid, port)
+    }
+
     pub fn mode(&self) -> EngineModeKind {
         self.mode
     }

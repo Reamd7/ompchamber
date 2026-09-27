@@ -68,6 +68,43 @@ pub struct DesktopRuntimeConfig {
     pub request_headers: HashMap<String, String>,
 }
 
+/// The desktop control channel pushes live external-host config here
+/// (the JS server queried Electron through a callback on every request).
+static DYNAMIC_CONFIG: std::sync::OnceLock<std::sync::RwLock<Option<DesktopRuntimeConfig>>> =
+    std::sync::OnceLock::new();
+
+/// Update the live config (desktop control `runtimeConfig` op). `None`
+/// clears it; env config remains the fallback when never set.
+pub fn set_dynamic_config(config: Option<DesktopRuntimeConfig>) {
+    let cell = DYNAMIC_CONFIG.get_or_init(|| std::sync::RwLock::new(None));
+    *cell.write().unwrap_or_else(|e| e.into_inner()) = config;
+}
+
+/// Build + store a live config from raw shell-provided parts.
+pub fn set_dynamic_config_from_parts(api_base_url: &str, request_headers: &serde_json::Value) {
+    let headers = serde_json::from_str::<HashMap<String, String>>(&request_headers.to_string())
+        .ok()
+        .unwrap_or_default();
+    let normalized = normalize_base_url(api_base_url);
+    if normalized.is_empty() || headers.is_empty() {
+        set_dynamic_config(None);
+        return;
+    }
+    let headers = sanitize_headers(&headers);
+    if headers.is_empty() {
+        set_dynamic_config(None);
+        return;
+    }
+    set_dynamic_config(Some(DesktopRuntimeConfig { api_base_url: normalized, request_headers: headers }));
+}
+
+/// Effective config: the shell-pushed value wins over the boot-time env.
+pub fn active_config() -> Option<DesktopRuntimeConfig> {
+    let cell = DYNAMIC_CONFIG.get_or_init(|| std::sync::RwLock::new(None));
+    let guard = cell.read().unwrap_or_else(|e| e.into_inner());
+    guard.clone().or_else(DesktopRuntimeConfig::from_env)
+}
+
 impl DesktopRuntimeConfig {
     /// Stand-in for Electron's injected config provider (see module docs).
     pub fn from_env() -> Option<Self> {
@@ -211,7 +248,7 @@ async fn proxy_sse(State(state): State<ModuleState>, request: Request) -> axum::
     }
 
     let Some((target, mut headers)) =
-        resolve_proxy_target(Some(&raw_url), state.config.as_ref(), false)
+        resolve_proxy_target(Some(&raw_url), crate::realtime_proxy::active_config().as_ref(), false)
     else {
         return sse_error(StatusCode::NOT_FOUND, "Realtime proxy is unavailable");
     };
@@ -324,7 +361,7 @@ async fn proxy_ws(
         .as_deref()
         .and_then(|query| form_urlencoded_lookup(query, "url"))
         .unwrap_or_default();
-    let Some((target, headers)) = resolve_proxy_target(Some(&raw_url), state.config.as_ref(), true)
+    let Some((target, headers)) = resolve_proxy_target(Some(&raw_url), crate::realtime_proxy::active_config().as_ref(), true)
     else {
         return upgrade.on_upgrade(|socket| async move {
             let _ = close_with(socket, 1008, "Realtime proxy is unavailable").await;

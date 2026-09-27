@@ -3,6 +3,7 @@ import contextMenu from 'electron-context-menu';
 import log from 'electron-log/main.js';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import net from 'node:net';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -1582,11 +1583,7 @@ const spawnLocalServer = async () => {
   // Rust sidecar replaces the in-process JS server — see the sidecar block
   // above for the channel mapping (notifications/quit-risk/focus).
   state.desktopUiPassword = desktopUiPassword;
-  const handle = await startRustUiServer({
-    port: chosenPort,
-    host: bindHost,
-    uiPassword: desktopUiPassword,
-  });
+  const handle = await startRustUiServer({ port: chosenPort, host: bindHost });
 
   const port = handle.getPort();
   const url = buildLocalUrl(port);
@@ -1690,16 +1687,152 @@ Stop-ProcessTree $targetPid $true
 //
 // The desktop no longer loads the JS server layer in-process; it spawns the
 // ported Rust binary instead. Parity comes from the port (API/CLI parity
-// harnesses in packages/web/server-rs/scripts). Desktop integration moved
-// to process channels:
-//   - native notifications: the server's stdout line protocol
-//     (`[OMPChamberDesktopNotify] <json>`, see emitter_runtime.rs)
-//   - quit-risk status: HTTP (tunnel + scheduled-tasks status routes)
-//   - window-focus suppression: not portable to a child process — the Rust
-//     probe defaults to "unfocused", so native notifications always fire
+// harnesses in packages/web/server-rs/scripts). Desktop integration runs
+// over the server's control channel (server-rs desktop_control.rs): a
+// private Unix-socket/loopback-TCP JSON-lines protocol with token
+// handshake. Notifications arrive as notify events; window focus and
+// external-host runtime config are pushed from here; quit-risk is a
+// request/response — no stdout scraping, no authenticated HTTP polling.
 // ---------------------------------------------------------------------------
 
-const RUST_DESKTOP_NOTIFY_PREFIX = '[OMPChamberDesktopNotify] ';
+const desktopControlDataDir = () =>
+  process.env.OMPCHAMBER_DATA_DIR || path.join(os.homedir(), '.config', 'ompchamber');
+
+class DesktopControlChannel {
+  constructor({ onNotification, onReady }) {
+    this.onNotification = onNotification;
+    this.onReady = onReady;
+    this.socket = null;
+    this.pending = new Map();
+    this.nextId = 1;
+    this.connected = false;
+    this.lineBuffer = '';
+  }
+
+  async connect({ timeoutMs = 60_000 } = {}) {
+    // A stale discovery file from a previous server (old token, dead socket)
+    // must not fail the channel permanently — retry until the fresh file
+    // from this server's boot answers the handshake.
+    const deadline = Date.now() + timeoutMs;
+    let lastError = new Error('desktop control connect never attempted');
+    while (Date.now() < deadline) {
+      try {
+        await this.connectOnce();
+        return;
+      } catch (error) {
+        lastError = error;
+        this.teardown();
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    throw lastError;
+  }
+
+  teardown() {
+    this.pending.forEach((waiter) => waiter.reject(new Error('channel reconnecting')));
+    this.pending.clear();
+    this.lineBuffer = '';
+    this.connected = false;
+    if (this.socket) {
+      this.socket.destroy();
+      this.socket = null;
+    }
+  }
+
+  async connectOnce() {
+    const discoveryPath = path.join(desktopControlDataDir(), 'run', 'desktop-control.json');
+    let discovery = null;
+    try {
+      discovery = JSON.parse(fs.readFileSync(discoveryPath, 'utf8'));
+    } catch {
+      throw new Error('desktop control discovery file not written yet');
+    }
+    if (!discovery?.path || !discovery?.token) {
+      throw new Error('desktop control discovery file incomplete');
+    }
+
+    const target = String(discovery.path);
+    const tcpMatch = /^(127\.0\.0\.1|localhost):(\d+)$/.exec(target);
+    this.socket = net.connect(tcpMatch ? { host: tcpMatch[1], port: Number(tcpMatch[2]) } : { path: target });
+
+    this.socket.setEncoding('utf8');
+    this.socket.on('data', (chunk) => this.handleData(chunk));
+    this.socket.on('error', (error) => {
+      if (this.connected) log.warn('[electron] desktop control channel error:', error?.message || error);
+    });
+
+    await new Promise((resolve, reject) => {
+      const failTimer = setTimeout(() => reject(new Error('desktop control connect timeout')), 10_000);
+      this.socket.once('connect', () => { clearTimeout(failTimer); resolve(); });
+      this.socket.once('error', (error) => { clearTimeout(failTimer); reject(error); });
+    });
+
+    await this.request('hello', { token: discovery.token }, { timeoutMs: 10_000 });
+    this.connected = true;
+    log.info('[electron] desktop control channel connected');
+    this.onReady?.();
+  }
+
+  handleData(chunk) {
+    this.lineBuffer += chunk;
+    let newlineIndex;
+    while ((newlineIndex = this.lineBuffer.indexOf('\n')) >= 0) {
+      const line = this.lineBuffer.slice(0, newlineIndex);
+      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (message?.op === 'notify') {
+        this.onNotification?.(message.payload);
+        continue;
+      }
+      const waiter = this.pending.get(message?.id);
+      if (waiter) {
+        this.pending.delete(message.id);
+        if (message.ok) waiter.resolve(message);
+        else waiter.reject(new Error(message.error || `control op failed`));
+      }
+    }
+  }
+
+  request(op, extra = {}, { timeoutMs = 8_000 } = {}) {
+    if (!this.socket || this.socket.destroyed) {
+      return Promise.reject(new Error('desktop control channel not connected'));
+    }
+    const id = this.nextId++;
+    const payload = JSON.stringify({ id, op, ...extra });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`control op ${op} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (message) => { clearTimeout(timer); resolve(message); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
+      this.socket.write(payload + '\n');
+    });
+  }
+
+  pushFocus(focused) {
+    if (!this.connected) return;
+    this.request('focus', { focused }).catch(() => {});
+  }
+
+  pushRuntimeConfig({ apiBaseUrl, requestHeaders }) {
+    if (!this.connected) return;
+    this.request('runtimeConfig', { apiBaseUrl: apiBaseUrl || '', requestHeaders: requestHeaders || {} }).catch(() => {});
+  }
+
+  requestShutdown() {
+    if (!this.connected) return Promise.resolve();
+    return this.request('shutdown', {}, { timeoutMs: 5_000 }).catch(() => {});
+  }
+}
 
 const resolveRustServerBinary = () => {
   const explicit = process.env.OMPCHAMBER_SERVER_BINARY;
@@ -1708,7 +1841,9 @@ const resolveRustServerBinary = () => {
     const packaged = path.join(process.resourcesPath, 'ompchamber-server');
     if (fs.existsSync(packaged)) return packaged;
   }
-  const repoTarget = path.resolve(__dirname, '..', 'web', 'server-rs', 'target');
+  // getAppPath() is the package root both for `electron .` (main.mjs) and
+  // the bundled dist-bundle/main.mjs — __dirname alone differs between them.
+  const repoTarget = path.resolve(app.getAppPath(), '..', 'web', 'server-rs', 'target');
   for (const kind of ['release', 'debug']) {
     const candidate = path.join(repoTarget, kind, process.platform === 'win32' ? 'ompchamber-server.exe' : 'ompchamber-server');
     if (fs.existsSync(candidate)) return candidate;
@@ -1730,28 +1865,16 @@ const hardenDesktopPath = (currentPath) => {
   return [...additions, currentPath || ''].filter(Boolean).join(path.delimiter);
 };
 
-const startRustUiServer = async ({ port, host, uiPassword = '' }) => {
+const startRustUiServer = async ({ port, host }) => {
   const binary = resolveRustServerBinary();
-  const headers = sanitizeRuntimeRequestHeaders(state.requestHeaders || {});
-  const runtimeConfigSnapshot = {
-    apiBaseUrl: state.apiBaseUrl || '',
-    requestHeaders: headers,
-  };
   const childEnv = {
     ...process.env,
     PATH: hardenDesktopPath(process.env.PATH),
     // GUI cold starts of the engine can exceed the server's 30s default;
     // killing it mid-boot strands the engine (single-instance lock).
     OMPCHAMBER_OMP_HOST_READY_TIMEOUT_MS: '180000',
-    // External-host proxy config: realtime_proxy.rs reads these at boot.
-    ...(runtimeConfigSnapshot.apiBaseUrl
-      ? {
-          OMPCHAMBER_DESKTOP_API_BASE_URL: runtimeConfigSnapshot.apiBaseUrl,
-          ...(Object.keys(runtimeConfigSnapshot.requestHeaders).length
-            ? { OMPCHAMBER_DESKTOP_REQUEST_HEADERS: JSON.stringify(runtimeConfigSnapshot.requestHeaders) }
-            : {}),
-        }
-      : {}),
+    // Enable the desktop control channel (desktop_control.rs).
+    OMPCHAMBER_DESKTOP_CONTROL: 'true',
   };
 
   log.info(`[electron] starting rust server: ${binary} serve --foreground --port ${port}`);
@@ -1771,22 +1894,10 @@ const startRustUiServer = async ({ port, host, uiPassword = '' }) => {
     }
   });
 
-  // Native notification channel: one JSON payload per stdout line.
-  let notifyBuffer = '';
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
-    notifyBuffer += chunk;
-    let newlineIndex;
-    while ((newlineIndex = notifyBuffer.indexOf('\n')) >= 0) {
-      const line = notifyBuffer.slice(0, newlineIndex);
-      notifyBuffer = notifyBuffer.slice(newlineIndex + 1);
-      if (line.startsWith(RUST_DESKTOP_NOTIFY_PREFIX)) {
-        try {
-          maybeShowNativeNotification(JSON.parse(line.slice(RUST_DESKTOP_NOTIFY_PREFIX.length)));
-        } catch (error) {
-          log.warn('[electron] malformed desktop notification line:', error?.message || error);
-        }
-      }
+    for (const line of chunk.split('\n')) {
+      if (line.trim()) log.info(`[server] ${line.trimEnd()}`);
     }
   });
   child.stderr.setEncoding('utf8');
@@ -1795,8 +1906,6 @@ const startRustUiServer = async ({ port, host, uiPassword = '' }) => {
       if (line.trim()) log.info(`[server] ${line.trimEnd()}`);
     }
   });
-
-  state.rustSidecarConfig = runtimeConfigSnapshot;
 
   // Wait for /health; fail fast if the child dies during boot.
   const deadline = Date.now() + 200_000;
@@ -1819,52 +1928,42 @@ const startRustUiServer = async ({ port, host, uiPassword = '' }) => {
   }
   log.info(`[electron] rust server ready on :${port} (pid ${child.pid})`);
 
-  // Session-authenticated JSON fetch: the status routes sit behind the UI
-  // gate. Login is lazy (401 -> POST /auth/session -> retry once); without
-  // a configured password the routes are open.
-  let sessionCookie = '';
-  const loginForSidecarFetch = async () => {
-    if (!uiPassword) return;
-    const response = await fetch(`http://127.0.0.1:${port}/auth/session`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ password: uiPassword, trustDevice: true }),
-      signal: AbortSignal.timeout(3_000),
+  // Control channel: notifications out, focus + runtime config in.
+  const control = new DesktopControlChannel({
+    onNotification: (payload) => maybeShowNativeNotification(payload),
+  });
+  try {
+    await control.connect({ timeoutMs: 30_000 });
+    control.pushFocus(isAnyWindowFocused());
+    control.pushRuntimeConfig({
+      apiBaseUrl: state.apiBaseUrl || '',
+      requestHeaders: sanitizeRuntimeRequestHeaders(state.requestHeaders || {}),
     });
-    if (!response.ok) throw new Error(`/auth/session -> ${response.status}`);
-    const [cookie] = response.headers.getSetCookie?.() || [];
-    sessionCookie = (cookie || '').split(';')[0] || '';
-  };
-  const fetchSidecarJson = async (pathname) => {
-    const attempt = async () => fetch(`http://127.0.0.1:${port}${pathname}`, {
-      headers: sessionCookie ? { cookie: sessionCookie } : {},
-      signal: AbortSignal.timeout(3_000),
-    });
-    let response = await attempt();
-    if (response.status === 401 && !sessionCookie) {
-      await loginForSidecarFetch();
-      response = await attempt();
-    }
-    if (!response.ok) throw new Error(`${pathname} -> ${response.status}`);
-    return await response.json();
-  };
+  } catch (error) {
+    log.warn('[electron] desktop control channel unavailable:', error?.message || error);
+  }
+  state.desktopControl = control;
 
   return {
     isRustSidecar: true,
     getPort: () => port,
-    // Composes the same shape the in-process handle exposed, over HTTP.
+    // Quit-risk over the control channel (same shape the in-process
+    // handle exposed: tunnel + scheduled-tasks status).
     getQuitRiskStatus: async () => {
-      const [tunnel, scheduledTasks] = await Promise.all([
-        fetchSidecarJson('/api/ompchamber/tunnel/status'),
-        fetchSidecarJson('/api/ompchamber/scheduled-tasks/status'),
-      ]);
-      return { tunnel: { active: Boolean(tunnel?.active) }, scheduledTasks };
+      const status = await control.request('quitRisk');
+      return {
+        tunnel: { active: Boolean(status?.tunnel?.active) },
+        scheduledTasks: status?.scheduledTasks ?? {},
+      };
     },
     // The detached killer takes pid+port and reaps the whole process group,
     // which includes the engine under the server.
     getOpenCodeProcessInfo: () => ({ managed: true, pid: child.pid, port }),
     shutdownAndWait: async () => {
       child.__intentionalExit = true;
+      // Prefer the graceful path: the control channel lets the server reap
+      // its engine and clean its pid files before exiting.
+      await control.requestShutdown();
       if (exited || !child.pid) return;
       try {
         child.kill('SIGTERM');
@@ -2874,24 +2973,12 @@ const activateMainWindow = async (url, localOrigin, bootOutcome, runtimeConfig =
   state.apiBaseUrl = typeof runtimeConfig.apiBaseUrl === 'string' ? runtimeConfig.apiBaseUrl : state.apiBaseUrl;
   state.clientToken = typeof runtimeConfig.clientToken === 'string' ? runtimeConfig.clientToken : '';
   state.requestHeaders = sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || {});
-  // The Rust sidecar reads external-host proxy config from its environment
-  // at boot; a changed target needs a same-port restart of the child.
-  if (state.serverHandle?.isRustSidecar && state.rustSidecarConfig) {
-    const changed = state.rustSidecarConfig.apiBaseUrl !== (state.apiBaseUrl || '')
-      || JSON.stringify(state.rustSidecarConfig.requestHeaders) !== JSON.stringify(state.requestHeaders || {});
-    if (changed) {
-      const restartPort = state.serverHandle.getPort();
-      log.info('[electron] external-host config changed; restarting rust sidecar');
-      await state.serverHandle.shutdownAndWait();
-      const replacement = await startRustUiServer({
-        port: restartPort,
-        host: process.env.OMPCHAMBER_HOST || '127.0.0.1',
-        uiPassword: state.desktopUiPassword || '',
-      });
-      state.serverHandle = replacement;
-      state.sidecarUrl = buildLocalUrl(restartPort);
-    }
-  }
+  // External-host proxy config is live on the control channel — push it,
+  // no restart needed (realtime_proxy resolves the active config per request).
+  state.desktopControl?.pushRuntimeConfig({
+    apiBaseUrl: state.apiBaseUrl || '',
+    requestHeaders: state.requestHeaders || {},
+  });
   const rendererRuntimeConfig = buildRendererRuntimeConfig(url, {
     apiBaseUrl: state.apiBaseUrl || '',
     clientToken: state.clientToken || '',
@@ -5582,6 +5669,14 @@ const dispatchTrayAction = async (action) => {
   }
   // show-main-window: revealing the window above is the whole action.
 };
+
+// Desktop control focus push: native-notification suppression reacts to
+// focus changes across all app windows (main + mini-chat + session windows).
+const pushFocusToDesktopControl = () => {
+  state.desktopControl?.pushFocus(isAnyWindowFocused());
+};
+app.on('browser-window-focus', pushFocusToDesktopControl);
+app.on('browser-window-blur', pushFocusToDesktopControl);
 
 app.on('window-all-closed', () => {
   if (process.platform === 'darwin' && !state.quitRequested) {

@@ -1043,6 +1043,15 @@ pub fn router_with(state: ModuleState) -> Router {
 }
 
 /// Real wiring (tunnel-wiring-runtime.js `initialize`).
+/// Desktop control quit-risk probe: the shared service handle is registered
+/// here once per process (composition builds a fresh state per router).
+static SHARED_TUNNEL_SERVICE: std::sync::OnceLock<Arc<TunnelService>> = std::sync::OnceLock::new();
+
+/// Current public tunnel URL, if any (desktop control `quitRisk`).
+pub fn tunnel_public_url() -> Option<String> {
+    SHARED_TUNNEL_SERVICE.get().and_then(|service| service.get_public_url())
+}
+
 pub fn module_state(ctx: RouterContext) -> ModuleState {
     let http = reqwest::Client::new();
     let runner = Arc::new(RealRunner);
@@ -1121,6 +1130,7 @@ pub fn module_state(ctx: RouterContext) -> ModuleState {
     };
 
     let auth = crate::client_auth::state(&ctx).tunnel_auth.clone();
+    let _ = SHARED_TUNNEL_SERVICE.set(Arc::clone(&service));
     ModuleState {
         settings: crate::settings::store(&ctx),
         registry,

@@ -54,6 +54,26 @@ use crate::notifications::trigger_runtime::TriggerRuntime;
 use crate::settings::SettingsStore;
 
 /// Everything the route family and the trigger bridge share.
+/// Desktop-shell integration hooks (control channel, see desktop_control.rs).
+/// Registered at boot before composition; consumed once when the state is built.
+pub struct DesktopHooks {
+    pub on_notification: Arc<dyn Fn(&serde_json::Value) + Send + Sync>,
+    pub is_focused: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+static DESKTOP_HOOKS: std::sync::RwLock<Option<DesktopHooks>> = std::sync::RwLock::new(None);
+
+pub fn set_desktop_hooks(hooks: DesktopHooks) {
+    *DESKTOP_HOOKS.write().unwrap_or_else(|e| e.into_inner()) = Some(hooks);
+}
+
+/// Test teardown: the control-channel test registers process-global hooks
+/// that would otherwise leak "window focused" into other notification tests.
+#[cfg(test)]
+pub fn clear_desktop_hooks() {
+    *DESKTOP_HOOKS.write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 pub struct NotificationsState {
     pub ctx: RouterContext,
     pub events: Arc<EventStreamState>,
@@ -116,6 +136,10 @@ impl NotificationsState {
             Arc::clone(&apns),
             Arc::clone(&settings),
         );
+        if let Some(hooks) = DESKTOP_HOOKS.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            emitter.set_on_desktop_notification(Some(Arc::clone(&hooks.on_notification) as crate::notifications::emitter_runtime::DesktopNotificationCallback));
+            trigger.set_get_is_window_focused(Some(Arc::clone(&hooks.is_focused)));
+        }
         Arc::new(Self {
             ctx,
             events,

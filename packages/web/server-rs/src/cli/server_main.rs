@@ -45,6 +45,16 @@ pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
     let config = Arc::new(parse_server_config(&argv, options.port));
     std::fs::create_dir_all(&config.data_dir)?;
 
+    // Desktop control channel (Electron spawn sets the env): must start
+    // before composition so the notification hooks register in time.
+    let mut _control_task = None;
+    if std::env::var("OMPCHAMBER_DESKTOP_CONTROL").as_deref() == Ok("true") {
+        match crate::desktop_control::serve(config.data_dir.clone()).await {
+            Ok(task) => _control_task = Some(task),
+            Err(error) => tracing::warn!("desktop control channel failed to start: {error}"),
+        }
+    }
+
     let engine: Arc<EngineState> = match &config.engine {
         EngineConfig::Managed { .. } => {
             let state = EngineState::start_managed(&config).await?;
@@ -75,6 +85,8 @@ pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
         hub: Arc::clone(&hub),
     };
 
+    crate::desktop_control::set_engine(Arc::clone(&engine));
+
     let event_state = event_stream::start(ctx.clone()).await;
     let goal_runtime = session_goal::runtime(&ctx);
     let _goal_bridge = session_goal::spawn_hub_bridge(goal_runtime, Arc::clone(&hub));
@@ -83,6 +95,12 @@ pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
         scheduled_tasks::build_runtime(&ctx, Arc::clone(&sse_clients));
     if let Err(error) = scheduler_runtime.start().await {
         tracing::warn!("scheduled-task scheduler failed to start: {error}");
+    }
+    {
+        let scheduler_probe = scheduler_service.clone();
+        crate::desktop_control::set_scheduler_status(Arc::new(move || {
+            scheduler_probe.status()
+        }));
     }
     let scheduled_tasks_router =
         scheduled_tasks::routes::router_shared(sse_clients, scheduler_service);
@@ -148,5 +166,8 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = crate::desktop_control::shutdown_requested() => {
+            tracing::info!("shutdown requested via desktop control channel");
+        },
     }
 }
