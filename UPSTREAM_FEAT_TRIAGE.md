@@ -119,7 +119,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `5badd2472` | feat(mobile): add copy session ID swipe action (#4060) | `自身` |  |
+| - [x] | `5badd2472` | feat(mobile): add copy session ID swipe action (#4060) | `自身` | PORTED(MobileSessionSwipe 拆分+Copy ID 动作;timeline-list 依赖 ea15762ee 已跳过,不引入) |
 | - [ ] | `54fc3f28a` | feat(mobile): recent section, pinning and a shorter swipe row in the sessions drawer | `服务端` |  |
 | - [ ] | `99b9c23c9` | feat(mobile): add branch and commit comparison views | `服务端` |  |
 | - [x] | `47bc2f604` | feat(mobile): drill into the OpenCode settings pages from a phone | `自身` | PORTED(干净落地,i18n 键补齐) |

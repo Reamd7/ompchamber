@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.session.work.markDone': 'Marcar como concluído',
+  'sessions.sidebar.session.work.track': 'Acompanhar como em andamento',
   'mobile.sessions.newSessionInProjectAria': 'Nova sessão em {label}',
   ...fileArtifactsI18n['pt-BR'],
   'sidebarFilesTree.menu.uploadFiles': 'Enviar arquivos',

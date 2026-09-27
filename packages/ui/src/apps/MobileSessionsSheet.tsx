@@ -1,4 +1,5 @@
 import React from 'react';
+import { MobileSessionRowActions, MobileSwipeActionsRow, ROW_ACTIONS_WIDTH, ROW_ACTION_SLOT_WIDTH, ROW_SWIPE_SNAP_MS, type MobileSessionWorkAction, type MobileSessionPinAction } from './MobileSessionSwipe';
 import { createPortal } from 'react-dom';
 import {
   RiAddLine,
@@ -312,84 +313,6 @@ const NewSessionIconButton: React.FC<{
 );
 
 
-/** Generic swipe-right-to-reveal wrapper for drawer rows (projects, worktrees).
-    Same gesture mechanics as SessionRow's swipe actions: horizontal intent
-    detection, imperative transform during the drag, snap on release. The
-    actions sit on the LEFT so the opposite direction stays free for the
-    drawer's own close swipe. */
-const MobileSwipeActionsRow: React.FC<{
-  actionsWidth: number;
-  actions: React.ReactNode;
-  revealed: boolean;
-  onRevealedChange: (revealed: boolean) => void;
-  children: React.ReactNode;
-}> = ({ actionsWidth, actions, revealed, onRevealedChange, children }) => {
-  const contentRef = React.useRef<HTMLDivElement>(null);
-  const startRef = React.useRef<{ x: number; y: number } | null>(null);
-  const draggingRef = React.useRef(false);
-  const offsetRef = React.useRef(0);
-  const revealedRef = React.useRef(revealed);
-
-  const applyOffset = React.useCallback((px: number, animate: boolean) => {
-    const el = contentRef.current;
-    if (!el) return;
-    el.style.transition = animate ? `transform ${ROW_SWIPE_SNAP_MS}ms ease-out` : 'none';
-    el.style.transform = px === 0 ? 'none' : `translateX(${px}px)`;
-    offsetRef.current = px;
-  }, []);
-
-  React.useEffect(() => {
-    revealedRef.current = revealed;
-    applyOffset(revealed ? actionsWidth : 0, true);
-  }, [actionsWidth, applyOffset, revealed]);
-
-  const handleTouchStart = (event: React.TouchEvent) => {
-    if (event.touches.length !== 1) return;
-    const touch = event.touches[0];
-    startRef.current = { x: touch.clientX, y: touch.clientY };
-    draggingRef.current = false;
-  };
-
-  const handleTouchMove = (event: React.TouchEvent) => {
-    if (!startRef.current) return;
-    const touch = event.touches[0];
-    const dx = touch.clientX - startRef.current.x;
-    const dy = touch.clientY - startRef.current.y;
-    if (!draggingRef.current) {
-      if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy)) return;
-      draggingRef.current = true;
-    }
-    const base = revealedRef.current ? actionsWidth : 0;
-    applyOffset(Math.max(0, Math.min(actionsWidth, base + dx)), false);
-  };
-
-  const handleTouchEnd = () => {
-    startRef.current = null;
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    const shouldReveal = offsetRef.current > actionsWidth / 2;
-    applyOffset(shouldReveal ? actionsWidth : 0, true);
-    if (shouldReveal !== revealedRef.current) onRevealedChange(shouldReveal);
-  };
-
-  return (
-    <div
-      className="relative overflow-hidden"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
-      style={{ touchAction: 'pan-y' }}
-    >
-      <div className="absolute inset-y-0 left-0 flex items-stretch" style={{ width: actionsWidth }} aria-hidden={!revealed}>
-        {actions}
-      </div>
-      <div ref={contentRef} className="relative flex w-full items-center bg-background">
-        {children}
-      </div>
-    </div>
-  );
-};
 
 /** Inline title editor shown in place of the row content while renaming.
     Mirrors the desktop sidebar rename: a bare transparent input at the row's
@@ -476,9 +399,6 @@ const SessionRenameForm: React.FC<{
   );
 };
 
-// Width of the swipe-revealed action area (rename + archive + delete buttons).
-const ROW_ACTIONS_WIDTH = 192;
-const ROW_SWIPE_SNAP_MS = 180;
 
 
 const SessionRow: React.FC<{
@@ -503,6 +423,8 @@ const SessionRow: React.FC<{
   onRequestRename?: () => void;
   onSubmitRename?: (title: string) => void;
   onCancelRename?: () => void;
+  work?: MobileSessionWorkAction;
+  pin?: MobileSessionPinAction;
 }> = ({
   session,
   active,
@@ -522,6 +444,8 @@ const SessionRow: React.FC<{
   onRequestRename,
   onSubmitRename,
   onCancelRename,
+  work,
+  pin,
 }) => {
   const { t } = useI18n();
   const time = formatRelativeShort(getSessionTimestamp(session));
@@ -554,221 +478,49 @@ const SessionRow: React.FC<{
     offsetRef.current = px;
   }, []);
 
-  React.useEffect(() => {
-    revealedRef.current = revealed;
-    applyOffset(revealed ? ROW_ACTIONS_WIDTH : 0, true);
-  }, [applyOffset, revealed]);
-
-  const handleTouchStart = (event: React.TouchEvent) => {
-    if (!swipeEnabled || event.touches.length !== 1) return;
-    const touch = event.touches[0];
-    startRef.current = { x: touch.clientX, y: touch.clientY };
-    draggingRef.current = false;
-  };
-
-  const handleTouchMove = (event: React.TouchEvent) => {
-    if (!swipeEnabled || !startRef.current) return;
-    const touch = event.touches[0];
-    const dx = touch.clientX - startRef.current.x;
-    const dy = touch.clientY - startRef.current.y;
-    if (!draggingRef.current) {
-      if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy)) return;
-      draggingRef.current = true;
-    }
-    const base = revealedRef.current ? ROW_ACTIONS_WIDTH : 0;
-    const next = Math.max(0, Math.min(ROW_ACTIONS_WIDTH, base + dx));
-    applyOffset(next, false);
-  };
-
-  const handleTouchEnd = () => {
-    startRef.current = null;
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    const shouldReveal = offsetRef.current > ROW_ACTIONS_WIDTH / 2;
-    applyOffset(shouldReveal ? ROW_ACTIONS_WIDTH : 0, true);
-    if (shouldReveal !== revealedRef.current) onRevealedChange?.(shouldReveal);
-  };
+  const rowContent = (
+    <button
+      type="button"
+      className="flex min-w-0 flex-1 items-center gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+      onClick={() => { if (revealedRef.current) { onRevealedChange?.(false); return; } onSelect(); }}
+    >
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="block truncate typography-ui-label text-foreground">{title}</span>
+        {contextLabel ? (
+          <span className="block truncate typography-micro text-muted-foreground">{contextLabel}</span>
+        ) : null}
+      </span>
+    </button>
+  );
 
   return (
-    <div
-      data-active-session={active || undefined}
-      className="relative overflow-hidden"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
-      // Vertical panning stays native; horizontal moves reach the swipe handler.
-      style={swipeEnabled ? { touchAction: 'pan-y' } : undefined}
+    <MobileSwipeActionsRow
+      actionsWidth={ROW_ACTIONS_WIDTH + (work ? ROW_ACTION_SLOT_WIDTH : 0) + (pin ? ROW_ACTION_SLOT_WIDTH : 0)}
+      revealed={revealed}
+      onRevealedChange={(next) => onRevealedChange?.(next)}
+      dataActiveSession={active}
+      contentClassName={cn(
+        'relative flex w-full items-center gap-1 bg-background transition-colors',
+        active && 'bg-[color-mix(in_srgb,var(--primary)_10%,var(--background))]',
+      )}
+      actions={(
+        <MobileSessionRowActions
+          sessionId={session.id}
+          title={title}
+          revealed={revealed}
+          confirmingDelete={confirmingDelete}
+          onArchive={onArchive}
+          onRequestDelete={onRequestDelete}
+          onConfirmDelete={onConfirmDelete}
+          onRequestRename={onRequestRename}
+          onRevealedChange={onRevealedChange}
+          work={work}
+          pin={pin}
+        />
+      )}
     >
-      {swipeEnabled ? (
-        <div
-          className="absolute inset-y-0 left-0 flex items-stretch"
-          style={{ width: ROW_ACTIONS_WIDTH }}
-          aria-hidden={!revealed}
-        >
-          {/* Icon-only actions on the row's own background — they read as the
-              row extending to reveal extra controls, not a separate panel.
-              Ordered outward from the content, so a partial drag exposes
-              delete first, exactly as the right-side version did. */}
-          <button
-            type="button"
-            tabIndex={revealed ? 0 : -1}
-            className={cn(
-              'flex flex-1 items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-destructive',
-              confirmingDelete
-                ? 'rounded-lg bg-destructive text-destructive-foreground'
-                : 'text-[var(--status-error)] active:opacity-80',
-            )}
-            aria-label={confirmingDelete
-              ? t('mobile.sessions.confirmDeleteSessionAria', { title })
-              : t('mobile.sessions.deleteSessionAria', { title })}
-            onClick={confirmingDelete ? onConfirmDelete : onRequestDelete}
-            style={{ touchAction: 'manipulation' }}
-          >
-            <RiDeleteBinLine className="size-[18px]" />
-          </button>
-      <button
-            type="button"
-            tabIndex={revealed ? 0 : -1}
-            className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-            aria-label={t('mobile.sessions.archiveSessionAria', { title })}
-            onClick={onArchive}
-            style={{ touchAction: 'manipulation' }}
-          >
-            <RiArchiveLine className="size-[18px]" />
-          </button>
-          <button
-            type="button"
-            tabIndex={revealed ? 0 : -1}
-            className="flex flex-1 items-center justify-center text-muted-foreground transition-colors active:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-            aria-label={t('mobile.sessions.renameSessionAria', { title })}
-            onClick={onRequestRename}
-            style={{ touchAction: 'manipulation' }}
-          >
-            <RiEdit2Line className="size-[18px]" />
-          </button>
-       <Button
-            variant="ghost"
-            size="icon"
-            tabIndex={revealed ? 0 : -1}
-            className="flex-1 self-center text-muted-foreground"
-            disabled={aiRename.disabled}
-            aria-label={t('sessions.aiRename.action')}
-            aria-description={aiRename.hint}
-            title={aiRename.hint}
-            onClick={() => { aiRename.run(); onRevealedChange?.(false); }}
-            style={{ touchAction: 'manipulation' }}
-          >
-            <Icon name={aiRename.pending ? 'loader-4' : 'ai-generate-2'} className={aiRename.pending ? 'size-[18px] animate-spin' : 'size-[18px]'} />
-          </Button>
-        </div>
-      ) : null}
-      <div
-        ref={contentRef}
-        className={cn(
-          'relative flex items-center gap-1 transition-colors',
-          // Swipeable rows need an OPAQUE background so the action buttons stay
-          // hidden behind the content until it slides; plain rows (search
-          // results on an elevated card) keep the translucent treatment.
-          swipeEnabled && 'bg-background',
-          active && (swipeEnabled
-            ? 'bg-[color-mix(in_srgb,var(--primary)_10%,var(--background))]'
-            : 'bg-[color-mix(in_srgb,var(--primary)_10%,transparent)]'),
-        )}
-      >
-        {/* Left gutter slot: live activity indicator takes priority over the
-            subsession chevron — same position, so rows never shift. When the
-            row has children the slot still toggles them either way. */}
-        {aiRename.pending || isStreaming || showUnreadDot || (hasChildren && onToggleChildren) ? (
-          <button
-            type="button"
-            className="absolute z-10 flex w-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            style={{ left: Math.max(indent - 32, 2), top: 0, bottom: 0, touchAction: 'manipulation' }}
-            aria-label={aiRename.pending
-              ? t('sessions.aiRename.generating')
-              : expanded
-                ? t('sessions.sidebar.session.subsessions.collapse')
-                : t('sessions.sidebar.session.subsessions.expand')}
-            disabled={!hasChildren || !onToggleChildren}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleChildren?.();
-            }}
-          >
-            {aiRename.pending ? (
-              <Icon name="loader-4" className="size-3 animate-spin text-primary" aria-label={t('sessions.aiRename.generating')} />
-            ) : isStreaming || showUnreadDot ? (
-              <span
-                className={cn(
-                  'size-1.5 rounded-full',
-                  isStreaming ? 'bg-primary' : 'bg-[var(--status-info)]',
-                )}
-                aria-hidden
-              />
-            ) : (
-              <RiArrowDownSLine className={cn('size-[18px] transition-transform duration-150', expanded ? 'rotate-0' : '-rotate-90')} />
-            )}
-          </button>
-        ) : null}
-        {renaming && onSubmitRename && onCancelRename ? (
-          <SessionRenameForm
-            initialTitle={title}
-            indent={indent}
-            onSubmit={onSubmitRename}
-            onCancel={onCancelRename}
-          />
-        ) : (
-        <button
-          type="button"
-          // Single-line rows: fixed h-9 (36px) to match SessionRenameForm
-          // exactly — min-h-* utilities lose the specificity fight against
-          // mobile.css's global 36px button floor anyway, so make the real
-          // height explicit. Two-line rows (search results with a context
-          // subtitle) keep flexible height.
-          className={cn(
-            'flex min-w-0 flex-1 items-center gap-2.5 pr-3.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset',
-            contextLabel ? 'min-h-10 py-1' : 'h-9',
-          )}
-          style={{ paddingLeft: indent, touchAction: 'manipulation' }}
-          onClick={() => {
-            // A tap while the actions are out just closes them.
-            if (revealedRef.current) {
-              onRevealedChange?.(false);
-              return;
-            }
-            onSelect();
-          }}
-        >
-          <span className="flex min-w-0 flex-1 flex-col">
-            <span className="flex items-center gap-2.5">
-              <span
-                className={cn(
-                  'block min-w-0 flex-1 truncate typography-ui-label',
-                  active ? 'text-primary' : 'text-foreground',
-                )}
-              >
-                {title}
-              </span>
-              {/* The elapsed turn takes the time slot while it matters, then
-                  hands it back to the relative timestamp. */}
-              {showActivityDuration ? (
-                <SessionActivityDuration
-                  sessionId={session.id}
-                  running={isStreaming}
-                  className="typography-micro"
-                />
-              ) : time ? (
-                <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{time}</span>
-              ) : null}
-            </span>
-            {contextLabel ? (
-              <span className="block truncate typography-micro text-muted-foreground">{contextLabel}</span>
-            ) : null}
-          </span>
-        </button>
-        )}
-      </div>
-    </div>
+      {rowContent}
+    </MobileSwipeActionsRow>
   );
 };
 

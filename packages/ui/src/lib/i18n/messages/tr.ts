@@ -1,5 +1,7 @@
 import { fileArtifactsI18n } from './file-artifacts.i18n';
 export const dict = {
+  'sessions.sidebar.session.work.markDone': 'Tamamlandı olarak işaretle',
+  'sessions.sidebar.session.work.track': 'Devam eden iş olarak izle',
   'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'Agent Gruplarında Ara...',
   'agentManager.sidebar.actions.newAgentGroup': 'Yeni Agent Grubu',

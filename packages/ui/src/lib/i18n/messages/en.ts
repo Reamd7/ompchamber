@@ -4,6 +4,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'sessions.sidebar.session.work.markDone': 'Mark done',
+  'sessions.sidebar.session.work.track': 'Track as in work',
   'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'Search Agent Groups...',
   'agentManager.sidebar.actions.newAgentGroup': 'New Agent Group',

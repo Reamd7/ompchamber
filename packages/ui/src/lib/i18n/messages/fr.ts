@@ -4,6 +4,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
+  'sessions.sidebar.session.work.markDone': 'Marquer comme terminé',
+  'sessions.sidebar.session.work.track': 'Suivre comme en cours',
   'mobile.sessions.activeProjectAria': 'Active project',
   'vscodeLayout.actions.resizeSessionsSidebarAria': 'Redimensionner la barre latérale des sessions',
   ...fileArtifactsI18n.fr,

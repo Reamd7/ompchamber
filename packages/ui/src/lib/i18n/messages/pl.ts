@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.session.work.markDone': 'Oznacz jako gotowe',
+  'sessions.sidebar.session.work.track': 'Śledź jako w toku',
   'mobile.sessions.activeProjectAria': 'Active project',
   'vscodeLayout.actions.openAgentManagerAria': 'Otwórz menedżer agentów',
   ...fileArtifactsI18n.pl,

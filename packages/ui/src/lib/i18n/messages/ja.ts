@@ -5,6 +5,8 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.session.work.markDone': '完了にする',
+  'sessions.sidebar.session.work.track': '作業中として追跡',
   'mobile.sessions.activeProjectAria': 'Active project',
   'agentManager.sidebar.search.placeholder': 'エージェントグループを検索...',
   'agentManager.sidebar.actions.newAgentGroup': '新規エージェントグループ',
