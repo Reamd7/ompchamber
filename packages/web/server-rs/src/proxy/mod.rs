@@ -123,8 +123,8 @@ fn build_router(ctx: RouterContext, settings: ProxySettings) -> Router {
         realpath: RealpathCache::new(),
     });
     Router::new()
-        .route("/api/session", get(session_list_handler))
-        .route("/api/experimental/session", get(session_list_handler))
+        .route("/api/session", any(session_route))
+        .route("/api/experimental/session", any(session_route))
         .route("/api/event", get(sse_handler))
         .route("/api/global/event", get(sse_handler))
         .route(
@@ -204,6 +204,18 @@ async fn session_action_handler(State(st): State<Arc<ProxyState>>, req: Request)
         st.settings.request_timeout_ms
     };
     forward_generic(&st, req, &upstream_path, budget_ms).await
+}
+
+/// JS composition: `app.get('/api/session')` terminates GETs with the
+/// sanitized list; every other method falls through `app.use('/api', apiProxy)`
+/// to the engine (`POST /session` creates a session — the desktop chat
+/// composer's first request). An axum `get(...)` static route would answer
+/// 405 for those instead of falling through, so dispatch by method here.
+async fn session_route(state: State<Arc<ProxyState>>, req: Request) -> Response {
+    if matches!(*req.method(), Method::GET | Method::HEAD) {
+        return session_list_handler(state, req).await;
+    }
+    generic_api_handler(state, req).await
 }
 
 /// `GET /api/session` + `GET /api/experimental/session` — sanitized session
