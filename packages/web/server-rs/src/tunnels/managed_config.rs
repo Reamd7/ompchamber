@@ -394,7 +394,7 @@ async fn write_private_file(path: &std::path::Path, body: &str) -> std::io::Resu
     tokio::fs::write(&tmp, body).await?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
     }
     tokio::fs::rename(&tmp, path).await

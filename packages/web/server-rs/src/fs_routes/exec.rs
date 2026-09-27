@@ -238,7 +238,7 @@ pub async fn run_command_in_directory(
 
 #[cfg(unix)]
 fn unix_signal_name(status: &std::process::ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
+use crate::os_compat::ExitStatusExt;
     let signal = status.signal()?;
     Some(match signal {
         9 => "SIGKILL".to_string(),

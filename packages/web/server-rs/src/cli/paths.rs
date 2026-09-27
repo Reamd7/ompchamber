@@ -27,7 +27,7 @@ pub fn run_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&dir);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
     dir

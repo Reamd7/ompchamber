@@ -352,7 +352,7 @@ pub(crate) fn write_settings(
         std::fs::create_dir_all(parent)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
     }
@@ -371,7 +371,7 @@ pub(crate) fn write_settings(
     std::fs::write(&tmp, payload)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
     }
     let rename_result = std::fs::rename(&tmp, settings_path);
@@ -380,7 +380,7 @@ pub(crate) fn write_settings(
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(settings_path, std::fs::Permissions::from_mode(0o600));
     }
     rename_result

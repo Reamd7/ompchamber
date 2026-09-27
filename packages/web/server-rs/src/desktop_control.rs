@@ -189,6 +189,7 @@ fn listener_token(discovery: &Value) -> String {
 }
 
 enum UnixOrTcp {
+    #[cfg(unix)]
     Unix(tokio::net::UnixStream),
     Tcp(tokio::net::TcpStream),
 }
@@ -197,6 +198,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let (reader, mut writer) = match stream {
+        #[cfg(unix)]
         UnixOrTcp::Unix(stream) => {
             let (read_half, write_half) = stream.into_split();
             (
@@ -301,7 +303,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
     globals().clients.lock().unwrap_or_else(|e| e.into_inner()).retain(|client| !client.is_closed());
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::time::Duration;

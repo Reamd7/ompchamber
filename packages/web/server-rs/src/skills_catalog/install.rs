@@ -228,7 +228,7 @@ fn walk_copy(current_src: &Path, current_dst: &Path, src_real: &str) -> Result<(
             std::fs::copy(&next_src, &next_dst).map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
                 let mode = stat.permissions().mode() & 0o777;
                 let _ = std::fs::set_permissions(&next_dst, std::fs::Permissions::from_mode(mode));
             }

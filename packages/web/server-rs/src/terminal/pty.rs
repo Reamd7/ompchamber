@@ -301,7 +301,7 @@ pub fn real_is_executable(path: &str) -> bool {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]

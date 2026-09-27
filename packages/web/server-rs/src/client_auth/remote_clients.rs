@@ -524,13 +524,13 @@ pub(crate) async fn write_file_private(path: &std::path::Path, bytes: &[u8]) -> 
         tokio::fs::create_dir_all(parent).await?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)

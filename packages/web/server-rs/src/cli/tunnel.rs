@@ -419,7 +419,7 @@ fn sanitize_profiles(data: &serde_json::Value) -> Vec<TunnelProfile> {
 fn warn_if_unsafe_file_permissions(file_path: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         if let Ok(metadata) = std::fs::metadata(file_path) {
             let perms = metadata.permissions().mode() & 0o777;
             if perms & 0o077 != 0 {
@@ -463,7 +463,7 @@ fn write_json_private(path: &Path, value: &serde_json::Value) {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 }

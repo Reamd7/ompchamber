@@ -26,7 +26,7 @@ impl FsLike for RealFs {
     fn access_executable(&self, path: &str) -> bool {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             std::fs::metadata(path)
                 .map(|meta| meta.permissions().mode() & 0o111 != 0)
                 .unwrap_or(false)

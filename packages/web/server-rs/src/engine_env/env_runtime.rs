@@ -449,7 +449,7 @@ impl EnvRuntime {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             metadata.permissions().mode() & 0o111 != 0
         }
         #[cfg(not(unix))]
@@ -1905,7 +1905,7 @@ mod tests {
         std::fs::write(path, contents).expect("write executable");
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         path.to_string_lossy().to_string()
@@ -2148,7 +2148,7 @@ mod tests {
                             m.is_file() && {
                                 #[cfg(unix)]
                                 {
-                                    use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
                                     m.permissions().mode() & 0o111 != 0
                                 }
                                 #[cfg(not(unix))]

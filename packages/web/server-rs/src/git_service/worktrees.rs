@@ -1292,7 +1292,7 @@ async fn run_post_checkout_hook(service: &GitService, directory: &str) {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
             return;
         }

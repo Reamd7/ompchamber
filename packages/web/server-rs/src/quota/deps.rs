@@ -141,7 +141,7 @@ pub(crate) fn write_auth_file_at(
         std::fs::copy(auth_file, &backup)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))?;
         }
     }

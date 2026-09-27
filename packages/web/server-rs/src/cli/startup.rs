@@ -297,13 +297,13 @@ fn write_file_mode(
 
 #[cfg(unix)]
 fn set_dir_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
 #[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
@@ -1074,7 +1074,7 @@ fn is_executable(path: &Path) -> bool {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]

@@ -15,6 +15,7 @@ pub mod cli;
 pub mod client_auth;
 pub mod config;
 pub mod desktop_control;
+pub mod os_compat;
 pub mod context;
 pub mod core_routes;
 pub mod dev_servers;

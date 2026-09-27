@@ -263,7 +263,7 @@ mod tests {
         let quota_dir = dir.join("quota");
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
+use crate::os_compat::MetadataExt;
             let mode = std::fs::metadata(&quota_dir).unwrap().mode() & 0o777;
             assert_eq!(mode, 0o700);
             let file_mode = std::fs::metadata(quota_dir.join("ollama-cloud.json"))

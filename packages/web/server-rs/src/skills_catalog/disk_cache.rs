@@ -77,7 +77,7 @@ fn write_and_rename(file_path: &Path, temp_path: &Path, data: &Value) -> bool {
         #[cfg(unix)]
         {
             use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
+use crate::os_compat::OpenOptionsExt;
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create(true)

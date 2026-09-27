@@ -3,7 +3,7 @@
 //! `.ompchamber.backup`), provider auth lookup/removal. The file's contents
 //! are credentials and are never logged.
 
-use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
 use std::path::PathBuf;
 
 use serde_json::{Map, Value};

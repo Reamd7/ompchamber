@@ -530,7 +530,7 @@ impl AuthStore {
 
 #[cfg(unix)]
 fn set_mode_600(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
@@ -618,7 +618,7 @@ mod tests {
         assert!(raw.contains("\n    \"accessToken\": \"tok_abcdef123456\""));
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let mode = std::fs::metadata(dir.join("github-auth.json"))
                 .unwrap()
                 .permissions()

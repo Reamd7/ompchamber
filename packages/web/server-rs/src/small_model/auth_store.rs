@@ -68,7 +68,7 @@ impl AuthStore for FsAuthStore {
         std::fs::create_dir_all(&dir).map_err(|_| fail())?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         }
         if self.path.exists() {
@@ -76,7 +76,7 @@ impl AuthStore for FsAuthStore {
             std::fs::copy(&self.path, &backup).map_err(|_| fail())?;
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
                 let _ = std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600));
             }
             tracing::info!("Created auth backup: {}", backup.display());
@@ -85,7 +85,7 @@ impl AuthStore for FsAuthStore {
         std::fs::write(&self.path, payload).map_err(|_| fail())?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
         }
         tracing::info!("Successfully wrote auth file");

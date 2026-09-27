@@ -248,7 +248,7 @@ fn command_failed_message(display_args: &str, stderr: &str) -> String {
 
 #[cfg(unix)]
 fn signal_name(status: std::process::ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
+use crate::os_compat::ExitStatusExt;
     status.signal().map(|signal| match signal {
         1 => "SIGHUP".to_string(),
         2 => "SIGINT".to_string(),

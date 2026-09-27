@@ -2771,7 +2771,7 @@ fn first_push_error(text: &str) -> String {
 
 async fn file_identity(path: &Path) -> std::io::Result<String> {
     let meta = tokio::fs::metadata(path).await?;
-    use std::os::unix::fs::MetadataExt;
+use crate::os_compat::MetadataExt;
     Ok(format!(
         "{}:{}:{}:{}",
         meta.dev(),

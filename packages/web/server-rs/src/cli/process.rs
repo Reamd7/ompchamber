@@ -35,7 +35,7 @@ pub fn write_pid_file(path: &Path, pid: u32) {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 }
@@ -57,7 +57,7 @@ pub fn write_instance_options(path: &Path, options: &InstanceOptions) {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
     }

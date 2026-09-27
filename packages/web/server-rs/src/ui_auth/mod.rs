@@ -613,7 +613,7 @@ fn persist_secret_file(data_dir: &Path, secret: &str) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+use crate::os_compat::OpenOptionsExt;
         let mut handle = std::fs::OpenOptions::new()
             .write(true)
             .create(true)

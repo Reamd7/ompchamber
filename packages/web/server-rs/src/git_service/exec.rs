@@ -145,7 +145,7 @@ fn is_executable_file(path: &std::path::Path) -> bool {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]

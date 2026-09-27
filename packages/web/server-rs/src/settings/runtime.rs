@@ -1375,7 +1375,7 @@ impl SettingsStore {
         tokio::fs::create_dir_all(&settings_directory).await?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(
                 &settings_directory,
                 std::fs::Permissions::from_mode(0o700),
@@ -1406,7 +1406,7 @@ impl SettingsStore {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(
                 &self.settings_path,
                 std::fs::Permissions::from_mode(0o600),
@@ -1553,7 +1553,7 @@ impl SettingsStore {
 async fn write_file_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)

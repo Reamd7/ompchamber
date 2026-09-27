@@ -236,7 +236,7 @@ impl std::error::Error for LinearError {}
 
 /// JS `writeJsonFile`: atomic tmp-file write with 0600 permissions.
 pub fn write_file_atomic_600(path: &Path, body: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

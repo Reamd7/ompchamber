@@ -242,7 +242,7 @@ pub fn get_or_create_install_id(config_dir: &Path, scope: &str) -> std::io::Resu
     std::fs::write(&id_path, format!("{install_id}\n"))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(&id_path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(install_id)

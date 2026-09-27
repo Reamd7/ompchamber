@@ -127,7 +127,7 @@ fn is_executable(path: &Path) -> bool {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
@@ -338,7 +338,7 @@ mod tests {
 
     #[cfg(unix)]
     fn make_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
+use crate::os_compat::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     }
 
