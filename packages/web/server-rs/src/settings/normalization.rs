@@ -309,9 +309,22 @@ pub fn path_relative(from: &str, to: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// `normalizeDirectoryPath`: trims, strips matching surrounding quotes,
-/// expands `~` / `~/` against the home directory.
+/// expands `~` / `~/` against the home directory, and folds Windows verbatim
+/// (`\\?\`) prefixes plus repeated drive prefixes back to the Node form so
+/// persisted paths stay comparable (and self-heal when older builds wrote
+/// canonicalize's verbatim output).
 pub fn normalize_directory_path(value: &str) -> String {
-    let mut trimmed = collapse_repeated_drive_prefixes(value.trim());
+    let stripped = {
+        let trimmed = value.trim();
+        if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{rest}")
+        } else if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
+            rest.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    };
+    let mut trimmed = collapse_repeated_drive_prefixes(&stripped);
     let b = trimmed.as_bytes();
     if b.len() >= 2
         && ((b[0] == b'"' && b[b.len() - 1] == b'"') || (b[0] == b'\'' && b[b.len() - 1] == b'\''))

@@ -53,8 +53,9 @@ pub fn resolve_path(input: &str) -> PathBuf {
             Component::RootDir => {
                 let rendered = out.to_string_lossy().into_owned();
                 if !rendered.is_empty() && rendered.ends_with(':') {
-                    // Windows drive prefix (`C:`) followed by its root slash.
-                    out.push("/");
+                    // Windows drive prefix (`C:`) followed by its root slash —
+                    // the platform separator, like Node's win32 path.resolve.
+                    out.push(if cfg!(windows) { "\\" } else { "/" });
                 } else {
                     out = PathBuf::from("/");
                 }
@@ -106,7 +107,14 @@ pub fn lexical_relative(from: &Path, to: &Path) -> String {
 pub fn is_path_within_root(resolved: &Path, root: &Path) -> bool {
     let resolved_root = resolve_path(&root.to_string_lossy());
     let relative = lexical_relative(&resolved_root, resolved);
-    !relative.starts_with("..") && !Path::new(&relative).is_absolute()
+    // A cross-root result comes back as the literal target; Node's win32
+    // `isAbsolute` counts a drive-less root path (`\etc\passwd`) as absolute
+    // while Rust's `Path::is_absolute` does not — treat a leading separator
+    // as absolute too.
+    !relative.starts_with("..")
+        && !relative.starts_with('/')
+        && !relative.starts_with('\\')
+        && !Path::new(&relative).is_absolute()
 }
 
 /// `~/.config/ompchamber` — index.js `OMPCHAMBER_USER_CONFIG_ROOT`. The fs

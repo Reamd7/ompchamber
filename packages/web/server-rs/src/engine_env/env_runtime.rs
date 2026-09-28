@@ -129,10 +129,13 @@ fn join(parts: &[&str]) -> String {
 /// JS `path.resolve(single)` — lexical absolutization + normalization (no
 /// symlink resolution; that is `canonicalize` below).
 fn lexical_resolve(p: &str) -> String {
-    let (prefix, rest) = if p.len() >= 2 && p.as_bytes()[1] == b':' {
-        (&p[..2], &p[2..])
+    // Windows drive prefix — Node win32 path.resolve uppercases the drive
+    // letter; on POSIX a colon is an ordinary filename character, so the
+    // split must not happen there.
+    let (prefix, rest) = if cfg!(windows) && p.len() >= 2 && p.as_bytes()[1] == b':' {
+        (p[..2].to_uppercase(), &p[2..])
     } else {
-        ("", p)
+        (String::new(), p)
     };
     let absolute = rest.starts_with('/') || rest.starts_with('\\');
     let base = if absolute {
@@ -449,7 +452,7 @@ impl EnvRuntime {
         }
         #[cfg(unix)]
         {
-use crate::os_compat::PermissionsExt;
+            use crate::os_compat::PermissionsExt;
             metadata.permissions().mode() & 0o111 != 0
         }
         #[cfg(not(unix))]
@@ -1905,7 +1908,7 @@ mod tests {
         std::fs::write(path, contents).expect("write executable");
         #[cfg(unix)]
         {
-use crate::os_compat::PermissionsExt;
+            use crate::os_compat::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         path.to_string_lossy().to_string()
@@ -2041,8 +2044,9 @@ use crate::os_compat::PermissionsExt;
 
     #[tokio::test]
     async fn merges_shell_path_ahead_of_current() {
+        let d = path_delim().to_string();
         let runtime = EnvRuntime::with_seams(
-            env_of(&[("PATH", "/usr/local/bin:/usr/bin")]),
+            env_of(&[("PATH", ["/usr/local/bin", "/usr/bin"].join(&d).as_str())]),
             noop_spawn(),
             home_of(temp_dir("home")),
             Platform::Unix,
@@ -2050,7 +2054,7 @@ use crate::os_compat::PermissionsExt;
         runtime.set_cached_login_shell_env_snapshot(Some(
             [(
                 "PATH".to_string(),
-                "/shell/bin:/usr/bin:/extra/bin".to_string(),
+                ["/shell/bin", "/usr/bin", "/extra/bin"].join(&d),
             )]
             .into_iter()
             .collect(),
@@ -2060,7 +2064,11 @@ use crate::os_compat::PermissionsExt;
 
         assert_eq!(
             runtime.effective_env().get("PATH").map(String::as_str),
-            Some("/shell/bin:/usr/bin:/extra/bin:/usr/local/bin")
+            Some(
+                ["/shell/bin", "/usr/bin", "/extra/bin", "/usr/local/bin"]
+                    .join(&d)
+                    .as_str()
+            )
         );
     }
 
@@ -2148,7 +2156,7 @@ use crate::os_compat::PermissionsExt;
                             m.is_file() && {
                                 #[cfg(unix)]
                                 {
-use crate::os_compat::PermissionsExt;
+                                    use crate::os_compat::PermissionsExt;
                                     m.permissions().mode() & 0o111 != 0
                                 }
                                 #[cfg(not(unix))]
@@ -2299,10 +2307,12 @@ use crate::os_compat::PermissionsExt;
                 })
             })
         };
+        let shell_bin = temp_dir("probe-shell").join("shell");
+        std::fs::write(&shell_bin, b"#!/bin/sh\n").expect("write shell fixture");
         let runtime = EnvRuntime::with_seams(
             env_of(&[
                 ("PATH", temp_dir("empty-path").to_str().unwrap()),
-                ("SHELL", "/bin/sh"),
+                ("SHELL", shell_bin.to_str().unwrap()),
             ]),
             spawn,
             home_of(temp_dir("empty-home")),
@@ -2597,20 +2607,21 @@ use crate::os_compat::PermissionsExt;
     async fn augmented_path_preserves_user_configured_order() {
         let home = temp_dir("augmented-home");
         let home_str = home.to_str().unwrap().to_string();
+        let d = path_delim().to_string();
         let current = [
             format!("{home_str}/.bun/bin"),
             format!("{home_str}/Library/pnpm"),
             "/opt/homebrew/bin".to_string(),
             "/usr/bin".to_string(),
         ]
-        .join(":");
+        .join(&d);
         let shell = [
             format!("{home_str}/.bun/bin"),
             "/opt/homebrew/bin".to_string(),
             format!("{home_str}/.cargo/bin"),
             "/usr/bin".to_string(),
         ]
-        .join(":");
+        .join(&d);
         let runtime = EnvRuntime::with_seams(
             env_of(&[("PATH", current.as_str())]),
             noop_spawn(),
@@ -2630,7 +2641,7 @@ use crate::os_compat::PermissionsExt;
                 "/usr/bin".to_string(),
                 format!("{home_str}/.cargo/bin"),
             ]
-            .join(":")
+            .join(&d)
         );
     }
 
@@ -2638,8 +2649,12 @@ use crate::os_compat::PermissionsExt;
     async fn augmented_path_prefers_login_shell_when_process_path_minimal() {
         let home = temp_dir("augmented-minimal-home");
         let home_str = home.to_str().unwrap().to_string();
+        let d = path_delim().to_string();
         let runtime = EnvRuntime::with_seams(
-            env_of(&[("PATH", "/usr/local/bin:/usr/bin:/bin")]),
+            env_of(&[(
+                "PATH",
+                ["/usr/local/bin", "/usr/bin", "/bin"].join(&d).as_str(),
+            )]),
             noop_spawn(),
             home_of(home),
             Platform::Unix,
@@ -2652,7 +2667,7 @@ use crate::os_compat::PermissionsExt;
                     "/opt/homebrew/bin".to_string(),
                     "/usr/bin".to_string(),
                 ]
-                .join(":"),
+                .join(&d),
             )]
             .into_iter()
             .collect(),
@@ -2667,7 +2682,7 @@ use crate::os_compat::PermissionsExt;
                 "/usr/local/bin".to_string(),
                 "/bin".to_string(),
             ]
-            .join(":")
+            .join(&d)
         );
     }
 
@@ -2675,6 +2690,7 @@ use crate::os_compat::PermissionsExt;
     async fn managed_path_prefers_shell_path_then_appends_process_entries() {
         let home = temp_dir("managed-home");
         let home_str = home.to_str().unwrap().to_string();
+        let d = path_delim().to_string();
         let current = [
             format!("{home_str}/.opencode/bin"),
             format!("{home_str}/.bun/bin"),
@@ -2682,7 +2698,7 @@ use crate::os_compat::PermissionsExt;
             "/opt/homebrew/bin".to_string(),
             "/usr/bin".to_string(),
         ]
-        .join(":");
+        .join(&d);
         let shell = [
             format!("{home_str}/.opencode/bin"),
             format!("{home_str}/.bun/bin"),
@@ -2690,7 +2706,7 @@ use crate::os_compat::PermissionsExt;
             "/usr/bin".to_string(),
             format!("{home_str}/.cargo/bin"),
         ]
-        .join(":");
+        .join(&d);
         let runtime = EnvRuntime::with_seams(
             env_of(&[("PATH", current.as_str())]),
             noop_spawn(),
@@ -2711,7 +2727,7 @@ use crate::os_compat::PermissionsExt;
                 format!("{home_str}/.cargo/bin"),
                 format!("{home_str}/Library/pnpm"),
             ]
-            .join(":")
+            .join(&d)
         );
     }
 
