@@ -2089,7 +2089,9 @@ mod tests {
         let data_dir = temp_dir("projects");
         let repo = data_dir.join("repo");
         std::fs::create_dir_all(&repo).expect("repo dir");
-        let canonical = std::fs::canonicalize(&repo).expect("canonicalize");
+        let canonical = crate::settings::normalization::strip_verbatim_prefix(
+            std::fs::canonicalize(&repo).expect("canonicalize"),
+        );
         let mut settings = default_settings();
         settings["projects"][0]["path"] = json!(repo.to_string_lossy());
         settings["projects"][0]["id"] =

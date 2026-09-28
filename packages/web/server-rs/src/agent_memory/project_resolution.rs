@@ -131,8 +131,16 @@ mod tests {
             list_project_paths: Arc::new(|| Box::pin(async { Ok(vec![PROJECT.to_string()]) })),
             resolve_primary_worktree_root: Arc::new(|directory: String| {
                 Box::pin(async move {
-                    Some(if directory == WORKTREE {
-                        PROJECT.to_string()
+                    // The resolver hands us platform-normalized directories
+                    // (`\Users\...` on Windows), so compare in that form —
+                    // path.resolve is the identity on POSIX.
+                    let normalize = |value: &str| {
+                        crate::settings::normalization::path_resolve(value)
+                            .to_string_lossy()
+                            .into_owned()
+                    };
+                    Some(if directory == normalize(WORKTREE) {
+                        normalize(PROJECT)
                     } else {
                         directory
                     })

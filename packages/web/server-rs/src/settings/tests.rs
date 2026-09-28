@@ -94,7 +94,14 @@ fn normalize_path_for_persistence_resolves_symlinks() {
 fn normalize_path_for_persistence_falls_back_when_path_missing() {
     let normalized =
         norm::normalize_path_for_persistence(&Value::from("/definitely/not/here"), true);
-    assert_eq!(normalized.as_str().unwrap(), "/definitely/not/here");
+    // win32 path.resolve of a root-relative posix-looking path yields
+    // backslash-separated segments (Node does the same).
+    let expected = if cfg!(windows) {
+        "\\definitely\\not\\here"
+    } else {
+        "/definitely/not/here"
+    };
+    assert_eq!(normalized.as_str().unwrap(), expected);
     // Non-strings pass through untouched.
     assert_eq!(
         norm::normalize_path_for_persistence(&Value::from(42), true),
@@ -1141,7 +1148,8 @@ async fn deterministic_project_ids_remap_plan_files() {
     let dir = temp_dir_unique("det-ids");
     let project_path = dir.join("project");
     std::fs::create_dir_all(&project_path).unwrap();
-    let canonical_project = std::fs::canonicalize(&project_path).unwrap();
+    let canonical_project =
+        norm::strip_verbatim_prefix(std::fs::canonicalize(&project_path).unwrap());
     let new_id = norm::create_project_id_from_path(&canonical_project.to_string_lossy());
 
     let store = store_for_path(&dir.join("settings.json"));
@@ -1197,7 +1205,8 @@ async fn deterministic_project_ids_remap_plan_files() {
         plan_files[0].get("path").unwrap(),
         &Value::from(
             new_storage
-                .join("plans/inside.md")
+                .join("plans")
+                .join("inside.md")
                 .to_string_lossy()
                 .into_owned()
         ),
@@ -1256,7 +1265,7 @@ async fn legacy_last_directory_seeds_a_project() {
     let (store, dir) = store_for_temp("lastdir");
     let workspace = dir.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let canonical = std::fs::canonicalize(&workspace).unwrap();
+    let canonical = norm::strip_verbatim_prefix(std::fs::canonicalize(&workspace).unwrap());
     tokio::fs::write(
         store.settings_path(),
         serde_json::to_string(&json!({ "lastDirectory": canonical.to_string_lossy() })).unwrap(),
@@ -1284,7 +1293,7 @@ async fn persist_drops_projects_whose_directory_is_gone() {
     let (store, _dir) = store_for_temp("validate");
     let live_dir = store.settings_path().parent().unwrap().join("live");
     std::fs::create_dir_all(&live_dir).unwrap();
-    let canonical_live = std::fs::canonicalize(&live_dir).unwrap();
+    let canonical_live = norm::strip_verbatim_prefix(std::fs::canonicalize(&live_dir).unwrap());
     let live_id = norm::create_project_id_from_path(&canonical_live.to_string_lossy());
     let dead_id = norm::create_project_id_from_path("/definitely/not/a/real/dir");
 

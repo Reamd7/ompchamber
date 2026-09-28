@@ -238,7 +238,7 @@ pub async fn run_command_in_directory(
 
 #[cfg(unix)]
 fn unix_signal_name(status: &std::process::ExitStatus) -> Option<String> {
-use crate::os_compat::ExitStatusExt;
+    use crate::os_compat::ExitStatusExt;
     let signal = status.signal()?;
     Some(match signal {
         9 => "SIGKILL".to_string(),
@@ -609,15 +609,18 @@ mod tests {
 
     #[tokio::test]
     async fn runs_a_command_and_captures_trimmed_output() {
-        let outcome = run_command_in_directory(
-            "/bin/sh",
-            "-c",
-            "printf '  out  ' ; printf ' err ' >&2 ; exit 0",
-            Path::new("/tmp"),
-            10_000,
-        )
-        .await;
-        assert!(outcome.success);
+        let (shell, flag, script) = if cfg!(windows) {
+            ("cmd", "/C", "echo   out  & echo   err  1>&2")
+        } else {
+            (
+                "/bin/sh",
+                "-c",
+                "printf '  out  ' ; printf ' err ' >&2 ; exit 0",
+            )
+        };
+        let outcome =
+            run_command_in_directory(shell, flag, script, &std::env::temp_dir(), 10_000).await;
+        assert!(outcome.success, "{:?}", outcome.error);
         assert_eq!(outcome.exit_code, Some(0));
         assert_eq!(outcome.stdout, "out");
         assert_eq!(outcome.stderr, "err");
@@ -630,7 +633,7 @@ mod tests {
             "/nonexistent-shell-fsport",
             "-c",
             "true",
-            Path::new("/tmp"),
+            &std::env::temp_dir(),
             1_000,
         )
         .await;
@@ -640,8 +643,13 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_kills_and_reports() {
+        let (shell, flag, script) = if cfg!(windows) {
+            ("cmd", "/C", "ping -n 5 127.0.0.1 > NUL")
+        } else {
+            ("/bin/sh", "-c", "sleep 5")
+        };
         let outcome =
-            run_command_in_directory("/bin/sh", "-c", "sleep 5", Path::new("/tmp"), 150).await;
+            run_command_in_directory(shell, flag, script, &std::env::temp_dir(), 150).await;
         assert!(!outcome.success);
         let error = outcome.error.expect("timeout error");
         assert!(

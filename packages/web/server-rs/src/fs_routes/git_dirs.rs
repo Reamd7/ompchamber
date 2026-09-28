@@ -154,7 +154,13 @@ mod tests {
             .collect();
         assert_eq!(
             rendered,
-            vec![root.join("a/b/c").to_string_lossy().into_owned()]
+            vec![
+                root.join("a")
+                    .join("b")
+                    .join("c")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
         );
         std::fs::remove_dir_all(&root).ok();
     }

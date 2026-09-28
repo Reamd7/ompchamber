@@ -1310,7 +1310,9 @@ async fn http_client_posts_session_create_with_directory_query_and_headers() {
     let data_dir = temp_dir("http-create");
     let project_dir = data_dir.join("repo").join("app");
     std::fs::create_dir_all(&project_dir).expect("project dir");
-    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&project_dir).expect("canonical"),
+    );
     let directory = canonical.to_string_lossy().to_string();
     let (base_url, recorder) = spawn_fake_engine().await;
     let router = production_router(&data_dir, &base_url);
@@ -1368,7 +1370,9 @@ async fn http_client_percent_encodes_the_directory_header_for_non_ascii_paths() 
     let data_dir = temp_dir("http-unicode");
     let project_dir = data_dir.join("Masaüstü").join("projeler");
     std::fs::create_dir_all(&project_dir).expect("project dir");
-    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&project_dir).expect("canonical"),
+    );
     let directory = canonical.to_string_lossy().to_string();
     let (base_url, recorder) = spawn_fake_engine().await;
     let router = production_router(&data_dir, &base_url);
@@ -1394,7 +1398,9 @@ async fn http_client_dispatches_prompt_async_with_the_engine_url_shape() {
     let data_dir = temp_dir("http-prompt");
     let project_dir = data_dir.join("repo").join("app");
     std::fs::create_dir_all(&project_dir).expect("project dir");
-    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&project_dir).expect("canonical"),
+    );
     let directory = canonical.to_string_lossy().to_string();
     let (base_url, recorder) = spawn_fake_engine().await;
     let router = production_router(&data_dir, &base_url);
@@ -1453,7 +1459,9 @@ async fn production_goal_creator_writes_the_objective_file_and_patches_metadata(
     let data_dir = temp_dir("http-goal");
     let project_dir = data_dir.join("repo").join("app");
     std::fs::create_dir_all(&project_dir).expect("project dir");
-    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&project_dir).expect("canonical"),
+    );
     let directory = canonical.to_string_lossy().to_string();
     let (base_url, recorder) = spawn_fake_engine().await;
     let router = production_router(&data_dir, &base_url);
@@ -1510,7 +1518,9 @@ async fn hub_receives_the_session_created_wire_frame() {
     let data_dir = temp_dir("http-emit");
     let project_dir = data_dir.join("repo").join("app");
     std::fs::create_dir_all(&project_dir).expect("project dir");
-    let canonical = std::fs::canonicalize(&project_dir).expect("canonical");
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&project_dir).expect("canonical"),
+    );
     let directory = canonical.to_string_lossy().to_string();
 
     let hub = EventHub::new();

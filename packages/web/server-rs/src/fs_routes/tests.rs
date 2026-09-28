@@ -139,7 +139,15 @@ async fn home_returns_the_home_directory() {
     let body = sent.json();
     assert_eq!(
         body.get("home").and_then(Value::as_str),
-        std::env::var("HOME").ok().as_deref(),
+        {
+            // os.homedir(): USERPROFILE on Windows, HOME elsewhere.
+            if cfg!(windows) {
+                std::env::var("USERPROFILE").ok()
+            } else {
+                std::env::var("HOME").ok()
+            }
+        }
+        .as_deref(),
         "{body}"
     );
 }
@@ -269,7 +277,7 @@ async fn list_missing_directory_is_404_with_reason() {
 #[tokio::test]
 async fn list_missing_plans_directory_answers_empty_200() {
     let fixture = unique_temp_dir("plans");
-    let plans = fixture.join(".opencode/plans");
+    let plans = fixture.join(".opencode").join("plans");
     let uri = format!("/api/fs/list?path={}", urlencoding_of(&plans));
     let sent = send(app(), get(&uri, &[directory_header_of(&fixture)])).await;
     assert_eq!(sent.status, StatusCode::OK, "{}", sent.text());
