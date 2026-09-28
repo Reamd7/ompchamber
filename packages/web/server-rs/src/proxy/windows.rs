@@ -2,6 +2,10 @@
 //! proxy.js` (`process.platform === 'win32'` branch): bare session listings
 //! merge the global list with per-project-directory lists because Windows
 //! directory scoping hides cross-directory sessions from the engine.
+//!
+//! 中文说明：合并全局与各项目目录的会话列表——先拉取全局 `/session`，
+//! 再读取 settings.json 中登记的每个项目目录的 `?directory=` 列表，
+//! 按 id 去重后合并返回；仅 Windows 平台的路由使用本模块。
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -15,8 +19,17 @@ use crate::proxy::sanitize::sanitize_session_list_payload;
 use crate::proxy::{ProxyState, fetch_session_list};
 use serde_json::Value;
 
+/// Windows 上每次会话列表请求（全局或按目录）的超时时间（毫秒）。
 const WINDOWS_SESSION_FETCH_TIMEOUT_MS: u64 = 10_000;
 
+/// Windows 专用的 `/api/session` 合并处理器。
+///
+/// 流程：取全局列表并净化（失败仅记录日志、按空处理）；从
+/// `~/.config/ompchamber/settings.json` 的 `projects[].path` 收集项目目录；
+/// 每个目录按原生/正斜杠/反斜杠三种拼写（去重保序）尝试带 `?directory=`
+/// 的请求，成功响应净化后按 `id` 去重追加。全局与所有目录读取均失败时
+/// 返回 504 GATEWAY_TIMEOUT；否则合并、按 `time_updated` 降序排序
+/// （净化后的载荷缺失该字段视为 0，实际为稳定排序）并以 200 返回净化结果。
 pub(super) async fn merge_session_list(st: &ProxyState, req_headers: &HeaderMap) -> Response {
     let global_sessions = match fetch_session_list(
         st,
@@ -143,6 +156,7 @@ pub(super) async fn merge_session_list(st: &ProxyState, req_headers: &HeaderMap)
         .into_response()
 }
 
+/// 从会话列表 payload 中收集所有 `id` 字符串，用于跨目录去重。
 fn session_ids(payload: Option<&Value>) -> HashSet<String> {
     let mut ids = HashSet::new();
     if let Some(items) = payload.and_then(Value::as_array) {
@@ -155,6 +169,7 @@ fn session_ids(payload: Option<&Value>) -> HashSet<String> {
     ids
 }
 
+/// 取用户主目录：优先 `USERPROFILE`，回退 `HOME`；缺失或为空返回 `None`。
 fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))

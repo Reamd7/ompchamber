@@ -4,6 +4,12 @@
 // credential masking, and validation rejections are exercised against real
 // files and the real SDK schema/validators.
 
+/**
+ * domain-providers 测试（中文摘要）：针对引擎 models.yml 的 GUI CRUD
+ * （能力 providers.v1）。用带真实注释的一次性 models.yml 验证注释保留、
+ * 字段合并语义、凭据遮蔽与校验拒绝，全部落在真实文件与真实 SDK
+ * schema/校验器上。
+ */
 import { describe, test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,6 +26,7 @@ import type { ParseOptions } from 'yaml';
 
 /** Read view for the list assertions: baseUrl/hasApiKey exist only on
  * file-sourced rows and assertions never narrow — widen once here. */
+/** 列表断言的读取视图（中文）：baseUrl/hasApiKey 仅存在于文件来源行。 */
 interface ListedProviderRow {
   id: string;
   source: string;
@@ -31,15 +38,19 @@ interface ListedProviderRow {
 // yaml's maxAliasCount guard belongs to ToJSOptions; the parse call accepts
 // (and ignores) it at runtime. Typing the shared const against ParseOptions
 // keeps the excess-property and weak-type checks satisfied at both calls.
+// 关闭 yaml 别名数量限制的共享解析选项（中文）：手写 YAML 可含任意别名。
 const aliasLimitOptions: ParseOptions & { maxAliasCount: number } = { maxAliasCount: -1 };
 
+/** 测试中创建的一次性目录清单，afterAll 统一清理。 */
 const cleanupDirs: string[] = [];
+/** 新建一次性目录（登记进 cleanupDirs）并返回其路径。 */
 const makeDir = () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'omp-domain-providers-'));
   cleanupDirs.push(dir);
   return dir;
 };
 
+/** 真实感的 models.yml 模板：带行内注释、两家网关、思考档位与待遮蔽的 key。 */
 const TEMPLATE = `# oh-my-pi (omp) custom provider config.
 # Docs: https://omp.sh/docs/providers
 
@@ -69,6 +80,7 @@ providers:
       - id: b1
 `;
 
+/** 统一清理全部一次性目录（Windows 文件锁下尽力而为）。 */
 afterAll(async () => {
   for (const dir of cleanupDirs) {
     try {
@@ -79,6 +91,7 @@ afterAll(async () => {
   }
 });
 
+/** 构造环境：一次性 agentDir + 按模板写入的 models.yml，返回其路径。 */
 const makeEnv = ({ template = TEMPLATE } = {}) => {
   const agentDir = makeDir();
   const modelsPath = path.join(agentDir, 'models.yml');
@@ -86,6 +99,7 @@ const makeEnv = ({ template = TEMPLATE } = {}) => {
   return { modelsPath };
 };
 
+// GET /omp/providers：文件来源行带 config 标记与遮蔽 key，引擎专属行标 engine。
 describe('GET /omp/providers (listOmpProviders)', () => {
   test('tags file providers with config + masked key; engine-only providers tagged engine', async () => {
     const { modelsPath } = makeEnv();
@@ -152,6 +166,7 @@ providers:
     expect(written).toContain('X-Str: keep');
   });
 
+// PUT /omp/providers：在带注释的文件中创建/更新 provider，逐字保留注释并触发 refreshModels。
 describe('PUT /omp/providers (putOmpProvider)', () => {
   test('creates a provider in a commented file, preserving every comment', async () => {
     const { modelsPath } = makeEnv();
@@ -535,6 +550,7 @@ describe('PUT /omp/providers (putOmpProvider)', () => {
   });
 });
 
+// DELETE /omp/providers/{id}：删除文件 provider（其行内注释随 key 一起走），未知 id 404。
 describe('DELETE /omp/providers/{id} (deleteOmpProvider)', () => {
   test('removes a file provider, keeps others and comments; 404 unknown; refresh called', async () => {
     const { modelsPath } = makeEnv();
@@ -557,6 +573,7 @@ describe('DELETE /omp/providers/{id} (deleteOmpProvider)', () => {
   });
 });
 
+// 路由挂载：四条路由注册齐全；能力关闭时显式 501，PUT/DELETE 经路由直连可用。
 describe('route mounting', () => {
   test('mounts the three routes; capability off answers explicit 501', async () => {
     const routes: Array<{ method: string; pattern: string; handler: import('./domain-providers.ts').ProvidersRouteHandler }> = [];
@@ -604,6 +621,7 @@ describe('route mounting', () => {
   });
 });
 
+// POST fetch-models：用存储/草稿的 baseUrl+key 请求 {baseUrl}/models 并去重返回 id；各类失败映射 400/404/502。
 describe('POST /omp/providers/{id}/fetch-models (fetchOmpProviderModels)', () => {
   test('queries {baseUrl}/models with the stored key and returns deduped ids', async () => {
     const { modelsPath } = makeEnv();

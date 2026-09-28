@@ -1,6 +1,10 @@
 //! Quota module tests — provider fixtures against the fake transport
 //! (mirroring the JS provider tests), credential store roundtrips, runtime
 //! coalescing, and route shapes.
+//!
+//! 中文说明：quota 模块测试集——用 FakeHttp transport 固定各 provider 的
+//! 响应夹具，验证 fetch_quota 的窗口/信封形状、凭据读写与优先级、
+//! runtime 的并发合并，以及 /api/quota 路由的请求/响应契约。
 
 use std::sync::Arc;
 
@@ -20,12 +24,15 @@ use crate::quota::routes;
 use crate::quota::runtime::QuotaRuntime;
 use crate::quota::tests_support::{FIXED_NOW, FakeHttp, TestEnv, json_response, status_response};
 
+/// 用给定响应序列构造 FakeHttp transport 与 QuotaRuntime；
+/// 返回 (runtime, fake)，fake 可用于断言实际发出的请求。
 fn quota_runtime(env: &TestEnv, responses: Vec<HttpResponse>) -> (Arc<QuotaRuntime>, FakeHttp) {
     let fake = FakeHttp::new(responses);
     let runtime = Arc::new(QuotaRuntime::new(env.deps(fake.clone().transport())));
     (runtime, fake)
 }
 
+/// 取 fake 记录的第 index 个请求的 authorization 头（不存在时返回空串）。
 fn bearer_used(fake: &FakeHttp, index: usize) -> String {
     let requests = fake.requests.lock().unwrap();
     requests[index]
@@ -38,6 +45,7 @@ fn bearer_used(fake: &FakeHttp, index: usize) -> String {
 
 // ============== codex ==============
 
+/// 验证 codex：仅 primary window 且时长为一周时，只产出 weekly 窗口。
 #[tokio::test]
 async fn codex_labels_weekly_only_window_from_its_duration() {
     let env = TestEnv::new();
@@ -62,6 +70,7 @@ async fn codex_labels_weekly_only_window_from_its_duration() {
     assert!(result["usage"]["windows"].get("5h").is_none());
 }
 
+/// 验证 codex：primary 5 小时 + secondary 一周分别映射为 `5h` 与 `weekly` 窗口。
 #[tokio::test]
 async fn codex_labels_five_hour_and_weekly_windows() {
     let env = TestEnv::new();
@@ -85,6 +94,8 @@ async fn codex_labels_five_hour_and_weekly_windows() {
     );
 }
 
+/// 验证 codex：spend_control.individual_limit 生成 credits 窗口并输出
+/// `used / limit used` 形态的 valueLabel，只发一次请求。
 #[tokio::test]
 async fn codex_surfaces_spend_control_individual_limit() {
     let env = TestEnv::new();
@@ -121,6 +132,7 @@ async fn codex_surfaces_spend_control_individual_limit() {
     assert_eq!(fake.requests.lock().unwrap().len(), 1);
 }
 
+/// 验证 codex：无凭据遇 401 报 Not configured；有凭据遇 401 报 Session expired。
 #[tokio::test]
 async fn codex_reports_session_expired_on_401_and_not_configured_without_auth() {
     let env = TestEnv::new();
@@ -141,6 +153,8 @@ async fn codex_reports_session_expired_on_401_and_not_configured_without_auth() 
 
 // ============== openai (internal twin) ==============
 
+/// 验证 openai（chatgpt 凭据）：与 codex 同构地映射 5h/weekly 窗口，
+/// providerId 为 openai 且不需要 account id。
 #[tokio::test]
 async fn openai_maps_windows_without_account_id() {
     let env = TestEnv::new();
@@ -167,6 +181,8 @@ async fn openai_maps_windows_without_account_id() {
 
 // ============== copilot ==============
 
+/// 验证 copilot：只暴露 premium_interactions 窗口，按 entitlement/remaining
+/// 计算 25% 已用与 `left` 标签。
 #[tokio::test]
 async fn copilot_exposes_only_premium_interactions() {
     let env = TestEnv::new();
@@ -192,6 +208,8 @@ async fn copilot_exposes_only_premium_interactions() {
     );
 }
 
+/// 验证 copilot addon：unlimited 快照输出 Unlimited 标签、百分比为 null；
+/// entitlement 为 0 时回退 percent_remaining 反推已用百分比且无标签。
 #[tokio::test]
 async fn copilot_reports_unlimited_and_percent_fallback() {
     let env = TestEnv::new();
@@ -235,6 +253,7 @@ async fn copilot_reports_unlimited_and_percent_fallback() {
 
 // ============== crof ==============
 
+/// 验证 crof：credits 格式化为两位小数金额标签；401 映射为 Session expired。
 #[tokio::test]
 async fn crof_reports_credits_value_label_and_maps_401() {
     let env = TestEnv::new();
@@ -262,6 +281,7 @@ async fn crof_reports_credits_value_label_and_maps_401() {
 
 // ============== deepseek ==============
 
+/// 验证 deepseek：USD 余额生成 `credits_balance` 窗口，无 USD 条目时回退 CNY。
 #[tokio::test]
 async fn deepseek_builds_credits_balance_from_documented_payload() {
     let env = TestEnv::new();
@@ -296,6 +316,8 @@ async fn deepseek_builds_credits_balance_from_documented_payload() {
     );
 }
 
+/// 验证 deepseek：401/403 报会话过期；空余额报 No quota data；
+/// 字面 `0.00` 仍是有效余额。
 #[tokio::test]
 async fn deepseek_maps_auth_errors_and_empty_balances() {
     let env = TestEnv::new();
@@ -338,6 +360,8 @@ async fn deepseek_maps_auth_errors_and_empty_balances() {
 
 // ============== kimi ==============
 
+/// 验证 kimi：weekly 窗口的 used 优先于 remaining、remaining 回退、都缺为 null；
+/// limits 数组生成 `Rate Limit (Nm)` 窗口；401 报 API error。
 #[tokio::test]
 async fn kimi_computes_weekly_and_rate_limit_windows() {
     let env = TestEnv::new();
@@ -407,6 +431,7 @@ async fn kimi_computes_weekly_and_rate_limit_windows() {
     assert_eq!(result["error"], json!("API error: 401"));
 }
 
+/// 验证 kimi：无凭据时 configured=false 且报 Not configured。
 #[tokio::test]
 async fn kimi_is_not_configured_without_credentials() {
     let env = TestEnv::new();
@@ -419,6 +444,7 @@ async fn kimi_is_not_configured_without_credentials() {
 
 // ============== openrouter / nanogpt / wafer / neuralwatt ==============
 
+/// 验证 openrouter：credits 窗口输出 `$left · $spent` 标签且无百分比。
 #[tokio::test]
 async fn openrouter_reports_remaining_and_spent() {
     let env = TestEnv::new();
@@ -438,6 +464,7 @@ async fn openrouter_reports_remaining_and_spent() {
     assert_eq!(credits["usedPercent"], json!(null));
 }
 
+/// 验证 nanogpt：daily/monthly 窗口都带上账户 state 标签（如 `(past_due)`）。
 #[tokio::test]
 async fn nanogpt_builds_daily_and_monthly_windows_with_state_labels() {
     let env = TestEnv::new();
@@ -459,6 +486,8 @@ async fn nanogpt_builds_daily_and_monthly_windows_with_state_labels() {
     assert_eq!(windows["monthly"]["valueLabel"], json!("(past_due)"));
 }
 
+/// 验证 wafer：窗口秒数由 window_start/end 推出（5h），标签含档位、余量与
+/// 超发数；空 payload 报 No quota data。
 #[tokio::test]
 async fn wafer_labels_window_from_payload_timestamps_and_overage() {
     let env = TestEnv::new();
@@ -489,6 +518,8 @@ async fn wafer_labels_window_from_payload_timestamps_and_overage() {
     assert_eq!(result["error"], json!("No quota data in response"));
 }
 
+/// 验证 neuralwatt：订阅窗口以 plan 名为键（standard），余额单独生成
+/// credits_balance 窗口。
 #[tokio::test]
 async fn neuralwatt_keys_subscription_window_by_plan_and_adds_credits() {
     let env = TestEnv::new();
@@ -518,6 +549,8 @@ async fn neuralwatt_keys_subscription_window_by_plan_and_adds_credits() {
     assert_eq!(credits["valueLabel"], json!("$32.68"));
 }
 
+/// 验证 neuralwatt：无订阅时 key allowance 用有效限额 min(limit, spent+credits)
+/// 计算已用百分比，period=month → monthly 窗口。
 #[tokio::test]
 async fn neuralwatt_allowance_window_prefers_effective_limit() {
     let env = TestEnv::new();
@@ -544,6 +577,8 @@ async fn neuralwatt_allowance_window_prefers_effective_limit() {
 
 // ============== zai / zhipuai / minimax ==============
 
+/// 验证 zai：TOKENS_LIMIT 按 unit 生成 5h/weekly 窗口，TIME_LIMIT 生成
+/// `MCP Tools`（30 天）窗口，resetAt 缺失写 null。
 #[tokio::test]
 async fn zai_surfaces_token_and_time_limit_windows() {
     let env = TestEnv::new();
@@ -571,6 +606,7 @@ async fn zai_surfaces_token_and_time_limit_windows() {
     assert_eq!(windows["MCP Tools"]["resetAt"], json!(1_787_128_459_979i64));
 }
 
+/// 验证 zai：CREDIT_LIMIT 生成 `cur / total credits` 标签，level 写入 planLabel。
 #[tokio::test]
 async fn zai_maps_credit_limits_with_value_labels_and_plan_level() {
     let env = TestEnv::new();
@@ -595,6 +631,8 @@ async fn zai_maps_credit_limits_with_value_labels_and_plan_level() {
     assert_eq!(windows["weekly"]["valueLabel"], json!("65 / 60k credits"));
 }
 
+/// 验证 zhipuai：auth.json 无条目时回落 OpenCode config 的 apiKey；
+/// auth.json 条目优先于 config 层。
 #[tokio::test]
 async fn zhipuai_resolves_keys_from_auth_and_config_layers() {
     let env = TestEnv::new();
@@ -637,6 +675,9 @@ async fn zhipuai_resolves_keys_from_auth_and_config_layers() {
     assert_eq!(bearer_used(&fake, 0), "Bearer auth-key");
 }
 
+/// 验证 minimax：新 token_plan 的 usage_count 是剩余量（used=total-remaining）
+/// 且 weekly_status=3 时省略 weekly；legacy 载荷的 usage_count 是已用量；
+/// 两个端点都失败时报 API returned no usable quota data。
 #[tokio::test]
 async fn minimax_token_plan_reports_remaining_semantics_and_skips_inactive_weekly() {
     let env = TestEnv::new();
@@ -702,6 +743,7 @@ async fn minimax_token_plan_reports_remaining_semantics_and_skips_inactive_weekl
     assert_eq!(result["error"], json!("API returned no usable quota data"));
 }
 
+/// 验证 minimax-cn 走 minimaxi.com 域名的 CN 端点（token_plan 先于 coding_plan）。
 #[tokio::test]
 async fn minimax_cn_uses_the_cn_endpoints() {
     let env = TestEnv::new();
@@ -724,6 +766,8 @@ async fn minimax_cn_uses_the_cn_endpoints() {
 
 // ============== ollama-cloud / opencode-go ==============
 
+/// 验证 ollama-cloud：从 settings HTML 解析 session/weekly/premium 窗口；
+/// 302 重定向视为认证失败；空页面报解析错误；is_configured 跟随凭据文件。
 #[tokio::test]
 async fn ollama_cloud_parses_settings_html_and_rejects_redirects() {
     let env = TestEnv::new();
@@ -767,6 +811,8 @@ async fn ollama_cloud_parses_settings_html_and_rejects_redirects() {
     ));
 }
 
+/// 验证 opencode-go：rolling/weekly 映射为窗口；403 报认证失败；
+/// 请求带 Bearer 头且不带 cookie。
 #[tokio::test]
 async fn opencode_go_parses_usage_and_maps_auth_failures() {
     let env = TestEnv::new();
@@ -813,6 +859,7 @@ async fn opencode_go_parses_usage_and_maps_auth_failures() {
     );
 }
 
+/// 验证 opencode-go：成功拉取配额后删除遗留的 data/quota/opencode-go.json 凭据文件。
 #[tokio::test]
 async fn opencode_go_fetch_deletes_the_legacy_credential_file() {
     let env = TestEnv::new();
@@ -836,6 +883,8 @@ async fn opencode_go_fetch_deletes_the_legacy_credential_file() {
 
 // ============== claude ==============
 
+/// Claude usage 接口的标准测试夹具：三条 limit（session/weekly_all/带模型
+/// scope 的 weekly_scoped）+ 启用的 spend 块。
 fn claude_payload() -> Value {
     json!({
         "limits": [
@@ -853,6 +902,9 @@ fn claude_payload() -> Value {
     })
 }
 
+/// 验证 claude 转换：limits → 5h/7d 窗口、模型 scope → models 表、spend →
+/// extra_usage；禁用 spend 时省略窗口、未知 kind 忽略、无 limits 走 legacy
+/// five_hour/seven_day 回退，None 输入给空结果。
 #[test]
 fn claude_transforms_map_limits_models_and_extra_usage() {
     let (windows, models) = claude::to_claude_usage(Some(&claude_payload()), FIXED_NOW);
@@ -900,6 +952,8 @@ fn claude_transforms_map_limits_models_and_extra_usage() {
     assert!(windows.is_empty() && models.is_empty());
 }
 
+/// 验证 claude 凭据优先级：keychain/.credentials.json → OpenCode auth 条目 →
+/// CLAUDE_CODE_OAUTH_TOKEN 环境变量（keychain 仅 macOS 生效）。
 #[test]
 fn claude_credential_sources_fall_through_in_priority_order() {
     let env = TestEnv::new();
@@ -954,6 +1008,8 @@ fn claude_credential_sources_fall_through_in_priority_order() {
     assert_eq!(credential.refresh_token, None);
 }
 
+/// 验证 claude fetch：无凭据 configured=false；有凭据时请求 usage 端点带
+/// `anthropic-beta: oauth-2025-04-20` 头并产出 5h 窗口。
 #[tokio::test]
 async fn claude_fetch_reports_windows_plan_label_and_not_configured() {
     let env = TestEnv::new();
@@ -977,6 +1033,8 @@ async fn claude_fetch_reports_windows_plan_label_and_not_configured() {
     assert_eq!(beta.as_deref(), Some("oauth-2025-04-20"));
 }
 
+/// 验证 claude：429 冷却期内返回缓存结果并短路后续上游请求
+/// （第三次调用不再发 HTTP）。
 #[tokio::test]
 async fn claude_serves_cached_values_during_the_429_cooldown() {
     let env = TestEnv::new();
@@ -1018,6 +1076,7 @@ async fn claude_serves_cached_values_during_the_429_cooldown() {
     );
 }
 
+/// 验证 claude：切换凭据后缓存失效，429 不再兜底而是返回 Rate limited 错误。
 #[tokio::test]
 async fn claude_switching_credentials_drops_the_cache() {
     let env = TestEnv::new();
@@ -1039,6 +1098,7 @@ async fn claude_switching_credentials_drops_the_cache() {
     assert_eq!(after_switch["error"], json!("Rate limited. Retrying soon."));
 }
 
+/// 验证 claude：401 报会话过期提示，500 报 API error。
 #[tokio::test]
 async fn claude_explains_expired_sessions_and_api_errors() {
     let env = TestEnv::new();
@@ -1059,6 +1119,8 @@ async fn claude_explains_expired_sessions_and_api_errors() {
 
 // ============== google ==============
 
+/// 验证 google：`token|project|managed` 三段式 refresh token 解析，以及
+/// quota bucket / modelData → 模型 daily 窗口的转换。
 #[test]
 fn google_transforms_parse_refresh_tokens_and_model_windows() {
     let (token, project, managed) =
@@ -1089,6 +1151,8 @@ fn google_transforms_parse_refresh_tokens_and_model_windows() {
     assert_eq!(window["usedPercent"], json!(50));
 }
 
+/// 验证 google fetch：按 gemini → antigravity 顺序访问各端点并合并两侧模型，
+/// 顶层 windows 为空。
 #[tokio::test]
 async fn google_fetch_merges_models_from_all_sources() {
     let env = TestEnv::new();
@@ -1148,6 +1212,7 @@ async fn google_fetch_merges_models_from_all_sources() {
     assert_eq!(result["usage"]["windows"].as_object().unwrap().len(), 0);
 }
 
+/// 验证 google：所有来源都失败时 ok=false 并透出来源错误（OAuth 刷新失败）。
 #[tokio::test]
 async fn google_reports_source_errors_when_no_models_merge() {
     let env = TestEnv::new();
@@ -1165,6 +1230,8 @@ async fn google_reports_source_errors_when_no_models_merge() {
 
 // ============== cursor ==============
 
+/// Cursor DashboardService 的用量测试夹具：planUsage、spendLimitUsage
+/// 与计费周期结束时间。
 fn cursor_usage_payload() -> Value {
     json!({
         "enabled": true,
@@ -1184,6 +1251,8 @@ fn cursor_usage_payload() -> Value {
     })
 }
 
+/// 验证 cursor：dashboard 载荷生成 billing_cycle/auto/api/plan_limit/
+/// on_demand 窗口及对应金额标签。
 #[tokio::test]
 async fn cursor_builds_windows_from_dashboard_payload() {
     let plan =
@@ -1204,6 +1273,8 @@ async fn cursor_builds_windows_from_dashboard_payload() {
     assert_eq!(windows["on_demand"]["usedPercent"], json!(75));
 }
 
+/// 验证 cursor：未过期的 JWT 直接作为 Bearer 使用；
+/// 无 planUsage 时报 No active Cursor subscription。
 #[tokio::test]
 async fn cursor_fetch_uses_bearer_token_and_rejects_missing_subscription() {
     let env = TestEnv::new();
@@ -1242,11 +1313,14 @@ async fn cursor_fetch_uses_bearer_token_and_rejects_missing_subscription() {
     assert_eq!(result["error"], json!("No active Cursor subscription"));
 }
 
+/// 把 JSON 值编码为无填充的 base64url 字符串（构造 JWT claims 用）。
 fn base64_url(value: Value) -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).unwrap())
 }
 
+/// 验证 cursor import：从 state.vscdb 读出 token、经 oauth 端点刷新后
+/// 持久化到 managed 凭据；无 sqlite 行时报凭据不可用。
 #[tokio::test]
 async fn cursor_import_reads_state_db_and_stores_the_credential() {
     let env = TestEnv::new();
@@ -1298,6 +1372,7 @@ async fn cursor_import_reads_state_db_and_stores_the_credential() {
 
 // ============== xai ==============
 
+/// 编码 protobuf varint（每 7 位一组，高位为续位标志）。
 fn varint(mut value: u64) -> Vec<u8> {
     let mut out = Vec::new();
     loop {
@@ -1313,6 +1388,7 @@ fn varint(mut value: u64) -> Vec<u8> {
     }
 }
 
+/// 包装 gRPC-web 帧：0x00 标志位 + 4 字节大端长度 + payload。
 fn grpc_web_frame(payload: &[u8]) -> Vec<u8> {
     let mut frame = vec![0u8];
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -1320,6 +1396,8 @@ fn grpc_web_frame(payload: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// 验证 xai：从 gRPC-web protobuf 读出百分比与重置时间；坏帧、非 protobuf
+/// 载荷、非零 RPC status、空响应分别返回对应的错误文案。
 #[test]
 fn xai_parse_usage_reads_percent_and_reset_from_protobuf() {
     // field 1, wire 5 (fixed32) = 42.0 → path [1].
@@ -1366,6 +1444,7 @@ fn xai_parse_usage_reads_percent_and_reset_from_protobuf() {
     assert_eq!(error, "xAI billing returned an empty protobuf response");
 }
 
+/// 验证 xai：只有重置时间与计费周期存在时，billing_cycle 的已用百分比按 0 输出。
 #[tokio::test]
 async fn xai_fetch_reports_zero_when_only_a_reset_and_period_exist() {
     // varint at [1,6] (usage period) + reset varint at [1,5,1].
@@ -1407,6 +1486,7 @@ async fn xai_fetch_reports_zero_when_only_a_reset_and_period_exist() {
     );
 }
 
+/// 验证 xai：过期 access token 先走刷新端点，并把新 access/refresh 写回 auth.json。
 #[tokio::test]
 async fn xai_refreshes_expired_tokens_and_persists_them() {
     let env = TestEnv::new();
@@ -1445,6 +1525,7 @@ async fn xai_refreshes_expired_tokens_and_persists_them() {
     drop(written);
 }
 
+/// 验证 xai：无凭据或 type 非 oauth 时 configured=false 且报 Not configured。
 #[tokio::test]
 async fn xai_reports_read_errors_and_missing_configuration() {
     let env = TestEnv::new();
@@ -1461,6 +1542,8 @@ async fn xai_reports_read_errors_and_missing_configuration() {
 
 // ============== runtime dispatcher ==============
 
+/// 验证 runtime：未知 provider 返回统一 Unsupported provider 信封，
+/// 完成后并发槽位被清理。
 #[tokio::test]
 async fn runtime_answers_unsupported_providers_with_the_envelope() {
     let env = TestEnv::new();
@@ -1481,6 +1564,7 @@ async fn runtime_answers_unsupported_providers_with_the_envelope() {
         .await;
 }
 
+/// 验证 runtime：同一 provider 的并发刷新合并为一次 HTTP 调用。
 #[tokio::test]
 async fn runtime_coalesces_concurrent_refreshes_by_provider_id() {
     let env = TestEnv::new();
@@ -1514,6 +1598,8 @@ async fn runtime_coalesces_concurrent_refreshes_by_provider_id() {
     );
 }
 
+/// 验证 runtime：list_configured 按 registry 注册顺序输出已配置 provider
+/// （openai 凭据归入 codex）。
 #[tokio::test]
 async fn runtime_lists_configured_providers_in_registry_order() {
     let env = TestEnv::new();
@@ -1531,11 +1617,13 @@ async fn runtime_lists_configured_providers_in_registry_order() {
 
 // ============== routes ==============
 
+/// 用 FakeHttp 构建挂好 quota 路由的 axum Router（oneshot 请求测试用）。
 fn quota_app(env: &TestEnv, responses: Vec<HttpResponse>) -> axum::Router {
     let fake = FakeHttp::new(responses);
     routes::router_with(Arc::new(QuotaRuntime::new(env.deps(fake.transport()))))
 }
 
+/// 对 app 发起 GET 请求并返回 (状态码, 解析后的 JSON body)。
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     let response = app
         .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -1548,6 +1636,8 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+/// 验证路由：/api/quota/providers 列出已配置项；未知 /api/quota/:id
+/// 返回 Unsupported provider。
 #[tokio::test]
 async fn routes_list_providers_and_answer_unknown_quota_ids() {
     let env = TestEnv::new();
@@ -1563,6 +1653,7 @@ async fn routes_list_providers_and_answer_unknown_quota_ids() {
     assert_eq!(body["error"], json!("Unsupported provider"));
 }
 
+/// 验证路由：凭据状态查询的 404/200 形状、掩码展示与 DELETE 删除成功。
 #[tokio::test]
 async fn routes_credential_status_and_delete_shapes() {
     let env = TestEnv::new();
@@ -1604,6 +1695,8 @@ async fn routes_credential_status_and_delete_shapes() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// 验证路由：PUT ollama-cloud 凭据先做 cookie 非空校验再调验证器；
+/// 空 cookie 返回 INVALID_CREDENTIAL，验证器失败透出其错误。
 #[tokio::test]
 async fn routes_put_validates_and_stores_ollama_credentials() {
     let env = TestEnv::new();
@@ -1679,6 +1772,9 @@ async fn routes_put_validates_and_stores_ollama_credentials() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// 验证路由：validate 未配置返回 NOT_CONFIGURED；import 对未知 provider
+/// 返回 UNSUPPORTED_PROVIDER、对 ollama-cloud 返回 IMPORT_UNAVAILABLE；
+/// GET 探测 POST-only 路由按 Express 语义落到 404。
 #[tokio::test]
 async fn routes_validate_reports_missing_credentials_and_import_unavailable() {
     let env = TestEnv::new();

@@ -6,13 +6,22 @@
 //!
 //! `detect_text_language` also drives the dictation module's local TTS model
 //! choice (`language: 'auto'`), so the tables below are behavior, not detail.
+//!
+//! 中文说明：移植自 `server/lib/tts/language-detect.js` 的无依赖语言检测，
+//! 用于 TTS voice 选择：文字系统（script）能直接定案大多数语言，拉丁文字
+//! 语言靠特征字母与功能词区分。结果只为 voice 选择服务，不是语言学论断，
+//! 未知语言回退英语。`detect_text_language` 还驱动听写模块本地 TTS 模型的
+//! `language: 'auto'` 选择，因此下面的表格是行为契约而非实现细节。
 
 use std::collections::HashMap;
 
 /// (`script`, char-predicate) pairs in the JS `SCRIPT_RANGES` order — order
 /// matters: the dominant-script tie-break keeps the first maximum.
+/// 元素顺序必须与 JS 一致：主导 script 并列时保留先出现的最大值。
 type CharClass = fn(char) -> bool;
 
+/// JS `SCRIPT_RANGES` 的移植：十个文字系统及各自的 Unicode 码位区间
+///（谚文、假名、汉字、西里尔、希腊、阿拉伯、希伯来、泰文、天城文、拉丁）。
 const SCRIPT_RANGES: [(&str, CharClass); 10] = [
     ("hangul", |c| {
         ('\u{AC00}'..='\u{D6AF}').contains(&c)
@@ -34,6 +43,8 @@ const SCRIPT_RANGES: [(&str, CharClass); 10] = [
     }),
 ];
 
+/// 能由 script 直接定案的语言映射；拉丁、西里尔、假名、汉字返回 `None`，
+/// 需要走后续的细分判定。
 fn script_language(script: &str) -> Option<&'static str> {
     match script {
         "hangul" => Some("ko"),
@@ -46,13 +57,16 @@ fn script_language(script: &str) -> Option<&'static str> {
     }
 }
 
+/// 参与停用词评分的拉丁文字语言列表（顺序即 [`best_of`] 的候选顺序）。
 const LATIN_LANGUAGES: [&str; 11] = [
     "en", "de", "fr", "es", "it", "pt", "pl", "nl", "cs", "tr", "sv",
 ];
+/// 参与停用词评分的西里尔文字语言（乌克兰语、俄语）。
 const CYRILLIC_LANGUAGES: [&str; 2] = ["uk", "ru"];
 
 /// Whole-word function-word lists per language (all 20 entries — the JS keeps
 /// the lists the same length so scores stay comparable).
+/// 每种语言固定 20 个整词功能词；JS 侧刻意保持等长，使各语言得分可比。
 fn stopwords(language: &str) -> &'static [&'static str] {
     match language {
         "en" => &[
@@ -149,6 +163,7 @@ fn stopwords(language: &str) -> &'static [&'static str] {
 
 /// Characteristic Latin-script letters. `true` = case-insensitive (JS `/i`);
 /// `false` matches the exact code points only (e.g. Turkish `İ`, `ß`).
+/// 表顺序即判定优先顺序：排在前面的语言先被检查。
 const LATIN_MARKERS: [(&str, &[char], bool); 8] = [
     ("pl", &['ł', 'ę', 'ą', 'ń', 'ś', 'ź', 'ż'], true),
     ("cs", &['ř', 'ě', 'ů', 'ť', 'ď', 'ň'], true),
@@ -160,34 +175,43 @@ const LATIN_MARKERS: [(&str, &[char], bool); 8] = [
     ("sv", &['å'], true),
 ];
 
+/// 乌克兰语独有字母（俄语字母表中不存在），用于区分 uk/ru。
 const UK_MARKER_CHARS: [char; 4] = ['і', 'ї', 'є', 'ґ'];
+/// 俄语独有字母（乌克兰语字母表中不存在），用于区分 uk/ru。
 const RU_MARKER_CHARS: [char; 4] = ['ы', 'э', 'ъ', 'ё'];
 
 /// JS `/[іїєґ]/gi` — matches either case of the Ukrainian-only letters.
+/// 大小写两种形式都算命中。
 fn is_uk_marker(c: char) -> bool {
     let lowered = c.to_lowercase().next().unwrap_or(c);
     UK_MARKER_CHARS.contains(&lowered) || UK_MARKER_CHARS.contains(&c)
 }
 
 /// JS `/[ыэъё]/gi`.
+/// 大小写两种形式都算命中。
 fn is_ru_marker(c: char) -> bool {
     let lowered = c.to_lowercase().next().unwrap_or(c);
     RU_MARKER_CHARS.contains(&lowered) || RU_MARKER_CHARS.contains(&c)
 }
 
+/// `detectTextLanguage` 的返回值：主语言与主导文字系统。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Detection {
     /// BCP-47 primary language subtag.
+    /// 如 `uk`、`zh`、`en`。
     pub language: String,
     /// Dominant script name (`latin`, `kana`, `han`, ...).
+    /// 如 `latin`、`kana`、`han`、`cyrillic`。
     pub script: String,
 }
 
+/// 统计文本中命中给定字符判定的字符个数。
 fn count_matches(source: &str, class: CharClass) -> u64 {
     source.chars().filter(|c| class(*c)).count() as u64
 }
 
 /// `source.toLowerCase().split(/[^\p{L}\p{M}']+/u).filter(Boolean)`.
+/// 组合符号（`\p{M}`）用常见区间近似，撇号也算词内字符；纯标点段被丢弃。
 fn lowercase_words(source: &str) -> Vec<String> {
     let lowered = source.to_lowercase();
     let mut words = Vec::new();
@@ -212,6 +236,7 @@ fn lowercase_words(source: &str) -> Vec<String> {
     words
 }
 
+/// 对每个候选语言统计词表中功能词的整词命中次数，返回 语言 → 得分。
 fn score_stopwords<'a>(words: &[String], languages: &[&'a str]) -> HashMap<&'a str, u64> {
     let mut scores = HashMap::new();
     for &language in languages {
@@ -227,6 +252,7 @@ fn score_stopwords<'a>(words: &[String], languages: &[&'a str]) -> HashMap<&'a s
 
 /// `bestOf`: highest score wins, ties keep the fallback/first candidate
 /// (strictly-greater replacement, iterating in `languages` order).
+/// 即遍历时只有严格更高分才替换，0 分不会覆盖 fallback。
 fn best_of<'a>(
     scores: &HashMap<&'a str, u64>,
     languages: &[&'a str],
@@ -245,6 +271,8 @@ fn best_of<'a>(
     best
 }
 
+/// 按 [`LATIN_MARKERS`] 的表顺序找第一个命中的特征字母所属语言；无命中返回
+/// `None`。
 fn pick_by_markers(source: &str) -> Option<&'static str> {
     for &(language, chars, case_insensitive) in LATIN_MARKERS.iter() {
         let hit = source.chars().any(|c| {
@@ -263,6 +291,12 @@ fn pick_by_markers(source: &str) -> Option<&'static str> {
 }
 
 /// `detectTextLanguage`.
+///
+/// 判定顺序：无字母 → 英语；假名出现且假名+汉字占比 ≥ 30% 判日语、纯汉字
+/// 占比 ≥ 30% 判中文；主导 script 可直接定案的语言（韩/希腊/阿拉伯/希伯来/
+/// 泰/印地）直接返回；西里尔走 uk/ru 特征字母与停用词三级判别；拉丁先看
+/// 特征字母（停用词得分未超过其两倍时生效），再退回停用词最高分（平局为
+/// 英语）。
 pub fn detect_text_language(text: &str) -> Detection {
     let counts: Vec<(&str, u64)> = SCRIPT_RANGES
         .iter()
@@ -365,6 +399,8 @@ pub fn detect_text_language(text: &str) -> Detection {
     }
 }
 
+/// 每种语言的 locale 前缀偏好表（按优先级排列，如法语 `fr_FR`、`fr_CA`、
+/// `fr`）；表外语言回退为语言码本身。
 fn locale_prefixes_for_language(language: &str) -> Vec<String> {
     let table: &[&str] = match language {
         "en" => &["en_US", "en_GB", "en"],
@@ -394,13 +430,17 @@ fn locale_prefixes_for_language(language: &str) -> Vec<String> {
 }
 
 /// A voice entry from a `say -v '?'` listing.
+/// 名称与 locale 两个字段即可支撑 voice 挑选。
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceEntry {
+    /// voice 显示名（可能带 "(Enhanced)"、"(Premium)" 等变体后缀）。
     pub name: String,
+    /// `say` 输出的 locale（如 `uk_UA`）。
     pub locale: String,
 }
 
 /// `/\((Enhanced|Premium)\)/i`.
+/// 只看名称中的后缀子串，不要求精确匹配。
 fn is_enhanced_variant(name: &str) -> bool {
     let lowered = name.to_lowercase();
     lowered.contains("(enhanced)") || lowered.contains("(premium)")
@@ -408,6 +448,7 @@ fn is_enhanced_variant(name: &str) -> bool {
 
 /// `pickVoiceForLanguage`: prefer an enhanced/premium variant of a matching
 /// voice, then any voice of the exact locale, then any voice of the language.
+/// 同一前缀组内优先 Enhanced/Premium 变体，否则取列表中的第一个。
 pub fn pick_voice_for_language(language: &str, voices: &[VoiceEntry]) -> Option<String> {
     let prefixes = locale_prefixes_for_language(language);
     for prefix in &prefixes {
@@ -432,6 +473,7 @@ pub fn pick_voice_for_language(language: &str, voices: &[VoiceEntry]) -> Option<
     None
 }
 /// `languageOfLocale` (`uk_UA` → `uk`; `null` stays `None`).
+/// 按 `_` 或 `-` 切分取首段并小写化。
 pub fn language_of_locale(locale: Option<&str>) -> Option<String> {
     let locale = locale?;
     if locale.is_empty() {
@@ -443,14 +485,17 @@ pub fn language_of_locale(locale: Option<&str>) -> Option<String> {
         .map(|primary| primary.to_lowercase())
 }
 
+/// 语言检测与 voice 挑选的行为契约测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 取检测结果的 language 字段的便捷封装。
     fn detect(text: &str) -> String {
         detect_text_language(text).language
     }
 
+    /// 验证 16 种表内语言的完整句子都能被正确识别。
     #[test]
     fn detects_table_languages() {
         let cases = [
@@ -500,6 +545,7 @@ mod tests {
         }
     }
 
+    /// 验证短句（停用词证据不足）靠独有字母区分乌克兰语与俄语。
     #[test]
     fn tells_short_uk_ru_phrases_apart_by_letters() {
         assert_eq!(detect("Готово. Запушено."), "uk");
@@ -509,18 +555,21 @@ mod tests {
         assert_eq!(detect("Готово, всё запушено."), "ru");
     }
 
+    /// 验证无字母输入（纯数字/标点/空串）回退英语。
     #[test]
     fn falls_back_to_english_without_letters() {
         assert_eq!(detect("1234 ... !!!"), "en");
         assert_eq!(detect(""), "en");
     }
 
+    /// 验证英文长句中的外来词（如 façade）不会翻转整体语言判定。
     #[test]
     fn quoted_foreign_word_does_not_flip_english() {
         let text = "The façade of the building is the part that you see from the street, and it is not the same as the interior.";
         assert_eq!(detect(text), "en");
     }
 
+    /// 验证 Detection.script 报告主导文字系统（假名/汉字/西里尔）。
     #[test]
     fn reports_the_dominant_script() {
         assert_eq!(detect_text_language("変更が完了し").script, "kana");
@@ -528,6 +577,7 @@ mod tests {
         assert_eq!(detect_text_language("Привіт").script, "cyrillic");
     }
 
+    /// 构造覆盖多语言的 `say` voice 列表。
     fn voices() -> Vec<VoiceEntry> {
         vec![
             VoiceEntry {
@@ -557,6 +607,7 @@ mod tests {
         ]
     }
 
+    /// 验证同语言同 locale 时优先选 "(Enhanced)" 变体。
     #[test]
     fn prefers_the_enhanced_variant_of_a_matching_voice() {
         assert_eq!(
@@ -565,6 +616,7 @@ mod tests {
         );
     }
 
+    /// 验证英语按前缀优先级选主 locale 的 voice（en_US 优先）。
     #[test]
     fn prefers_the_primary_locale_of_a_language() {
         assert_eq!(
@@ -573,11 +625,13 @@ mod tests {
         );
     }
 
+    /// 验证没有任何 voice 会说该语言时返回 `None`。
     #[test]
     fn returns_none_when_no_voice_speaks_the_language() {
         assert_eq!(pick_voice_for_language("ja", &voices()), None);
     }
 
+    /// 验证表外语言回退为语言码本身作为前缀去匹配。
     #[test]
     fn unknown_language_falls_back_to_its_own_locale_prefix() {
         let list = vec![VoiceEntry {
@@ -587,6 +641,7 @@ mod tests {
         assert_eq!(pick_voice_for_language("fi", &list).as_deref(), Some("V"));
     }
 
+    /// 验证 locale 的主语言子标签提取与 `None`/空串边界。
     #[test]
     fn reads_the_language_subtag() {
         assert_eq!(language_of_locale(Some("uk_UA")).as_deref(), Some("uk"));

@@ -1,10 +1,19 @@
+/**
+ * rebindUpstream（#2638）的测试套件：模拟 OpenCode 托管进程重启到
+ * 新端口而旧 SSE 连接仍存活的场景，验证共享 hub 重启后拨向新端口、
+ * 已连接的全局客户端不断线即恢复收事件，以及目录级 socket 被主动
+ * 关闭以促其重连新端口。
+ */
+
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGlobalMessageStreamHub } from './global-hub.js';
 import { createMessageStreamWsRuntime } from './runtime.js';
 
+/** 测试用伪 WS socket：记录已发帧与关闭调用，close 时广播事件。 */
 class FakeSocket extends EventEmitter {
+  /** 初始处于 OPEN 状态；sent/closeCalls 记录交互历史供断言。 */
   constructor() {
     super();
     this.readyState = 1;
@@ -12,14 +21,17 @@ class FakeSocket extends EventEmitter {
     this.closeCalls = [];
   }
 
+  /** 记录一帧已发送的 payload（解析为对象便于断言）。 */
   send(payload) {
     this.sent.push(JSON.parse(payload));
   }
 
+  /** 协议层 ping 占位：真实保活由 bridge 的 ping 定时器负责。 */
   ping() {
     void 0;
   }
 
+  /** 置为 CLOSED、记录关闭码/原因，并广播 close 事件驱动清理。 */
   close(code, reason) {
     if (this.readyState === 3) {
       return;
@@ -30,6 +42,10 @@ class FakeSocket extends EventEmitter {
   }
 }
 
+/**
+ * 构造伪 SSE 响应：按块返回编码字节，块耗尽后结束或挂起至
+ * signal 中止（holdOpen 模拟旧进程上不会结束的长连接）。
+ */
 function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -50,6 +66,7 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
             }
 
             return new Promise((resolve, reject) => {
+              // 中止时以 AbortError 拒绝挂起的 read，模拟真实 fetch 行为。
               const onAbort = () => {
                 signal.removeEventListener('abort', onAbort);
                 const error = new Error('Aborted');
@@ -65,6 +82,7 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   };
 }
 
+// 覆盖托管重启换端口后 rebindUpstream 的两条恢复路径。
 describe('rebindUpstream (#2638)', () => {
   it('restarts the shared hub upstream so a connected client resumes receiving events on the new port', async () => {
     const server = new EventEmitter();

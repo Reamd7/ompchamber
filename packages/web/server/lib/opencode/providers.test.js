@@ -1,3 +1,11 @@
+/**
+ * providers.js 自定义 provider 配置持久化层的单元测试（bun:test）。
+ *
+ * 覆盖 validateCustomProviderConfig 的校验规则（ID/名称/baseURL/模型/凭据/
+ * npm 适配包白名单）、upsertProviderConfig 在 user/project/custom 三种 scope
+ * 下的写入与更新、removeProviderConfig 的删除语义，以及「校验失败不落盘」
+ * 「hasStoredAuth 免 env」等边界。每个用例使用独立的临时项目目录，不污染真实配置。
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
@@ -10,17 +18,21 @@ import {
   removeProviderConfig,
 } from './providers.js';
 
+// 当前用例使用的临时项目目录（beforeEach 中重建、afterEach 中删除）。
 let projectDir;
 
+/** 将 value 以两空格缩进的 JSON 写入 filePath（自动创建父目录），用于铺设配置文件。 */
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8');
 }
 
+/** 读取并解析 filePath 的 JSON 内容，用于断言落盘后的配置形状。 */
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+// 套件：自定义 provider 的校验规则与跨 user/project/custom 配置层的持久化读写。
 describe('custom provider config persistence', () => {
   beforeEach(() => {
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-provider-'));

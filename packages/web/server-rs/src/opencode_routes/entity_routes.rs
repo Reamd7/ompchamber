@@ -3,6 +3,11 @@
 //! persist to disk immediately and answer with the deferred-restart
 //! envelope; the engine restart is deferred to `POST /api/config/reload`
 //! (owned by core_routes).
+//! 中文说明:本模块移植自 `opencode/config-entity-routes.js`,承载
+//! agent、command、MCP 三类实体的 HTTP CRUD 路由(snippet 路由归属
+//! 另一个移植模块)。写入操作立即持久化到磁盘,并统一返回"延迟重启"
+//! 信封——engine 的重启被推迟到 `POST /api/config/reload`(由
+//! core_routes 模块提供)。
 
 use axum::Json;
 use axum::extract::{Request, State};
@@ -19,6 +24,8 @@ use super::mutation::deferred_restart_response;
 use super::project_directory::{resolve_optional_project_directory, resolve_project_directory};
 use super::routes::parse_json_body_for_entity;
 
+/// 注册三类实体的路由树:agent(含 config 子路由)、MCP(列表 + 单条)
+/// 与 command,各自挂 GET/POST/PATCH/DELETE 处理器。
 pub(crate) fn entity_routes() -> axum::Router<ModuleState> {
     axum::Router::new()
         .route(
@@ -49,11 +56,15 @@ pub(crate) fn entity_routes() -> axum::Router<ModuleState> {
         )
 }
 
+/// 构造统一的错误响应:指定 HTTP 状态码 + `{ "error": message }` 的
+/// JSON body。
 fn error_response(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
 /// Resolve the required project directory, answering the JS 400 on failure.
+/// 解析必需的项目目录:复用 project_directory 的解析逻辑,无法解析
+/// 出目录时直接返回 JS 对应的 400 错误响应;Ok 携带目录路径。
 async fn required_directory(
     state: &ModuleState,
     headers: &HeaderMap,
@@ -70,6 +81,8 @@ async fn required_directory(
 }
 
 /// Resolve the optional project directory (`resolveOptionalProjectDirectory`).
+/// 解析可选的项目目录:目录允许不存在(返回 None),但解析本身出错
+/// (例如显式请求了无效目录)仍返回 400。
 async fn optional_directory(
     _state: &ModuleState,
     headers: &HeaderMap,
@@ -86,6 +99,10 @@ async fn optional_directory(
 // Agents
 // ---------------------------------------------------------------------------
 
+/// `GET /api/config/agents/:name`:返回 agent 的来源元数据(透传
+/// agents::get_agent_sources 的四组信息),并额外汇总顶层 `scope`
+/// (优先 `.md`,其次 JSON,都没有为 null)与 `isBuiltIn`(两类来源
+/// 均不存在时为真)。内部错误统一 500 并记录日志。
 async fn get_agent_sources_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -141,6 +158,8 @@ async fn get_agent_sources_route(
     }
 }
 
+/// `GET /api/config/agents/:name/config`:返回 agent 的生效配置
+/// (source/scope/config 三元组);内部错误 500 并记录日志。
 async fn get_agent_config_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -163,6 +182,9 @@ async fn get_agent_config_route(
     }
 }
 
+/// `POST /api/config/agents/:name`:创建 agent。body 经 50MB 解析器
+/// 后拆出 `scope` 与其余配置字段;成功返回延迟重启信封,失败(含
+/// 三处重名检查未过)返回 500 并附具体错误消息。
 async fn create_agent_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -205,6 +227,8 @@ async fn create_agent_route(
     }
 }
 
+/// `PATCH /api/config/agents/:name`:按字段更新 agent;body 必须是
+/// JSON 对象(否则直接 500)。成功返回延迟重启信封,失败 500。
 async fn update_agent_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -243,6 +267,9 @@ async fn update_agent_route(
     }
 }
 
+/// `DELETE /api/config/agents/:name`:删除 agent;body 中可选的
+/// `scope` 限定删除层级(缺省时项目/用户/JSON 依次尝试)。成功返回
+/// 延迟重启信封,失败返回 500。
 async fn delete_agent_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -283,6 +310,8 @@ async fn delete_agent_route(
     }
 }
 
+/// 把创建请求的 body 拆为 (scope, 其余字段):提取顶层 `scope`
+/// 字符串并从配置映射中剔除;非对象 body 视为空配置(scope 为 None)。
 fn split_scope_and_config(parsed: Value) -> (Option<String>, Map<String, Value>) {
     let map = parsed.as_object().cloned().unwrap_or_default();
     let scope = map.get("scope").and_then(Value::as_str).map(str::to_string);
@@ -294,6 +323,8 @@ fn split_scope_and_config(parsed: Value) -> (Option<String>, Map<String, Value>)
 // MCP
 // ---------------------------------------------------------------------------
 
+/// `GET /api/config/mcp`:列出所有 MCP server 配置(项目目录可选);
+/// 失败返回 500 并记录日志。
 async fn list_mcp_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -319,6 +350,8 @@ async fn list_mcp_route(
     }
 }
 
+/// `GET /api/config/mcp/:name`:读取单个 MCP server 配置;条目不
+/// 存在返回 404,其余错误返回 500 并记录日志。
 async fn get_mcp_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -349,6 +382,8 @@ async fn get_mcp_route(
     }
 }
 
+/// `POST /api/config/mcp/:name`:创建 MCP server 配置;body 拆出
+/// `scope` 后整体作为配置传入。成功返回延迟重启信封,失败 500。
 async fn create_mcp_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -391,6 +426,8 @@ async fn create_mcp_route(
     }
 }
 
+/// `PATCH /api/config/mcp/:name`:整体更新 MCP server 配置(body
+/// 原样传入);"not found" 类错误映射为 404,其余错误返回 500。
 async fn update_mcp_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -429,6 +466,8 @@ async fn update_mcp_route(
     }
 }
 
+/// `DELETE /api/config/mcp/:name`:删除 MCP server 配置;成功返回
+/// 延迟重启信封,失败 500 并记录日志。
 async fn delete_mcp_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -462,6 +501,9 @@ async fn delete_mcp_route(
 // Commands
 // ---------------------------------------------------------------------------
 
+/// `GET /api/config/commands/:name`:返回 command 的来源元数据,
+/// 响应结构与 agent sources 路由一致(scope 汇总 + isBuiltIn 标记);
+/// 内部错误 500 并记录日志。
 async fn get_command_sources_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,
@@ -517,6 +559,8 @@ async fn get_command_sources_route(
     }
 }
 
+/// `POST /api/config/commands/:name`:创建 command;body 拆出
+/// `scope` 后作为配置传入。成功返回延迟重启信封,失败 500。
 async fn create_command_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -559,6 +603,8 @@ async fn create_command_route(
     }
 }
 
+/// `PATCH /api/config/commands/:name`:按字段更新 command;body
+/// 必须是 JSON 对象(否则 500)。成功返回延迟重启信封,失败 500。
 async fn update_command_route(
     State(state): State<ModuleState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -600,6 +646,9 @@ async fn update_command_route(
     }
 }
 
+/// `DELETE /api/config/commands/:name`:删除 command(底层会依次
+/// 清理项目 `.md`、用户 `.md` 与 JSON 层条目);成功返回延迟重启
+/// 信封,全部未命中时返回 500。
 async fn delete_command_route(
     State(state): State<ModuleState>,
     headers: HeaderMap,

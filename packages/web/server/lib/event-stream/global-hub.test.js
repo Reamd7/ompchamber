@@ -1,7 +1,17 @@
+/**
+ * createGlobalMessageStreamHub 的测试套件：验证同步/异步订阅者抛错
+ * 不中断 fanout，以及 stop()/start() 依托保留 replay 尾部 + epoch
+ * 实现的同 boot 续连（不重复摄入环、不向订阅者重复扇出）。
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGlobalMessageStreamHub } from './global-hub.js';
 
+/**
+ * 构造带自定义响应头（如 x-omp-epoch）与一次性 SSE 块的伪 fetch
+ * 响应；块耗尽后立即 done，配合读取器的自动重连驱动测试节奏。
+ */
 function createSseResponse({ blocks = [], headers = {} } = {}) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -28,6 +38,10 @@ function createSseResponse({ blocks = [], headers = {} } = {}) {
   };
 }
 
+/**
+ * 轮询断言直至通过或 1 秒超时：hub 的连接与扇出发生在后台异步
+ * 循环中，测试先等待副作用到达再做最终断言（超时抛出最后一次错误）。
+ */
 async function waitForAssertion(assertion) {
   const deadline = Date.now() + 1000;
   let lastError;
@@ -45,6 +59,7 @@ async function waitForAssertion(assertion) {
   throw lastError;
 }
 
+// 覆盖全局 hub 的 fanout 容错与 stop/start 续连语义。
 describe('createGlobalMessageStreamHub', () => {
   it('continues fanout when an event subscriber throws', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

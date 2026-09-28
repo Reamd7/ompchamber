@@ -5,19 +5,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createWorktreeWatcher, resolveGitCommonDir } from './worktree-watcher.js';
 
+/**
+ * worktree-watcher 模块测试套件。
+ *
+ * 覆盖 resolveGitCommonDir 对主仓库与 linked worktree（绝对/相对 gitdir）
+ * 的 common dir 解析，以及 createWorktreeWatcher 的真实文件系统监听行为：
+ * worktree 注册表增删的上报、事件防抖合并、注册目录首次出现的检测、
+ * 多项目共享仓库的上报、stop() 幂等性、settings.json 变更触发的重扫描
+ * （re-arm）与 listProjects 失败时的容错。全部基于真实临时目录，不 mock
+ * 文件系统。
+ */
+
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
 // ---------------------------------------------------------------------------
 
+/** 本套件各用例创建的临时目录，afterEach 统一递归清理。 */
 const tempDirs = [];
+/** 本套件各用例启动的 watcher 运行时，afterEach 统一 stop。 */
 const watchers = [];
 
+/** 创建带 ompchamber-worktree-watcher- 前缀的临时目录并登记到 tempDirs 以便统一清理。 */
 const createTempDir = () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-worktree-watcher-'));
   tempDirs.push(dir);
   return dir;
 };
 
+// 停止本用例启动的所有 watcher 并递归删除全部临时目录（均为 best-effort）。
 afterEach(() => {
   for (const watcher of watchers.splice(0)) {
     try {
@@ -31,6 +46,12 @@ afterEach(() => {
   }
 });
 
+/**
+ * 轮询等待 predicate 变为真，用于等待 watcher 异步事件的到达。
+ * @param {() => boolean} predicate 结束条件
+ * @param {number} timeoutMs 超时毫秒数，超时抛出 Error
+ * @param {number} intervalMs 轮询间隔毫秒数
+ */
 const waitFor = async (predicate, timeoutMs = 5_000, intervalMs = 25) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -40,6 +61,7 @@ const waitFor = async (predicate, timeoutMs = 5_000, intervalMs = 25) => {
   throw new Error('waitFor timed out');
 };
 
+/** 构造最小主仓库布局：<root>/.git 目录，可选创建 .git/worktrees 注册目录。 */
 /** Minimal main-repo git layout: <root>/.git directory (+ optional worktrees). */
 const makeRepo = (root, { withWorktreesDir = false } = {}) => {
   fs.mkdirSync(path.join(root, '.git'), { recursive: true });
@@ -49,6 +71,7 @@ const makeRepo = (root, { withWorktreesDir = false } = {}) => {
   return root;
 };
 
+/** 构造最小 linked worktree 布局：<root>/.git 指针文件指向主仓库的 worktree 元数据目录。 */
 /** Minimal linked-worktree layout: <root>/.git file pointing at the main repo. */
 const makeLinkedWorktreeProject = (root, mainRepo, name) => {
   fs.mkdirSync(root, { recursive: true });
@@ -56,6 +79,15 @@ const makeLinkedWorktreeProject = (root, mainRepo, name) => {
   return root;
 };
 
+/**
+ * 启动被测 watcher 并收集 onWorktreesChanged 回调收到的目录列表。
+ *
+ * 防抖、重扫描与重新布防延时均压到 60ms 以加快用例；watcher 登记到
+ * watchers 由 afterEach 兜底 stop。
+ *
+ * @param {object} options 透传给 createWorktreeWatcher 的覆盖项（listProjects 等）
+ * @returns {Promise<{runtime: object, events: Array<Array<string>>}>} 运行时与事件记录
+ */
 const startWatcher = async (options) => {
   const events = [];
   const onWorktreesChanged = (directories) => events.push(directories);
@@ -76,6 +108,7 @@ const startWatcher = async (options) => {
 // resolveGitCommonDir
 // ---------------------------------------------------------------------------
 
+/** resolveGitCommonDir：主仓库、linked worktree（绝对/相对 gitdir）与非仓库目录的解析。 */
 describe('resolveGitCommonDir', () => {
   it('returns the .git directory for a main repository', () => {
     const repo = makeRepo(createTempDir());
@@ -109,6 +142,7 @@ describe('resolveGitCommonDir', () => {
 // watching
 // ---------------------------------------------------------------------------
 
+/** watcher 行为：worktree 变更上报、防抖合并、settings 触发重扫描与容错。 */
 describe('worktree watcher', () => {
   it('reports a registered project when a worktree metadata entry appears and disappears', async () => {
     const repo = makeRepo(createTempDir(), { withWorktreesDir: true });

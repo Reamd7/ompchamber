@@ -1,3 +1,17 @@
+/**
+ * domain-dialogs.ts 的单元测试套件（bun:test）。
+ *
+ * 覆盖对话域的六个单元：UiLeaseTable（UI 租约表：TTL、引用计数、attach/detach
+ * 回调）、PendingDialogRegistry（待决对话注册表：注册、呈递确认、双端竞答、
+ * T_present/T_answer 超时、孤儿窗口与批量结算）、createDialogBridge（SDK
+ * WebUIContext 到注册表的桥接与 fail-closed）、alwaysAllowTransaction
+ * （"先写后批"事务语义）、registerDialogEndpoints（HTTP 端点分组与 feature
+ * gate 501）、createDomainDialogs（领域装配、孤儿窗口联动与 dispose）。
+ *
+ * 所有时间断言由 makeClock() 手动时钟驱动被测方注入的 now/schedule/cancel
+ * 接缝，lease TTL、present 超时、应答超时与孤儿窗口无需真实等待即可确定性验证；
+ * 事件侧断言通过 OmpEventBus 订阅回放（subscribeSince）核对 omp.dialog.* 信封。
+ */
 import { describe, test, expect } from 'bun:test';
 import {
   UiLeaseTable,
@@ -30,6 +44,12 @@ import type {
 // TTL assertions (T_present / T_answer / orphan window / lease expiry) are
 // deterministic without real waits.
 // ---------------------------------------------------------------------------
+/**
+ * 构造手动时钟：以 start 为起点，用 Map 保存已排定的定时器。
+ * now/schedule/cancel 即被测代码拿到的时钟接缝；advance 按到期时间依次
+ * await 各回调并把时钟推进到目标时刻；pending 暴露未触发定时器数，
+ * 供断言确认没有泄漏的 sweep 定时器。
+ */
 const makeClock = (start = 1_000_000): ManualClock => {
   const timers = new Map<number, { due: number; fn: () => void }>();
   let seq = 1;
@@ -63,26 +83,43 @@ const makeClock = (start = 1_000_000): ManualClock => {
   };
 };
 
+/** 主测试目录 fixture（Windows 风格路径，兼测目录键归一化）。 */
 const DIR = 'C:/work/project';
+/** 第二个测试目录 fixture，用于验证跨目录的 scope 隔离与 403 拒答。 */
 const DIR_B = 'C:/work/other';
+/** 主测试会话 id fixture。 */
 const SESSION = 'sess-1';
+/** 测试 UI 客户端 A 的 clientId fixture（UUID 形态）。 */
 const CLIENT_A = '11111111-1111-4111-8111-111111111111';
+/** 测试 UI 客户端 B 的 clientId fixture：多持有者与双端竞答场景。 */
 const CLIENT_B = '22222222-2222-4222-8222-222222222222';
 
 /** Manual clock contract: the injectable seams plus the test-only driver. */
+/** 手动时钟契约：被测代码可注入的三个时间接缝，外加仅测试使用的推进驱动。 */
 interface ManualClock {
+  /** 当前时刻（毫秒）。 */
   now(): number;
+  /** 在 delay 毫秒后触发 fn；返回可供 cancel 的定时器句柄。 */
   schedule(fn: () => void, delay: number): number;
+  /** 取消一个已排定的定时器；返回是否确实移除。 */
   cancel(id: import('./domain-dialogs.ts').DialogTimerHandle): boolean;
+  /** 将时钟推进 ms 毫秒，按到期顺序 await 每个到点回调后再落到目标时刻。 */
   advance(ms: number): Promise<void>;
+  /** 尚未触发的定时器数量，用于检查定时器泄漏。 */
   pending(): number;
 }
 
 /** Rejection view: dialog rejections carry name/message/outcome fields. */
+/** 拒绝视图：对话 promise 的 reject 值在 Error 的 name/message 之外还携带 outcome。 */
 interface DialogRejectionView extends Error {
+  /** 结算结果类别（responded / timeout / aborted 等）。 */
   outcome?: string;
 }
 
+/**
+ * 等待 promise 并把 reject 值收窄为 DialogRejectionView；resolve 则返回 null。
+ * 便于对超时/中止路径断言 message 与 outcome 字段。
+ */
 const rejectionOf = async (promise: Promise<unknown>): Promise<DialogRejectionView | null> => {
   try {
     await promise;
@@ -96,6 +133,8 @@ const rejectionOf = async (promise: Promise<unknown>): Promise<DialogRejectionVi
 // ---------------------------------------------------------------------------
 // UiLeaseTable (spec 03 §5.1 D-C1b, §7 unit 3)
 // ---------------------------------------------------------------------------
+// UiLeaseTable 单元：租约获取/续期幂等、TTL 过期与 detach 恰好一次、多持有者
+// 引用计数、attach/detach 回调时序、目录键归一化与 releaseAll 清场。
 describe('UiLeaseTable', () => {
   test('acquire-or-renew is idempotent: same triple renews and returns the same leaseId', () => {
     const clock = makeClock();
@@ -209,7 +248,11 @@ describe('UiLeaseTable', () => {
 // ---------------------------------------------------------------------------
 // PendingDialogRegistry (spec 03 §5.2/§5.6, §7 unit 1)
 // ---------------------------------------------------------------------------
+// PendingDialogRegistry 单元：注册与事件投影、呈递确认（T_answer 起点）、双端
+// 竞答 409、跨目录 403、载荷校验 400、T_present/T_answer 超时、孤儿窗口抢救与
+// 过期、单个/按会话/信号三种 abort、settleAll 清场、id 熵与快照排序过滤。
 describe('PendingDialogRegistry', () => {
+  // 构造带真实 OmpEventBus 与诊断收集的注册表；可注入手动时钟与任意选项覆盖。
   const setup = ({ clock, ...rest }: { clock?: ManualClock } & Partial<PendingDialogRegistryOptions> = {}) => {
     const bus = new OmpEventBus();
     const diagnostics: unknown[] = [];
@@ -222,6 +265,7 @@ describe('PendingDialogRegistry', () => {
     return { bus, registry, diagnostics, clock };
   };
 
+  // 以固定 approval 提示词注册一个待批对话框；可覆盖 directory/sessionId。
   const registerApproval = (registry: { register: (dialog: { directory: string; sessionId: string; kind: 'approval'; payload: { approval: { prompt: string } } }) => { id: string; promise: Promise<unknown> } }, { directory = DIR, sessionId = SESSION }: { directory?: string; sessionId?: string } = {}) =>
     registry.register({
       directory,
@@ -601,7 +645,11 @@ describe('PendingDialogRegistry', () => {
 // ---------------------------------------------------------------------------
 // WebUIContext bridge (spec 03 §5.1 D-C1, §7 unit 2)
 // ---------------------------------------------------------------------------
+// createDialogBridge 单元：SDK 对话方法（select/confirm/input/editor/askDialog）
+// 到注册表对话框的映射与结果回填、approval 上下文增强、无租约 fail-closed、
+// AbortSignal 中止、注册表拒绝沿桥传播、notify 转发与 terminal-only 成员空转。
 describe('createDialogBridge', () => {
+  // 预置手动时钟 + 已持有租约的租约表/注册表，构造带 UI 在线的桥接前置条件。
   const setup = () => {
     const clock = makeClock();
     const leases = new UiLeaseTable({ ...clock });
@@ -853,6 +901,8 @@ describe('createDialogBridge', () => {
 // ---------------------------------------------------------------------------
 // alwaysAllowTransaction (spec 03 §5.3.2, master R10 — write-first-then-approve)
 // ---------------------------------------------------------------------------
+// alwaysAllowTransaction 单元：master R10 "先写设置、后发批准确认" 事务——写成功后
+// 恰好批一次、写失败绝不批（错误上抛）、批准 409 视为已结算可审计、非 409 错误上抛。
 describe('alwaysAllowTransaction', () => {
   test('successful write approves exactly once after the write lands', async () => {
     const order: string[] = [];
@@ -911,19 +961,25 @@ describe('alwaysAllowTransaction', () => {
 // ---------------------------------------------------------------------------
 // Endpoint group (spec 03 §5.2; feature gate per §5.0)
 // ---------------------------------------------------------------------------
+// registerDialogEndpoints 单元：feature gate 关闭时全部端点显式 501；开启后 lease
+// 获取/释放驱动 hasUI、缺字段 400、snapshot/presented/respond/abort 的正路与错误码。
 describe('registerDialogEndpoints', () => {
+  // 用 Map 假路由表挂载 domain.mount 的全部端点；feature 决定能力开关，返回
+  // 可直接以 params/body/url 调用已挂载 handler 的 call 助手。
   const mountRoutes = (feature: () => boolean) => {
     const clock = makeClock();
     const domain = createDomainDialogs({ clock, bus: new OmpEventBus() });
     const routes = new Map();
     const route = (method: string, pattern: string, handler: (request: Request, ctx?: import('./domain-dialogs.ts').DialogsRouteContext) => Response | Promise<Response>) => routes.set(`${method} ${pattern}`, handler);
     domain.mount(route, { feature });
+    /** 单次调用参数：路径参数、JSON 请求体与绝对 URL。 */
     /** Per-call invocation init: path params, JSON body, absolute URL. */
     interface RouteCallInit {
       params?: Record<string, string>;
       body?: unknown;
       url?: string;
     }
+    // 按 "METHOD /pattern" 取出 handler 并以最小 Request 形状调用。
     const call = async (key: string, { params = {}, body, url }: RouteCallInit = {}) => {
       const handler = routes.get(key);
       if (!handler) throw new Error(`route not mounted: ${key}`);
@@ -938,6 +994,7 @@ describe('registerDialogEndpoints', () => {
     return { domain, routes, call };
   };
 
+  // lease 获取/释放端点共用的合法请求体 fixture。
   const leaseBody = { directory: DIR, sessionId: SESSION, clientId: CLIENT_A };
 
   test('feature off: every dialog endpoint answers an explicit 501', async () => {
@@ -1034,6 +1091,9 @@ describe('registerDialogEndpoints', () => {
 // ---------------------------------------------------------------------------
 // Domain wiring (spec 03 §5.0 item 9, §5.1 D-C1b transitions, R11 dispose)
 // ---------------------------------------------------------------------------
+// createDomainDialogs 单元：领域装配——租约 attach/detach 驱动引擎钩子与孤儿窗口
+// （窗口内重连救回待决对话框）、dispose 全量 aborted 结算并清空租约表、
+// config 覆盖项传导至 lease TTL 与孤儿窗口时长。
 describe('createDomainDialogs', () => {
   test('lease transitions drive orphan windows and engine hooks in order', async () => {
     const clock = makeClock();

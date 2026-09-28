@@ -4,10 +4,17 @@
 //! No command strings or arguments are ever accepted — only well-known shell
 //! ids and executable paths. All environment/filesystem access is injected
 //! (`createTerminalShellResolver` deps), mirroring the JS seam used by tests.
+//!
+//! 中文说明：移植自 server/lib/terminal/shells.js。发现可执行的 shell
+//! 家族，并把持久化的 shell 偏好解析为具体可执行文件。安全约束：绝不
+//! 接受命令串或任意参数，只认白名单 shell id 与可执行路径；所有环境与
+//! 文件系统访问经 ShellDeps 注入（对应 JS createTerminalShellResolver
+//! 的依赖缝），测试借此注入假环境。
 
 use std::collections::HashSet;
 
 /// Known shell families, in discovery order.
+/// 中文补充：同时充当发现顺序——auto 之外的条目按此数组次序出现。
 pub const TERMINAL_SHELL_IDS: [&str; 10] = [
     "bash",
     "zsh",
@@ -21,11 +28,13 @@ pub const TERMINAL_SHELL_IDS: [&str; 10] = [
     "nu",
 ];
 
+/// 判断值是否为白名单 shell id（精确匹配，不做归一化）。
 pub fn is_terminal_shell_id(value: &str) -> bool {
     TERMINAL_SHELL_IDS.contains(&value)
 }
 
 /// `normalizeTerminalShell`: `'auto'` or a known id, else `None`.
+/// 中文补充：trim + 小写后必须是 auto 或已知 id，否则 None——命令串在这里被拒绝。
 pub fn normalize_terminal_shell(value: Option<&str>) -> Option<String> {
     let value = value?;
     let normalized = value.trim().to_ascii_lowercase();
@@ -38,6 +47,7 @@ pub fn normalize_terminal_shell(value: Option<&str>) -> Option<String> {
 
 /// `shellIdFromPath`: basename (backslashes normalized), lowercased, `.exe`
 /// stripped — must be a known shell id.
+/// 中文补充：Windows 反斜杠归一为斜杠；识别失败返回 None。
 pub fn shell_id_from_path(value: &str) -> Option<&'static str> {
     let normalized = value.replace('\\', "/");
     let filename = normalized
@@ -52,12 +62,14 @@ pub fn shell_id_from_path(value: &str) -> Option<&'static str> {
         .copied()
 }
 
+/// 特殊展示名映射（PowerShell 家族）；表外 shell 直接用 id 展示。
 const SHELL_LABELS: [(&str, &str); 3] = [
     ("pwsh", "PowerShell"),
     ("powershell", "Windows PowerShell"),
     ("cmd", "Command Prompt"),
 ];
 
+/// 查 id 对应的展示名；缺省回退为 id 本身。
 fn shell_label(id: &str) -> &str {
     SHELL_LABELS
         .iter()
@@ -67,13 +79,18 @@ fn shell_label(id: &str) -> &str {
 }
 
 /// `process.platform` stand-in for cross-platform tests.
+/// 中文补充：决定默认候选序列、路径分隔符与登录参数表的平台分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
+    /// Windows：ComSpec/PowerShell 优先，路径用反斜杠。
     Windows,
+    /// Unix 系：SHELL 优先，/bin/zsh、/bin/bash、/bin/sh 回退。
     Posix,
 }
 
+/// 平台工具方法。
 impl Platform {
+    /// 编译目标对应的当前平台（测试可注入其它值）。
     pub fn current() -> Self {
         if cfg!(windows) {
             Platform::Windows
@@ -85,6 +102,7 @@ impl Platform {
 
 /// `getTerminalShellLoginArgs`: built-in login-mode arguments for known shells
 /// only; `None` means the shell has no supported login mode.
+/// 中文补充：参数硬编码在白名单里，杜绝通过偏好注入任意参数。
 pub fn get_terminal_shell_login_args(executable: &str, platform: Platform) -> Option<Vec<String>> {
     let id = shell_id_from_path(executable)?;
     match id {
@@ -98,52 +116,76 @@ pub fn get_terminal_shell_login_args(executable: &str, platform: Platform) -> Op
 /// Injected dependencies (`createTerminalShellResolver` options). `env` is a
 /// live lookup so `OMPCHAMBER_TERMINAL_SHELL`/`SHELL` are read per resolution
 /// like the JS closure over `process.env`.
+/// 中文补充：env 是活查询——每次解析现读，等价 JS 对 process.env 的闭包。
 pub struct ShellDeps {
+    /// 目标平台，决定默认候选与路径分隔符。
     pub platform: Platform,
+    /// 环境变量查询（OMPCHAMBER_TERMINAL_SHELL/SHELL 等覆盖项）。
     pub env: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    /// 构造传给 PTY 的增强 PATH。
     pub build_augmented_path: Box<dyn Fn() -> String + Send + Sync>,
+    /// 在给定搜索路径中按名字查找可执行文件。
     pub search_path_for: Box<dyn Fn(&str, &str) -> Option<String> + Send + Sync>,
+    /// 判定路径是否为可执行文件。
     pub is_executable: Box<dyn Fn(&str) -> bool + Send + Sync>,
     /// `/etc/shells` contents (Posix only; `None` skips configured shells).
+    /// 中文补充：Windows 下不参与发现。
     pub read_etc_shells: Box<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
+/// 面向客户端的 shell 条目（list 接口的输出）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellInfo {
+    /// shell id（auto 表示跟随默认解析）。
     pub id: String,
+    /// 展示名。
     pub name: String,
+    /// 解析到的可执行路径；auto 可能解析不到（None）。
     pub executable: Option<String>,
+    /// 是否支持登录模式（按登录参数表判定）。
     pub supports_login: bool,
 }
 
+/// 解析结果：选定的 shell id 与依序尝试的可执行文件列表。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedShell {
+    /// 选定 id。
     pub id: String,
+    /// 候选可执行文件；spawn 逐个尝试，首个成功者生效。
     pub executables: Vec<String>,
 }
 
+/// 解析失败（包裹面向客户端的错误文案）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellError(pub String);
 
+/// 直接透出内部文案，供错误映射到 HTTP 响应。
 impl std::fmt::Display for ShellError {
+    /// 输出错误消息本体。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
+/// shell 解析器：持有注入依赖，提供列表与解析能力。
 pub struct ShellResolver {
+    /// 注入的环境与文件系统依赖。
     deps: ShellDeps,
 }
 
+/// 发现与解析逻辑（listShells/resolveShell 的移植）。
 impl ShellResolver {
+    /// 以给定依赖构造解析器。
     pub fn new(deps: ShellDeps) -> Self {
         Self { deps }
     }
 
+    /// 便捷的环境变量查询。
     fn env(&self, name: &str) -> Option<String> {
         (self.deps.env)(name)
     }
 
+    /// 按平台分隔符拼接路径片段。
     fn join_path(&self, parts: &[&str]) -> String {
         let separator = if self.deps.platform == Platform::Windows {
             "\\"
@@ -155,6 +197,7 @@ impl ShellResolver {
 
     /// `resolveExecutable`: pathful candidates are used as-is, bare names are
     /// searched on the augmented PATH; falls back to the raw value.
+    /// 中文补充：候选不可执行时整体 miss，交由上层报“不可用”。
     fn resolve_executable(&self, candidate: Option<&str>) -> Option<String> {
         let value = candidate?;
         if value.is_empty() {
@@ -178,6 +221,7 @@ impl ShellResolver {
     }
 
     /// `defaultCandidates`: environment overrides before platform defaults.
+    /// 中文补充：Windows 用 ComSpec 与系统 PowerShell 路径兜底，Posix 用 /bin 三件套。
     fn default_candidates(&self) -> Vec<Option<String>> {
         match self.deps.platform {
             Platform::Windows => {
@@ -214,6 +258,7 @@ impl ShellResolver {
     }
 
     /// `resolveCandidates`: resolve in order, drop misses, dedupe.
+    /// 中文补充：去重按解析后的路径，避免同一可执行文件重复出现。
     fn resolve_candidates(&self, candidates: &[Option<String>]) -> Vec<String> {
         let mut seen: HashSet<String> = HashSet::new();
         let mut resolved = Vec::new();
@@ -228,6 +273,7 @@ impl ShellResolver {
     }
 
     /// `list`: available shell entries, `'auto'` first, then discovery order.
+    /// 中文补充：auto 条目总是第一个，且带其解析出的可执行文件与登录支持。
     pub fn list(&self) -> Vec<ShellInfo> {
         let configured_shells: Vec<String> = if self.deps.platform != Platform::Windows {
             (self.deps.read_etc_shells)()
@@ -294,11 +340,13 @@ impl ShellResolver {
     }
 
     /// The augmented PATH handed to spawned PTYs (JS `buildAugmentedPath`).
+    /// 中文补充：即 ShellDeps.build_augmented_path 的直接转发。
     pub fn augmented_path(&self) -> String {
         (self.deps.build_augmented_path)()
     }
 
     /// `resolve`: `None` preference (JS `preference ?? 'auto'`) means auto.
+    /// 中文补充：auto 返回全部默认候选；显式 id 必须在 list 结果中，否则报不可用。
     pub fn resolve(&self, preference: Option<&str>) -> Result<ResolvedShell, ShellError> {
         let normalized = normalize_terminal_shell(Some(preference.unwrap_or("auto")))
             .ok_or_else(|| ShellError("Invalid terminal shell".to_string()))?;
@@ -322,12 +370,15 @@ impl ShellResolver {
     }
 }
 
+/// 单元测试：归一化、路径识别、登录参数表、各平台发现顺序与解析结果。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    /// 构造带调用录制的测试依赖：search 调用被记录，可执行集合与
+    /// 环境/PATH 由参数给出，返回 (resolver, search 调用记录)。
     fn test_deps(
         platform: Platform,
         env: HashMap<&str, &str>,
@@ -382,6 +433,7 @@ mod tests {
         (ShellResolver::new(deps), searches)
     }
 
+    /// 归一化接受空白与大小写变体、拒绝命令串与未知 id；None 偏好不归一化。
     #[test]
     fn normalizes_shell_preferences() {
         assert_eq!(
@@ -401,6 +453,7 @@ mod tests {
         assert_eq!(normalize_terminal_shell(None), None);
     }
 
+    /// 路径识别处理 Unix 路径、Windows 反斜杠与 .exe 后缀；非 shell 家族返回 None。
     #[test]
     fn shell_ids_from_paths_handle_windows_and_exe_suffixes() {
         assert_eq!(shell_id_from_path("/bin/zsh"), Some("zsh"));
@@ -410,6 +463,7 @@ mod tests {
         assert_eq!(shell_id_from_path(""), None);
     }
 
+    /// 登录参数表只产出白名单参数；sh/dash 与 Windows pwsh 不支持登录模式。
     #[test]
     fn uses_only_known_platform_safe_login_arguments() {
         assert_eq!(
@@ -445,6 +499,7 @@ mod tests {
         );
     }
 
+    /// 裸名 shell 经增强 PATH 搜索被发现，且搜索确实发生在该 PATH 上。
     #[test]
     fn discovers_shells_from_the_augmented_pty_path() {
         let (resolver, recorder) = test_deps(
@@ -469,6 +524,7 @@ mod tests {
         );
     }
 
+    /// Windows 下能发现路径安装的 bash.exe/nu.exe，并正确报告登录支持。
     #[test]
     fn discovers_supported_path_installed_shells_on_windows() {
         let (resolver, _) = test_deps(
@@ -494,6 +550,7 @@ mod tests {
             }));
     }
 
+    /// auto 解析时环境覆盖（OMPCHAMBER_TERMINAL_SHELL、SHELL）排在平台默认之前。
     #[test]
     fn uses_environment_overrides_before_platform_defaults_for_auto() {
         let (resolver, _) = test_deps(
@@ -514,6 +571,7 @@ mod tests {
         );
     }
 
+    /// /etc/shells 配置行进入发现结果（注释与空行忽略），非 shell 家族不出现。
     #[test]
     fn reads_configured_shells_from_etc_shells_when_available() {
         let executables: Vec<String> = vec![
@@ -561,6 +619,7 @@ mod tests {
         assert_eq!(shells[0].id, "auto");
     }
 
+    /// 显式解析可用 shell、对不可用/非法偏好报对应错误，None 偏好等价 auto。
     #[test]
     fn resolves_explicit_shells_and_reports_unavailable_ones() {
         let (resolver, _) = test_deps(

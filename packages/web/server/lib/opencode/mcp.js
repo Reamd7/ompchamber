@@ -1,3 +1,13 @@
+/**
+ * MCP（Model Context Protocol）服务器配置的数据层。
+ *
+ * 基于 OpenCode 分层配置（用户级 opencode.json 与项目级 .opencode/opencode.json），
+ * 提供 MCP server 条目的列表、单条查询、创建、更新与删除。
+ * 条目分两类：local（本地进程，command 数组）与 remote（远程 URL，可携带
+ * headers、oauth 与 timeout）。所有写入先经 buildMcpEntry 清洗：剔除
+ * name/scope 等非配置字段、丢弃 undefined/null 值并按类型删除互斥字段，
+ * 保证落盘 JSON 与 OpenCode 的 schema 一致。
+ */
 import fs from 'fs';
 import path from 'path';
 import {
@@ -14,6 +24,9 @@ import {
 
 /**
  * Validate MCP server name
+ * 校验 MCP 服务器名称：必须是非空字符串，且仅由小写字母、数字、连字符与
+ * 下划线组成，首尾字符必须是字母或数字（单个字符也合法）；
+ * 不合法时直接抛出 Error，调用方无需再判空。
  */
 function validateMcpName(name) {
   if (!name || typeof name !== 'string') {
@@ -26,12 +39,19 @@ function validateMcpName(name) {
 
 /**
  * List all MCP server configs from user-level opencode.json
+ * 依据条目来源文件路径推断 scope：路径等于项目层配置文件时返回
+ * AGENT_SCOPE.PROJECT，否则（用户级配置）返回 AGENT_SCOPE.USER；
+ * 无来源路径时返回 null。
  */
 function resolveMcpScopeFromPath(layers, sourcePath) {
   if (!sourcePath) return null;
   return sourcePath === layers.paths.projectPath ? AGENT_SCOPE.PROJECT : AGENT_SCOPE.USER;
 }
 
+/**
+ * 确保项目级 MCP 配置文件 .opencode/opencode.json 的父目录存在
+ * （不存在则递归创建），并返回该文件的绝对路径；项目 scope 写入前的准备。
+ */
 function ensureProjectMcpConfigPath(workingDirectory) {
   const configDir = path.join(workingDirectory, '.opencode');
   if (!fs.existsSync(configDir)) {
@@ -40,6 +60,11 @@ function ensureProjectMcpConfigPath(workingDirectory) {
   return path.join(configDir, 'opencode.json');
 }
 
+/**
+ * 列出合并配置中的全部 MCP server 条目：读取 mergedConfig.mcp，
+ * 过滤掉非对象条目，逐个用 getJsonEntrySource 定位来源层并推断 scope，
+ * 返回包含 name、清洗后字段与 scope 的对象数组。
+ */
 function listMcpConfigs(workingDirectory) {
   const layers = readConfigLayers(workingDirectory);
   const mcp = layers?.mergedConfig?.mcp || {};
@@ -58,6 +83,8 @@ function listMcpConfigs(workingDirectory) {
 
 /**
  * Get a single MCP server config by name
+ * 按名称查询单条配置：条目存在时返回清洗后的字段与来源 scope，
+ * 不存在时返回 null（不抛错）。
  */
 function getMcpConfig(name, workingDirectory) {
   const layers = readConfigLayers(workingDirectory);
@@ -76,6 +103,9 @@ function getMcpConfig(name, workingDirectory) {
 
 /**
  * Create a new MCP server config entry
+ * 创建新条目：先校验名称并确认条目不存在（已存在抛错）；scope 为 project
+ * 时要求 workingDirectory 并写入项目级配置文件，否则写入用户级可写目标。
+ * 写入前剔除传入数据中的 name 字段并经 buildMcpEntry 清洗。
  */
 function createMcpConfig(name, mcpConfig, workingDirectory, scope) {
   validateMcpName(name);
@@ -114,6 +144,8 @@ function createMcpConfig(name, mcpConfig, workingDirectory, scope) {
 
 /**
  * Update an existing MCP server config entry
+ * 更新已存在条目：定位条目真实所在的配置层与文件，在原有字段基础上
+ * 浅合并 updates（剔除 name），重新清洗后写回同一文件；条目不存在时抛错。
  */
 function updateMcpConfig(name, updates, workingDirectory) {
   const layers = readConfigLayers(workingDirectory);
@@ -141,6 +173,8 @@ function updateMcpConfig(name, updates, workingDirectory) {
 
 /**
  * Delete an MCP server config entry
+ * 删除指定名称的条目并写回其所在配置文件；mcp 键删空后连带移除该键；
+ * 条目不存在时抛出 Error。
  */
 function deleteMcpConfig(name, workingDirectory) {
   const layers = readConfigLayers(workingDirectory);
@@ -164,6 +198,13 @@ function deleteMcpConfig(name, workingDirectory) {
 
 /**
  * Build a clean MCP entry object, omitting undefined/null values
+ * 将任意输入清洗为符合 OpenCode schema 的条目：剔除 name/scope；
+ * type 归一为 local/remote（非 remote 一律 local）；local 保留非空字符串
+ * 数组 command，并删除 url/headers/oauth/timeout；remote 保留 trim 后的 url，
+ * 删除 command，headers 清洗为字符串 Record，oauth 仅保留非空的
+ * clientId/clientSecret/scope/redirectUri，timeout 仅保留正有限数值；
+ * environment 清洗为扁平字符串 Record；enabled 缺省为 true。
+ * 非对象输入按空对象处理。
  */
 function buildMcpEntry(data) {
   const entry = (data && typeof data === 'object' && !Array.isArray(data))
@@ -269,6 +310,7 @@ function buildMcpEntry(data) {
   return entry;
 }
 
+// 对外导出：MCP server 配置的列表、查询、创建、更新与删除。
 export {
   listMcpConfigs,
   getMcpConfig,

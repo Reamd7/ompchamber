@@ -8,21 +8,31 @@
 //! values mirrors `JSON.stringify` exactly (compact, `"`, `\`, and control
 //! characters escaped; non-ASCII kept raw), and parameter maps are kept in
 //! declaration order — the same object-key order the JS emits.
+//!
+//! 中文说明：本文件承载生成侧——把工具定义渲染成在受管 OpenCode 引擎内运行的
+//! JavaScript 插件源码，并把插件 URL 合并进 `OPENCODE_CONFIG_CONTENT`。模板为 JS
+//! `String.raw` 的逐字嵌入，`@@MARKER@@` 为占位符；被替换值的序列化与 `JSON.stringify`
+//! 完全对齐，参数映射保持声明顺序（与 JS 对象键序一致）。
 
 use serde_json::{Map, Value};
 
 use crate::openchamber_control::actions as control_actions;
 
+/// 线上协议版本，与回调信封中的 `schemaVersion` 对应。
 pub(crate) const TOOL_SCHEMA_VERSION: u32 = 1;
 
+/// `ompchamber` 控制工具暴露给模型的描述文本（英文原文逐字保留自 JS 生成器）。
 pub(crate) const CONTROL_TOOL_DESCRIPTION: &str = "Control OMPChamber projects, sessions, and scheduled tasks on the user's behalf. Sessions and scheduled tasks you create are for the user to follow and interact with; never use this tool to delegate parts of your own current task. Use one action per call. Scope with projectId or directory; omit both to use the current session directory. Session dispatches return immediately by default and you receive no notification when a dispatched session finishes, so never promise to report back on it; the user follows it in OMPChamber; a dispatched session needs no follow-up from you. If the user later asks how it went, use session.messages (add wait to block until it is idle, lastAssistant for just the final answer) — session.send always sends a NEW prompt and never just waits. Set wait only when the user asks or the next step requires the completed result. Session and worktree deletion are unavailable.";
 
+/// `ompchamber_web` 浏览器工具的描述文本（英文原文逐字保留自 JS 生成器）。
 pub(crate) const WEB_TOOL_DESCRIPTION: &str = "Look at and interact with a web page in OMPChamber's browser panel, so you can check your own work rather than describing what you expect. Use one action per call. Open a page, snapshot it to read its text and its interactive elements, then click, type or scroll using the selectors the snapshot returned; snapshots also report any errors the page logged. Pass a selector to browser.snapshot to read one part of a long page. browser.inspect returns computed styles when the question is how something renders. Set viewport to check a layout at mobile, tablet or desktop size. The page runs with the user's real logins, so treat what you see as their live session.";
 
+/// `ompchamber_memory` 记忆工具的描述文本（英文原文逐字保留自 JS 生成器）。
 pub(crate) const MEMORY_TOOL_DESCRIPTION: &str = "Keep what you learn across sessions, so the user does not have to explain the same thing twice. Use one action per call. The session already lists the titles of what is stored. A title is an abbreviation, not the memory: read the entry with memory.read before acting on it, because titles leave out the conditions and exceptions that decide how the memory applies, and the ones that look self-explanatory hide them most often. Save something only when it will still be true in a later session — a stable preference, a project convention, a decision and its reason, or a hard-won pointer. Do not save one-off task state, anything you can read from the code, secrets or credentials, or anything the user asked you not to keep. Choose the scope deliberately: global is about the user and reaches every project, so put a project's conventions in project scope. What you save is shown to the user as unreviewed until they confirm it, so save plainly and say what you saved when it matters.";
 
 /// `(name, exact JSON schema text)` in `ALL_PARAMETER_PROPERTIES` declaration
 /// order — the order the generated plugin emits them in.
+/// 中文：条目顺序即生成插件的输出顺序。
 const ALL_PARAMETER_PROPERTIES: &[(&str, &str)] = &[
     (
         "projectId",
@@ -188,6 +198,7 @@ const ALL_PARAMETER_PROPERTIES: &[(&str, &str)] = &[
 ];
 
 /// `WEB_PARAMETER_NAMES` — everything the web tool may ask for.
+/// 中文：web 工具可能用到的全部输入名。
 const WEB_PARAMETER_NAMES: &[&str] = &[
     "url",
     "selector",
@@ -201,10 +212,12 @@ const WEB_PARAMETER_NAMES: &[&str] = &[
 
 /// `MEMORY_ONLY_PARAMETER_NAMES` — names memory alone introduces (`title` is
 /// shared with the control tool, so it is not listed here).
+/// 中文：仅由 memory 工具引入的参数名（`title` 与控制工具共享，故不在此列）。
 const MEMORY_ONLY_PARAMETER_NAMES: &[&str] = &["body", "scope", "memoryId", "type"];
 
 /// `MEMORY_PARAMETER_OVERRIDES`, applied in place (JS object-spread keeps the
 /// original key position for keys that already exist).
+/// 中文：仅覆盖已存在的键（JS 对象展开保持原键位）。
 fn memory_parameter_override(name: &str) -> Option<&'static str> {
     match name {
         "title" => Some(
@@ -217,6 +230,7 @@ fn memory_parameter_override(name: &str) -> Option<&'static str> {
     }
 }
 
+/// 按名字列表从共享参数表挑出条目，保持声明顺序。
 fn pick_parameters(names: &[&str]) -> Vec<(&'static str, &'static str)> {
     ALL_PARAMETER_PROPERTIES
         .iter()
@@ -227,6 +241,7 @@ fn pick_parameters(names: &[&str]) -> Vec<(&'static str, &'static str)> {
 
 /// Everything the control tool's actions take: the shared map minus web-only
 /// and memory-only inputs.
+/// 中文：共享参数表去掉 web 专属与 memory 专属输入。
 pub(crate) fn control_parameter_properties() -> Vec<(&'static str, &'static str)> {
     ALL_PARAMETER_PROPERTIES
         .iter()
@@ -237,10 +252,12 @@ pub(crate) fn control_parameter_properties() -> Vec<(&'static str, &'static str)
         .collect()
 }
 
+/// web 工具的参数表：按 `WEB_PARAMETER_NAMES` 顺序挑选。
 pub(crate) fn web_parameter_properties() -> Vec<(&'static str, &'static str)> {
     pick_parameters(WEB_PARAMETER_NAMES)
 }
 
+/// memory 工具的参数表：在共享表基础上叠加 memory 专属覆盖（如 `title`、`scope`）。
 pub(crate) fn memory_parameter_properties() -> Vec<(&'static str, &'static str)> {
     pick_parameters(&["body", "scope", "memoryId", "type", "title"])
         .into_iter()
@@ -250,11 +267,17 @@ pub(crate) fn memory_parameter_properties() -> Vec<(&'static str, &'static str)>
 
 /// One generated tool entry. `oneof` holds `(action, description)` pairs and
 /// `parameters` holds `(name, JSON text)` pairs in emission order.
+/// 中文：`oneof` 与 `parameters` 均按输出顺序排列。
 pub(crate) struct ToolSpec {
+    /// 工具名（如 `ompchamber`），在生成对象中作为键出现两次。
     pub name: &'static str,
+    /// 工具描述常量。
     pub description: &'static str,
+    /// 该工具可请求的 action 名列表。
     pub actions: Vec<&'static str>,
+    /// `(action, description)` 对，渲染为 `oneof` 枚举约束。
     pub oneof: Vec<(&'static str, &'static str)>,
+    /// `(参数名, JSON schema 文本)` 对，渲染为参数对象。
     pub parameters: Vec<(&'static str, &'static str)>,
 }
 
@@ -262,6 +285,7 @@ pub(crate) struct ToolSpec {
 /// markers: `@@NAME_KEY@@` (object key, appears twice), `@@DESCRIPTION@@`,
 /// `@@ACTIONS@@`, `@@ONEOF@@`, `@@PARAMETERS@@`, `@@TITLES@@`, `@@SV@@`
 /// (schema version), `@@NAME_STR@@` (JSON-stringified tool name).
+/// 中文：占位符在替换内容中不可能出现，可安全做纯文本替换。
 const TOOL_ENTRY_TEMPLATE: &str = r#"    @@NAME_KEY@@: {
       description: @@DESCRIPTION@@,
       args: {
@@ -334,10 +358,12 @@ const TOOL_ENTRY_TEMPLATE: &str = r#"    @@NAME_KEY@@: {
 "#;
 
 /// `JSON.stringify` parity for the values interpolated into the template.
+/// 中文：依赖 serde_json 的转义规则与 `JSON.stringify` 一致（紧凑、非 ASCII 原样）。
 fn json_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+/// 渲染一个工具条目：把 actions、oneof、parameters 序列化后替换模板占位符。
 pub(crate) fn create_tool_entry(spec: &ToolSpec, titles_json: &str) -> String {
     let actions_json = format!(
         "[{}]",
@@ -380,6 +406,7 @@ pub(crate) fn create_tool_entry(spec: &ToolSpec, titles_json: &str) -> String {
 
 /// The `AGENT_TOOL_ACTION_TITLES` map: action → short title across every
 /// definition either managed tool may ask for, in declaration order.
+/// 中文：按声明顺序合并控制、web、memory 三组定义。
 pub(crate) fn action_titles_json() -> String {
     let mut pairs = Vec::new();
     for definition in control_actions::agent_tool_action_definitions() {
@@ -403,6 +430,7 @@ pub(crate) fn action_titles_json() -> String {
 
 /// `createPluginSource` — the specs arrive in fixed order (control, web,
 /// memory); only the enabled ones are passed.
+/// 中文：输出形如 `export const OMPChamberPlugin = async () => ({ tool: { … } })` 的源码。
 pub(crate) fn create_plugin_source(specs: &[ToolSpec]) -> String {
     let titles_json = action_titles_json();
     let mut source = String::from("export const OMPChamberPlugin = async () => ({\n  tool: {\n");
@@ -414,6 +442,7 @@ pub(crate) fn create_plugin_source(specs: &[ToolSpec]) -> String {
 }
 
 /// The tool specs in fixed order, filtered by the include flags.
+/// 中文：固定顺序（控制、web、memory），仅返回启用项的完整定义。
 pub(crate) fn tool_specs(
     include_control: bool,
     include_web: bool,
@@ -462,6 +491,7 @@ pub(crate) fn tool_specs(
 /// `mergePluginConfig`: parse `OPENCODE_CONFIG_CONTENT` as JSONC, drop plugin
 /// entries that already reference `plugin_url` (plain URL or `[url, options]`
 /// tuple), append the fresh URL, and return the compact JSON.
+/// 中文：非对象 JSONC 或 `plugin` 字段非数组时返回错误；结果为紧凑 JSON。
 pub(crate) fn merge_plugin_config(
     raw_config: Option<&str>,
     plugin_url: &str,

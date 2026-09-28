@@ -1,11 +1,26 @@
+/**
+ * npm-registry 客户端测试套件：覆盖 lookupNpmPackage 的成功 / 404 / 5xx /
+ * 网络错误 / 超时路径，以及 getNpmInfo 的 TTL 缓存命中、forceRefresh
+ * 穿透、并发去重、404 缓存与网络错误不缓存等行为。通过替换
+ * globalThis.fetch 与 Date.now 打桩，afterEach 统一还原。
+ */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as npm from './npm-registry.js';
 
+/** 备份原始 fetch，测试后还原，避免污染其它用例。 */
 const originalFetch = globalThis.fetch;
+/** 备份原始 Date.now，供 TTL 用例改写时间后还原。 */
 const originalDateNow = Date.now;
 
+/** 当前用例注入的 fetch mock（beforeEach 中重建）。 */
 let fetchMock;
 
+/**
+ * 构造一个直接 resolve 的 JSON Response 打桩。
+ *
+ * @param {*} body 将被 JSON.stringify 的响应体
+ * @param {number} [status] HTTP 状态码，默认 200
+ */
 function jsonResponse(body, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), {
     status,
@@ -13,7 +28,9 @@ function jsonResponse(body, status = 200) {
   }));
 }
 
+// npm registry 客户端主套件：成功与错误路径 + 缓存与并发去重行为。
 describe('npm registry client', () => {
+  // 每个用例前：清空模块缓存、还原 Date.now，并注入默认 200 的 fetch mock。
   beforeEach(() => {
     npm.clearCache();
     Date.now = originalDateNow;
@@ -21,6 +38,7 @@ describe('npm registry client', () => {
     globalThis.fetch = fetchMock;
   });
 
+  // 每个用例后：再次清空缓存并还原全局 fetch 与 Date.now。
   afterEach(() => {
     npm.clearCache();
     globalThis.fetch = originalFetch;

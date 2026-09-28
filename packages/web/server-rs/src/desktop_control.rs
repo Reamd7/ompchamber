@@ -23,6 +23,13 @@
 //! Discovery: boot writes `<data-dir>/run/desktop-control.json`
 //! (`{"path","token"}`); the shell reads it and connects. Enabled via
 //! `OMPCHAMBER_DESKTOP_CONTROL=true` (set by the desktop spawn).
+//!
+//! 中文说明：本模块实现桌面控制通道——一个私有 Unix domain socket（Windows
+//! 上为 loopback TCP），供 Electron 桌面壳与被拉起的 server 进程集成。
+//! 协议为换行分隔的 JSON：请求带 `id`，响应回显同一 `id`；事件（`notify`）
+//! 无 id。启动时把发现信息（socket 路径 + 鉴权 token）写入
+//! `<data-dir>/run/desktop-control.json`，桌面壳读取后连接。
+//! 通过 `OMPCHAMBER_DESKTOP_CONTROL=true` 启用（由桌面 spawn 设置）。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -37,22 +44,31 @@ use serde_json::{Value, json};
 use crate::engine::EngineState;
 
 /// Serialized status provider (scheduled-tasks status shape).
+/// 中文说明：返回计划任务状态的序列化 JSON，供 `quitRisk` 应答组装。
 pub type StatusProvider = Arc<dyn Fn() -> Value + Send + Sync>;
 
+/// 控制通道的进程级全局状态（OnceLock 惰性初始化，整个进程共享一份）。
 struct Globals {
     /// Authenticated client queues — desktop notification fan-out.
+    /// 中文说明：已认证客户端的发送队列，用于桌面通知扇出。
     clients: Mutex<Vec<tokio::sync::mpsc::Sender<String>>>,
     /// Shell-pushed window focus (notifications suppress when focused).
+    /// 中文说明：壳推送的窗口焦点状态（聚焦时抑制通知）。
     focus: AtomicBool,
     /// Graceful shutdown trigger.
+    /// 中文说明：优雅停机触发器（`shutdown` op 通过 notify_one 唤醒等待方）。
     shutdown: tokio::sync::Notify,
     /// Late-bound handles set during boot.
+    /// 中文说明：启动阶段晚绑定的引擎句柄，供 `engineInfo` 查询。
     engine: RwLock<Option<Arc<EngineState>>>,
+    /// 计划任务状态提供者（晚绑定），供 quitRisk 应答组装。
     scheduler_status: RwLock<Option<StatusProvider>>,
 }
 
+/// 进程级全局状态的唯一载体；首次访问时惰性初始化。
 static GLOBALS: OnceLock<Globals> = OnceLock::new();
 
+/// 获取（必要时初始化）全局状态的单例引用。
 fn globals() -> &'static Globals {
     GLOBALS.get_or_init(|| Globals {
         clients: Mutex::new(Vec::new()),
@@ -63,10 +79,12 @@ fn globals() -> &'static Globals {
     })
 }
 
+/// 启动阶段晚绑定引擎句柄，供 `engineInfo` op 返回 pid/port 等进程信息。
 pub fn set_engine(engine: Arc<EngineState>) {
     *globals().engine.write().unwrap_or_else(|e| e.into_inner()) = Some(engine);
 }
 
+/// 注册计划任务状态提供者（计划任务模块在组合阶段调用）。
 pub fn set_scheduler_status(provider: StatusProvider) {
     *globals()
         .scheduler_status
@@ -75,11 +93,14 @@ pub fn set_scheduler_status(provider: StatusProvider) {
 }
 
 /// Whether any shell is connected over the control channel.
+/// 中文说明：任一壳经控制通道完成鉴权握手即视为已连接。
 pub fn shell_connected() -> bool {
     !globals().clients.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
 }
 
 /// Push a desktop notification payload to every connected shell.
+/// 中文说明：把通知负载包装成 `{"op":"notify",...}` 行，投递给所有仍存活
+/// 的已连接壳队列；已关闭的队列被即时清理。
 pub fn emit_notification(payload: &Value) {
     let line = json!({ "op": "notify", "payload": payload }).to_string();
     let mut clients = globals().clients.lock().unwrap_or_else(|e| e.into_inner());
@@ -90,15 +111,19 @@ pub fn emit_notification(payload: &Value) {
 }
 
 /// Current shell-pushed focus state.
+/// 中文说明：读取壳最近一次 `focus` op 推送的焦点状态。
 pub fn window_focused() -> bool {
     globals().focus.load(Ordering::SeqCst)
 }
 
 /// Resolve once the shell asks for a graceful shutdown.
+/// 中文说明：等待壳发出优雅停机请求（`shutdown` op）后返回；
+/// `Notify::notify_one` 会预存许可，晚到的等待者立即通过。
 pub async fn shutdown_requested() {
     globals().shutdown.notified().await;
 }
 
+/// 组装退出风险评估：tunnel 是否活跃 + 计划任务状态（提供者未注册时为空对象）。
 fn quit_risk_status() -> Value {
     let tunnel_active = crate::tunnels::tunnel_public_url().is_some();
     let scheduled_tasks = {
@@ -108,6 +133,8 @@ fn quit_risk_status() -> Value {
     json!({ "tunnel": { "active": tunnel_active }, "scheduledTasks": scheduled_tasks })
 }
 
+/// 组装引擎进程信息：受管子进程返回 (managed, pid, port)，
+/// 引擎未绑定或外部模式下返回 managed=false 与 null 字段。
 fn engine_info() -> Value {
     let guard = globals().engine.read().unwrap_or_else(|e| e.into_inner());
     match guard.as_ref() {
@@ -121,6 +148,9 @@ fn engine_info() -> Value {
 
 /// Bind the control socket and serve connections until the process exits.
 /// Writes the discovery file before returning the listener task handle.
+/// 中文说明：先建 `<data-dir>/run` 目录，生成随机 token 并绑定 socket，
+/// 写入发现文件，注册通知钩子，最后返回监听任务的 JoinHandle。
+/// Unix 用 domain socket，Windows 用 127.0.0.1 随机端口 TCP。
 pub async fn serve(data_dir: PathBuf) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let run_dir = data_dir.join("run");
     std::fs::create_dir_all(&run_dir)?;
@@ -184,16 +214,24 @@ pub async fn serve(data_dir: PathBuf) -> anyhow::Result<tokio::task::JoinHandle<
     Ok(task)
 }
 
+/// 从发现 JSON 中取出鉴权 token（供 accept 闭包捕获）。
 fn listener_token(discovery: &Value) -> String {
     discovery["token"].as_str().unwrap_or_default().to_string()
 }
 
+/// 平台无关的连接流封装：Unix domain socket 或 TCP。
 enum UnixOrTcp {
+    /// Unix 平台的 domain socket 连接。
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
+    /// Windows 平台的 loopback TCP 连接。
     Tcp(tokio::net::TcpStream),
 }
 
+/// 单个控制连接的会话循环：按行读取 JSON 请求，首行必须是携带正确 token 的
+/// `hello` 握手（失败即断开）；之后分发 focus/runtimeConfig/quitRisk/
+/// engineInfo/shutdown 各 op，未知 op 返回错误应答。出站消息经队列由独立
+/// 写任务串行写出，避免读写互相阻塞。
 async fn handle_connection(stream: UnixOrTcp, token: String) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -216,6 +254,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
     };
     let mut lines = BufReader::new(reader).lines();
 
+    // 每连接一个出站队列，由独立写任务排空；读循环只投递不阻塞在写上。
     // Per-connection outbound queue drained by a writer task.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
     let writer_task = tokio::spawn(async move {
@@ -226,6 +265,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
         }
     });
 
+    // 构造成功应答行：回显 id，ok=true，并把 body 的字段合并进顶层。
     let respond = |id: Value, body: Value| -> String {
         let mut response = json!({ "id": id, "ok": true });
         if let (Value::Object(target), Value::Object(extra)) = (&mut response, body) {
@@ -236,6 +276,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
         format!("{}\n", response)
     };
 
+    // 鉴权前拒绝一切非 hello 消息；token 不匹配直接断开连接。
     let mut authenticated = false;
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -254,6 +295,7 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
             continue;
         }
 
+        // 分发已鉴权的 op。
         match op {
             "focus" => {
                 globals().focus.store(
@@ -303,12 +345,16 @@ async fn handle_connection(stream: UnixOrTcp, token: String) {
     globals().clients.lock().unwrap_or_else(|e| e.into_inner()).retain(|client| !client.is_closed());
 }
 
+/// 控制通道协议的端到端测试：握手鉴权、各 op 语义、通知扇出与停机信号。
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    /// 验证：完整控制协议端到端可用——错误 token 被断开；hello 握手成功后
+    /// focus/runtimeConfig/quitRisk/shutdown 各 op 行为正确；通知可扇出至
+    /// 已连接客户端。
     #[tokio::test]
     async fn control_protocol_end_to_end() {
         let dir = crate::skills_catalog::scan::mkd_temp("dc-test-").unwrap();

@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { buildDigest } from './digest.js';
 import { isGeneratedArtifact } from './generated.js';
 
+/**
+ * digest 构建与生成物识别的测试套件：覆盖 isGeneratedArtifact 的命中与
+ * 关键反例（误报会把真实代码悄悄挤出评审），以及 buildDigest 对生成物的
+ * 剔除、别名只分配给可评审 hunk、各项计数的正确性。
+ */
+/** 构造一个最小合法的单 hunk unified diff 片段，默认正文为新增一行代码。 */
 const fileDiff = (path, body = '+const a = 1;') => `diff --git a/${path} b/${path}
 --- a/${path}
 +++ b/${path}
@@ -9,6 +15,7 @@ const fileDiff = (path, body = '+const a = 1;') => `diff --git a/${path} b/${pat
 ${body}
 `;
 
+// 生成物路径识别：精确 lockfile 名与常规产物命中，近似命名的手写源码绝不误伤。
 describe('isGeneratedArtifact', () => {
   it('matches lockfiles by exact name anywhere in the tree', () => {
     expect(isGeneratedArtifact('bun.lock')).toBe(true);
@@ -36,7 +43,9 @@ describe('isGeneratedArtifact', () => {
   });
 });
 
+// digest 构建：生成物不进模型视图但仍返回给客户端；别名与计数只覆盖可评审部分。
 describe('buildDigest', () => {
+  // 公共夹具：一次工作区变更，含两个源文件与一个 lockfile。
   const sections = [{
     scope: 'working',
     patch: [fileDiff('src/a.ts'), fileDiff('bun.lock', '+  "version": "2",'), fileDiff('src/b.ts')].join(''),

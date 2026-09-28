@@ -1,3 +1,8 @@
+//! unified diff → 可寻址 hunk 的唯一权威实现：模型叙事锚定 hunk id，
+//! 客户端用同一 id 找回代码，staleness 即“当前 diff 不再存在的 id”。
+//! id 形如 <scope>:<path>:<sha1(header+"\n"+body)[:8]>，同一文件内字节级
+//! 重复的 hunk 追加 -2、-3… 后缀；摘要实现见 super::sha1（与 Node crypto
+//! 逐字节一致）。
 //! Port of `server/lib/walkthrough/hunks.js`.
 //!
 //! Parsing a unified diff into addressable hunks lives here and only here. The
@@ -14,12 +19,15 @@ use std::collections::HashMap;
 
 use super::sha1::sha1_hex;
 
+/// git 文件头行的识别前缀（"diff --git "）。
 const FILE_HEADER_PREFIX: &str = "diff --git ";
 
+/// 取 SHA-1 十六进制摘要的前 8 个字符作为 hunk 指纹。
 fn short_hash(value: &str) -> String {
     sha1_hex(value.as_bytes())[..8].to_string()
 }
 
+/// 解析 "diff --git a/old b/new" 行的两侧路径（含带引号的含空格路径）。
 /// `parsePathsFromFileHeader`: `diff --git a/old b/new`, with either side
 /// quoted when it contains spaces. Mirrors the JS regex
 /// `/^diff --git (?:"?a\/(.+?)"?) (?:"?b\/(.+?)"?)$/` including its lazy
@@ -56,6 +64,8 @@ fn parse_paths_from_file_header(line: &str) -> Option<(String, String)> {
     }
 }
 
+/// 由文件头附属行推断状态：new file / deleted file / rename from 分别
+/// 映射 added / deleted / renamed，其余为 modified。
 /// `statusFromHeaderLines`.
 fn status_from_header_lines(lines: &[String]) -> &'static str {
     if lines.iter().any(|line| line.starts_with("new file mode")) {
@@ -72,6 +82,7 @@ fn status_from_header_lines(lines: &[String]) -> &'static str {
     }
 }
 
+/// 文件头是否声明二进制（"Binary files " 或 "GIT binary patch"）。
 /// `isBinaryHeader`.
 fn is_binary_header(lines: &[String]) -> bool {
     lines
@@ -79,35 +90,56 @@ fn is_binary_header(lines: &[String]) -> bool {
         .any(|line| line.starts_with("Binary files ") || line.starts_with("GIT binary patch"))
 }
 
+/// 一个文件中的一个 hunk：头行、行区间与增删统计、可独立应用的 patch、
+/// 指纹 id 与正文。
 /// One parsed hunk of one file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedHunk {
+/// 全局唯一 hunk id（scope:path:sha1[:8]，重复时加出现序号后缀）。
     pub id: String,
+/// hunk 头行原文（@@ … @@，含尾部上下文）。
     pub header: String,
+/// 旧侧起始行号。
     pub old_start: i64,
+/// 旧侧行数。
     pub old_lines: i64,
+/// 新侧起始行号。
     pub new_start: i64,
+/// 新侧行数。
     pub new_lines: i64,
+/// 新增行数（+ 开头的行）。
     pub added: i64,
+/// 删除行数（- 开头的行）。
     pub deleted: i64,
+/// 可独立应用的补丁：文件头 + 仅此 hunk。
     /// Standalone applicable patch: file header + this hunk only.
     pub patch: String,
+/// hunk 正文（不含头行）。
     /// Hunk body without the header line.
     pub body: String,
 }
 
+/// diff 中的一个文件：路径、状态、头块文本与全部 hunk。
 /// One parsed file of a diff.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedFile {
+/// 新路径（优先取 b 侧，取不到再退 a 侧）。
     pub path: String,
+/// 旧路径，仅在与新路径不同（改名等）时存在。
     pub old_path: Option<String>,
+/// 文件状态：added / deleted / renamed / modified。
     pub status: String,
+/// 是否二进制文件。
     pub binary: bool,
+/// 首个 hunk 之前的文件头块（headerLines 以换行连接）。
     /// `headerLines.join('\n')` — the file header block up to the first hunk.
     pub header_text: String,
+/// 按出现顺序排列的 hunk 列表。
     pub hunks: Vec<ParsedHunk>,
 }
 
+/// 手写解析 hunk 头行，返回 (oldStart, oldLines, newStart, newLines)；
+/// 省略的计数按 1 解析，允许 @@ 之后带任意尾部上下文。
 /// `HUNK_HEADER` = `/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)$/`,
 /// hand-parsed (no regex crate). Returns
 /// `(oldStart, oldLines, newStart, newLines)`; a missing count defaults to 1.
@@ -135,6 +167,8 @@ fn parse_hunk_header(line: &str) -> Option<(i64, i64, i64, i64)> {
     Some((old_start, old_lines, new_start, new_lines))
 }
 
+/// 按 JS 正则 \s+ 的语义消费一段空白（至少一个空白字符）并返回余下文本；
+/// 开头无空白则返回 None。
 /// A JS `\s+` run (at least one whitespace char) and the remainder after it.
 fn strip_js_whitespace_run(text: &str) -> Option<&str> {
     let mut end = 0;
@@ -148,6 +182,8 @@ fn strip_js_whitespace_run(text: &str) -> Option<&str> {
     (end > 0).then_some(&text[end..])
 }
 
+/// 从文本头部取一段 ASCII 数字解析为 i64，返回 (值, 余下文本)；
+/// 开头无数字则返回 None。
 fn split_digits(text: &str) -> Option<(i64, &str)> {
     let end = text
         .find(|c: char| !c.is_ascii_digit())
@@ -159,28 +195,46 @@ fn split_digits(text: &str) -> Option<(i64, &str)> {
     Some((value, &text[end..]))
 }
 
+/// 正在累积、尚未闭合落盘的 hunk。
 struct OpenHunk {
+/// 头行原文。
     header: String,
+/// 旧侧起始行。
     old_start: i64,
+/// 旧侧行数。
     old_lines: i64,
+/// 新侧起始行。
     new_start: i64,
+/// 新侧行数。
     new_lines: i64,
+/// 累计新增行数。
     added: i64,
+/// 累计删除行数。
     deleted: i64,
+/// 正文行缓冲。
     lines: Vec<String>,
 }
 
+/// 单文件的解析状态机：当前文件、头行缓冲、打开的 hunk 与指纹计数，
+/// 闭合转移以方法形式提供。
 /// Per-file parse state (`current`, `headerLines`, `hunk`, `hunkDigests` in
 /// the JS loop), with the close-hunk/close-file transitions as methods.
 struct FileAccumulator {
+/// 正在解析的文件（遇到下一个 diff --git 行之前有效）。
     current: Option<ParsedFile>,
+/// 首个 hunk 之前累积的文件头行。
     header_lines: Vec<String>,
+/// 当前打开的 hunk（None 表示处于文件头区域）。
     hunk: Option<OpenHunk>,
+/// 指纹 → 已出现次数（字节级重复 hunk 的去重依据）。
     hunk_digests: HashMap<String, u32>,
+/// hunk id 的命名空间。
     scope: String,
 }
 
+/// 闭合转移逻辑：把打开的 hunk 与文件安全落盘。
 impl FileAccumulator {
+/// 以 scope 创建空状态。
     fn new(scope: &str) -> Self {
         Self {
             current: None,
@@ -191,6 +245,7 @@ impl FileAccumulator {
         }
     }
 
+/// 闭合当前 hunk：计算指纹 id（字节级重复时加出现序号后缀）并推入文件。
     fn close_hunk(&mut self) {
         let Some(open) = self.hunk.take() else {
             return;
@@ -229,6 +284,7 @@ impl FileAccumulator {
         });
     }
 
+/// 闭合当前文件（先闭合 hunk），补二进制标记后收入结果列表。
     fn close_file(&mut self, files: &mut Vec<ParsedFile>) {
         self.close_hunk();
         if let Some(mut file) = self.current.take() {
@@ -240,6 +296,9 @@ impl FileAccumulator {
     }
 }
 
+/// 把覆盖任意数量文件的 unified diff 拆成文件与 hunk。scope 是 id 的
+/// 命名空间：不同 scope 中字节相同的 hunk 保持不同 id，使针对 staged
+/// 变更写的导览不会静默命中 unstaged 的 hunk。解析不出路径的文件被丢弃。
 /// `parseDiffFiles`: split a unified diff covering any number of files into
 /// files and hunks.
 ///
@@ -325,65 +384,88 @@ pub fn parse_diff_files(patch: &str, scope: &str) -> Vec<ParsedFile> {
     files
 }
 
+/// 拥有可寻址 hunk 的最小接口（ParsedFile 与 DigestFile 都实现）。
 /// Anything that owns addressable hunks plus the path and status the client
 /// index needs — implemented by both [`ParsedFile`] and the digest's
 /// `DigestFile`.
 pub trait HunkSource {
+/// 所属文件路径。
     fn path(&self) -> &str;
+/// 所属文件状态。
     fn status(&self) -> &str;
+/// hunk 列表。
     fn hunks(&self) -> &[ParsedHunk];
 }
 
+/// 解析结果的原生实现。
 impl HunkSource for ParsedFile {
+/// 新路径。
     fn path(&self) -> &str {
         &self.path
     }
+/// 状态字符串。
     fn status(&self) -> &str {
         &self.status
     }
+/// hunk 列表。
     fn hunks(&self) -> &[ParsedHunk] {
         &self.hunks
     }
 }
 
+/// id 键控的 hunk 索引：别名解析与 staleness 检查用，保持文件先后的
+/// 位置顺序。
 /// `indexHunks`: flatten parsed files into an id-keyed index for resolution
 /// and staleness checks, preserving file-then-position order.
 pub struct HunkIndex {
+/// 按文件与位置顺序排列的条目。
     entries: Vec<IndexedHunk>,
+/// id → entries 下标。
     by_id: HashMap<String, usize>,
 }
 
+/// 索引条目：hunk id 加上所属文件的路径与状态。
 /// The index value shape: the hunk with its owning file's path and status.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexedHunk {
+/// hunk id。
     pub id: String,
+/// 所属文件路径。
     pub path: String,
+/// 所属文件状态。
     pub status: String,
 }
 
+/// 索引查询接口。
 impl HunkIndex {
+/// id 是否存在于当前 diff。
     pub fn has(&self, id: &str) -> bool {
         self.by_id.contains_key(id)
     }
 
+/// 索引条目总数。
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+/// 索引是否为空。
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+/// 按文件先后顺序产出全部 id。
     /// Ids in file-then-position order (`[...hunkIndex.keys()]`).
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|entry| entry.id.as_str())
     }
 
+/// 按 id 取条目。
     pub fn get(&self, id: &str) -> Option<&IndexedHunk> {
         self.by_id.get(id).map(|&index| &self.entries[index])
     }
 }
 
+/// 由任意 HunkSource 集合构建索引（indexHunks）。
 pub fn index_hunks<'a, F: HunkSource + 'a>(files: impl IntoIterator<Item = &'a F>) -> HunkIndex {
     let mut entries = Vec::new();
     let mut by_id = HashMap::new();
@@ -400,6 +482,7 @@ pub fn index_hunks<'a, F: HunkSource + 'a>(files: impl IntoIterator<Item = &'a F
     HunkIndex { entries, by_id }
 }
 
+/// 按文件与位置顺序列出全部 hunk id，用于计算未被任何 stop 覆盖的尾部。
 /// `listHunkIds`: every hunk id in the diff, in file-then-position order.
 /// Used to compute the "not covered by any stop" tail.
 pub fn list_hunk_ids(files: &[ParsedFile]) -> Vec<String> {
@@ -409,5 +492,6 @@ pub fn list_hunk_ids(files: &[ParsedFile]) -> Vec<String> {
         .collect()
 }
 
+/// 解析与索引测试（见 tests 子模块文件）。
 #[cfg(test)]
 mod tests;

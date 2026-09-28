@@ -1,3 +1,10 @@
+/**
+ * 终端运行时（terminal/runtime.js）测试套件：会话创建/重启/关闭的生命
+ * 周期、shell 选择与登录模式校验、并发创建冲突、多窗口 claim 语义，以及
+ * 基于真实 HTTP/WebSocket 服务器的 I/O、快照重放、洪流抑制与视口
+ * （viewport）协商的端到端验证。PTY 由 fake provider 模拟，输出与退出
+ * 通过 emitData/emitExit 手动驱动。
+ */
 import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -9,6 +16,10 @@ import { WebSocket } from 'ws';
 import { createTerminalRuntime } from './runtime.js';
 import { createTerminalWsControlFrame, readTerminalWsControlFrame } from './terminal-ws-protocol.js';
 
+/**
+ * 构造最小可用的 express Response 替身：记录 statusCode 与 JSON 载荷，
+ * 供路由处理器直接调用并断言。
+ */
 function createResponse() {
   return {
     statusCode: 200,
@@ -24,6 +35,10 @@ function createResponse() {
   };
 }
 
+/**
+ * 以受控依赖创建终端运行时：stub 掉 fs/path/PTY/鉴权与可执行文件探测，
+ * 只保留被测逻辑；overrides 可逐项替换任意依赖。
+ */
 function createRuntime(server, overrides = {}) {
   const app = overrides.app ?? {
     post() {},
@@ -50,15 +65,20 @@ function createRuntime(server, overrides = {}) {
   });
 }
 
+// 终端运行时的路由与生命周期行为：创建与 shell 校验、并发冲突、关闭语义与 WebSocket 协议。
 describe('terminal runtime', () => {
+  /** 测试挂具：捕获注册到的路由 + fake PTY + 事件服务器；返回路由表、进程列表与运行时。 */
   const createHarness = (overrides = {}) => {
+    // 以路由路径为键捕获注册到的处理器，测试直接调用以驱动请求。
     const routes = { get: new Map(), post: new Map(), delete: new Map() };
+    // 记录 fake PTY 派生出的全部进程，供断言检查。
     const processes = [];
     const app = {
       post(route, handler) { routes.post.set(route, handler); },
       get(route, handler) { routes.get.set(route, handler); },
       delete(route, handler) { routes.delete.set(route, handler); },
     };
+    // fake PTY provider：记录写入/resize/kill，可用 emitData/emitExit 模拟输出与退出。
     const loadPtyProvider = async () => ({
       backend: 'fake-pty',
       spawn: (shell, args, options) => {

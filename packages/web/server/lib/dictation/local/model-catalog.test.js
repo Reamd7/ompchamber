@@ -1,3 +1,10 @@
+/**
+ * 本地 TTS 模型目录（model-catalog.js）的单元测试，运行于 vitest。
+ *
+ * 覆盖：语言到模型的回退选择（保留会说该语言的选中模型、否则挑目录
+ * 内首个支持模型、无覆盖时返回 null）、跨语言默认说话人，以及目录
+ * 条目自身的完整性（语言非空、下载地址合法、必需文件与词典键可解析）。
+ */
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LOCAL_TTS_MODEL,
@@ -7,6 +14,7 @@ import {
   resolveLocalTtsModelForLanguage,
 } from './model-catalog.js';
 
+/** 本地 TTS 目录的语言选择与条目完整性校验。 */
 describe('local TTS catalog', () => {
   it('keeps the selected model when it speaks the language', () => {
     expect(resolveLocalTtsModelForLanguage('en', DEFAULT_LOCAL_TTS_MODEL)).toBe(DEFAULT_LOCAL_TTS_MODEL);

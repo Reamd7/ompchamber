@@ -1,6 +1,10 @@
 //! Port of `server/lib/linear/routes.js` — the public OAuth callback page and
 //! the `/api/linear/*` endpoints. JSON bodies on these routes use a 16kb
 //! limit (they are not on the server-wide `/api` 50mb allowlist).
+//! 中文说明：移植自 JS 版 routes.js。Linear 路由层——公开的 OAuth 回调
+//! 页面与 `/api/linear/*` 接口（认证状态/启动/激活/删除、issue 列表/详情/
+//! 状态/更新、mapping 读写、会话状态评论、偏好设置）。这些路由的 JSON
+//! body 上限为 16kb，不走服务器全局 `/api` 的 50mb 白名单。
 
 use std::sync::Arc;
 
@@ -26,8 +30,12 @@ use super::teams::list_linear_teams;
 use super::{LinearError, LinearState};
 
 /// JS `express.json({ limit: '16kb' })`.
+///
+/// 中文说明：超出该字节数的 JSON body 按 body-parser 语义返回 413。
 const PENDING_JSON_LIMIT: usize = 16 * 1024;
 
+/// 组装 Linear 子路由：OAuth 回调页 + `/api/linear/*` 全部端点，
+/// 挂载共享的 `LinearState`。
 pub fn router(state: Arc<LinearState>) -> axum::Router {
     axum::Router::new()
         .route("/linear/oauth/callback", get(oauth_callback))
@@ -48,6 +56,9 @@ pub fn router(state: Arc<LinearState>) -> axum::Router {
         .with_state(state)
 }
 /// JS `queryValue`: first value of a repeated query parameter wins.
+///
+/// 中文说明：手工解析 raw query string，复刻 Express 的 `req.query`
+/// 语义（重复键取第一个，缺失返回空串）。
 fn query_value(raw_query: &str, key: &str) -> String {
     for (name, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
         if name == key {
@@ -58,10 +69,14 @@ fn query_value(raw_query: &str, key: &str) -> String {
 }
 
 /// JS `isLinearUserError`.
+///
+/// 中文说明：INVALID 错误码或带 `user_error` 标记的错误映射为 400，
+/// 其余按服务器内部错误处理。
 fn is_linear_user_error(error: &LinearError) -> bool {
     error.code.as_deref() == Some("INVALID") || error.user_error
 }
 
+/// 取错误消息，为空时使用 fallback 文案。
 fn error_message_or(error: &LinearError, fallback: &str) -> String {
     if error.message.is_empty() {
         fallback.to_string()
@@ -72,6 +87,9 @@ fn error_message_or(error: &LinearError, fallback: &str) -> String {
 
 /// JS `storeAuthorizationResult`: best-effort identity lookup, then persist.
 /// A persistence failure propagates to the route's error path.
+///
+/// 中文说明：OAuth 成功后尽力拉取一次身份（失败不阻断，用空身份继续），
+/// 再把 token 持久化并激活为当前 workspace；持久化失败沿路由错误路径返回。
 async fn store_authorization_result(
     state: &Arc<LinearState>,
     result: &super::oauth::AuthorizationResult,
@@ -98,6 +116,7 @@ async fn store_authorization_result(
     )
 }
 
+/// HTML 转义五个关键字符，回调页文案未经转义不得内插。
 fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -108,6 +127,9 @@ fn escape_html(value: &str) -> String {
 }
 
 /// JS `renderLinearOAuthCallbackPage`.
+///
+/// 中文说明：渲染居中的回调结果页；desktop 来源额外注入
+/// `openchamber://focus/linear-auth` 深链与自动跳转脚本。
 fn render_linear_oauth_callback_page(title: &str, message: &str, desktop_return: bool) -> String {
     let desktop = if desktop_return {
         "<a class=\"return\" href=\"openchamber://focus/linear-auth\">Return to OpenChamber</a>\n<script>window.location.href = 'openchamber://focus/linear-auth';</script>"
@@ -147,6 +169,7 @@ fn render_linear_oauth_callback_page(title: &str, message: &str, desktop_return:
     )
 }
 
+/// 以 `text/html; charset=utf-8` 返回指定状态码的 HTML 响应。
 fn html_response(status: StatusCode, body: String) -> Response {
     (
         status,
@@ -160,6 +183,8 @@ fn html_response(status: StatusCode, body: String) -> Response {
 // GET /linear/oauth/callback
 // ---------------------------------------------------------------------------
 
+/// GET /linear/oauth/callback：消费授权码换取 token 并持久化，渲染成功/
+/// 失败页面；UNKNOWN_STATE/MISSING_CODE/ACCESS_DENIED 映射 400，其余 502。
 async fn oauth_callback(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let raw_query = request.uri().query().unwrap_or_default().to_string();
     let query = super::oauth::CallbackQuery {
@@ -212,6 +237,9 @@ async fn oauth_callback(State(state): State<Arc<LinearState>>, request: Request)
 // GET /api/linear/auth/status
 // ---------------------------------------------------------------------------
 
+/// GET /api/linear/auth/status：先收割 broker 中继的授权结果（尽力而为），
+/// 再取有效 token 刷新身份并返回连接状态；401 时清除失效 workspace，
+/// 无剩余条目则返回未连接。
 async fn auth_status(State(state): State<Arc<LinearState>>) -> Response {
     match state.poll_authorization_broker().await {
         Ok(Some(result)) => {
@@ -270,6 +298,7 @@ async fn auth_status(State(state): State<Arc<LinearState>>) -> Response {
     }
 }
 
+/// 认证状态查询失败出口：记日志并返回 500 + 错误 JSON。
 fn auth_status_failure(error: &LinearError) -> Response {
     tracing::error!("Failed to get Linear auth status: {error}");
     (
@@ -283,6 +312,8 @@ fn auth_status_failure(error: &LinearError) -> Response {
 // POST /api/linear/auth/start
 // ---------------------------------------------------------------------------
 
+/// POST /api/linear/auth/start：解析 body 里的 origin（desktop/web）后启动
+/// OAuth 授权并返回授权 URL；client id 未配置映射 400，其余 500。
 async fn auth_start(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -316,6 +347,8 @@ async fn auth_start(State(state): State<Arc<LinearState>>, request: Request) -> 
 // GET /api/linear/issues/*
 // ---------------------------------------------------------------------------
 
+/// GET /api/linear/issues/list：把 query 参数映射为 `ListIssuesParams` 后
+/// 执行列表/搜索查询。
 async fn issues_list(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let raw_query = request.uri().query().unwrap_or_default().to_string();
     let params = ListIssuesParams {
@@ -332,6 +365,8 @@ async fn issues_list(State(state): State<Arc<LinearState>>, request: Request) ->
     }
 }
 
+/// issue 类端点的统一错误出口：用户错误（INVALID/user_error）返回 400 并
+/// 透出原始消息，其余记日志返回 500 + fallback 文案。
 fn issues_failure(error: &LinearError, fallback: &str) -> Response {
     if is_linear_user_error(error) {
         return (
@@ -348,6 +383,7 @@ fn issues_failure(error: &LinearError, fallback: &str) -> Response {
         .into_response()
 }
 
+/// GET /api/linear/issues/get：按 id 参数加载单条 issue；缺 id 返回 400。
 async fn issues_get(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let raw_query = request.uri().query().unwrap_or_default().to_string();
     let id = query_value(&raw_query, "id");
@@ -364,6 +400,8 @@ async fn issues_get(State(state): State<Arc<LinearState>>, request: Request) -> 
     }
 }
 
+/// GET /api/linear/issues/states：按 teamId 拉取 workflow 状态；
+/// 缺参数返回 400。
 async fn issues_states(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let raw_query = request.uri().query().unwrap_or_default().to_string();
     let team_id = query_value(&raw_query, "teamId");
@@ -380,6 +418,7 @@ async fn issues_states(State(state): State<Arc<LinearState>>, request: Request) 
     }
 }
 
+/// POST /api/linear/issues/update：读取 body 的 id/stateId 后切换 issue 状态。
 async fn issues_update(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -404,6 +443,8 @@ async fn issues_update(State(state): State<Arc<LinearState>>, request: Request) 
 // GET/PUT /api/linear/mapping
 // ---------------------------------------------------------------------------
 
+/// GET /api/linear/mapping：合并 Linear 团队与本地存储的映射视图；未连接
+/// 返回 `{ connected: false }`，存储文件损坏（MALFORMED）返回 500。
 async fn mapping_get(State(state): State<Arc<LinearState>>) -> Response {
     let teams_result = match list_linear_teams(&state).await {
         Ok(result) => result,
@@ -435,6 +476,7 @@ async fn mapping_get(State(state): State<Arc<LinearState>>) -> Response {
     Json(payload).into_response()
 }
 
+/// mapping 类端点失败出口：记日志并返回 500 + fallback 文案。
 fn mapping_failure(error: &LinearError, fallback: &str) -> Response {
     tracing::error!("{fallback}: {error}");
     (
@@ -444,6 +486,8 @@ fn mapping_failure(error: &LinearError, fallback: &str) -> Response {
         .into_response()
 }
 
+/// PUT /api/linear/mapping：先校验已连接，再保存映射（INVALID 返回 400），
+/// 最后像 GET 一样回传合并后的视图。
 async fn mapping_put(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -490,6 +534,8 @@ async fn mapping_put(State(state): State<Arc<LinearState>>, request: Request) ->
 // POST /api/linear/session-status
 // ---------------------------------------------------------------------------
 
+/// POST /api/linear/session-status：把 body 映射为 `SessionStatusInput` 后
+/// 发会话状态评论；INVALID 400、MALFORMED 500、其余 500 + fallback。
 async fn session_status(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -545,10 +591,13 @@ async fn session_status(State(state): State<Arc<LinearState>>, request: Request)
 // GET/PUT /api/linear/preferences
 // ---------------------------------------------------------------------------
 
+/// GET /api/linear/preferences：返回 `{ sessionComments }` 偏好。
 async fn preferences_get(State(state): State<Arc<LinearState>>) -> Response {
     Json(json!({ "sessionComments": state.session_comments_enabled() })).into_response()
 }
 
+/// PUT /api/linear/preferences：更新会话评论开关；body 的 sessionComments
+/// 非布尔值返回 400。
 async fn preferences_put(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -573,6 +622,8 @@ async fn preferences_put(State(state): State<Arc<LinearState>>, request: Request
 // POST /api/linear/auth/activate + DELETE /api/linear/auth
 // ---------------------------------------------------------------------------
 
+/// POST /api/linear/auth/activate：按 organizationId 激活 workspace；
+/// 缺参 400、找不到 404，成功返回新的连接状态。
 async fn auth_activate(State(state): State<Arc<LinearState>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let parsed = match parse_json_body(parts.headers, body).await {
@@ -601,6 +652,8 @@ async fn auth_activate(State(state): State<Arc<LinearState>>, request: Request) 
     Json(state.to_public_status(Some(&auth), None)).into_response()
 }
 
+/// DELETE /api/linear/auth：优先吊销 refresh token（没有则吊销 access
+/// token），再清除当前 workspace 凭据，返回 `{ success, removed }`。
 async fn auth_delete(State(state): State<Arc<LinearState>>) -> Response {
     let auth = state.get_auth();
     if let Some(auth) = &auth {
@@ -622,6 +675,9 @@ async fn auth_delete(State(state): State<Arc<LinearState>>) -> Response {
 /// Mirror `express.json({ limit: '16kb' })`: JSON content types parse (empty
 /// body becomes `{}`), anything else stays undefined, malformed JSON is a 400,
 /// and an over-limit body is a 413.
+///
+/// 中文说明：非 JSON Content-Type 返回 `Null`（对齐 express 跳过解析后
+/// `req.body ?? {}` 的语义）；超限 413、解析失败 400。
 async fn parse_json_body(headers: HeaderMap, body: Body) -> Result<Value, Response> {
     let content_type = headers
         .get(header::CONTENT_TYPE)

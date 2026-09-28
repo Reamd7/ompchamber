@@ -1,3 +1,7 @@
+/**
+ * ngrok-tunnel 纯函数部分的单元测试套件（bun:test）：从 JSON/文本两类输出
+ * 中提取公网 URL，以及把 ngrok 输出提炼为一句错误摘要的优先级规则。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -5,6 +9,7 @@ import {
   summarizeNgrokOutput,
 } from './ngrok-tunnel.js';
 
+/** extractNgrokPublicUrlFromText：JSON 行与纯文本两种来源的 URL 提取与过滤。 */
 describe('extractNgrokPublicUrlFromText', () => {
   it('extracts public URL from ngrok JSON logs', () => {
     const url = extractNgrokPublicUrlFromText('{"lvl":"info","msg":"started tunnel","url":"https://demo.ngrok-free.app"}\n');
@@ -25,6 +30,7 @@ describe('extractNgrokPublicUrlFromText', () => {
   });
 });
 
+/** summarizeNgrokOutput：错误摘要的选取优先级（JSON 错误 > ERROR 行 > 末行）。 */
 describe('summarizeNgrokOutput', () => {
   it('prefers actionable JSON error details over trailing help text', () => {
     const summary = summarizeNgrokOutput([

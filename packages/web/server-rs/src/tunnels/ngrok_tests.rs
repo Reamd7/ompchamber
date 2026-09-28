@@ -1,5 +1,8 @@
 //! Tests for `ngrok.rs` (JS precedent: extract/summarize helpers from
 //! ngrok-tunnel.js and the provider diagnose shape from providers/ngrok.js).
+//! （中文说明）ngrok provider 的单元测试：公网 URL 归一化、stdout
+//! 提取、错误摘要、本地 agent API 轮询、quick tunnel 的 argv/就绪/
+//! 超时行为，以及 diagnose 与 capabilities 的 JSON 形状对齐。
 
 use std::sync::Arc;
 
@@ -8,6 +11,7 @@ use serde_json::json;
 use super::*;
 use crate::tunnels::runner::testutil::FakeRunner;
 
+/// 行为契约：仅接受 ngrok 域名的 https URL 并去掉一个尾斜杠；其余输入一律 None。
 #[test]
 fn normalizes_ngrok_public_urls() {
     assert_eq!(
@@ -30,6 +34,7 @@ fn normalizes_ngrok_public_urls() {
     assert_eq!(normalize_ngrok_public_url(None), None);
 }
 
+/// 行为契约：JSON 行的 url/public_url 字段与纯文本中的 ngrok URL 均可提取；非 ngrok 域名被拒。
 #[test]
 fn extracts_urls_from_json_lines_and_plain_text() {
     let json_line = json!({"url": "https://abc-1.ngrok-free.app", "lvl": "info"}).to_string();
@@ -56,6 +61,7 @@ fn extracts_urls_from_json_lines_and_plain_text() {
     assert_eq!(extract_ngrok_public_url_from_text("   "), None);
 }
 
+/// 行为契约：错误摘要优先取 error 级别 JSON 行的 err 字段。
 #[test]
 fn summarize_prefers_error_level_lines() {
     let lines = vec![
@@ -66,6 +72,7 @@ fn summarize_prefers_error_level_lines() {
     assert_eq!(summarize_ngrok_output(&lines), "authentication failed");
 }
 
+/// 行为契约：无 error 级别行时回退到 failed 前缀的 msg，再回退到 info 行的 err 字段。
 #[test]
 fn summarize_falls_back_to_failed_msgs_and_err_fields() {
     let lines = vec![
@@ -82,6 +89,7 @@ fn summarize_falls_back_to_failed_msgs_and_err_fields() {
     assert_eq!(summarize_ngrok_output(&lines), "dial tcp refused");
 }
 
+/// 行为契约：ERROR: 开头的纯文本行也参与摘要，最多拼接四条。
 #[test]
 fn summarize_uses_error_prefixed_plain_lines() {
     let lines = vec![
@@ -98,6 +106,7 @@ fn summarize_uses_error_prefixed_plain_lines() {
     );
 }
 
+/// 行为契约：仍无可用信息时取最后一行；空输入返回空串。
 #[test]
 fn summarize_falls_back_to_last_line() {
     let lines = vec![
@@ -112,6 +121,7 @@ fn summarize_falls_back_to_last_line() {
     assert_eq!(summarize_ngrok_output(&[]), "");
 }
 
+/// 行为契约：append 摘要用冒号连接到基消息后；无摘要时保留原消息。
 #[test]
 fn append_summary_joins_with_colon() {
     let lines = vec![json!({"lvl": "eror", "err": "auth failed"}).to_string()];
@@ -125,6 +135,8 @@ fn append_summary_joins_with_colon() {
     );
 }
 
+/// 行为契约：从本地 agent API 的 tunnels 列表取首个 https 公网 URL；
+/// API 不可达返回 None（外层轮询继续等待）。
 #[tokio::test]
 async fn fetches_public_url_from_local_agent_api() {
     // Minimal HTTP server speaking the ngrok agent API shape.
@@ -172,6 +184,8 @@ async fn fetches_public_url_from_local_agent_api() {
     );
 }
 
+/// 行为契约：quick tunnel 以 `http 127.0.0.1:PORT` + JSON stdout 日志拉起，
+/// 公网 URL 从 stdout 的 url 字段读出。
 #[tokio::test]
 async fn quick_tunnel_argv_and_url_from_stdout_log() {
     let runner = FakeRunner::new()
@@ -219,6 +233,7 @@ async fn quick_tunnel_argv_and_url_from_stdout_log() {
     );
 }
 
+/// 行为契约：二进制缺失与 authtoken 未配置分别返回对应的启动错误。
 #[tokio::test]
 async fn quick_tunnel_requires_dependency_and_authtoken() {
     let http = reqwest::Client::new();
@@ -247,6 +262,7 @@ async fn quick_tunnel_requires_dependency_and_authtoken() {
     );
 }
 
+/// 行为契约：没有本地端口时启动被拒绝。
 #[tokio::test]
 async fn quick_tunnel_requires_a_port() {
     let runner = FakeRunner::new()
@@ -263,6 +279,7 @@ async fn quick_tunnel_requires_a_port() {
     assert_eq!(error, "A local port is required to start an ngrok tunnel");
 }
 
+/// 行为契约：就绪超时返回固定的 30 秒错误消息（无输出时不追加摘要）并终止子进程。
 #[tokio::test]
 async fn quick_tunnel_timeout_includes_output_summary() {
     let runner = FakeRunner::new()
@@ -289,6 +306,7 @@ async fn quick_tunnel_timeout_includes_output_summary() {
     assert!(runner.kill_called());
 }
 
+/// 行为契约：非 quick 模式返回 mode_unsupported 的服务错误。
 #[tokio::test]
 async fn provider_start_rejects_non_quick_modes() {
     let provider = NgrokTunnelProvider::new(Arc::new(FakeRunner::new()), reqwest::Client::new());
@@ -313,6 +331,8 @@ async fn provider_start_rejects_non_quick_modes() {
     }
 }
 
+/// 行为契约：diagnose 输出 dependency/authtoken/network 三项检查及
+/// quick 模式的就绪状态与空 blockers。
 #[tokio::test]
 async fn provider_diagnose_reports_dependency_authtoken_network() {
     let provider = NgrokTunnelProvider::new(
@@ -356,6 +376,8 @@ async fn provider_diagnose_reports_dependency_authtoken_network() {
     assert_eq!(modes[0]["blockers"], json!([]));
 }
 
+/// 行为契约：依赖缺失时 authtoken 检查失败、detail 为安装指引，模式
+/// 未就绪且带 blockers 提示。
 #[tokio::test]
 async fn provider_diagnose_failure_blockers() {
     let provider =
@@ -374,6 +396,8 @@ async fn provider_diagnose_failure_blockers() {
     assert_eq!(checks[1]["detail"], ngrok_install_message());
 }
 
+/// 行为契约：capabilities JSON 的模式、intent、supports 与稳定性字段
+/// 与 JS 版逐一对齐。
 #[test]
 fn capabilities_json_shape_matches_js() {
     let capabilities = ngrok_capabilities_json();

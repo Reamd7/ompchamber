@@ -1,3 +1,8 @@
+/**
+ * skill-routes.js 的 HTTP 层测试套件：在随机端口启动真实 express 应用并注入
+ * 桩依赖（目录解析固定指向临时项目、伪造的 omp-host engine /skill 端点），
+ * 端到端验证技能列表的目录软回退、engine 技能行的合并保留与 scope 推断。
+ */
 import { afterEach, describe, expect, it } from 'vitest';
 import express from 'express';
 import fs from 'fs';
@@ -22,12 +27,21 @@ import {
   writeSkillSupportingFile,
 } from './shared.js';
 
+/** 创建带 .git 标记的临时项目目录（被目录解析桩视为合法 project root），供用例布置技能文件。 */
 const createTempProject = () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-skill-routes-'));
   fs.mkdirSync(path.join(projectRoot, '.git'));
   return projectRoot;
 };
 
+/**
+ * 启动挂载了技能路由的测试 Express 应用；engineSkills 提供时会额外启动一个
+ * 伪造的 omp-host engine face（GET /skill 返回 engine 形态的 wire 行），
+ * 使路由内部的代理拉取走真实 HTTP。其余依赖均为固定桩：目录解析指向
+ * projectRoot，设置读取返回空对象，catalog 扫描安装一律返回失败/空。
+ * @param {object} options projectRoot 必填；engineSkills 可选的 engine 行数组；homeDir 可选的 homedir 覆盖
+ * @returns {{ baseUrl: string, close: () => Promise<void> }} 应用基址与关闭回调（连同伪造 engine 一并关闭）
+ */
 const startSkillsApp = ({ projectRoot, engineSkills = null, homeDir = null }) => {
   const app = express();
   app.use(express.json());
@@ -110,6 +124,7 @@ const startSkillsApp = ({ projectRoot, engineSkills = null, homeDir = null }) =>
   };
 };
 
+/** 验证 engine 缺席或遗漏条目时，技能列表回退到本地目录发现并正确标记可重命名性。 */
 describe('skill-routes directory soft fallback', () => {
   /** @type {string | null} */
   let projectRoot = null;
@@ -237,6 +252,7 @@ describe('skill-routes directory soft fallback', () => {
   });
 });
 
+/** 验证 engine 返回的 wire 行在合并后原样保留，以及 .omp/skills 位置到 project/user scope 的推断。 */
 describe('skill-routes engine skills merge and scope inference', () => {
   /** @type {string | null} */
   let projectRoot = null;

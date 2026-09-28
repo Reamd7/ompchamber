@@ -21,12 +21,21 @@
 //! cron-parser's DST hour shifting is not reproduced. Search is bounded to
 //! ~8 years of days instead of the 10 000-step loop limit; expressions that
 //! can never match return `None` (the JS caller maps that to `null`).
+//! 中文说明：手写 cron 表达式解析器，逐段移植 cron-parser@4.9.0 中本服务
+//! 接受的语义子集。整体分两阶段：`CronExpr::parse` 完成 1-6 个字段的别名
+//! 替换、通配符/列表/范围/步长展开以及 dom/dow 的 `L`、`nL`、`#n` 标记
+//! 解析；`next_after` 在固定时区偏移下按天推进搜索、再按时/分/秒取当天
+//! 首个候选时刻。所有错误保留 cron-parser 的英文消息原文（`CronError`），
+//! 便于与 JS 参考实现逐一对照。
 
 use super::timeutil::{Civil, MS_PER_SECOND, days_from_civil, days_in_month, weekday_from_days};
 
 /// cron-parser's non-leap days-in-month table (Feb = 29).
+/// cron-parser 的非闰年每月天数表（二月固定为 29 天）；用于判断 dom 是否
+/// 视为"通配"以及"单月份 + 显式日越界"的校验，与真实闰年无关。
 const DAYS_IN_MONTH_TABLE: [u32; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
+/// 月份三字母别名到月号（1-12）的映射；替换发生在字符白名单校验之前。
 const MONTH_ALIASES: [(&str, u32); 12] = [
     ("jan", 1),
     ("feb", 2),
@@ -42,6 +51,8 @@ const MONTH_ALIASES: [(&str, u32); 12] = [
     ("dec", 12),
 ];
 
+/// 星期三字母别名到星期号（0=周日 .. 6=周六）的映射；dow 允许的 7 会在
+/// 字段解析阶段折叠为 0。
 const DOW_ALIASES: [(&str, u32); 7] = [
     ("sun", 0),
     ("mon", 1),
@@ -52,83 +63,116 @@ const DOW_ALIASES: [(&str, u32); 7] = [
     ("sat", 6),
 ];
 
+/// cron 解析/求值错误；元组字段为 cron-parser 风格的英文错误消息原文。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CronError(pub String);
 
+/// Display 实现：直接透出内部消息字符串，路由层无需额外格式化。
 impl std::fmt::Display for CronError {
+/// 输出构造时携带的原始错误消息。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
+/// std::error::Error 的空实现：消息已由元组字段完整承载。
 impl std::error::Error for CronError {}
 
 /// A single field's values. `L` markers (dom/dow) are tracked separately.
+/// 单个字段解析后的取值集合；数值按升序去重存储，`L` 类标记（dom/dow
+/// 专用）单独跟踪，避免混入数值集合破坏"通配"判定。
 #[derive(Debug, Clone, Default)]
 struct FieldValues {
+/// 该字段允许的数值（升序、去重），支撑二分成员查询。
     values: Vec<u32>,
     /// Plain `L` marker (dom: last day of month).
+/// dom 中的裸 `L` 标记：命中当月最后一天。
     has_l: bool,
     /// `nL` marker: last weekday `n` of the month (day-of-week only).
+/// dow 中的 `nL` 标记：星期 n 限定在当月最后一次出现。
     l_weekday: Option<u32>,
 }
 
+/// 成员查询辅助。
 impl FieldValues {
+/// 数值集合二分查找；`L` 标记不参与，由调用方单独判断。
     fn contains(&self, v: u32) -> bool {
         self.values.binary_search(&v).is_ok()
     }
 }
 
 /// Parsed day-of-week `#` occurrence (1-5), when present.
+/// 一次成功解析后的 cron 表达式：六个字段各保留排序后的取值集合（dom/dow
+/// 额外携带 `L` 类标记），供 `next_after` 做递增搜索。
 #[derive(Debug, Clone)]
 pub struct CronExpr {
+/// 秒字段允许值（0-59，缺省字段默认 0）。
     seconds: Vec<u32>,
+/// 分字段允许值（0-59）。
     minutes: Vec<u32>,
+/// 时字段允许值（0-23）。
     hours: Vec<u32>,
+/// 日（day of month）取值集合及 `L` 标记。
     dom: FieldValues,
+/// 月字段允许值（1-12）。
     months: Vec<u32>,
+/// 星期（day of week）取值集合及 `nL` 标记。
     dow: FieldValues,
     /// `dow#n` nth-day-of-month occurrence.
+/// `dow#n` 的第 n 次出现序号（1-5）。
     nth_day_of_week: Option<u32>,
 }
 
+/// 字段取值范围与能力开关，对应 cron-parser 的约束描述。
 struct Constraints {
+/// 允许的最小值（含）。
     min: i64,
+/// 允许的最大值（含）；dow 为 7，解析时按 7%7 折叠为 0。
     max: i64,
+/// 是否接受 `L`/`nL` 标记（仅 dom 与 dow 为 true）。
     allow_l: bool,
 }
 
+/// 秒字段约束：0-59，不支持 `L`。
 const SECOND_C: Constraints = Constraints {
     min: 0,
     max: 59,
     allow_l: false,
 };
+/// 分字段约束：0-59，不支持 `L`。
 const MINUTE_C: Constraints = Constraints {
     min: 0,
     max: 59,
     allow_l: false,
 };
+/// 时字段约束：0-23，不支持 `L`。
 const HOUR_C: Constraints = Constraints {
     min: 0,
     max: 23,
     allow_l: false,
 };
+/// 日字段约束：1-31，支持 `L`。
 const DOM_C: Constraints = Constraints {
     min: 1,
     max: 31,
     allow_l: true,
 };
+/// 月字段约束：1-12，不支持 `L`。
 const MONTH_C: Constraints = Constraints {
     min: 1,
     max: 12,
     allow_l: false,
 };
+/// 星期字段约束：0-7（7 折叠为 0），支持 `L` 与 `#`。
 const DOW_C: Constraints = Constraints {
     min: 0,
     max: 7,
     allow_l: true,
 };
 
+/// 把值里每个三字母连续段按别名表替换为数字（cron-parser 的
+/// `/[a-z]{3}/gi` 行为）：未知三字母段报错，其余字符（包括单独的 `L`）
+/// 原样保留。
 fn replace_aliases(value: &str, aliases: &[(&str, u32)]) -> Result<String, CronError> {
     // cron-parser replaces every 3-letter run (`/[a-z]{3}/gi`); unknown
     // 3-letter runs are errors. Other characters (including a lone `L`)
@@ -164,6 +208,8 @@ fn replace_aliases(value: &str, aliases: &[(&str, u32)]) -> Result<String, CronE
     Ok(out)
 }
 
+/// 字段字符白名单校验：dom/dow 额外允许 `L`（dow 还允许 `#`），其余
+/// 字段只接受数字与 `,` `*` `/` `-`。
 fn valid_chars(field: &str, value: &str) -> Result<(), CronError> {
     let ok = match field {
         "dayOfMonth" => value.chars().all(|c| {
@@ -197,6 +243,9 @@ fn valid_chars(field: &str, value: &str) -> Result<(), CronError> {
 }
 
 /// Parse one field into sorted values. Mirrors `_parseField`.
+/// 对应 `_parseField`：别名替换 → 字符校验 → `*`/`?` 展开为全区间 →
+/// 逗号分片逐个解析 → 数值排序去重并提取 `L` 标记；集合为空时按
+/// cron-parser 报 "contains no values"。
 fn parse_field(field: &str, raw: &str, c: &Constraints) -> Result<FieldValues, CronError> {
     let mut value = raw.to_string();
     if field == "month" {
@@ -250,14 +299,20 @@ fn parse_field(field: &str, raw: &str, c: &Constraints) -> Result<FieldValues, C
     })
 }
 
+/// 字段解析过程中的中间条目，数值最终汇入 `FieldValues`。
 enum Item {
+/// 普通数值（dow 的 7 已折叠为 0）。
     Num(u32),
+/// 裸 `L`：当月最后一天（仅 dom）。
     L,
     /// `nL`: weekday n restricted to its last occurrence in the month.
+/// `nL`：星期 n 限定为当月最后一次出现（仅 dow）。
     LastWeekday(u32),
 }
 
 /// `parseRepeat`: `n/step` widens to `n-max/step`.
+/// 对应 `parseRepeat`：`n/step` 头部为纯数字时扩写为 `n-max/step`，
+/// 否则原样交给 `parse_range`；无步长时按步长 1 处理。
 fn parse_repeat(
     val: &str,
     c: &Constraints,
@@ -280,6 +335,9 @@ fn parse_repeat(
 }
 
 /// `parseRange`: `a-b/step` expansion with constraint checks.
+/// 对应 `parseRange`：展开 `a-b/step` 并做约束检查。标量分支处理 `L`、
+/// `nL` 与越界数值；区间分支检查范围与步长，dow 中 max 为 7 的区间额外
+/// 先压入 0（保住 `*` 展开后的 8 个取值，通配判定依赖该长度）。
 fn parse_range(
     val: &str,
     repeat: &str,
@@ -404,6 +462,8 @@ fn parse_range(
 }
 
 /// Parse `dow#n` (nth weekday) — extracted before field parsing like the JS.
+/// 对应 `#` 预解析：拆出 `dow#n` 的基数与出现序号（1-5），`#` 与
+/// `,` `/` `-` 混用直接报错；无 `#` 时原样返回。
 fn parse_nth_day(value: &str) -> Result<(String, Option<u32>), CronError> {
     let parts: Vec<&str> = value.split('#').collect();
     if parts.len() == 1 {
@@ -438,8 +498,12 @@ fn parse_nth_day(value: &str) -> Result<(String, Option<u32>), CronError> {
     Ok((parts[0].to_string(), Some(nth as u32)))
 }
 
+/// 解析入口与下一次触发时刻的计算。
 impl CronExpr {
     /// Parse a cron expression (cron-parser `parseExpression`).
+/// 展开预定义别名（`@daily` 等）后按 1-6 个字段解析；缺省字段由
+/// `['0','*','*','*','*','*']` 右对齐补齐。单月份 + 显式 dom 超过非闰月
+/// 天数时报错，其余越界日被过滤（`L` 保留）。
     pub fn parse(expression: &str) -> Result<Self, CronError> {
         let expr = match expression {
             "@yearly" => "0 0 1 1 *",
@@ -514,6 +578,9 @@ impl CronExpr {
     /// cron-parser `next()`: the first matching instant strictly after
     /// `current_utc_ms`, computed under a fixed zone offset (seconds).
     /// `None` mirrors the JS throw paths (`computeNextRunAt` maps to `null`).
+/// 在固定偏移下计算严格晚于 `current_utc_ms` 的首个匹配时刻：按天推进
+///（月份不符直接跳到下月 1 号），命中日再取时/分/秒排序后的首个不早于
+/// 起始时刻的候选。搜索上限约 8 年，永不匹配的表达式返回 `None`。
     pub fn next_after(&self, current_utc_ms: i64, offset_seconds: i64) -> Option<i64> {
         // Matches sit on whole seconds; start strictly after `current`.
         let start_sec = current_utc_ms.div_euclid(MS_PER_SECOND) + 1;
@@ -583,6 +650,9 @@ impl CronExpr {
     }
 
     /// Vixie dom/dow semantics (see cron-parser `_findSchedule`).
+/// Vixie 语义的日匹配：dom 与 dow 同时受限时命中任一即可；通配判定沿用
+/// cron-parser 的取值数量近似（dom 与非闰月天数表比较，dow 达 8 个值
+/// 视为通配）。存在 `#n` 标记时还需满足第 n 次出现。
     fn day_matches(&self, day: &Civil) -> bool {
         let dom_match = self.dom.contains(day.day)
             || (self.dom.has_l && day.day == days_in_month(day.year, day.month));
@@ -614,6 +684,8 @@ impl CronExpr {
         true
     }
 
+/// 显式 `0-6` 只有 7 个取值，按 cron-parser 视为受限而非通配，恒返回
+/// `false`（保留函数形状以对应 JS 结构）。
     fn dow_full_range(&self) -> bool {
         // `*` in dow expands to 0-7 (8 values incl. 7→0). An explicit 0-6 is
         // 7 values and counts as restricted in cron-parser.
@@ -622,6 +694,7 @@ impl CronExpr {
 
     /// `nL` day-of-week: is `day` the last occurrence of weekday `n` this
     /// month (cron-parser `isLastWeekdayOfMonth`)?
+/// `nL` 判定：从当月最后一天反推同星期 n 的日期，比较 day 是否相等。
     fn is_last_weekday_of_month(&self, day: &Civil, weekday: u32) -> bool {
         let last_day = days_in_month(day.year, day.month);
         let last_date = last_day
@@ -631,6 +704,7 @@ impl CronExpr {
     }
 }
 
+/// `dow#n` 判定：day 落在第 n 个 7 天窗口内即第 n 次出现（1-5 有效）。
 fn is_nth_day_match(day: &Civil, nth: u32) -> bool {
     if nth >= 6 {
         return false;
@@ -644,6 +718,7 @@ fn is_nth_day_match(day: &Civil, nth: u32) -> bool {
     occurrence == nth
 }
 
+/// 日期推进一天；跨月/跨年时把时分秒清零。
 fn next_day(day: &Civil) -> Civil {
     let last = days_in_month(day.year, day.month);
     if day.day < last {
@@ -672,10 +747,13 @@ fn next_day(day: &Civil) -> Civil {
     }
 }
 
+/// `timeutil::civil_from_utc_ms` 的转发包装。
 fn civil_from_utc(utc_ms: i64, offset_seconds: i64) -> Civil {
     super::timeutil::civil_from_utc_ms(utc_ms, offset_seconds)
 }
 
+/// 在当天（按字段允许值升序）找不早于 `at_start` 的首个时分秒组合，
+/// 换算回 UTC 毫秒；当天无候选返回 `None`。
 fn first_time_at_or_after(
     day: &Civil,
     hours: &[u32],
@@ -715,6 +793,8 @@ fn first_time_at_or_after(
 
 /// Convenience for validation (`validateCronExpression`): parse + compute one
 /// next occurrence from `now_ms` under the zone's fixed offset.
+/// 便捷校验入口：解析表达式并在 `now_ms` 的时区偏移下能否算出下一次
+/// 触发；解析失败或永不匹配都返回 `false`。
 pub fn validate(expression: &str, timezone: &str, now_ms: i64) -> bool {
     let offset = super::timeutil::offset_or_utc(timezone, now_ms);
     match CronExpr::parse(expression) {
@@ -723,11 +803,13 @@ pub fn validate(expression: &str, timezone: &str, now_ms: i64) -> bool {
     }
 }
 
+/// cron 解析与下一次触发计算的单元测试，断言值与 cron-parser 行为对齐。
 #[cfg(test)]
 mod tests {
     use super::super::timeutil::{is_leap_year, utc_ms_from_civil};
     use super::*;
 
+/// 以 UTC 偏移 0 构造时间戳的测试辅助。
     fn utc(y: i64, m: u32, d: u32, h: u32, mi: u32, s: u32) -> i64 {
         utc_ms_from_civil(
             &Civil {
@@ -742,10 +824,12 @@ mod tests {
         )
     }
 
+/// 解析表达式并取 UTC 偏移 0 下一次触发时刻的测试辅助。
     fn next(expr: &str, now: i64) -> Option<i64> {
         CronExpr::parse(expr).ok()?.next_after(now, 0)
     }
 
+/// 五字段表达式在步长、跨日、边界（严格晚于当前时刻）与星期匹配上给出正确的下一次触发。
     #[test]
     fn parses_five_field_expressions() {
         // Every 5 minutes from 14:03.
@@ -783,6 +867,7 @@ mod tests {
         );
     }
 
+/// 别名（月/星期）、范围、列表与 `n/step` 扩写均按 cron-parser 语义求值。
     #[test]
     fn supports_names_ranges_lists_and_steps() {
         let now = utc(2026, 1, 1, 0, 0, 0);
@@ -808,6 +893,7 @@ mod tests {
         assert_eq!(next("0 9 * * 7", now), Some(utc(2026, 1, 4, 9, 0, 0)));
     }
 
+/// 第一个秒字段可省略，存在时参与下一次时刻计算。
     #[test]
     fn supports_optional_seconds_field() {
         let now = utc(2026, 1, 1, 9, 0, 0);
@@ -816,6 +902,7 @@ mod tests {
         assert_eq!(next("*/15 * * * * *", now), Some(utc(2026, 1, 1, 9, 0, 15)));
     }
 
+/// 2 月 29 日表达式跳到下一个闰年（2028）触发。
     #[test]
     fn handles_leap_day_expressions() {
         let now = utc(2026, 1, 1, 0, 0, 0);
@@ -823,6 +910,7 @@ mod tests {
         assert_eq!(next("0 0 29 2 *", now), Some(utc(2028, 2, 29, 0, 0, 0)));
     }
 
+/// dom 与 dow 同时受限时按 Vixie OR 语义命中任一侧。
     #[test]
     fn vixie_day_semantics_when_both_dom_and_dow_restricted() {
         // "30 4 1,15 * 5": 04:30 on the 1st and 15th plus every Friday.
@@ -833,6 +921,7 @@ mod tests {
         assert_eq!(next("0 0 1 * *", now), Some(utc(2026, 2, 1, 0, 0, 0)));
     }
 
+/// `L`、`nL` 与 `#n` 标记分别命中当月最后一天、最后一个星期 n 与第 n 次出现。
     #[test]
     fn supports_l_and_nth_markers() {
         let now = utc(2026, 1, 1, 0, 0, 0);
@@ -844,6 +933,7 @@ mod tests {
         assert_eq!(next("0 0 * * 5#2", now), Some(utc(2026, 1, 9, 0, 0, 0)));
     }
 
+/// 各类非法表达式返回与 cron-parser 一致的错误消息。
     #[test]
     fn rejects_invalid_expressions_with_cron_parser_messages() {
         assert_eq!(
@@ -888,6 +978,7 @@ mod tests {
         );
     }
 
+/// 永不匹配的表达式使 `next` 与 `validate` 分别返回 `None` 与 `false`。
     #[test]
     fn never_matching_expressions_return_none() {
         // 30 February can never happen (filtered out of the dom set).
@@ -897,6 +988,7 @@ mod tests {
         assert!(validate("*/5 * * * *", "UTC", now));
     }
 
+/// 非零固定时区偏移下按本地时刻换算回 UTC 触发时间。
     #[test]
     fn computes_under_a_fixed_zone_offset() {
         // 09:00 UTC == 11:00 at Kyiv's +2 offset: cron in Kyiv zone at 09:00
@@ -909,6 +1001,7 @@ mod tests {
         );
     }
 
+/// `@daily` 与 `@hourly` 预定义别名按展开式触发。
     #[test]
     fn predefined_aliases_expand() {
         let now = utc(2026, 1, 1, 12, 0, 0);
@@ -916,6 +1009,7 @@ mod tests {
         assert_eq!(next("@hourly", now), Some(utc(2026, 1, 1, 13, 0, 0)));
     }
 
+/// 非闰年天数表与闰年判定保持一致，且跨闰二月的日匹配正确。
     #[test]
     fn is_leap_year_table_agrees_with_helper() {
         assert!(is_leap_year(2028));

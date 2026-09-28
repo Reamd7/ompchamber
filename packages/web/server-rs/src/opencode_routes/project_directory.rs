@@ -3,6 +3,12 @@
 //! `resolveOptionalProjectDirectory`). `fs_routes::workspace` keeps its own
 //! copy for the fs surface; this one serves the opencode config routes and
 //! reads the settings fallback through the shared settings store.
+//!
+//! 中文说明：内联移植 `opencode/project-directory-runtime.js` 的三个
+//! 入口（路径校验、必需/可选项目目录解析）。候选目录来自
+//! `x-opencode-directory` 头（带 `uri` 编码标记时才做百分号解码）与
+//! `?directory=` query；无显式候选时回退到设置里的 `lastDirectory`，
+//! 再回退到活动项目。`fs_routes::workspace` 另有一份独立拷贝。
 
 use std::path::PathBuf;
 
@@ -14,14 +20,23 @@ use crate::settings::normalization::normalize_directory_path;
 
 use super::webutil::{first_query_value, header_value, resolve_path};
 
+/// 中文：项目目录解析结果：规范化目录、词法化请求目录与错误文案；
+/// 成功时 `error` 为 `None`，失败时两个目录字段为 `None`。
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectDirectory {
+    /// 校验通过并 canonicalize 后的目录（失败时为 None）。
     pub directory: Option<PathBuf>,
+    /// 词法解析后的原始请求目录（用于回显/设置存储）。
     pub requested_directory: Option<PathBuf>,
+    /// 解析失败原因（无显式请求且无可用回退时也为 None）。
     pub error: Option<String>,
 }
 
 /// `validateDirectoryPath` — returns (canonical, lexical requested).
+/// 中文：校验目录参数并返回 (canonical 目录, 词法请求目录) 二元组：
+/// 空值报错；经规范化与词法解析后用 `tokio::fs::metadata` 确认存在
+/// 且是目录，错误按 NotFound/PermissionDenied/其他映射为固定文案，
+/// 最后 canonicalize 失败也报统一错误。
 pub(crate) async fn validate_directory_path(candidate: &str) -> Result<(PathBuf, PathBuf), String> {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
@@ -50,6 +65,9 @@ pub(crate) async fn validate_directory_path(candidate: &str) -> Result<(PathBuf,
     }
 }
 
+/// 中文：收集显式目录候选：`x-opencode-directory` 头优先（仅当
+/// `x-opencode-directory-encoding: uri` 时做百分号解码，保留直连
+/// API 客户端送来的字面 `%` 序列），其次是 `?directory=` query。
 fn directory_candidates(headers: &HeaderMap, uri: &axum::http::Uri) -> Vec<String> {
     let mut candidates = Vec::new();
     let header_encoding = header_value(headers, "x-opencode-directory-encoding");
@@ -73,6 +91,8 @@ fn directory_candidates(headers: &HeaderMap, uri: &axum::http::Uri) -> Vec<Strin
     candidates.into_iter().filter(|v| !v.is_empty()).collect()
 }
 
+/// 中文：单个组件的百分号解码（对应 `decodeURIComponent`）：
+/// `%XX` 序列逐字节解码，序列不完整或结果非 UTF-8 时返回 `None`。
 fn percent_decode_component(input: &str) -> Option<String> {
     let raw = input.as_bytes();
     let mut bytes = Vec::with_capacity(raw.len());
@@ -93,6 +113,10 @@ fn percent_decode_component(input: &str) -> Option<String> {
 
 /// `resolveProjectDirectory`: explicit header/query candidates first, then
 /// settings `lastDirectory`, then the active project.
+/// 中文：解析必需的项目目录，优先级：显式头/query 候选（逐个校验，
+/// 全失败则返回最后一个错误）→ 设置中的 `lastDirectory` → 设置中
+/// 的活动项目（`activeProjectId` 匹配不到则取首个，仅保留路径非空
+/// 的项目）。全部不可用时返回错误，要求提供目录参数或活动项目。
 pub(crate) async fn resolve_project_directory(
     ctx: &RouterContext,
     headers: &HeaderMap,
@@ -204,6 +228,8 @@ pub(crate) async fn resolve_project_directory(
 }
 
 /// `resolveOptionalProjectDirectory`.
+/// 中文：解析可选的项目目录：仅当存在显式头/query 候选时才校验；
+/// 没有候选返回全 `None` 的成功结果，不回退到设置。
 pub(crate) async fn resolve_optional_project_directory(
     headers: &HeaderMap,
     uri: &axum::http::Uri,
@@ -237,6 +263,8 @@ pub(crate) async fn resolve_optional_project_directory(
 }
 
 /// Header-only directory hint (`x-opencode-directory` or `?directory=`).
+/// 中文：只看请求头的目录提示（`x-opencode-directory` 或
+/// `?directory=`），返回首个候选原文，不做校验。
 pub(crate) fn requested_directory_hint(
     headers: &HeaderMap,
     uri: &axum::http::Uri,

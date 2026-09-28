@@ -15,14 +15,28 @@
 //! skipped). Registration order in the JS (`startup-pipeline-runtime.js`,
 //! after `registerAuthAndAccessRoutes`, before the proxy) puts the HTTP
 //! routes behind the same gate.
+//!
+//! 中文说明：JS 版 `server/lib/dictation/runtime.js` 的移植，实现流式
+//! 听写 WebSocket 端点与 HTTP 状态/模型/TTS 路由。WS 协议为 JSON 文本
+//! 帧（协议帧类型见上方英文说明）。鉴权与 terminal WS 一致：/api 网关层
+//! 覆盖升级请求，仅在配置了 UI 密码时才在此执行 origin 检查；HTTP 路由
+//! 也注册在同一网关之后（位于 proxy 之前）。
 
+/// PCM16 音频辅助：格式解析、峰值检测、WAV 封装与流式重采样。
 pub mod audio;
+/// 本地 sherpa-onnx 引擎接缝与默认的 Unavailable 引擎。
 pub mod local;
+/// 本地 STT/TTS 模型目录与 id/语言/speaker 解析。
 pub mod model_catalog;
+/// 模型归档下载、解压与安装完整性检查。
 pub mod model_downloader;
+/// OpenAI 兼容端点的伪流式转写会话。
 pub mod openai_session;
+/// 核心服务：provider 解析、就绪状态与模型生命周期管理。
 pub mod service;
+/// 流式转写会话契约与事件类型。
 pub mod session;
+/// 每条听写流的会话生命周期管理（start/chunk/finish/cancel）。
 pub mod stream_manager;
 
 use std::sync::Arc;
@@ -46,19 +60,27 @@ use session::SttSessionOutcome;
 use stream_manager::DictationStreamManager;
 
 /// `DICTATION_WS_MAX_PAYLOAD_BYTES`.
+/// WS 单帧最大载荷（512 KiB），超出由 axum 在传输层拒绝。
 const DICTATION_WS_MAX_PAYLOAD_BYTES: usize = 512 * 1024;
 /// `DICTATION_WS_HEARTBEAT_INTERVAL_MS`.
+/// 心跳间隔（30 秒）：空闲连接周期性发送 WebSocket ping 保活。
 const DICTATION_WS_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
 /// The route's own `express.json({ limit: '1mb' })` middleware.
+/// speak 路由的 JSON 请求体上限（1 MiB）。
 const SPEAK_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 
+/// 路由共享状态：核心服务与 UI 鉴权开关。
 #[derive(Clone)]
 struct DictationState {
+    /// 共享的听写核心服务。
     service: Arc<DictationService>,
     /// JS `uiAuthController?.enabled` — governs the upgrade origin check.
+    /// 中文：配置了非空 UI 密码时为 true。
     auth_enabled: bool,
 }
 
+/// 构建听写路由：创建服务与状态，并套上与 JS 相同的 UI 鉴权中间件。
+/// 模型目录为 `data_dir/speech-models`（对应 JS 用户配置根下的同名目录）。
 pub fn router(ctx: RouterContext) -> axum::Router {
     // index.js: `dictationModelsDir = path.join(OMPCHAMBER_USER_CONFIG_ROOT,
     // 'speech-models')`.
@@ -80,6 +102,7 @@ pub fn router(ctx: RouterContext) -> axum::Router {
         .with_state(state)
 }
 
+/// 路由表：TTS speak、status、模型下载/删除与 WS 升级端点。
 fn routes() -> Router<DictationState> {
     Router::new()
         .route("/api/dictation/tts/speak", post(dictation_tts_speak))
@@ -95,15 +118,18 @@ fn routes() -> Router<DictationState> {
         .route("/api/dictation/ws", get(dictation_ws))
 }
 
+/// 测试用路由：跳过鉴权层，直接以给定状态构建。
 #[cfg(test)]
 pub(crate) fn test_router(state: DictationState) -> Router {
     routes().with_state(state)
 }
 
+/// 构造 `{ "error": message }` 形式的 JSON 错误响应。
 fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// 读取并解析 JSON 请求体：超上限 413、空体视为 `{}`、非法 JSON 400。
 async fn read_json_body(request: Request) -> Result<Value, Response> {
     let bytes = to_bytes(request.into_body(), SPEAK_BODY_LIMIT_BYTES)
         .await
@@ -117,6 +143,9 @@ async fn read_json_body(request: Request) -> Result<Value, Response> {
 
 /// `slice(0, 4000)` on the client-provided sample (UTF-16 units in the JS;
 /// chars here — identical for BMP text).
+///
+/// 中文：languageSample 截断为前 4000 个字符（JS 按 UTF-16 码元截断，
+/// 对 BMP 文本两者等价）。
 fn sample_prefix(value: &str) -> String {
     value.chars().take(4000).collect()
 }
@@ -126,6 +155,8 @@ fn sample_prefix(value: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// JS `Number.isInteger`: an integer-valued JSON number.
+///
+/// 中文：仅接受整数值、有限且在安全整数范围内的数字。
 fn json_integer(value: Option<&Value>) -> Option<i64> {
     let number = value?.as_f64()?;
     if number.fract() != 0.0 || !number.is_finite() || number.abs() >= 9.007_199_254_740_992e15 {
@@ -134,6 +165,9 @@ fn json_integer(value: Option<&Value>) -> Option<i64> {
     Some(number as i64)
 }
 
+/// POST /api/dictation/tts/speak：本地 TTS 合成。text 空白返回 400；
+/// 就绪错误 503（含 retryable/reasonCode）；引擎抛错 500；成功回传音频
+/// 字节并附 X-Speech-Model / X-Speech-Language 头。
 async fn dictation_tts_speak(State(state): State<DictationState>, request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -212,13 +246,17 @@ async fn dictation_tts_speak(State(state): State<DictationState>, request: Reque
 // Status + model management
 // ---------------------------------------------------------------------------
 
+/// /api/dictation/status 的查询参数。
 #[derive(Debug, Deserialize, Default)]
 struct StatusQuery {
+    /// provider 名称（`local` | `openai-compatible`）。
     provider: Option<String>,
+    /// 请求的本地 STT 模型 id。
     #[serde(rename = "localModel")]
     local_model: Option<String>,
 }
 
+/// GET /api/dictation/status：把 provider/localModel 查询参数转发给服务层。
 async fn dictation_status(
     State(state): State<DictationState>,
     Query(query): Query<StatusQuery>,
@@ -230,6 +268,8 @@ async fn dictation_status(
     Json(state.service.get_status(&options).await).into_response()
 }
 
+/// POST /api/dictation/models/{modelId}/download：触发后台下载；
+/// 服务层返回失败（如未知 id）时以 400 应答。
 async fn dictation_model_download(
     State(state): State<DictationState>,
     Path(model_id): Path<String>,
@@ -242,6 +282,8 @@ async fn dictation_model_download(
     Json(result).into_response()
 }
 
+/// DELETE /api/dictation/models/{modelId}：删除已安装模型；
+/// 未知 id 或下载中由服务层拒绝并以 400 应答。
 async fn dictation_model_delete(
     State(state): State<DictationState>,
     Path(model_id): Path<String>,
@@ -261,6 +303,8 @@ async fn dictation_model_delete(
 /// JS `upgradeHandler`: only while `uiAuthController.enabled` — the 401
 /// session-token check already ran in the gate layer for the upgrade
 /// request; the origin check is this module's own responsibility.
+///
+/// 中文：返回 `Some(响应)` 表示拒绝升级（403 Invalid origin），None 放行。
 fn ws_origin_gate(auth_enabled: bool, parts: &Parts) -> Option<Response> {
     if auth_enabled && !crate::ui_auth::is_request_origin_allowed(parts) {
         return Some(crate::ui_auth::reject_websocket_upgrade(
@@ -271,6 +315,8 @@ fn ws_origin_gate(auth_enabled: bool, parts: &Parts) -> Option<Response> {
     None
 }
 
+/// GET /api/dictation/ws：origin 门控通过后升级 WebSocket，
+/// 并限制单帧最大载荷。
 async fn dictation_ws(
     State(state): State<DictationState>,
     ws: WebSocketUpgrade,
@@ -285,6 +331,9 @@ async fn dictation_ws(
 
 /// One connected client: the shared service, a per-connection stream
 /// manager, a ready frame, a heartbeat, and the message pump.
+///
+/// 中文：连接建立即发 ready 帧；主循环 select 心跳 ping、出站帧队列与
+/// 入站帧，任一方失败/关闭即退出并清理全部流（cleanup_all）。
 async fn run_dictation_socket(service: Arc<DictationService>, mut socket: WebSocket) {
     let (emit_tx, mut emit_rx) = mpsc::unbounded_channel::<Value>();
 
@@ -362,6 +411,9 @@ async fn run_dictation_socket(service: Arc<DictationService>, mut socket: WebSoc
 }
 
 /// One inbound text frame (`socket.on('message')`).
+///
+/// 中文：非 JSON 对象的帧静默丢弃；start 异步执行（不阻塞后续 chunk），
+/// chunk 要求非负整数 seq，finish 的 finalSeq 允许非整数，ping 回 pong。
 async fn handle_socket_text(
     manager: &Arc<DictationStreamManager>,
     emit_tx: &mpsc::UnboundedSender<Value>,
@@ -432,6 +484,7 @@ async fn handle_socket_text(
     }
 }
 
+/// 路由层契约测试：speak/status/模型管理 HTTP 行为与 WS origin 门控。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,8 +500,10 @@ mod tests {
     use service::ReadyError;
     use session::StreamingTranscriptionSession;
 
+    /// 临时目录名的去重计数器。
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
+    /// 创建唯一的临时目录。
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-dictation-routes-{label}-{}-{}",
@@ -459,19 +514,27 @@ mod tests {
         dir
     }
 
+    /// 恒返回空文本的转写器桩。
     struct NullTranscriber;
+    /// 桩实现：任何音频都转写为空字符串。
     impl Transcriber for NullTranscriber {
+        /// 立即成功返回空文本。
         fn transcribe(&self, _params: TranscribeParams) -> TranscribeFuture {
             Box::pin(async { Ok(String::new()) })
         }
     }
 
+    /// 记录合成参数并返回固定音频的 speaker 桩。
     struct RecordingSpeaker {
+        /// 收到的合成参数记录。
         calls: Mutex<Vec<local::LocalSpeechParams>>,
+        /// 每次合成返回的固定音频字节。
         audio: Vec<u8>,
     }
 
+    /// 桩实现：记录参数并以 audio/wav 返回预置字节。
     impl local::LocalSpeaker for RecordingSpeaker {
+        /// 记录参数，异步返回预置音频。
         fn synthesize(
             &self,
             params: local::LocalSpeechParams,
@@ -490,8 +553,11 @@ mod tests {
         }
     }
 
+    /// 恒成功的识别器桩。
     struct NullRecognizer;
+    /// 桩实现：返回最小静音会话与新建事件通道。
     impl local::LocalRecognizer for NullRecognizer {
+        /// 立即返回 NullSession。
         fn create_session(
             &self,
             _models_dir: &std::path::Path,
@@ -507,14 +573,21 @@ mod tests {
             >,
         > {
             Box::pin(async {
+                // 最小静音会话桩。
                 struct NullSession;
+                // 会话契约的空实现。
                 impl StreamingTranscriptionSession for NullSession {
+                    // 固定 16 kHz。
                     fn required_sample_rate(&self) -> u32 {
                         16000
                     }
+                    // 忽略音频。
                     fn append_pcm16(&mut self, _chunk: Vec<u8>) {}
+                    // 空提交。
                     fn commit(&mut self) {}
+                    // 空清除。
                     fn clear(&mut self) {}
+                    // 空关闭。
                     fn close(&mut self) {}
                 }
                 let (tx, rx) = mpsc::unbounded_channel();
@@ -526,6 +599,7 @@ mod tests {
         }
     }
 
+    /// 在模型目录中伪造 kokoro 英文模型的必需文件（含 espeak-ng-data 目录）。
     fn install_kokoro_english(models_dir: &std::path::Path) {
         let model_dir = models_dir.join("kokoro-en-v0_19");
         std::fs::create_dir_all(model_dir.join("espeak-ng-data")).unwrap();
@@ -534,6 +608,7 @@ mod tests {
         }
     }
 
+    /// 以给定引擎构造无鉴权的测试 router 与 speaker 桩。
     fn fixture(models_dir: PathBuf, speaker_audio: Vec<u8>) -> (Router, Arc<RecordingSpeaker>) {
         let speaker = Arc::new(RecordingSpeaker {
             calls: Mutex::new(Vec::new()),
@@ -551,6 +626,7 @@ mod tests {
         (test_router(state), speaker)
     }
 
+    /// 单发请求并返回（状态码, JSON 体, 原始字节, 响应头）。
     async fn call(
         router: &Router,
         request: Request<Body>,
@@ -574,6 +650,7 @@ mod tests {
         (status, value, body, headers)
     }
 
+    /// 构造 JSON POST 请求。
     fn post_json(path: &str, body: Value) -> Request<Body> {
         HttpRequest::post(path)
             .header(header::CONTENT_TYPE, "application/json")
@@ -581,6 +658,7 @@ mod tests {
             .unwrap()
     }
 
+    /// 验证：空白 text 返回 400 "Text is required"。
     #[tokio::test]
     async fn speak_requires_text() {
         let (router, _) = fixture(temp_dir("speak-400"), vec![]);
@@ -593,6 +671,8 @@ mod tests {
         assert_eq!(body["error"], "Text is required");
     }
 
+    /// 验证：成功合成回传音频字节与 Content-Type/X-Speech-Model 头，
+    /// speaker 与 speed 透传到引擎。
     #[tokio::test]
     async fn speak_streams_wav_bytes_with_model_headers() {
         let dir = temp_dir("speak-200");
@@ -618,6 +698,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：language=auto 检测出乌克兰语并切模型，回传 X-Speech-Language 头。
     #[tokio::test]
     async fn speak_reports_language_when_auto_detected() {
         let dir = temp_dir("speak-lang");
@@ -650,6 +731,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：模型未安装时 503 + model_download_in_progress + retryable。
     #[tokio::test]
     async fn speak_answers_503_while_model_downloading() {
         let (router, _) = fixture(temp_dir("speak-503"), vec![]);
@@ -664,6 +746,7 @@ mod tests {
         assert_eq!(body["reasonCode"], "model_download_in_progress");
     }
 
+    /// 验证：已安装模型 + Unavailable 引擎走 JS catch 的 500 路径。
     #[tokio::test]
     async fn speak_answers_500_when_the_local_engine_throws() {
         // Installed model + Unavailable engine → the JS route's catch.
@@ -695,6 +778,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：状态路由回传 provider/available/reasonCode/模型清单形状。
     #[tokio::test]
     async fn status_route_reports_models_missing_shape() {
         let (router, _) = fixture(temp_dir("status"), vec![]);
@@ -711,6 +795,7 @@ mod tests {
         assert_eq!(body["ttsModels"].as_array().unwrap().len(), 14);
     }
 
+    /// 验证：provider 查询参数透传，openai-compatible 恒 available。
     #[tokio::test]
     async fn status_route_forwards_provider_query() {
         let (router, _) = fixture(temp_dir("status-compat"), vec![]);
@@ -722,6 +807,8 @@ mod tests {
         assert_eq!(body["available"], true);
     }
 
+    /// 验证：下载/删除路由对未知 id 回 400；已安装模型下载为 no-op、
+    /// 删除成功。
     #[tokio::test]
     async fn model_routes_validate_ids() {
         let dir = temp_dir("models");
@@ -759,6 +846,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：非升级 GET 请求被 axum 拒绝为 400（JS 未注册 HTTP 路由）。
     #[tokio::test]
     async fn ws_endpoint_rejects_plain_gets() {
         // The JS registers no HTTP route on the WS path; axum's upgrade
@@ -771,6 +859,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
+    /// 构造带 Origin/Host 头的升级请求 Parts。
     fn origin_parts(origin: &str, host: &str) -> Parts {
         let request = HttpRequest::get("/api/dictation/ws")
             .header(header::ORIGIN, origin)
@@ -781,6 +870,8 @@ mod tests {
         parts
     }
 
+    /// 验证：origin 门控仅在鉴权开启时拒绝外域；同源与打包客户端放行；
+    /// 未配置鉴权时不做任何 origin 检查。
     #[test]
     fn ws_origin_gate_rejects_foreign_origins_only_while_auth_enabled() {
         // While UI auth is configured, a foreign origin is rejected with the
@@ -815,6 +906,8 @@ mod tests {
         );
     }
 
+    /// 验证：路由层手工拼装的 ReadyError JSON 形状
+    /// （error/retryable/reasonCode）。
     #[tokio::test]
     async fn ready_error_serializes_the_ready_shape() {
         // Compile-time shape check for the route-facing error type.

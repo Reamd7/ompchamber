@@ -17,6 +17,12 @@
 //! lock (a generation guard replaces the JS `if (!state) return` staleness
 //! check); the `setTimeout` finalization budget becomes an abortable tokio
 //! task capturing the manager `Arc`.
+//!
+//! 中文说明：服务端权威的流式听写状态机，一条 WebSocket 连接对应一个
+//! 管理器实例。核心职责：按 seq 重排乱序 chunk 并 ack 最高连续 seq；
+//! 把客户端 PCM 重采样到提供方采样率；在自然停顿处分段（纯静音段清空、
+//! 绝不提交）；把分段转写拼接成实时 partial，全部提交段拿到 final 转写后
+//! 发出最终文本；并按剩余工作量自适应地计算最终化超时预算。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +38,9 @@ use super::session::{
 };
 use crate::dictation_tts::tts::stt::lenient_base64_decode;
 
+/// 最终化超时的基础预算（毫秒）。
 const DEFAULT_FINAL_TIMEOUT_MS: u64 = 10_000;
+/// 分段最小长度（秒）：达到后遇到停顿才切分。
 // Parakeet is a full-attention conformer: decode cost and peak memory grow
 // quadratically with segment length (measured: 60s -> 2.1s/+90MB,
 // 300s -> 21.3s/+1.5GB). Segmenting keeps a long dictation off that curve
@@ -40,13 +48,21 @@ const DEFAULT_FINAL_TIMEOUT_MS: u64 = 10_000;
 // Typical dictations are shorter than the minimum and are decoded as one
 // segment.
 const DEFAULT_SEGMENT_MIN_SECONDS: f64 = 60.0;
+/// 分段硬上限（秒）：达到即无条件切分，与停顿无关。
 const DEFAULT_SEGMENT_MAX_SECONDS: f64 = 90.0;
+/// 自适应最终化超时的总上限（5 分钟）。
 const FINAL_TIMEOUT_MAX_MS: u64 = 5 * 60 * 1000;
+/// 每个待完成分段追加的预算（毫秒）。
 const FINAL_TIMEOUT_PER_PENDING_SEGMENT_MS: u64 = 15 * 1000;
+/// 每秒尚未提交的音频追加的预算（毫秒）。
 const FINAL_TIMEOUT_PER_PENDING_AUDIO_SECOND_MS: u64 = 1500;
+/// 每个仍缺失的 seq（客户端可能还在补发）追加的预算（毫秒）。
 const FINAL_TIMEOUT_PER_MISSING_SEQ_MS: u64 = 250;
+/// PCM16 峰值低于该阈值视为静音。
 const SILENCE_PEAK_THRESHOLD: i32 = 300;
 
+/// 秒数换算成 PCM16 单声道字节数（每样本 2 字节）；正数至少折算为
+/// 1 字节，非正数返回 0。
 fn seconds_to_pcm16_bytes(seconds: f64, sample_rate: u32) -> u64 {
     if seconds > 0.0 {
         (seconds * sample_rate as f64 * 2.0).round().max(1.0) as u64
@@ -55,6 +71,8 @@ fn seconds_to_pcm16_bytes(seconds: f64, sample_rate: u32) -> u64 {
     }
 }
 
+/// 判断当前分段是否应切分：达到硬上限时无条件切；否则要求已达到最小
+/// 长度且最近一个 chunk 足够安静（约一秒的静音≈句子边界而非词间空隙）。
 /// Split the current segment once it is long enough to be worth decoding on
 /// its own and the speaker has just gone quiet, or unconditionally at the
 /// hard cap. Client chunks are ~1s, so a quiet chunk is roughly a second of
@@ -70,32 +88,54 @@ fn should_split_segment(state: &StreamState) -> bool {
     state.last_chunk_peak < SILENCE_PEAK_THRESHOLD
 }
 
+/// 单条听写流的全部服务端状态（对应 JS stream-manager 的 state 对象）。
 struct StreamState {
+    /// STT 会话；清理后为 None。
     session: Option<Box<dyn StreamingTranscriptionSession>>,
+    /// 提供方要求的采样率（重采样目标）。
     output_rate: u32,
+    /// 输入→输出采样率重采样器；两者一致时为 None。
     resampler: Option<Pcm16MonoResampler>,
+    /// 乱序到达、尚未能按 seq 连续转发的 chunk 缓冲。
     received_chunks: HashMap<i64, Vec<u8>>,
+    /// 下一个待转发的 seq。
     next_seq_to_forward: i64,
+    /// 已确认的最高连续 seq；-1 表示尚未收到任何 chunk。
     ack_seq: i64,
+    /// 分段最小字节数；达到后遇静音才切分。
     segment_min_bytes: u64,
+    /// 分段硬上限字节数；达到即无条件切分。
     segment_max_bytes: u64,
+    /// 当前分段自上次提交/清空以来累计的字节数。
     bytes_since_commit: u64,
+    /// 当前分段内的音频峰值。
     peak_since_commit: i32,
+    /// 最近一个转发 chunk 的峰值，用于静音判定。
     last_chunk_peak: i32,
+    /// 已提交分段的 id（按提交顺序）。
     committed_segment_ids: Vec<String>,
+    /// 插入序保存的分段转写。
     /// Insertion-ordered segment transcripts (the JS `Map`).
     transcripts_by_segment_id: Vec<(String, String)>,
+    /// 已拿到 final 转写的分段 id 集合。
     final_transcript_segment_ids: HashSet<String>,
+    /// 已发出 commit、尚未收到 committed 事件的次数。
     pending_commits: u64,
+    /// 客户端已发送 finish。
     finish_requested: bool,
+    /// finish 已封板（尾部音频已清空或提交）。
     finish_sealed: bool,
+    /// `final_seq`：finish 携带的最高 seq，原样保存 JSON 数字。
     /// `null` until `finish` arrives; f64 because the JS stores the raw
     /// JSON number (the transport validates `typeof === 'number'` only).
     final_seq: Option<f64>,
+    /// 最终化超时任务句柄；重新调度或清理时会被 abort。
     final_timeout: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// 分段转写的存取、裁剪与排序辅助。
 impl StreamState {
+    /// 取指定分段的转写；无记录时返回空串。
     fn transcript_for(&self, segment_id: &str) -> &str {
         self.transcripts_by_segment_id
             .iter()
@@ -104,6 +144,7 @@ impl StreamState {
             .unwrap_or("")
     }
 
+    /// 写入分段转写：已存在则原位替换，否则追加到末尾（保持插入序）。
     /// `Map.set` semantics: replace in place, or append.
     fn set_transcript(&mut self, segment_id: String, transcript: String) {
         if let Some(slot) = self
@@ -118,6 +159,7 @@ impl StreamState {
         }
     }
 
+    /// 丢弃既未提交、也没有 final 转写的分段记录（清空静音尾部时调用）。
     fn drop_uncommitted_non_final_transcripts(&mut self) {
         let committed: HashSet<&str> = self
             .committed_segment_ids
@@ -130,6 +172,8 @@ impl StreamState {
         });
     }
 
+    /// 最终文本的分段顺序：先按提交序排列的已提交段，其后是尚未提交
+    /// 但已有转写的段。
     fn ordered_segment_ids(&self) -> Vec<String> {
         let committed: HashSet<&str> = self
             .committed_segment_ids
@@ -146,11 +190,16 @@ impl StreamState {
     }
 }
 
+/// streams 表中的条目：状态 + 代数标记。
 struct StreamEntry {
+    /// 代数；同 id 重新 start 会分配新代数，旧会话的异步事件据此判定过期。
     generation: u64,
+    /// 流状态。
     state: StreamState,
 }
 
+/// 释放条目持有的资源：abort 最终化超时任务并关闭会话。幂等——字段被
+/// take 清空后再次调用无副作用。
 fn close_entry(entry: &mut StreamEntry) {
     if let Some(handle) = entry.state.final_timeout.take() {
         handle.abort();
@@ -160,26 +209,39 @@ fn close_entry(entry: &mut StreamEntry) {
     }
 }
 
+/// dictationId → 流条目的共享容器；互斥锁对应 JS 的单线程事件循环。
 type Streams = Mutex<HashMap<String, StreamEntry>>;
 
+/// 加锁辅助：锁中毒时恢复内层数据继续使用，不让一次 panic 毁掉整条连接。
 fn lock(streams: &Streams) -> MutexGuard<'_, HashMap<String, StreamEntry>> {
     streams.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 听写流管理器（对应 JS 的 `DictationStreamManager`）：持有全部活跃流与
+/// STT 会话工厂。分段参数与超时预算保持可赋值，便于测试与后续调优。
 /// `DictationStreamManager`. The segment bounds and timeout budget stay
 /// assignable for the same reasons the JS leaves them assignable (tests and
 /// future tuning).
 pub struct DictationStreamManager {
+    /// 出站消息通道（发往 WebSocket）。
     emit_tx: mpsc::UnboundedSender<Value>,
+    /// STT 会话工厂，负责选择本地/远程提供方。
     create_stt_session: CreateSttSession,
+    /// 基础最终化超时（毫秒）。
     pub final_timeout_ms: u64,
+    /// 分段最小长度（秒）。
     pub segment_min_seconds: f64,
+    /// 分段硬上限（秒）。
     pub segment_max_seconds: f64,
+    /// dictationId → 流条目。
     streams: Streams,
+    /// 代数计数器，每次 start 原子递增。
     generations: AtomicU64,
 }
 
+/// 管理器主体：start/chunk/finish/cancel 的处理与封板、最终化判定。
 impl DictationStreamManager {
+    /// 用显式的超时与分段参数构造（对应 JS 测试直接给这些字段赋值）。
     /// Same, with explicit tuning (the JS tests assign these fields).
     pub fn with_bounds(
         emit_tx: mpsc::UnboundedSender<Value>,
@@ -199,6 +261,8 @@ impl DictationStreamManager {
         })
     }
 
+    /// 以默认参数构造共享管理器；返回 `Arc` 是因为会话 pump 与最终化
+    /// 超时任务都要捕获它（对应 JS 闭包捕获 `this`）。
     /// Construct the shared manager (an `Arc` because session pumps and the
     /// finalization timeout capture it, like the JS closures capture
     /// `this`).
@@ -217,14 +281,17 @@ impl DictationStreamManager {
         })
     }
 
+    /// 发送一条消息到 WebSocket 通道；接收端已关闭时静默丢弃。
     fn emit(&self, message: Value) {
         let _ = self.emit_tx.send(message);
     }
 
+    /// 发送 ack，携带当前最高连续 seq。
     fn emit_ack(&self, dictation_id: &str, ack_seq: i64) {
         self.emit(json!({ "type": "ack", "dictationId": dictation_id, "ackSeq": ack_seq }));
     }
 
+    /// 发送 error 消息；提供 reason_code 时附带 `reasonCode` 字段。
     fn fail_stream(
         &self,
         dictation_id: &str,
@@ -244,6 +311,7 @@ impl DictationStreamManager {
         self.emit(payload);
     }
 
+    /// 清理流：从表中移除条目，关闭会话并终止超时任务。
     /// Lock-free emit, then remove the stream (may be called with the map
     /// lock held by the caller — cleanup itself runs after release).
     fn cleanup_stream(&self, dictation_id: &str) {
@@ -253,11 +321,13 @@ impl DictationStreamManager {
         }
     }
 
+    /// 报错后清理流（不产出最终文本）。
     fn fail_and_cleanup_stream(&self, dictation_id: &str, error: &str, retryable: bool) {
         self.fail_stream(dictation_id, error, retryable, None);
         self.cleanup_stream(dictation_id);
     }
 
+    /// 清理全部活跃流（连接关闭时调用）。
     pub fn cleanup_all(&self) {
         let ids: Vec<String> = lock(&self.streams).keys().cloned().collect();
         for id in ids {
@@ -265,6 +335,9 @@ impl DictationStreamManager {
         }
     }
 
+    /// 处理 `start`：清掉同 id 旧流、分配新代数，解析输入采样率（非法即
+    /// 失败），创建 STT 会话（NotReady 时按原样报错返回），按需构造重采样
+    /// 器，注册流状态并 ack(-1)，最后 spawn 会话事件 pump。
     /// `handleStart`: `format` e.g. `"audio/pcm;rate=16000;bits=16"`;
     /// `start_options` are forwarded to `createSttSession`.
     pub async fn handle_start(
@@ -362,6 +435,9 @@ impl DictationStreamManager {
         });
     }
 
+    /// 应用一条会话事件（对应 JS 的 `stt.on(...)` 处理器）：Committed 记录
+    /// 分段并递减 pending；Transcript 更新转写并发出 partial；Error 报错并
+    /// 清理。均以代数守卫防止旧会话事件污染重启后的新流。
     /// One session event arriving (the JS `stt.on(...)` handlers).
     fn apply_session_event(&self, dictation_id: &str, generation: u64, event: SessionEvent) {
         match event {
@@ -428,6 +504,10 @@ impl DictationStreamManager {
         }
     }
 
+    /// 处理 `chunk`：按 seq 缓存乱序 chunk，从 next_seq_to_forward 起连续
+    /// 转发——重采样后追加给会话、更新分段统计并尝试自动切分，随后推进
+    /// ack。重复 seq 只重发 ack 不重复追加；重采样、峰值计算或提交失败时
+    /// 报错并清理流。
     /// `handleChunk`. `seq` is validated as a non-negative integer by the
     /// transport (the JS re-checks `Number.isInteger` here).
     pub fn handle_chunk(&self, dictation_id: &str, seq: i64, audio_base64: &str) {
@@ -500,6 +580,10 @@ impl DictationStreamManager {
         self.maybe_finalize_stream(dictation_id);
     }
 
+    /// 处理 `finish`：记录 final_seq（声明的 seq>0 却一个 chunk 都没收到时
+    /// 立即报错），随后尝试封板与最终化，再按剩余工作量估算并调度最终化
+    /// 超时任务（到期仍未完成则以超时错误收尾），最后回 `finish_accepted`
+    /// 携带预算毫秒数。
     /// `handleFinish` — `final_seq` is the highest seq the client sent (or
     /// -1 if none).
     pub fn handle_finish(self: &Arc<Self>, dictation_id: &str, final_seq: f64) {
@@ -575,10 +659,13 @@ impl DictationStreamManager {
         }));
     }
 
+    /// 处理 `cancel`：立即清理流，不产出最终文本。
     pub fn handle_cancel(&self, dictation_id: &str) {
         self.cleanup_stream(dictation_id);
     }
 
+    /// 估算最终化超时预算：在基础值之上按待完成分段数、未提交音频秒数与
+    /// 缺失 seq 数线性追加，封顶 FINAL_TIMEOUT_MAX_MS，且永不低于基础值。
     fn estimate_finalization_timeout(&self, state: &StreamState) -> u64 {
         let bytes_per_second = (state.output_rate as u64 * 2).max(1);
         let pending_committed_segments = state
@@ -616,6 +703,8 @@ impl DictationStreamManager {
             .max((self.final_timeout_ms + extra_ms).min(FINAL_TIMEOUT_MAX_MS))
     }
 
+    /// 自动切分判定：finish 之后不再切；满足切分条件且当前段纯静音则清空
+    /// 会话缓冲并复位统计，否则提交分段。返回 Some 表示提交侧错误。
     fn maybe_auto_commit_segment(&self, state: &mut StreamState) -> Option<String> {
         if state.finish_requested {
             return None;
@@ -639,6 +728,8 @@ impl DictationStreamManager {
         self.commit_segment(state)
     }
 
+    /// 发出 commit 并计入 in-flight 计数；收到 committed 事件前管理器不得
+    /// 最终化，否则最终文本会缺这一段的转写。
     /// Issue a commit and record it as in flight. The session acknowledges
     /// with a `committed` event; until then the manager must not finalize,
     /// or the segment's transcript would be missing from the final text.
@@ -650,6 +741,8 @@ impl DictationStreamManager {
         None
     }
 
+    /// finish 封板（幂等，finish_sealed 防重入）：音频收齐后处理尾部——
+    /// 纯静音则清空并丢弃未提交转写，否则提交尾部分段；失败则报错清理。
     fn maybe_seal_stream_finish(&self, dictation_id: &str) {
         let mut failed: Option<String> = None;
         {
@@ -696,6 +789,9 @@ impl DictationStreamManager {
         }
     }
 
+    /// 最终化判定：finish 已请求、音频收齐、无 in-flight commit 且全部分段
+    /// 都有 final 转写时，按分段顺序拼接发出 `final` 文本并清理流；一个
+    /// 分段都没有时发出空文本。
     fn maybe_finalize_stream(&self, dictation_id: &str) {
         let final_text: Option<String> = {
             let mut streams = lock(&self.streams);
@@ -745,6 +841,8 @@ impl DictationStreamManager {
     }
 }
 
+/// 取出仍属当前代数的流条目；id 缺失或代数不符（流已重启/清理）时返回
+/// None——等价于 JS 的 `if (!state) return` 过期检查。
 fn live_entry<'a>(
     streams: &'a mut HashMap<String, StreamEntry>,
     dictation_id: &str,
@@ -755,33 +853,50 @@ fn live_entry<'a>(
         .filter(|entry| entry.generation == generation)
 }
 
+/// 状态机单元测试：乱序重排与 ack、静音清空、分段切分、finish 流程、
+/// 错误路径与最终化超时。
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+    /// 测试用 PCM 格式串（16 kHz、16-bit）。
     const FORMAT: &str = "audio/pcm;rate=16000;bits=16";
 
+    /// 假会话的调用记录与分段计数。
     struct FakeState {
+        /// 收到的每段 PCM 数据。
         appended: Vec<Vec<u8>>,
+        /// commit 调用次数。
         commits: usize,
+        /// clear 调用次数。
         clears: usize,
+        /// 会话是否已关闭。
         closed: bool,
+        /// 已分配的分段序号。
         segment_counter: usize,
     }
 
+    /// 模拟 STT 会话：commit 时发出 Committed，并在 1ms 后发出 final
+    /// Transcript（模拟 JS 假件的 setTimeout(0) 时序）。
     struct FakeSttSession {
+        /// 共享调用记录。
         state: Arc<Mutex<FakeState>>,
+        /// 事件通道发送端。
         events: mpsc::UnboundedSender<SessionEvent>,
+        /// 按分段序号生成转写文本的闭包。
         transcript_by_segment: Arc<dyn Fn(usize) -> String + Send + Sync>,
     }
 
+    /// FakeSttSession 的会话 trait 实现。
     impl StreamingTranscriptionSession for FakeSttSession {
+        /// 固定 16 kHz，与 FORMAT 一致。
         fn required_sample_rate(&self) -> u32 {
             16000
         }
 
+        /// 记录追加的 PCM 数据。
         fn append_pcm16(&mut self, chunk: Vec<u8>) {
             self.state
                 .lock()
@@ -790,6 +905,7 @@ mod tests {
                 .push(chunk);
         }
 
+        /// 计数并异步回放 Committed + final Transcript 事件对。
         fn commit(&mut self) {
             let (segment_id, transcript) = {
                 let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -816,15 +932,18 @@ mod tests {
             });
         }
 
+        /// 计数 clear 调用。
         fn clear(&mut self) {
             self.state.lock().unwrap_or_else(|e| e.into_inner()).clears += 1;
         }
 
+        /// 标记会话已关闭。
         fn close(&mut self) {
             self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
         }
     }
 
+    /// 生成振幅交替 ±amplitude 的响亮 chunk（base64 编码的 PCM16）。
     fn loud_chunk_base64(samples: usize, amplitude: i16) -> String {
         let arr: Vec<i16> = (0..samples)
             .map(|i| if i % 2 == 0 { amplitude } else { -amplitude })
@@ -833,17 +952,23 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
+    /// 生成全零静音 chunk（base64 编码的 PCM16）。
     fn silent_chunk_base64(samples: usize) -> String {
         let bytes = vec![0u8; samples * 2];
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
+    /// 测试夹具：管理器 + 出站消息记录 + 假会话状态。
     struct Fixture {
+        /// 被测管理器。
         manager: Arc<DictationStreamManager>,
+        /// 已发出消息的快照列表。
         messages: Arc<Mutex<Vec<Value>>>,
+        /// 假会话调用记录。
         state: Arc<Mutex<FakeState>>,
     }
 
+    /// 用显式的超时与分段参数构造夹具。
     #[allow(clippy::too_many_arguments)]
     fn fixture_with_bounds(
         transcript_by_segment: Arc<dyn Fn(usize) -> String + Send + Sync>,
@@ -898,18 +1023,22 @@ mod tests {
         }
     }
 
+    /// 以默认参数构造夹具，可指定分段转写文本生成器。
     fn fixture_with(transcript_by_segment: Arc<dyn Fn(usize) -> String + Send + Sync>) -> Fixture {
         fixture_with_bounds(transcript_by_segment, 10_000, 60.0, 90.0)
     }
 
+    /// 全默认夹具；转写固定为 "hello world"。
     fn fixture() -> Fixture {
         fixture_with(Arc::new(|_| "hello world".to_string()))
     }
 
+    /// 轮询消息列表直到谓词命中（约 2 秒上限），超时 panic。
     async fn wait_for(messages: &Arc<Mutex<Vec<Value>>>, predicate: impl Fn(&Value) -> bool) {
         wait_for_within(messages, predicate, 500).await;
     }
 
+    /// `wait_for` 的可调尝试次数版本。
     async fn wait_for_within(
         messages: &Arc<Mutex<Vec<Value>>>,
         predicate: impl Fn(&Value) -> bool,
@@ -929,6 +1058,7 @@ mod tests {
         panic!("waitFor timed out");
     }
 
+    /// 取当前消息快照。
     fn messages_of(fixture: &Fixture) -> Vec<Value> {
         fixture
             .messages
@@ -937,6 +1067,7 @@ mod tests {
             .clone()
     }
 
+    /// 过滤出指定 `type` 的消息。
     fn of_type<'a>(fixture: &'a Fixture, kind: &str) -> Vec<Value> {
         messages_of(fixture)
             .into_iter()
@@ -944,12 +1075,16 @@ mod tests {
             .collect()
     }
 
+    /// 全局递增计数器，保证跨测试的 dictation id 唯一。
     static SEQ: AtomicUsize = AtomicUsize::new(0);
 
+    /// 生成带唯一序号的 dictation id。
     fn unique_id(label: &str) -> String {
         format!("{label}-{}", SEQ.fetch_add(1, AtomicOrdering::SeqCst))
     }
 
+    /// 验证：顺序 chunk → finish 的主路径产出 final 文本、恰好一次
+    /// commit、会话关闭，且最终 ack 到达最后 seq。
     #[tokio::test]
     async fn transcribes_ordered_chunks_and_emits_final_text() {
         let fixture = fixture();
@@ -979,6 +1114,7 @@ mod tests {
         assert_eq!(acks.last().unwrap()["ackSeq"], 1);
     }
 
+    /// 验证：乱序到达的 chunk 被暂存，直到 seq 补齐后才按序追加给会话。
     #[tokio::test]
     async fn reorders_out_of_order_chunks_before_appending() {
         let fixture = fixture();
@@ -1016,6 +1152,7 @@ mod tests {
         wait_for(&fixture.messages, |m| m["type"] == "final").await;
     }
 
+    /// 验证：纯静音的听写在 finish 时被清空而不是提交，最终文本为空串。
     #[tokio::test]
     async fn clears_silence_only_tails_instead_of_committing() {
         let fixture = fixture();
@@ -1039,6 +1176,8 @@ mod tests {
         assert_eq!(state.clears, 1);
     }
 
+    /// 验证：finish 声明有音频却一个 chunk 都没收到时快速失败
+    /// （retryable error）并关闭会话。
     #[tokio::test]
     async fn fails_fast_when_finish_arrives_with_no_chunks() {
         let fixture = fixture();
@@ -1067,6 +1206,8 @@ mod tests {
         );
     }
 
+    /// 验证：会话工厂返回 NotReady 时，error 消息透传 reasonCode 与
+    /// retryable 标记。
     #[tokio::test]
     async fn reports_provider_readiness_errors_from_create_stt_session() {
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
@@ -1106,6 +1247,8 @@ mod tests {
         assert_eq!(error["retryable"], true);
     }
 
+    /// 验证：分段转写陆续到达时逐段发出 partial，最终文本按空格拼接
+    /// 全部分段。
     #[tokio::test]
     async fn emits_partials_as_segment_transcripts_arrive() {
         let counter = Arc::new(AtomicUsize::new(0));
@@ -1145,6 +1288,8 @@ mod tests {
         assert!(!partials.is_empty());
     }
 
+    /// 验证：低于分段最小长度时中途停顿不切分，仅在 finish 时同步提交
+    /// 尾部（一次 commit）。
     #[tokio::test]
     async fn keeps_a_short_dictation_as_one_segment_across_pauses() {
         let fixture = fixture();
@@ -1185,6 +1330,8 @@ mod tests {
         );
     }
 
+    /// 验证：超过最小长度后的下一个静音 chunk 成为分段边界（触发
+    /// commit），未达最小长度时同样的停顿不切。
     #[tokio::test]
     async fn splits_at_a_pause_once_the_segment_passes_the_minimum() {
         let fixture =
@@ -1237,6 +1384,7 @@ mod tests {
         );
     }
 
+    /// 验证：持续有声（无停顿）的语音在硬上限处被无条件切分。
     #[tokio::test]
     async fn splits_pauseless_speech_at_the_hard_cap() {
         let fixture =
@@ -1272,6 +1420,7 @@ mod tests {
         );
     }
 
+    /// 验证：纯静音段即使到达硬上限也被清空，绝不提交。
     #[tokio::test]
     async fn clears_a_silence_only_segment_at_the_hard_cap() {
         let fixture =
@@ -1292,6 +1441,8 @@ mod tests {
         assert_eq!(state.clears, 1);
     }
 
+    /// 验证：start 之前到达的 chunk 触发 "Dictation stream not started"
+    /// 的 retryable 错误。
     #[tokio::test]
     async fn chunk_before_start_fails_retryable() {
         let fixture = fixture();
@@ -1304,6 +1455,7 @@ mod tests {
         assert_eq!(error["retryable"], true);
     }
 
+    /// 验证：重复/过期 seq 只重发既有 ack，不会把音频重复追加给会话。
     #[tokio::test]
     async fn stale_seq_re_ackes_without_appending() {
         let fixture = fixture();
@@ -1336,16 +1488,23 @@ mod tests {
         assert_eq!(acks.last().unwrap()["ackSeq"], 0);
     }
 
+    /// 验证：commit 永远等不到转写时，最终化超时以 retryable 错误收尾；
+    /// 缺失 seq 项让预算保持较小，而不是整段基础超时。
     #[tokio::test]
     async fn finalization_timeout_fires_when_transcripts_never_arrive() {
+        // 静默会话：commit 只回 Committed，永不发出转写。
         struct SilentSession {
             events: mpsc::UnboundedSender<SessionEvent>,
         }
+        // 静默会话的 trait 实现。
         impl StreamingTranscriptionSession for SilentSession {
+            // 固定 16 kHz。
             fn required_sample_rate(&self) -> u32 {
                 16000
             }
+            // 丢弃音频，制造"永远没有转写"的局面。
             fn append_pcm16(&mut self, _chunk: Vec<u8>) {}
+            // 只回 Committed 事件。
             fn commit(&mut self) {
                 let _ = self.events.send(SessionEvent::Committed {
                     segment_id: "seg-silent".to_string(),
@@ -1353,7 +1512,9 @@ mod tests {
                 });
                 // No transcript, ever.
             }
+            // 无需清空。
             fn clear(&mut self) {}
+            // 无需清理。
             fn close(&mut self) {}
         }
 

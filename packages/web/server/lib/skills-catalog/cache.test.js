@@ -1,16 +1,23 @@
+/**
+ * 技能扫描缓存（cache.js）测试：同 key 并发去重、全局并发上限、失败不
+ * 入缓存、refresh 强制重扫，以及成功结果落盘。每个用例使用独立临时数据目录。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { clearCache, scanWithCache, setCachedScan, getCachedScan } from './cache.js';
 
+/** 每个用例独立的临时数据目录（设为 OMPCHAMBER_DATA_DIR）。 */
 let tempDataDir;
 
+// 每个用例前：新建临时数据目录并让磁盘缓存指向它。
 beforeEach(() => {
   tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skills-cache-test-'));
   process.env.OMPCHAMBER_DATA_DIR = tempDataDir;
 });
 
+// 每个用例后：还原环境变量、清空模块缓存并删除临时目录。
 afterEach(() => {
   delete process.env.OMPCHAMBER_DATA_DIR;
   clearCache();
@@ -18,8 +25,10 @@ afterEach(() => {
   fs.rmSync(tempDataDir, { recursive: true, force: true });
 });
 
+/** 等待 1.2 秒，跨过缓存模块 1 秒去抖的磁盘写入窗口。 */
 const flushDiskWrites = async () => new Promise((resolve) => setTimeout(resolve, 1200));
 
+/** scanWithCache：去重、限流、失败与刷新语义、磁盘持久化。 */
 describe('scanWithCache', () => {
   it('deduplicates concurrent loaders for the same key', async () => {
     const loader = vi.fn(async () => {

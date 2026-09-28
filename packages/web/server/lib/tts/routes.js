@@ -1,11 +1,23 @@
+/**
+ * TTS/STT/摘要 HTTP 路由：OpenAI 兼容 TTS 合成（/api/tts/speak）、
+ * macOS say 合成（/api/tts/say/*，含能力探测与按语言选 voice）、
+ * 本地文本摘要（/api/text/summarize）与服务端 STT 转写代理（/api/stt/transcribe）。
+ */
 import express from 'express';
 import { normalizeCustomOpenAIBaseURL } from './base-url.js';
 import { summarizeText, sanitizeForTTS, sanitizeForNote } from '../text/summarization.js';
 
 import { detectTextLanguage, languageOfLocale, pickVoiceForLanguage } from './language-detect.js';
 
+/**
+ * 在 express app 上注册语音相关路由。
+ * @param {import('express').Express} app
+ * @param {{ sayTTSCapability: Promise<object> }} deps macOS say 能力探测 promise（与启动探测共用同一权威结果）
+ */
 export function registerTtsRoutes(app, { sayTTSCapability }) {
+  // TTS 服务模块的懒加载 promise（ESM 动态 import，避免启动期加载 openai SDK）。
   let ttsModulePromise = null;
+  /** 懒加载并缓存 ./index.js（ttsService 单例所在模块）。 */
   const getTtsModule = async () => {
     if (!ttsModulePromise) {
       ttsModulePromise = import('./index.js');
@@ -13,6 +25,7 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
     return ttsModulePromise;
   };
 
+  /** POST /api/voice/token — 探测 OpenAI 语音服务可用性：仅检查 OPENAI_API_KEY 是否配置，未配置返回 503。 */
   app.post('/api/voice/token', async (req, res) => {
     console.log('[Voice] Token request received:', {
       contentType: req.headers['content-type'] || null,
@@ -43,6 +56,7 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
     }
   });
 
+  /** POST /api/tts/speak — 服务端 TTS：校验 baseURL 合法性与 key 来源（服务端配置/客户端提供/自定义 URL），生成音频后以 audio/mpeg 一次性返回。 */
   // Server-side TTS endpoint - streams audio from OpenAI TTS API
   app.post('/api/tts/speak', async (req, res) => {
     try {
@@ -105,6 +119,7 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
       }
   });
 
+  /** POST /api/text/summarize — 本地文本摘要；异常时也返回清洗后的兜底摘要而非 5xx。 */
   app.post('/api/text/summarize', async (req, res) => {
     try {
       const { text, threshold = 200, maxLength = 500, mode } = req.body || {};
@@ -131,6 +146,7 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
   });
 
        
+  /** GET /api/tts/status — OpenAI TTS 可用性与内置音色列表。 */
   // TTS status endpoint
   app.get('/api/tts/status', async (_req, res) => {
     try {
@@ -147,12 +163,14 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
     }
   });
 
+  /** GET /api/tts/say/status — 返回启动期 say 能力探测的权威结果。 */
   // The startup probe runs concurrently with server bootstrap. An unusually
   // early status request waits for that same authoritative result.
   app.get('/api/tts/say/status', async (_req, res) => {
     res.json(await sayTTSCapability);
   });
 
+  /** POST /api/tts/say/speak — 调 macOS say 生成 m4a；language:'auto' 时探测文本语言并切换到会讲该语言的已装 voice（找不到则保留原 voice 带口音朗读）。 */
   // macOS 'say' command TTS speak endpoint
   app.post('/api/tts/say/speak', async (req, res) => {
     try {
@@ -228,6 +246,7 @@ export function registerTtsRoutes(app, { sayTTSCapability }) {
     }
   });
 
+  /** POST /api/stt/transcribe — 接收原始音频（<=20mb），从 x-* 头取模型/语言/baseURL/bearer key，代理到 OpenAI 兼容转写端点并返回 transcript。 */
   // Server-side STT: receive raw audio, proxy to OpenAI-compatible transcription endpoint
   app.post(
     '/api/stt/transcribe',

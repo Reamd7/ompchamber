@@ -1,3 +1,10 @@
+/**
+ * Walkthrough（代码变更导读）生成服务：把当前 diff 解析为文件与 hunk，交给
+ * small-model 生成结构化的"阅读顺序"叙事（章节/停靠点，锚定到 hunk id），结果
+ * 按 diff+模型+语言缓存并在仓库内记指针。生成是显式用户动作，任务表按仓库+
+ * 来源去重且独立于请求生命周期（断线不取消）；同时暴露读取（getWalkthrough，
+ * 不花 token）、就绪度判断与取消接口。本模块由路由层懒加载。
+ */
 import { getRepositoryRoot } from '../git/service.js';
 import { describeSmallModel, generateSmallModelText } from '../small-model/index.js';
 import { buildDigest } from './digest.js';
@@ -34,10 +41,14 @@ setTimeout(() => {
 // real money and minutes, while an over-long deadline only holds a job slot, so
 // this errs long. It scales because a three-hunk edit and a 500-hunk pull
 // request have no business sharing a deadline.
+/** 生成超时的基础时长（毫秒）：小 diff 的保底等待窗口。 */
 const GENERATION_TIMEOUT_BASE_MS = 120_000;
+/** 每个 hunk 额外累加的超时（毫秒），让大 diff 按规模延长限。 */
 const GENERATION_TIMEOUT_PER_HUNK_MS = 1_000;
+/** 生成超时的封顶值（毫秒），防止超大 diff 把时限推得不可接受。 */
 const GENERATION_TIMEOUT_MAX_MS = 900_000;
 
+/** 计算某次生成的超时：基础值 + 每 hunk 加成，封顶 GENERATION_TIMEOUT_MAX_MS。 */
 const generationTimeoutMs = (hunkCount) => Math.min(
   GENERATION_TIMEOUT_MAX_MS,
   GENERATION_TIMEOUT_BASE_MS + Math.max(0, hunkCount) * GENERATION_TIMEOUT_PER_HUNK_MS,
@@ -53,20 +64,29 @@ const generationTimeoutMs = (hunkCount) => Math.min(
 // The reserve subtracted from the input budget is the same number, always: ask
 // for more than was reserved and a large diff overruns the context mid-answer,
 // which surfaces as a truncation bug rather than a budgeting one.
+/** 输出 token 预算下限（历史上固定的请求值），任何模型都至少请求这么多。 */
 const MIN_OUTPUT_TOKENS = 24_000;
 // A ceiling, because the reserve is taken out of the input allowance: a model
 // that would let us ask for 384k tokens of answer would also let us spend a
 // third of a million tokens of context reserving them, and no walkthrough needs
 // that much thinking.
+/** 输出 token 预算上限：预留额要从输入预算里扣，上不封顶会白白占掉大量上下文。 */
 const MAX_OUTPUT_TOKENS = 96_000;
 // Above this share of the context, the reserve starts costing more diff than
 // the extra room is worth.
+/** 输出预留最多占模型上下文的比例，再高就开始挤占能送入的 diff。 */
 const OUTPUT_CONTEXT_SHARE = 0.25;
 
 /**
  * Answer allowance for a specific model: as much as it admits it can emit,
  * bounded by a share of its context and never below what this feature always
  * asked for.
+ */
+/**
+ * 为具体模型计算回答的输出 token 预算：先取"上下文的固定比例"并夹在
+ * MIN/MAX 之间，再被模型自身声明的输出上限压低。该值同时作为输入预算的
+ * 预留数额（经 describeSmallModel 的 outputReserveTokens 回调传入），保证
+ * 预留与请求永远一致。
  */
 const walkthroughOutputTokens = ({ contextTokens, outputTokenLimit }) => {
   const wanted = Math.min(
@@ -78,6 +98,7 @@ const walkthroughOutputTokens = ({ contextTokens, outputTokenLimit }) => {
   return Number(outputTokenLimit) > 0 ? Math.min(wanted, Number(outputTokenLimit)) : wanted;
 };
 
+/** 构造带 statusCode 与附加字段（如 code、model）的 Error，供路由层映射 HTTP 状态。 */
 const fail = (message, statusCode, extra = {}) =>
   Object.assign(new Error(message), { statusCode, ...extra });
 
@@ -88,6 +109,7 @@ const fail = (message, statusCode, extra = {}) =>
 // a minute of paid-for work. Jobs are keyed by repository + source, so a client
 // that comes back attaches to the running job instead of starting a second one,
 // and cancelling is an explicit request rather than a side effect of leaving.
+/** 运行中的生成任务表：jobKey（仓库+来源）-> { controller, promise, stage }，与请求生命周期解耦。 */
 const jobs = new Map();
 
 // Providers that answered a schema request with a 4xx. Retrying the schema on
@@ -97,10 +119,13 @@ const jobs = new Map();
 // Process-lifetime only, on purpose: a provider that gains structured-output
 // support should not need a settings change to be tried again — a restart is
 // enough, and the cost of one wasted first attempt after that is small.
+/** 已拒绝 schema 请求的 provider 集合（仅进程级记忆）：命中则直接走 prompt 内嵌 JSON 形状的降级路径。 */
 const schemaRefusedBy = new Set();
 
+/** 模型的稳定键：providerID/modelID。 */
 const modelKey = (model) => `${model.providerID}/${model.modelID}`;
 
+/** 任务表键：仓库根目录与 sourceKey 以 NUL 分隔拼接（两个成分都不会包含 NUL）。 */
 const jobKey = (repoRoot, sourceKeyValue) => `${repoRoot}\0${sourceKeyValue}`;
 
 /**
@@ -111,6 +136,10 @@ const jobKey = (repoRoot, sourceKeyValue) => `${repoRoot}\0${sourceKeyValue}`;
  * would imply progress where there is none. `retrying` appears only when a
  * provider rejects the schema and the prompt-side fallback runs.
  */
+/**
+ * 更新运行中任务的粗粒度阶段（collecting/asking/retrying/assembling），供
+ * 前端轮询展示等待进度；任务不存在时静默忽略。
+ */
 const setStage = (repoRoot, sourceKeyValue, stage) => {
   const job = jobs.get(jobKey(repoRoot, sourceKeyValue));
   if (job) job.stage = stage;
@@ -120,6 +149,7 @@ const setStage = (repoRoot, sourceKeyValue, stage) => {
  * Current stage of a running generation, or `null` when nothing is running.
  * Reads memory only — no git, no network — so it is cheap to poll.
  */
+/** 读取某来源当前生成阶段，无运行任务返回 null；只查内存，无 git/网络开销。 */
 export function getGenerationStage(repoRoot, sourceKeyValue) {
   return jobs.get(jobKey(repoRoot, sourceKeyValue))?.stage ?? null;
 }
@@ -128,6 +158,7 @@ export function getGenerationStage(repoRoot, sourceKeyValue) {
  * Whether a generation is currently running for a source. Lets a reconnecting
  * client show progress instead of an empty panel.
  */
+/** 某来源是否有生成正在进行，供重连的客户端显示进度而非空白面板。 */
 export function isGenerating(repoRoot, sourceKeyValue) {
   return jobs.has(jobKey(repoRoot, sourceKeyValue));
 }
@@ -136,6 +167,7 @@ export function isGenerating(repoRoot, sourceKeyValue) {
  * Resolve the pair the job registry is keyed by, for callers that need to look
  * a job up without doing any diff work.
  */
+/** 解析任务表使用的键对（仓库根 + sourceKey），供不做 diff 的调用方查询任务。 */
 export async function getRepositoryRootFor(directory, rawSource) {
   const source = parseSource(rawSource);
   return { repoRoot: await getRepositoryRoot(directory), sourceKey: sourceKey(source) };
@@ -145,6 +177,7 @@ export async function getRepositoryRootFor(directory, rawSource) {
  * Stop a running generation. Only an explicit request does this — leaving the
  * page does not.
  */
+/** 显式取消某来源的运行中生成（abort 其 controller）；无任务返回 cancelled: false。离开页面不会触发取消。 */
 export async function cancelWalkthroughGeneration({ directory, source: rawSource }) {
   const source = parseSource(rawSource);
   const repoRoot = await getRepositoryRoot(directory);
@@ -154,6 +187,7 @@ export async function cancelWalkthroughGeneration({ directory, source: rawSource
   return { cancelled: true };
 }
 
+/** 模型的展示标签：providerID/modelID，用于错误消息文案。 */
 const modelLabel = (model) => `${model.providerID}/${model.modelID}`;
 
 /**
@@ -165,23 +199,31 @@ const modelLabel = (model) => `${model.providerID}/${model.modelID}`;
  * saved setting, which in turn outranks the small-model chain — the user picking
  * a roomier model for a risky change is the most specific intent there is.
  */
+/**
+ * 解析本功能使用的模型：显式选择的模型 > 已保存的 walkthrough 覆盖设置 >
+ * small-model 链默认值。同时把 walkthroughOutputTokens 作为输出预留回调传入，
+ * 使"预留多少"与"请求多少"永远一致。
+ */
 const resolveModel = (directory, explicitModel) => describeSmallModel({
   directory,
   outputReserveTokens: walkthroughOutputTokens,
   overrideModel: explicitModel || readWalkthroughModelOverride(),
 });
 
+/** 测试导出：暴露超时与输出预算两个纯函数供单元测试直接调用。 */
 export const __testing = { generationTimeoutMs, walkthroughOutputTokens };
 
 /**
  * Current diff for a source, parsed into files and hunks.
  */
+/** 读取某来源当前 diff 并构建 digest（文件、hunk、计数），读取与生成共用的入口。 */
 async function loadCurrentDiff(directory, source, deps) {
   const { sections } = await loadSourceSections(directory, source, deps);
   const built = buildDigest(sections);
   return built;
 }
 
+/** 收集 walkthrough 全部停靠点引用的 hunk id（顺序无关，仅用于构造覆盖集合）。 */
 const stopHunkIds = (walkthrough) =>
   walkthrough.chapters.flatMap((chapter) => chapter.stops.flatMap((stop) => stop.hunkIds));
 
@@ -191,6 +233,11 @@ const stopHunkIds = (walkthrough) =>
  * Staleness is not a heuristic here: a hunk id is a hash of the hunk's content,
  * so an anchor that no longer resolves is proof that the code it described has
  * changed or gone. Anchors that still resolve are still accurate.
+ */
+/**
+ * 把已存的 walkthrough 与当前 diff 对账：hunk id 是内容哈希，锚点失配即证明
+ * 所描述的代码已变。返回是否过期（isStale）、缺失的 hunk id、过期的停靠点 id
+ * 以及当前 diff 中未被任何停靠点覆盖的 hunk id。
  */
 function resolveAgainstCurrent(walkthrough, hunkIndex) {
   const missingHunkIds = [];
@@ -216,6 +263,7 @@ function resolveAgainstCurrent(walkthrough, hunkIndex) {
   };
 }
 
+/** 把解析出的 files 拍平为 hunk 视图数组（含路径、状态、头信息、patch 正文），返回给前端。 */
 const serializeHunks = (files) => files.flatMap((file) => file.hunks.map((hunk) => ({
   id: hunk.id,
   path: file.path,
@@ -232,6 +280,11 @@ const serializeHunks = (files) => files.flatMap((file) => file.hunks.map((hunk) 
 /**
  * Read the last walkthrough for a source, resolved against the current diff.
  * Never generates and never spends tokens.
+ */
+/**
+ * 读取某来源最近一次 walkthrough 并对账当前 diff；从不生成、不花 token。优先
+ * 返回"本次请求的模型+语言"对应的缓存（切换语言后面板不再停留旧语言），命中
+ * 不同缓存时顺带更新指针。返回体含 hunks、readiness、generating 与过期信息。
  */
 export async function getWalkthrough({ directory, source: rawSource, model: explicitModel, language: rawLanguage }, deps = {}) {
   const source = parseSource(rawSource);
@@ -320,6 +373,12 @@ export async function getWalkthrough({ directory, source: rawSource, model: expl
  * answers need the same diff, and computing it twice doubled the git work on
  * every panel open.
  */
+/**
+ * 判断解析出的模型能否胜任本次生成，失败时返回带可操作 reason 的结果：
+ * no-model / empty-diff / only-generated / no-provider-login /
+ * structured-output-unsupported / context-too-small。提示词长度用与真正生成
+ * 相同的语言计算，避免测量一个不会发出的请求。
+ */
 function computeReadiness({ model, digest, files, fileCount, hunkCount, generatedFileCount, source, language }) {
   if (!model) return { ready: false, reason: 'no-model' };
 
@@ -368,6 +427,11 @@ function computeReadiness({ model, digest, files, fileCount, hunkCount, generate
  * which also means returning to a previous state of the working tree costs
  * nothing.
  */
+/**
+ * 生成（或复用）某来源的 walkthrough：同键任务进行中直接复用其 promise，避免
+ * 重复计费；未强制（force=false）且缓存命中时返回缓存并更新指针；否则启动
+ * runGeneration，任务登记进 jobs 表，结束（无论成败）后自动摘除。
+ */
 export async function generateWalkthrough({ directory, source: rawSource, force = false, model: explicitModel, language: rawLanguage }, deps = {}) {
   const source = parseSource(rawSource);
   const repoRoot = await getRepositoryRoot(directory);
@@ -391,6 +455,13 @@ export async function generateWalkthrough({ directory, source: rawSource, force 
   return promise;
 }
 
+/**
+ * 生成的实际执行体：解析模型（含登录与结构化输出校验）-> 构建 digest -> 计算
+ * 缓存键 -> 非强制时查缓存 -> 组装提示词（可携带上一版叙事）-> 先带 responseSchema
+ * 请求，被 provider 以 4xx 拒绝则记入 schemaRefusedBy 并改用 prompt 内嵌 JSON
+ * 形状重试 -> 解析并归一化响应 -> 写缓存与指针。各类失败映射为带 statusCode 与
+ * code 的错误；缓存写入失败不会让已产出好结果的请求失败。
+ */
 async function runGeneration({ directory, source, repoRoot, key, force, explicitModel, language, signal }, deps) {
 
   const model = await resolveModel(directory, explicitModel);
@@ -598,4 +669,5 @@ async function runGeneration({ directory, source, repoRoot, key, force, explicit
   };
 }
 
+// 转导出来源解析错误类型，路由层用它区分"来源不合法"之类的用户错误。
 export { WalkthroughSourceError };

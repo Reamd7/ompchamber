@@ -1,3 +1,6 @@
+//! 识别“由工具生成而非人手写”的文件（lockfile、压缩产物、codegen 等）：
+//! 这类文件的 diff 巨大且无审阅意图，故不进入模型输入，但也不隐藏——
+//! 它们照常出现在客户端的未覆盖尾部。
 //! Port of `server/lib/walkthrough/generated.js`.
 //!
 //! Files that are produced by a tool rather than written by a person. Their
@@ -10,6 +13,7 @@
 //! the dependency set). Case-insensitivity follows each pattern's `/i` flag
 //! exactly.
 
+/// 按任意目录层级的 basename 精确匹配的 lockfile 清单。
 /// `LOCKFILES`: exact basenames anywhere in the tree.
 const LOCKFILES: &[&str] = &[
     "bun.lock",
@@ -33,6 +37,7 @@ const LOCKFILES: &[&str] = &[
     "deno.lock",
 ];
 
+/// 忽略 ASCII 大小写判断 `value` 是否以 `suffix` 结尾。
 fn ends_with_ignore_case(value: &str, suffix: &str) -> bool {
     value.len() >= suffix.len()
         && value
@@ -40,6 +45,9 @@ fn ends_with_ignore_case(value: &str, suffix: &str) -> bool {
             .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
 }
 
+/// 逐条复刻 JS 的 GENERATED_PATTERNS 正则（.min.、.js.map、.generated.、
+/// .gen.、generated/ 目录、.pb.*、_pb2*、__snapshots__/、.snap），
+/// 各模式的大小写敏感性与 JS 的 /i 标志一一对应。
 /// `GENERATED_PATTERNS.some((pattern) => pattern.test(filePath))`.
 fn matches_generated_pattern(path: &str) -> bool {
     // /\.min\.(js|css)$/i
@@ -93,6 +101,8 @@ fn matches_generated_pattern(path: &str) -> bool {
     false
 }
 
+/// 判断路径是否为工具产物：先按 basename 匹配 lockfile，再匹配生成模式。
+/// 刻意保守——误报会把真实代码悄悄移出审阅范围。
 /// `isGeneratedArtifact`: whether a path is a tool-produced artifact rather
 /// than authored source.
 ///
@@ -109,10 +119,12 @@ pub fn is_generated_artifact(file_path: &str) -> bool {
     matches_generated_pattern(file_path)
 }
 
+/// 生成文件识别的边界测试（命中、近似不命中、大小写）。
 #[cfg(test)]
 mod tests {
     use super::is_generated_artifact;
 
+/// lockfile 在任意层级按 basename 精确命中。
     #[test]
     fn matches_lockfiles_by_exact_name_anywhere_in_the_tree() {
         assert!(is_generated_artifact("bun.lock"));
@@ -121,6 +133,7 @@ mod tests {
         assert!(is_generated_artifact("go.sum"));
     }
 
+/// 常规生成产物（min.js、.generated.ts、.pb.go、__snapshots__、generated/）命中。
     #[test]
     fn matches_conventional_generated_output() {
         assert!(is_generated_artifact("dist/app.min.js"));
@@ -130,6 +143,7 @@ mod tests {
         assert!(is_generated_artifact("src/generated/client.ts"));
     }
 
+/// 仅形似的真实源码（lock.ts、generator.ts 等）不得误报。
     #[test]
     fn does_not_match_authored_source_that_merely_looks_similar() {
         // A false positive silently removes real code from the review, so these
@@ -143,6 +157,7 @@ mod tests {
         ));
     }
 
+/// 各模式分别遵循自身的大小写敏感性（/i 折叠、非 /i 不折叠）。
     #[test]
     fn follows_the_case_sensitivity_of_each_pattern() {
         // `/i` patterns:

@@ -1,6 +1,13 @@
+/**
+ * PWA manifest 路由测试：验证 /manifest.webmanifest 快捷方式（shortcuts）
+ * 的作用域过滤——目录作用域的 manifest 不回退到无关的全局会话；根作用域
+ * 的 manifest 会包含子会话快捷方式。通过替换 globalThis.fetch 模拟
+ * OpenCode 的 /session 列表，用手写 response 对象捕获输出。
+ */
 import { describe, expect, it } from 'vitest';
 import { registerPwaManifestRoute } from './pwa-manifest-routes.js';
 
+/** 极简 response 桩：记录 header / type / body 并支持链式调用。 */
 const createResponse = () => ({
   headers: new Map(),
   contentType: '',
@@ -19,6 +26,7 @@ const createResponse = () => ({
   },
 });
 
+// PWA manifest 路由主套件。
 describe('PWA manifest route', () => {
   it('does not fall back to unrelated global session shortcuts for scoped manifests', async () => {
     const routes = new Map();

@@ -1,3 +1,9 @@
+/**
+ * package-manager 更新检查能力的测试套件（vitest）。mock 掉
+ * node:child_process 与 globalThis.fetch，覆盖：GitHub latest release 的
+ * semver 比对（含 prerelease 降级）、自托管更新 API 关闭/启用时的行为与
+ * Android APK 资产解析，以及 CLI 更新命令依赖的导出契约。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock child_process to prevent real spawnSync calls that would hang in tests
@@ -6,6 +12,7 @@ vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(() => ({ status: 0, stdout: '/usr/local/bin', stderr: '' })),
 }));
 
+/** 待测导出（顶部已 mock node:child_process，避免真实 spawnSync）。 */
 const {
   checkForUpdates,
   detectPackageManager,
@@ -14,6 +21,10 @@ const {
 } = await import('./package-manager.js');
 
 /** Helper: create a fetch mock that routes by URL pattern */
+/**
+ * 构造按 URL 子串路由的 fetch mock：when(pattern, response) 注册处理器，
+ * 未匹配的请求直接 reject，便于暴露意外的网络调用。
+ */
 function createFetchMock() {
   const handlers = new Map();
 
@@ -37,6 +48,7 @@ function createFetchMock() {
   return mock;
 }
 
+/** 更新检查：GitHub latest 比对、自托管更新 API 与 Android APK 解析。 */
 describe('checkForUpdates', () => {
   let fetchMock;
   let originalFetch;
@@ -52,6 +64,7 @@ describe('checkForUpdates', () => {
     delete process.env.OMPCHAMBER_UPDATE_API_URL;
   });
 
+  // 注册 GitHub latest release mock 响应的便捷封装。
   const latestRelease = (tag) => fetchMock.when('api.github.com/repos/Reamd7/ompchamber/releases/latest', {
     ok: true,
     json: async () => ({ tag_name: tag }),
@@ -191,6 +204,7 @@ describe('checkForUpdates', () => {
   });
 });
 
+/** getCurrentVersion 导出契约：读取包内版本号。 */
 describe('getCurrentVersion', () => {
   it('is exported for the CLI update command', () => {
     expect(typeof getCurrentVersion).toBe('function');
@@ -198,6 +212,7 @@ describe('getCurrentVersion', () => {
   });
 });
 
+/** CLI 更新命令依赖的导出契约。 */
 describe('CLI update exports', () => {
   it('exports package-manager helpers used by the update command', () => {
     expect(typeof detectPackageManager).toBe('function');

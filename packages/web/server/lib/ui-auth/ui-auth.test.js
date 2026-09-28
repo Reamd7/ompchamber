@@ -1,20 +1,39 @@
+/**
+ * ui-auth 模块的客户端凭据（bearer token）接缝测试：覆盖 UI 密码保护开启时
+ * bearer client 凭据的接受范围、仅限会话路由的隔离、密码关闭时强制客户端认证、
+ * 会话状态上报，以及短时效 URL auth token 的签发与使用边界（含 WebSocket 与
+ * 限定只读 GET 的限制）。通过伪造的 req/res 对象直接调用 createUiAuth 返回的
+ * 中间件方法，不启动真实 HTTP 服务。
+ */
 import { afterAll, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** 每个测试进程独立的临时数据目录，隔离 OMPCHAMBER_DATA_DIR 相关的落盘副作用。 */
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-ui-auth-test-'));
+// 必须在动态 import ui-auth.js 之前设置，被测模块在加载时就会读取该目录。
 process.env.OMPCHAMBER_DATA_DIR = dataDir;
 
+// 测试结束后递归删除临时数据目录。
 afterAll(() => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
+/**
+ * 动态导入被测模块并返回其工厂 createUiAuth。放在函数里而不是顶部静态导入，
+ * 是为了保证 OMPCHAMBER_DATA_DIR 已在模块加载前设置完成。
+ */
 const loadCreateUiAuth = async () => {
   const module = await import('./ui-auth.js');
   return module.createUiAuth;
 };
 
+/**
+ * 构造一个手写的 Express 风格 response 桩：记录 status/json/setHeader 调用并
+ * 链式返回 this，通过 getter 暴露最终状态码与响应体；getHeader 按小写读取，
+ * 模拟 Express header 的大小写不敏感行为，供断言使用。
+ */
 const createResponse = () => {
   let statusCode = 200;
   let body = null;
@@ -44,6 +63,7 @@ const createResponse = () => {
   };
 };
 
+/** 客户端凭据接缝：bearer client token 与 UI 会话、URL token 的签发、校验与边界。 */
 describe('ui auth client credential seam', () => {
   it('accepts bearer client credentials when UI password auth is enabled', async () => {
     const createUiAuth = await loadCreateUiAuth();

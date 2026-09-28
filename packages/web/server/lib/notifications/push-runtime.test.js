@@ -1,7 +1,19 @@
+/**
+ * push runtime 可见性追踪测试套件。
+ *
+ * 以 stub 的 fs / path / webPush / settings 依赖构造运行时，围绕 UI 可见性
+ * 心跳验证：多客户端可见状态的聚合、可见性 30 秒 TTL 过期、
+ * isAnyInteractiveClientVisible 的平台判定（仅移动端平台视为非交互客户端，
+ * 用于抑制手机推送），以及心跳缺省 platform 时沿用上次上报值的记忆行为。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createPushRuntime } from './push-runtime.js';
 
+/**
+ * 用全量 stub 依赖构造 push 运行时：文件读写、web-push 调用与 settings
+ * 读写全部 mock，订阅文件指向 /tmp 下的假路径，测试不触碰真实磁盘或网络。
+ */
 const createRuntime = () => createPushRuntime({
   fsPromises: {
     mkdir: vi.fn(async () => {}),
@@ -19,10 +31,12 @@ const createRuntime = () => createPushRuntime({
   writeSettingsToDisk: vi.fn(async () => {}),
 });
 
+/** 每个用例结束后恢复真实计时器，避免 fake timers 泄漏到后续套件。 */
 afterEach(() => {
   vi.useRealTimers();
 });
 
+/** 验证 UI 可见性状态机的记录、聚合与 TTL 过期行为。 */
 describe('push runtime visibility tracking', () => {
   it('keeps visible UI state when another client reports hidden', () => {
     vi.useFakeTimers();

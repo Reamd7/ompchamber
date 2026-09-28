@@ -1,3 +1,9 @@
+/**
+ * SDK 事件处置（dispositions）测试：验证 OmpHostEngine 对 SDK 事件联合
+ * 的逐成员处置——重试、模型切换、todo、irc 卡片、工具结果归一化、
+ * tail-sync 补投影等——产出的 wire 事件与 omp 叠加事件的精确形状。
+ * SDK 经 mock.module 替换为最小假件，引擎本身走真实代码路径。
+ */
 import { describe, test, expect, mock, afterAll } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,15 +16,24 @@ import type { AgentSession } from '@oh-my-pi/pi-coding-agent';
  * model/timestamp — so the literal is asserted to this union member instead
  * of fabricating the full AssistantMessage shape.
  */
+/** SDK transcript 消息元素的类型视图（中文）：tail-sync 夹具只读
+ * role/content/model/timestamp 四个字段。 */
 type SdkMessage = AgentSession['messages'][number];
 
+/** 一次性 agent 根目录（afterAll 删除）。 */
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-dispositions-'));
+/** 假会话 jsonl 文件所在的 sessions 目录。 */
 const sessionDir = path.join(agentDir, 'sessions');
 
+/** SessionManager.list 返回的会话文件清单（仅 s1）。 */
 const sessionFiles = [{ id: 's1', path: path.join(sessionDir, 's1.jsonl') }];
+/** 会话 id -> 订阅监听器；测试经此直接注入 SDK 事件。 */
 const listenersBySession = new Map();
+/** 会话 id -> 假会话实例（createAgentSession 惰性创建）。 */
 const fakeSessions = new Map();
 
+/** 构造最小可用的假 AgentSession：可订阅、可 prompt，模型/技能等字段
+ * 覆盖引擎实际读取的面。 */
 const makeFakeSession = (id: string) => {
   const session = {
     model: { provider: 'p1', id: 'current-model' },
@@ -49,7 +64,9 @@ const makeFakeSession = (id: string) => {
   return session;
 };
 
+/** 真实 SDK 模块：mock 展开保留其余导出，只替换下列成员。 */
 const realSdk = await import('@oh-my-pi/pi-coding-agent');
+// 用最小假件替换 SDK 的注册表/管理器/Settings 等成员，其余导出原样透传。
 mock.module('@oh-my-pi/pi-coding-agent', () => ({
   ...realSdk,
   // static global() + onChange: the engine subscribes the process-global
@@ -115,26 +132,38 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
   BUILTIN_TOOLS: [] as string[],
 }));
 
+// 在 mock 生效后导入引擎，使 engine.ts 拿到的是替换后的 SDK。
 const { OmpHostEngine } = await import('./engine.ts');
 
+// 删除一次性 agent 目录。
 afterAll(() => {
   rmSync(agentDir, { recursive: true, force: true, maxRetries: 5 });
 });
 
 /** Harness read rows: unknown-valued so per-test assertions narrow them. */
+/** wire 读取行的类型视图（中文）：properties 保持未知，逐断言处收窄。 */
 type WireHarnessRow = { id: string; type: string; properties: object };
 
 // SAFETY: harness-only property view; each call site names the field shape it reads.
+/** 读取 wire 行 properties 的窄化视图；各调用处自行声明所读字段形状。 */
 const wireProps = <T extends object>(row: WireHarnessRow | undefined): T | undefined => row?.properties as T | undefined;
+/** omp 叠加事件的读取行视图：id/type/payload。 */
 type OmpHarnessRow = { id: number; type: string; payload: object };
 
 /** Harness fixture views — envelope fields narrowed to what these tests read. */
+/** 重试状态事件的读取视图。 */
 type FixtureStatus = { type: string; attempt: number; message: string; next: number };
+/** 消息 part 的读取视图（工具状态、ask 详情等）。 */
 type FixturePart = { type: string; messageID?: string; text?: string; state?: { status?: string; output?: string; metadata?: FixtureDetails } };
+/** 工具结果 details 的递归读取视图。 */
 type FixtureDetails = { details?: FixtureDetails; asyncState?: string; question?: string; options?: string[]; multi?: boolean; selectedOptions?: string[]; timedOut?: boolean };
+/** agent/子代理信息行的读取视图。 */
 type FixtureInfo = { id: string; role: string; parentID?: string; metadata?: { ompRole?: string } };
+/** todo 条目的读取视图。 */
 type FixtureTodo = { content?: string; status?: string; blocker?: string; priority?: string };
 
+/** 组装测试 harness：真实 OmpHostEngine + 双总线采集（wire/omp）+ s1
+ * 会话的事件注入器 emit 与按类型过滤的读取器。 */
 const harness = async () => {
   const engine = new OmpHostEngine({ agentDir });
   // Harness read views: envelope fields stay permissive here; every deep
@@ -167,6 +196,7 @@ const harness = async () => {
   };
 };
 
+// SDK 事件处置套件：每个事件成员的 wire/omp 投影与显式忽略语义（spec 05 §5.1）。
 describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
   test('auto_retry_start emits wire retry status + omp overlay, zero wire mutation', async () => {
     const h = await harness();

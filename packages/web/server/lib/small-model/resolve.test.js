@@ -1,6 +1,12 @@
+/**
+ * 小模型解析（resolve.js）测试套件：parseModelRef 的引用切分规则、
+ * isUsableAuthEntry 的凭证判定，以及 resolveSmallModel 的完整优先级链
+ * （设置覆盖 > 配置 > 会话 provider > 家族扫描 > Copilot 兜底）。
+ */
 import { describe, it, expect } from 'bun:test';
 import { resolveSmallModel, parseModelRef, isUsableAuthEntry } from './resolve.js';
 
+/** 测试目录：google 与 anthropic 各带若干家族模型，用于家族扫描断言。 */
 const catalog = {
   google: {
     id: 'google',
@@ -19,6 +25,7 @@ const catalog = {
   },
 };
 
+// "provider/model" 引用解析：首斜杠切分、model 保留内部斜杠、畸形输入返回 null。
 describe('parseModelRef', () => {
   it('splits provider/model on the first slash', () => {
     expect(parseModelRef('anthropic/claude-haiku-4-5')).toEqual({
@@ -42,6 +49,7 @@ describe('parseModelRef', () => {
   });
 });
 
+// 凭证可用性判定：各类型条目的有效字段与非空校验。
 describe('isUsableAuthEntry', () => {
   it('accepts api keys, oauth tokens, and wellknown tokens', () => {
     expect(isUsableAuthEntry({ type: 'api', key: 'sk-x' })).toBe(true);
@@ -56,6 +64,7 @@ describe('isUsableAuthEntry', () => {
   });
 });
 
+// 小模型解析的优先级链与会话上下文行为。
 describe('resolveSmallModel', () => {
   it('gives the OMPChamber settings override top priority', () => {
     const result = resolveSmallModel({

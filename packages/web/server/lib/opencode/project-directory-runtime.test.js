@@ -1,7 +1,19 @@
+/**
+ * project-directory-runtime.js 的单元测试套件：目录校验（validateDirectoryPath）
+ * 与项目目录解析（resolveProjectDirectory / resolveOptionalProjectDirectory）。
+ * 通过注入伪造的 fsPromises 与设置读取函数，覆盖 symlink 归一、URI 编码头域、
+ * 多级回退顺序以及各类错误分支，不触碰真实文件系统。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createProjectDirectoryRuntime } from './project-directory-runtime.js';
 
+/**
+ * 以默认桩依赖加 overrides 构造 createProjectDirectoryRuntime 测试实例。
+ * 默认桩：stat 恒返回目录、realpath 原样透传、设置读取返回空对象、项目列表原样透传。
+ * @param {object} [overrides] 需覆盖的依赖项（如 fsPromises、getReadSettingsFromDiskMigrated）
+ * @returns {object} 项目目录运行时实例
+ */
 const createTestRuntime = (overrides = {}) => {
   const defaults = {
     fsPromises: {
@@ -20,7 +32,9 @@ const createTestRuntime = (overrides = {}) => {
   return createProjectDirectoryRuntime({ ...defaults, ...overrides });
 };
 
+/** 项目目录运行时：目录校验与三级来源解析（header / query / 设置）的行为测试。 */
 describe('project directory runtime', () => {
+  /** validateDirectoryPath：realpath 归一与空值、非目录、不存在、无权限等错误分支。 */
   describe('validateDirectoryPath', () => {
     it('returns resolved real path for a valid directory', async () => {
       const runtime = createTestRuntime();
@@ -109,6 +123,7 @@ describe('project directory runtime', () => {
     });
   });
 
+  /** resolveProjectDirectory：目录头域（含 URI 编码标记）、query 参数与设置中 lastDirectory / 活跃项目的优先级及 symlink 解析。 */
   describe('resolveProjectDirectory', () => {
     it('resolves symlinks in x-opencode-directory header', async () => {
       const runtime = createTestRuntime({
@@ -281,6 +296,7 @@ describe('project directory runtime', () => {
     });
   });
 
+  /** resolveOptionalProjectDirectory：未显式指定目录时返回 null 而非报错，指定后行为与必选解析一致。 */
   describe('resolveOptionalProjectDirectory', () => {
     it('returns null directory when no directory is requested', async () => {
       const runtime = createTestRuntime();

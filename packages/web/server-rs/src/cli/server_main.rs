@@ -2,17 +2,37 @@
 //!
 //! Extracted verbatim from the former `main()` so the CLI serve command can
 //! run the server in-process (foreground) while `main` dispatches commands.
+//!
+//! 中文说明：前台（foreground）serve 模式的服务器启动序列，即原 main()
+//! 的完整内容：tracing 初始化、UI 密码注入、解析 ServerConfig、按需启动
+//! desktop control 通道、启动托管/外部引擎、构建事件总线与各路由
+//! （最终经 cli::compose_app 合成 axum Router）、绑定端口并以优雅退出
+//! 方式运行。CLI 的 `serve --foreground` 分支与守护模式 spawn 出的子进程
+//! 都从这里进入。
 
 use std::sync::Arc;
 use std::time::Duration;
 
+/// 前台启动服务器的全部参数，由 serve 命令（前台分支或守护子进程的
+/// argv）构造。
 pub struct RunServerOptions {
+    /// 监听端口。
     pub port: u16,
+    /// 绑定地址（IP 或主机名）。
     pub host: String,
+    /// UI 密码；Some 时在启动早期写入 OMPCHAMBER_UI_PASSWORD 环境变量。
     pub ui_password: Option<String>,
+    /// 仅暴露 API 路由，不服务浏览器 UI 静态资源。
     pub api_only: bool,
 }
 
+/// 启动并在前台运行 OMPChamber 服务器，直到收到退出信号。步骤：初始化
+/// tracing → 注入 UI 密码 → 解析配置并创建数据目录 → （按
+/// OMPCHAMBER_DESKTOP_CONTROL 环境变量）启动 desktop control 通道 →
+/// 启动托管引擎或连接外部引擎（未就绪则报错退出）→ 构建
+/// EventHub/RouterContext → 启动事件流、session goal 桥、定时任务调度
+/// 器 → compose_app 组装路由 → 绑定监听（AddrInUse 时重试 20 秒）→
+/// 优雅退出后关闭引擎。返回 Err 时由 CLI 包装为 GENERAL_ERROR。
 pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
     use crate::config::{EngineConfig, parse_server_config};
     use crate::context::RouterContext;
@@ -131,6 +151,8 @@ pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 绑定 (host, port)：遇到 AddrInUse 每 500ms 重试，最多 20 秒后报
+/// "port ... still in use after 20s"；其它绑定错误立即上抛。
 async fn bind_with_retry(host: &str, port: u16) -> anyhow::Result<tokio::net::TcpListener> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
@@ -148,6 +170,9 @@ async fn bind_with_retry(host: &str, port: u16) -> anyhow::Result<tokio::net::Tc
     }
 }
 
+/// 优雅退出的触发源：Ctrl+C、SIGTERM（非 Unix 平台永远等不到该信号，
+/// 用 pending future 占位）或 desktop control 通道的关闭请求；任一到达
+/// 即完成 future，触发 axum 的 graceful shutdown。
 async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;

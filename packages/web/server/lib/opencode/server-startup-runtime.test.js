@@ -1,3 +1,9 @@
+/**
+ * server-startup-runtime 测试套件：未捕获异常策略（单个异常存活、持续
+ * 异常风暴才关停、unhandledRejection 仅记录不关停）与 EADDRINUSE 端口
+ * 占用重试（等前一个实例释放端口、非占用错误立即失败、重试窗口耗尽后
+ * 拒绝）。
+ */
 import { describe, expect, test } from 'bun:test';
 import { randomUUID as _randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -5,11 +11,17 @@ import { createServerStartupRuntime } from './server-startup-runtime.js';
 
 
 /**
+ * 中文补充：桌面应用内嵌本服务且没有任何东西会重启它，若单个未捕获
+ * 异常就关停，任何零星 socket 错误都会变成“实例失联直到手动重启”。
+ * 因此只有持续的异常风暴才触发关停。
+ */
+/**
  * The desktop app embeds this server and nothing restarts it, so shutting down
  * on a single uncaught exception turned every stray socket error into "the
  * instance is unreachable until restarted". Only a sustained storm shuts down.
  */
 describe('uncaught exception policy', () => {
+  // 构造挂好进程处理器的事件型 process 桩，并统计 gracefulShutdown 次数。
   const setup = () => {
     const fakeProcess = new EventEmitter();
     let shutdowns = 0;
@@ -45,8 +57,11 @@ describe('uncaught exception policy', () => {
   });
 });
 
+// EADDRINUSE 绑定重试套件。
 describe('EADDRINUSE bind retry', () => {
+  // 满足运行时 crypto.randomUUID 需求的最小桩。
   const crypto = { randomUUID: _randomUUID };
+  // 伪造 net.Server：前 N 次 listen 以指定错误码失败，之后触发 listening。
   const createFakeServer = ({ failuresBeforeSuccess = 0, errorCode = 'EADDRINUSE' } = {}) => {
     const emitter = new EventEmitter();
     let attempts = 0;
@@ -67,6 +82,7 @@ describe('EADDRINUSE bind retry', () => {
     return { server: emitter, attempts: () => attempts };
   };
 
+  // 以 1ms 重试间隔 / 2s 窗口创建监听运行时；overrides 可覆盖时序参数。
   const createListenRuntime = (server, overrides = {}) => createServerStartupRuntime({
     process: { env: {} },
     crypto,
@@ -116,6 +132,7 @@ describe('EADDRINUSE bind retry', () => {
   });
 });
 
+/** 临时替换 console.log 以捕获输出行，返回 calls 与 restore。 */
 const mockConsoleLog = () => {
   const calls = [];
   const original = console.log;

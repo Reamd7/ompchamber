@@ -1,10 +1,18 @@
+/**
+ * 请求安全运行时测试套件（bun:test）：验证打包客户端 Origin 放行、未知
+ * Origin 拒绝、WebSocket 升级拒绝时先完整写出 HTTP 错误响应再销毁 socket
+ * （以及对已销毁 socket 的无操作），以及反向代理场景下对外部 host 的
+ * 信任边界（x-forwarded-host / x-forwarded-proto）。
+ */
 import { describe, expect, test } from 'bun:test';
 import { createRequestSecurityRuntime } from './request-security.js';
 
+/** 构造带空设置读取器（无 publicOrigin）的请求安全运行时。 */
 const createRuntime = () => createRequestSecurityRuntime({
   readSettingsFromDiskMigrated: async () => ({}),
 });
 
+/** 同源放行判定与 WebSocket 升级拒绝行为验证。 */
 describe('request security runtime', () => {
   test('allows packaged client origins for remote client transports', async () => {
     const runtime = createRuntime();

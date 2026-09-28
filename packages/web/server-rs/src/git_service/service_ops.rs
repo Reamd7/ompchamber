@@ -3,6 +3,12 @@
 //! details, stashes, log, commit-file diffs, worktree-type probes, and the
 //! primary-root/toplevel resolvers. Split from `service.rs` only for file
 //! size; same `impl GitService`.
+//!
+//! 本模块承载旧 `service.js` 其余导出的 Rust 实现：暂存/还原与 hunk 应用、
+//! commit、分支操作、远端与 push/pull/fetch、merge/rebase/continue、冲突详情、
+//! stash、log、提交文件 diff、worktree 类型探测，以及主 worktree 根目录/顶层
+//! 目录解析。仅为控制文件体积才从 `service.rs` 拆出，仍是同一个
+//! `impl GitService` 的延续实现。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -20,21 +26,29 @@ use super::service::{GitService, NO_EXT_DIFF, ServiceResult, iso_now};
 // Status-file helper (shared by cherry-pick/revert/merge/rebase conflict paths)
 // ---------------------------------------------------------------------------
 
+/// 读取当前 status 并返回冲突文件路径列表；cherry-pick/revert/merge/rebase
+/// 的冲突路径共用此辅助。
 async fn conflict_files(service: &GitService, repo_root: &Path) -> Vec<String> {
     let status = service.parse_status(repo_root, &[]).await;
     status.conflicted
 }
 
+/// 判断错误文本是否表示 cherry-pick 类冲突：含 "conflict" 或
+/// "patch does not apply"（大小写不敏感）。
 fn is_conflict_message(text: &str) -> bool {
     let lowered = text.to_lowercase();
     lowered.contains("conflict") || lowered.contains("patch does not apply")
 }
 
+/// 判断错误文本是否表示 revert 冲突：含 "conflict" 或 "revert failed"
+/// （大小写不敏感）。
 fn is_revert_conflict_message(text: &str) -> bool {
     let lowered = text.to_lowercase();
     lowered.contains("conflict") || lowered.contains("revert failed")
 }
 
+/// 判断错误文本是否表示 rebase 冲突：含 "conflict"、"could not apply" 或
+/// "merge conflict"（大小写不敏感）。
 fn is_rebase_conflict_message(text: &str) -> bool {
     let lowered = text.to_lowercase();
     lowered.contains("conflict")
@@ -42,6 +56,9 @@ fn is_rebase_conflict_message(text: &str) -> bool {
         || lowered.contains("merge conflict")
 }
 
+/// 判断 `rebase --continue`/`merge --continue` 的失败输出是否表示仍有冲突
+/// 待解决：含 "conflict"、"needs merge"、"unmerged" 或 "fix conflicts"
+/// （大小写不敏感）。
 fn is_continue_conflict_message(text: &str) -> bool {
     let lowered = text.to_lowercase();
     lowered.contains("conflict")
@@ -50,6 +67,8 @@ fn is_continue_conflict_message(text: &str) -> bool {
         || lowered.contains("fix conflicts")
 }
 
+/// 按优先级拼接 git 失败信息：stderr、stdout、message 三段去掉空白后以换行
+/// 连接（空段被跳过），是全模块统一的错误文本合成器。
 fn failure_text(stdout: &str, stderr: &str, message: &str) -> String {
     [stderr.trim(), stdout.trim(), message.trim()]
         .iter()
@@ -59,19 +78,29 @@ fn failure_text(stdout: &str, stderr: &str, message: &str) -> String {
         .join("\n")
 }
 
+/// [`GitService`] 的核心操作 impl 块（自 `service.rs` 拆出的延续部分）：暂存与
+/// hunk、commit、分支与远端操作、push/pull/fetch、merge/rebase、stash、log、
+/// 冲突处理及 worktree 解析等。
 impl GitService {
     // -----------------------------------------------------------------------
     // Staging / unstaging (JS stageFiles / unstageFiles)
     // -----------------------------------------------------------------------
 
+    /// 暂存指定文件（对应 JS 版 `stageFiles`），转调 [`stage_unfiles`]（stage=true）。
     pub async fn stage_files(&self, directory: &str, paths: &[Value]) -> ServiceResult<()> {
         self.stage_unfiles(directory, paths, true).await
     }
 
+    /// 取消暂存指定文件（对应 JS 版 `unstageFiles`），转调 [`stage_unfiles`]（stage=false）。
     pub async fn unstage_files(&self, directory: &str, paths: &[Value]) -> ServiceResult<()> {
         self.stage_unfiles(directory, paths, false).await
     }
 
+    /// 暂存/取消暂存的共用实现，整体运行于 index 队列内以避免 `index.lock` 竞争：
+    /// 先做目录与路径非空校验、路径规范化及仓库越界校验，再逐个把文件解析为
+    /// repo 相对路径并二次校验。暂存走 `git add --`（整批失败且为 pathspec 错误时
+    /// 逐文件重试，跳过已不存在的项）；取消暂存先 `git restore --staged --`，
+    /// 失败时回退 `git reset HEAD --`。
     async fn stage_unfiles(
         &self,
         directory: &str,
@@ -165,6 +194,11 @@ impl GitService {
     // revertFile / applyHunk
     // -----------------------------------------------------------------------
 
+    /// 还原文件：`scope == "working"` 只还原工作区，其余（视为 "all"）先取消暂存。
+    /// 未跟踪文件走 `git clean -f -d --`（失败再直接删除文件/目录，均视为成功）；
+    /// 已跟踪文件在 all 模式先 `restore --staged`（失败回退 `reset HEAD --`），
+    /// 最后 `restore --`（失败回退 `checkout --`，仍失败才报错）。
+    /// 整体运行于 index 队列内。
     pub async fn revert_file(
         &self,
         directory: &str,
@@ -288,6 +322,12 @@ impl GitService {
         .await
     }
 
+    /// 以补丁形式应用单个 hunk，整体运行于 index 队列内。action 映射 flags：
+    /// stage → `--cached`、unstage → `--cached --reverse`、discard → `--reverse`，
+    /// 非法值直接报 "Invalid hunk action"。patch 必填且须包含 `@@ ` hunk 头；
+    /// 补丁推断出的目标路径（`extract_patch_target_path`）必须与请求文件一致；
+    /// 补丁先写入临时文件，`git apply --check` 预检失败提示 hunk 已不适用，
+    /// 预检通过才真正 apply，最后清理临时文件。
     pub async fn apply_hunk(
         &self,
         directory: &str,
@@ -392,6 +432,13 @@ impl GitService {
     // commit
     // -----------------------------------------------------------------------
 
+    /// 提交变更，整体运行于 index 队列内。`options.addAll == true` 时执行 `add .`；
+    /// 否则按 `options.files` 解析 repo 路径，仅保留 status 中实际存在的文件
+    /// （全部被过滤时报错提示刷新 git status）。提供 `options.stageFiles` 时改为
+    /// “仅提交所选暂存”：把未选中的已暂存文件临时 `restore --staged` 撤出索引，
+    /// 提交后重新 `add` 恢复；未提供时只为工作区仍有改动的文件补 `add`。
+    /// 提交由 `commit_once` 完成；遇到 pathspec 错误时回退为不带文件列表的
+    /// 整索引提交。成功返回 commit 哈希、分支名与 diffstat 汇总。
     pub async fn commit(
         &self,
         directory: &str,
@@ -558,6 +605,11 @@ impl GitService {
     // Branch operations
     // -----------------------------------------------------------------------
 
+    /// 列出本地与活跃远端分支：`git branch -v -a` 经 `parse_branch_summary` 解析；
+    /// 远端分支经 `filter_active_remote_branches` 过滤（剔除远端已删除的分支、
+    /// 补齐远端现存但本地引用缺失的分支），另附 `remote_default_branches` 得到的
+    /// 各 remote 默认分支。返回 all（本地分支 + `remotes/<remote>/<branch>`）、
+    /// current、branches 条目映射与 defaultBranches。
     pub async fn get_branches(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let output = self
@@ -600,6 +652,8 @@ impl GitService {
         }))
     }
 
+    /// 执行 `git remote` 列出全部远端名（非空行）；命令失败时输出为空，
+    /// 等价于返回空列表。
     async fn remote_names(&self, repo_root: &Path) -> Vec<String> {
         let output = self.run(repo_root, &["remote"]).await;
         output
@@ -610,6 +664,11 @@ impl GitService {
             .collect()
     }
 
+    /// 过滤出远端仍然存在的分支：对每个 remote 执行 `ls-remote --heads` 得到远端分支
+    /// 集合（命令失败的 remote 记为不可达）。输入的 `remotes/<remote>/<branch>` 中，
+    /// 不可达 remote 的分支原样保留（无法验证），可达 remote 仅保留远端仍存在的分支；
+    /// 最后补上 ls-remote 发现但输入未列出的分支（以 `remotes/<remote>/<branch>`
+    /// 形式去重追加）。
     async fn filter_active_remote_branches(
         &self,
         repo_root: &Path,
@@ -677,6 +736,10 @@ impl GitService {
         active
     }
 
+    /// 解析各 remote 的默认分支：先从 `for-each-ref --format='%(refname) %(symref)'
+    /// refs/remotes` 的 `refs/remotes/<remote>/HEAD` symref 提取；对没有 HEAD symref
+    /// 的 remote，退回 `ls-remote --symref <remote> HEAD` 并经 `extract_symref_head`
+    /// 解析（失败忽略）。返回 remote 到默认分支名的映射。
     async fn remote_default_branches(&self, repo_root: &Path) -> Map<String, Value> {
         let mut defaults = Map::new();
         let refs = self
@@ -737,6 +800,10 @@ impl GitService {
         defaults
     }
 
+    /// 统计各分支未推送的提交数：branch_names 去重去空后最多取前 5 个；仅统计
+    /// `branch -v` 中真实存在的本地分支，解析其 `@{upstream}`（无 upstream 跳过），
+    /// 用 `rev-list --count <upstream>..<branch>` 计数，只保留 count > 0 的项。
+    /// 返回 `{ "counts": { "<branch>": n } }`。
     pub async fn get_unpushed_branch_counts(
         &self,
         directory: &str,
@@ -807,6 +874,8 @@ impl GitService {
         Ok(json!({ "counts": counts }))
     }
 
+    /// 创建并切换到新分支：`git checkout -b <branch_name> <start_point>`，
+    /// 起点缺省为 HEAD。命令结果不检查（与 JS 版行为一致），始终返回 success 与分支名。
     pub async fn create_branch(
         &self,
         directory: &str,
@@ -820,6 +889,10 @@ impl GitService {
         Ok(json!({ "success": true, "branch": branch_name }))
     }
 
+    /// 切换分支：分支名去空白后为空直接报 "Branch name is required"；目标经
+    /// `resolve_branch_checkout_target` 解析——远端分支首次检出时用
+    /// `checkout -b <branch> --track <remote_ref>` 建立跟踪分支，
+    /// 否则直接 `checkout <branch>`。
     pub async fn checkout_branch(
         &self,
         directory: &str,
@@ -847,6 +920,11 @@ impl GitService {
         Ok(json!({ "success": true, "branch": target.branch }))
     }
 
+    /// 解析 checkout 请求对应的实际目标。请求名已是本地分支（`refs/heads/<name>` 存在）
+    /// 时按原样返回；否则识别 `remotes/<remote>/<branch>` 或 `<remote>/<branch>` 形式：
+    /// 远端跟踪引用不存在时先 `fetch <remote> <branch>`（fetch 失败或之后引用仍不存在
+    /// 则报错），本地同名分支已存在时返回纯本地目标，否则返回带 `remote_ref` 的跟踪
+    /// 目标（跳过 `<remote>/HEAD`）。无法识别为远端引用时按原样返回，交由 git 报错。
     async fn resolve_branch_checkout_target(
         &self,
         repo_root: &Path,
@@ -913,6 +991,8 @@ impl GitService {
         })
     }
 
+    /// 以 detached HEAD 检出指定提交：先用 `is_valid_commit_hash` 校验哈希格式，
+    /// 再执行 `git checkout <hash>`；失败返回合成错误文本。
     pub async fn checkout_commit(&self, directory: &str, hash: &str) -> ServiceResult<Value> {
         if !is_valid_commit_hash(hash) {
             return Err("Invalid commit hash".to_string());
@@ -929,6 +1009,9 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// cherry-pick 指定提交（哈希先校验格式）。成功返回 `{ success, conflict: false }`；
+    /// 失败文本命中 [`is_conflict_message`] 特征时返回 `conflict: true` 并附
+    /// `conflict_files` 冲突文件列表；其余失败按合成文本报错。
     pub async fn cherry_pick(&self, directory: &str, hash: &str) -> ServiceResult<Value> {
         if !is_valid_commit_hash(hash) {
             return Err("Invalid commit hash".to_string());
@@ -949,6 +1032,9 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 以 `git revert --no-commit <hash>` 反转指定提交（不自动生成提交，由调用方
+    /// 自行 commit）。失败文本命中 [`is_revert_conflict_message`] 特征时返回
+    /// `conflict: true` 与冲突文件列表；其余失败按合成文本报错。
     pub async fn revert_commit(&self, directory: &str, hash: &str) -> ServiceResult<Value> {
         if !is_valid_commit_hash(hash) {
             return Err("Invalid commit hash".to_string());
@@ -971,6 +1057,9 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 以指定模式重置到某提交：mode 直接映射为 `--<mode>`。`hard` 且未传 force 时
+    /// 先查 status，工作区存在未提交变更则拒绝执行并提示先 stash/commit 或使用 force；
+    /// 哈希先经 `is_valid_commit_hash` 校验。失败返回合成错误文本。
     pub async fn reset_to_commit(
         &self,
         directory: &str,
@@ -1004,6 +1093,8 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 删除本地分支：force 为 true 用 `-D`（强制删除），否则 `-d`（git 会拒绝删除
+    /// 未合并分支）；branch 自动剥离可选的 `refs/heads/` 前缀。失败返回合成错误文本。
     pub async fn delete_branch(
         &self,
         directory: &str,
@@ -1026,6 +1117,10 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 重命名本地分支：先读取旧分支的 `branch.<name>.remote`/`.merge` 本地配置，
+    /// `git branch -m` 成功后，若旧分支配置过 upstream，则为新分支名恢复
+    /// `--set-upstream-to=<remote>/<branch>`（merge 引用指向旧名时同步替换为新名，
+    /// 恢复失败被忽略）。改名失败返回合成错误文本。
     pub async fn rename_branch(
         &self,
         directory: &str,
@@ -1094,6 +1189,9 @@ impl GitService {
     // Remotes / push / pull / fetch
     // -----------------------------------------------------------------------
 
+    /// 列出远端配置：解析 `git remote -v` 的 `name\turl (fetch|push)` 行，按首次出现
+    /// 顺序聚合为 name/fetchUrl/pushUrl 条目数组。错误文本含 "not a git repository"
+    /// 时静默返回空数组，其余错误照常返回。
     pub async fn get_remotes(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let output = self
@@ -1148,6 +1246,8 @@ impl GitService {
         Ok(Value::Array(remotes))
     }
 
+    /// 移除远端：名称去空白后必填，且禁止移除 origin；执行 `git remote remove <name>`，
+    /// 失败返回合成错误文本。
     pub async fn remove_remote(&self, directory: &str, remote_name: &str) -> ServiceResult<Value> {
         let remote = remote_name.trim();
         if remote.is_empty() {
@@ -1170,6 +1270,9 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 拉取并合并远端更新：remote/branch 取自 options；只提供 remote 时用当前分支
+    /// （status.current）补全 branch；`options.rebase == true` 时附加 `--rebase`。
+    /// 命令失败返回合成错误文本，成功返回经 `parse_pull_summary` 解析的汇总 JSON。
     pub async fn pull(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let remote = options
@@ -1211,6 +1314,12 @@ impl GitService {
         Ok(summary)
     }
 
+    /// 推送到远端，带多层 upstream 兜底：remote/branch 均缺省时先做无参 push，
+    /// 失败且特征像缺 upstream（[`looks_like_missing_upstream`]）时取当前分支并回退到
+    /// origin（或首个 remote），附带 `--set-upstream` 重试；只提供 remote 且当前分支
+    /// 无跟踪时同样直接带 `--set-upstream` 推当前分支；常规路径按 remote[:branch] 推送，
+    /// 失败且像缺 upstream 时用有效分支名带 `--set-upstream` 再试一次。
+    /// 错误统一经 [`first_push_error`] 规整后返回。
     pub async fn push(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let remote = options
@@ -1384,6 +1493,9 @@ impl GitService {
         }
     }
 
+    /// 删除远端分支：执行 `git push <remote> :<branch> --verbose --porcelain`。
+    /// `branch` 必填（自动剥离可选的 `refs/heads/` 前缀），`remote` 缺省为 origin；
+    /// 命令失败返回合成错误文本，成功返回 `{ success: true }`。
     pub async fn delete_remote_branch(
         &self,
         directory: &str,
@@ -1419,6 +1531,10 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 拉取远端更新。`remote`/`branch` 取自 options（其 `options` 字段经
+    /// `build_raw_git_options` 展开为透传参数）：仅提供 remote 时 fetch 该 remote；
+    /// remote 与 branch 齐全时 fetch 指定分支；两者都缺省时 fetch origin。
+    /// 命令失败返回合成错误文本。
     pub async fn fetch(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let remote = options
@@ -1471,6 +1587,9 @@ impl GitService {
     // Merge / rebase
     // -----------------------------------------------------------------------
 
+    /// 变基到 `options.onto` 指定的基点（必填）。成功返回 `{ success, conflict: false }`；
+    /// 失败文本命中 [`is_rebase_conflict_message`] 特征时返回 `conflict: true` 并附
+    /// `conflict_files` 冲突文件列表；其余失败按合成文本报错。
     pub async fn rebase(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let onto = options
@@ -1494,6 +1613,7 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 执行 `git rebase --abort` 放弃进行中的变基；失败返回合成错误文本。
     pub async fn abort_rebase(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let result = self.run(&context.repo_root, &["rebase", "--abort"]).await;
@@ -1507,6 +1627,9 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 合并 `options.branch` 指定的分支（必填）。成功返回 `{ success, conflict: false }`；
+    /// 失败文本（大小写不敏感）含 "conflict" 或 "automatic merge failed" 时返回
+    /// `conflict: true` 并附 `conflict_files` 冲突文件列表；其余失败按合成文本报错。
     pub async fn merge(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let branch = options
@@ -1531,6 +1654,7 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 执行 `git merge --abort` 放弃进行中的合并；失败返回合成错误文本。
     pub async fn abort_merge(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let result = self.run(&context.repo_root, &["merge", "--abort"]).await;
@@ -1544,6 +1668,10 @@ impl GitService {
         Ok(json!({ "success": true }))
     }
 
+    /// 继续变基：以 `GIT_EDITOR=true` 执行 `rebase --continue`，避免交互式编辑器阻塞。
+    /// 失败文本命中 [`is_continue_conflict_message`] 时返回 `conflict: true` 与冲突文件
+    /// 列表；输出含 "nothing to commit"/"no changes"（空提交场景）时自动补一次
+    /// `rebase --skip` 并按成功返回；其余失败按合成文本报错。
     pub async fn continue_rebase(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let mut env = HashMap::new();
@@ -1575,6 +1703,11 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 继续合并：先查 status，仍存在冲突文件时直接返回 `conflict: true` 与冲突列表；
+    /// 否则以 `GIT_EDITOR=true` 执行 `git -c core.abbrev=40 commit --no-edit` 完成
+    /// 合并提交。失败文本命中 [`is_continue_conflict_message`] 时同样返回冲突，
+    /// 含 "nothing to commit"/"no changes added" 时视为合并已完成返回成功；
+    /// 其余失败按合成文本报错。
     pub async fn continue_merge(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let status = self.parse_status(&context.repo_root, &[]).await;
@@ -1614,6 +1747,11 @@ impl GitService {
         Err(text.trim().to_string())
     }
 
+    /// 汇总当前冲突现场的详情：`status --porcelain` 原文、`diff --name-only
+    /// --diff-filter=U` 的未合并文件列表、`diff NO_EXT_DIFF` 的冲突 diff，以及
+    /// headInfo 与 operation——存在 MERGE_HEAD 时判定为 merge 并附 MERGE_HEAD 哈希与
+    /// MERGE_MSG 文件内容；否则存在 REBASE_HEAD 时判定为 rebase 并附 REBASE_HEAD 哈希。
+    /// 各探测命令失败时均按空值兜底，不产生错误。
     pub async fn get_conflict_details(&self, directory: &str) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let status_porcelain = self
@@ -1706,6 +1844,9 @@ impl GitService {
     // Stashes
     // -----------------------------------------------------------------------
 
+    /// 列出全部 stash：执行 `git stash list --format=%gd␟%gs␟%cr␟%H`
+    /// （以 U+001F 单元分隔符分列），解析为 ref/message/relativeTime/hash 条目数组；
+    /// 命令失败时返回经 `failure_text` 合成的错误文本。
     pub async fn list_stashes(&self, directory: &str) -> ServiceResult<Vec<Value>> {
         let context = self.repository_context(directory).await?;
         let output = self
@@ -1740,6 +1881,9 @@ impl GitService {
         Ok(stashes)
     }
 
+    /// 统计各 stash 涉及的文件数：`refs` 为字符串数组，先去重去空白，再对每个引用执行
+    /// `git stash show --name-only` 统计非空行数（命令失败按 0 计），
+    /// 返回 `{ "counts": { "<ref>": n } }`。
     pub async fn count_stash_files(
         &self,
         directory: &str,
@@ -1781,6 +1925,9 @@ impl GitService {
         Ok(json!({ "counts": counts }))
     }
 
+    /// 创建 stash：执行 `git stash push --include-untracked -m <message>`。
+    /// message 取 options.message（去空白），缺省为 "OMPChamber stash <ISO 时间>"；
+    /// 输出包含 "no local changes" 时 created=false，表示没有可入栈的变更。
     pub async fn stash_push(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let message = options
@@ -1816,6 +1963,9 @@ impl GitService {
         }))
     }
 
+    /// 应用 stash（引用取自 `stash_ref`，默认 `stash@{0}`）：先尝试保留暂存区结构的
+    /// `stash apply --index`，失败时退回不带 `--index` 的普通 apply；
+    /// 两次都失败才向上返回合成错误文本。
     pub async fn stash_apply(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let reference = stash_ref(options);
@@ -1845,6 +1995,7 @@ impl GitService {
         Ok(json!({ "success": true, "ref": reference }))
     }
 
+    /// 删除指定 stash 引用（`git stash drop <ref>`），失败时返回合成错误文本。
     pub async fn stash_drop(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let reference = stash_ref(options);
@@ -1861,6 +2012,8 @@ impl GitService {
         Ok(json!({ "success": true, "ref": reference }))
     }
 
+    /// 弹出 stash：依次执行 `stash_apply` 与 `stash_drop`，任一步失败即中止并向上
+    /// 透传其错误；成功返回 `{ success, ref }`。
     pub async fn stash_pop(&self, directory: &str, options: &Value) -> ServiceResult<Value> {
         let reference = stash_ref(options);
         self.stash_apply(directory, options).await?;
@@ -1872,6 +2025,13 @@ impl GitService {
     // Log / commit inspection
     // -----------------------------------------------------------------------
 
+    /// 获取提交历史。`options.all` 为真时走全引用通道：`log --all --topo-order
+    /// --shortstat` 加自定义分隔 format，由 `parse_raw_log_entries` 解析出带
+    /// refs/作者字段的条目。常规通道先用 `resolve_base_ref_for_log_with` 归一化
+    /// from 引用，再执行 simple-git 风格的 `\u{f2}` 边界 format log（单文件历史时
+    /// 附加 `--follow` 与 `:(top)<path>`，并使用 `from...to` 范围），得到主列表；
+    /// 随后跑第二条 `--shortstat` log 由 `parse_log_stats` 补充各提交的
+    /// diffstat 与 parents，合并为 all/latest/total。max_count 缺省或非正时取 50。
     pub async fn get_log(&self, directory: &str, options: &LogOptions) -> ServiceResult<Value> {
         let context = self.repository_context(directory).await?;
         let max_count = if options.max_count.unwrap_or(0) > 0 {
@@ -1997,6 +2157,11 @@ impl GitService {
         Ok(json!({ "all": merged, "latest": latest, "total": base_total }))
     }
 
+    /// 获取单个提交的变更文件列表：先 `git show --numstat` 取
+    /// path/insertions/deletions（"-" 列表示二进制，计数按 0），再
+    /// `git show --name-status` 取 A/M/D/R/C 状态（R/C 取制表符分隔的最后一个路径），
+    /// 状态按 `numstat_destination_path` 归一化后的路径匹配；匹配不到时
+    /// 含 " => " 的路径记为 R，否则记为 M。
     pub async fn get_commit_files(
         &self,
         directory: &str,
@@ -2105,6 +2270,12 @@ impl GitService {
         Ok(json!({ "files": out }))
     }
 
+    /// 读取指定提交中某文件的改前/改后内容。directory/hash/file_path 任一为空直接报
+    /// 参数错误；is_binary 时短路返回空内容。先构造相对 repo 根与相对 directory 的两个
+    /// 候选路径（过滤 `..`/绝对路径并去重），用 `git show <hash>^:<path>` 与
+    /// `<hash>:<path>` 成对探测；任一侧成功即采用该候选，全部失败时经
+    /// `resolve_git_commit_file_path` 重解析路径再试；两次读取都失败则返回带 stderr
+    /// 的错误，单侧失败时该侧内容返回空串。
     pub async fn get_commit_file_diff(
         &self,
         directory: &str,
@@ -2187,6 +2358,9 @@ impl GitService {
         }))
     }
 
+    /// 用 `git ls-tree --name-only` 依次验证候选路径在提交本身或其父提交中是否存在，
+    /// 返回第一个命中的候选路径；全部未命中时返回 "Invalid file path" 错误。
+    /// 供 `get_commit_file_diff` 在直接 `show` 失败时做路径重解析。
     async fn resolve_git_commit_file_path(
         &self,
         repo_root: &Path,
@@ -2221,6 +2395,10 @@ impl GitService {
         Err("Invalid file path".to_string())
     }
 
+    /// 批量获取提交摘要。`shas` 为 JSON 字符串数组，仅接受 4–64 位十六进制哈希，
+    /// 含非法值时直接报 "Invalid commit SHA"；空列表短路返回空结果。
+    /// 通过 `git show -s --format=%H\t%h\t%s` 解析出 sha/short/subject；
+    /// 首选 `run_or_throw` 通道，失败时退回 `raw` 通道以相同参数重试一次。
     pub async fn get_commit_summaries(
         &self,
         directory: &str,
@@ -2299,6 +2477,9 @@ impl GitService {
     // Worktree type probes + primary-root/toplevel resolvers
     // -----------------------------------------------------------------------
 
+    /// 判断目录是否为 linked worktree：比较 `rev-parse --git-dir` 与
+    /// `--git-common-dir` 的输出，二者不同即为 linked worktree；
+    /// 目录非法或任一命令失败时一律按 false 处理。
     pub async fn is_linked_worktree(&self, directory: &str) -> bool {
         let Ok(directory_path) = require_directory(Some(directory)) else {
             return false;
@@ -2315,6 +2496,10 @@ impl GitService {
         git_dir.stdout.trim() != git_common_dir.stdout.trim()
     }
 
+    /// 校验 directory 是否是位于 worktree_root 之内的 git 仓库。任一路径为空或
+    /// directory 不是 git 仓库时返回全空的无效对象（valid=false）；有效时返回
+    /// canonicalize 后的 resolvedCwd/resolvedWorktreeRoot，以及 insideWorktreeRoot
+    /// （二者相等或 cwd 以 `<root>/` 为前缀）。
     pub async fn validate_worktree_directory(&self, directory: &str, worktree_root: &str) -> Value {
         let invalid = json!({
             "valid": false,
@@ -2343,6 +2528,12 @@ impl GitService {
         })
     }
 
+    /// 汇总 worktree 当前状态 JSON：worktreeRoot（解析失败时状态标记为 invalid）、cwd、
+    /// 分支与 headState（symbolic-ref 命中为 branch；为空时回退 rev-parse HEAD，
+    /// 仍为空记 unborn，否则 detached 且分支显示为 7 位短哈希）、worktreeStatus，以及
+    /// attentionReason——按 merge（存在 MERGE_HEAD 且在分支上）、rebase（rebase-merge/
+    /// rebase-apply 目录存在）、cherry-pick/revert（有冲突文件且 CHERRY_PICK_HEAD/
+    /// REVERT_HEAD 存在）的优先级判定，无异常时为 null。
     pub async fn canonicalize_worktree_state(&self, directory: &str) -> Value {
         let empty = || {
             json!({
@@ -2479,6 +2670,10 @@ impl GitService {
         })
     }
 
+    /// 解析主 worktree 根目录：先取 `rev-parse --absolute-git-dir`（反斜杠归一为 `/`），
+    /// 交给 [`derive_primary_worktree_root_from_git_dir`] 反推；失败再用
+    /// `--git-common-dir`（相对路径基于 directory 绝对化）重试；两者都失败时
+    /// 原样返回传入的 directory。
     pub async fn resolve_primary_worktree_root(&self, directory: &str) -> Value {
         let result = self
             .run(
@@ -2515,6 +2710,8 @@ impl GitService {
         json!({ "root": directory })
     }
 
+    /// 运行 `git rev-parse --show-toplevel` 获取当前 worktree 的顶层目录
+    /// （路径分隔符归一为 `/`）；命令失败或输出为空时回退为传入的 directory。
     pub async fn resolve_worktree_top_level(&self, directory: &str) -> Value {
         let result = self.run(directory, &["rev-parse", "--show-toplevel"]).await;
         if !result.success {
@@ -2528,6 +2725,7 @@ impl GitService {
         }
     }
 
+    /// 通过 `repository_context` 解析仓库根目录，并返回其字符串形式。
     pub async fn get_repository_root(&self, directory: &str) -> ServiceResult<String> {
         let context = self.repository_context(directory).await?;
         Ok(context.repo_root.to_string_lossy().to_string())
@@ -2537,6 +2735,9 @@ impl GitService {
     // Long-path support (issue #2746)
     // -----------------------------------------------------------------------
 
+    /// 确保 worktree 启用 `core.longpaths`（issue #2746 的 Windows 长路径支持）：
+    /// 已为 true 则直接返回；否则写入 `core.longpaths=true`，写入失败也被忽略
+    /// （尽力而为，不阻塞后续填充流程）。
     pub async fn ensure_worktree_longpaths(&self, directory: &str) -> ServiceResult<()> {
         let current = self
             .run(directory, &["config", "--get", "core.longpaths"])
@@ -2550,6 +2751,11 @@ impl GitService {
         Ok(())
     }
 
+    /// 带锁恢复的 worktree 填充：执行 reset 检出命令，遇到 `index.lock` 冲突时按
+    /// 250ms → 750ms 退避重试；重试前用 `rev-parse --git-path index.lock` 定位锁文件，
+    /// 并以 `file_identity` 记录其指纹，仅当锁文件在两次探测间确实未变化（陈旧锁）时
+    /// 才删除锁文件做最后一次尝试。非锁错误或最终仍失败时返回经
+    /// [`format_worktree_populate_error`] 规整的错误消息。
     pub async fn populate_worktree_with_lock_recovery(&self, directory: &str) -> ServiceResult<()> {
         self.ensure_worktree_longpaths(directory).await?;
 
@@ -2618,6 +2824,9 @@ impl GitService {
         Ok(())
     }
 
+    /// 以额外的环境变量执行任意 git 子命令（字符串参数形式），直接转发给注入的
+    /// runner 闭包并原样返回 `GitCommandResult`；供需要向子进程注入 env
+    /// （如 worktree 场景）的调用方使用。
     pub(crate) async fn run_strings_with_env(
         &self,
         cwd: impl AsRef<Path>,
@@ -2632,8 +2841,12 @@ impl GitService {
 // Log options + pure parsing helpers
 // ---------------------------------------------------------------------------
 
+/// [`GitService`] 的单次命令封装（commit/push）与引用探测辅助；自 `service.rs`
+/// 拆分出的 impl 块，仅为本文件内部方法服务。
 impl GitService {
     /// `rev-parse --verify <ref>` resolves to a commit-ish (quiet).
+    /// 运行 `git rev-parse --verify <ref>` 静默探测引用是否解析到某个 commit-ish；
+    /// 命令失败或输出为空都按“不可解析”（false）处理，不产生错误。
     async fn ref_resolves(&self, repo_root: &Path, reference: &str) -> bool {
         self.raw(
             repo_root,
@@ -2645,6 +2858,9 @@ impl GitService {
     }
 
     /// One `git -c core.abbrev=40 commit -m <msg> [files]` invocation.
+    /// 执行一次 `git -c core.abbrev=40 commit -m <msg> [files...]`；成功时解析 stdout
+    /// 得到（提交哈希、分支名、changes/insertions/deletions 汇总 JSON）三元组，
+    /// 失败时返回经 `failure_text` 合成的错误消息字符串。
     async fn commit_once(
         &self,
         repo_root: &Path,
@@ -2675,6 +2891,8 @@ impl GitService {
     }
 
     /// One `git push --verbose --porcelain …` invocation, parsed.
+    /// 执行一次 `git push --verbose --porcelain ...` 并用 `parse_push_result` 解析输出；
+    /// 成功返回推送结果 JSON 对象，失败返回合成后的错误消息字符串。
     async fn push_once(
         &self,
         repo_root: &Path,
@@ -2694,20 +2912,32 @@ impl GitService {
     }
 }
 
+/// log 查询的公共选项集合，字段与 JS 版 log API 的参数一一对应。
 #[derive(Debug, Default, Clone)]
 pub struct LogOptions {
+    /// 限制返回的提交条数（映射为 `--max-count`）；`None` 表示不限制。
     pub max_count: Option<i64>,
+    /// log 起点引用（分支名或 commit）；使用前会经
+    /// `resolve_base_ref_for_log_with` 归一化为可解析的 ref。
     pub from: Option<String>,
+    /// log 终点引用；`None` 表示默认到 HEAD。
     pub to: Option<String>,
+    /// 仅跟踪指定文件的提交历史；`None` 表示全仓库范围。
     pub file: Option<String>,
+    /// 是否附加 `--all` 以覆盖所有引用的提交历史。
     pub all: bool,
 }
 
+/// checkout 目标描述：目标分支名加上可选的远端跟踪引用。
 struct CheckoutTarget {
+    /// 目标分支名（本地分支名，不含 remote 前缀）。
     branch: String,
+    /// 对应的远端跟踪引用（如 `origin/main`）；仅在远端分支首次检出等场景存在。
     remote_ref: Option<String>,
 }
 
+/// 从 stash 操作的 options JSON 中读取 `ref` 字段并去除空白；字段缺失或为空时
+/// 回退到 `stash@{0}`（最新一条 stash）。
 fn stash_ref(options: &Value) -> String {
     options
         .get("ref")
@@ -2718,6 +2948,9 @@ fn stash_ref(options: &Value) -> String {
         .unwrap_or_else(|| "stash@{0}".to_string())
 }
 
+/// 将 JS 侧透传的 raw 配置展开为 git 命令行参数数组：数组形式逐项透传（跳过空白项）；
+/// 对象形式按键值生成参数——布尔 `true`/`null` 只生成开关项、`false` 整体跳过，
+/// 字符串值原样追加，其它类型序列化为 JSON 文本后追加。
 fn build_raw_git_options(raw: Option<&Value>) -> Vec<String> {
     let mut out = Vec::new();
     match raw {
@@ -2751,6 +2984,9 @@ fn build_raw_git_options(raw: Option<&Value>) -> Vec<String> {
     out
 }
 
+/// 依据错误文本特征判断 push 失败是否因当前分支缺少 upstream 配置
+/// （"has no upstream"/"no upstream"/"set-upstream"，或同时出现 upstream、push 与 -u），
+/// 用于决定是否应自动附带 `--set-upstream` 重试。
 fn looks_like_missing_upstream(text: &str) -> bool {
     let message = text.to_lowercase();
     message.contains("has no upstream")
@@ -2760,6 +2996,8 @@ fn looks_like_missing_upstream(text: &str) -> bool {
         || (message.contains("upstream") && message.contains("push") && message.contains("-u"))
 }
 
+/// 提取 push 的错误文本：非空则返回 trim 后的原文，否则回退为通用消息
+/// "Failed to push to remote"。
 fn first_push_error(text: &str) -> String {
     for chunk in [text.trim()].iter() {
         if !chunk.is_empty() {
@@ -2769,6 +3007,8 @@ fn first_push_error(text: &str) -> String {
     "Failed to push to remote".to_string()
 }
 
+/// 生成文件的稳定性指纹 `dev:ino:len:mtime`（设备号、inode、长度、修改时间），
+/// 用于判断 `index.lock` 在两次探测之间是否被真正写入过；IO 失败时返回 Err。
 async fn file_identity(path: &Path) -> std::io::Result<String> {
     let meta = tokio::fs::metadata(path).await?;
 use crate::os_compat::MetadataExt;
@@ -2781,6 +3021,9 @@ use crate::os_compat::MetadataExt;
     ))
 }
 
+/// 规整 worktree 填充失败的错误消息：空消息回退为通用文案；当文本（大小写不敏感、
+/// 统一 "file name too long" 写法后）命中路径超长特征时，追加 Windows 长路径指引
+/// （core.longpaths 已启用 / 建议 LongPathsEnabled 或缩短绝对路径）。
 pub fn format_worktree_populate_error(message: &str) -> String {
     let text = if message.trim().is_empty() {
         "Failed to populate worktree".to_string()
@@ -2801,6 +3044,8 @@ pub fn format_worktree_populate_error(message: &str) -> String {
     .join("\n")
 }
 
+/// 从 `.git` 目录路径反推主 worktree 根目录：先剥离 `/.git` 后缀；若是 linked
+/// worktree（路径含 `/.git/worktrees/`）则截取该标记之前的部分。无法识别时返回 `None`。
 fn derive_primary_worktree_root_from_git_dir(git_dir: &str) -> Option<String> {
     let normalized = git_dir.trim();
     if normalized.is_empty() {
@@ -2821,6 +3066,7 @@ fn derive_primary_worktree_root_from_git_dir(git_dir: &str) -> Option<String> {
     None
 }
 
+/// 计算 target 相对 root 的路径字符串；target 不在 root 之下时原样返回其完整路径字符串。
 fn relative(root: &Path, target: &Path) -> String {
     target
         .strip_prefix(root)
@@ -2828,6 +3074,7 @@ fn relative(root: &Path, target: &Path) -> String {
         .unwrap_or_else(|_| target.to_string_lossy().to_string())
 }
 
+/// 生成 8 位十六进制随机后缀，用于临时分支名/文件名去重。
 fn hex_random_suffix() -> String {
     use rand::Rng;
     let mut rng = rand::rng();
@@ -2837,6 +3084,9 @@ fn hex_random_suffix() -> String {
 }
 
 /// `extractPatchTargetPath` — first `---`/`+++` target that is a real path.
+/// 扫描补丁文本中首个 `---`/`+++` 头部行，取其路径 token 并归一化
+/// （跳过 `/dev/null`、剥离 `a/`/`b/` 前缀）；用于从补丁内容推断目标文件路径，
+/// 找不到有效路径时返回 `None`。
 pub(crate) fn extract_patch_target_path(patch: &str) -> Option<String> {
     for line in patch.lines() {
         let trimmed = line.trim_start();
@@ -2854,6 +3104,8 @@ pub(crate) fn extract_patch_target_path(patch: &str) -> Option<String> {
     None
 }
 
+/// 解析 diff 头部行中的路径 token：空串与 `/dev/null` 视为无路径；带引号形式按
+/// JSON 转义规则解码（解码失败时退化为去引号文本）；裸路径截取首个制表符之前的部分。
 fn parse_patch_path_token(value: &str) -> Option<String> {
     if value.is_empty() || value == "/dev/null" {
         return None;
@@ -2885,6 +3137,8 @@ fn parse_patch_path_token(value: &str) -> Option<String> {
     }
 }
 
+/// 过滤并归一化补丁目标路径：`None`、空串与 `/dev/null` 一律返回 `None`，
+/// 其余剥离 `a/`/`b/` diff 前缀后返回。
 fn normalize_patch_target_path(value: Option<String>) -> Option<String> {
     let value = value?;
     if value.is_empty() || value == "/dev/null" {
@@ -2899,13 +3153,20 @@ fn normalize_patch_target_path(value: Option<String>) -> Option<String> {
 
 // -- commit / pull / push / branch parsers ----------------------------------
 
+/// `git commit` 输出的解析结果。
 #[derive(Debug, Clone)]
 struct CommitSummaryParsed {
+    /// 新提交的哈希。
     commit: String,
+    /// 提交所在分支名。
     branch: String,
+    /// changes/insertions/deletions 汇总统计的 JSON 对象。
     value: Value,
 }
 
+/// 解析 `git commit` 的 stdout：从 `[branch (root-commit) hash] subject` 汇总行提取
+/// 分支名与提交哈希（跳过可选的 "(root-commit)" token），并汇总
+/// "N files changed / insertions / deletions" 的 diffstat 统计。
 fn parse_commit_summary(stdout: &str) -> CommitSummaryParsed {
     let mut commit = String::new();
     let mut branch = String::new();
@@ -2955,6 +3216,8 @@ fn parse_commit_summary(stdout: &str) -> CommitSummaryParsed {
     }
 }
 
+/// 在行内定位复数/单数标记（如 " files changed" / " file"），返回标记之前的行尾数字；
+/// 找不到标记或行尾无完整数字时返回 `None`。
 fn count_before(line: &str, singular_marker: &str, plural_marker: &str) -> Option<i64> {
     let marker_pos = line
         .find(plural_marker)
@@ -2962,6 +3225,7 @@ fn count_before(line: &str, singular_marker: &str, plural_marker: &str) -> Optio
     trailing_digits(&line[..marker_pos])
 }
 
+/// 提取字符串末尾连续的 ASCII 数字并解析为 i64；末尾没有数字时返回 `None`。
 fn trailing_digits(head: &str) -> Option<i64> {
     let trimmed = head.trim_end();
     let start = trimmed
@@ -2971,6 +3235,8 @@ fn trailing_digits(head: &str) -> Option<i64> {
     trimmed[start..].parse::<i64>().ok()
 }
 
+/// 在行内查找 insertion/deletion 计数词，并依据其后的 `(+)`/`(-)` 方向标记返回
+/// （数量, 方向字符）；缺少方向标记时返回 `None`。
 fn insertion_deletion_count(line: &str, word: &str) -> Option<(i64, char)> {
     let pos = line.find(word)?;
     let tail = &line[pos..];
@@ -2984,6 +3250,10 @@ fn insertion_deletion_count(line: &str, word: &str) -> Option<(i64, char)> {
     trailing_digits(&line[..pos]).map(|count| (count, direction))
 }
 
+/// 解析 `git pull` 的 stdout/stderr 为与 JS 版对齐的 JSON 结果：逐文件解析
+/// `file | 5 +++--` 统计行得到 insertions/deletions，识别 `create mode`/`delete mode`
+/// 行归类 created/deleted 列表，并汇总 changes/insertions/deletions 总量；
+/// 重复出现的文件名只记录一次。
 fn parse_pull_summary(stdout: &str, stderr: &str) -> Value {
     let mut files: Vec<Value> = Vec::new();
     let mut insertions = Map::new();
@@ -3057,6 +3327,11 @@ fn parse_pull_summary(stdout: &str, stderr: &str) -> Value {
     })
 }
 
+/// 解析 `git push` 的 stdout/stderr，组装与 JS 版 simple-git 对齐的 JSON 结果：
+/// `pushed` 数组（每个引用的 new/deleted/tag/alreadyUpdated 标记及 local/remote 引用名）、
+/// 目标仓库地址（`Pushing to ...` 行）以及被更新的本地跟踪 ref。
+/// `_directory` 仅用于保持与 JS 版签名一致，解析本身不使用。
+/// 始终返回 `success: true`；推送失败由调用方依据 git 退出码另行判断。
 fn parse_push_result(stdout: &str, stderr: &str, _directory: &str) -> Value {
     let mut pushed: Vec<Value> = Vec::new();
     let mut repo = Value::Null;
@@ -3104,6 +3379,8 @@ fn parse_push_result(stdout: &str, stderr: &str, _directory: &str) -> Value {
     })
 }
 
+/// 拆解 push 汇总行 `local:remote [status]`，返回 `((local, remote), status)`。
+/// 行内缺少 `[...]` 状态括号或 `local:remote` 冒号时返回 `None`。
 fn split_push_line(body: &str) -> Option<((String, String), String)> {
     // local:remote [status]
     let bracket = body.find("[")?;
@@ -3114,13 +3391,20 @@ fn split_push_line(body: &str) -> Option<((String, String), String)> {
     Some(((local.to_string(), remote.to_string()), status))
 }
 
+/// `git branch -v` 输出的解析结果，形状与 JS 版 simple-git 的 branch 汇总对齐。
 #[derive(Debug, Default)]
 struct BranchSummaryParsed {
+    /// 全部分支名列表，按输出顺序排列（含 detached HEAD 行解析出的名字）。
     all: Vec<String>,
+    /// 当前检出的分支名；detached HEAD 时为解析出的提交名，可能为空串。
     current: String,
+    /// 分支名到分支条目 JSON 对象（current/linkedWorkTree/name/commit/label）的映射。
     branches: Map<String, Value>,
 }
 
+/// 逐行解析 `git branch -v` 输出。先剥离 `* `/`+ ` 前缀标记（当前分支 / linked worktree），
+/// 再分别处理 `(HEAD detached at/from ...)` 行与 `name hash label` 常规行；
+/// `remotes/origin/HEAD -> origin/main` 这类 symref 行被跳过，与 simple-git 行为一致。
 fn parse_branch_summary(stdout: &str) -> BranchSummaryParsed {
     let mut parsed = BranchSummaryParsed::default();
     for line in stdout.lines() {
@@ -3205,6 +3489,8 @@ fn parse_branch_summary(stdout: &str) -> BranchSummaryParsed {
     parsed
 }
 
+/// 从 `git symbolic-ref` 风格输出中提取当前分支名：匹配 `ref: refs/heads/<branch>` 行
+/// 并去除行尾残留的 `HEAD` 字样；没有有效分支名时返回 `None`。
 fn extract_symref_head(output: &str) -> Option<String> {
     // `ref: refs/heads/main\tHEAD`
     for line in output.lines() {
@@ -3221,24 +3507,39 @@ fn extract_symref_head(output: &str) -> Option<String> {
 
 // -- log parsers --------------------------------------------------------------
 
+/// 边界 log（`--boundary`）中的单条提交记录；各字段由 `\u{f2}` 分隔符拆出，
+/// 供 log 解析的边界回退路径使用。
 #[derive(Debug, Clone)]
 struct BoundaryLogEntry {
+    /// 提交哈希（短哈希或全长哈希，取决于调用方的 git 格式参数）。
     hash: String,
+    /// 与 `hash` 相同内容的副本，保留以对齐 JS 版的字段命名。
     hash_string: String,
+    /// 提交日期字符串（按调用方 `--date=` 格式原样保留）。
     date: String,
+    /// 提交消息首行（subject）。
     message: String,
+    /// 装饰引用（如 `refs/heads/main`、tag 名），无则为 `None`。
     refs: Option<String>,
+    /// 提交正文（body），无则为 `None`。
     body: Option<String>,
+    /// 作者姓名。
     author_name: String,
+    /// 作者邮箱。
     author_email: String,
 }
 
+/// 为 [`BoundaryLogEntry`] 提供的对齐 JS 版访问器的辅助方法。
 impl BoundaryLogEntry {
+    /// 返回提交哈希的克隆；保留为独立方法以对齐 JS 版的 `hash` 访问器。
     fn hash_str(&self) -> String {
         self.hash.clone()
     }
 }
 
+/// 解析以 `\u{f2}\u{f2}\u{f2}\u{f2}\u{f2}\u{f2} ` 分隔的边界 log 输出。每条记录先截断到
+/// ` \u{f2}\u{f2}` 提交边界，再按 `" \u{f2} "` 拆出 hash/date/message/refs/body/author_name/
+/// author_email 七个字段；hash 为空的记录直接丢弃。
 fn parse_boundary_log(stdout: &str) -> Vec<BoundaryLogEntry> {
     let trimmed = stdout.trim();
     let start_boundary = "\u{f2}\u{f2}\u{f2}\u{f2}\u{f2}\u{f2} ";
@@ -3279,14 +3580,22 @@ fn parse_boundary_log(stdout: &str) -> Vec<BoundaryLogEntry> {
     entries
 }
 
+/// 单个提交的 diffstat 聚合值。
 #[derive(Debug, Clone, Default)]
 struct LogStat {
+    /// 变更文件数。
     files_changed: i64,
+    /// 新增行数。
     insertions: i64,
+    /// 删除行数。
     deletions: i64,
+    /// 父提交哈希列表，用于识别合并提交。
     parents: Vec<String>,
 }
 
+/// 解析自定义分隔的 `log --stat` 输出：记录以 `\u{1e}` 分块，首行用 `\u{1f}` 拆出 hash 与
+/// 父提交列表，其余行提取 "N files changed / insertions / deletions" 汇总，
+/// 返回 hash 到 [`LogStat`] 的映射。
 fn parse_log_stats(stdout: &str) -> HashMap<String, LogStat> {
     let mut stats: HashMap<String, LogStat> = HashMap::new();
     for record in stdout.split('\u{1e}') {
@@ -3333,6 +3642,9 @@ fn parse_log_stats(stdout: &str) -> HashMap<String, LogStat> {
     stats
 }
 
+/// 解析自定义分隔的原始 log 输出为 JSON 条目数组。首行以 `\u{1f}` 拆出
+/// hash/parents/author_name/author_email/date/message/refs 字段，其余行提取 diffstat；
+/// `with_refs` 为 true 时额外输出 refs/body 与作者字段，以对齐 JS 版的两种 log 形状。
 fn parse_raw_log_entries(stdout: &str, with_refs: bool) -> Vec<Value> {
     let mut entries = Vec::new();
     for record in stdout.split('\u{1e}') {
@@ -3393,8 +3705,13 @@ fn parse_raw_log_entries(stdout: &str, with_refs: bool) -> Vec<Value> {
     entries
 }
 
+/// [`GitService`] 的 log 引用解析辅助方法；自 `service.rs` 拆出后的延续 impl 块。
 impl GitService {
     /// `resolveBaseRefForLog` bound to a repository.
+    /// 将用户给定的 log 起点归一化为可解析引用：先按原样探测是否为有效 ref，
+    /// 失败则退回 `refs/remotes/origin/<name>`（返回 `origin/<name>` 形式）；
+    /// 两者都无法解析时仍原样返回，交由后续 git 命令自行报错。
+    /// `from` 为 `None` 或全空白时返回 `None`，表示未指定起点。
     pub(crate) async fn resolve_base_ref_for_log_with(
         &self,
         repo_root: &Path,
@@ -3412,6 +3729,9 @@ impl GitService {
     }
 }
 
+/// 把 `git log --numstat` 输出中的重命名路径归一化为重命名后的目标路径：
+/// 支持 `old => new` 与 `prefix{old => new}suffix` 两种形式（后者会压缩拼接产生的 `//`）；
+/// 不含 ` => ` 的路径原样返回。
 fn numstat_destination_path(file_path: &str) -> String {
     if !file_path.contains(" => ") {
         return file_path.to_string();

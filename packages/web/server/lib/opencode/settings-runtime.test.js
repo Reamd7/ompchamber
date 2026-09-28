@@ -1,3 +1,12 @@
+/**
+ * settings-runtime.js 设置读写运行时的单元测试（vitest）。
+ *
+ * createRuntime 在临时目录中构造注入全量桩依赖的 createSettingsRuntime 实例
+ * （多数桩为直通/空实现，仅保留文件系统副作用），覆盖：设置往返与落盘格式、
+ * POSIX 下的目录与文件权限收紧、项目 ID 迁移时 plan 路径重映射仅限旧存储目录、
+ * 退役 OpenCode 更新状态的清理、Windows 阻止原子替换时的回退写入、启动迁移时
+ * 孤立 settings.json.tmp 的清理，以及写盘失败时临时文件的删除。
+ */
 import { describe, expect, it } from 'vitest';
 import crypto from 'crypto';
 import fsPromises from 'fs/promises';
@@ -6,6 +15,11 @@ import path from 'path';
 import { createProjectIdFromPath } from '../projects/project-id.js';
 import { createSettingsRuntime } from './settings-runtime.js';
 
+/**
+ * 在临时目录中创建注入桩依赖的 settings runtime：各桩函数均为直通或空实现，
+ * 以隔离真实的迁移与归一化逻辑，仅保留文件读写副作用；返回 runtime、
+ * settings 文件路径、临时根目录与 cleanup 清理函数。
+ */
 const createRuntime = async () => {
   const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-settings-runtime-'));
   const settingsFilePath = path.join(tempRoot, 'settings.json');
@@ -38,6 +52,7 @@ const createRuntime = async () => {
   };
 };
 
+// 套件：settings.json 的持久化、迁移清理与写盘失败路径。
 describe('settings runtime', () => {
   it('round-trips shared sidebar preferences through settings.json', async () => {
     const { runtime, settingsFilePath, cleanup } = await createRuntime();

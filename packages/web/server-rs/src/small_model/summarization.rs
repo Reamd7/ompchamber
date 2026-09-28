@@ -10,6 +10,13 @@
 //! The small-model seam is injectable ([`ModelSummarySource`]): production
 //! passes `None` (exactly the JS stub behavior); a future model-backed
 //! summarizer can be wired without touching this module again.
+//! 中文说明：本模块移植自 `server/lib/text/summarization.js`（模式：
+//! tts / notification / note）。JS 侧已退役模型摘要路径（忽略
+//! zenModel），本地 sanitize/distill 兜底即全部行为。正则驱动的清洗器
+//! 在此重实现为字符扫描（允许的依赖集里没有 regex crate），每个函数
+//! 都注明它对应的 JS 模式；长度运算采用 UTF-16 码元语义以对齐 JS 的
+//! String.length/slice。小模型接缝可注入（ModelSummarySource）：生产
+//! 传 None（与 JS 桩完全一致），未来接入模型摘要无需再改本模块。
 
 use std::sync::Arc;
 
@@ -18,14 +25,20 @@ use serde_json::{Map, Value};
 
 use crate::small_model::http::{utf16_len, utf16_prefix};
 
+/// 摘要模式：决定使用哪套清洗器与蒸馏兜底（对应 JS 的 mode 参数）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryMode {
+    /// 语音朗读：最激进的清洗（去 markdown、代码、URL、路径与标点）。
     Tts,
+    /// 系统通知：去除 markdown 结构，但保留内联代码与强调的内部文本。
     Notification,
+    /// 笔记标题：同通知清洗，另外整体删除 URL 与引号。
     Note,
 }
 
+/// SummaryMode 的解析辅助。
 impl SummaryMode {
+    /// 从字符串解析模式；无法识别时回落 Tts（与 JS 的 default 分支一致）。
     fn from_str(value: &str) -> Self {
         match value {
             "note" => Self::Note,
@@ -39,10 +52,12 @@ impl SummaryMode {
 // Character-class helpers (JS regex semantics, ASCII classes)
 // ---------------------------------------------------------------------------
 
+/// JS 的 `\w` 字符类：ASCII 字母数字与下划线。
 fn is_js_word(character: char) -> bool {
     character.is_ascii_alphanumeric() || character == '_'
 }
 
+/// JS 的 `\s` 字符类：ASCII 空白 + Unicode 空白 + BOM（逐字符枚举）。
 fn is_js_whitespace(character: char) -> bool {
     matches!(
         character,
@@ -58,6 +73,8 @@ fn is_js_whitespace(character: char) -> bool {
 }
 
 /// `text.split(/\s+/).join(' ').trim()` — collapse every whitespace run.
+/// 中文说明：等价 `split(/\s+/).join(' ').trim()`——把所有空白串折叠
+/// 为单个空格。
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
@@ -67,6 +84,8 @@ fn collapse_whitespace(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// ```[\s\S]*?``` (lazy): fenced code blocks, replaced by `replacement`.
+/// 中文说明：惰性匹配三反引号围栏代码块并整体替换为 replacement；
+/// 没有闭合围栏时保留原文。
 fn replace_fenced_code(text: &str, replacement: &str) -> String {
     let mut result = String::with_capacity(text.len());
     let mut rest = text;
@@ -89,6 +108,9 @@ fn replace_fenced_code(text: &str, replacement: &str) -> String {
 /// the next occurrence of the same marker. `keep_content` selects the JS
 /// replacement: emphasis keeps the inner text (`**x**` → `x`), TTS inline
 /// code replaces the whole match with a space (`` `x` `` → ` `).
+/// 中文说明：最左优先配对——JS 正则把第一个标记与下一个同标记配对；
+/// keep_content 决定保留内部文本（强调标记）还是整体换成空格（TTS
+/// 内联代码）。
 fn replace_delimited(text: &str, marker: &str, keep_content: bool) -> String {
     let marker_chars: Vec<char> = marker.chars().collect();
     let chars: Vec<char> = text.chars().collect();
@@ -119,6 +141,8 @@ fn replace_delimited(text: &str, marker: &str, keep_content: bool) -> String {
 }
 
 /// `\[(.*?)\]\((.*?)\)` → link text.
+/// 中文说明：markdown 链接（方括号文字 + 圆括号地址）替换为链接文字；
+/// 逐字符非贪婪扫描，未配对的方括号原样保留。
 fn replace_markdown_links(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut result = String::with_capacity(text.len());
@@ -146,6 +170,8 @@ fn replace_markdown_links(text: &str) -> String {
 /// selects the bullet set; the JS '#' heading removal happens before the TTS
 /// `[$#>]` pass removes '#' characters entirely, so the TTS variant only ever
 /// sees '$' and '>' in practice.
+/// 中文说明：按行剥离行首 bullet、ATX 标题与 `$`/`#`/`>` 符号前缀；
+/// 三个开关各自独立生效（实际 TTS 路径只会遇到 `$` 与 `>`）。
 fn strip_line_prefixes(text: &str, bullets: bool, headings: bool, sigils: bool) -> String {
     let mut result = String::with_capacity(text.len());
     for line in text.split('\n') {
@@ -192,6 +218,8 @@ fn strip_line_prefixes(text: &str, bullets: bool, headings: bool, sigils: bool) 
 // ---------------------------------------------------------------------------
 
 /// `sanitizeForTTS`: markdown, code, URLs, paths and punctuation removed.
+/// 中文说明：sanitizeForTTS——为语音朗读清除 markdown、代码、URL、
+/// 路径与各类标点，共八步流水线，最后折叠空白。
 pub fn sanitize_for_tts(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -236,6 +264,8 @@ pub fn sanitize_for_tts(text: &str) -> String {
 }
 
 /// `https?:\/\/[^\s]+` → `replacement`.
+/// 中文说明：匹配 http/https URL（延伸到下一个空白字符）并整体替换为
+/// replacement。
 fn replace_urls(text: &str, replacement: &str) -> String {
     let bytes: Vec<char> = text.chars().collect();
     let mut result = String::with_capacity(text.len());
@@ -271,6 +301,8 @@ fn replace_urls(text: &str, replacement: &str) -> String {
 }
 
 /// `/[\w\-./]+` — maximal runs starting with '/' of word/dash/dot/slash.
+/// 中文说明：删除以 `/` 开头的最长路径片段（字母数字/连字符/点/斜杠
+/// 组成的连续段）。
 fn strip_path_runs(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut result = String::with_capacity(text.len());
@@ -289,6 +321,8 @@ fn strip_path_runs(text: &str) -> String {
     result
 }
 
+/// `sanitizeForNotification`：去除围栏代码、bullet/标题前缀、各类强调
+/// 标记与 markdown 链接壳（保留内部文本），最后折叠空白。
 fn sanitize_for_notification(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -305,6 +339,8 @@ fn sanitize_for_notification(text: &str) -> String {
 }
 
 /// `sanitizeForNote`: like notification but URLs and quotes are removed.
+/// 中文说明：sanitizeForNote——同通知清洗，但 URL 整体删除（替换为空）
+/// 且额外去掉单双引号。
 pub fn sanitize_for_note(text: &str) -> String {
     if text.is_empty() {
         return String::new();
@@ -325,6 +361,7 @@ pub fn sanitize_for_note(text: &str) -> String {
     collapse_whitespace(&text)
 }
 
+/// 按模式分派到对应的清洗器（note/notification/tts）。
 fn sanitize_by_mode(text: &str, mode: SummaryMode) -> String {
     match mode {
         SummaryMode::Note => sanitize_for_note(text),
@@ -338,6 +375,8 @@ fn sanitize_by_mode(text: &str, mode: SummaryMode) -> String {
 // ---------------------------------------------------------------------------
 
 /// `(?<=[.!?])\s+` sentence split.
+/// 中文说明：在 `.`/`!`/`?` 后跟空白处断句并 trim；结尾没有终止符的
+/// 残句也作为一句返回。
 fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
@@ -365,6 +404,7 @@ fn split_sentences(text: &str) -> Vec<String> {
     sentences
 }
 
+/// 大小写不敏感地剥离任一候选前缀；都不匹配时原样返回借用的原文。
 fn strip_prefix_ci<'a>(text: &'a str, candidates: &[&str]) -> &'a str {
     for candidate in candidates {
         if text.len() >= candidate.len() && text[..candidate.len()].eq_ignore_ascii_case(candidate)
@@ -376,6 +416,9 @@ fn strip_prefix_ci<'a>(text: &'a str, candidates: &[&str]) -> &'a str {
 }
 
 /// `distillNoteFallback`.
+/// 中文说明：distillNoteFallback——剥离 "In summary"/"Here's a note"
+/// 式开场白后取首句，再按分号/冒号/括号/破折号与逗号依次截短；仍超
+/// 上限（min(maxLength, 65% 比例) 且不低于 32）时截断加省略号。
 fn distill_note_fallback(text: &str, max_length: u64) -> String {
     let sanitized = sanitize_for_note(text);
     if sanitized.is_empty() {
@@ -472,6 +515,7 @@ fn distill_note_fallback(text: &str, max_length: u64) -> String {
     }
 }
 
+/// 把字符下标换算成字节下标（Rust 字符串切片需要）；越界返回文本长度。
 fn char_byte_index(text: &str, char_index: usize) -> usize {
     text.char_indices()
         .nth(char_index)
@@ -480,6 +524,8 @@ fn char_byte_index(text: &str, char_index: usize) -> usize {
 }
 
 /// `distillNotificationFallback`.
+/// 中文说明：distillNotificationFallback——取首个至少 20 字符的句子
+/// （否则首句），超限时截断加省略号；max_length 缺失或非法时上限 100。
 fn distill_notification_fallback(text: &str, max_length: Option<f64>) -> String {
     let sanitized = sanitize_for_notification(text);
     if sanitized.is_empty() {
@@ -509,6 +555,7 @@ fn distill_notification_fallback(text: &str, max_length: Option<f64>) -> String 
     }
 }
 
+/// 按模式分派到对应的蒸馏兜底；TTS 没有蒸馏步骤，仅做清洗。
 fn fallback_by_mode(text: &str, max_length: Option<f64>, mode: SummaryMode) -> String {
     match mode {
         SummaryMode::Note => distill_note_fallback(text, max_length.unwrap_or(0.0) as u64),
@@ -521,18 +568,28 @@ fn fallback_by_mode(text: &str, max_length: Option<f64>, mode: SummaryMode) -> S
 // The seam + entrypoint
 // ---------------------------------------------------------------------------
 
+/// 传给模型摘要接缝的请求：待摘要全文与目标长度上限。
 pub struct SummaryModelRequest {
+    /// 待摘要的原始文本。
     pub text: String,
+    /// 期望的摘要长度上限（UTF-16 码元）。
     pub max_length: u64,
 }
 
+/// 模型摘要接缝返回的 future；Err 为人类可读的失败原因。
 pub type SummaryModelFuture = BoxFuture<'static, Result<String, String>>;
+/// 可注入的模型摘要来源（为已退役的 zen 提供者预留的前向兼容位）。
 pub type ModelSummarySource = Arc<dyn Fn(SummaryModelRequest) -> SummaryModelFuture + Send + Sync>;
 
+/// summarize_text 的入参集合（对应 JS summarizeText 的四个参数）。
 pub struct SummarizeParams<'a> {
+    /// 待处理文本；None 视为空串（reason 记 "No text provided"）。
     pub text: Option<&'a str>,
+    /// 触发摘要的长度阈值（UTF-16 码元）；不超过则只清洗不摘要。
     pub threshold: u64,
+    /// 摘要长度上限；None/非法值由各模式兜底自行取默认。
     pub max_length: Option<f64>,
+    /// 摘要模式，决定清洗与蒸馏策略。
     pub mode: SummaryMode,
 }
 
@@ -540,6 +597,9 @@ pub struct SummarizeParams<'a> {
 /// the local fallback always answers and `summarized` is always false.
 /// A provided seam is used for over-threshold text (forward-compat for the
 /// retired zen provider's replacement; the production wiring passes `None`).
+/// 中文说明：summarizeText——model 为 None 时与 JS 桩逐字节一致：始终
+/// 由本地兜底回答、summarized 恒为 false；提供接缝时仅用于超阈值文本
+/// （生产接线传 None）。
 pub async fn summarize_text(
     params: SummarizeParams<'_>,
     model: Option<ModelSummarySource>,
@@ -602,6 +662,8 @@ pub async fn summarize_text(
         Some(utf16_len(text)),
     )
 }
+/// 组装 JS 形状的返回对象（summary/summarized/reason/summaryLength/
+/// originalLength）；可选参数缺省时对应键整个省略。
 fn json_object(
     summary: String,
     summarized: bool,
@@ -626,6 +688,8 @@ fn json_object(
 
 /// `summarizeText` default entrypoint (no model seam) matching the JS export
 /// shape callers build with plain arguments.
+/// 中文说明：summarizeText 的默认入口（无模型接缝），参数形状与 JS
+/// 导出一致，供调用方按普通参数直接构造。
 pub async fn summarize_text_simple(
     text: Option<&str>,
     threshold: u64,

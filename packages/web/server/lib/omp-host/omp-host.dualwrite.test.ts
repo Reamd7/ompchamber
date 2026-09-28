@@ -1,3 +1,10 @@
+/**
+ * 双写外部变更分类（dual-write.ts）的测试套件。
+ *
+ * 通过真实临时文件驱动 fileSignature / classifyExternalChange /
+ * tailEntryIdOf，逐条钉住 plan §8 的分类契约：外部追加判 append、
+ * 尾 id 不变的重写判 dirty、截断与文件消失永不判 clean。
+ */
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,6 +15,7 @@ import { classifyExternalChange, fileSignature, tailEntryIdOf } from './dual-wri
 // "双写"): external appends absorb; rewrites that preserve the tail id still
 // classify dirty; truncations and vanished files never read clean.
 
+/** 在临时目录里落一个内容为 content 的 JSONL 文件，返回绝对路径。 */
 const tempFile = (content: string): string => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-dual-'));
   const file = path.join(dir, 's.jsonl');
@@ -15,8 +23,10 @@ const tempFile = (content: string): string => {
   return file;
 };
 
+/** 把 {id} 行数组序列化为以换行结尾的 JSONL 文本。 */
 const jsonl = (rows: Array<{ id: string }>): string => rows.map((row) => JSON.stringify(row)).join('\n') + '\n';
 
+// 文件签名与外部变更分类的契约测试：见上方模块说明与各用例断言。
 describe('fileSignature + classifyExternalChange (plan §8)', () => {
   test('unchanged when size and mtime match', () => {
     const file = tempFile(jsonl([{ id: 'e1' }]));

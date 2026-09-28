@@ -1,3 +1,6 @@
+//! walkthrough 的磁盘存储，两个目录两种职责：entries/ 存内容寻址的
+//! 不可变缓存条目（key 由当前 diff 派生，命中即“这份导览正是为当前
+//! 代码写的”，过期即 miss）；pointers/ 存 repo+source → cacheKey 指针。
 //! Port of `server/lib/walkthrough/store.js`.
 //!
 //! Two artifacts with two different jobs.
@@ -17,11 +20,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// 缓存条目数量上限（触发 LRU 驱逐）。
 const MAX_ENTRIES: usize = 200;
+/// entries 目录总字节数上限。
 const MAX_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
+/// 单个 JSON 文件允许读取的字节数上限（防异常大文件）。
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// 单次指针清理最多处理的文件数。
 const PRUNE_LIMIT: usize = 500;
 
+/// 计算 SHA-256 并返回小写十六进制串。
 fn sha256_hex(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     let mut out = String::with_capacity(64);
@@ -31,6 +39,7 @@ fn sha256_hex(value: &str) -> String {
     out
 }
 
+/// 当前 Unix 毫秒时间戳（时钟早于纪元时返回 0）。
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -38,54 +47,75 @@ fn now_millis() -> u128 {
         .as_millis()
 }
 
+/// 写入 entries/<sha256>.json 的一条缓存（字段顺序与省略对齐 JS 序列化）。
 /// One cache entry as written to `entries/<sha256>.json`. Field order mirrors
 /// the JS spread (`{ walkthroughVersion, ...entry }`); absent optional fields
 /// are omitted like `JSON.stringify` drops `undefined`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheEntry {
+/// 写入时的 WALKTHROUGH_VERSION（版本不匹配的旧条目读作 miss）。
     pub walkthrough_version: i64,
+/// 所属 cache key（部分写入路径不落盘该字段）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_key: Option<String>,
+/// 生成时间（ISO 字符串）。
     pub generated_at: String,
+/// 生成时的仓库根路径。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_root: Option<String>,
+/// 生成时的 source key。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_key: Option<String>,
+/// 生成所用模型的描述子集。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<Value>,
+/// 输出语言 tag。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+/// walkthrough 结果本体（chapters 等）。
     pub walkthrough: Value,
 }
 
+/// 序列化辅助。
 impl CacheEntry {
+/// 序列化为 JSON Value（失败得 Null）。
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
     }
 }
 
+/// 写入 pointers/<sha256>.json 的指针：repo+source 到 cacheKey 的映射。
 /// One pointer as written to `pointers/<sha256>.json`. Only `cacheKey` is
 /// required when reading; writes always include the full shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pointer {
+/// 仓库根路径。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_root: Option<String>,
+/// source key。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_key: Option<String>,
+/// 指向的缓存条目 key（读取时唯一必填项）。
     pub cache_key: String,
+/// 指向条目的生成时间。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated_at: Option<String>,
 }
 
+/// 根于 <data_dir>/walkthroughs 的存储：entries 与 pointers 两个子目录。
 /// The walkthrough store rooted at `<data_dir>/walkthroughs`.
 pub struct Store {
+/// 缓存条目目录。
     entries_dir: PathBuf,
+/// 指针目录。
     pointers_dir: PathBuf,
 }
 
+/// 缓存与指针的读写及维护（驱逐、清理）。
 impl Store {
+/// 由 data_dir 推导两个子目录路径（不创建目录）。
     pub fn new(data_dir: &Path) -> Self {
         let walkthrough_dir = data_dir.join("walkthroughs");
         Self {
@@ -94,23 +124,28 @@ impl Store {
         }
     }
 
+/// 条目目录路径。
     pub fn entries_dir(&self) -> &Path {
         &self.entries_dir
     }
 
+/// 指针目录路径。
     pub fn pointers_dir(&self) -> &Path {
         &self.pointers_dir
     }
 
+/// cacheKey → entries/<key>.json 的路径。
     fn entry_path(&self, cache_key: &str) -> PathBuf {
         self.entries_dir.join(format!("{cache_key}.json"))
     }
 
+/// repo+source（以 \0 连接后取 SHA-256）→ pointers/<digest>.json 的路径。
     fn pointer_path(&self, repo_root: &str, source_key: &str) -> PathBuf {
         let digest = sha256_hex(&format!("{repo_root}\0{source_key}"));
         self.pointers_dir.join(format!("{digest}.json"))
     }
 
+/// 容错读取 JSON：缺失、非文件、超限或解析失败一律 None，绝不报错。
     /// `readJson`: missing, unreadable, or corrupt all mean the same thing to
     /// callers — no usable cached walkthrough. Never an error: a bad cache
     /// file must not break the feature.
@@ -123,6 +158,8 @@ impl Store {
         serde_json::from_str(&raw).ok()
     }
 
+/// 先写临时文件再 rename 的原子写：崩溃不会留下半写文件；失败时清理
+/// 临时文件并返回 false。
     /// `writeJsonAtomic`: atomic so a crash mid-write leaves the previous
     /// entry intact rather than a half-written file that later fails to parse.
     fn write_json_atomic(&self, path: &Path, value: &Value) -> bool {
@@ -154,6 +191,7 @@ impl Store {
         }
     }
 
+/// 读取缓存条目：版本不匹配或 walkthrough 形状非法都读作 miss。
     /// `isWalkthroughEntry` + read: an entry written by an incompatible
     /// version reads as a miss rather than a crash.
     pub fn read_cached_walkthrough(&self, cache_key: &str) -> Option<CacheEntry> {
@@ -172,6 +210,7 @@ impl Store {
         Some(entry)
     }
 
+/// 写入条目（补 walkthroughVersion 字段）并按需触发 LRU 驱逐。
     /// `writeCachedWalkthrough`: writes `{ walkthroughVersion, ...entry }`
     /// and evicts least-recently-used entries past the bounds.
     pub fn write_cached_walkthrough(&self, cache_key: &str, entry: &CacheEntry) -> bool {
@@ -189,6 +228,7 @@ impl Store {
         written
     }
 
+/// 读取 repo+source 的指针（缺失或损坏即 None）。
     /// `readPointer`.
     pub fn read_pointer(&self, repo_root: &str, source_key: &str) -> Option<Pointer> {
         let value = self.read_json(&self.pointer_path(repo_root, source_key))?;
@@ -196,12 +236,15 @@ impl Store {
         Some(pointer)
     }
 
+/// 原子写入指针。
     /// `writePointer`.
     pub fn write_pointer(&self, repo_root: &str, source_key: &str, pointer: &Pointer) -> bool {
         let value = serde_json::to_value(pointer).unwrap_or(Value::Null);
         self.write_json_atomic(&self.pointer_path(repo_root, source_key), &value)
     }
 
+/// 超过条目数或总字节上限时按 atime 淘汰最久未用的条目；指针很小不动，
+/// 指向已驱逐条目的指针读作“没有导览”（诚实的答案）；删除失败留待下次。
     /// `evictEntries`: bound the cache by count and total size, dropping
     /// least-recently-used entries. Pointers are tiny and are left alone; a
     /// pointer to an evicted entry simply reads as "no walkthrough", which is
@@ -250,6 +293,9 @@ impl Store {
         }
     }
 
+/// 删除仓库目录已确定不存在的指针，返回删除数。只删“确实不存在”的：
+/// 断连的共享盘或权限错误不算；上限 PRUNE_LIMIT 个，避免病态目录拖成
+/// 长尾工作。
     /// `pruneMissingRepositories`: drop pointers for repositories that no
     /// longer exist. Only ever removes entries whose subject is provably gone.
     ///
@@ -307,6 +353,9 @@ impl Store {
     }
 }
 
+/// 由全部影响产出的输入构建内容寻址 key：规范 JSON 与 JS 的 stringify
+/// 逐字节一致，文件按 JS 字符串序（UTF-16 码元）排序后整体取 SHA-256；
+/// 任一输入变化都产生 miss 而非陈旧命中。
 /// `buildCacheKey`: content-addressed key. Every input that can change the
 /// output is in here: change any of them and you get a miss rather than a
 /// stale hit.
@@ -368,5 +417,6 @@ pub fn build_cache_key(
     sha256_hex(&canonical)
 }
 
+/// 存储层测试（见 tests 子模块文件）。
 #[cfg(test)]
 mod tests;

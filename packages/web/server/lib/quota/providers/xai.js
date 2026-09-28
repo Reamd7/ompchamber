@@ -1,24 +1,47 @@
+/**
+ * xAI（Grok）配额 provider。
+ *
+ * 读取 OpenCode auth.json 中的 xAI OAuth 条目，按需用 refresh token 换新
+ * access token 并写回，然后调用 grok.com 的 gRPC-web 计费接口，
+ * 从返回的 protobuf 中解析当前计费周期的已用百分比与重置时间。
+ */
+
 import { readAuthFile, writeAuthFile } from '../../opencode/auth.js';
 import { buildResult, toUsageWindow } from '../utils/index.js';
 
+/** provider 标识（quota 路由与 provider 注册表引用）。 */
 export const providerId = 'xai';
+/** 展示用 provider 名称。 */
 export const providerName = 'xAI';
 
+/** gRPC-web 计费配置查询端点（connect 协议）。 */
 const USAGE_URL = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig';
+/** xAI OAuth token 刷新端点。 */
 const TOKEN_URL = 'https://auth.x.ai/oauth2/token';
+/** 刷新 token 时使用的公开 client_id（OpenCode 生态共用值）。 */
 const CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
+/** 刷新提前量：距过期不足 2 分钟即视为需要刷新。 */
 const REFRESH_SKEW_MS = 120_000;
+/** 对 xAI 接口的请求超时时间。 */
 const REQUEST_TIMEOUT_MS = 15_000;
+/** gRPC-web 空请求体：5 字节全零帧头，无任何字段。 */
 const EMPTY_GRPC_WEB_BODY = new Uint8Array([0, 0, 0, 0, 0]);
 
+/** 进行中的 token 刷新 Promise（模块级去重：并发调用共享同一次刷新，结束后清空以便重试）。 */
 let refreshPromise = null;
 
+/** 字符串 trim 后非空则返回 trim 值，否则返回 null。 */
 const nonEmptyString = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
 };
 
+/**
+ * 读取 auth.json 的 xai 条目：仅接受带 access 或 refresh 的 oauth 条目。
+ * 读文件失败时返回带可展示 error 的结果而不是抛出，供 fetchQuota 区分
+ * 「读取失败」与「未配置」。
+ */
 const readXaiAuth = () => {
   try {
     const entry = readAuthFile()?.xai;
@@ -34,6 +57,7 @@ const readXaiAuth = () => {
   }
 };
 
+/** 解码 JWT 的 payload 段（base64url → JSON），缺失或解析失败返回 null。 */
 const decodeJwtClaims = (token) => {
   try {
     const payload = token.split('.')[1];
@@ -44,6 +68,10 @@ const decodeJwtClaims = (token) => {
   }
 };
 
+/**
+ * 判断 access token 是否需要刷新：token 缺失、存储的过期时间或 JWT
+ * exp 距当前不足 REFRESH_SKEW_MS 均返回 true。
+ */
 const tokenNeedsRefresh = (entry) => {
   const access = nonEmptyString(entry.access);
   if (!access) return true;
@@ -56,6 +84,12 @@ const tokenNeedsRefresh = (entry) => {
   return Number.isFinite(jwtExpiry) && jwtExpiry <= refreshDeadline;
 };
 
+/**
+ * 用 refresh token 向 TOKEN_URL 换新 access token 并写回 auth.json
+ * （保留旧 refresh token 当响应未携带新值时）。refreshPromise 保证并发
+ * 调用共享同一次网络请求；无可用 refresh token、HTTP 失败、响应缺
+ * access token 或过期时间不合法都会抛错。
+ */
 const refreshXaiOauth = async (entry) => {
   if (!refreshPromise) {
     refreshPromise = (async () => {
@@ -116,6 +150,7 @@ const refreshXaiOauth = async (entry) => {
   return refreshPromise;
 };
 
+/** 返回可直接使用的认证条目：token 仍新鲜原样返回，否则要求存在 refresh token 并触发刷新。 */
 const ensureFreshAccess = async (entry) => {
   if (!tokenNeedsRefresh(entry)) return entry;
   if (!nonEmptyString(entry.refresh)) {
@@ -124,6 +159,7 @@ const ensureFreshAccess = async (entry) => {
   return refreshXaiOauth(entry);
 };
 
+/** 从 bytes[state.index] 起读取一个 protobuf varint（≤64 位），越界或溢出返回 null；无论成败游标已推进。 */
 const readVarint = (bytes, state) => {
   let value = 0n;
   for (let shift = 0n; state.index < bytes.length && shift < 64n; shift += 7n) {
@@ -135,11 +171,20 @@ const readVarint = (bytes, state) => {
   return null;
 };
 
+/** 判断两个数字数组表示的字段路径完全相同。 */
 const samePath = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
 // CodexBar observes both the flat billing message and the response envelope.
+/** 已用百分比出现的 protobuf 字段路径：扁平计费消息的 [1] 与响应 envelope 的 [1,1]（与 CodexBar 的观测一致）。 */
 const USAGE_PERCENT_PATHS = [[1], [1, 1]];
+/** candidate 路径是否命中 paths 中的任一条。 */
 const hasPath = (paths, candidate) => paths.some((path) => samePath(path, candidate));
 
+/**
+ * 手写的 protobuf 结构扫描器：不依赖 schema，递归（深度上限 4）解析
+ * varint / fixed64 / length-delimited / fixed32 字段，收集带路径与出现
+ * 顺序的 fixed32 float 值及 varint 值。任何不合法结构（wire type 未知、
+ * 长度越界、嵌套过深）都返回 false，由调用方整体判废。
+ */
 const scanProtobuf = (bytes, path = [], depth = 0, state = { index: 0, order: 0 }) => {
   const fixed32Fields = [];
   const varintFields = [];
@@ -196,6 +241,11 @@ const scanProtobuf = (bytes, path = [], depth = 0, state = { index: 0, order: 0 
   return { fixed32Fields, varintFields };
 };
 
+/**
+ * 解析 gRPC-web 帧序列：每帧为 1 字节 flags（0x80 表示 trailer）+
+ * 4 字节大端长度 + payload；trailer 之后不允许再出现数据帧。
+ * 返回消息帧列表与各 trailer 的 grpc-status；结构非法返回 false。
+ */
 const parseFrames = (bytes) => {
   if (bytes.length < 5 || (bytes[0] & 0x7f) !== 0) return null;
   const messages = [];
@@ -231,6 +281,10 @@ const parseFrames = (bytes) => {
   return { messages, trailerStatuses };
 };
 
+/**
+ * 解析 trailer 帧中的 grpc-status：按行拆分 key:value 头，要求键非空、
+ * 状态值为纯数字且唯一；任何不合法都返回 null（视为解析失败）。
+ */
 const parseGrpcTrailerStatus = (bytes) => {
   let text;
   try {
@@ -256,6 +310,7 @@ const parseGrpcTrailerStatus = (bytes) => {
   return status;
 };
 
+/** 粗判字节流是否像裸 protobuf：首字节可解出合法 field number 与受支持的 wire type。 */
 const looksLikeProtobuf = (bytes) => {
   if (!bytes.length) return false;
   const fieldNumber = bytes[0] >> 3;
@@ -263,6 +318,13 @@ const looksLikeProtobuf = (bytes) => {
   return fieldNumber > 0 && [0, 1, 2, 5].includes(wireType);
 };
 
+/**
+ * 从计费响应字节中提取用量：先剥 gRPC-web 帧（trailer 状态非 0 即抛错；
+ * 无帧时按裸 protobuf 兜底），扫描字段后取 0-100 区间的 float 百分比
+ * （路径最短者优先）作为已用百分比，取未来的秒级 varint 时间戳
+ * （优先路径 [1,5,1]）作为重置时间。仅当响应能证明「存在计费周期但
+ * 没有百分比」时按 0% 处理，否则抛错。
+ */
 const parseUsage = (bytes) => {
   const framed = parseFrames(bytes);
   if (framed === false) throw new Error('xAI billing returned malformed gRPC-web framing');
@@ -312,6 +374,11 @@ const parseUsage = (bytes) => {
   return { usedPercent, resetAt };
 };
 
+/**
+ * 携带 access token 调用计费端点（伪装 grok.com web 客户端的 gRPC-web
+ * 请求）：先校验响应头 grpc-status 与 HTTP 状态，再把 body 交给
+ * parseUsage 解析。任何失败都以 Error 抛出。
+ */
 const fetchUsage = async (accessToken) => {
   const response = await fetch(USAGE_URL, {
     method: 'POST',
@@ -340,8 +407,14 @@ const fetchUsage = async (accessToken) => {
   return parseUsage(new Uint8Array(await response.arrayBuffer()));
 };
 
+/** auth.json 中是否存在可用的 xAI OAuth 条目（不触发网络请求）。 */
 export const isConfigured = () => Boolean(readXaiAuth().entry);
 
+/**
+ * 配额查询入口：未配置返回 configured:false；认证读取失败或请求出错都
+ * 转为 ok:false 的结果对象而非抛出。成功路径确保 token 新鲜后拉取
+ * 用量，组装 billing_cycle 用量窗口（百分比 + 重置时间）。
+ */
 export const fetchQuota = async () => {
   const { entry, error: authError } = readXaiAuth();
   if (authError) {

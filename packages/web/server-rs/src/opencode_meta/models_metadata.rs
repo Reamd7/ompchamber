@@ -21,6 +21,12 @@
 //! - Concurrent callers serialize on a fetch mutex and then re-read the
 //!   memory cache instead of sharing one in-flight future (same wire result,
 //!   one network request either way; noted in PORT-MANIFEST.md).
+//!
+//! 中文说明：本模块是 `server/lib/opencode/models-metadata.js` 的 Rust 移植，
+//! 为 UI 提供 models.dev 模型目录的读取与缓存。读取顺序与 JS 版一致：
+//! 内存缓存（TTL 内新鲜）→ 磁盘缓存（断网兜底、重启预热）→ 网络
+//! （先直连条件 GET；仅在网络级错误时按序尝试检测到的 proxy）。
+//! 所有网络与 proxy 依赖都经 [`CatalogIo`] 注入，便于测试替换。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,28 +39,43 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::http::{HttpFetch, HttpRequest, default_fetch};
 
+/// models.dev 目录 API 的固定地址（与 JS 版硬编码的 URL 相同）。
 pub(crate) const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+/// 默认内存缓存有效期：10 分钟（对应 JS 模块默认 ttlMs）。
 pub(crate) const DEFAULT_TTL_MS: u64 = 10 * 60 * 1000;
+/// 默认网络请求超时：20 秒（对应 JS 模块默认 timeoutMs）。
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 20_000;
+/// 磁盘缓存文件格式版本号；版本不匹配的旧文件按不存在处理，避免读到不兼容结构。
 const DISK_CACHE_VERSION: u64 = 1;
+/// macOS `scutil --proxy` 检测结果的进程内缓存时长（60 秒）。
 const SCUTIL_TTL_MS: u64 = 60_000;
+/// `scutil --proxy` 子进程执行超时；超时按“无系统代理”处理。
 const SCUTIL_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// proxy 目标端点，对应 JS 的 `{ host, port }` 形状。
 /// `httpsGetViaProxy` target: `{ host, port }` (JS shape).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ProxyEndpoint {
+    /// proxy 主机名或 IP 地址。
     pub host: String,
+    /// proxy 端口号。
     pub port: u16,
 }
 
+/// 经 proxy CONNECT 隧道执行 GET 的响应，对应 JS 的 `{ status, etag, body }`。
 /// JS `{ status, etag, body }` from the CONNECT-tunnel GET.
 #[derive(Debug, Clone)]
 pub(crate) struct ProxyResponse {
+    /// HTTP 状态码（304 表示内容未变）。
     pub status: u16,
+    /// 响应携带的 ETag（可能缺席）。
     pub etag: Option<String>,
+    /// 响应正文文本。
     pub body: String,
 }
 
+/// 经指定 proxy 执行 GET 的可注入闭包签名：
+/// (url, proxy 端点, 超时毫秒, 可选 ETag) → 响应或错误字符串。
 pub(crate) type ProxyGet = Arc<
     dyn Fn(
             String,
@@ -65,29 +86,39 @@ pub(crate) type ProxyGet = Arc<
         + Send
         + Sync,
 >;
+/// 异步返回当前可用 proxy 候选列表（按优先级排序）的可注入闭包。
 pub(crate) type ProxyCandidates =
     Arc<dyn Fn() -> BoxFuture<'static, Vec<ProxyEndpoint>> + Send + Sync>;
 
+/// 可注入的 IO 接缝集合，对应 JS 的 options 参数
+/// （fetchImpl / proxyGet / proxyCandidates）：测试注入 fake，生产注入真实实现。
 /// Injectable seams mirroring the JS `options` (`fetchImpl`, `proxyGet`,
 /// `proxyCandidates`).
 pub(crate) struct CatalogIo {
+    /// 直连 HTTP fetch 实现。
     pub fetch: HttpFetch,
+    /// 经 proxy 的 GET 实现。
     pub proxy_get: ProxyGet,
+    /// proxy 候选探测实现。
     pub proxy_candidates: ProxyCandidates,
 }
 
+/// 一次目录拉取失败。是否为源站 HTTP 回答、是否为超时，决定后续分流（见各字段）。
 /// A fetch failure. `http_status` presence marks an origin answer (4xx/5xx),
 /// which must NOT trigger the proxy retry; `timeout` drives the route's
 /// 504-vs-502 mapping (`TimeoutError`/`AbortError` in the JS).
 #[derive(Debug, Clone)]
 pub(crate) struct FetchFailure {
+    /// 人类可读的错误消息。
     pub message: String,
+    /// 标记这是源站的 HTTP 错误回答（4xx/5xx），不得触发 proxy 重试。
     /// Marks an origin HTTP answer (4xx/5xx) which must NOT trigger the
     /// proxy retry. Only constructed (and matched) on the early-return path
     /// in `fetch_catalog`; the field documents the JS's `error.httpStatus`
     /// check even though no later reader needs it.
     #[allow(dead_code)]
     pub http_status: Option<u16>,
+    /// 是否为超时类错误（对应 JS 的 TimeoutError/AbortError，路由据此映射 504）。
     /// JS `error.name === 'TimeoutError' | 'AbortError'` for the route's
     /// 504 mapping. Like the JS, the fetch rotation's surviving error is the
     /// proxy attempt's, so this never observes a timeout in practice.
@@ -95,45 +126,69 @@ pub(crate) struct FetchFailure {
     pub timeout: bool,
 }
 
+/// 一次成功拉取的结果：304 未修改，或携带新 ETag 的新鲜载荷。
 enum FetchOutcome {
+    /// 源站返回 304：缓存正文仍然有效，仅时间戳推进。
     NotModified,
+    /// 拉到新载荷及其 ETag（可能缺席）。
     Fresh {
+        /// 新的目录 JSON（对象或数组）。
         metadata: Value,
+        /// 新载荷的 ETag，用于下一次条件请求。
         etag: Option<String>,
     },
 }
 
+/// 一份缓存条目：目录正文、配对 ETag 与最近抓取时间（Unix 毫秒）。
 struct CacheEntry {
+    /// 目录 JSON 正文。
     metadata: Value,
+    /// 与正文配对的 ETag（可能缺席）。
     etag: Option<String>,
+    /// 最近一次成功抓取的 Unix 毫秒时间戳，TTL 判断依据。
     fetched_at: u64,
 }
 
+/// 内存缓存状态，由 `state` 同步互斥锁保护。
 struct MemoryState {
+    /// 当前缓存条目；None 表示内存中尚无缓存。
     entry: Option<CacheEntry>,
+    /// 磁盘缓存是否已在本实例内加载过（仅一次性加载）。
     disk_loaded: bool,
 }
 
+/// `getModelsMetadata` 的结果，对应 JS 的 `{ metadata, fromCache, stale? }`。
 /// `getModelsMetadata` result: `{ metadata, fromCache, stale? }`.
 #[derive(Debug, Clone)]
 pub(crate) struct ModelsMetadataResult {
+    /// 目录 JSON 正文。
     pub metadata: Value,
+    /// 是否来自缓存（内存或磁盘）而非本次网络请求。
     pub from_cache: bool,
+    /// 是否为网络彻底失败后回退的过期缓存。
     pub stale: bool,
 }
 
+/// 目录缓存实例：JS 模块级状态（memoryCache/diskLoaded/inflight）的归宿，每个数据目录一个实例。
 /// Module-level JS state (`memoryCache`, `diskLoaded`, `inflight`) owned by
 /// one cache instance per data directory.
 pub(crate) struct ModelsMetadataCache {
+    /// 注入的 fetch 与 proxy 接缝。
     io: CatalogIo,
+    /// 磁盘缓存文件路径。
     cache_path: PathBuf,
+    /// 内存缓存状态（同步互斥锁保护）。
     state: Mutex<MemoryState>,
+    /// 对应 JS 的 inflight：并发调用共享同一次刷新。
     /// JS `inflight`: concurrent callers share one refresh.
     fetch_lock: AsyncMutex<()>,
+    /// 可注入的时钟（Unix 毫秒），测试可固定时间。
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
+/// `ModelsMetadataCache` 的实现：内存/磁盘双层缓存加条件网络刷新，逐一对应 JS 模块函数。
 impl ModelsMetadataCache {
+    /// 以显式注入的 IO、缓存路径与时钟构造实例（测试入口）。
     pub(crate) fn new(
         io: CatalogIo,
         cache_path: PathBuf,
@@ -151,6 +206,7 @@ impl ModelsMetadataCache {
         }
     }
 
+    /// 生产构造器：真实 HTTP fetch、reqwest CONNECT proxy 与系统时钟。
     /// Production cache for a data directory.
     pub(crate) fn production(cache_path: PathBuf) -> Self {
         Self::new(
@@ -166,6 +222,9 @@ impl ModelsMetadataCache {
         )
     }
 
+    /// 读取目录（对应 JS `getModelsMetadata`）：TTL 内直接命中内存缓存；
+    /// 否则持锁刷新——304 保留原正文仅推进时间戳，网络彻底失败时回退到
+    /// 任意已有缓存（标记 stale），无任何缓存则返回错误。
     /// JS `getModelsMetadata({ url, ttlMs, timeoutMs, cachePath })` with the
     /// module's default TTL/timeout and this cache's fixed disk path.
     pub(crate) async fn get(
@@ -241,6 +300,7 @@ impl ModelsMetadataCache {
         }
     }
 
+    /// 内存缓存仍在 TTL 内时返回命中结果（from_cache 且非 stale），否则 None。
     fn fresh_result(&self, ttl_ms: u64) -> Option<ModelsMetadataResult> {
         let now = (self.now_ms)();
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -256,6 +316,7 @@ impl ModelsMetadataCache {
         }
     }
 
+    /// 惰性加载磁盘缓存（每实例一次，对应 JS `loadDiskCache`）：文件缺失或损坏一律视为空缓存，不报错。
     /// JS `loadDiskCache` (once per process; missing/corrupt reads as empty).
     fn load_disk_cache(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,6 +348,7 @@ impl ModelsMetadataCache {
         }
     }
 
+    /// 将条目写回磁盘（对应 JS `persistDiskCache`）：先写临时文件再原子 rename；失败仅清理临时文件，不影响调用方。
     /// JS `persistDiskCache` — atomic temp+rename, best-effort.
     fn persist_disk_cache(&self, entry: &CacheEntry) {
         let payload = serde_json::json!({
@@ -317,6 +379,7 @@ impl ModelsMetadataCache {
     }
 }
 
+/// 当前 Unix 毫秒时间戳（时钟早于 epoch 时返回 0）。
 pub(crate) fn system_now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -328,6 +391,7 @@ pub(crate) fn system_now_ms() -> u64 {
 // Fetch orchestration (fetchCatalog)
 // ---------------------------------------------------------------------------
 
+/// 解析 models.dev 响应（对应 JS `parseCatalog`）：必须是 JSON 对象或数组，否则视为“意外载荷”。
 /// JS `parseCatalog`: must decode to an object (or array — JS `typeof []` is
 /// `"object"`); anything else is "an unexpected payload".
 fn parse_catalog(body_text: &str) -> Result<Value, String> {
@@ -339,6 +403,9 @@ fn parse_catalog(body_text: &str) -> Result<Value, String> {
     }
 }
 
+/// 拉取目录（对应 JS `fetchCatalog`）：先直连条件 GET；仅当直连出现
+/// 网络级错误或载荷解析失败时才按序尝试 proxy 候选。源站的 HTTP 状态
+/// 错误是真实回答，直接返回、不触发 proxy 重试。
 /// JS `fetchCatalog`: direct first, then via each detected proxy on network
 /// errors. HTTP status errors from the origin do NOT trigger the proxy
 /// retry — the origin answered.
@@ -418,6 +485,7 @@ async fn fetch_catalog(
 // Proxy detection (env first, then macOS system proxy)
 // ---------------------------------------------------------------------------
 
+/// 解析 proxy URL（对应 JS `httpProxyFromUrl`）：只接受 http/https scheme（socks 需要另一种隧道），缺省端口取 80/443。
 /// JS `httpProxyFromUrl`: http/https proxies only (`socks://` needs a
 /// different tunnel).
 pub(crate) fn http_proxy_from_url(raw: &str) -> Option<ProxyEndpoint> {
@@ -436,6 +504,7 @@ pub(crate) fn http_proxy_from_url(raw: &str) -> Option<ProxyEndpoint> {
     Some(ProxyEndpoint { host, port })
 }
 
+/// 从显式值列表解析 env proxy（对应 JS `detectEnvProxies`）；env 读取留在调用点，保证测试封闭。
 /// JS `detectEnvProxies` over an explicit value list (env read stays at the
 /// call site so tests stay hermetic).
 pub(crate) fn env_proxies_from(values: &[Option<String>]) -> Vec<ProxyEndpoint> {
@@ -446,6 +515,7 @@ pub(crate) fn env_proxies_from(values: &[Option<String>]) -> Vec<ProxyEndpoint> 
         .collect()
 }
 
+/// 读取 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY（含小写变体）并解析为 proxy 列表。
 fn detect_env_proxies() -> Vec<ProxyEndpoint> {
     env_proxies_from(&[
         std::env::var("HTTPS_PROXY").ok(),
@@ -457,6 +527,7 @@ fn detect_env_proxies() -> Vec<ProxyEndpoint> {
     ])
 }
 
+/// 解析 `scutil --proxy` 的字典输出：仅提取已启用（Enable=1）的 HTTP/HTTPS 代理键值对。
 /// JS `detectScutilProxies` output parser: `Key : value` dictionary lines.
 pub(crate) fn parse_scutil_output(stdout: &str) -> Vec<ProxyEndpoint> {
     let read = |key: &str| -> Option<String> {
@@ -492,7 +563,9 @@ pub(crate) fn parse_scutil_output(stdout: &str) -> Vec<ProxyEndpoint> {
     proxies
 }
 
+/// 执行 `scutil --proxy` 探测 macOS 系统 proxy（结果缓存 60 秒）；超时或失败按无系统代理处理。
 async fn detect_scutil_proxies() -> Vec<ProxyEndpoint> {
+    // 进程内 scutil 结果缓存：(上次刷新毫秒, proxy 列表)。
     static CACHE: LazyLock<Mutex<(u64, Vec<ProxyEndpoint>)>> =
         LazyLock::new(|| Mutex::new((0, Vec::new())));
     let now = system_now_ms();
@@ -519,6 +592,7 @@ async fn detect_scutil_proxies() -> Vec<ProxyEndpoint> {
     proxies
 }
 
+/// 汇总 proxy 候选（对应 JS `detectProxyCandidates`）：env 优先，macOS 追加 scutil 系统代理，再按 host+port 去重；任何一步都不抛错。
 /// JS `detectProxyCandidates`: env proxies + (darwin) system proxies, env
 /// first, deduped. Never throws.
 pub(crate) async fn detect_proxy_candidates() -> Vec<ProxyEndpoint> {
@@ -536,9 +610,11 @@ pub(crate) async fn detect_proxy_candidates() -> Vec<ProxyEndpoint> {
 // Proxy GET (reqwest CONNECT — the JS hand-rolled tunnel's replacement)
 // ---------------------------------------------------------------------------
 
+/// 按 (host, port) 缓存的 reqwest client 池：每个 proxy 复用一个配置好 CONNECT 的 client。
 static PROXY_CLIENTS: LazyLock<Mutex<HashMap<(String, u16), reqwest::Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// 取（或创建并缓存）指定 proxy 的 reqwest client。
 fn proxy_client(proxy: &ProxyEndpoint) -> reqwest::Client {
     let key = (proxy.host.clone(), proxy.port);
     let mut cache = PROXY_CLIENTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,6 +631,7 @@ fn proxy_client(proxy: &ProxyEndpoint) -> reqwest::Client {
     client
 }
 
+/// 生产环境的经 proxy GET（对应 JS `httpsGetViaProxy`）：reqwest CONNECT 隧道 + identity 编码 + Connection: close，与 JS 手写隧道行为一致。
 /// Production `httpsGetViaProxy` equivalent: identity-encoded HTTP/1.1 GET
 /// through the proxy's CONNECT tunnel with `Connection: close` framing.
 async fn default_proxy_get(
@@ -588,6 +665,7 @@ async fn default_proxy_get(
 // Disk cache path helper (JS `cacheFilePath`)
 // ---------------------------------------------------------------------------
 
+/// 磁盘缓存文件路径（对应 JS `cacheFilePath`）：<数据目录>/models-dev.catalog.json。
 /// JS `cacheFilePath()`: `<OMPCHAMBER_DATA_DIR>/models-dev.catalog.json`.
 pub(crate) fn cache_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join("models-dev.catalog.json")

@@ -9,6 +9,12 @@
 //! - `PUT    /api/projects/:projectId/icon` — upload from `{ dataUrl }`
 //! - `DELETE /api/projects/:projectId/icon` — remove
 //! - `POST   /api/projects/:projectId/icon/discover` — favicon adoption
+//!
+//! 中文说明：本模块是 `server/lib/opencode/project-icon-routes.js` 的 Rust
+//! 移植，实现项目图标的读取（GET）、上传（PUT）、删除（DELETE）与 favicon
+//! 自动发现（POST discover）。存储布局、MIME 白名单、5 MB 上限、SVG 主题
+//! 注入与“最短 favicon 路径优先”等行为均与 JS 版逐点对齐；文件搜索复用
+//! `fs_routes::search` 的模糊搜索运行时。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +31,7 @@ use super::{MetaState, now_ms, parse_json_body, parse_query};
 use crate::fs_routes::search::{SearchHit, SearchOptions, search_filesystem_files};
 use crate::settings::normalization::sanitize_projects;
 
+/// MIME → 扩展名白名单映射，同时定义了候选图标的遍历顺序。
 const MIME_TO_EXTENSION: [(&str, &str); 5] = [
     ("image/png", "png"),
     ("image/jpeg", "jpg"),
@@ -33,9 +40,12 @@ const MIME_TO_EXTENSION: [(&str, &str); 5] = [
     ("image/x-icon", "ico"),
 ];
 
+/// 图标字节大小上限：5 MB，与 JS 版一致。
 const PROJECT_ICON_MAX_BYTES: usize = 5 * 1024 * 1024;
+/// 主题 → 默认图标颜色：light 为深灰 #111111，dark 为浅灰 #f5f5f5。
 const PROJECT_ICON_THEME_COLORS: [(&str, &str); 2] = [("light", "#111111"), ("dark", "#f5f5f5")];
 
+/// 挂载图标四条路由：GET/PUT/DELETE `/icon` 与 POST `/icon/discover`。
 pub(crate) fn routes(state: Arc<MetaState>) -> axum::Router {
     axum::Router::new()
         .route(
@@ -53,10 +63,12 @@ pub(crate) fn routes(state: Arc<MetaState>) -> axum::Router {
 // Helpers (JS module-scope closures)
 // ---------------------------------------------------------------------------
 
+/// 图标存储目录：`<dataDir>/project-icons`。
 fn icons_dir(state: &MetaState) -> PathBuf {
     state.data_dir.join("project-icons")
 }
 
+/// 归一化 MIME（对应 JS `normalizeProjectIconMime`）：`image/jpg` 折叠为 `image/jpeg`，仅接受白名单五种图片类型。
 /// JS `normalizeProjectIconMime` — `image/jpg` folds to `image/jpeg`.
 fn normalize_project_icon_mime(value: &str) -> Option<&'static str> {
     let normalized = value.trim().to_lowercase();
@@ -73,6 +85,7 @@ fn normalize_project_icon_mime(value: &str) -> Option<&'static str> {
     }
 }
 
+/// 反向查表：扩展名 → MIME；未知扩展名返回 None。
 fn extension_to_mime(extension: &str) -> Option<&'static str> {
     MIME_TO_EXTENSION
         .iter()
@@ -80,6 +93,7 @@ fn extension_to_mime(extension: &str) -> Option<&'static str> {
         .map(|(mime, _)| *mime)
 }
 
+/// 由归一化 MIME 推出图标文件具体路径（对应 JS `projectIconPathForMime`）；MIME 不在白名单返回 None。
 /// JS `projectIconPathForMime` — normalized MIME → concrete path.
 fn project_icon_path_for_mime(state: &MetaState, project_id: &str, mime: &str) -> Option<PathBuf> {
     let normalized = normalize_project_icon_mime(mime)?;
@@ -94,6 +108,7 @@ fn project_icon_path_for_mime(state: &MetaState, project_id: &str, mime: &str) -
     )))
 }
 
+/// 图标文件基础名：`project-<sha1(projectId)>`（SHA-1 由 `walkthrough::sha1` 提供与 Node 一致的 hex 摘要）。
 /// JS `projectIconBaseName`: `project-<sha1(projectId)>` (`walkthrough::sha1`
 /// provides the Node-compatible SHA-1 hex digest — the `sha1` crate is not a
 /// direct dependency of this crate).
@@ -104,6 +119,7 @@ fn project_icon_base_name(project_id: &str) -> String {
     )
 }
 
+/// 枚举该项目所有可能的图标路径（对应 JS `projectIconPathCandidates`），按白名单扩展名顺序排列。
 /// JS `projectIconPathCandidates` — every supported extension, in order.
 fn project_icon_path_candidates(state: &MetaState, project_id: &str) -> Vec<PathBuf> {
     let base = project_icon_base_name(project_id);
@@ -113,6 +129,7 @@ fn project_icon_path_candidates(state: &MetaState, project_id: &str) -> Vec<Path
         .collect()
 }
 
+/// 删除除 `keep` 外的全部候选图标文件（对应 JS `removeProjectIconFiles`）；文件不存在视为成功，其它错误向上传播。
 /// JS `removeProjectIconFiles` — unlink every candidate except `keep`;
 /// missing files (ENOENT) are fine, other failures propagate.
 async fn remove_project_icon_files(
@@ -133,6 +150,9 @@ async fn remove_project_icon_files(
     Ok(())
 }
 
+/// 解析 `{ dataUrl }`（对应 JS `parseProjectIconDataUrl`）：校验
+/// `data:<mime>;base64,<payload>` 格式与字符集、MIME 限 PNG/JPEG/SVG、
+/// 解码后非空且 ≤ 5 MB；各失败分支返回与 JS 逐字一致的错误文案。
 /// JS `parseProjectIconDataUrl`: `/^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/i`.
 fn parse_project_icon_data_url(value: Option<&Value>) -> Result<(String, Vec<u8>), &'static str> {
     use base64::engine::Engine as _;
@@ -196,6 +216,7 @@ fn parse_project_icon_data_url(value: Option<&Value>) -> Result<(String, Vec<u8>
     Ok((mime.to_string(), bytes))
 }
 
+/// 归一化主题变体（对应 JS `normalizeProjectIconThemeVariant`）：仅接受 light/dark（忽略大小写与空白）。
 /// JS `normalizeProjectIconThemeVariant`.
 fn normalize_project_icon_theme_variant(value: Option<&str>) -> Option<&'static str> {
     let normalized = value?.trim().to_lowercase();
@@ -206,6 +227,7 @@ fn normalize_project_icon_theme_variant(value: Option<&str>) -> Option<&'static 
     }
 }
 
+/// 校验十六进制颜色（对应 JS `projectIconHexColorPattern`）：# 开头的 3/4/6/8 位 hex。
 /// JS `projectIconHexColorPattern`:
 /// `/^#(?:[\da-fA-F]{3}|[\da-fA-F]{4}|[\da-fA-F]{6}|[\da-fA-F]{8})$/`.
 fn is_hex_color(value: &str) -> bool {
@@ -218,6 +240,7 @@ fn is_hex_color(value: &str) -> bool {
         && rest.iter().all(|b| b.is_ascii_hexdigit())
 }
 
+/// 归一化显式颜色参数（对应 JS `normalizeProjectIconColor`）：去空白后必须是合法 hex 颜色，否则视为未提供。
 /// JS `normalizeProjectIconColor`.
 fn normalize_project_icon_color(value: Option<&str>) -> Option<String> {
     let normalized = value?.trim();
@@ -227,10 +250,14 @@ fn normalize_project_icon_color(value: Option<&str>) -> Option<String> {
     Some(normalized.to_string())
 }
 
+/// 判断字节是否为单词字符（字母/数字/下划线），用于 `<svg` 标签名的边界匹配（等价 JS 正则的 \b）。
 fn is_word_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+/// SVG 主题注入（对应 JS `applyProjectIconSvgTheme`）：在首个 `<svg>`
+/// 开标签后插入覆盖 `:root` 颜色的 `<style>`；显式 color 优先于主题默认
+/// 色，两者皆无则原样返回。
 /// JS `applyProjectIconSvgTheme` — inject `<style>` right after the opening
 /// `<svg>` tag with the theme's (or explicit) color.
 pub(crate) fn apply_project_icon_svg_theme(
@@ -285,17 +312,20 @@ pub(crate) fn apply_project_icon_svg_theme(
     )
 }
 
+/// 读取并净化 settings 中的项目列表（JS `findProjectById` 的数据来源）；缺失或非法时返回空列表。
 /// JS `findProjectById` over `sanitizeProjects(settings.projects) || []`.
 fn sanitized_projects(settings: &Map<String, Value>) -> Vec<Value> {
     sanitize_projects(settings.get("projects")).unwrap_or_default()
 }
 
+/// 在项目列表中按 id 查找项目；找不到返回 None。
 fn find_project<'a>(projects: &'a [Value], project_id: &str) -> Option<&'a Value> {
     projects
         .iter()
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(project_id))
 }
 
+/// 取路径最后一段的扩展名并转小写（对应 JS `path.extname(p).slice(1).toLowerCase()`）。
 /// `path.extname(p).slice(1).toLowerCase()` for icon file names.
 fn lowercase_extension(path: &str) -> String {
     let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -305,8 +335,10 @@ fn lowercase_extension(path: &str) -> String {
     }
 }
 
+/// 判断是否 favicon 文件（对应 JS 正则 `/(^|\/)favicon\.(ico|png|svg|jpg|jpeg|webp)$/i`）。
 /// JS `/(^|\/)favicon\.(ico|png|svg|jpg|jpeg|webp)$/i`.
 fn is_favicon_path(path: &str) -> bool {
+    // favicon 允许的扩展名集合（含 jpeg：能被匹配到，但无 MIME 映射 → 415）。
     const EXTENSIONS: [&str; 6] = ["ico", "png", "svg", "jpg", "jpeg", "webp"];
     let file_name = path.rsplit('/').next().unwrap_or(path);
     let Some((stem, extension)) = file_name.split_once('.') else {
@@ -318,10 +350,14 @@ fn is_favicon_path(path: &str) -> bool {
     EXTENSIONS.contains(&extension.to_lowercase().as_str())
 }
 
+/// 构造统一 JSON 错误响应：`{ "error": message }` + 给定状态码。
 fn json_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
+/// 把项目的新 `iconImage` 写回持久化 settings（上传传对象、删除传 null），
+/// 返回各图标路由共享的 `{ project, settings }` 响应体；持久化失败映射为
+/// Err(()) 由调用方转 500。
 /// Replace (or clear) the project's `iconImage` in the persisted settings
 /// and return the shared `{ project, settings }` response body.
 async fn persist_icon_update(
@@ -367,6 +403,9 @@ async fn persist_icon_update(
 // GET /api/projects/:projectId/icon
 // ---------------------------------------------------------------------------
 
+/// `GET /icon`：校验项目存在后，按“元数据 MIME 首选、其余扩展名候选”
+/// 顺序读取图标；SVG 可经 `?theme=`/`?iconColor=` 注入主题色；响应携带
+/// 一年 immutable 的 Cache-Control。候选文件缺失则试下一个，全缺失 404。
 async fn get_icon(
     State(state): State<Arc<MetaState>>,
     AxumPath(project_id): AxumPath<String>,
@@ -480,6 +519,8 @@ async fn get_icon(
 // PUT /api/projects/:projectId/icon
 // ---------------------------------------------------------------------------
 
+/// `PUT /icon`：解析 body 的 `dataUrl` 并校验，通过后落盘、清理旧扩展名并
+/// 持久化 iconImage（source=custom）；校验失败 400、项目不存在 404、IO 失败 500。
 async fn put_icon(
     State(state): State<Arc<MetaState>>,
     AxumPath(project_id): AxumPath<String>,
@@ -521,6 +562,8 @@ async fn put_icon(
     }
 }
 
+/// PUT 主体流程：确认项目存在后把字节写入 MIME 对应路径并删除其它扩展名
+/// 文件，返回 (项目列表, 新 iconImage 元数据) 供持久化。
 async fn put_icon_flow(
     state: &MetaState,
     project_id: &str,
@@ -547,6 +590,7 @@ async fn put_icon_flow(
     )))
 }
 
+/// 把 settings 读取错误转换为 io::Error，让 JS 的兜底 500 分支保持单一出口。
 /// Settings-read failures surface as io errors so the JS catch-all 500
 /// mapping stays one branch.
 fn io_error(error: crate::error::AppError) -> std::io::Error {
@@ -557,6 +601,7 @@ fn io_error(error: crate::error::AppError) -> std::io::Error {
 // DELETE /api/projects/:projectId/icon
 // ---------------------------------------------------------------------------
 
+/// `DELETE /icon`：删除全部图标文件并把 iconImage 置为 null 持久化，返回 `{ project, settings }`。
 async fn delete_icon(
     State(state): State<Arc<MetaState>>,
     AxumPath(project_id): AxumPath<String>,
@@ -586,6 +631,7 @@ async fn delete_icon(
     }
 }
 
+/// DELETE 主体流程：确认项目存在后删除所有候选图标文件，返回项目列表供持久化。
 async fn delete_icon_flow(
     state: &MetaState,
     project_id: &str,
@@ -603,6 +649,9 @@ async fn delete_icon_flow(
 // POST /api/projects/:projectId/icon/discover
 // ---------------------------------------------------------------------------
 
+/// `POST /icon/discover`：在项目目录模糊搜索 favicon 并收养路径最短者
+/// （source=auto）；已有 custom 图标时跳过（除非 `force: true`）；无
+/// favicon 404、扩展名无 MIME 映射 415。
 async fn discover_icon(
     State(state): State<Arc<MetaState>>,
     AxumPath(project_id): AxumPath<String>,
@@ -709,6 +758,8 @@ async fn discover_icon(
     }
 }
 
+/// discover 主体流程：读取源 favicon、校验非空且 ≤ 5 MB，复制到项目图标
+/// 路径并清理其它扩展名，返回 `source: "auto"` 元数据。
 async fn discover_icon_flow(
     state: &MetaState,
     project_id: &str,

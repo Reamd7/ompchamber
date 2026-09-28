@@ -1,8 +1,19 @@
+/**
+ * 截图落盘模块（screenshots.js）的测试套件。
+ *
+ * 用内存版 fs 桩验证：screenshotSlug 把任意标签压成安全文件名片段（绝
+ * 不构成路径），writeScreenshot 按标签 + 时间戳 + MIME 扩展名写入项目
+ * 相对目录并回传可移植路径，且拒绝空目录与空图像。
+ */
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
 import { SCREENSHOT_DIRECTORY, screenshotSlug, writeScreenshot } from './screenshots.js';
 
+/**
+ * 造一个内存版 fs 桩：mkdir 记录到 made，writeFile 记录到 written，
+ * 供断言"写了什么、写到哪里"而不触碰真实磁盘。
+ */
 const createFs = () => {
   const written = new Map();
   const made = [];
@@ -14,6 +25,7 @@ const createFs = () => {
   };
 };
 
+// 标签 slug 契约：可读名保留、路径片段被压平、退化输入回退 "page"。
 describe('screenshot labels', () => {
   it('keeps a readable name', () => {
     expect(screenshotSlug('Before fix')).toBe('before-fix');
@@ -33,7 +45,9 @@ describe('screenshot labels', () => {
   });
 });
 
+// 写文件契约：相对路径可移植、扩展名跟随 MIME、缺目录或空图直接拒绝。
 describe('writing a screenshot', () => {
+  // 真实图像字节的 base64 形式。
   const base64 = Buffer.from('image-bytes').toString('base64');
 
   it('writes into the project and reports a portable relative path', async () => {

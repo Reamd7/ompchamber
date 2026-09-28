@@ -1,3 +1,10 @@
+/**
+ * 通知发射运行时：负责把一条通知投递到各个客户端表面。
+ *
+ * 三条通道：桌面原生通知（进程内回调或 stdout 单行 JSON 协议）、
+ * 全局 UI 广播（SSE/WS），以及直连 SSE 客户端的兜底写入。
+ * 由 createNotificationTriggerRuntime 组合使用。
+ */
 export const createNotificationEmitterRuntime = (dependencies) => {
   const {
     process,
@@ -18,14 +25,22 @@ export const createNotificationEmitterRuntime = (dependencies) => {
     ? initialOnDesktopNotification
     : null;
 
+  /** 注册/替换进程内桌面通知回调；传入非函数则清空，回到 stdout 兜底。 */
   const setOnDesktopNotification = (cb) => {
     onDesktopNotification = typeof cb === 'function' ? cb : null;
   };
 
+  /** 按 SSE `data: {json}` 帧格式把 payload 写入响应流。 */
   const writeSseEvent = (res, payload) => {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
+  /**
+   * 发送桌面原生通知；返回是否成功投递。
+   * 桌面通知未启用或 payload 非对象时返回 false。
+   * 优先调用进程内回调（Electron main 注入），回调抛错视为失败并忽略；
+   * 无回调时退回 stdout 单行 `${prefix}{json}` 协议，写入失败同样忽略。
+   */
   const emitDesktopNotification = (payload) => {
     const desktopNotifyEnabled = getDesktopNotifyEnabled();
     if (!desktopNotifyEnabled) {
@@ -57,6 +72,14 @@ export const createNotificationEmitterRuntime = (dependencies) => {
     return false;
   };
 
+  /**
+   * 向所有已连接的 UI 客户端广播通知事件。
+   * payload 会包装成 ompchamber:notification 事件，并附带
+   * desktopNotificationDelivered（原生通道是否已接收，避免客户端重复弹 OS 通知）
+   * 与 desktopStdoutActive（兼容旧客户端的 stdout 标记）。
+   * 优先走全局广播函数（覆盖 SSE 与 WebSocket），否则逐个写入 SSE 客户端，
+   * 单个客户端写入失败不影响其余客户端。
+   */
   const broadcastUiNotification = (payload, options = {}) => {
     const desktopNotifyEnabled = getDesktopNotifyEnabled();
     if (!payload || typeof payload !== 'object') {

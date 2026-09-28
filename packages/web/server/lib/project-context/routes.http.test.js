@@ -17,9 +17,26 @@ import { registerProjectContextRoutes } from './routes.js';
  * These tests mount the routes on a bare express app, exactly as production
  * does, so a missing body parser fails the suite instead of the user.
  */
+/**
+ * project-context 路由的真实 HTTP 端到端测试（中文说明）。
+ *
+ * 早期单元测试直接调用 handler，只能覆盖状态码映射而看不到中间件，
+ * 因此漏掉过一个真实 bug：服务器没有全局 JSON parser（core-routes 仅
+ * 按路径前缀白名单解析，OpenCode proxy 需保持请求流未读），导致所有
+ * 写请求 `req.body` 为 undefined 而被当作非法请求拒绝。
+ *
+ * 本套件把路由挂在与生产一致的裸 express app 上验证，一旦缺少
+ * body parser，失败的是测试而不是用户。
+ */
 
+/** 所有用例共享的最小合法 context 快照：version 2 且 notes/todos/plans 均为空数组。 */
 const emptyContext = { version: 2, notes: [], todos: [], plans: [] };
 
+/**
+ * 构建挂载了被测路由的 express app 与 fake runtime。
+ * runtime 各方法会把收到的参数记入 received 供断言；overrides 可按用例
+ * 替换任意方法（如抛错或返回 null）来驱动错误路径。
+ */
 const createApp = (overrides = {}) => {
   const received = {};
   const runtime = {
@@ -68,8 +85,10 @@ const createApp = (overrides = {}) => {
   return { app, received };
 };
 
+/** 测试用 projectId 路径前缀：`path_` + base64url('test')。 */
 const BASE = '/api/project-context/path_dGVzdA';
 
+/** 覆盖读写成功路径、各类校验拒绝（400）与错误映射（404/500/400）的 HTTP 用例。 */
 describe('project context routes over HTTP', () => {
   it('reads the context', async () => {
     const { app } = createApp();

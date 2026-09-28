@@ -1,19 +1,34 @@
+/**
+ * GitHub 仓库元数据（stars、最近 push 时间）查询：供技能目录做可选的展示
+ * 增强。内存 + 磁盘双层 TTL 缓存、inFlight 去重；失败写入短暂负缓存，
+ * 任何情况下都不阻塞目录响应（fetch 超时远小于目录路由的请求期限）。
+ */
 import { readDiskCache, writeDiskCache } from './disk-cache.js';
 
+/** GitHub REST API 根地址。 */
 const GITHUB_API_BASE = 'https://api.github.com';
+/** 成功结果的缓存存活时间：3 小时。 */
 const CACHE_TTL_MS = 3 * 60 * 60 * 1000;
+/** 失败结果的负缓存存活时间：5 分钟。 */
 const FAILURE_CACHE_TTL_MS = 5 * 60 * 1000;
 // Keep well under the catalog route's client request deadline so optional
 // metadata enrichment can never abort catalog loading.
+/** 单次元数据请求的超时：1.5 秒，必须远小于目录路由的客户端请求期限。 */
 const FETCH_TIMEOUT_MS = 1500;
+/** 磁盘缓存文件名（位于 OMPChamber 数据目录，见 disk-cache.js）。 */
 const DISK_CACHE_FILE = 'skills-github-meta.json';
 
+/** 内存缓存：owner/repo → { expiresAt, value }。 */
 const metaCache = new Map();
+/** 进行中的请求 Promise：同一仓库的并发查询共享一次 fetch。 */
 const inFlight = new Map();
 
+/** 磁盘缓存是否已加载过；每个进程只加载一次。 */
 let diskLoaded = false;
+/** 去抖的磁盘写入定时器句柄；非 null 表示已有待执行的写入。 */
 let diskWriteTimer = null;
 
+/** 惰性把磁盘缓存加载进内存，只接受未过期且结构合法的条目。 */
 const loadDiskEntries = () => {
   if (diskLoaded) {
     return;
@@ -38,6 +53,7 @@ const loadDiskEntries = () => {
   }
 };
 
+/** 1 秒去抖地把未过期条目写回磁盘；定时器 unref，不阻止进程退出。 */
 const scheduleDiskWrite = () => {
   if (diskWriteTimer) {
     return;
@@ -58,6 +74,7 @@ const scheduleDiskWrite = () => {
   }
 };
 
+/** 从 GitHub API 响应中提取 stars（stargazers_count）与最近 push 时间；字段缺失或非法记为 null。 */
 const parseMeta = (payload) => {
   if (!payload || typeof payload !== 'object') {
     return null;
@@ -69,6 +86,11 @@ const parseMeta = (payload) => {
   };
 };
 
+/**
+ * 查询单个仓库的元数据（缓存 + 去重）。命中未过期缓存直接返回；HTTP 非
+ * 2xx 或 fetch 抛错（含超时）时写入短暂负缓存并返回 null；成功则按
+ * CACHE_TTL_MS 缓存。本函数永不 reject。
+ */
 const fetchRepoMeta = async (normalizedRepo) => {
   loadDiskEntries();
   const cached = metaCache.get(normalizedRepo);
@@ -125,6 +147,7 @@ const fetchRepoMeta = async (normalizedRepo) => {
  * `owner/repo` strings. Best-effort: failed lookups resolve to null and
  * never block the catalog response.
  */
+/** 批量查询一组仓库元数据（先去重再并发），返回 repo → 元数据或 null 的映射。 */
 export async function fetchGitHubRepoMetas(normalizedRepos) {
   const unique = [...new Set(normalizedRepos.filter(Boolean))];
   const entries = await Promise.all(unique.map(async (repo) => [repo, await fetchRepoMeta(repo)]));
@@ -132,6 +155,7 @@ export async function fetchGitHubRepoMetas(normalizedRepos) {
 }
 
 /** For tests only: clear the in-memory repository metadata cache. */
+/** 仅供测试：清空内存缓存，并置 diskLoaded 防止后续用例串读磁盘。 */
 export function clearGitHubMetaCache() {
   metaCache.clear();
   inFlight.clear();

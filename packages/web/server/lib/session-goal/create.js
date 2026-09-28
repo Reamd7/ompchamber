@@ -1,7 +1,16 @@
+/**
+ * 会话目标的创建流程：把超长 objective 压进上限（先用小模型蒸馏成完成
+ * 判据，失败则首尾截断加标记）、优先把 objective 写入按 session id 命名
+ * 的文件（失败回退内联 metadata）、生成新 goal id 与初始计数后 PATCH 到
+ * 会话 metadata.ompchamber.goal。另提供建目标时注入对话的
+ * system-reminder 介绍文案。
+ */
 import { GOAL_OBJECTIVE_CHAR_LIMIT, writeObjective } from './objectives.js';
 
+/** 蒸馏失败时首尾截断目标文本所插入的说明标记。 */
 const TRIM_MARKER = '\n\n[… objective trimmed for the auditor — the full prompt was delivered in the chat message …]\n\n';
 
+/** 构造目标模式开启时注入对话的 <system-reminder> 介绍文案；设置了预算时附上 token 预算说明行。 */
 export const buildGoalIntroText = (tokenBudget) => {
   const budgetLine = tokenBudget
     ? ` A token budget of ${tokenBudget} tokens applies to this goal.`
@@ -14,6 +23,12 @@ export const buildGoalIntroText = (tokenBudget) => {
     + '\n</system-reminder>';
 };
 
+/**
+ * 把超长 objective 压到 GOAL_OBJECTIVE_CHAR_LIMIT 以内：先用小模型把任务
+ * 蒸馏成“完成判据”（保留路径 / 命令 / 标识符原文、同语言、控制在 4000
+ * 字符内，且限制在与会话相同的 provider 下）；蒸馏失败或产出为空则退回
+ * 首尾对半截断并插入 TRIM_MARKER。未超长时原样返回。
+ */
 const fitObjective = async ({ objective, directory, providerID, modelID, warn }) => {
   if (objective.length <= GOAL_OBJECTIVE_CHAR_LIMIT) return objective;
 
@@ -45,6 +60,15 @@ const fitObjective = async ({ objective, directory, providerID, modelID, warn })
   return `${objective.slice(0, half)}${TRIM_MARKER}${objective.slice(-half)}`;
 };
 
+/**
+ * 创建并激活一个会话目标：objective 经 fitObjective 裁剪后优先写目标
+ * 文件（objectiveFile 标记为 true，metadata 只存空 objective）；写文件
+ * 失败回退内联截断文本。生成新 goal id 与全部归零的计数，PATCH 会话
+ * metadata.ompchamber.goal；PATCH 非 2xx 抛错。onWarning 缺省时警告走
+ * console.warn。
+ *
+ * @returns {Promise<object>} 写入的 goal 对象
+ */
 export const createSessionGoal = async ({
   baseUrl,
   authHeaders,
@@ -56,6 +80,7 @@ export const createSessionGoal = async ({
   modelID,
   onWarning,
 }) => {
+  /** 警告转发：优先 onWarning 回调，否则落到 console.warn。 */
   const warn = (message, error) => {
     if (typeof onWarning === 'function') {
       onWarning(message, error);

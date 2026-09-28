@@ -1,3 +1,8 @@
+/**
+ * （中文套件说明）TTS 路由测试：say 能力 promise 的等待语义、按文本语言
+ * 切换 say voice、摘要兜底不再调用 zen，以及自定义 OpenAI 兼容 baseURL
+ * 的本机/远程放行规则与归一化。
+ */
 import { describe, expect, it, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
@@ -5,6 +10,7 @@ import request from 'supertest';
 import { registerTtsRoutes } from './routes.js';
 import { normalizeCustomOpenAIBaseURL } from './base-url.js';
 
+/** 构建挂载了 TTS 路由的 express app（可注入假的 say 能力结果）。 */
 const createApp = (sayTTSCapability = null) => {
   const app = express();
   app.use(express.json());
@@ -15,6 +21,7 @@ const createApp = (sayTTSCapability = null) => {
   return app;
 };
 
+// TTS 路由：say 能力等待、语言切换 voice 与本地摘要兜底。
 describe('tts routes', () => {
   it('waits for the authoritative macOS say capability', async () => {
     let resolveCapability;
@@ -96,6 +103,7 @@ describe('tts routes', () => {
   });
 });
 
+// 自定义 OpenAI 兼容 baseURL：运行时环境与本机白名单决定远程放行，归一化去 query/尾斜杠。
 describe('normalizeCustomOpenAIBaseURL', () => {
   const originalRuntime = process.env.OMPCHAMBER_RUNTIME;
   const originalAllowRemote = process.env.OMPCHAMBER_ALLOW_REMOTE_OPENAI_COMPAT_URLS;

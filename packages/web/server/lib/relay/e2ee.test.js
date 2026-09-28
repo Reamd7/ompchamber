@@ -1,3 +1,8 @@
+/**
+ * 【测试套件】relay E2EE 通道（e2ee.js）：ECDH 握手、双向帧加解密往返、
+ * 密文篡改拒绝、计数器回退/重放拒绝、重复 hello 重发 ready 与 rekey 失败、
+ * ready 后明文 fail-closed，以及 base64url 辅助函数。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import {
@@ -13,10 +18,13 @@ import {
   RELAY_PROTOCOL_VERSION,
 } from './e2ee.js';
 
+// WebCrypto subtle 引用快捷方式。
 const subtle = globalThis.crypto.subtle;
 
 // A minimal client-side initiator so the host handshake can be exercised
 // end-to-end without importing the browser TS modules.
+// 极简客户端发起方：不导入浏览器侧 TS 模块即可端到端驱动 host 握手，
+// 返回 helloText 与派生对称通道的 deriveChannel。
 const createClientHandshake = async (hostEncPubJwk) => {
   const hostPublicKey = await subtle.importKey(
     'jwk',
@@ -33,6 +41,7 @@ const createClientHandshake = async (hostEncPubJwk) => {
     clientPubJwk: await exportPublicKeyJwk(ephemeral.publicKey),
     nonce: bytesToBase64Url(nonce),
   });
+  // 由客户端侧 ECDH 临时私钥 + host 公钥派生对称通道（encryptor/decryptor）。
   const deriveChannel = async () => {
     const keys = await deriveSessionKeys(ephemeral.privateKey, hostPublicKey, nonce);
     return {
@@ -43,6 +52,7 @@ const createClientHandshake = async (hostEncPubJwk) => {
   return { helloText, deriveChannel };
 };
 
+// 主 describe：握手建立后的 E2EE 帧通道安全语义。
 describe('relay e2ee', () => {
   it('round-trips frames in both directions after handshake', async () => {
     const hostKeys = await generateEcdhKeyPair();

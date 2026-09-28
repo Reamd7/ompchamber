@@ -2,6 +2,12 @@
 //! `~/.local/share/opencode` — read, defensive write (0700/0600 perms,
 //! `.ompchamber.backup`), provider auth lookup/removal. The file's contents
 //! are credentials and are never logged.
+//!
+//! 中文说明：管理 OpenCode 的 auth.json 凭据存储（位于
+//! `~/.local/share/opencode`）。读取时对缺失或空白文件容错返回空对象；
+//! 写入前先复制 `.ompchamber.backup` 备份并收紧权限（目录 0700、
+//! 文件/备份 0600，仅 Unix）；另提供按 provider 的凭据查询与移除。
+//! 文件内容为凭据，任何日志都不得包含其载荷。
 
 use crate::os_compat::PermissionsExt;
 use std::path::PathBuf;
@@ -11,11 +17,15 @@ use serde_json::{Map, Value};
 use super::OpenCodeEnv;
 use super::webutil::js_truthy;
 
+/// 中文：auth.json 的绝对路径（数据目录下的 `auth.json`）。
 pub(crate) fn auth_file(env: &OpenCodeEnv) -> PathBuf {
     env.data_dir.join("auth.json")
 }
 
 /// `readAuthFile`.
+/// 中文：读取 auth.json 并解析为 JSON。文件不存在或内容为空白时返回
+/// 空对象而非报错；读取失败与解析失败都会记录 error 日志（不含内容）
+/// 并返回统一的错误文案。
 pub(crate) fn read_auth_file(env: &OpenCodeEnv) -> Result<Value, String> {
     let path = auth_file(env);
     if !path.exists() {
@@ -36,7 +46,12 @@ pub(crate) fn read_auth_file(env: &OpenCodeEnv) -> Result<Value, String> {
 }
 
 /// `writeAuthFile` — never logs the payload.
+/// 中文：防御性写入 auth.json：必要时先创建数据目录（Unix 下置 0700），
+/// 旧文件先复制为 `.ompchamber.backup`（0600），再以 pretty JSON 覆写
+/// 并把新文件权限设为 0600。任何失败路径都返回统一错误文案，且日志
+/// 只记录路径与结果、绝不记录载荷。
 pub(crate) fn write_auth_file(env: &OpenCodeEnv, auth: &Value) -> Result<(), String> {
+// 局部辅助：把任意写入阶段错误折叠为统一文案（JS 内联的字符串映射）。
     fn failure<T>(_: T) -> String {
         "Failed to write OpenCode auth configuration".to_string()
     }
@@ -75,6 +90,7 @@ pub(crate) fn write_auth_file(env: &OpenCodeEnv, auth: &Value) -> Result<(), Str
     Ok(())
 }
 
+/// 中文：备份文件路径 = 原路径加 `.ompchamber.backup` 后缀。
 fn backup_path(path: &std::path::Path) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(".ompchamber.backup");
@@ -83,6 +99,9 @@ fn backup_path(path: &std::path::Path) -> PathBuf {
 
 /// `removeProviderAuth` — JS truthiness on the stored entry decides whether
 /// anything is there to remove.
+/// 中文：移除指定 provider 的凭据条目。空 ID 直接报错；按 JS 真值语义
+/// 判断条目是否存在（假值视为不存在并返回 `Ok(false)`），存在则删除后
+/// 回写文件并返回 `Ok(true)`。
 pub(crate) fn remove_provider_auth(env: &OpenCodeEnv, provider_id: &str) -> Result<bool, String> {
     if provider_id.is_empty() {
         return Err("Provider ID is required".to_string());
@@ -103,6 +122,8 @@ pub(crate) fn remove_provider_auth(env: &OpenCodeEnv, provider_id: &str) -> Resu
 
 /// `getProviderAuth`: `auth[providerId] || null` — a stored falsy JSON
 /// scalar also reads as absent.
+/// 中文：查询指定 provider 的凭据。等价于 JS 的 `auth[providerId] || null`：
+/// 条目缺失或为假值（false/0/""/null）时一律返回 `None`。
 pub(crate) fn get_provider_auth(
     env: &OpenCodeEnv,
     provider_id: &str,

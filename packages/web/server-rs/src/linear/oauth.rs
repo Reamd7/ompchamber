@@ -2,6 +2,10 @@
 //! the public callback-broker handoff (register/poll/acknowledge), token
 //! refresh, and revocation. Pending authorizations live in module state
 //! (JS module-level `Map`s) keyed by OAuth state, pruned by a 10 minute TTL.
+//! 中文说明：移植自 JS 版 oauth.js。Linear 授权码 + PKCE S256 流程：
+//! 发起授权、公开回调 broker 的注册/轮询/确认握手、token 刷新与吊销。
+//! 待完成授权保存在模块状态里（对应 JS 的模块级 Map），以 OAuth state
+//! 为键，超过 10 分钟 TTL 即清理。
 
 use std::sync::Arc;
 
@@ -15,18 +19,27 @@ use super::http::{HttpBody, HttpMethod, HttpRequest};
 use super::parse::{is_plain_object, is_string, read_finite_number, read_trimmed_string};
 use super::{LinearError, LinearState};
 
+/// Linear 授权页端点（浏览器跳转目标）。
 pub const LINEAR_AUTHORIZE_URL: &str = "https://linear.app/oauth/authorize";
+/// token 换取/刷新端点。
 pub const LINEAR_TOKEN_URL: &str = "https://api.linear.app/oauth/token";
+/// token 吊销端点。
 pub const LINEAR_REVOKE_URL: &str = "https://api.linear.app/oauth/revoke";
+/// 待完成授权的存活时长（10 分钟），过期后回调被拒绝。
 pub const PENDING_AUTHORIZATION_TTL_MS: f64 = 10.0 * 60_000.0;
 
+/// 发起授权的客户端来源，决定回调页是否注入桌面深链跳转。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthOrigin {
+    /// 浏览器端发起，回调页只展示结果。
     Web,
+    /// 桌面端发起，回调页自动跳转 `openchamber://` 深链。
     Desktop,
 }
 
+/// `AuthOrigin` 的字符串解析实现。
 impl AuthOrigin {
+    /// 字符串转来源：`desktop` 精确匹配，其余（含空值）视为 Web。
     fn parse(value: &str) -> Self {
         if value == "desktop" {
             AuthOrigin::Desktop
@@ -36,53 +49,84 @@ impl AuthOrigin {
     }
 }
 
+/// 进行中的授权会话（以 OAuth state 为键存储在内存里）。
 #[derive(Debug, Clone)]
 pub struct PendingAuthorization {
+    /// PKCE code_verifier，换 token 时回传给 Linear。
     pub code_verifier: String,
+    /// 本次授权使用的 redirect URI（可能是 broker 回调地址）。
     pub redirect_uri: String,
+    /// 发起方来源（web/desktop）。
     pub origin: AuthOrigin,
+    /// 走 broker 中继时的注册信息；直连回调时为 `None`。
     pub broker: Option<BrokerInfo>,
+    /// 过期时间戳（毫秒），超时被清理。
     pub expires_at: f64,
 }
 
+/// 公开回调 broker 的注册信息（claim secret 用于认领回调结果）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrokerInfo {
+    /// broker 基地址。
     pub url: String,
+    /// 认领密钥，轮询与确认时都要携带。
     pub claim_secret: String,
 }
 
+/// 一次 OAuth 交换/刷新得到的完整 token 组。
 #[derive(Debug, Clone)]
 pub struct TokenBundle {
+    /// access token（必填）。
     pub access_token: String,
+    /// refresh token，公开客户端流程可能没有。
     pub refresh_token: Option<String>,
+    /// token 类型，默认 `bearer`。
     pub token_type: String,
+    /// 过期时间戳（毫秒），按 expires_in 推算。
     pub expires_at: f64,
+    /// 归一化后的 scope（逗号分隔）。
     pub scope: String,
 }
 
+/// 回调消费完成的授权结果：token 组 + 来源 + broker 回执（需确认）。
 #[derive(Debug, Clone)]
 pub struct AuthorizationResult {
+    /// 换取到的 token 组。
     pub tokens: TokenBundle,
+    /// 发起方来源。
     pub origin: AuthOrigin,
+    /// 走 broker 时需回执确认；直连回调为 `None`。
     pub broker_receipt: Option<BrokerReceipt>,
 }
 
+/// broker 授权结果的确认凭据（轮询成功后用于 `/complete` 确认）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrokerReceipt {
+    /// 对应的 OAuth state。
     pub state: String,
+    /// broker 基地址。
     pub url: String,
+    /// 认领密钥。
     pub claim_secret: String,
 }
 
+/// OAuth 回调携带的查询参数（code/state/error/error_description）。
 #[derive(Debug, Clone, Default)]
 pub struct CallbackQuery {
+    /// 授权码。
     pub code: String,
+    /// 防 CSRF 的 state，用于匹配待完成授权。
     pub state: String,
+    /// OAuth 错误码（如 access_denied）。
     pub error: String,
+    /// 错误描述，展示时优先于错误码。
     pub error_description: String,
 }
 
 /// JS `createPkcePair`.
+///
+/// 中文说明：生成 (verifier, challenge) 对；challenge 是 verifier 的
+/// SHA-256 再 base64url（无填充），对应 S256 方法。
 pub fn create_pkce_pair() -> (String, String) {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -92,6 +136,7 @@ pub fn create_pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
+/// 32 字节 CSPRNG 随机数的 base64url 编码，用作 OAuth state 或 claim secret。
 fn random_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -99,13 +144,19 @@ fn random_token() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Linear 状态上的 OAuth 流程实现（授权发起/回调消费/broker 握手/刷新/吊销）。
 impl LinearState {
+    /// 清理过期的待完成授权：仅保留 expires_at 晚于当前时间的条目。
     fn prune_expired_pending(&self, now: f64) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.retain(|_, entry| entry.expires_at > now);
     }
 
     /// JS `startAuthorization`.
+    ///
+    /// 中文说明：生成 PKCE 与 state；redirect URI 等于 broker 回调地址时
+    /// 先向 broker 注册事务并取回统一回调地址。返回授权 URL 与有效期；
+    /// client id 未配置返回 LINEAR_CLIENT_ID_MISSING。
     pub async fn start_authorization(self: &Arc<Self>, origin: &str) -> Result<Value, LinearError> {
         let client_id = self.get_client_id();
         if client_id.is_empty() {
@@ -169,6 +220,10 @@ impl LinearState {
     }
 
     /// JS `consumeAuthorizationCallback`.
+    ///
+    /// 中文说明：按 state 匹配待完成授权；error/缺 code/未知 state 分别
+    /// 返回对应错误码（并清理条目），成功则用 code_verifier 换 token 并
+    /// 移除该待授权条目。
     pub async fn consume_authorization_callback(
         self: &Arc<Self>,
         query: &CallbackQuery,
@@ -259,6 +314,9 @@ impl LinearState {
     /// JS `pollAuthorizationBroker`: polls every pending broker authorization
     /// (deduplicated per state) and returns the first completed hand-off. A
     /// rejected poll aborts the loop, exactly like the JS `await` chain.
+    ///
+    /// 中文说明：同一 state 的轮询 future 去重共享，避免并发请求重复打
+    /// broker；拿到第一个完成的结果即返回。
     pub async fn poll_authorization_broker(
         self: &Arc<Self>,
     ) -> Result<Option<AuthorizationResult>, LinearError> {
@@ -297,6 +355,9 @@ impl LinearState {
     }
 
     /// JS `completeAuthorizationBroker`.
+    ///
+    /// 中文说明：向 broker `/complete` 确认结果已收到；凭据不完整直接
+    /// 返回 false，非 2xx 返回 LINEAR_BROKER_FAILED。
     pub async fn complete_authorization_broker(
         self: &Arc<Self>,
         receipt: &BrokerReceipt,
@@ -334,6 +395,9 @@ impl LinearState {
     }
 
     /// JS `refreshAccessToken`.
+    ///
+    /// 中文说明：用 refresh token 换新 token 组；token 为空返回
+    /// MISSING_REFRESH_TOKEN，配置了 client secret 时一并携带。
     pub async fn refresh_access_token(
         self: &Arc<Self>,
         refresh_token: &str,
@@ -357,6 +421,9 @@ impl LinearState {
     }
 
     /// JS `revokeToken`.
+    ///
+    /// 中文说明：向 Linear 吊销端点发 form 请求（可带 token_type_hint）；
+    /// 仅响应恰为 200 才算成功，网络失败按 false 处理。
     pub async fn revoke_token(self: &Arc<Self>, token: &str, token_type_hint: &str) -> bool {
         let value = token.trim();
         if value.is_empty() {
@@ -383,10 +450,13 @@ impl LinearState {
 }
 
 /// JS `brokerCallbackUrl`.
+///
+/// 中文说明：broker 基地址去掉尾部斜杠后拼接 `/callback`。
 pub fn broker_callback_url(broker_url: &str) -> String {
     format!("{}/callback", broker_url.trim_end_matches('/'))
 }
 
+/// 把键值对编码为 `application/x-www-form-urlencoded` 字符串。
 fn encode_form(body: &[(String, String)]) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     for (key, value) in body {
@@ -395,6 +465,8 @@ fn encode_form(body: &[(String, String)]) -> String {
     serializer.finish()
 }
 
+/// 向 broker `/start` 注册事务（state + claimSecret），并校验返回的
+/// redirectUri 必须与预期回调一致，不一致则拒绝使用该 broker。
 async fn register_broker_transaction(
     state: &Arc<LinearState>,
     broker_url: &str,
@@ -430,6 +502,9 @@ async fn register_broker_transaction(
 
 /// JS `readJsonResponse` for broker endpoints: non-OK failures surface
 /// `payload.error` (or a fallback with the status) as `LINEAR_BROKER_FAILED`.
+///
+/// 中文说明：2xx 时要求响应为 JSON 对象否则报错；非 2xx 优先透出
+/// payload 的 error 字段，没有则用“fallback + 状态码”。
 fn read_json_response(
     response: super::http::HttpResponse,
     fallback_message: &str,
@@ -457,6 +532,9 @@ fn read_json_response(
     }
 }
 
+/// 轮询单个 broker 事务：202 表示仍在等待（返回 `None`）；status 为
+/// complete 时用授权码走完整回调消费并附上回执，failed 时转发错误，
+/// 未知 status 报 LINEAR_BROKER_FAILED。
 async fn poll_broker_state(
     state: Arc<LinearState>,
     oauth_state: String,
@@ -524,6 +602,9 @@ async fn poll_broker_state(
 }
 
 /// JS `postForm`.
+///
+/// 中文说明：POST form 到 Linear token 端点并解析为 `TokenBundle`；
+/// 非 2xx 时透出 error_description（或 error），并把 error 大写作为错误码。
 async fn post_form(
     state: &Arc<LinearState>,
     url: &str,
@@ -580,6 +661,9 @@ async fn post_form(
 }
 
 /// JS `parseTokenPayload`.
+///
+/// 中文说明：校验 token 响应——非对象/带 error/缺 access_token 都报
+/// LINEAR_OAUTH_FAILED；token_type 默认 bearer，expires_in 缺失按 24 小时算。
 fn parse_token_payload(payload: Option<&Value>) -> Result<TokenBundle, LinearError> {
     let Some(payload) = payload.filter(|p| is_plain_object(p)) else {
         return Err(LinearError::oauth(
@@ -615,12 +699,15 @@ fn parse_token_payload(payload: Option<&Value>) -> Result<TokenBundle, LinearErr
     })
 }
 
+/// 去空白后空串视为 `None` 的字符串读取。
 fn optional_trimmed(value: &Value) -> Option<String> {
     let trimmed = read_trimmed_string(value);
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
 /// JS `normalizeScope`.
+///
+/// 中文说明：字符串原样 trim；数组过滤非法项后以逗号连接；其余类型得到空串。
 fn normalize_scope(scope: &Value) -> String {
     match scope {
         Value::String(value) => value.trim().to_string(),
@@ -636,6 +723,8 @@ fn normalize_scope(scope: &Value) -> String {
 }
 
 /// JS `readExpiresAt`.
+///
+/// 中文说明：expires_in 为正数时 now + 秒数*1000，否则兜底 now + 24 小时。
 fn read_expires_at(expires_in: &Value, now: f64) -> f64 {
     match read_finite_number(expires_in) {
         Some(seconds) if seconds > 0.0 => now + seconds.floor() * 1000.0,
@@ -645,6 +734,9 @@ fn read_expires_at(expires_in: &Value, now: f64) -> f64 {
 
 /// Convert an OAuth result into the `setLinearAuth` input the routes use
 /// (JS `storeAuthorizationResult` spreads the token fields).
+///
+/// 中文说明：只搬运 token 字段；身份（user/organization）与 workspace 留空，
+/// 由调用方后续填充。
 pub fn result_to_set_input(result: &AuthorizationResult) -> SetLinearAuthInput {
     SetLinearAuthInput {
         access_token: result.tokens.access_token.clone(),

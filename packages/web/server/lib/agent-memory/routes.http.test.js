@@ -13,7 +13,15 @@ import { registerAgentMemoryRoutes } from './routes.js';
  * one that has to attach its own `express.json()` — and these tests are what
  * would fail if it stopped.
  */
+/**
+ * agent memory 路由的真实 HTTP 测试（中文说明）。
+ *
+ * 用内存桩替换存储运行时，经 supertest 打真实的 express 应用：验证
+ * scope 解析与拒绝、双 scope 合读、错误码分流（400/404/500/503）、
+ * PATCH 的 body 校验，以及设置开关关闭后整个路由面的行为。
+ */
 
+/** 造一条记忆条目桩；overrides 覆盖任意字段（默认 id 为 mem-1 的 fact）。 */
 const entry = (overrides = {}) => ({
   id: 'mem-1',
   title: 'Uses bun',
@@ -24,6 +32,12 @@ const entry = (overrides = {}) => ({
   ...overrides,
 });
 
+/**
+ * 组装被测应用：记录调用参数的 runtime 桩 + 真实路由注册。返回
+ * { app, received }——received 收集 runtime 各方法实际收到的参数，用于
+ * 断言路由把正确的目标传了下去；overrides.runtime 可替换任意桩方法，
+ * overrides.isAgentMemoryEnabled 控制设置开关。
+ */
 const createApp = (overrides = {}) => {
   const received = {};
   const runtime = {
@@ -57,6 +71,7 @@ const createApp = (overrides = {}) => {
   return { app, received };
 };
 
+// scope 解析：合法取值通过；缺失或不合法在触碰存储之前就被 400 拒绝。
 describe('scope resolution', () => {
   it('reads global scope', async () => {
     const { app, received } = createApp();
@@ -104,6 +119,7 @@ describe('scope resolution', () => {
   });
 });
 
+// 双 scope 合读：projectId 缺省时只读全局，不误报为空。
 describe('both scopes at once', () => {
   it('returns global and project together', async () => {
     const { app, received } = createApp();
@@ -124,6 +140,7 @@ describe('both scopes at once', () => {
   });
 });
 
+// 失败分流：存储损坏是服务端错误（500），坏 projectId 是客户端错误（400）。
 describe('failures', () => {
   it('reports malformed storage as a server error', async () => {
     const { app } = createApp({
@@ -150,6 +167,7 @@ describe('failures', () => {
   });
 });
 
+// 修正（PATCH）：JSON body 解析、字段类型校验与未命中 404。
 describe('corrections', () => {
   it('patches a memory from a JSON body', async () => {
     // This route is the only one here that carries a body, so it is the only
@@ -186,6 +204,7 @@ describe('corrections', () => {
   });
 });
 
+// 删除：按 scope + id 删除指定记忆；未命中如实回 404。
 describe('delete', () => {
   it('deletes the named memory in the named scope', async () => {
     const { app, received } = createApp();
@@ -206,6 +225,7 @@ describe('delete', () => {
   });
 });
 
+// 设置开关关闭的是整个路由面：带 disabled 标记的 404；设置读不出则 503。
 describe('the settings toggle disables the surface, not just its UI', () => {
   it('flags the disabled answer so a deleted entry cannot be mistaken for it', async () => {
     // Both answer 404. Without the flag a client would report one memory the

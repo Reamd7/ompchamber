@@ -1,12 +1,27 @@
+/**
+ * 项目级配置文件（projects/<projectId>.json）的读写 runtime。
+ *
+ * 负责 scheduled tasks 的规范化（schedule/execution/state 的校验、
+ * 截断与归一）、双重写锁（进程内链式 Promise + 跨进程锁文件）保护下的
+ * 原子读改写、向前兼容的未知字段保留，以及 `.agents/loops` 发现结果
+ * 与 JSON 任务列表的对账（reconcile）。
+ */
+
 import { DateTime, IANAZone } from 'luxon';
 import parser from 'cron-parser';
 
+/** 配置文件格式版本号；每次写入都会重置为当前版本。 */
 const PROJECT_CONFIG_VERSION = 1;
+/** 任务名称最大长度（超出截断）；导出供 UI 侧做同规则校验。 */
 export const MAX_TASK_NAME_LENGTH = 80;
+/** 任务 prompt 最大长度（超出截断）。 */
 const MAX_TASK_PROMPT_LENGTH = 20_000;
+/** cron 表达式最大长度（超出截断后为空即报错）。 */
 const MAX_CRON_LENGTH = 200;
+/** 持久化的最近一次错误消息最大长度，防止异常堆栈撑爆配置文件。 */
 const MAX_LAST_ERROR_LENGTH = 2_000;
 
+/** 输入为非空字符串时返回 trim 后的值，否则返回 null（统一的「可选字符串」规范化入口）。 */
 const asNonEmptyString = (value) => {
   if (typeof value !== 'string') {
     return null;
@@ -15,6 +30,7 @@ const asNonEmptyString = (value) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/** 把字符串截断到 maxLength；非字符串返回空串（只裁剪不报错，用于 name/lastError 等展示字段）。 */
 const clampLength = (value, maxLength) => {
   if (typeof value !== 'string') {
     return '';
@@ -22,6 +38,7 @@ const clampLength = (value, maxLength) => {
   return value.length > maxLength ? value.slice(0, maxLength) : value;
 };
 
+/** 把 lastStatus 归一到合法枚举 running/success/error/idle，未知或缺失一律落回 idle。 */
 const normalizeStatus = (value) => {
   if (value === 'running' || value === 'success' || value === 'error' || value === 'idle') {
     return value;
@@ -29,6 +46,7 @@ const normalizeStatus = (value) => {
   return 'idle';
 };
 
+/** 校验 24 小时制 HH:mm 时间字符串，非法或非字符串返回 null。 */
 const normalizeTimeValue = (value) => {
   const time = asNonEmptyString(value);
   if (!time) {
@@ -40,6 +58,10 @@ const normalizeTimeValue = (value) => {
   return time;
 };
 
+/**
+ * 校验 YYYY-MM-DD 日期字符串：正则限定格式后用 luxon 按 UTC 解析并
+ * 回格式化比对，排除「2 月 30 日」这类幻影日期；非法返回 null。
+ */
 const normalizeDateValue = (value) => {
   const date = asNonEmptyString(value);
   if (!date) {
@@ -55,6 +77,10 @@ const normalizeDateValue = (value) => {
   return date;
 };
 
+/**
+ * 校验星期数组（0=周日 … 6=周六）：元素必须是 0-6 的整数；去重后
+ * 升序返回。空数组、非数组或含非法值返回 null。
+ */
 const normalizeWeekdays = (value) => {
   if (!Array.isArray(value)) {
     return null;
@@ -78,6 +104,11 @@ const normalizeWeekdays = (value) => {
   return Array.from(unique).sort((a, b) => a - b);
 };
 
+/**
+ * 合并出 schedule 最终生效的 times 列表：优先取新值 value.times（数组，
+ * 任一非法 HH:mm 直接抛错）与遗留单值 value.time，两者皆空时沿用
+ * existingSchedule.times；结果去重并按字典序排序，完全为空返回 null。
+ */
 const resolveScheduleTimes = (value, existingSchedule) => {
   const times = [];
 
@@ -112,6 +143,7 @@ const resolveScheduleTimes = (value, existingSchedule) => {
   return uniqueSorted;
 };
 
+/** 取系统本地 IANA 时区名作为 schedule.timezone 的默认值，取不到或无效时回退 UTC。 */
 const resolveDefaultTimezone = () => {
   const resolved = DateTime.local().zoneName;
   if (resolved && IANAZone.isValidZone(resolved)) {
@@ -120,6 +152,10 @@ const resolveDefaultTimezone = () => {
   return 'UTC';
 };
 
+/**
+ * 校验时区：值为空返回 fallback（默认取系统时区）；非空的字符串必须是
+ * 合法 IANA 时区名，否则返回 null 交由调用方报错。
+ */
 const normalizeTimezone = (value, fallback = resolveDefaultTimezone()) => {
   const timezone = asNonEmptyString(value);
   if (!timezone) {
@@ -128,6 +164,10 @@ const normalizeTimezone = (value, fallback = resolveDefaultTimezone()) => {
   return IANAZone.isValidZone(timezone) ? timezone : null;
 };
 
+/**
+ * 用 cron-parser 在指定时区试解析表达式并推进一次，验证其可执行；
+ * 任何解析/迭代异常都视为表达式非法，返回 false。
+ */
 const validateCronExpression = (expression, timezone) => {
   try {
     const iterator = parser.parseExpression(expression, {
@@ -141,6 +181,13 @@ const validateCronExpression = (expression, timezone) => {
   }
 };
 
+/**
+ * 校验并归一 schedule 对象（失败抛带字段名的 Error）：
+ * kind 必须是 daily/weekly/once/cron 之一；timezone 必须是合法 IANA 名
+ * （缺省回填 existingSchedule.timezone 或系统时区）；daily/weekly 需要
+ * 至少一个合法 times（weekly 另需合法 weekdays），once 需要合法的
+ * date + time，cron 需要能通过校验的 cron 表达式。
+ */
 const normalizeSchedule = (value, existingSchedule) => {
   if (!value || typeof value !== 'object') {
     throw new Error('schedule is required');
@@ -203,6 +250,12 @@ const normalizeSchedule = (value, existingSchedule) => {
   return { kind, cron, timezone };
 };
 
+/**
+ * 校验并归一 execution（失败抛错）：prompt 必填（超长截断）；必须要么
+ * 显式指定 providerID + modelID，要么声明 modelRole: 'default' 交由
+ * 引擎选默认模型；goalEnabled/permissionAutoAccept 仅在显式为 true 时
+ * 保留，goalTokenBudget 必须为正的有限数（且仅随 goalEnabled 保留）。
+ */
 const normalizeExecution = (value) => {
   if (!value || typeof value !== 'object') {
     throw new Error('execution is required');
@@ -248,6 +301,11 @@ const normalizeExecution = (value) => {
   };
 };
 
+/**
+ * 归一任务运行时 state：数值时间戳取整并压到非负，lastStatus 归一，
+ * lastError 截断，createdAt/updatedAt 缺省补当前时间；只输出存在的
+ * 字段。value 优先、fallback（磁盘上的既有 state）兜底。
+ */
 const normalizeState = (value, fallback) => {
   const source = value && typeof value === 'object' ? value : fallback || {};
   const lastRunAt = typeof source.lastRunAt === 'number' && Number.isFinite(source.lastRunAt)
@@ -286,6 +344,13 @@ const normalizeState = (value, fallback) => {
   };
 };
 
+/**
+ * 把外部输入的任务规范化为存储形状：id 与既有任务不一致即抛错
+ * （id 不可变）、name 必填（截断至上限）、schedule/execution 全量重校验、
+ * state 继承既有值（refreshUpdatedAt 控制是否刷新 updatedAt）。
+ * loopFile 是 loop 来源标记，优先取新值、否则保留既有值，供对账时
+ * 检测 loop 文件删除；allowCreate=false 时拒绝创建带未知 id 的任务。
+ */
 const normalizeTaskForStorage = (value, options) => {
   const {
     now,
@@ -349,11 +414,23 @@ const normalizeTaskForStorage = (value, options) => {
   };
 };
 
+/** 新项目的空配置骨架：仅版本号与空任务列表。 */
 const createEmptyProjectConfig = () => ({
   version: PROJECT_CONFIG_VERSION,
   scheduledTasks: [],
 });
 
+/**
+ * 创建作用于指定 projects 目录的配置 runtime。
+ *
+ * @param deps.fsPromises 文件系统 Promise API（测试可注入沙盒实现）
+ * @param deps.path 路径工具（与 fsPromises 配套注入）
+ * @param deps.projectsDirPath 各项目 `<projectId>.json` 所在目录
+ * @param deps.createTaskID 新任务 id 生成器（缺省用 crypto.randomUUID
+ *   或「时间戳 + 随机串」兜底）
+ * @returns 暴露 list/upsert/delete、两个 state 更新入口、loop 对账与
+ *   配置路径解析的 API 对象
+ */
 export const createProjectConfigRuntime = (deps) => {
   const {
     fsPromises,
@@ -362,6 +439,7 @@ export const createProjectConfigRuntime = (deps) => {
     createTaskID,
   } = deps;
 
+  /** 任务 id 生成器：优先使用注入的 createTaskID，否则退回随机方案。 */
   const taskIDFactory = typeof createTaskID === 'function'
     ? createTaskID
     : (() => {
@@ -371,11 +449,16 @@ export const createProjectConfigRuntime = (deps) => {
       return `task_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     });
 
+  /** 项目 id → 链式 Promise 的进程内写锁表，串行化同一项目的并发写。 */
   const writeLocks = new Map();
+  /** 获取跨进程文件锁的最长等待时间，超时抛错。 */
   const PROJECT_FILE_LOCK_WAIT_MS = 10_000;
+  /** 锁文件年龄超过该阈值即视为陈旧，可被抢占删除。 */
   const PROJECT_FILE_LOCK_STALE_MS = 60_000;
+  /** 抢锁失败后的重试间隔。 */
   const PROJECT_FILE_LOCK_RETRY_MS = 20;
 
+  /** 校验 projectId 非空且仅含 [a-zA-Z0-9._:-]，防止路径穿越与怪异文件名；非法即抛错。 */
   const sanitizeProjectID = (projectID) => {
     const value = asNonEmptyString(projectID);
     if (!value) {
@@ -387,11 +470,13 @@ export const createProjectConfigRuntime = (deps) => {
     return value;
   };
 
+  /** 返回 projectId 对应的配置文件绝对路径（内部先做 id 消毒）。 */
   const resolveProjectConfigPath = (projectID) => {
     const safeProjectID = sanitizeProjectID(projectID);
     return path.join(projectsDirPath, `${safeProjectID}.json`);
   };
 
+  /** 用 kill(pid, 0) 探测进程是否存活；EPERM 表示进程存在但属其它用户，同样视为存活。 */
   const isProcessAlive = (pid) => {
     if (!Number.isInteger(pid) || pid <= 0) {
       return false;
@@ -409,6 +494,13 @@ export const createProjectConfigRuntime = (deps) => {
    * Cross-process exclusive lock for a project config file.
    * In-process chaining alone cannot serialize Electron (port 57123) and CLI
    * serve (port 3000) writers that share the same on-disk projects dir.
+   */
+  /**
+   * 中文说明：以 open(lockPath, 'wx') 独占创建 `<config>.json.lock`
+   * 实现跨进程互斥（Electron 与 CLI serve 两个进程可能写同一目录），
+   * 锁内容为 {pid, at}。持锁进程已死或锁龄超阈值时删除陈旧锁重试；
+   * 等待超时抛 timeout 错误。release 只在锁文件仍属本进程时 unlink，
+   * 避免误删被抢占后新持有者的锁。
    */
   const acquireProjectFileLock = async (projectID) => {
     const configPath = resolveProjectConfigPath(projectID);
@@ -490,6 +582,7 @@ export const createProjectConfigRuntime = (deps) => {
     throw new Error(`timeout acquiring project config lock for ${projectID}`);
   };
 
+  /** 读取并解析磁盘上的原始配置 JSON；文件不存在返回空对象，其余读取/解析错误原样上抛。 */
   const readRawProjectConfigFromDisk = async (projectID) => {
     const filePath = resolveProjectConfigPath(projectID);
     try {
@@ -512,6 +605,12 @@ export const createProjectConfigRuntime = (deps) => {
   // Writers therefore persist untouched tasks from `rawTasksByID` verbatim and
   // only serialize a normalized task where the task itself was deliberately
   // replaced.
+  /**
+   * 中文说明：读取配置并返回双层视图——scheduledTasks 是本版本能识别
+   * 的规范化任务，rawTasksByID 保留每个任务的原始磁盘记录，写入时
+   * 原样回写以保住未知字段。单个任务规范化失败（数据损坏）仅跳过该
+   * 任务，不影响其余任务加载。
+   */
   const readProjectConfigFromDisk = async (projectID) => {
     const parsed = await readRawProjectConfigFromDisk(projectID);
     const tasksRaw = Array.isArray(parsed.scheduledTasks) ? parsed.scheduledTasks : [];
@@ -544,6 +643,11 @@ export const createProjectConfigRuntime = (deps) => {
   // included. A state-only update counts as untouched — only its `state` is
   // swapped onto the stored record. Callers keep working with (and returning)
   // the normalized tasks; only the bytes on disk differ.
+  /**
+   * 中文说明：计算实际落盘的任务列表——本次被整体替换的任务
+   * （replacedIDs）写规范化结果；其余任务沿用 rawTasksByID 里的原始
+   * 记录；stateUpdatedID 指定的任务只在原始记录上替换 state 字段。
+   */
   const toStoredTasks = (config, tasks, { replacedIDs = new Set(), stateUpdatedID = null } = {}) => (
     tasks.map((task) => {
       if (replacedIDs.has(task.id)) return task;
@@ -553,6 +657,11 @@ export const createProjectConfigRuntime = (deps) => {
     })
   );
 
+  /**
+   * 原子写盘：先读旧文件以合并保留顶层未知键，再写唯一命名的临时
+   * 文件并 rename 覆盖目标（读者不会看到半截 JSON）；失败时清理
+   * 临时文件并上抛。调用方须已持有该项目的写锁。
+   */
   const writeProjectConfigToDisk = async (projectID, config) => {
     const filePath = resolveProjectConfigPath(projectID);
     const parentDirectory = path.dirname(filePath);
@@ -575,6 +684,11 @@ export const createProjectConfigRuntime = (deps) => {
     }
   };
 
+  /**
+   * 在「进程内链式锁 + 跨进程文件锁」双重保护下执行 mutate（读-改-写）。
+   * 文件锁获取失败也必须先释放进程内链，否则该项目的后续写入会
+   * 永远卡在 await previous 上。
+   */
   const withProjectWriteLock = async (projectID, mutate) => {
     const key = sanitizeProjectID(projectID);
     const previous = writeLocks.get(key) || Promise.resolve();
@@ -605,11 +719,17 @@ export const createProjectConfigRuntime = (deps) => {
     }
   };
 
+  /** 列出项目的全部规范化 scheduled tasks（只读，不加锁）。 */
   const listScheduledTasks = async (projectID) => {
     const config = await readProjectConfigFromDisk(projectID);
     return config.scheduledTasks;
   };
 
+  /**
+   * 创建或更新任务：按传入 id 匹配既有任务（id 不可变，name 等字段
+   * 全量替换），规范化后在校验+写锁内落盘；返回 {task, tasks, created}，
+   * created 区分新建与覆盖。
+   */
   const upsertScheduledTask = async (projectID, taskInput) => {
     return withProjectWriteLock(projectID, async () => {
       const now = Date.now();
@@ -649,6 +769,10 @@ export const createProjectConfigRuntime = (deps) => {
     });
   };
 
+  /**
+   * 删除指定 id 的任务；任务不存在时 deleted 为 false 且不写盘。
+   * 返回删除后的任务列表。
+   */
   const deleteScheduledTask = async (projectID, taskID) => {
     return withProjectWriteLock(projectID, async () => {
       const normalizedTaskID = asNonEmptyString(taskID);
@@ -674,6 +798,10 @@ export const createProjectConfigRuntime = (deps) => {
     });
   };
 
+  /**
+   * 无条件把 statePatch 合并进任务 state（经 normalizeState 归一后写盘），
+   * 用于一次运行结束后回写结果。任务不存在返回 updated:false 且不写盘。
+   */
   const updateScheduledTaskState = async (projectID, taskID, statePatch) => {
     return withProjectWriteLock(projectID, async () => {
       const normalizedTaskID = asNonEmptyString(taskID);
@@ -723,6 +851,12 @@ export const createProjectConfigRuntime = (deps) => {
    * it returns false the write is skipped and `{ updated: false }` is returned.
    * Used by the scheduled-tasks runtime to claim a single schedule occurrence
    * across concurrent OMPChamber server instances.
+   */
+  /**
+   * 中文说明：state 更新的条件版本——先读取最新任务，predicate 通过
+   * 才应用 statePatch，否则跳过写盘并返回 updated:false。调度器用它
+   * 认领一次调度触发（写入 lastScheduledFor），保证多个共享同一配置
+   * 文件的 OMPChamber 实例不会就同一时隙各跑一次。
    */
   const updateScheduledTaskStateIf = async (projectID, taskID, predicate, statePatch) => {
     return withProjectWriteLock(projectID, async () => {
@@ -804,6 +938,13 @@ export const createProjectConfigRuntime = (deps) => {
    * - Malformed definitions are skipped with a warning and never block valid
    *   loops; the scheduler passes them as `definition: null` entries, and
    *   normalization failures here are isolated per loop.
+   */
+  /**
+   * 中文说明：对账实现——按 loop 文件路径认领既有 loop 任务（重命名
+   * 不留副本）、按名称认领同名 JSON 任务（保留 id/state 与文件格式未
+   * 覆盖的 UI 字段）、为无主 loop 创建确定性 `loop:<scope>:<name>` id、
+   * 清理文件已删除的任务与同名孤儿副本；全程持有写锁，返回对账后的
+   * 完整任务列表。
    */
   const reconcileLoopTasks = async (projectID, loops) => {
     return withProjectWriteLock(projectID, async () => {

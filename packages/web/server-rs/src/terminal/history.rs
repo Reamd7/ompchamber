@@ -8,6 +8,13 @@
 //! port scans bytes — every recognized control sequence is pure ASCII, and
 //! multibyte UTF-8 payloads can never collide with the scanned lead bytes
 //! (`0x1b`/`0x9b`/`0x9d`… only appear as standalone ASCII/C1 bytes).
+//!
+//! 中文说明：回放历史做两层工作。`sanitize_terminal_history_chunk` 在
+//! 字节流层剥离渲染器回放时无法应答的查询交换（DSR/DA/XTVERSION/
+//! mode-2031/OSC 10/11/12 颜色查询），其余控制序列与正文逐字节保留，
+//! 跨 chunk 的半截序列经 `pending` 携带。`HistoryBuf` 以 chunk 双端
+//! 队列保存可见字节，追加 O(1)，materialize 时取 512 KiB 字节精确尾部
+//! 并跳过被截断 codepoint 的前导连续字节。
 
 use std::collections::VecDeque;
 
@@ -17,6 +24,7 @@ pub const MAX_HISTORY_BYTES: usize = 512 * 1024;
 /// materialized snapshots stay within `MAX_HISTORY_BYTES + slack`.
 const MAX_HISTORY_CHUNK_BYTES: usize = 128 * 1024;
 
+/// CSI 最终字节判定（0x40..=0x7e）：参数区到此结束。
 fn is_csi_final_byte(code: u8) -> bool {
     (0x40..=0x7e).contains(&code)
 }
@@ -49,6 +57,9 @@ fn body_is_mode_2031_report(body: &[u8]) -> bool {
     }
 }
 
+/// 按最终字节分类 CSI 是否属于查询交换：`n`（DSR 应答）一律剥离，
+/// `R`/`c`/`p`/`y` 按各自消息体形态判定，`h`/`l` 仅剥离 mode-2031 的
+/// 置位/复位；其余保留。
 fn should_strip_csi(body: &[u8], final_byte: u8) -> bool {
     match final_byte {
         b'n' => true,
@@ -71,6 +82,7 @@ fn should_strip_osc(content: &[u8]) -> bool {
     rest.starts_with(b"?") || rest.starts_with(b"rgb:")
 }
 
+/// 去掉字符串序列（OSC/DCS/PM/APC）的终止符：ST（ESC `\`）、BEL 或 0x9c。
 fn strip_terminator(value: &[u8]) -> &[u8] {
     if value.ends_with(b"\x1b\\") {
         &value[..value.len() - 2]
@@ -112,8 +124,12 @@ fn find_escape_end(input: &[u8], start: usize) -> Option<usize> {
     }
 }
 
+/// `sanitizeTerminalHistoryChunk` 的结果：可保留的可见字节与跨 chunk
+/// 待拼接的尾部半截序列。
 pub struct SanitizedChunk {
+    /// 剥离查询交换后的输出，可直接并入回放历史。
     pub visible: Vec<u8>,
+    /// 尾部不完整的控制序列（尚无终止符/最终字节），留给下一个 PTY chunk。
     pub pending: Vec<u8>,
 }
 
@@ -241,11 +257,15 @@ fn trim_history_bytes(mut bytes: &[u8]) -> &[u8] {
 /// continuation bytes are skipped exactly as the tail trim does.
 #[derive(Default)]
 pub struct HistoryBuf {
+    /// 已清洗的可见字节按到达顺序组成的 chunk 队列（队首最旧）。
     chunks: VecDeque<Vec<u8>>,
+    /// 队列内字节总数，作为整块修剪的判据（上限 + 单 chunk 余量）。
     bytes: usize,
 }
 
+/// 追加、整块修剪与 materialize 出有界文本。
 impl HistoryBuf {
+    /// 清空全部历史 chunk 与字节计数（会话重置时使用）。
     pub fn reset(&mut self) {
         self.chunks.clear();
         self.bytes = 0;
@@ -276,18 +296,23 @@ impl HistoryBuf {
     }
 }
 
+/// 历史清洗与回放缓冲的单元测试：剥离规则、跨 chunk 携带与字节上限。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 测试便捷封装：以字符串形式调用 `sanitize_terminal_history_chunk`。
     fn sanitize(pending: &str, data: &str) -> SanitizedChunk {
         sanitize_terminal_history_chunk(pending.as_bytes(), data.as_bytes())
     }
 
+    /// 有损 UTF-8 解码，便于对字节结果做字符串断言。
     fn as_str(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
     }
 
+    /// 验证：DSR/DA/mode-2031/OSC 颜色查询交换被剥离，SGR 等显示控制
+    /// 序列逐字节保留。
     #[test]
     fn removes_device_and_color_query_exchanges_while_preserving_display_controls() {
         let input = "before\u{1b}[6n\u{1b}[12;40R\u{1b}[>0c\u{1b}[?2031h\u{1b}[?2031$p\u{1b}[?2031;1$y\u{1b}]10;?\u{7}\u{1b}[31mred\u{1b}[0mafter";
@@ -296,6 +321,8 @@ mod tests {
         assert_eq!(result.pending, Vec::<u8>::new());
     }
 
+    /// 验证：跨 chunk 的半截控制序列先挂起为 pending，拼齐后丢弃，
+    /// 不进入可见输出。
     #[test]
     fn carries_incomplete_control_sequences_across_pty_chunks() {
         let first = sanitize("", "text\u{1b}]11;");
@@ -306,6 +333,7 @@ mod tests {
         assert_eq!(second.pending, Vec::<u8>::new());
     }
 
+    /// 验证：普通 OSC 标题与正文逐字节保留。
     #[test]
     fn preserves_ordinary_osc_titles_and_split_utf16_text() {
         let result = sanitize("", "\u{1b}]0;title\u{7}ok");
@@ -313,6 +341,8 @@ mod tests {
         assert_eq!(result.pending, Vec::<u8>::new());
     }
 
+    /// 验证：非查询类 CSI 报文、8-bit C1 变体与 OSC 133 保留，消息体
+    /// 为纯数字的 `R` 位置报文按查询剥离。
     #[test]
     fn keeps_non_query_reports_and_8bit_variants() {
         // A position-report body of pure digits/;/? IS a query exchange (JS
@@ -326,6 +356,7 @@ mod tests {
         assert_eq!(as_str(&mixed.visible), "\u{1b}]133;A\u{7}");
     }
 
+    /// 验证：mode-2031 报文消息体的可选参数形态判定。
     #[test]
     fn mode_2031_reports_with_and_without_a_parameter() {
         assert!(body_is_mode_2031_report(b"?2031$"));
@@ -334,6 +365,8 @@ mod tests {
         assert!(!body_is_mode_2031_report(b"?2031;;$"));
     }
 
+    /// 验证：历史缓冲 roundtrip，超限时 materialize 出不超过 512 KiB
+    /// 的字节精确尾部。
     #[test]
     fn history_buffer_roundtrips_and_caps_to_the_byte_exact_tail() {
         let mut buf = HistoryBuf::default();
@@ -355,6 +388,8 @@ mod tests {
         );
     }
 
+    /// 验证：整块丢弃队首后，materialize 跳过残缺 codepoint 的前导
+    /// 连续字节。
     #[test]
     fn history_buffer_skips_continuation_bytes_after_a_dropped_head_chunk() {
         let mut buf = HistoryBuf::default();

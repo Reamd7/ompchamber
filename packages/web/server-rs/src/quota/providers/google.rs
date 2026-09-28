@@ -8,6 +8,13 @@
 //!   only), and `v1internal:fetchAvailableModels` across the three endpoints.
 //! - `transforms.js`: `refreshToken|projectId|managedProjectId` parsing and
 //!   per-model window transforms.
+//!
+//! 中文概览：通过 Google CloudCode 内部端点聚合 Gemini CLI 与 Antigravity
+//! 两个来源的配额——认证解析（OpenCode `auth.json` 的 google/google.oauth
+//! 条目 + Antigravity accounts 文件）、OAuth access token 刷新、
+//! retrieveUserQuota 配额桶（仅 gemini 来源）与 fetchAvailableModels 模型
+//! 拉取、按模型的时间窗口转换，最终由 fetch_google_quota 合并为统一的
+//! quota 结果 JSON。
 
 use std::sync::Arc;
 
@@ -22,30 +29,45 @@ use crate::quota::utils::{
     get_auth_entry, normalize_auth_entry, read_json_file, to_number, to_usage_window,
 };
 
+/// 提供方唯一标识，注册到 quota 注册表时使用的小写 id。
 pub const PROVIDER_ID: &str = "google";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "Google";
+/// auth.json 中识别本提供方的别名：顶层 `google` 条目与嵌套 `google.oauth` 条目。
 pub const ALIASES: [&str; 2] = ["google", "google.oauth"];
 
+/// Antigravity CLI 随客户端分发的公开 OAuth client id，用于刷新其 refresh token。
 const ANTIGRAVITY_GOOGLE_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
+/// Antigravity CLI 随客户端分发的公开 OAuth client secret。
 const ANTIGRAVITY_GOOGLE_CLIENT_SECRET: &str = "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";
+/// Gemini CLI 随客户端分发的公开 OAuth client id，用于刷新其 refresh token。
 const GEMINI_GOOGLE_CLIENT_ID: &str =
     "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+/// Gemini CLI 随客户端分发的公开 OAuth client secret。
 const GEMINI_GOOGLE_CLIENT_SECRET: &str = "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";
+/// 来源未携带 projectId 时使用的默认 Google Cloud 项目 id。
 pub const DEFAULT_PROJECT_ID: &str = "rising-fact-p41fc";
 
+/// CloudCode 主端点；retrieveUserQuota 配额桶查询固定走此端点。
 const GOOGLE_PRIMARY_ENDPOINT: &str = "https://cloudcode-pa.googleapis.com";
+/// fetchAvailableModels 依次尝试的端点列表：两个 sandbox 端点在前，主端点兜底。
 const GOOGLE_ENDPOINTS: [&str; 3] = [
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://autopush-cloudcode-pa.sandbox.googleapis.com",
     GOOGLE_PRIMARY_ENDPOINT,
 ];
 
+/// CloudCode 请求的超时时间（毫秒）。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
+/// Antigravity 5 小时滚动窗口对应的秒数。
 const FIVE_HOUR_WINDOW_SECONDS: f64 = 5.0 * 3600.0;
+/// 24 小时每日窗口对应的秒数。
 const DAILY_WINDOW_SECONDS: f64 = 24.0 * 3600.0;
 
 /// `resolveGoogleOAuthClient`.
+/// 按 source_id 选择对应 CLI 的公开 OAuth client 凭据：`gemini` 用 Gemini CLI
+/// 的 client，其余（antigravity）用 Antigravity CLI 的 client。
 pub fn resolve_google_oauth_client(source_id: &str) -> (&'static str, &'static str) {
     if source_id == "gemini" {
         (GEMINI_GOOGLE_CLIENT_ID, GEMINI_GOOGLE_CLIENT_SECRET)
@@ -58,6 +80,8 @@ pub fn resolve_google_oauth_client(source_id: &str) -> (&'static str, &'static s
 }
 
 /// `parseGoogleRefreshToken` — `token|projectId|managedProjectId`.
+/// 解析 `refresh` 字段的 `token|projectId|managedProjectId` 三段格式，
+/// 逐段取值（空段返回 None）；输入非字符串或全空白时三元组均为 None。
 pub fn parse_google_refresh_token(
     raw: Option<&Value>,
 ) -> (Option<String>, Option<String>, Option<String>) {
@@ -75,18 +99,28 @@ pub fn parse_google_refresh_token(
     (token, project, managed)
 }
 
+/// 单个 Google 配额来源（Gemini CLI 或 Antigravity 账号），由认证解析阶段产出，
+/// 供后续刷新 token 与拉取配额使用。
 #[derive(Debug, Clone)]
 pub struct GoogleSource {
+    /// 来源标识：`"gemini"` 或 `"antigravity"`，决定 OAuth client 与窗口规则。
     pub source_id: &'static str,
+    /// 来源展示名（"Gemini"/"Antigravity"），用于拼接逐来源错误消息。
     pub source_label: &'static str,
+    /// 现有 access token；可能已过期，缺失或过期时用 refresh token 换新。
     pub access_token: Option<String>,
+    /// OAuth refresh token；access token 无效且无 refresh token 时该来源报错跳过。
     pub refresh_token: Option<String>,
+    /// Google Cloud 项目 id；为空时回退 DEFAULT_PROJECT_ID。
     pub project_id: Option<String>,
+    /// access token 过期时间戳（毫秒）；早于当前时间则触发刷新。
     pub expires: Option<i64>,
 }
 
 /// `resolveGeminiCliAuth` — the OpenCode auth entry with an optional nested
 /// `oauth` object.
+/// 从 OpenCode auth.json 的 google/google.oauth 条目解析 Gemini CLI 来源，
+/// 兼容可选的嵌套 `oauth` 对象；access 与 refresh 均缺失时返回 None。
 fn resolve_gemini_cli_auth(auth: &Value) -> Option<GoogleSource> {
     let entry = normalize_auth_entry(get_auth_entry(auth, &ALIASES))?;
     let entry_object = entry.as_object()?;
@@ -116,6 +150,8 @@ fn resolve_gemini_cli_auth(auth: &Value) -> Option<GoogleSource> {
 }
 
 /// `resolveAntigravityAuth` — first accounts file with a refresh token.
+/// 依次遍历 Antigravity accounts 文件，取 activeIndex 指向（越界回退首个）
+/// 账号的 refreshToken；无可刷新账号时返回 None。
 fn resolve_antigravity_auth(deps: &QuotaDeps) -> Option<GoogleSource> {
     for path in antigravity_accounts_paths(deps) {
         let Some(data) = read_json_file(&path) else {
@@ -157,6 +193,8 @@ fn resolve_antigravity_auth(deps: &QuotaDeps) -> Option<GoogleSource> {
 }
 
 /// `resolveGoogleAuthSources` — Gemini CLI first, Antigravity second.
+/// 汇总认证来源列表：先尝试 Gemini CLI 的 auth.json 条目，再尝试 Antigravity
+/// accounts 文件，顺序即后续拉取配额的处理顺序。
 pub fn resolve_google_auth_sources(deps: &QuotaDeps) -> Vec<GoogleSource> {
     let mut sources = Vec::new();
     if let Ok(auth) = deps.read_auth_value()
@@ -170,6 +208,7 @@ pub fn resolve_google_auth_sources(deps: &QuotaDeps) -> Vec<GoogleSource> {
     sources
 }
 
+/// 是否已配置：能解析出至少一个认证来源即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     !resolve_google_auth_sources(deps).is_empty()
 }
@@ -177,6 +216,9 @@ pub fn is_configured(deps: &QuotaDeps) -> bool {
 // ============== api.js ==============
 
 /// `refreshGoogleAccessToken` — None on any failure (per-source error).
+/// 用 refresh token 向 oauth2.googleapis.com 换取新 access token；
+/// HTTP 非 2xx 返回 Ok(None)（记为来源级错误），网络/JSON 解析失败返回 Err
+/// （与 JS 版一致：fetch 抛错直接中断整个循环）。
 async fn refresh_google_access_token(
     deps: &QuotaDeps,
     refresh_token: &str,
@@ -207,6 +249,8 @@ async fn refresh_google_access_token(
         .map(str::to_string))
 }
 
+/// application/x-www-form-urlencoded 编码：非保留字符原样保留，
+/// 其余字节转成大写十六进制 `%XX` 转义。
 fn urlencode(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
@@ -221,6 +265,8 @@ fn urlencode(value: &str) -> String {
 }
 
 /// `fetchGoogleQuotaBuckets` — gemini-only quota buckets; None on any failure.
+/// 调用 v1internal:retrieveUserQuota 获取配额桶（仅 gemini 来源使用）；
+/// 请求失败、非 2xx 或 JSON 解析失败一律返回 None。
 async fn fetch_google_quota_buckets(
     deps: &QuotaDeps,
     access_token: &str,
@@ -245,6 +291,9 @@ async fn fetch_google_quota_buckets(
 }
 
 /// `fetchGoogleModels` — endpoints tried in order; None when all fail.
+/// 依次尝试 GOOGLE_ENDPOINTS 中的端点调用 v1internal:fetchAvailableModels
+/// （带 Antigravity 伪装的 User-Agent/Client-Metadata 头），首个成功响应的
+/// JSON 即返回；全部失败返回 None。
 async fn fetch_google_models(
     deps: &QuotaDeps,
     access_token: &str,
@@ -278,6 +327,8 @@ async fn fetch_google_models(
 // ============== transforms.js ==============
 
 /// `resolveGoogleWindow` — gemini daily; antigravity 5h/daily by remaining.
+/// 决定窗口标签与秒数：gemini 来源恒为 daily；antigravity 来源按剩余时间
+/// 大于 10 小时取 daily、否则取 5h，缺 reset 时间时默认 5h。
 fn resolve_google_window(source_id: &str, reset_at: Option<i64>, now: u64) -> (&'static str, f64) {
     if source_id == "antigravity" {
         if let Some(reset_at) = reset_at {
@@ -292,6 +343,8 @@ fn resolve_google_window(source_id: &str, reset_at: Option<i64>, now: u64) -> (&
     ("daily", DAILY_WINDOW_SECONDS)
 }
 
+/// 为模型名加 `source_id/` 前缀（已带前缀则原样返回），
+/// 避免不同来源的同名模型在合并时互相覆盖。
 fn scoped_model_name(model_id: &str, source_id: &str) -> String {
     if model_id.starts_with(&format!("{source_id}/")) {
         model_id.to_string()
@@ -300,6 +353,7 @@ fn scoped_model_name(model_id: &str, source_id: &str) -> String {
     }
 }
 
+/// 构造单个模型条目的 JSON 形态：`{ "windows": { <label>: UsageWindow } }`。
 fn model_windows_entry(
     label: &str,
     used_percent: Option<f64>,
@@ -323,6 +377,8 @@ fn model_windows_entry(
 }
 
 /// `transformQuotaBucket`.
+/// 将 retrieveUserQuota 返回的单个 bucket 转换为 (带前缀模型名, windows 条目)；
+/// 缺少 modelId 时返回 None（该桶被跳过）。
 pub fn transform_quota_bucket(
     bucket: &Value,
     source_id: &str,
@@ -341,6 +397,8 @@ pub fn transform_quota_bucket(
 }
 
 /// `transformModelData`.
+/// 将 fetchAvailableModels 返回的单个模型 quotaInfo 转换为
+/// (带前缀模型名, windows 条目)。
 pub fn transform_model_data(
     model_name: &str,
     model_data: &Value,
@@ -363,6 +421,9 @@ pub fn transform_model_data(
     )
 }
 
+/// 主入口：遍历认证来源——按需刷新 OAuth token，拉取配额桶（仅 gemini）
+/// 与可用模型并合并进 models；无任何来源时返回 "Not configured"，
+/// 全部来源失败时返回首个来源错误，成功则返回聚合的 models JSON。
 pub fn fetch_google_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();
@@ -509,6 +570,7 @@ pub fn fetch_google_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     })
 }
 
+/// 提供方注册表入口，直接委托给 fetch_google_quota。
 pub fn fetch_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     fetch_google_quota(rt)
 }

@@ -1,6 +1,10 @@
 //! Port of `server/lib/linear/issues.js` — list/search/get issues, team
 //! workflow states, `issueUpdate` (identifier→UUID resolution first), and
 //! `commentCreate` for session status comments.
+//! 中文说明：移植自 JS 版 issues.js。承载 Linear issue 的列表/搜索/详情
+//! 查询、团队 workflow 状态读取、`issueUpdate`（先把 identifier 解析成
+//! UUID，因为 Linear 的 mutation 只接受 UUID）、以及会话状态评论用的
+//! `commentCreate`。所有 GraphQL 查询文本与 JS 版逐字对齐。
 
 use std::sync::Arc;
 
@@ -10,7 +14,9 @@ use super::client::{fetch_linear_graphql, get_valid_linear_access_token};
 use super::parse::{is_plain_object, read_finite_number, read_trimmed_string};
 use super::{LinearError, LinearState};
 
+/// 分页大小：与 JS 版一致，每页拉取 50 条 issue。
 const PAGE_SIZE: i64 = 50;
+/// 列表查询：按 `updatedAt` 倒序分页拉取 issue 摘要（不含 description 与评论）。
 const LIST_QUERY: &str = r#"
   query ListLinearIssues($first: Int!, $after: String, $filter: IssueFilter) {
     issues(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
@@ -30,6 +36,7 @@ const LIST_QUERY: &str = r#"
   }
 "#;
 
+/// 搜索查询：走 Linear 的 `searchIssues` 全文搜索端点，节点结构与列表查询相同。
 const SEARCH_QUERY: &str = r#"
   query SearchLinearIssues($term: String!, $first: Int!, $after: String, $filter: IssueFilter) {
     searchIssues(term: $term, first: $first, after: $after, filter: $filter) {
@@ -49,6 +56,7 @@ const SEARCH_QUERY: &str = r#"
   }
 "#;
 
+/// 详情查询：单条 issue，额外带 description 和前 50 条评论（含作者信息）。
 const GET_QUERY: &str = r#"
   query GetLinearIssue($id: String!) {
     issue(id: $id) {
@@ -74,6 +82,7 @@ const GET_QUERY: &str = r#"
   }
 "#;
 
+/// 评论创建 mutation：向指定 issue 写入一条评论，只回读 `comment.id`。
 const COMMENT_CREATE: &str = r#"
   mutation CommentCreate($input: CommentCreateInput!) {
     commentCreate(input: $input) {
@@ -83,6 +92,7 @@ const COMMENT_CREATE: &str = r#"
   }
 "#;
 
+/// 团队状态查询：拉取指定团队最多 50 个 workflow 状态（id/name/type/position）。
 const STATES_QUERY: &str = r#"
   query TeamWorkflowStates($id: String!) {
     team(id: $id) {
@@ -93,6 +103,8 @@ const STATES_QUERY: &str = r#"
   }
 "#;
 
+/// 更新 mutation：`issueUpdate` 修改 issue（当前用于切换状态），
+/// 返回完整 issue（含 description 与评论）。
 const ISSUE_UPDATE: &str = r#"
   mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
     issueUpdate(id: $id, input: $input) {
@@ -121,19 +133,28 @@ const ISSUE_UPDATE: &str = r#"
   }
 "#;
 
+/// 解析后的 issue 引用：`kind` 标明 `value` 是人类可读 identifier 还是 Linear UUID。
 #[derive(Debug, Clone, PartialEq)]
 pub struct IssueRef {
+    /// 引用类型：Identifier（如 `ENG-123`）或 Id（UUID）。
     pub kind: IssueRefKind,
+    /// 归一化后的引用值：identifier 转大写、UUID 转小写。
     pub value: String,
 }
 
+/// issue 引用的两种形态，决定后续走 identifier 解析还是直接按 UUID 查询。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueRefKind {
+    /// 人类可读的团队前缀编号（如 `ENG-123`），查询前需先解析成 UUID。
     Identifier,
+    /// Linear 内部 UUID，可直接用于 GraphQL 查询与 mutation。
     Id,
 }
 
 /// JS `parseLinearIssueRef`: identifier, Linear issue URL, or UUID.
+///
+/// 中文说明：依次尝试 Linear URL、identifier、UUID 三种形态；identifier
+/// 统一转大写、UUID 统一转小写，无法识别时返回 `None`。
 pub fn parse_linear_issue_ref(value: &str) -> Option<IssueRef> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -161,6 +182,9 @@ pub fn parse_linear_issue_ref(value: &str) -> Option<IssueRef> {
 }
 
 /// `^[A-Za-z][A-Za-z0-9]*-\d+$`
+///
+/// 中文说明：手写实现该正则（字母开头的团队 key + `-` + 纯数字编号），
+/// 避免引入 regex 依赖。
 fn is_identifier(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut i = 0;
@@ -179,6 +203,8 @@ fn is_identifier(value: &str) -> bool {
 
 /// `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` (case
 /// insensitive).
+///
+/// 中文说明：按 8-4-4-4-12 分组逐段校验十六进制，不依赖 regex crate。
 fn is_uuid(value: &str) -> bool {
     let groups = [8usize, 4, 4, 4, 12];
     let bytes = value.as_bytes();
@@ -203,6 +229,9 @@ fn is_uuid(value: &str) -> bool {
 }
 
 /// `/linear\.app\/(?:[^/]+\/)?issue\/([A-Za-z][A-Za-z0-9]*-\d+)/i`
+///
+/// 中文说明：扫描所有 `linear.app/` 出现位置，手写复刻正则的贪婪匹配与
+/// 回溯（先试带团队段，再退回无团队段）。
 fn match_url_identifier(input: &str) -> Option<String> {
     let hay = input.as_bytes();
     let marker = b"linear.app/";
@@ -228,6 +257,8 @@ fn match_url_identifier(input: &str) -> Option<String> {
     None
 }
 
+/// 在 `position` 处匹配 `issue/` 前缀并读取紧随其后的 identifier；
+/// 前缀不匹配或格式非法（无数字编号等）时返回 `None`。
 fn read_identifier_after_issue(hay: &[u8], position: usize) -> Option<String> {
     let issue = b"issue/";
     if !matches_ci(hay, position, issue) {
@@ -256,6 +287,8 @@ fn read_identifier_after_issue(hay: &[u8], position: usize) -> Option<String> {
     String::from_utf8(hay[start..end].to_vec()).ok()
 }
 
+/// ASCII 大小写不敏感地判断 `hay` 在 `position` 处是否以 `needle` 开头；
+/// 长度不足（越界）视为不匹配。
 fn matches_ci(hay: &[u8], position: usize, needle: &[u8]) -> bool {
     hay.len() >= position + needle.len()
         && hay[position..position + needle.len()]
@@ -265,17 +298,29 @@ fn matches_ci(hay: &[u8], position: usize, needle: &[u8]) -> bool {
 }
 
 /// Filters for `listLinearIssues`.
+///
+/// 中文说明：全部字段来自 query string，空字符串表示该过滤条件不生效。
 #[derive(Debug, Clone, Default)]
 pub struct ListIssuesParams {
+    /// 搜索词：能解析成 issue 引用时直接查那条 issue，否则做全文搜索；为空则纯列表。
     pub query: String,
+    /// 分页游标（上一页返回的 `endCursor`），为空表示第一页。
     pub cursor: String,
+    /// 状态过滤：open/backlog/todo/started/inReview/completed/canceled/duplicate/all。
     pub status: String,
+    /// 负责人过滤：`me` 只看自己，`any`（默认）不过滤。
     pub assignee: String,
+    /// 团队 id 过滤，为空表示所有团队。
     pub team_id: String,
+    /// 优先级过滤：none/urgent/high/medium/low，默认 `all` 不过滤。
     pub priority: String,
 }
 
 /// JS `buildIssueListFilter`.
+///
+/// 中文说明：把过滤参数组装成 Linear 的 `IssueFilter` JSON；所有条件都
+/// 无效时返回 `None`（不传 filter）。status/priority 的非法值在读取阶段
+/// 已被归一化，不会出现在这里。
 pub fn build_issue_list_filter(params: &ListIssuesParams) -> Option<Value> {
     let status = read_list_status(&params.status);
     let assignee = read_list_assignee(&params.assignee);
@@ -300,6 +345,7 @@ pub fn build_issue_list_filter(params: &ListIssuesParams) -> Option<Value> {
     (!filter.is_empty()).then_some(Value::Object(filter))
 }
 
+/// 归一化 status 过滤值：合法值原样返回（含 `all`），非法值回退到 `open`。
 fn read_list_status(value: &str) -> String {
     let status = value.trim();
     if status == "all" || list_status_state(status).is_object() {
@@ -309,6 +355,9 @@ fn read_list_status(value: &str) -> String {
     }
 }
 
+/// 把 status 关键字翻译成 Linear `IssueFilter.state` 条件；
+/// `started`/`canceled` 需按名称排除 In Review/Duplicate，`duplicate` 是
+/// 类型或名称的或组合，未知值返回 `Null`（表示无法映射为过滤器）。
 fn list_status_state(status: &str) -> Value {
     match status {
         "open" => json!({ "type": { "nin": ["completed", "canceled", "duplicate"] } }),
@@ -332,6 +381,7 @@ fn list_status_state(status: &str) -> Value {
     }
 }
 
+/// 归一化 assignee 过滤值：只接受 `me` 与 `any`，其余回退 `any`。
 fn read_list_assignee(value: &str) -> String {
     match value.trim() {
         "me" | "any" => value.trim().to_string(),
@@ -339,6 +389,7 @@ fn read_list_assignee(value: &str) -> String {
     }
 }
 
+/// 归一化 priority 过滤值：只接受 none/urgent/high/medium/low，其余回退 `all`。
 fn read_list_priority(value: &str) -> String {
     match value.trim() {
         "none" | "urgent" | "high" | "medium" | "low" => value.trim().to_string(),
@@ -346,6 +397,7 @@ fn read_list_priority(value: &str) -> String {
     }
 }
 
+/// 把优先级关键字映射为 Linear 的数字优先级（0=none … 4=low），未知值按 0 处理。
 fn list_priority_value(priority: &str) -> i64 {
     match priority {
         "none" => 0,
@@ -357,19 +409,26 @@ fn list_priority_value(priority: &str) -> i64 {
     }
 }
 
+/// issue 的工作流状态摘要（id/name/type 皆可缺失，全缺失则视为无状态）。
 #[derive(Debug, Clone, PartialEq)]
 struct IssueState {
+    /// 状态的 UUID；输入缺失时为 `None`。
     id: Option<String>,
+    /// 状态名称（如 In Review）；输入缺失时为 `None`。
     name: Option<String>,
+    /// 状态类型（started/completed 等）；输入缺失时为 `None`。
     kind: Option<String>,
 }
 
+/// 序列化为 JS 版一致的 `{ id, name, type }` JSON（缺失字段输出 null）。
 impl IssueState {
+    /// 生成 `{ id, name, type }` JSON，`None` 字段序列化为 null。
     fn to_json(&self) -> Value {
         json!({ "id": self.id, "name": self.name, "type": self.kind })
     }
 }
 
+/// 从 GraphQL 节点读取状态：非对象或三个字段全空时返回 `None`。
 fn read_state(value: &Value) -> Option<IssueState> {
     if !is_plain_object(value) {
         return None;
@@ -383,20 +442,28 @@ fn read_state(value: &Value) -> Option<IssueState> {
     Some(IssueState { id, name, kind })
 }
 
+/// 读取字符串并去首尾空白：空串视为 `None`（JS 的“存在且非空”语义）。
 fn optional(value: &Value) -> Option<String> {
     let trimmed = read_trimmed_string(value);
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+/// 团队 workflow 状态（`listLinearIssueStates` 的返回单元），用于状态切换 UI。
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowState {
+    /// 状态 UUID，作为 `issueUpdate` 的 `stateId`。
     pub id: String,
+    /// 状态显示名（必填，缺失则整条记录被丢弃）。
     pub name: String,
+    /// 状态类型（triage/backlog/started 等），用于排序分级。
     pub kind: Option<String>,
+    /// 同类型内的顺序位置，缺失时按 0 处理。
     pub position: f64,
 }
 
+/// 序列化为 `{ id, name, type, position }`，position 经 `num` 规整为有限数。
 impl WorkflowState {
+    /// 生成 `{ id, name, type, position }` JSON。
     fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -409,6 +476,8 @@ impl WorkflowState {
 
 /// JS `WORKFLOW_TYPE_ORDER` (triage < backlog < unstarted < started <
 /// completed < canceled; unknown last).
+///
+/// 中文说明：返回状态类型的排序权重；未知类型排最后（99）。
 fn workflow_type_rank(kind: &str) -> i64 {
     match kind {
         "triage" => 0,
@@ -421,6 +490,7 @@ fn workflow_type_rank(kind: &str) -> i64 {
     }
 }
 
+/// 从 GraphQL 节点读取 workflow 状态：id 或 name 缺失时返回 `None`。
 fn read_workflow_state(value: &Value) -> Option<WorkflowState> {
     if !is_plain_object(value) {
         return None;
@@ -439,6 +509,9 @@ fn read_workflow_state(value: &Value) -> Option<WorkflowState> {
 }
 
 /// JS `compareWorkflowStates` (stable sort, then type rank, position, name).
+///
+/// 中文说明：先按类型权重，再按 position，最后按名称（用 ASCII 比较近似
+/// JS 的 localeCompare，覆盖实际字符集）。
 fn compare_workflow_states(left: &WorkflowState, right: &WorkflowState) -> std::cmp::Ordering {
     let kind_of = |state: &WorkflowState| state.kind.clone().unwrap_or_default();
     let type_delta = workflow_type_rank(&kind_of(left)).cmp(&workflow_type_rank(&kind_of(right)));
@@ -456,14 +529,20 @@ fn compare_workflow_states(left: &WorkflowState, right: &WorkflowState) -> std::
     left.name.cmp(&right.name)
 }
 
+/// issue 负责人摘要（三个字段全缺失视为无人负责）。
 #[derive(Debug, Clone, PartialEq)]
 struct Assignee {
+    /// 负责人全名。
     name: Option<String>,
+    /// 负责人显示名。
     display_name: Option<String>,
+    /// 负责人头像 URL。
     avatar_url: Option<String>,
 }
 
+/// 序列化为 `{ name, displayName, avatarUrl }`。
 impl Assignee {
+    /// 生成 `{ name, displayName, avatarUrl }` JSON。
     fn to_json(&self) -> Value {
         json!({
             "name": self.name,
@@ -473,6 +552,7 @@ impl Assignee {
     }
 }
 
+/// 从 GraphQL 节点读取负责人：非对象或三个字段全空时返回 `None`。
 fn read_assignee(value: &Value) -> Option<Assignee> {
     if !is_plain_object(value) {
         return None;
@@ -490,19 +570,26 @@ fn read_assignee(value: &Value) -> Option<Assignee> {
     })
 }
 
+/// Linear 团队（id/key/name，被 issue 与 mapping 共用）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearTeam {
+    /// 团队 UUID。
     pub id: String,
+    /// 团队 key（identifier 的前缀，如 `ENG`）。
     pub key: String,
+    /// 团队显示名。
     pub name: String,
 }
 
+/// 序列化为 `{ id, key, name }`。
 impl LinearTeam {
+    /// 生成 `{ id, key, name }` JSON。
     pub fn to_json(&self) -> Value {
         json!({ "id": self.id, "key": self.key, "name": self.name })
     }
 }
 
+/// 从 GraphQL 节点读取团队：id/key/name 任一缺失时返回 `None`。
 pub fn read_team(value: &Value) -> Option<LinearTeam> {
     if !is_plain_object(value) {
         return None;
@@ -517,6 +604,9 @@ pub fn read_team(value: &Value) -> Option<LinearTeam> {
 }
 
 /// JS `readPriority`: integer 0–4.
+///
+/// 中文说明：只接受 0–4 的整数值（JS 的 Number 语义），小数或越界返回
+/// `None`。
 fn read_priority(value: &Value) -> Option<i64> {
     let number = value.as_f64()?;
     if number.fract() != 0.0 || !(0.0..=4.0).contains(&number) {
@@ -526,6 +616,9 @@ fn read_priority(value: &Value) -> Option<i64> {
 }
 
 /// JS `readLabelColor`: normalized `#rrggbb`.
+///
+/// 中文说明：容忍可省略的 `#` 前缀，其余必须是 6 位十六进制；输出统一
+/// 小写加 `#`。
 fn read_label_color(value: &Value) -> Option<String> {
     let raw = read_trimmed_string(value);
     if raw.is_empty() {
@@ -538,6 +631,7 @@ fn read_label_color(value: &Value) -> Option<String> {
     Some(format!("#{}", hex.to_lowercase()))
 }
 
+/// 从 GraphQL 节点读取单个 label：id 与 name 必填，color 可为 null。
 fn read_label(value: &Value) -> Option<Value> {
     if !is_plain_object(value) {
         return None;
@@ -554,6 +648,7 @@ fn read_label(value: &Value) -> Option<Value> {
     }))
 }
 
+/// 读取 label 连接的 nodes（容忍直接给数组），逐条解析并静默丢弃非法项。
 fn read_labels(value: &Value) -> Vec<Value> {
     let nodes = value["nodes"]
         .as_array()
@@ -562,20 +657,32 @@ fn read_labels(value: &Value) -> Vec<Value> {
     nodes.iter().filter_map(read_label).collect()
 }
 
+/// issue 摘要：列表/搜索返回的字段子集（不含 description 与评论）。
 #[derive(Debug, Clone)]
 struct IssueSummary {
+    /// issue UUID（必填）。
     id: String,
+    /// 人类可读编号，如 `ENG-123`（必填）。
     identifier: String,
+    /// 标题（必填）。
     title: String,
+    /// Linear Web URL（必填）。
     url: String,
+    /// 工作流状态，输入缺失/无效时为 `None`。
     state: Option<IssueState>,
+    /// 负责人，无人负责时为 `None`。
     assignee: Option<Assignee>,
+    /// 所属团队，缺失/无效时为 `None`。
     team: Option<LinearTeam>,
+    /// 0–4 的数字优先级，非法值（小数/越界/缺失）为 `None`。
     priority: Option<i64>,
+    /// 已解析的 label JSON 数组（原样透传给前端）。
     labels: Vec<Value>,
 }
 
+/// 序列化为 JS 版一致的 issue 摘要 JSON（可选字段输出 null）。
 impl IssueSummary {
+    /// 生成完整摘要对象，可选成员为 null。
     fn to_json(&self) -> Value {
         json!({
             "id": self.id,
@@ -591,6 +698,7 @@ impl IssueSummary {
     }
 }
 
+/// 从 GraphQL 节点读取 issue 摘要：四个必填字符串任一为空即返回 `None`。
 fn read_issue_summary(node: &Value) -> Option<IssueSummary> {
     if !is_plain_object(node) {
         return None;
@@ -615,14 +723,20 @@ fn read_issue_summary(node: &Value) -> Option<IssueSummary> {
     })
 }
 
+/// 完整 issue：摘要 + description + 评论列表（详情查询/更新返回的形态）。
 #[derive(Debug, Clone)]
 struct Issue {
+    /// 基础摘要字段（必填校验由 `read_issue_summary` 完成）。
     summary: IssueSummary,
+    /// 正文描述，仅接受字符串值（null/缺失为 `None`）。
     description: Option<String>,
+    /// 已解析的评论 JSON 列表，缺失时为空数组。
     comments: Vec<Value>,
 }
 
+/// 在摘要 JSON 上追加 `description` 与 `comments` 两个键。
 impl Issue {
+    /// 在摘要 JSON 上追加 `description`/`comments` 后返回。
     fn to_json(&self) -> Value {
         let mut payload = self.summary.to_json();
         payload["description"] = json!(self.description);
@@ -632,6 +746,9 @@ impl Issue {
 }
 
 /// JS `readComment`.
+///
+/// 中文说明：从 GraphQL 节点读取评论，id 必填；仅当作者有 name 或
+/// displayName 时才保留 user 字段（与 JS 一致）。
 fn read_comment(node: &Value) -> Option<Value> {
     if !is_plain_object(node) {
         return None;
@@ -661,6 +778,7 @@ fn read_comment(node: &Value) -> Option<Value> {
     }))
 }
 
+/// 从 GraphQL 节点读取完整 issue：摘要校验失败返回 `None`，评论逐条解析。
 fn read_issue(node: &Value) -> Option<Issue> {
     let summary = read_issue_summary(node)?;
     let comments = node["comments"]["nodes"]
@@ -677,6 +795,8 @@ fn read_issue(node: &Value) -> Option<Issue> {
     })
 }
 
+/// 读取连接的 pageInfo：返回 (是否还有下一页, 下一页游标)；
+/// pageInfo 缺失时视为 (false, None)。
 fn read_page_info(connection: &Value) -> (bool, Option<String>) {
     let page_info = &connection["pageInfo"];
     if !is_plain_object(page_info) {
@@ -688,6 +808,7 @@ fn read_page_info(connection: &Value) -> (bool, Option<String>) {
     )
 }
 
+/// 把连接的 nodes 逐条解析为 issue 摘要 JSON，非法节点被静默丢弃。
 fn read_issue_nodes(connection: &Value) -> Vec<Value> {
     connection["nodes"]
         .as_array()
@@ -703,6 +824,10 @@ fn read_issue_nodes(connection: &Value) -> Vec<Value> {
 
 /// JS `withLinearToken`: resolves a token, runs the call, and maps a 401 to
 /// `{ connected: false }` after clearing that workspace only.
+///
+/// 中文说明：先取有效 token（必要时刷新），拿不到直接返回
+/// `{ connected: false }`；调用返回 401 时清除对应 workspace 的凭据并
+/// 同样返回未连接，让上层 UI 引导重新授权。
 async fn with_linear_token<F, Fut>(
     state: &Arc<LinearState>,
     workspace_id: Option<&str>,
@@ -733,6 +858,8 @@ where
     }
 }
 
+/// 按引用（identifier 或 UUID）执行详情查询并解析为 `Issue`；
+/// Linear 找不到该 issue 时返回 `Ok(None)`。
 async fn fetch_issue_by_ref(
     state: &Arc<LinearState>,
     token: &str,
@@ -749,6 +876,10 @@ async fn fetch_issue_by_ref(
 }
 
 /// JS `listLinearIssues`.
+///
+/// 中文说明：查询词能解析成 issue 引用时直接查那条 issue（单条结果、无
+/// 分页）；否则按过滤条件走搜索或列表查询，返回
+/// `{ connected, issues, cursor, hasMore }`。
 pub async fn list_linear_issues(
     state: &Arc<LinearState>,
     params: &ListIssuesParams,
@@ -802,6 +933,9 @@ pub async fn list_linear_issues(
 }
 
 /// JS `getLinearIssue`.
+///
+/// 中文说明：按 id/identifier/URL 加载单条 issue；id 无法解析且非空时按
+/// UUID 兜底，返回 `{ connected, issue }`（找不到时 issue 为 null）。
 pub async fn get_linear_issue(state: &Arc<LinearState>, id: &str) -> Result<Value, LinearError> {
     let trimmed = id.trim();
     let reference = parse_linear_issue_ref(trimmed).or_else(|| {
@@ -824,6 +958,9 @@ pub async fn get_linear_issue(state: &Arc<LinearState>, id: &str) -> Result<Valu
 }
 
 /// JS `listLinearIssueStates`.
+///
+/// 中文说明：拉取团队 workflow 状态并按 `compare_workflow_states` 排序；
+/// teamId 为空返回 INVALID 错误。
 pub async fn list_linear_issue_states(
     state: &Arc<LinearState>,
     team_id: &str,
@@ -850,6 +987,9 @@ pub async fn list_linear_issue_states(
 }
 
 /// JS `updateLinearIssue`.
+///
+/// 中文说明：切换 issue 状态：identifier 引用先查详情解析出 UUID；目标
+/// issue 不存在时返回 `{ connected: true, issue: null }` 而非报错。
 pub async fn update_linear_issue(
     state: &Arc<LinearState>,
     id: &str,
@@ -895,6 +1035,9 @@ pub async fn update_linear_issue(
 }
 
 /// JS `createLinearIssueComment`.
+///
+/// 中文说明：向 issue 写评论：issue 引用先解析为详情，body 仅接受非空白
+/// 字符串；未连接或找不到 issue 时返回 null comment 而非错误。
 pub async fn create_linear_issue_comment(
     state: &Arc<LinearState>,
     issue_id: &str,

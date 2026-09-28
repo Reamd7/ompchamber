@@ -6,6 +6,11 @@
 //! by hand — field order and filenames match what the SDK sends: `file`,
 //! `model`, `response_format`, and an optional `language`). The seam trait
 //! lets route and dictation-session tests inject fakes.
+//!
+//! 中文说明：移植自 `server/lib/tts/stt.js`——把音频缓冲 proxy 到任意
+//! OpenAI 兼容的 `/v1/audio/transcriptions` 端点。JS 用 OpenAI Node SDK；
+//! 此处用 reqwest 按相同字段顺序与文件名手工构造 multipart 表单（crate 未
+//! 启用 `multipart` feature），接缝 trait 供路由与听写会话测试注入 fake。
 
 use base64::Engine;
 use futures::future::BoxFuture;
@@ -14,24 +19,35 @@ use serde_json::Value;
 use super::base_url::normalize_custom_openai_base_url;
 
 /// `transcribeAudio` inputs.
+/// `base_url` 为必需项：没有它就没有可转写的上游端点。
 #[derive(Debug, Clone)]
 pub struct TranscribeParams {
+    /// 原始音频字节（作为 multipart 的 `file` 字段上传）。
     pub audio_buffer: Vec<u8>,
+    /// 客户端声明的 MIME 类型（用于推断上传文件扩展名）。
     pub mime_type: String,
+    /// whisper 模型名。
     pub model: String,
+    /// OpenAI 兼容服务器 base URL（经 base_url 模块校验后使用）。
     pub base_url: Option<String>,
+    /// 可选 bearer token；为空时回退 `OPENAI_API_KEY`，再退 "not-required"。
     pub api_key: Option<String>,
+    /// 可选语言提示（上游据此约束识别语言）。
     pub language: Option<String>,
 }
 
+/// 错误以字符串消息形式返回（与 JS 抛错的 message 对应）。
 pub type TranscribeFuture = BoxFuture<'static, Result<String, String>>;
 
 /// Injectable `transcribeAudio`.
+/// trait 化使路由与听写会话测试可以注入 fake。
 pub trait Transcriber: Send + Sync {
+    /// 执行一次转写；future 由实现方 box 好。
     fn transcribe(&self, params: TranscribeParams) -> TranscribeFuture;
 }
 
 /// `mimeTypeToExt`.
+/// 先去掉 `;` 参数部分再小写匹配；未知类型一律回退 "webm"。
 pub fn mime_type_to_ext(mime_type: &str) -> &'static str {
     let base = mime_type.split(';').next().unwrap_or("").trim();
     match base.to_ascii_lowercase().as_str() {
@@ -45,6 +61,8 @@ pub fn mime_type_to_ext(mime_type: &str) -> &'static str {
     }
 }
 
+/// 生成 16 个随机字节的 hex multipart boundary（带 "----ompchamber" 前缀），
+/// 避免与音频内容撞车。
 fn random_boundary() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
@@ -55,6 +73,7 @@ fn random_boundary() -> String {
     )
 }
 
+/// 向 `out` 追加一个普通 multipart 字段（无单独 Content-Type 头）。
 fn form_part(boundary: &str, name: &str, value: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     out.extend_from_slice(
@@ -64,6 +83,7 @@ fn form_part(boundary: &str, name: &str, value: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\r\n");
 }
 
+/// 向 `out` 追加 `name="file"` 的文件字段，带 filename 与音频 Content-Type。
 fn file_part(boundary: &str, filename: &str, mime_type: &str, bytes: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     out.extend_from_slice(
@@ -76,11 +96,15 @@ fn file_part(boundary: &str, filename: &str, mime_type: &str, bytes: &[u8], out:
 }
 
 /// Production `transcribeAudio` over reqwest.
+/// 唯一字段 `http` 可注入定制过的 client。
 pub struct HttpTranscriber {
+    /// 实际发请求的 reqwest client。
     pub http: reqwest::Client,
 }
 
+/// 默认构造一个全新 reqwest client。
 impl Default for HttpTranscriber {
+    /// Default trait 实现：新建默认 reqwest client。
     fn default() -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -88,7 +112,11 @@ impl Default for HttpTranscriber {
     }
 }
 
+/// 校验 base URL、手工组装 multipart 表单并 POST `{base_url}/audio/transcriptions`；
+/// 600 秒超时且不重试（与 JS 侧 SDK 的 `void 0` 重试配置一致）。
 impl Transcriber for HttpTranscriber {
+    /// 完成 base URL 校验、API key 回退链、表单组装、请求发送与 `text` 字段
+    /// 解析的完整流程。
     fn transcribe(&self, params: TranscribeParams) -> TranscribeFuture {
         let http = self.http.clone();
         Box::pin(async move {
@@ -173,6 +201,8 @@ impl Transcriber for HttpTranscriber {
 /// `Buffer.from(input, 'base64')` is lenient: it skips characters outside the
 /// alphabet instead of failing, so a noisy payload decodes to whatever valid
 /// run it contains rather than rejecting the chunk.
+/// 具体做法：先过滤掉 base64 字母表之外的字符，再补齐 4 的倍数 padding，
+/// 解码失败返回空 vec。
 pub fn lenient_base64_decode(input: &str) -> Vec<u8> {
     let filtered: String = input
         .chars()
@@ -188,10 +218,12 @@ pub fn lenient_base64_decode(input: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// STT 模块测试：mime 映射、宽松 base64 解码与 multipart 表单形状。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证各 mime 类型到扩展名的映射（含参数、大小写与未知回退）。
     #[test]
     fn maps_mime_types_to_extensions() {
         assert_eq!(mime_type_to_ext("audio/webm"), "webm");
@@ -205,6 +237,7 @@ mod tests {
         assert_eq!(mime_type_to_ext(""), "webm");
     }
 
+    /// 验证标准 base64 与含噪声输入的宽松解码（噪声只截短不损坏前缀）。
     #[test]
     fn decodes_standard_and_lenient_base64() {
         use base64::engine::general_purpose::STANDARD;
@@ -220,6 +253,7 @@ mod tests {
         assert!(lenient_base64_decode("not base64 at all$$$").len() <= 4);
     }
 
+    /// 验证手工构造的 multipart 表单形状（字段头与结尾 boundary）。
     #[test]
     fn builds_multipart_bodies_with_expected_shape() {
         let boundary = "testboundary";

@@ -1,3 +1,10 @@
+/**
+ * Kimi for Coding 配额 provider。
+ *
+ * 请求 api.kimi.com 的用量端点，把周用量块（usage）与各限流条目
+ * （limits[]，按窗口时长命名，5 小时窗口额外加 "Rate Limit" 前缀）
+ * 组装成窗口表。
+ */
 import { readAuthFile } from '../../opencode/auth.js';
 import {
   getAuthEntry,
@@ -10,10 +17,14 @@ import {
   durationToSeconds
 } from '../utils/index.js';
 
+/** 对外 provider 标识。 */
 export const providerId = 'kimi-for-coding';
+/** 展示名。 */
 export const providerName = 'Kimi for Coding';
+/** OpenCode auth 文件中的凭据匹配别名。 */
 const aliases = ['kimi-for-coding', 'kimi'];
 
+/** 由 total 与 used/remaining（二者取其一，used 优先）计算 [0,100] 的已用百分比；total 缺失返回 null。 */
 // Kimi's weekly `usage` block reports `used`; its rate-limit `limits[].detail`
 // blocks report `remaining` instead. Neither field is guaranteed present, so
 // derive usedPercent from whichever one the API actually returned.
@@ -28,12 +39,19 @@ const computeUsedPercent = (total, used, remaining) => {
   return null;
 };
 
+/** 读取 auth 文件，存在 key 或 token 即视为已配置。 */
 export const isConfigured = () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return Boolean(entry?.key || entry?.token);
 };
 
+/**
+ * 拉取 Kimi 配额：usage 块输出 weekly 窗口；limits 数组逐条按
+ * durationToLabel 生成的时长标签输出各限流窗口（5 小时窗口加
+ * "Rate Limit" 前缀以便与周用量区分）；未配置、HTTP 错误或异常
+ * 均返回结构化失败结果。
+ */
 export const fetchQuota = async () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));

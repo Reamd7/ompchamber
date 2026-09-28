@@ -1,3 +1,9 @@
+/**
+ * Small Model 服务层入口：承担 "用哪个小模型" 的完整决策链——设置/配置
+ * 覆盖与自动解析（resolve.js）、输入按上下文预算截断、输出预算封顶——
+ * 再把请求交给 call.js 的对应 wire format 执行；同时向 UI 提供可用
+ * provider 列表与当前模型的能力描述（不发起真实调用）。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -14,8 +20,10 @@ import { getRuntimeProviderSnapshot } from './runtime-providers.js';
 // the user's Claude subscription rate limit. Paying that for a session title
 // or a summary is the wrong trade, so the refusal is unconditional rather than
 // conditional on an endpoint existing.
+/** 绝不作为小模型使用的 provider：其端点是 Claude Agent SDK 的门面，每次调用都消耗 Claude 订阅额度。 */
 const CLAUDE_CODE_PROVIDER = 'claude-code';
 
+/** OMPChamber 自身 settings.json 的路径（可被 OMPCHAMBER_DATA_DIR 环境变量覆盖）。 */
 const OMPCHAMBER_SETTINGS_FILE = path.join(
   process.env.OMPCHAMBER_DATA_DIR
     ? path.resolve(process.env.OMPCHAMBER_DATA_DIR)
@@ -25,6 +33,10 @@ const OMPCHAMBER_SETTINGS_FILE = path.join(
 
 // OMPChamber's own settings: when the user unchecks "use default small model"
 // their explicit override outranks every other resolution step.
+/**
+ * 读取用户设置里的小模型覆盖（仅当 smallModelUseDefault === false 时生效）；
+ * 文件不存在、JSON 非法或没有有效覆盖值时返回 null，绝不抛错。
+ */
 const readSmallModelSettingsOverride = () => {
   try {
     const raw = fs.readFileSync(OMPCHAMBER_SETTINGS_FILE, 'utf8');
@@ -42,13 +54,19 @@ const readSmallModelSettingsOverride = () => {
 // Token estimate is ~4 chars/token; when the catalog has no limit for the
 // model (Copilot/codex utility models are not listed) a conservative default
 // applies.
+/** 目录未给出上下文上限时的保守默认值（token 数）。 */
 const DEFAULT_CONTEXT_TOKENS = 64_000;
+/** 调用方未声明输出预留时的默认值（token 数）。 */
 const OUTPUT_RESERVE_TOKENS = 4_000;
 
 /**
  * Input budget in characters, given how much of the context the caller intends
  * to leave for the answer. The reserve must match the output budget the caller
  * will actually request, or the two disagree and the model overruns its context.
+ */
+/**
+ * 计算输入字符预算：上下文 token 数减去输出预留（下限 1000 token），
+ * 按 ~4 字符/token 折算成字符；同时返回实际采用的上下文与它是否来自目录。
  */
 export const getModelInputCharBudget = ({ catalog, providerID, modelID, outputReserveTokens }) => {
   const limit = catalog?.[providerID]?.models?.[modelID]?.limit;
@@ -64,6 +82,10 @@ export const getModelInputCharBudget = ({ catalog, providerID, modelID, outputRe
  * what the model admits it can emit. Asking for more than `limit.output` is
  * rejected outright by some providers and silently ignored by others.
  */
+/**
+ * 解析实际请求的输出 token 预算：取调用方申请值与目录 limit.output 的
+ * 较小者；调用方未申请时不设上限（返回 undefined）。
+ */
 const resolveOutputTokens = ({ catalog, providerID, modelID, maxOutputTokens }) => {
   const requested = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : 0;
   if (!requested) return undefined;
@@ -74,6 +96,11 @@ const resolveOutputTokens = ({ catalog, providerID, modelID, maxOutputTokens }) 
 // `truncate` keeps the historical behavior for callers whose prompt losing its
 // tail is survivable (summaries, commit messages). `error` is for callers whose
 // output would be quietly wrong on a clipped input — they need the failure.
+/**
+ * 按模型输入预算处理超长 prompt：默认截断到预算并追加省略号（truncated
+ * 为 true）；onOverflow 为 'error' 时抛 statusCode 413 / code
+ * 'context-too-small'，让无法容忍截断的调用方拿到明确失败而不是失真的输入。
+ */
 const clampPromptToModelLimit = ({ prompt, catalog, providerID, modelID, onOverflow, outputReserveTokens }) => {
   const { maxChars } = getModelInputCharBudget({ catalog, providerID, modelID, outputReserveTokens });
   if (prompt.length <= maxChars) {
@@ -88,6 +115,10 @@ const clampPromptToModelLimit = ({ prompt, catalog, providerID, modelID, onOverf
   return { prompt: `${prompt.slice(0, maxChars)}…`, truncated: true };
 };
 
+/**
+ * 读取 OpenCode 配置层合并后的 small_model（"provider/model" 字符串）；
+ * 读取失败或值不是字符串时返回 null。
+ */
 const readConfiguredSmallModel = (workingDirectory) => {
   try {
     const { mergedConfig } = readConfigLayers(workingDirectory);
@@ -101,6 +132,13 @@ const readConfiguredSmallModel = (workingDirectory) => {
 /**
  * Generates text with the user's small model, resolved and authenticated
  * entirely server-side from the OpenCode config and auth store.
+ */
+/**
+ * 小模型文本生成主入口：校验 prompt → 解析模型（显式 model 优先，否则走
+ * resolveSmallModel 链）→ 无条件拒绝 Claude Code → 可选锁定会话 provider →
+ * 解析输出预算并按预算截断输入 → 调用 callSmallModel。
+ * 返回文本与实际使用的 provider/model/source；输入被截断时附带
+ * inputTruncated: true。prompt 缺失抛 400，无可用模型抛 404。
  */
 export async function generateSmallModelText({ prompt, system, maxOutputTokens, model, directory, preferredProviderID, preferredModelID, restrictToPreferredProvider = false, responseSchema, timeoutMs, signal, onOverflow = 'truncate' }) {
   if (typeof prompt !== 'string' || !prompt.trim()) {
@@ -194,6 +232,11 @@ export async function generateSmallModelText({ prompt, system, maxOutputTokens, 
  * the Small Model and Changes Walkthrough pickers to hide providers that would
  * only ever fail (e.g. opencode free models without a token).
  */
+/**
+ * 小模型真正可调用的 provider id 列表：auth.json 可用登录 + 运行时
+ * （插件）可调用 provider，并剔除 Claude Code；任何失败都返回空数组，
+ * 运行时查询失败只损失它本可补充的条目，不影响已从磁盘确立的登录。
+ */
 export async function listAuthenticatedProviders() {
   try {
     const auth = readAuthFile();
@@ -228,6 +271,7 @@ export async function listAuthenticatedProviders() {
  * speak is not knowable from any field OpenCode reports, and guessing it wrong
  * removes a working model from the picker with nothing to explain it.
  */
+/** 只存在于运行中 OpenCode 里的可调用 provider：有可用的凭证与端点，且不属于专用 wire format。 */
 async function listRuntimeCallableProviders() {
   const snapshot = await getRuntimeProviderSnapshot();
   if (!snapshot) return [];
@@ -264,10 +308,17 @@ async function listRuntimeCallableProviders() {
  * function lets it decide once the limits are known, and keeps the reserve and
  * the eventual request the same number by construction.
  */
+/** 输出预留允许传函数：拿到解析后模型的真实限额（上下文/输出上限）再决定数值。 */
 const resolveReserveTokens = (outputReserveTokens, limits) => (
   typeof outputReserveTokens === 'function' ? outputReserveTokens(limits) : outputReserveTokens
 );
 
+/**
+ * 报告当前会用到哪个小模型及其能力，不发起调用：输入字符预算、上下文
+ * 是否已知、输出预算与上限、structured output 三态（true/false/null，
+ * null 表示目录未标注，不能当作 "不支持"），以及是否有可用登录
+ * （resolveProviderLogin）。供 walkthrough 等调用方在花钱请求前决定放行。
+ */
 export async function describeSmallModel({ directory, preferredProviderID, preferredModelID, outputReserveTokens, overrideModel } = {}) {
   const auth = readAuthFile();
   const catalog = await getModelCatalog().catch(() => ({}));

@@ -1,6 +1,10 @@
 //! Route-level tests for the proxy port. Upstreams are raw `tokio` TCP
 //! listeners serving canned HTTP/SSE bytes, mirroring the JS
 //! `opencode-proxy.test.js` setups.
+//!
+//! 中文说明：proxy 端口的路由级测试。上游是裸 tokio TCP listener，按
+//! 脚本回放预置的 HTTP/SSE 字节，对应 JS 版 opencode-proxy.test.js 的
+//! 搭建方式。
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +27,8 @@ use crate::proxy::{ProxySettings, build_router};
 // Test scaffolding
 // ---------------------------------------------------------------------------
 
+/// 测试用 proxy 参数：零就绪宽限、4 秒预算；SSE 心跳/看门狗由各用例
+/// 自行覆盖。
 fn test_settings() -> ProxySettings {
     ProxySettings {
         ready_grace_ms: 0,
@@ -35,6 +41,8 @@ fn test_settings() -> ProxySettings {
     }
 }
 
+/// 构造测试 RouterContext：临时目录、外部引擎指向 127.0.0.1:1，
+/// 各用例再用真实上游端口覆盖。
 fn test_ctx(engine: Arc<EngineState>, hub: Arc<EventHub>) -> RouterContext {
     RouterContext {
         config: Arc::new(ServerConfig {
@@ -55,6 +63,7 @@ fn test_ctx(engine: Arc<EngineState>, hub: Arc<EventHub>) -> RouterContext {
     }
 }
 
+/// 构造已就绪的外部引擎状态（可带引擎密码）。
 fn ready_engine(port: u16, password: Option<&str>) -> Arc<EngineState> {
     EngineState::external(
         format!("http://127.0.0.1:{port}"),
@@ -63,6 +72,7 @@ fn ready_engine(port: u16, password: Option<&str>) -> Arc<EngineState> {
 }
 
 /// One canned HTTP response with a body (connection closes after write).
+/// 中文：拼一条带 content-length 的完整 HTTP 响应字节（写完即关连接）。
 fn http_response(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
     let reason = match status {
         200 => "OK",
@@ -83,10 +93,12 @@ fn http_response(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> 
 }
 
 /// An SSE response head (no content-length, stream stays open).
+/// 中文：SSE 响应头（无 content-length，连接保持打开）。
 fn sse_response_head() -> Vec<u8> {
     b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: keep-alive\r\n\r\n".to_vec()
 }
 
+/// 在字节串中查找子串首次出现的位置，供脚本上游定位请求头结束处。
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
@@ -95,6 +107,9 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// request (head+body), replies with `initial`, then plays `delayed` frames
 /// (delay in ms before each write), then stays open for `hold_open_ms` before
 /// closing — enough to emulate streaming SSE or silent upstreams.
+/// 中文：脚本化上游——循环接受连接，捕获每个原始请求，先回 initial，
+/// 再按各自延迟逐帧写 delayed，最后保持连接 hold_open_ms 再关闭；足以
+/// 模拟流式 SSE 或静默上游。返回端口与捕获的请求列表。
 async fn spawn_scripted_upstream(
     initial: Vec<u8>,
     delayed: Vec<(u64, Vec<u8>)>,
@@ -155,6 +170,7 @@ async fn spawn_scripted_upstream(
     (port, captured)
 }
 
+/// 读全响应体为字节。
 async fn read_body(response: axum::response::Response) -> Vec<u8> {
     to_bytes(response.into_body(), usize::MAX)
         .await
@@ -162,11 +178,13 @@ async fn read_body(response: axum::response::Response) -> Vec<u8> {
         .to_vec()
 }
 
+/// 读全响应体并按 JSON 解析。
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
     let bytes = read_body(response).await;
     serde_json::from_slice(&bytes).expect("json body")
 }
 
+/// 取最近一个被捕获请求的 (head, body) 二元组。
 fn captured_request(captured: &Arc<Mutex<Vec<String>>>) -> (String, String) {
     let requests = captured.lock().unwrap_or_else(|e| e.into_inner());
     let raw = requests.last().expect("upstream saw a request").clone();
@@ -178,6 +196,8 @@ fn captured_request(captured: &Arc<Mutex<Vec<String>>>) -> (String, String) {
 // Generic proxy
 // ---------------------------------------------------------------------------
 
+/// 验证：通用转发保留方法/路径/头，客户端凭据被引擎鉴权替换，请求体
+/// 与查询串原样到达上游。
 #[tokio::test]
 async fn generic_proxy_forwards_method_path_headers_and_auth() {
     let response = http_response(
@@ -228,6 +248,7 @@ async fn generic_proxy_forwards_method_path_headers_and_auth() {
     assert_eq!(body, r#"{"a":1}"#);
 }
 
+/// 验证：响应中的 hop-by-hop 与 content-encoding 等头被剥离，普通头保留。
 #[tokio::test]
 async fn generic_proxy_strips_hop_by_hop_response_headers() {
     let response = http_response(
@@ -262,6 +283,8 @@ async fn generic_proxy_strips_hop_by_hop_response_headers() {
     assert!(response.headers().get("content-length").is_none());
 }
 
+/// 验证：引擎始终未就绪时，就绪门在宽限耗尽后返回 503 与 restarting
+/// 错误体。
 #[tokio::test]
 async fn readiness_gate_returns_503_restarting_when_engine_never_becomes_ready() {
     let engine = EngineState::external("http://127.0.0.1:1".to_string(), None);
@@ -284,6 +307,7 @@ async fn readiness_gate_returns_503_restarting_when_engine_never_becomes_ready()
     assert_eq!(value["restarting"], true);
 }
 
+/// 验证：豁免路径跳过就绪扣留并转发到兜底目标。
 #[tokio::test]
 async fn gate_exempt_paths_skip_the_readiness_hold_and_use_fallback_target() {
     let response = http_response(
@@ -311,6 +335,7 @@ async fn gate_exempt_paths_skip_the_readiness_hold_and_use_fallback_target() {
     assert!(head.starts_with("GET /health HTTP/1.1"), "{head}");
 }
 
+/// 验证：上游超时返回 504 与 JS 同款错误体。
 #[tokio::test]
 async fn upstream_timeout_answers_504_with_js_error_shape() {
     // Silent upstream: accepts, reads the request, never writes.
@@ -332,6 +357,8 @@ async fn upstream_timeout_answers_504_with_js_error_shape() {
     assert_eq!(value["error"], "OpenCode upstream timed out");
 }
 
+/// 验证：OAuth 回调、会话动作与深层会话路径都按去 /api 前缀后的路径
+/// 转发到上游。
 #[tokio::test]
 async fn oauth_and_session_action_routes_forward_with_matching_paths() {
     let response = http_response(200, &[("content-type", "application/json")], b"true");
@@ -421,6 +448,7 @@ async fn oauth_and_session_action_routes_forward_with_matching_paths() {
 // Sanitized session list
 // ---------------------------------------------------------------------------
 
+/// 验证：会话列表脱敏字段，并把 directory 查询参数规范化后发给上游。
 #[tokio::test]
 async fn session_list_sanitizes_payloads_and_canonicalizes_directory_query() {
     let payload = br#" [{
@@ -507,6 +535,7 @@ async fn session_list_sanitizes_payloads_and_canonicalizes_directory_query() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
+/// 验证：非数组 JSON 与错误响应按原文透传，不做脱敏。
 #[tokio::test]
 async fn session_list_passes_non_array_json_and_errors_through_verbatim() {
     let body = br#"{"error":"not a list"}"#.to_vec();
@@ -551,6 +580,7 @@ async fn session_list_passes_non_array_json_and_errors_through_verbatim() {
     assert_eq!(read_body(response).await, b"not json at all".to_vec());
 }
 
+/// 验证：会话详情路径走通用转发，不脱敏。
 #[tokio::test]
 async fn session_detail_responses_are_not_sanitized() {
     let payload = br#" {"id":"abc","summary":{"diffs":[{"patch":"@@ -1 +1 @@"}]},"revert":{"messageID":"msg_1","snapshot":"abc","diff":"..."}} "#.to_vec();
@@ -580,6 +610,7 @@ async fn session_detail_responses_are_not_sanitized() {
 // SSE forwarding
 // ---------------------------------------------------------------------------
 
+/// 验证：SSE 透传上游帧与响应头，请求侧携带引擎鉴权。
 #[tokio::test]
 async fn sse_passes_upstream_frames_and_headers_through() {
     let delayed = vec![(20, b"data: {\"ok\":true}\n\n".to_vec())];
@@ -630,6 +661,7 @@ async fn sse_passes_upstream_frames_and_headers_through() {
     );
 }
 
+/// 验证：hub 帧按顺序合入上游帧之间，心跳保持流活跃。
 #[tokio::test]
 async fn sse_merges_hub_frames_between_upstream_frames_in_order() {
     let delayed = vec![
@@ -675,6 +707,7 @@ async fn sse_merges_hub_frames_between_upstream_frames_in_order() {
     );
 }
 
+/// 验证：上游静默时看门狗结束响应，期间心跳照发。
 #[tokio::test]
 async fn sse_stall_watchdog_closes_the_response_when_upstream_goes_silent() {
     let delayed = vec![(20, b"data: {\"only\":true}\n\n".to_vec())];
@@ -701,6 +734,7 @@ async fn sse_stall_watchdog_closes_the_response_when_upstream_goes_silent() {
     assert!(body.contains(":heartbeat\n\n"), "{body}");
 }
 
+/// 验证：事件端点对非事件流响应按普通字节流回传。
 #[tokio::test]
 async fn sse_endpoint_passes_non_event_stream_responses_through() {
     let response = http_response(
@@ -725,6 +759,7 @@ async fn sse_endpoint_passes_non_event_stream_responses_through() {
     );
 }
 
+/// 验证：引擎未就绪时事件端点被就绪门拦下。
 #[tokio::test]
 async fn sse_gate_blocks_requests_while_engine_is_not_ready() {
     let engine = EngineState::external("http://127.0.0.1:1".to_string(), None);

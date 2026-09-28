@@ -1,4 +1,8 @@
 //! Tests for the agent-tool port, mirroring `runtime.test.js`.
+//!
+//! 中文说明：agent tool 移植的测试集，镜像 JS 端 `runtime.test.js`：
+//! 授权与回环闸门、allowlist 分发、结果信封形状、插件源生成与合并、
+//! prepare 的 token 轮换与文件落盘，以及 HTTP 路由的鉴权与转发行为。
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -13,15 +17,21 @@ use super::plugin;
 use super::*;
 use crate::openchamber_control::actions as control_actions;
 
+/// 录制的调用三元组：(action, input, context_directory)。
 type RecordedCall = (String, Value, Option<Value>);
 
+/// 测试用的回环对端地址。
 const LOOPBACK: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 54321);
 
+/// 测试夹具：独立临时目录模拟 agent-tool 数据根，drop 时整体清理。
 struct Fixture {
+    /// 临时工作目录。
     dir: std::path::PathBuf,
 }
 
+/// 夹具的构造与 runtime/router 派生 helper。
 impl Fixture {
+    /// 以 tag + 毫秒时间戳 + 进程 id 命名临时目录，避免测试间冲突。
     fn new(tag: &str) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "oc-agent-tool-{tag}-{}-{}",
@@ -35,10 +45,13 @@ impl Fixture {
         Fixture { dir }
     }
 
+    /// 便捷封装：监听 3901 端口、无配置内容的 runtime。
     fn runtime(&self, executor: Option<ExecuteActionFn>) -> AgentToolRuntime {
         self.runtime_with(executor, Some(3901), None)
     }
 
+    /// 构造完全受控的 runtime：executor 为 None 模拟控制服务缺失，
+    /// 端口为 None 模拟无可用监听端口，config 内容经闭包动态读取。
     fn runtime_with(
         &self,
         executor: Option<ExecuteActionFn>,
@@ -54,17 +67,22 @@ impl Fixture {
         )
     }
 
+    /// 把 runtime 包成可直接 oneshot 的 axum Router。
     fn app(&self, runtime: AgentToolRuntime) -> Router {
         router_with_runtime(Arc::new(runtime))
     }
 }
 
+/// 夹具析构：递归删除临时目录。
 impl Drop for Fixture {
+    /// 清理临时目录；失败忽略。
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
+/// 构造会录制每次调用的假 executor：按序弹出预设响应，队列耗尽后返回
+/// 空对象成功；返回 (调用记录, executor) 供断言。
 fn recording_executor(
     responses: Vec<Result<Value, ActionExecutionError>>,
 ) -> (Arc<Mutex<Vec<RecordedCall>>>, ExecuteActionFn) {
@@ -91,6 +109,7 @@ fn recording_executor(
     (calls, executor)
 }
 
+/// 构造带固定 context 目录 `/work/project` 的标准工具载荷。
 fn payload(input: Value) -> AgentToolPayload {
     AgentToolPayload {
         input: Some(input),
@@ -99,10 +118,14 @@ fn payload(input: Value) -> AgentToolPayload {
     }
 }
 
+/// 构造占位 AbortSignal：相关用例的执行路径只把它透传给 executor，
+/// 不在此触发取消分支。
 fn quiet_signal() -> AbortSignal {
     AbortHandle::new().signal()
 }
 
+/// 构造对 /api/ompchamber/agent-tool 的 POST 请求：可选 bearer token、
+/// 可选对端地址（ConnectInfo 扩展）与 Content-Type（默认 application/json）。
 fn request(
     token: Option<&str>,
     addr: Option<SocketAddr>,
@@ -125,6 +148,7 @@ fn request(
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
+/// 读出响应 body（上限 10 MiB）并按 JSON 解析，供断言使用。
 async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), 10 * 1024 * 1024)
         .await
@@ -133,6 +157,7 @@ async fn body_json(response: axum::response::Response) -> Value {
 }
 
 /// Extracts the `enum: [...]` JSON for one generated tool entry.
+/// 从生成的插件源中截取指定工具条目的 `enum: [...]` 片段。
 fn tool_enum(source: &str, name: &str) -> String {
     let entry = source
         .find(&format!("    {name}: {{"))
@@ -144,6 +169,7 @@ fn tool_enum(source: &str, name: &str) -> String {
 }
 
 /// Extracts the `properties: {...}` JSON for one generated tool entry.
+/// 从生成的插件源中截取指定工具条目的 `properties: {...}` 片段。
 fn tool_parameters(source: &str, name: &str) -> String {
     let entry = source
         .find(&format!("    {name}: {{"))
@@ -154,6 +180,7 @@ fn tool_parameters(source: &str, name: &str) -> String {
     rest[start..end].to_string()
 }
 
+/// 验证恒时比较：相等为真；长度不同或任一字节不同为假（含空串边界）。
 #[test]
 fn timing_safe_equal_compares_bytes() {
     assert!(timing_safe_equal(b"token", b"token"));
@@ -163,6 +190,8 @@ fn timing_safe_equal_compares_bytes() {
     assert!(timing_safe_equal(b"", b""));
 }
 
+/// 验证回环判定只认 127.0.0.1/::1/IPv4 映射拼写；其它地址、主机名与
+/// 缺失地址一律拒绝。
 #[test]
 fn loopback_gate_accepts_only_loopback_spellings() {
     for accepted in ["127.0.0.1", "::1", "::ffff:127.0.0.1", "::FFFF:127.0.0.1"] {
@@ -180,6 +209,8 @@ fn loopback_gate_accepts_only_loopback_spellings() {
     assert!(!is_loopback_address(None));
 }
 
+/// 验证授权需同时满足：已生成 token、回环对端、严格的 Bearer 头
+/// （仅容忍首尾空白），任何一项缺失即拒绝。
 #[test]
 fn authorize_requires_token_loopback_and_bearer() {
     let token = "abcdefghijklmnopqrstuvwxyz012345";
@@ -234,6 +265,7 @@ fn authorize_requires_token_loopback_and_bearer() {
     ));
 }
 
+/// 验证生成的 token 是 43 字符的 URL 安全串，且每次生成都不同。
 #[test]
 fn generated_tokens_are_url_safe_and_unique() {
     let first = generate_token();
@@ -247,6 +279,8 @@ fn generated_tokens_are_url_safe_and_unique() {
     assert_ne!(first, second);
 }
 
+/// 验证 abort 语义：丢弃未完成的 handle 会触发 signal；finish 之后的
+/// 丢弃不触发；显式 abort 立即触发。
 #[test]
 fn abort_handle_fires_only_for_unfinished_requests() {
     let handle = AbortHandle::new();
@@ -267,6 +301,8 @@ fn abort_handle_fires_only_for_unfinished_requests() {
     assert!(signal.is_aborted());
 }
 
+/// 验证 agent 可分发的动作集合是控制面的窄子集：包含只读/创建类动作，
+/// 不包含 schedule.status 与 session.delete。
 #[test]
 fn dispatchable_actions_stay_narrower_than_the_control_surface() {
     let actions = dispatchable_actions();
@@ -283,6 +319,8 @@ fn dispatchable_actions_stay_narrower_than_the_control_surface() {
     assert!(!actions.contains(&"session.delete"));
 }
 
+/// 验证 allowlist 内的每个动作都带着原始输入与 context 目录转发给
+/// 控制服务，并回报成功。
 #[tokio::test]
 async fn delegates_every_allowlisted_action_to_the_control_service() {
     let actions = [
@@ -331,6 +369,7 @@ async fn delegates_every_allowlisted_action_to_the_control_service() {
     }
 }
 
+/// 验证 allowlist 之外的动作以 usage 错误拒绝，且完全不触发转发。
 #[tokio::test]
 async fn rejects_actions_outside_the_agent_allowlist_without_dispatching() {
     for action in ["session.delete", "schedule.status"] {
@@ -356,6 +395,7 @@ async fn rejects_actions_outside_the_agent_allowlist_without_dispatching() {
     }
 }
 
+/// 验证缺失 action 时报告 unknown，错误消息列出全部合法动作。
 #[tokio::test]
 async fn missing_action_reports_unknown_and_lists_everything() {
     let (calls, executor) = recording_executor(vec![]);
@@ -378,6 +418,8 @@ async fn missing_action_reports_unknown_and_lists_everything() {
     assert!(calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
 }
 
+/// 验证带 tool 名时可用裸 action（如 read）——工具名已把它限定成
+/// memory.read 一类全名。
 #[tokio::test]
 async fn accepts_the_bare_action_a_tool_name_already_qualifies() {
     let (calls, executor) = recording_executor(vec![Ok(json!({ "memory": {} }))]);
@@ -407,6 +449,8 @@ async fn accepts_the_bare_action_a_tool_name_already_qualifies() {
     assert_eq!(calls[0].2, Some(Value::String("/work/project".into())));
 }
 
+/// 验证 action 解析失败时，错误消息只列调用工具自己的能力，
+/// 不泄漏其它工具的动作。
 #[tokio::test]
 async fn unresolvable_action_is_told_what_the_calling_tool_can_do() {
     let fixture = Fixture::new("unresolvable");
@@ -429,6 +473,7 @@ async fn unresolvable_action_is_told_what_the_calling_tool_can_do() {
     assert!(!error.message.contains("browser.open"));
 }
 
+/// 验证一个工具不能经裸 action 触达另一个工具的动作（跨工具隔离）。
 #[tokio::test]
 async fn one_tool_cannot_reach_another_tools_actions() {
     let (calls, executor) = recording_executor(vec![]);
@@ -450,6 +495,7 @@ async fn one_tool_cannot_reach_another_tools_actions() {
     assert!(calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
 }
 
+/// 验证成功结果信封的 JSON 序列化逐字段精确（字段顺序与取值）。
 #[tokio::test]
 async fn success_envelope_shape_is_exact() {
     let (_, executor) = recording_executor(vec![Ok(json!({ "projects": [] }))]);
@@ -470,6 +516,7 @@ async fn success_envelope_shape_is_exact() {
     );
 }
 
+/// 验证扁平输入与解析出的 action 合并后原样转发给控制服务。
 #[tokio::test]
 async fn flattened_inputs_are_forwarded_with_the_resolved_action() {
     let (calls, executor) = recording_executor(vec![Ok(json!({}))]);
@@ -496,6 +543,7 @@ async fn flattened_inputs_are_forwarded_with_the_resolved_action() {
     );
 }
 
+/// 验证控制服务失败时仍返回结构化的工具结果信封，而非抛出异常。
 #[tokio::test]
 async fn service_failures_stay_structured_tool_results() {
     let fixture = Fixture::new("failures");
@@ -526,6 +574,8 @@ async fn service_failures_stay_structured_tool_results() {
     );
 }
 
+/// 验证错误 kind 按状态码分档：4xx（至 498）为 usage，
+/// 499 及以上/无状态码为 runtime。
 #[tokio::test]
 async fn error_kind_follows_the_status_code_band() {
     for (status_code, kind) in [
@@ -561,6 +611,8 @@ async fn error_kind_follows_the_status_code_band() {
     }
 }
 
+/// 验证部分失败把 partial 元数据带入 data；缺失字段整体省略
+/// 而非置 null（与 JSON.stringify 行为一致）。
 #[tokio::test]
 async fn partial_failures_carry_their_metadata_as_data() {
     let fixture = Fixture::new("partial");
@@ -614,6 +666,7 @@ async fn partial_failures_carry_their_metadata_as_data() {
     assert_eq!(result.data, Some(json!({ "partial": true })));
 }
 
+/// 验证取消信号透传给控制服务，其 499 取消结果按 runtime 错误回报。
 #[tokio::test]
 async fn forwards_cancellation_to_the_control_service() {
     let fixture = Fixture::new("cancel");
@@ -642,6 +695,7 @@ async fn forwards_cancellation_to_the_control_service() {
     );
 }
 
+/// 验证控制服务缺失（executor 为 None）时报 runtime 错误信封。
 #[tokio::test]
 async fn missing_control_service_is_a_runtime_error() {
     let fixture = Fixture::new("noservice");
@@ -660,6 +714,9 @@ async fn missing_control_service_is_a_runtime_error() {
     );
 }
 
+/// 验证生成的插件源：三个工具各带自己的 enum 与参数、动作定义的
+/// const/description 对齐全、关键框架文案与传输细节（扁平/嵌套入参、
+/// 失败元数据命名空间）俱在。
 #[test]
 fn plugin_source_carries_both_tool_schemas_and_their_own_inputs() {
     let source = plugin::create_plugin_source(&plugin::tool_specs(true, true, true));
@@ -734,6 +791,7 @@ fn plugin_source_carries_both_tool_schemas_and_their_own_inputs() {
     assert!(source.contains("metadata: { ompchamber: { schemaVersion: 1, action: args.action, description: title, ok: false } }"));
 }
 
+/// 验证 memory 工具的参数顺序与 JS 生成的插件一致。
 #[test]
 fn plugin_source_orders_memory_parameters_like_the_js() {
     let source = plugin::create_plugin_source(&plugin::tool_specs(true, false, true));
@@ -748,6 +806,7 @@ fn plugin_source_orders_memory_parameters_like_the_js() {
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
+/// 验证被关闭的工具在生成的插件源中整体缺席。
 #[test]
 fn plugin_source_omits_disabled_tools_entirely() {
     let web_only = plugin::create_plugin_source(&plugin::tool_specs(false, true, false));
@@ -770,6 +829,8 @@ fn plugin_source_omits_disabled_tools_entirely() {
     assert!(!control_and_memory.contains("    ompchamber_web: {"));
 }
 
+/// 验证合并保留既有 plugin 条目（含带配置的数组形式）并把托管插件
+/// 追加到末尾。
 #[test]
 fn merge_plugin_config_preserves_configured_entries() {
     let raw = r#"{ // existing
@@ -789,6 +850,7 @@ fn merge_plugin_config_preserves_configured_entries() {
     );
 }
 
+/// 验证合并时同一 URL 的旧引用（裸串或数组形式）被替换而非重复追加。
 #[test]
 fn merge_plugin_config_replaces_prior_references_to_the_same_url() {
     let url = "file:///data/agent-tool/ompchamber-plugin.js";
@@ -801,6 +863,7 @@ fn merge_plugin_config_replaces_prior_references_to_the_same_url() {
     assert_eq!(plugin_entries[1], url);
 }
 
+/// 验证缺失/纯空白配置按空对象处理，仅注入托管插件。
 #[test]
 fn merge_plugin_config_accepts_empty_and_missing_config() {
     for raw in [None, Some(""), Some("   \n")] {
@@ -810,6 +873,8 @@ fn merge_plugin_config_accepts_empty_and_missing_config() {
     }
 }
 
+/// 验证非法配置（非对象根、plugin 非数组/为 null）报出指明修复方向的
+/// 错误消息。
 #[test]
 fn merge_plugin_config_rejects_invalid_roots_and_plugin_shapes() {
     let object_error = "OPENCODE_CONFIG_CONTENT must contain a valid JSON object before OMPChamber can inject its managed tool";
@@ -841,6 +906,8 @@ fn merge_plugin_config_rejects_invalid_roots_and_plugin_shapes() {
     );
 }
 
+/// 验证 prepare：写出 0600 权限且不含 token 的插件文件、向配置注入
+/// plugin 条目，并给出 agent tool URL 与 URL 安全的 token。
 #[tokio::test]
 async fn prepare_materializes_plugin_and_env_additions() {
     let fixture = Fixture::new("prepare");
@@ -896,6 +963,7 @@ async fn prepare_materializes_plugin_and_env_additions() {
     }
 }
 
+/// 验证重复 prepare 轮换 token，且 plugin 条目不重复累积。
 #[tokio::test]
 async fn prepare_rotates_the_token_and_keeps_one_plugin_entry() {
     let fixture = Fixture::new("rotate");
@@ -916,6 +984,7 @@ async fn prepare_rotates_the_token_and_keeps_one_plugin_entry() {
     assert_eq!(plugin_entries.len(), 1);
 }
 
+/// 验证三个工具全部关闭时 prepare 拒绝注入插件。
 #[tokio::test]
 async fn prepare_refuses_a_plugin_with_no_tools() {
     let fixture = Fixture::new("notools");
@@ -934,6 +1003,7 @@ async fn prepare_refuses_a_plugin_with_no_tools() {
     );
 }
 
+/// 验证无可用监听端口时 prepare 拒绝注入插件。
 #[tokio::test]
 async fn prepare_requires_an_available_listener_port() {
     let fixture = Fixture::new("noport");
@@ -948,6 +1018,8 @@ async fn prepare_requires_an_available_listener_port() {
     );
 }
 
+/// 验证路由鉴权：未 prepare 或 token 错误均 401；正确 token 200；
+/// prepare 轮换后旧 token 立即失效。
 #[tokio::test]
 async fn route_requires_the_per_child_token() {
     let fixture = Fixture::new("route-auth");
@@ -1029,6 +1101,8 @@ async fn route_requires_the_per_child_token() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// 验证路由只接受回环对端（含 IPv4 映射的回环拼写）；非回环地址与
+/// 缺失 ConnectInfo 都按 401 拒绝（fail closed）。
 #[tokio::test]
 async fn route_accepts_only_loopback_peers() {
     let fixture = Fixture::new("route-loopback");
@@ -1078,6 +1152,7 @@ async fn route_accepts_only_loopback_peers() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// 验证路由把请求体中的 contextDirectory 与输入一起转发给控制服务。
 #[tokio::test]
 async fn route_forwards_the_context_directory_to_the_service() {
     let fixture = Fixture::new("route-context");
@@ -1111,6 +1186,8 @@ async fn route_forwards_the_context_directory_to_the_service() {
     assert_eq!(calls[0].2, Some(Value::String("/work/project".into())));
 }
 
+/// 验证非 JSON Content-Type 的 body 按空处理：得到“缺少 action”的
+/// 结构化 usage 错误，且不触发转发。
 #[tokio::test]
 async fn route_treats_non_json_bodies_as_empty() {
     let fixture = Fixture::new("route-plain");
@@ -1146,6 +1223,7 @@ async fn route_treats_non_json_bodies_as_empty() {
     assert!(calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
 }
 
+/// 验证声明 JSON Content-Type 但 body 非法时返回 400。
 #[tokio::test]
 async fn route_rejects_malformed_json_bodies() {
     let fixture = Fixture::new("route-badjson");
@@ -1169,6 +1247,7 @@ async fn route_rejects_malformed_json_bodies() {
     assert!(body_json(response).await.get("error").is_some());
 }
 
+/// 验证超过 1 MiB 的请求体返回 413。
 #[tokio::test]
 async fn route_enforces_the_body_limit() {
     let fixture = Fixture::new("route-limit");
@@ -1195,6 +1274,8 @@ async fn route_enforces_the_body_limit() {
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
+/// 验证响应正常完成后，路由不会把服务侧 signal 置为 aborted
+/// （完成不等于取消）。
 #[tokio::test]
 async fn route_does_not_abort_the_service_after_a_completed_response() {
     let fixture = Fixture::new("route-abort");

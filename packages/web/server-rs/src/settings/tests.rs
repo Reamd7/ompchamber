@@ -1,6 +1,10 @@
 //! Unit tests for the settings module port. Mirrors the JS test suites
 //! (`settings-helpers.test.js`, `settings-normalization-runtime.test.js`,
 //! `settings-runtime.test.js`) plus route-level behavior via `oneshot`.
+//! 中文说明：settings 模块移植的单元测试，覆盖四层——normalization.rs
+//! 的纯函数、helpers.rs 的 sanitize/merge/format 三段、runtime.rs 的
+//! SettingsStore 读写与磁盘迁移，以及 routes.rs 的 GET/PUT
+//! /api/config/settings 路由（通过 tower oneshot 直接驱动 axum Router）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,6 +26,8 @@ use crate::context::RouterContext;
 use crate::engine::EngineState;
 use crate::hub::EventHub;
 
+/// 创建以 `tag` 标识的唯一临时目录（路径混入进程 ID 与纳秒时间戳，保证
+/// 并行测试互不冲突），返回已创建的目录路径。
 fn temp_dir_unique(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -33,16 +39,21 @@ fn temp_dir_unique(tag: &str) -> PathBuf {
     dir
 }
 
+/// 在唯一临时目录内构造指向 `settings.json` 的 SettingsStore，返回
+/// (store, 临时目录)；目录供断言 sibling 文件或磁盘副作用时使用。
 fn store_for_temp(tag: &str) -> (Arc<SettingsStore>, PathBuf) {
     let dir = temp_dir_unique(tag);
     let store = store_for_path(&dir.join("settings.json"));
     (store, dir)
 }
 
+/// 测试助手：把 `json!` 产生的 Value 以 JSON 对象形式取出（失败即 panic）。
 fn object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap()
 }
 
+/// 测试助手：对载荷执行 `sanitize_settings_update` 并 unwrap，
+/// 简化各 sanitize 用例的断言前奏。
 fn sanitized(payload: Value) -> super::helpers::SanitizedUpdate {
     sanitize_settings_update(&payload).unwrap()
 }
@@ -51,6 +62,8 @@ fn sanitized(payload: Value) -> super::helpers::SanitizedUpdate {
 // normalization.rs
 // ---------------------------------------------------------------------------
 
+/// 契约：`normalize_directory_path` 先剥离成对引号再做 `~` 展开，
+/// 单独出现的不成对引号保持原样。
 #[test]
 fn normalize_directory_path_strips_quotes_and_expands_home() {
     assert_eq!(norm::normalize_directory_path("  '/tmp/x'  "), "/tmp/x");
@@ -70,6 +83,8 @@ fn normalize_directory_path_strips_quotes_and_expands_home() {
     assert_eq!(norm::normalize_directory_path("it's here"), "it's here");
 }
 
+/// 契约：`normalize_path_for_persistence` 对存在的路径解析符号链接，
+/// 返回 canonicalize 后的真实路径。
 #[test]
 fn normalize_path_for_persistence_resolves_symlinks() {
     let dir = temp_dir_unique("norm-symlink");
@@ -90,6 +105,8 @@ fn normalize_path_for_persistence_resolves_symlinks() {
     );
 }
 
+/// 契约：路径不存在时 `normalize_path_for_persistence` 原样返回字符串，
+/// 非字符串值完全透传。
 #[test]
 fn normalize_path_for_persistence_falls_back_when_path_missing() {
     let normalized =
@@ -109,6 +126,9 @@ fn normalize_path_for_persistence_falls_back_when_path_missing() {
     );
 }
 
+/// 契约：`sanitize_projects` 按 id 与 path 去重，并逐字段校验——label
+/// trim、图标背景必须是十六进制色值、模型引用必须带 provider、非数字
+/// 或负数时间戳被丢弃；非法字段缺失而非整体失败。
 #[test]
 fn sanitize_projects_dedupes_and_validates() {
     let dir = temp_dir_unique("sanitize-projects");
@@ -171,6 +191,8 @@ fn sanitize_projects_dedupes_and_validates() {
     );
 }
 
+/// 契约：`normalize_string_array` 只保留非空字符串、去重且维持首次出现
+/// 顺序；非数组输入得到空数组。
 #[test]
 fn normalize_string_array_dedupes_and_keeps_order() {
     let value = json!(["b", "a", "b", "", 3, "a"]);
@@ -178,6 +200,8 @@ fn normalize_string_array_dedupes_and_keeps_order() {
     assert!(norm::normalize_string_array(&json!("not-an-array")).is_empty());
 }
 
+/// 契约：managed tunnel 主机名归一化从任意带协议/路径的形式提取纯主机名
+/// 并转小写；空白、非字符串、非法 URL 一律返回 None。
 #[test]
 fn managed_tunnel_hostname_normalization() {
     let cases: Vec<(Value, Option<&str>)> = vec![
@@ -198,6 +222,8 @@ fn managed_tunnel_hostname_normalization() {
     }
 }
 
+/// 契约：tunnel 预设按 trim 后的 id 与归一化主机名双重去重，id/name/
+/// hostname 全部 trim；非数组输入返回 None。
 #[test]
 fn managed_tunnel_presets_dedupe_by_id_and_hostname() {
     let input = json!([
@@ -216,6 +242,8 @@ fn managed_tunnel_presets_dedupe_by_id_and_hostname() {
     assert!(norm::normalize_managed_remote_tunnel_presets(&json!("x")).is_none());
 }
 
+/// 契约：preset token 映射对键值分别 trim 并剔除空键空值；全部无效或
+/// 输入非对象时返回 None。
 #[test]
 fn managed_tunnel_preset_tokens_filter_empty() {
     let tokens = norm::normalize_managed_remote_tunnel_preset_tokens(
@@ -228,6 +256,8 @@ fn managed_tunnel_preset_tokens_filter_empty() {
     assert!(norm::normalize_managed_remote_tunnel_preset_tokens(&json!([1])).is_none());
 }
 
+/// 契约：typographySizes 部分更新只保留已知且非空的档位键；清洗结果
+/// 为空或无输入时返回 None（不写键）。
 #[test]
 fn typography_sizes_partial_keeps_known_non_empty_keys() {
     let typography = norm::sanitize_typography_sizes_partial(Some(
@@ -240,6 +270,8 @@ fn typography_sizes_partial_keeps_known_non_empty_keys() {
     assert!(norm::sanitize_typography_sizes_partial(None).is_none());
 }
 
+/// 契约：模型引用列表 trim 后按 provider/model 去重并遵守传入上限，
+/// 缺字段或非对象条目被剔除；非数组输入返回 None。
 #[test]
 fn model_refs_limit_and_dedupe() {
     let input = json!([
@@ -260,6 +292,8 @@ fn model_refs_limit_and_dedupe() {
     assert!(norm::sanitize_model_refs(&json!("x"), 5).is_none());
 }
 
+/// 契约：skill catalog 只保留具备必填 id/label/source 的条目并按 id
+/// 去重，可选字段 trim 后保留。
 #[test]
 fn skill_catalogs_keep_required_fields() {
     let input = json!([
@@ -275,6 +309,8 @@ fn skill_catalogs_keep_required_fields() {
     );
 }
 
+/// 契约：tunnel 两个 TTL 的钳制边界使用生产常量——bootstrap 夹在
+/// 60s–24h、默认 30min；session 夹在 5min–30d、默认 8h；null 透传为 null。
 #[test]
 fn tunnel_ttl_clamps_use_production_constants() {
     assert_eq!(
@@ -307,6 +343,8 @@ fn tunnel_ttl_clamps_use_production_constants() {
     );
 }
 
+/// 契约：tunnel provider/mode 未知或缺失时回落默认值（cloudflare /
+/// quick），合法值 trim 且大小写不敏感。
 #[test]
 fn tunnel_provider_and_mode_default_sanely() {
     assert_eq!(norm::normalize_tunnel_provider(&json!(null)), "cloudflare");
@@ -323,6 +361,8 @@ fn tunnel_provider_and_mode_default_sanely() {
     assert_eq!(norm::normalize_tunnel_mode(&json!("nope")), "quick");
 }
 
+/// 契约：`normalize_optional_path` 展开 `~` 后必须落在 home 目录内，
+/// 越界路径返回错误（与 JS 抛出的 TunnelServiceError 对齐）。
 #[test]
 fn optional_tunnel_path_must_stay_in_home() {
     let inside = norm::normalize_optional_path("~/tunnel/config.yml").unwrap();
@@ -332,6 +372,8 @@ fn optional_tunnel_path_must_stay_in_home() {
     assert!(err.to_string().contains("within the home directory"));
 }
 
+/// 契约：项目 id 由规范化路径确定性生成——`path_` 前缀 + URL-safe
+/// base64（无填充），正反斜杠与尾斜杠等价，空白路径得到空串。
 #[test]
 fn project_ids_are_path_base64url() {
     use base64::Engine as _;
@@ -344,6 +386,7 @@ fn project_ids_are_path_base64url() {
     assert_eq!(norm::create_project_id_from_path("  "), "");
 }
 
+/// 契约：`sha1_hex` 与公开标准测试向量一致（"abc" 与空串）。
 #[test]
 fn sha1_matches_known_vectors() {
     assert_eq!(
@@ -356,6 +399,8 @@ fn sha1_matches_known_vectors() {
     );
 }
 
+/// 契约：`path_resolve` / `path_relative` 做纯词法规范化——相对路径基于
+/// cwd、`..` 与 `.` 被消解，`path_relative` 计算两路径间的相对路径。
 #[test]
 fn path_resolve_lexically_normalizes() {
     let cwd = std::env::current_dir().unwrap();
@@ -511,6 +556,7 @@ async fn read_migrated_heals_corrupted_drive_prefixes_end_to_end() {
 // helpers.rs — sanitizeSettingsUpdate
 // ---------------------------------------------------------------------------
 
+/// 契约：布尔设置字段只接受真布尔；字符串 "true"、数字、null 一律丢弃。
 #[test]
 fn sanitize_accepts_only_booleans() {
     assert_eq!(
@@ -526,6 +572,7 @@ fn sanitize_accepts_only_booleans() {
     }
 }
 
+/// 契约：尺寸类数值按 JS 语义 round 后夹到各自 [min, max] 区间。
 #[test]
 fn sanitize_clamps_and_rounds_sizes() {
     let update = sanitized(
@@ -537,6 +584,8 @@ fn sanitize_clamps_and_rounds_sizes() {
     assert_eq!(update.get("messageLimit"), Some(&Some(json!(10))));
 }
 
+/// 契约：terminalShell 与 terminalLoginShells trim + 转小写后按白名单
+/// 校验，login shells 额外去重，非法项被剔除。
 #[test]
 fn sanitize_terminal_shell_and_login_shells() {
     let update = sanitized(
@@ -549,6 +598,8 @@ fn sanitize_terminal_shell_and_login_shells() {
     );
 }
 
+/// 契约：枚举字段命中白名单原样保留、白名单之外的值整键丢弃；旧值
+/// desktopWindowControlsPosition "auto" 迁移为 "right"。
 #[test]
 fn sanitize_rejects_invalid_enum_values() {
     assert_eq!(
@@ -579,6 +630,8 @@ fn sanitize_rejects_invalid_enum_values() {
     );
 }
 
+/// 契约：permissionAutoAccept 只保留布尔 session 开关（非布尔条目剔除），
+/// revision 必须是非负安全整数，缺省为 0。
 #[test]
 fn sanitize_permission_auto_accept_policy() {
     let update = sanitized(json!({
@@ -597,6 +650,8 @@ fn sanitize_permission_auto_accept_policy() {
     );
 }
 
+/// 契约：desktopUiPassword 仅 trim（空串保留以支持清除密码）；
+/// shortcutOverrides 剔除空键/空值/非字符串值，空对象保留用于整体重置。
 #[test]
 fn sanitize_trims_password_and_shortcut_overrides() {
     let update = sanitized(json!({ "desktopUiPassword": " secret " }));
@@ -628,6 +683,8 @@ fn sanitize_trims_password_and_shortcut_overrides() {
     );
 }
 
+/// 契约：模型列表合法输入原样往返、缺字段的条目整体剔除、非数组输入
+/// 整键丢弃；collapsedModelProviders 等字符串数组类字段去重保序。
 #[test]
 fn sanitize_model_lists_roundtrip_and_reject_garbage() {
     let refs = json!([{ "providerID": "anthropic", "modelID": "claude-opus-4" }]);
@@ -670,6 +727,8 @@ fn sanitize_model_lists_roundtrip_and_reject_garbage() {
     assert!(!sanitized(json!({ "recentAgents": { "build": 1 } })).contains_key("recentAgents"));
 }
 
+/// 契约：recentEfforts 对每个模型键的档位数组去重；非对象、非数组值、
+/// 空键、空数组等非法形状整键丢弃。
 #[test]
 fn sanitize_recent_efforts() {
     let input =
@@ -696,6 +755,7 @@ fn sanitize_recent_efforts() {
     }
 }
 
+/// 契约：未识别的键与已退役的旧键（update 通知类）在清洗时全部静默丢弃。
 #[test]
 fn sanitize_drops_unknown_and_retired_keys() {
     let update = sanitized(json!({
@@ -707,6 +767,8 @@ fn sanitize_drops_unknown_and_retired_keys() {
     assert!(update.is_empty());
 }
 
+/// 契约：可清空的字符串字段传空白串时映射为 `None`（等价 JS 的
+/// undefined 赋值），表示清除已持久化的值。
 #[test]
 fn sanitize_clears_optional_fields_on_empty_strings() {
     let update = sanitized(json!({ "defaultModel": "  " }));
@@ -719,6 +781,8 @@ fn sanitize_clears_optional_fields_on_empty_strings() {
     );
 }
 
+/// 契约：tunnel 字段清洗组合——TTL 钳制、provider/mode 回落默认、主机名
+/// 归一化、token trim、null 显式清除；config path 越界 home 目录时报错。
 #[test]
 fn sanitize_tunnel_fields() {
     let update = sanitized(json!({
@@ -777,6 +841,8 @@ fn sanitize_tunnel_fields() {
     assert!(err.to_string().contains("within the home directory"));
 }
 
+/// 契约：主题字段——themeId 非空即保留，themeVariant 只认 light/dark，
+/// splash 颜色 trim 后非空才保留。
 #[test]
 fn sanitize_theme_fields() {
     let update = sanitized(json!({
@@ -792,6 +858,9 @@ fn sanitize_theme_fields() {
     assert!(!sanitized(json!({ "themeVariant": "blue" })).contains_key("themeVariant"));
 }
 
+/// 契约：STT 旧 provider 名迁移（server→openai-compatible 等）、URL trim、
+/// followUpBehavior 旧值 immediate→steer 及 queueModeEnabled 兜底；
+/// pwa 字段归一化失败映射为清除。
 #[test]
 fn sanitize_stt_and_followup_fields() {
     let update = sanitized(json!({
@@ -822,6 +891,8 @@ fn sanitize_stt_and_followup_fields() {
 // helpers.rs — mergePersistedSettings / formatSettingsResponse
 // ---------------------------------------------------------------------------
 
+/// 契约：merge 语义——Some 覆盖、None 清除、未提及键保留；
+/// bookmarks 强制去重重建（可为空数组），typographySizes 按键级合并。
 #[test]
 fn merge_persists_clears_and_dedupes_bookmarks() {
     let current = object(json!({
@@ -851,6 +922,9 @@ fn merge_persists_clears_and_dedupes_bookmarks() {
     assert!(empty.get("typographySizes").is_none());
 }
 
+/// 契约：formatSettingsResponse 绝不回传 token 明文（只回 has 标志），
+/// 并为布尔/集合/PWA 字段补齐默认值；desktop 专属字段仅在
+/// OMPCHAMBER_RUNTIME=desktop 时出现。
 #[test]
 fn format_response_defaults_and_hides_tunnel_token() {
     let settings = object(json!({
@@ -910,6 +984,8 @@ fn format_response_defaults_and_hides_tunnel_token() {
 // runtime.rs — SettingsStore
 // ---------------------------------------------------------------------------
 
+/// 契约：settings.json 缺失时 read_migrated 生成迁移后的默认值（主题、
+/// 通知开关与模板等）并落盘，再次读取结果稳定。
 #[tokio::test]
 async fn missing_file_yields_migrated_defaults_and_persists_them() {
     let (store, _dir) = store_for_temp("missing");
@@ -952,6 +1028,8 @@ async fn missing_file_yields_migrated_defaults_and_persists_them() {
     assert_eq!(again, settings);
 }
 
+/// 契约：严格读取把损坏的 JSON 视为解析错误；宽松读取（GET 使用）则
+/// 告警并从迁移默认值重新开始。
 #[tokio::test]
 async fn malformed_json_is_an_error_for_strict_reads_only() {
     let (store, _dir) = store_for_temp("malformed");
@@ -971,6 +1049,7 @@ async fn malformed_json_is_an_error_for_strict_reads_only() {
     assert_eq!(settings.get("lightThemeId"), Some(&json!("flexoki-light")));
 }
 
+/// 契约：严格读取把非对象 JSON（如数组）判为 malformed 错误。
 #[tokio::test]
 async fn non_object_payload_is_an_error_for_strict_reads() {
     let (store, _dir) = store_for_temp("nonobject");
@@ -981,6 +1060,8 @@ async fn non_object_payload_is_an_error_for_strict_reads() {
     assert!(err.to_string().contains("malformed"));
 }
 
+/// 契约：persist 先清洗再写盘并返回格式化响应；未知键丢弃，后续更新按
+/// 合并语义保留先前字段。
 #[tokio::test]
 async fn persist_sanitizes_and_roundtrips() {
     let (store, _dir) = store_for_temp("persist");
@@ -1013,6 +1094,8 @@ async fn persist_sanitizes_and_roundtrips() {
     assert_eq!(raw.get("fontSize"), Some(&json!(200)));
 }
 
+/// 契约：空字符串清除 defaultModel——先持久化一个值，再用 "" 清空后
+/// 该键从磁盘状态中消失。
 #[tokio::test]
 async fn persist_clears_default_model_with_empty_string() {
     let (store, _dir) = store_for_temp("clear");
@@ -1028,6 +1111,8 @@ async fn persist_clears_default_model_with_empty_string() {
     assert!(store.read_raw().await.get("defaultModel").is_none());
 }
 
+/// 契约：原子写——内容以 pretty JSON 落盘，不留临时文件、不动 sibling；
+/// Unix 下文件模式 0600、目录 0700。
 #[tokio::test]
 async fn write_is_atomic_with_restrictive_permissions() {
     let (store, dir) = store_for_temp("atomic");
@@ -1064,6 +1149,8 @@ async fn write_is_atomic_with_restrictive_permissions() {
     }
 }
 
+/// 契约：read_migrated 顺带清理历史遗留的 settings.json.tmp-* 临时文件，
+/// 其余无关文件不受影响。
 #[tokio::test]
 async fn orphaned_tmp_files_are_cleaned_during_migrated_read() {
     let (store, dir) = store_for_temp("orphans");
@@ -1091,6 +1178,8 @@ async fn orphaned_tmp_files_are_cleaned_during_migrated_read() {
     assert!(!files.iter().any(|f| f.starts_with("settings.json.tmp-")));
 }
 
+/// 契约：迁移保留未知字段（前向兼容）、删除退役键，并把旧 namedTunnel
+/// 字段迁移为 managedRemoteTunnel 等价物；后续 persist 不丢未知字段。
 #[tokio::test]
 async fn unknown_disk_fields_survive_but_retired_keys_are_removed() {
     let (store, _dir) = store_for_temp("unknown");
@@ -1143,6 +1232,9 @@ async fn unknown_disk_fields_survive_but_retired_keys_are_removed() {
     );
 }
 
+/// 契约：旧版随机项目 id 迁移为路径确定性 id——settings 与项目计划文件
+/// 改写、存储目录重命名，计划文件中指向旧目录的路径同步重映射，
+/// sibling 目录不受影响。
 #[tokio::test]
 async fn deterministic_project_ids_remap_plan_files() {
     let dir = temp_dir_unique("det-ids");
@@ -1236,6 +1328,8 @@ async fn deterministic_project_ids_remap_plan_files() {
     );
 }
 
+/// 契约：退役的 collapsedProjects 列表迁移为各项目条目上的
+/// sidebarCollapsed 布尔标记。
 #[tokio::test]
 async fn collapsed_projects_migrate_to_sidebar_flags() {
     let (store, _dir) = store_for_temp("collapsed");
@@ -1260,6 +1354,8 @@ async fn collapsed_projects_migrate_to_sidebar_flags() {
     assert_eq!(projects[0].get("sidebarCollapsed"), Some(&json!(true)));
 }
 
+/// 契约：只有旧版 lastDirectory 时，迁移以其 canonical 路径播种一个
+/// 项目并设为 activeProjectId。
 #[tokio::test]
 async fn legacy_last_directory_seeds_a_project() {
     let (store, dir) = store_for_temp("lastdir");
@@ -1288,6 +1384,8 @@ async fn legacy_last_directory_seeds_a_project() {
     );
 }
 
+/// 契约：persist 校验项目目录存在性——目录已消失的项目被剔除，并把
+/// activeProjectId 收敛到幸存项目。
 #[tokio::test]
 async fn persist_drops_projects_whose_directory_is_gone() {
     let (store, _dir) = store_for_temp("validate");
@@ -1322,6 +1420,8 @@ async fn persist_drops_projects_whose_directory_is_gone() {
     assert_eq!(raw.get("projects").unwrap().as_array().unwrap().len(), 1);
 }
 
+/// 契约：类型化视图 read_typed 把未知字段捕获进 extra（含嵌套的 project
+/// 条目），序列化后未知字段原样往返不丢失。
 #[tokio::test]
 async fn typed_view_roundtrips_unknown_fields() {
     let (store, _dir) = store_for_temp("typed");
@@ -1370,6 +1470,8 @@ async fn typed_view_roundtrips_unknown_fields() {
 // routes.rs — GET/PUT /api/config/settings via oneshot
 // ---------------------------------------------------------------------------
 
+/// 构造路由测试用的 RouterContext——端口 0、外部 EngineState 与独立
+/// EventHub，data_dir 指向给定临时目录。
 fn test_context(data_dir: &Path) -> RouterContext {
     let config = ServerConfig {
         port: 0,
@@ -1391,6 +1493,8 @@ fn test_context(data_dir: &Path) -> RouterContext {
     }
 }
 
+/// 构造 oneshot 用的 HTTP 请求；body 为 Some((内容, Content-Type)) 时附带
+/// 相应请求头与长度，否则发送空 body。
 fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some((content, content_type)) = body {
@@ -1403,6 +1507,8 @@ fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<
     }
 }
 
+/// 契约：GET /api/config/settings 首次访问返回迁移后的默认值
+/// （application/json），并像 JS 一样把迁移结果落盘。
 #[tokio::test]
 async fn get_settings_serves_migrated_defaults() {
     let dir = temp_dir_unique("route-get");
@@ -1434,6 +1540,8 @@ async fn get_settings_serves_migrated_defaults() {
     );
 }
 
+/// 契约：PUT 合法 JSON 后返回格式化状态（越界值被钳制、未知键丢弃），
+/// 随后的 GET 能读到同一持久化结果。
 #[tokio::test]
 async fn put_settings_persists_and_answers_with_the_formatted_state() {
     let dir = temp_dir_unique("route-put");
@@ -1471,6 +1579,7 @@ async fn put_settings_persists_and_answers_with_the_formatted_state() {
     assert_eq!(payload.get("fontSize"), Some(&json!(200)));
 }
 
+/// 契约：PUT 收到损坏的 JSON body 时以 400 拒绝。
 #[tokio::test]
 async fn put_settings_rejects_malformed_json_with_400() {
     let dir = temp_dir_unique("route-400");
@@ -1486,6 +1595,8 @@ async fn put_settings_rejects_malformed_json_with_400() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// 契约：PUT 非 JSON Content-Type 的 body 合并不到任何设置，仅回落
+/// merge 默认字段（如空 bookmarks 数组）。
 #[tokio::test]
 async fn put_settings_without_json_content_type_merges_nothing() {
     let dir = temp_dir_unique("route-text");
@@ -1511,6 +1622,8 @@ async fn put_settings_without_json_content_type_merges_nothing() {
     );
 }
 
+/// 契约：data_dir 不可写（被文件占位）时 PUT/GET 分别映射为 500，错误
+/// 消息为 "Failed to save settings" / "Failed to read settings"。
 #[tokio::test]
 async fn settings_routes_map_io_failures_to_500() {
     // A data_dir that is a FILE makes settings.json unwritable.
@@ -1554,5 +1667,6 @@ async fn settings_routes_map_io_failures_to_500() {
 }
 
 // Keep clippy quiet about the test-only HashMap import pattern.
+/// 仅为压制 clippy 对测试专用 HashMap 导入模式的告警，本身无实际用途。
 #[allow(dead_code)]
 type UnusedTestMap = HashMap<String, ()>;

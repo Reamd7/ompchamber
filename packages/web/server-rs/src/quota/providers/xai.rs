@@ -7,6 +7,14 @@
 //! field scan collecting fixed32 floats and varints with their field paths.
 //! Usage percent comes from fixed32 fields at path `[1]`/`[1,1]`; the reset
 //! timestamp from epoch-second varints, preferring path `[1,5,1]`.
+//!
+//! 中文说明：本模块是 `server/lib/quota/providers/xai.js` 的移植：通过
+//! `GetGrokCreditsConfig` gRPC-web 端点获取 xAI Grokcredits 用量，OAuth
+//! 刷新后的 token 会写回 OpenCode `auth.json` 的 `xai` 条目（type 为
+//! `oauth`）。计费响应为手写解析的 protobuf：先剥 gRPC-web 帧（5 字节
+//! 前缀、可带 `grpc-status` 的 trailer 帧），再递归扫描收集 fixed32 浮点
+//! 与 varint 及其字段路径；用量百分比取路径 `[1]`/`[1,1]` 的 fixed32，
+//! 重置时间取 epoch 秒 varint（优先路径 `[1,5,1]`）。
 
 use std::sync::Arc;
 
@@ -22,43 +30,68 @@ use crate::quota::utils::{
     build_result, field, non_empty_string_value, to_number, to_usage_window, usage_payload,
 };
 
+/// provider 注册 ID（注册表与 API 路径中使用）。
 pub const PROVIDER_ID: &str = "xai";
+/// provider 展示名。
 pub const PROVIDER_NAME: &str = "xAI";
 
+/// Grok 计费配置的 gRPC-web 端点（用量百分比与重置时间来源）。
 const USAGE_URL: &str = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig";
+/// xAI OAuth token 刷新端点。
 const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
+/// OAuth 刷新使用的公开 client_id（与 grok.com 前端一致）。
 const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+/// 判定 token 是否需要刷新的提前量（毫秒）：过期时间落在当前时间 + 该
+/// 偏移内即触发刷新。
 const REFRESH_SKEW_MS: f64 = 120_000.0;
+/// 出站请求（用量与 token 刷新）的超时毫秒数。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
+/// gRPC-web 空 RPC 体的固定 5 字节帧（flag 0 + 长度 0）。
 const EMPTY_GRPC_WEB_BODY: [u8; 5] = [0, 0, 0, 0, 0];
 
 // ============== protobuf scanning ==============
 
+/// protobuf 扫描的可变游标：当前字节下标与 fixed32 字段的发现顺序。
 struct ScanState {
+    /// 下一个待读字节的下标。
     index: usize,
+    /// fixed32 字段的发现序号（用于稳定排序，保证 JS 语义下的确定性）。
     order: usize,
 }
 
+/// 扫描到的一个 varint 字段：字段路径与解码值。
 #[derive(Debug, Clone)]
 struct VarintField {
+    /// 字段路径（从消息根部到该字段的 field number 序列）。
     path: Vec<u32>,
+    /// varint 解码值。
     value: u64,
 }
 
+/// 扫描到的一个 fixed32 字段：路径、浮点值与发现顺序。
 #[derive(Debug, Clone)]
 struct Fixed32Field {
+    /// 字段路径（从消息根部到该字段的 field number 序列）。
     path: Vec<u32>,
+    /// 小端 fixed32 解释出的 f32 值。
     value: f32,
+    /// 发现顺序（同路径多值时的稳定排序依据）。
     order: usize,
 }
 
+/// 一次 protobuf 扫描的汇总结果：全部 fixed32 与 varint 字段。
 #[derive(Default, Debug)]
 struct ScanResult {
+    /// 收集到的 fixed32 字段（含嵌套消息内的）。
     fixed32_fields: Vec<Fixed32Field>,
+    /// 收集到的 varint 字段（含嵌套消息内的）。
     varint_fields: Vec<VarintField>,
 }
 
 /// `readVarint` — None on truncation or an over-long final byte.
+///
+/// 中文说明：读取一个 varint；截断、超过 64 位或最高字节的保留位非零
+/// 都返回 `None`（对齐 JS `readVarint` 的失败语义）。
 fn read_varint(bytes: &[u8], state: &mut ScanState) -> Option<u64> {
     let mut value: u64 = 0;
     let mut shift = 0u32;
@@ -77,18 +110,29 @@ fn read_varint(bytes: &[u8], state: &mut ScanState) -> Option<u64> {
     None
 }
 
+/// 路径相等比较（语义即切片相等，独立成函数以对应 JS 的 `samePath`）。
 fn same_path(left: &[u32], right: &[u32]) -> bool {
     left == right
 }
 
 /// `USAGE_PERCENT_PATHS` — the flat billing message and the response envelope.
+///
+/// 中文说明：用量百分比所在的两个字段路径：扁平计费消息 `[1]` 与响应
+/// 信封 `[1,1]`。
 const USAGE_PERCENT_PATHS: [&[u32]; 2] = [&[1], &[1, 1]];
 
+/// 判断候选路径是否命中给定路径集合中的任一路径。
 fn has_path(paths: &[&[u32]], candidate: &[u32]) -> bool {
     paths.iter().any(|path| same_path(path, candidate))
 }
 
 /// `scanProtobuf` — Err mirrors the JS `false` return.
+///
+/// 中文说明：递归扫描 protobuf 字节（对应 JS `scanProtobuf`）：按
+/// wire type 分派——varint 记入 `varint_fields`，fixed32 记入
+/// `fixed32_fields`（携带顺序号），64-bit 定长字段跳过，length-delimited
+/// 字段在深度 <4 时递归扫描（≥4 且非空则视为非法）。key 为 0、字段号
+/// 越界、截断等任何非法输入都返回 `Err`（对应 JS 返回 `false`）。
 fn scan_protobuf(
     bytes: &[u8],
     path: &[u32],
@@ -175,17 +219,27 @@ fn scan_protobuf(
     Ok(result)
 }
 
+/// gRPC-web 帧解析结果。
 enum Framed {
     /// Not gRPC-web framed at all (fallback to raw protobuf).
     NotFramed,
+    /// 帧结构存在但格式非法（对应 JS 的 malformed 分支）。
     Malformed,
+    /// 合法帧：解出的数据消息与 trailer 中的 grpc-status 列表。
     Messages {
+        /// 数据帧的 payload（protobuf 消息体）。
         messages: Vec<Vec<u8>>,
+        /// trailer 帧里解析出的 `grpc-status` 值。
         trailer_statuses: Vec<i64>,
     },
 }
 
 /// `parseFrames`.
+///
+/// 中文说明：解析 gRPC-web 帧序列（对应 JS `parseFrames`）：每帧为
+/// 1 字节 flag + 4 字节大端长度 + payload；首字节高位标记 trailer，
+/// trailer 之后不允许再出现数据帧。总长不足 5 字节或首字节异常视为
+/// 未帧化（回退按裸 protobuf 解析），其余任何违规都判 Malformed。
 fn parse_frames(bytes: &[u8]) -> Framed {
     if bytes.len() < 5 || (bytes[0] & 0x7f) != 0 {
         return Framed::NotFramed;
@@ -237,6 +291,9 @@ fn parse_frames(bytes: &[u8]) -> Framed {
 }
 
 /// `parseGrpcTrailerStatus` — `grpc-status: N` headers, digits only.
+///
+/// 中文说明：解析 trailer 帧中的 HTTP 风格头，提取 `grpc-status: N`
+/// （仅接受纯数字，出现两次或非法格式都算失败返回 `None`）。
 fn parse_grpc_trailer_status(bytes: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(bytes).ok()?;
     let mut status: Option<i64> = None;
@@ -272,6 +329,10 @@ fn parse_grpc_trailer_status(bytes: &[u8]) -> Option<i64> {
 }
 
 /// `looksLikeProtobuf` — plausible first key byte.
+///
+/// 中文说明：裸字节是否"像" protobuf（对应 JS `looksLikeProtobuf`）：
+/// 首字节需解出非零字段号且 wire type 属于 0/1/2/5，作为未帧化响应
+/// 的兜底判定。
 fn looks_like_protobuf(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
         return false;
@@ -281,13 +342,23 @@ fn looks_like_protobuf(bytes: &[u8]) -> bool {
     field_number > 0 && matches!(wire_type, 0 | 1 | 2 | 5)
 }
 
+/// 解析出的 xAI 用量：当前计费周期已用百分比与重置时间。
 #[derive(Debug)]
 pub struct XaiUsage {
+    /// 已用百分比（0–100）；来自路径 `[1]`/`[1,1]` 的 fixed32 字段。
     pub used_percent: Option<f64>,
+    /// 重置时间的 epoch 毫秒；来自 epoch 秒 varint（优先路径 `[1,5,1]`）。
     pub reset_at: Option<i64>,
 }
 
 /// `parseUsage`.
+///
+/// 中文说明：解析计费响应（对应 JS `parseUsage`）：先帧化并校验
+/// grpc-status（非 0 报 "xAI billing RPC failed with status N"），未帧化
+/// 但像 protobuf 的按裸消息处理；随后扫描各 payload，按路径与顺序选
+/// 出用量百分比，varint 里落在 2024–2033 年区间且晚于 `now_ms` 的值
+/// 作为重置时间候选（优先 `[1,5,1]` 路径，取最早）。无百分比但存在
+/// 用量周期字段与重置时间时按 0% 处理；完全无可用数据则报错。
 pub fn parse_usage(bytes: &[u8], now_ms: u64) -> Result<XaiUsage, String> {
     let payloads: Vec<Vec<u8>> = match parse_frames(bytes) {
         Framed::Malformed => {
@@ -396,6 +467,9 @@ pub fn parse_usage(bytes: &[u8], now_ms: u64) -> Result<XaiUsage, String> {
 
 // ============== OAuth ==============
 
+/// 读取 auth.json 中的 xAI OAuth 条目：必须是对象、type 为 `oauth` 且
+/// `access`/`refresh` 至少一个非空；不满足时返回 `Ok(None)`（视为未
+/// 配置），仅 auth 读取失败透传为 `Err`。
 fn read_xai_auth(deps: &QuotaDeps) -> Result<Option<Value>, String> {
     let auth = deps.read_auth_value()?;
     let Some(entry) = field(&auth, "xai") else {
@@ -416,6 +490,8 @@ fn read_xai_auth(deps: &QuotaDeps) -> Result<Option<Value>, String> {
     Ok(Some(entry.clone()))
 }
 
+/// 解码 JWT 的 payload 段（base64url）为 claims 对象；分割、解码或 JSON
+/// 解析任一失败都返回 `None`。
 fn decode_jwt_claims(token: &str) -> Option<Map<String, Value>> {
     let payload = token.split('.').nth(1)?;
     let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -423,6 +499,9 @@ fn decode_jwt_claims(token: &str) -> Option<Map<String, Value>> {
     claims.as_object().cloned()
 }
 
+/// 判断 token 是否需要刷新：无 access 直接需要；存储的 `expires` 落在
+/// 当前时间 + [`REFRESH_SKEW_MS`] 之内需要；否则解码 JWT `exp` 再判一次
+///（同样带提前量）。
 fn token_needs_refresh(deps: &QuotaDeps, entry: &Value) -> bool {
     let Some(access) = field(entry, "access").and_then(non_empty_string_value) else {
         return true;
@@ -443,6 +522,12 @@ fn token_needs_refresh(deps: &QuotaDeps, entry: &Value) -> bool {
 }
 
 /// `refreshXaiOauth` — coalesced, persisted back into `auth.json`.
+///
+/// 中文说明：刷新 OAuth（对应 JS `refreshXaiOauth`）：经 runtime 持有的
+/// [`SharedSlot`] 合并并发刷新，向 [`TOKEN_URL`] 发 form 请求换取新
+/// access token（`expires_in` 缺省 3600，非数字视为错误），把新
+/// access/refresh/expires 写回 entry 并整体持久化进 `auth.json` 的
+/// `xai` 条目，返回刷新后的条目。
 fn refresh_xai_oauth(
     rt: &Arc<QuotaRuntime>,
     entry: Value,
@@ -519,6 +604,8 @@ fn refresh_xai_oauth(
     Box::pin(shared)
 }
 
+/// 确保拿到未过期的 access：token 仍新鲜直接返回原条目；需要刷新但
+/// 无可用 refresh token 时报错；否则执行（合并的）刷新。
 async fn ensure_fresh_access(rt: &Arc<QuotaRuntime>, entry: Value) -> Result<Value, String> {
     if !token_needs_refresh(&rt.deps, &entry) {
         return Ok(entry);
@@ -535,6 +622,11 @@ async fn ensure_fresh_access(rt: &Arc<QuotaRuntime>, entry: Value) -> Result<Val
 }
 
 /// `fetchUsage` — gRPC-web POST with the header-carried grpc-status check.
+///
+/// 中文说明：拉取用量（对应 JS `fetchUsage`）：向 [`USAGE_URL`] 发带
+/// bearer token 与 grok.com Origin/Referer 头的 gRPC-web POST（空 RPC
+/// 体、15 秒超时）；优先校验响应头里的 `grpc-status`（非 0 报错），
+/// 再校验 HTTP 状态，最后把 body 交给 [`parse_usage`]。
 async fn fetch_usage(deps: &QuotaDeps, access_token: &str) -> Result<XaiUsage, String> {
     let request = HttpRequest::post(USAGE_URL)
         .bearer(access_token)
@@ -576,10 +668,16 @@ async fn fetch_usage(deps: &QuotaDeps, access_token: &str) -> Result<XaiUsage, S
     parse_usage(&response.body, deps.now_ms())
 }
 
+/// provider 是否已配置：auth.json 中存在可用的 xAI OAuth 条目（读取
+/// 失败按未配置处理）。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     read_xai_auth(deps).unwrap_or(None).is_some()
 }
 
+/// 配额抓取主入口（注册表 `fetch` 指向此处）：未配置返回 "Not
+/// configured" 信封；auth 读取失败返回固定错误串；必要时先刷新 OAuth，
+/// 再拉取用量并组装 `billing_cycle` 用量窗口（百分比 + 重置时间），
+/// 成功产出 `ok/configured=true` 的结果信封，失败产出错误信封。
 pub fn fetch_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();
@@ -665,14 +763,20 @@ pub fn fetch_quota(rt: Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     })
 }
 
+/// 刷新 future 的共享类型：并发刷新合并为同一个在途 future。
 pub type XaiRefreshFuture = futures::future::Shared<BoxFuture<'static, Result<Value, String>>>;
 
 /// The refresh coalescing slot (held by the runtime).
+///
+/// 中文说明：OAuth 刷新的合并槽位（由 [`QuotaRuntime`] 持有，跨请求共享）。
 pub struct XaiRefreshState {
+    /// 在途刷新的共享槽位：并发调用共享同一结果。
     pub pending: Arc<SharedSlot<Result<Value, String>>>,
 }
 
+/// [`XaiRefreshState`] 的构造。
 impl XaiRefreshState {
+    /// 创建带全新空槽位的刷新状态。
     pub fn new() -> Self {
         Self {
             pending: Arc::new(SharedSlot::new()),
@@ -680,7 +784,9 @@ impl XaiRefreshState {
     }
 }
 
+/// [`XaiRefreshState`] 的 `Default` 委托给 [`XaiRefreshState::new`]。
 impl Default for XaiRefreshState {
+    /// 等价于 [`XaiRefreshState::new`]。
     fn default() -> Self {
         Self::new()
     }

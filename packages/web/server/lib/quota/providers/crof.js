@@ -1,3 +1,9 @@
+/**
+ * CrofAI 配额 provider。
+ *
+ * 请求 crof.ai 的 usage_api，把返回的 credits 余额格式化为 credits 窗口的
+ * valueLabel；不提供百分比用量，仅展示余额。
+ */
 import { readAuthFile } from '../../opencode/auth.js';
 import {
   getAuthEntry,
@@ -8,17 +14,27 @@ import {
   formatMoney
 } from '../utils/index.js';
 
+/** 对外 provider 标识。 */
 export const providerId = 'crof';
+/** 展示名。 */
 export const providerName = 'CrofAI';
+/** OpenCode auth 文件中的凭据匹配别名。 */
 const aliases = ['crof'];
+/** CrofAI 用量查询端点。 */
 const CROF_USAGE_URL = 'https://crof.ai/usage_api/';
 
+/** 读取 auth 文件，存在 key 或 token 即视为已配置。 */
 export const isConfigured = () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return Boolean(entry?.key || entry?.token);
 };
 
+/**
+ * 拉取 CrofAI 余额：credits 字段缺失时窗口仍成功返回、只是没有
+ * valueLabel；401 映射为会话过期提示，15 秒超时与 JSON 解析失败
+ * 有独立错误文案。
+ */
 export const fetchQuota = async () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));

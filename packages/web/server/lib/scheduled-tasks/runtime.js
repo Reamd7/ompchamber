@@ -1,3 +1,10 @@
+/**
+ * 【模块】定时任务（scheduled tasks / loops）运行时：按项目加载并 reconcile
+ * 任务定义（`.agents/loops` 文件为权威来源），为每个 occurrence 布防定时器，
+ * 经共享项目配置的 lastScheduledFor 声明防止多实例（CLI serve + desktop）重复执行（#2710），
+ * 再通过本地 OpenCode 引擎创建会话并以 prompt_async / 斜杠命令驱动执行，
+ * 全程受全局/项目两级并发额度与 watchdog 超时约束。
+ */
 import { createLocalEngineClient } from '../opencode/local-engine-client.js';
 import { DateTime } from 'luxon';
 import parser from 'cron-parser';
@@ -5,16 +12,25 @@ import { expandSnippets } from '../opencode/snippets.js';
 import { buildGoalIntroText, createSessionGoal } from '../session-goal/create.js';
 import { discoverLoops } from './loops.js';
 
+// 全局并发上限默认值：所有项目合计同时运行的任务数。
 const DEFAULT_GLOBAL_CONCURRENCY = 4;
+// 单项目并发上限默认值：同一项目同时运行的任务数。
 const DEFAULT_PROJECT_CONCURRENCY = 2;
+// 单次任务运行时长上限（默认 30 分钟），超时由 watchdog 竞速中止。
 const DEFAULT_MAX_RUN_MS = 30 * 60 * 1000;
+// 到点触发抖动上限（毫秒）：在精确到点之上叠加随机抖动，避免大量任务同毫秒齐发。
 const JITTER_MAX_MS = 2_000;
+// 生成的运行会话标题最大长度（任务名 + 时间戳后缀合计）。
 const TASK_TITLE_MAX_LENGTH = 120;
+// 到期宽限量（毫秒）：lastScheduledFor 落在该窗口内视为同一 occurrence，用于多实例去重。
 const TASK_DUE_SLACK_MS = 5_000;
+// setTimeout 的最大合法延迟（2^31-1 ms）；更长延迟需分段重排定时器。
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
+/** 构造任务唯一键 `${projectID}:${taskID}`，用于定时器索引与运行中去重。 */
 const buildTaskKey = (projectID, taskID) => `${projectID}:${taskID}`;
 
+/** 将 "HH:mm" 字符串解析为 { hour, minute }；非字符串或不匹配 00:00–23:59 返回 null。 */
 const parseTimeParts = (time) => {
   const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(typeof time === 'string' ? time : '');
   if (!match) {
@@ -26,6 +42,7 @@ const parseTimeParts = (time) => {
   };
 };
 
+/** 把 HH:mm 套用到给定 luxon DateTime（秒/毫秒清零）返回同日该时刻；time 非法返回 null。 */
 const applyTimeToDate = (baseDateTime, time) => {
   const parsed = parseTimeParts(time);
   if (!parsed) {
@@ -39,6 +56,7 @@ const applyTimeToDate = (baseDateTime, time) => {
   });
 };
 
+/** 归一化调度时间列表：优先取 schedule.times 中的合法项，回退到单个 schedule.time；去重并按字典序（等价时间序）排序返回。 */
 const resolveScheduleTimes = (schedule) => {
   const times = [];
   if (Array.isArray(schedule?.times)) {
@@ -54,6 +72,7 @@ const resolveScheduleTimes = (schedule) => {
   return Array.from(new Set(times)).sort((a, b) => a.localeCompare(b));
 };
 
+/** 将 luxon 的 1–7（周一–周日）weekday 转为 0–6（周日=0）以匹配 schedule.weekdays 约定；无效输入返回 null。 */
 const weekdayAsZeroBased = (dateTime) => {
   if (!dateTime || typeof dateTime.weekday !== 'number') {
     return null;
@@ -61,6 +80,7 @@ const weekdayAsZeroBased = (dateTime) => {
   return dateTime.weekday % 7;
 };
 
+/** 从任意抛出值提取安全错误消息：Error 取 message，其余 String 化；trim、空值兜底 "Unknown error"、超长截断到 maxLength。 */
 const safeErrorMessage = (error, maxLength = 2_000) => {
   const raw = error instanceof Error
     ? (error.message || String(error))
@@ -72,6 +92,7 @@ const safeErrorMessage = (error, maxLength = 2_000) => {
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
 };
 
+/** 解析 "/命令 参数…" 形态的任务提示词：非 "/" 开头或首行无命令名返回 null，否则返回 { command, arguments }。 */
 export const parseScheduledCommandPrompt = (prompt) => {
   if (typeof prompt !== 'string') {
     return null;
@@ -95,6 +116,11 @@ export const parseScheduledCommandPrompt = (prompt) => {
   };
 };
 
+/**
+ * 展开命令模板的参数占位符生成 goal objective：`$ARGUMENTS` 全量替换；
+ * `$1`/`$2`… 按引号/空白切分的位置参数（最后一个位置吞并余下全部参数）；
+ * 模板无占位符且有参数时把参数追加为第二段；模板为空返回 null。
+ */
 export const expandCommandGoalObjective = (template, argumentsText) => {
   if (typeof template !== 'string' || !template.trim()) {
     return null;
@@ -121,6 +147,12 @@ export const expandCommandGoalObjective = (template, argumentsText) => {
   return rawArguments ? `${template}\n\n${rawArguments}` : template;
 };
 
+/**
+ * 计算任务下一次应运行时刻（毫秒时间戳）。禁用、无 schedule、时区无效或
+ * 调度数据不完整一律返回 null。支持 daily / weekly / once / cron 四种 kind，
+ * 均按 schedule.timezone（缺省本地时区）计算；候选时刻必须晚于
+ * now + TASK_DUE_SLACK_MS 宽限量，weekly 最多向前看 14 天。
+ */
 export const computeNextRunAt = (task, nowMs = Date.now()) => {
   if (!task?.enabled) {
     return null;
@@ -229,6 +261,7 @@ export const computeNextRunAt = (task, nowMs = Date.now()) => {
   return null;
 };
 
+/** 生成运行会话标题 `任务名 yyyy-LL-dd HH:mm`（按任务时区）；任务名缺失用 "Scheduled task"，整体截到 TASK_TITLE_MAX_LENGTH。 */
 export const formatScheduledSessionTitle = (task, nowMs = Date.now()) => {
   const timezone = typeof task?.schedule?.timezone === 'string' && task.schedule.timezone.trim().length > 0
     ? task.schedule.timezone.trim()
@@ -245,6 +278,12 @@ export const formatScheduledSessionTitle = (task, nowMs = Date.now()) => {
   return `${trimmedName}${suffix}`;
 };
 
+/**
+ * 创建定时任务运行时。内部维护每项目任务表、每任务定时器、运行队列与
+ * 全局/项目两级并发额度；返回 { start, stop, syncAllProjects, syncProject,
+ * runNow, getStatus }。deps 注入项目配置运行时、OpenCode 引擎访问器、
+ * 事件回调与并发/超时参数。
+ */
 export const createScheduledTasksRuntime = (deps) => {
   const {
     projectConfigRuntime,
@@ -261,16 +300,26 @@ export const createScheduledTasksRuntime = (deps) => {
     maxRunDurationMs = DEFAULT_MAX_RUN_MS,
   } = deps;
 
+  // 运行时是否已 start；stop 后置回 false，未启动时 scheduleTask 直接跳过布防。
   let started = false;
+  // projectID -> Map(taskID -> task) 的内存任务表（最新已知任务定义与状态）。
   const tasksByProject = new Map();
+  // projectID -> 项目路径缓存（listProjects 结果）。
   const projectPathByID = new Map();
+  // taskKey -> setTimeout 句柄：每个任务至多一个待触发定时器。
   const timersByTaskKey = new Map();
+  // 已入队尚未开跑的 taskKey 集合（防重复入队）。
   const queuedTaskKeys = new Set();
+  // 正在运行中的 taskKey 集合（占用并发额度）。
   const runningTaskKeys = new Set();
+  // projectID -> 该项目运行中任务数（项目级并发额度计数）。
   const runningCountByProject = new Map();
+  // 全局运行中任务数（全局并发额度计数）。
   let runningGlobalCount = 0;
+  // 待运行队列（FIFO），元素为 { projectID, taskID, reason, scheduledFor? }。
   const queue = [];
 
+  /** 取消并移除某 taskKey 的待触发定时器（无定时器则空操作）。 */
   const clearTimerForKey = (taskKey) => {
     const timer = timersByTaskKey.get(taskKey);
     if (timer) {
@@ -279,6 +328,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 清掉某项目全部任务的定时器并把他们移出待入队集合（项目任务表本身的清理由调用方决定）。 */
   const clearProjectTimers = (projectID) => {
     const tasks = tasksByProject.get(projectID);
     if (!tasks) {
@@ -290,6 +340,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 用新任务列表整体替换某项目的内存任务表（先清旧定时器，任务以 id 为键去重）。 */
   const setProjectTasks = (projectID, tasks) => {
     clearProjectTimers(projectID);
     const taskMap = new Map();
@@ -299,6 +350,12 @@ export const createScheduledTasksRuntime = (deps) => {
     tasksByProject.set(projectID, taskMap);
   };
 
+  /**
+   * 为任务布防到 nextRunAt 的定时器：先清旧定时器；未启动、目标时刻非法则不布防。
+   * 延迟 = 到点差值 + 随机抖动（0..JITTER_MAX_MS），超过 MAX_TIMER_DELAY_MS 时
+   * 先挂一个分段定时器、到期后递归重排。到点回调里重新校验任务存在且 enabled，
+   * 再入队 'scheduled' 运行并泵动队列。
+   */
   const scheduleTask = (projectID, taskID, nextRunAt) => {
     const taskKey = buildTaskKey(projectID, taskID);
     clearTimerForKey(taskKey);
@@ -335,6 +392,7 @@ export const createScheduledTasksRuntime = (deps) => {
     timersByTaskKey.set(taskKey, timer);
   };
 
+  /** 用最新任务对象覆盖内存表中的同 id 项（项目或任务不存在则忽略）。 */
   const updateInMemoryTask = (projectID, nextTask) => {
     if (!nextTask) {
       return;
@@ -346,6 +404,7 @@ export const createScheduledTasksRuntime = (deps) => {
     taskMap.set(nextTask.id, nextTask);
   };
 
+  /** 重算任务 nextRunAt 并写回项目配置（statePatch 含 updatedAt）；写回成功后更新内存并在任务启用时重新布防。 */
   const syncTaskSchedule = async (projectID, task) => {
     if (!task) {
       return;
@@ -364,6 +423,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 解析 projectID 对应的项目路径：命中缓存直接返回，否则查 listProjects 并缓存；找不到或出错返回 null。 */
   const ensureProjectPath = async (projectID) => {
     if (projectPathByID.has(projectID)) {
       return projectPathByID.get(projectID) || null;
@@ -382,6 +442,11 @@ export const createScheduledTasksRuntime = (deps) => {
     return null;
   };
 
+  /**
+   * 同步单个项目：有路径则先以 `.agents/loops` 定义 reconcile 持久化任务列表
+   *（loop 文件在场时为权威、删除即取消调度、运行状态保留），否则直接列出持久化任务；
+   * 然后整体替换内存任务表并逐个重算/布防 nextRunAt。返回该项目的任务列表。
+   */
   const syncProject = async (projectID) => {
     await ensureProjectPath(projectID);
     const projectPath = projectPathByID.get(projectID) || null;
@@ -406,6 +471,7 @@ export const createScheduledTasksRuntime = (deps) => {
     return tasks;
   };
 
+  /** 全量同步：刷新项目列表与路径缓存，清掉已消失项目的定时器与任务表，再逐项目 syncProject。 */
   const syncAllProjects = async () => {
     const projects = await listProjects();
     const activeProjectIDs = new Set();
@@ -430,6 +496,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 把一次运行加入待运行队列（reason 为 'scheduled'/'manual'，scheduledFor 为计划时刻）；已在队列或运行中则忽略。 */
   const queueTaskRun = (projectID, taskID, reason, scheduledFor) => {
     const taskKey = buildTaskKey(projectID, taskID);
     if (queuedTaskKeys.has(taskKey) || runningTaskKeys.has(taskKey)) {
@@ -444,6 +511,7 @@ export const createScheduledTasksRuntime = (deps) => {
     });
   };
 
+  /** 并发闸门：全局运行数未达上限且该项目运行数未达项目上限时才允许开跑。 */
   const canRunTask = (projectID) => {
     if (runningGlobalCount >= maxGlobalConcurrency) {
       return false;
@@ -452,6 +520,11 @@ export const createScheduledTasksRuntime = (deps) => {
     return projectRunning < maxProjectConcurrency;
   };
 
+  /**
+   * 构造 prompt_async 请求体：按需附带 model（角色跟随任务省略以用引擎默认）、
+   * agent、variant；parts 依次为常驻项目知识（synthetic）、展开 snippet 后的任务提示词、
+   * goal 模式时的 goal 引导文本（synthetic）。
+   */
   const buildPromptAsyncPayload = (task, projectPath, knowledgeText = '') => ({
     ...(task.execution.providerID && task.execution.modelID
       ? { model: { providerID: task.execution.providerID, modelID: task.execution.modelID } }
@@ -474,6 +547,11 @@ export const createScheduledTasksRuntime = (deps) => {
     ],
   });
 
+  /**
+   * 向会话发送 prompt_async：先解析待投递的项目知识（失败静默降级为空，绝不因此挂掉运行），
+   * POST 成功后才把该知识记为已投递——失败的派发下次运行会再次携带上下文。
+   * 非 2xx 响应抛出带状态码与响应体的错误。
+   */
   const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, projectPath, task }) => {
     // Never allowed to fail the run: a task that executes without its
     // background is a lesser loss than a task that does not execute.
@@ -507,6 +585,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 若任务提示词是 "/命令" 形态且引擎已注册同名命令，返回 { command, arguments, template }，否则 null（回落到 prompt_async）。 */
   const resolveScheduledCommand = async ({ client, projectPath, task }) => {
     const parsed = parseScheduledCommandPrompt(task?.execution?.prompt);
     if (!parsed) {
@@ -525,6 +604,7 @@ export const createScheduledTasksRuntime = (deps) => {
     return command ? { ...parsed, template: command.template } : null;
   };
 
+  /** 在会话里执行已解析的斜杠命令，透传任务的 agent / model / variant 覆盖。 */
   const runScheduledCommand = async ({ client, projectPath, sessionID, task, command }) => {
     await client.session.command({
       sessionID,
@@ -540,6 +620,13 @@ export const createScheduledTasksRuntime = (deps) => {
 
   };
 
+  /**
+   * 执行一次任务并产出运行结果：等待引擎就绪、经本地引擎 client 创建带标题的会话、
+   * 发出 running 事件、按需为会话开启权限自动放行（失败仅告警）、goal 模式先创建
+   * session goal（objective 用命令模板展开或 snippet 展开），最后走斜杠命令或
+   * prompt_async 派发。返回 { sessionID, durationMs, reason, startedAt, finishedAt }；
+   * 超时由调用方 runTask 的 watchdog 竞速处理。
+   */
   const runTaskWithWatchdog = async (projectID, task, reason) => {
     const startedAt = Date.now();
     const title = formatScheduledSessionTitle(task, startedAt);
@@ -631,6 +718,7 @@ export const createScheduledTasksRuntime = (deps) => {
     };
   };
 
+  /** 释放一次运行占用的并发额度：移出运行集合、全局计数减一、项目计数减一（归零则删除键）。 */
   const releaseRunningSlot = (projectID, taskKey) => {
     runningTaskKeys.delete(taskKey);
     runningGlobalCount = Math.max(0, runningGlobalCount - 1);
@@ -642,6 +730,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 只为"未来"的 occurrence 布防定时器；nextRunAt 非法或已过期（<= fromMs）返回 false 不布防。 */
   /**
    * Arm a timer only for a future occurrence. Scheduling a past nextRunAt
    * (delay 0 + jitter) re-enters the claim path immediately and can spin —
@@ -659,6 +748,11 @@ export const createScheduledTasksRuntime = (deps) => {
     return true;
   };
 
+  /**
+   * 重新布防任务：优先用内存/兜底任务里仍指向未来的持久化 nextRunAt；
+   * 否则基于 fromMs 重算下一次时刻再布防。绝不重挂过去的 occurrence
+   * （否则会制造 once 任务的静默败者循环与 claim 失败重试风暴）。
+   */
   const rearmFromTaskOrCompute = (projectID, taskID, fallbackTask, fromMs) => {
     const latest = (tasksByProject.get(projectID)?.get(taskID)) || fallbackTask;
     if (!latest?.enabled) {
@@ -675,6 +769,16 @@ export const createScheduledTasksRuntime = (deps) => {
     scheduleFutureRun(projectID, taskID, computedNext, base);
   };
 
+  /**
+   * 执行一次任务（manual/scheduled 统一入口）：占用运行槽位后——
+   * 定时派发先在共享项目配置里声明 occurrence（updateScheduledTaskStateIf +
+   * lastScheduledFor 宽限量去重，#2710：双实例各自布防定时器，靠该声明只有一个真正运行），
+   * 声明失败/落败时记录状态并按未来时刻重挂；手动派发仅写 running 状态——
+   * 然后以 watchdog 超时竞速执行 runTaskWithWatchdog，成功后消费 once 任务、
+   * 写终态（含 nextRunAt）并按未来时刻重挂；完成态写入失败走内存恢复 + 单次重试。
+   * 返回 { ok, status, sessionID, task, error, ... }；finally 里必定释放运行槽位，
+   * 保证锁超时/写入失败不会把任务卡死在 "running"。
+   */
   const runTask = async (projectID, taskID, reason, scheduledFor) => {
     const taskMap = tasksByProject.get(projectID);
     const task = taskMap?.get(taskID);
@@ -721,6 +825,8 @@ export const createScheduledTasksRuntime = (deps) => {
         // occurrence. Do not reject on advanced disk nextRunAt: lastScheduledFor
         // persists across days, so a second-instance sync inside TASK_DUE_SLACK_MS
         // would otherwise suppress every armed occurrence after the first.
+        // occurrence 声明谓词：任务须启用，且 lastScheduledFor 不在本 occurrence
+        // 的宽限窗口内（在窗口内说明已被本实例或另一实例声明过）。
         const canClaimOccurrence = (candidate) => {
           if (!candidate?.enabled) {
             return false;
@@ -1015,6 +1121,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 泵动待运行队列：从头扫描，把并发额度允许的项出队开跑（fire-and-forget + catch 告警），每项完成后再次泵动。 */
   const pumpQueue = () => {
     if (!started) {
       return;
@@ -1053,6 +1160,7 @@ export const createScheduledTasksRuntime = (deps) => {
     }
   };
 
+  /** 手动立即运行：任务运行中/已入队直接返回相应错误，否则以 reason='manual' 走 runTask（不做 occurrence 声明）。 */
   const runNow = async (projectID, taskID) => {
     const taskKey = buildTaskKey(projectID, taskID);
     if (runningTaskKeys.has(taskKey)) {
@@ -1073,6 +1181,7 @@ export const createScheduledTasksRuntime = (deps) => {
     return runTask(projectID, taskID, 'manual');
   };
 
+  /** 启动运行时（幂等）：置 started 后全量同步所有项目并布防定时器。 */
   const start = async () => {
     if (started) {
       return;
@@ -1081,6 +1190,7 @@ export const createScheduledTasksRuntime = (deps) => {
     await syncAllProjects();
   };
 
+  /** 停止运行时：清空全部定时器与待运行队列，置回未启动状态。 */
   const stop = () => {
     if (!started) {
       return;
@@ -1094,6 +1204,7 @@ export const createScheduledTasksRuntime = (deps) => {
     queue.length = 0;
   };
 
+  /** 汇总状态：是否存在启用的定时任务、是否有运行中的任务及其数量，供 UI/健康检查使用。 */
   const getStatus = () => {
     let enabledCount = 0;
     for (const taskMap of tasksByProject.values()) {

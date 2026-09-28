@@ -76,25 +76,69 @@ import type {
  * pay one scan then take the labeled fallback.
  */
 
+/**
+ * 模块：冷转录文件的窗口化分页读取器（docs/plans/omp-host-memory/plan.md §7.2）。
+ *
+ * 背景：冷路径 getMessagesPage 原先经 SessionManager.open 打开整份 JSONL——解析
+ * 全部条目、投影全部消息——最后只切出一页。本读取器把驻留内存约束到请求页：
+ *
+ *   pass 1（流式）：只留每条目的元数据——leaf→root 回溯用的 id/parentId/type/
+ *     timestamp；emit 类别、门控标志、wire id 与 flush/anchor 标志（合并展示
+ *     序列要用）；全局 toolCall/toolResult 配对 id；按 user 消息折叠的
+ *     model/thinking 状态；整条保留的 turn-event 分隔条目与结构化行条目（小
+ *     标量）；以及每条目的字节区间（供第二轮定点重读）。
+ *   resolve：仅在元数据上回溯 leaf 路径；wire 序列复刻 projectConversation 的
+ *     pending-assistant 冲刷顺序；turn-event 分隔条按时间戳拼接（与
+ *     #mergeTurnEventDividers 完全一致）；limit/before 选出窗口；窗口扩展为
+ *     连续的 fed 区间——向后找最近的 user 锚点（parentID 链）否则最近的
+ *     flusher（pending assistant），向前吞并连续的非 flush 条目（tool-result
+ *     配对）——使投影结果与全量折叠逐字节一致。
+ *   pass 2（重开文件）：只重解析 fed 区间的字节记录；按 buildSessionContext
+ *     转录分支的方式产出 AgentMessage，再对照全路径配对集剥离悬空 tool call
+ *     （与全量折叠同一判定），投影、拼接分隔条。
+ *
+ * 窗口化折叠无法复现的一切情况都返回 null——调用方保留 withColdManager 的
+ * 全量物化臂（plan §7.1 的带标签回退）：旧版本文件（迁移需要完整条目表）、无
+ * id 的 emit 条目（无法选定 fed 区间）、blob:sha256: 引用（要在 open 时经
+ * BlobStore 解析，pi-utils 的 blobs 目录不可在此 import）、页压实上的
+ * snapcompact 归档（来自 @oh-my-pi/snapcompact，同样不可 import）、fed 区间
+ * 超过 MAX_FED_ENTRIES、以及无界 limit（没有分页就没有值得两轮扫描的内存收益）。
+ * 单条 JSONL 记录的在途大小以记录本身为界——扫描器至多持有一行 + 一个
+ * chunk（plan §7.2 附注）。
+ *
+ * 两轮之间文件可能被追加或重写；pass-2 读取会在 pass-1 的字节区间上复核每个
+ * 所需记录的 id+type，最终再以 size/mtime 比对拒绝任何中途变化——包括纯追
+ * 加——因此活跃追加中的转录文件会走 manager 臂，而不是用陈旧元数据折页。这使
+ * 流式臂只是冷读优化：热文件付出一次扫描后即取带标签回退。
+ */
 /** Cap on retained turn-event divider entries per scan. */
+/** 单次扫描保留的 turn-event 分隔条目数上限。 */
 const MAX_DIVIDER_ENTRIES = 4096;
 /** Cap on emit entries loaded with full content around a page. */
+/** 页窗口前后以完整内容载入的 emit 条目数上限。 */
 const MAX_FED_ENTRIES = 1024;
 /** Largest `limit` worth streaming for; larger pages fall back. */
+/** 值得流式服务的最大 limit；更大的页直接回退。 */
 const MAX_PAGE_LIMIT = 512;
 /** Cap on retained structured-row entries per scan (getEntries' five kinds). */
+/** 单次扫描保留的结构化行条目数上限（getEntries 的五种 kind）。 */
 const MAX_ROW_ENTRIES = 16384;
 /** Single JSONL record byte cap (plan §7.2: maxRecords bounds count, not size). */
+/** 单条 JSONL 记录的字节上限（plan §7.2：maxRecords 只限条数不限大小）。 */
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 
+/** 被更新压实取代的旧压实摘要——在线显示用的省略占位文本。 */
 const SUPERSEDED_COMPACTION_SUMMARY = '[Superseded compaction summary elided after a newer compaction]';
+/** 同上的短摘要占位文本。 */
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = 'Superseded compaction elided';
 
 // -- boundary helpers -----------------------------------------------------------
 
 /** The AgentMessage union as session entries carry it (message entries only). */
+/** 会话条目中的 AgentMessage 联合类型（仅 message 条目携带）。 */
 type AgentMessage = Extract<SessionEntry, { type: 'message' }>['message'];
 /** Assistant arm of the union — retryRecovery field type without importing pi-ai. */
+/** 联合中的 assistant 臂——为 retryRecovery 字段类型而不必 import pi-ai。 */
 type AssistantArm = Extract<AgentMessage, { role: 'assistant' }>;
 
 /**
@@ -103,9 +147,11 @@ type AssistantArm = Extract<AgentMessage, { role: 'assistant' }>;
  * runtime values in untrusted JSONL. Generic so callers can probe any
  * declared field type; the tag check does the verification.
  */
+/** 不用 typeof 的运行时字符串探针：字符串原样返回，其余（含声明类型与运行时不符的值）返回 undefined。 */
 const stringOf = <T,>(value: T): string | undefined =>
   Object.prototype.toString.call(value) === '[object String]' ? String(value) : undefined;
 
+/** 取消息内容的纯文本：字符串直接用，块数组则拼接全部 text 块。 */
 const textOfContent = (content: ProjectedContentInput | null | undefined): string => {
   const asString = stringOf(content);
   if (asString !== undefined) return asString;
@@ -117,11 +163,13 @@ const textOfContent = (content: ProjectedContentInput | null | undefined): strin
 };
 
 /** projection.ts's private unwrap, mirrored: full-body `<tag>...</tag>` wrappers. */
+/** 镜像 projection.ts 的私有解包：剥掉整段包裹的 <tag>...</tag> 外壳。 */
 const unwrapFullBodyXml = (text: string): string => {
   const wrapped = text.match(/^<([a-zA-Z-]+)[^>]*>\s*([\s\S]*?)\s*<\/\1>\s*$/);
   return wrapped ? wrapped[2] : text;
 };
 
+/** 时间戳归一为毫秒数值：字符串走 Date.parse；数值原样；undefined/对象得 NaN。 */
 const timestampMs = (value: string | number | undefined): number => {
   const asString = stringOf(value);
   if (asString !== undefined) return Date.parse(asString);
@@ -131,70 +179,114 @@ const timestampMs = (value: string | number | undefined): number => {
 // -- pass-1 metadata -------------------------------------------------------------
 
 /** Folded model/thinking state at a user message's point in the log. */
+/** 日志行到某条 user 消息处折叠出的 model/thinking 状态。 */
 interface TurnState {
+  /** 最近一次 model_change 折叠到的模型 id；无则为 null。 */
   model: string | null;
+  /** 最近一次 thinking_level_change 折叠到的档位；置空则为 null。 */
   thinkingLevel: string | null;
 }
 
+/** emit 条目的 pass-1 元数据：判定该条目在折叠/合并序列中的全部行为标志。 */
 interface EmitMeta {
+  /** emit 类别（对应四种会产生消息/展示项的条目类型）。 */
   kind: 'message' | 'custom_message' | 'branch_summary' | 'compaction';
   /** AgentMessage role for message entries; undefined for the others. */
+  /** message 条目的 AgentMessage role；其余类别为 undefined。 */
   role: string | undefined;
   /** Entry pushes a message in buildSessionContext (drives fileMessageCount). */
+  /** 该条目在 buildSessionContext 中压入一条消息（驱动 fileMessageCount）。 */
   emitsMessage: boolean;
   /** The message yields a wire item in the merged sequence. */
+  /** 该消息在合并序列中产出一个 wire 条目。 */
   producesWire: boolean;
   /** Processing it flushes the pending assistant turn. */
+  /** 处理它会冲刷 pending 的 assistant 轮次。 */
   flushes: boolean;
   /** Its wire item parks until the next flusher (assistant pairing). */
+  /** 其 wire 条目停靠到下一个 flusher 为止（assistant 配对）。 */
   parksAssistant: boolean;
   /** It occupies the user-turn slot (anchors following parentID). */
+  /** 它占据 user 轮次槽位（为后续条目锚定 parentID）。 */
   anchorsUser: boolean;
   /** Projected wire id; compactions resolve it after the path is known. */
+  /** 投影 wire id；compaction 类在路径确定后再解析。 */
   wireId: string | null;
   /** Numeric ms on the wire item's `time.created`. */
+  /** wire 条目 time.created 上的毫秒数值。 */
   created: number;
   /** toolResult's toolCallId. */
+  /** toolResult 的 toolCallId。 */
   resultId: string | undefined;
   /** Assistant retry-recovery flag (getEntries rows). */
+  /** assistant 的 retry-recovery 标志（getEntries 行用）。 */
   retryRecovery: AssistantArm['retryRecovery'];
   /** Compaction entry's raw summary — needed for the active one's wire id. */
+  /** compaction 条目的原始 summary——活动压实的 wire id 需要它。 */
   compactionSummary: string | undefined;
   /** Folded turn state for user messages. */
+  /** user 消息折叠出的轮次状态。 */
   turnState: TurnState | undefined;
 }
 
+/** 单条条目的 pass-1 元数据：树回溯字段 + 字节区间，不含任何内容。 */
 interface EntryMeta {
+  /** 条目 id；无 id 的条目无法参与 fed 区间选取（回退路径）。 */
   id: string | undefined;
+  /** 父条目 id；根/无父为 null。 */
   parentId: string | null;
+  /** 条目类型字符串（原文照录，用于判别与 pass-2 复核）。 */
   type: string;
+  /** emit 类条目的行为元数据；非 emit 条目为 undefined。 */
   emit: EmitMeta | undefined;
   /** Byte range [start, end) of this entry's JSONL record, for pass 2 reads. */
+  /** 本条目 JSONL 记录的字节区间，供 pass 2 定点重读。 */
   byteStart: number;
+  /** 字节区间终点（不含）。 */
   byteEnd: number;
 }
 
+/** 一次完整 pass-1 扫描的结果：元数据、保留条目与全部回退标志。 */
 interface Scan {
+  /** 首个解析条目是否为合法 session 头。 */
   headerValid: boolean;
+  /** 文件版本低于 CURRENT_SESSION_VERSION，需要全量迁移（回退）。 */
   needsMigration: boolean;
+  /** 某类保留条目超过上限或单条记录超限（回退）。 */
   overCap: boolean;
+  /** emit/row 条目中发现 blob:sha256: 引用（回退，需 BlobStore）。 */
   emitBlobRef: boolean;
+  /** 解析失败的行数（loader 同样跳过，仅计数不回退）。 */
   malformed: number;
+  /** 全部条目（含非 emit）的元数据，按文件顺序。 */
   metas: EntryMeta[];
+  /** 整条保留的 turn-event 分隔条目（model_change / mode_change）。 */
   dividerEntries: SessionEntry[];
+  /** 整条保留的结构化行条目（getEntries 的五种 kind）。 */
   rowEntries: SessionEntry[];
+  /** 头部声明的文件版本号（缺省按 1）。 */
   fileVersion: number;
 }
 
+/** 四种 emit 条目类型集合（会产生消息/展示项的条目）。 */
 const EMIT_TYPES = new Set(['message', 'custom_message', 'branch_summary', 'compaction']);
+/** getEntries 五种结构化行条目类型集合。 */
 const ROW_TYPES = new Set(['compaction', 'branch_summary', 'model_change', 'mode_change', 'ttsr_injection']);
 
 /** Custom/hook message wire-id seed: `[omp:<type>] ` + unwrapped text. */
+/** custom/hook 消息的 wire-id 种子：`[omp:<type>] ` + 解包后的文本。 */
 const customSeedOf = (customType: string | undefined, content: ProjectedContentInput): string => {
   const label = customType ? `[omp:${customType}] ` : '[omp] ';
   return label + unwrapFullBodyXml(textOfContent(content));
 };
 
+/**
+ * 把一条 emit 类条目分类为 EmitMeta：按条目类型与消息 role 推导
+ * producesWire/flushes/parksAssistant/anchorsUser 等标志并解析 wire id，
+ * 各分支须与 projectConversation 的折叠语义逐字段一致（含 display 空文本、
+ * developer 归因、fileMention 行文案等细节）。compaction 的 wire id 延后到
+ * 路径已知时再定（活动/被取代两种 summary）。
+ */
 const classifyEmit = (
   entry: SessionEntry,
   fold: TurnState,
@@ -322,6 +414,7 @@ const classifyEmit = (
  * byteStart, byteEnd) may return false to stop early. byteEnd includes the
  * newline; a trailing unterminated record is visited without one.
  */
+/** 按行流式扫描 JSONL 并给出字节偏移，全程至多持有一行 + 一个 chunk（内存有界的核心）。 */
 const scanJsonlLines = async (
   filePath: string,
   visit: (line: string, byteStart: number, byteEnd: number) => void | false,
@@ -365,6 +458,7 @@ const scanJsonlLines = async (
  * Any range whose parsed id/type no longer matches the pass-1 meta means the
  * file was rewritten mid-read — the caller falls back to the manager arm.
  */
+/** pass 2：重开文件，只重解析 fed 区间的字节记录并按 id 建索引；任一记录 id/type 复核失败即返回 null（文件中途被改写）。 */
 const readEntriesAtRanges = async (
   filePath: string,
   metas: readonly EntryMeta[],
@@ -403,6 +497,12 @@ const readEntriesAtRanges = async (
 };
 
 /** Stream pass 1: header + per-entry metadata + byte ranges; retains no content. */
+/**
+ * 流式 pass 1：剥掉可选标题槽首行，校验 session 头（非法头立即终止并回退），
+ * 之后逐行折叠 model/thinking 状态、保留分隔条目与结构化行条目、分类 emit 元
+ * 数据并记录字节区间——全程不保留任何消息内容。返回 null 表示文件不可读或
+ * 首行即全部损坏。
+ */
 const scanTranscript = async (
   filePath: string,
   wireIdFor: WireIdResolver | undefined,
@@ -516,17 +616,27 @@ const scanTranscript = async (
 
 // -- path + merged sequence -------------------------------------------------------
 
+/** 仅凭元数据完成的 leaf→root 路径解析结果。 */
 interface PathScan {
+  /** leaf→root 路径上的 emit 元数据，已反转为展示顺序。 */
   /** Emit metas on the leaf→root path, in display order. */
   emitMetas: { meta: EntryMeta; emit: EmitMeta }[];
+  /** 路径上 toolResult 应答的全部 toolCallId（悬空剥离的配对域）。 */
   /** Every toolCallId a path toolResult answers (strip pairing domain). */
   pathResultIds: Set<string>;
+  /** 路径上会压入消息的 emit 条目数——与 context.messages.length 对齐。 */
   /** Path emit entries that push a message — context.messages.length parity. */
   fileMessageCount: number;
+  /** 路径上最新一条 compaction 的条目 id。 */
   /** Entry id of the latest compaction on the path. */
   activeCompactionId: string | undefined;
 }
 
+/**
+ * 从最后一条条目沿 parentId 回溯到根（防环），得到路径元数据；
+ * 收集 emit 序列、toolResult 配对 id，并在路径已知后为 compaction 补齐
+ * wire id（活动压实用真实 summary，被取代的用省略占位）。
+ */
 const resolvePath = (scan: Scan): PathScan => {
   const byId = new Map<string, EntryMeta>();
   for (const meta of scan.metas) if (meta.id !== undefined) byId.set(meta.id, meta);
@@ -565,6 +675,7 @@ const resolvePath = (scan: Scan): PathScan => {
 };
 
 /** projectConversation wire order over a contiguous emit range. */
+/** 在连续 emit 区间上复刻 projectConversation 的 wire 顺序（pending assistant 停靠与冲刷）。 */
 const wireOrderOf = (emitMetas: readonly { emit: EmitMeta }[], start: number, end: number): number[] => {
   const order: number[] = [];
   let pending = -1;
@@ -582,14 +693,19 @@ const wireOrderOf = (emitMetas: readonly { emit: EmitMeta }[], start: number, en
   return order;
 };
 
+/** 合并序列条目：wire 消息项或分隔条拼接项。 */
 interface MergedItem {
+  /** 投影 wire id。 */
   wireId: string;
+  /** wire 条目的 time.created 毫秒值（分隔条按时间戳插入的依据）。 */
   created: number;
   /** Emit-seq index for message items; -1 for divider splices. */
   emitIndex: number;
+  /** 分隔条目本体；消息项为 null。 */
   divider: SessionEntry | null;
 }
 
+/** 先取全路径 wire 顺序，再把 turn-event 分隔条按时间戳二分插入——与 #mergeTurnEventDividers 相同的合并规则。 */
 const buildMergedSequence = (emitMetas: readonly { emit: EmitMeta }[], dividerEntries: readonly SessionEntry[], sessionID: string): MergedItem[] => {
   const seq: MergedItem[] = wireOrderOf(emitMetas, 0, emitMetas.length).map((emitIndex) => {
     const emit = emitMetas[emitIndex].emit;
@@ -607,6 +723,13 @@ const buildMergedSequence = (emitMetas: readonly { emit: EmitMeta }[], dividerEn
 
 // -- pass-2 emit + page assembly ---------------------------------------------------
 
+/**
+ * pass 2：把一条完整条目转成 AgentMessage，语义对齐 buildSessionContext 的
+ * 转录分支。message 原样返回；custom_message/branch_summary/compaction 经
+ * 对应的 create* 工厂重建；compaction.preserveData 存在时返回 'needsManager'
+ * （snapcompact 数据需要 manager 臂）；无 summary 等空内容返回 null（跳过）。
+ * compaction 按活动/被取代选择真实或省略 summary。
+ */
 const emitAgentMessage = (
   entry: SessionEntry,
   activeCompactionId: string | undefined,
@@ -655,8 +778,15 @@ const emitAgentMessage = (
  * blocks drop, thinking signatures clear, and the turn is marked
  * strippedToolCalls instead of vanishing.
  */
+/** assistant 内容块类型（联合的单臂成员，供悬空剥离的块级判定）。 */
 type AssistantContentBlock = AssistantArm['content'][number];
 
+/**
+ * 转录模式的悬空 tool-call 剥离（buildSessionContext 的改写）：路径上没有
+ * 配对 toolResult 的 toolCall 块被移除，redactedThinking 块丢弃，thinking
+ * 签名清空，轮次打上 strippedToolCalls 计数标记而不是整条消失。就地改写
+ * messages 数组。
+ */
 const stripDanglingToolCalls = (messages: AgentMessage[], paired: ReadonlySet<string>): void => {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
@@ -680,21 +810,32 @@ const stripDanglingToolCalls = (messages: AgentMessage[], paired: ReadonlySet<st
   }
 };
 
+/** getMessagesPage 冷路径的窗口化读取请求。 */
 export interface TranscriptPageRequest {
+  /** 会话 id（投影 wire id 与分隔条需要）。 */
   sessionID: string;
+  /** 会话目录（透传 projectConversation）。 */
   directory?: string;
+  /** agent 名（透传 projectConversation）。 */
   agent?: string;
+  /** wire id 解析器注入（活动 dispatcher 的 echo id 优先）；缺省用确定性 id。 */
   wireIdFor?: WireIdResolver;
+  /** 页大小；非法或超过 MAX_PAGE_LIMIT 时回退 manager 臂。 */
   limit?: number;
+  /** 游标：返回该 wire id 之前的页；找不到时返回空页。 */
   before?: string;
 }
 
+/** readTranscriptMessagePage 的返回：窗口化的页 + 与全量折叠对齐的辅助数据。 */
 export interface TranscriptPageResult {
   /** Parity with buildSessionContext({transcript:true}).messages.length. */
+  /** 与 buildSessionContext({transcript:true}).messages.length 对齐的计数。 */
   fileMessageCount: number;
   /** Turn-event divider entries (the live-arm merge needs the same set). */
+  /** turn-event 分隔条目全集（live 臂合并需要同一集合）。 */
   dividerEntries: SessionEntry[];
   /** The paginated, divider-merged file arm — already windowed. */
+  /** 已分页、已合并分隔条的文件臂结果——窗口化已完成。 */
   page: ProjectedMessagePage;
 }
 
@@ -702,6 +843,12 @@ export interface TranscriptPageResult {
  * Stream `filePath` and return the requested page with retained memory
  * bounded to the page window. Returns null for every labeled fallback; the
  * caller then keeps the withColdManager full-materialization arm.
+ */
+/**
+ * 流式读取 `filePath` 并返回请求的消息页，驻留内存约束在页窗口内。
+ * 全部带标签回退（旧版本/无 id emit/blob 引用/超限/中途改写/投影对不上）
+ * 一律返回 null，由调用方保留 withColdManager 全量物化臂。
+ * before 游标不存在时按约定返回空页（cursor 为 undefined）而非回退。
  */
 export const readTranscriptMessagePage = async (
   filePath: string,
@@ -794,6 +941,7 @@ export const readTranscriptMessagePage = async (
   for (const { emit } of emitMetas) {
     if (emit.turnState && emit.wireId) turnStateByWireId.set(emit.wireId, emit.turnState);
   }
+  // 轮次状态查询：按 user 消息的 wire id 反查 pass-1 折叠的 model/thinking 档位。
   const turnStateFor = (message: WireIdMessageInput | null | undefined) => {
     if (message?.role !== 'user') return null;
     const state = turnStateByWireId.get(request.wireIdFor?.(message) ?? deterministicWireId(message));
@@ -836,6 +984,7 @@ export const readTranscriptMessagePage = async (
 // -- scalar + row readers -----------------------------------------------------------
 
 /** directoryExists parity: any stat failure (ENOENT, non-dir) → false. */
+/** 与 directoryExists 同义：任何 stat 失败（ENOENT、非目录）都视为不可用。 */
 const directoryUsable = async (dir: string): Promise<boolean> => {
   try {
     return (await fs.promises.stat(dir)).isDirectory();
@@ -845,27 +994,41 @@ const directoryUsable = async (dir: string): Promise<boolean> => {
 };
 
 /** File signature sampled across the two passes (plan §7.2 rewrite tripwire). */
+/** 两轮扫描间采样的文件签名（plan §7.2 的改写绊网）。 */
 interface FileSignature {
+  /** 文件字节数。 */
   size: number;
+  /** mtime 毫秒值。 */
   mtimeMs: number;
 }
 
+/** 标量扫描的可变状态盒（避免闭包赋值把绑定收窄为 never）。 */
 interface ScalarScanState {
+  /** 已解析的 session 头；未见到头时为 null。 */
   header: SessionHeader | null;
 }
 
+/** 标题槽扫描状态盒。 */
 interface TitleSlotScan {
+  /** 首行是否为固定宽度标题槽。 */
   seen: boolean;
+  /** 标题槽携带的标题文本（可为空串）。 */
   title: string | undefined;
 }
 
+/** 会话列表所需的标量摘要（不打开 manager 即可取得）。 */
 export interface SessionScalars {
+  /** 头部声明的会话 id。 */
   id: string;
+  /** 标题：标题槽覆盖头部的 title；均无则为 undefined。 */
   title: string | undefined;
   /** Recorded header cwd when it still resolves to a directory; else null. */
+  /** 头部记录的 cwd 且当前仍是目录；否则 null。 */
   cwd: string | null;
+  /** 头部时间戳（ISO 字符串）。 */
   createdIso: string | undefined;
   /** Last non-header record's timestamp ISO; undefined when none. */
+  /** 最后一条非头记录的时间戳（ISO）；无记录时为 undefined。 */
   modifiedIso: string | undefined;
 }
 
@@ -876,6 +1039,12 @@ export interface SessionScalars {
  * (`SessionManager.open` mints a fresh id and rewrites invalid files).
  * Header scalars are unaffected by entry migrations, so legacy versions
  * stream fine.
+ */
+/**
+ * 流式读取 session 头 + 最后一条记录的时间戳，不打开 manager。
+ * 文件不可读或没有合法 session 头时返回 null——调用方的 manager 路径随后
+ * 复现既有行为（SessionManager.open 会另铸 id 并重写坏文件）。
+ * 头部标量不受条目迁移影响，旧版本文件也能流式读取。
  */
 export const readSessionScalars = async (filePath: string): Promise<SessionScalars | null> => {
   // Boxed named contracts: the visitor closure's assignment would otherwise
@@ -935,20 +1104,35 @@ export const readSessionScalars = async (filePath: string): Promise<SessionScala
  * One getEntries row — the wire shape the manager arm builds per entry
  * kind. Fields are per-kind optional; absent fields serialize as omitted.
  */
+/** getEntries 的一行——manager 臂按条目 kind 构建的同一 wire 形态；字段按 kind 可选，缺省序列化时省略。 */
 export interface SessionEventRow {
+  /** 行类别（五种结构化 kind 或 retry_recovery）。 */
   kind: string;
+  /** 条目 id。 */
   id?: string;
+  /** 时间戳（毫秒）。 */
   timestamp?: number;
+  /** 压实/分支摘要文本。 */
   summary?: string;
+  /** 压实前 token 数。 */
   tokensBefore?: number;
+  /** 压实警告文本。 */
   warning?: string;
+  /** 分支摘要的起点条目 id。 */
   fromId?: string;
+  /** model_change 后的模型 id。 */
   model?: string;
+  /** model_change 的触发角色。 */
   role?: string;
+  /** mode_change 后的模式名。 */
   mode?: string;
+  /** mode_change 的附加数据。 */
   data?: object;
+  /** ttsr_injection 注入的规则列表。 */
   rules?: string[];
+  /** retry_recovery 行对应的消息 wire id。 */
   messageID?: string;
+  /** retry-recovery 详情（manager 臂同款）。 */
   retryRecovery?: AssistantArm['retryRecovery'];
 }
 
@@ -958,6 +1142,12 @@ export interface SessionEventRow {
  * metas (same wireIdFor resolution the manager arm applies). Returns null
  * on the labeled fallbacks (legacy versions need entry-id migration; blob
  * refs resolve through BlobStore).
+ */
+/**
+ * getEntries 的冷路径臂：五种结构化 kind 直接来自扫描保留的行条目；
+ * retry_recovery 行由路径上的 assistant emit 元数据合成（wireIdFor 解析与
+ * manager 臂一致）。wanted 为空集表示全部 kind。带标签回退（旧版本需条目
+ * id 迁移、blob 引用需 BlobStore 等）返回 null。
  */
 export const readSessionEventRows = async (
   filePath: string,

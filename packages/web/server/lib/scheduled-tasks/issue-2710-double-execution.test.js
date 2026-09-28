@@ -14,6 +14,16 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
  * before creating a session, so the second instance skips.
  */
 
+/**
+ * 【测试套件】#2710 回归：每日定时任务在到点时刻被执行两次。
+ * 根因：每个 OMPChamber 服务进程各自持有定时器——共享同一磁盘项目配置的两个实例
+ * （如 CLI serve 3000 端口 + Electron 57123 端口，或开机自启服务 + 桌面端）
+ * 会为同一 occurrence 各自布防并同时派发。
+ * 修复：定时派发在创建会话前先在共享项目配置中声明 occurrence
+ * （lastScheduledFor + 前移 nextRunAt，跨进程写锁下完成），后到实例因此跳过。
+ */
+
+// vi.hoisted 的伪 SDK：记录每次 session.create 的时间戳，并 mock 本地引擎 client（无命令注册，回落 prompt_async）。
 const sdk = vi.hoisted(() => ({
   sessionCreates: [],
   createLocalEngineClient: () => ({
@@ -33,10 +43,14 @@ vi.mock('../opencode/local-engine-client.js', () => ({
 
 import { createScheduledTasksRuntime } from './runtime.js';
 
+// 以 UTC 分量构造毫秒时间戳的快捷函数。
 const UTC = (y, mo, d, h, mi, s = 0) => Date.UTC(y, mo, d, h, mi, s);
+// 一分钟的毫秒数。
 const MINUTE = 60_000;
+// 一小时的毫秒数。
 const HOUR = 3_600_000;
 
+/** 构造默认启用的 daily 测试任务（UTC 时区、id task-1、prompt 型执行），schedule 参数可覆盖 kind/times 等。 */
 const makeTask = (schedule) => ({
   id: 'task-1',
   name: 'Daily Sync',
@@ -47,12 +61,17 @@ const makeTask = (schedule) => ({
 });
 
 /**
+ * 共享磁盘存储替身：两个 runtime 必须看到同一份任务状态，
+ * occurrence 声明才能像真实项目配置那样把派发串行化。
+ */
+/**
  * Shared on-disk store stand-in. Both runtimes must see the same task state so
  * occurrence claiming can serialize dispatches the way real project config does.
  */
 const createSharedProjectConfigRuntime = (initialTask) => {
   let currentTask = structuredClone(initialTask);
 
+  // 把 state patch 叠加到当前任务上（保留 updatedAt=now），显式 undefined 会清除可选数字字段。
   const applyPatch = (patch) => {
     const nextState = {
       ...(currentTask.state || {}),
@@ -93,6 +112,7 @@ const createSharedProjectConfigRuntime = (initialTask) => {
   };
 };
 
+/** 组装 createScheduledTasksRuntime 的 deps：单项目 p1 -> /repo，静默 logger，直通就绪的引擎桩。 */
 const createRuntimeDeps = (projectConfigRuntime) => ({
   projectConfigRuntime,
   listProjects: vi.fn(async () => [{ id: 'p1', path: '/repo' }]),
@@ -104,6 +124,7 @@ const createRuntimeDeps = (projectConfigRuntime) => ({
   logger: { info: () => {}, warn: () => {}, error: () => {} },
 });
 
+/** 启动 count 个共享同一 projectConfigRuntime 的 runtime 实例（模拟多服务进程），返回 { runtimes, projectConfigRuntime }。 */
 const startInstances = async (count, task) => {
   const projectConfigRuntime = createSharedProjectConfigRuntime(task);
   const runtimes = [];
@@ -115,6 +136,7 @@ const startInstances = async (count, task) => {
   return { runtimes, projectConfigRuntime };
 };
 
+// 主 describe：单/双实例下 daily、weekly、cron、once 的恰好一次执行，以及声明失败、状态写入失败、宽限窗口与重挂语义。
 describe('issue 2710: daily scheduled task double execution at the configured time', () => {
   beforeEach(() => {
     vi.useFakeTimers();

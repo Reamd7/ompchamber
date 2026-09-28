@@ -1,9 +1,24 @@
+/**
+ * 远程客户端认证运行时（remote client auth）。
+ *
+ * 管理"远程客户端"（手机 App、桌面端等）与 OMPChamber 服务器之间的
+ * bearer token 生命周期：签发（磁盘上只保存 SHA-256 哈希，明文仅签发时
+ * 返回一次）、认证（常数时间比较）、列举、吊销与清理。状态存放在一个
+ * 0600 权限的 JSON 文件里；所有读改写都经同一个串行队列执行，避免并发
+ * 认证流量覆盖掉并发执行的吊销。
+ */
+/** 令牌存储文件的结构版本号，保留用于将来做格式迁移。 */
 const STORE_VERSION = 1;
+/** 客户端 bearer token 的固定前缀；认证入口先做廉价前缀过滤。 */
 const TOKEN_PREFIX = 'oc_client_';
+/** 生成 token 使用的随机字节数（256 位熵）。 */
 const TOKEN_BYTES = 32;
+/** 客户端显示名称的最大长度，超长直接截断。 */
 const MAX_LABEL_LENGTH = 80;
+/** lastUsedAt 落盘的最小间隔：认证高频时限制写放大（传输方式变化时会立即写）。 */
 const LAST_USED_WRITE_INTERVAL_MS = 60_000;
 
+/** 归一化客户端显示名：非字符串或空白回退为 'Remote client'，超长按 MAX_LABEL_LENGTH 截断。 */
 const normalizeLabel = (value) => {
   if (typeof value !== 'string') return 'Remote client';
   const trimmed = value.trim();
@@ -11,6 +26,7 @@ const normalizeLabel = (value) => {
   return trimmed.length > MAX_LABEL_LENGTH ? trimmed.slice(0, MAX_LABEL_LENGTH) : trimmed;
 };
 
+/** 把任意输入规整为合法的 ISO 时间字符串；为空或无法解析时返回 null。 */
 const normalizeTimestamp = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -19,12 +35,14 @@ const normalizeTimestamp = (value) => {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 };
 
+/** 去除首尾空白后返回非空字符串，否则返回 null（用于可选元数据字段的统一收口）。 */
 const normalizeOptionalString = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/** 提取并归一化客户端元数据（认证方式、配对来源、设备信息、App 版本），缺失字段一律为 null。 */
 const normalizeMetadata = (client) => ({
   authMethod: normalizeOptionalString(client.authMethod),
   pairingId: normalizeOptionalString(client.pairingId),
@@ -34,6 +52,7 @@ const normalizeMetadata = (client) => ({
   appVersion: normalizeOptionalString(client.appVersion),
 });
 
+/** 解析 JSON 字符串；解析失败（存储文件损坏）时返回 null 而不是抛错。 */
 const safeJsonParse = (raw) => {
   try {
     return JSON.parse(raw);
@@ -42,6 +61,10 @@ const safeJsonParse = (raw) => {
   }
 };
 
+/**
+ * 常数时间比较两个十六进制字符串，防止时序侧信道逐字节泄露哈希。
+ * 任一侧不是字符串、或 hex 解码后长度不同（timingSafeEqual 的前置要求）时直接返回 false。
+ */
 const constantTimeEqual = (left, right, crypto) => {
   if (typeof left !== 'string' || typeof right !== 'string') return false;
   const leftBuffer = Buffer.from(left, 'hex');
@@ -50,13 +73,34 @@ const constantTimeEqual = (left, right, crypto) => {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 
+/**
+ * 创建远程客户端认证运行时。
+ *
+ * @param {object} deps 依赖注入，便于测试替换
+ * @param {object} deps.fsPromises 兼容 node:fs/promises 的文件系统接口
+ * @param {object} deps.path 兼容 node:path 的路径工具
+ * @param {object} deps.crypto 兼容 node:crypto 的实现（哈希、随机数、timingSafeEqual）
+ * @param {string} deps.storePath 令牌存储 JSON 文件路径
+ * @returns 认证运行时：authenticateBearerToken / createClient / listClients /
+ *   hasActiveRelayClients / purgeRevokedClients / revokeClient
+ */
 export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storePath }) => {
+  /** 计算 bearer token 的 SHA-256 十六进制哈希；明文 token 永不落盘。 */
   const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+  /** 当前时间的 ISO 字符串（所有时间戳字段的统一格式）。 */
   const nowIso = () => new Date().toISOString();
+  /** 生成 24 位十六进制随机客户端 id。 */
   const generateId = () => crypto.randomBytes(12).toString('hex');
+  /** 生成带 TOKEN_PREFIX 前缀的 base64url 随机 bearer token（仅创建时返回一次）。 */
   const generateToken = () => `${TOKEN_PREFIX}${crypto.randomBytes(TOKEN_BYTES).toString('base64url')}`;
+  // 串行化所有存储写操作的 promise 链尾。
   let storeMutationQueue = Promise.resolve();
 
+  /**
+   * 把一次存储变更放入全局串行队列：等此前所有变更完成后执行 fn，
+   * 无论成败都在 finally 里释放队列。保证 read-modify-write 不交错
+   * （例如并发认证期间发起的吊销不会被覆盖回来）。
+   */
   const withStoreMutation = async (fn) => {
     const previous = storeMutationQueue;
     let release;
@@ -71,6 +115,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     }
   };
 
+  /** 把磁盘上的任意 JSON 规整为当前版本的存储结构，逐字段校验并补默认值；没有有效 tokenHash 的记录被丢弃。 */
   const normalizeStore = (payload) => ({
     version: STORE_VERSION,
     clients: Array.isArray(payload?.clients)
@@ -94,6 +139,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
       : [],
   });
 
+  /** 读取并归一化存储文件；文件不存在（ENOENT）视作空存储，其它错误原样上抛。 */
   const readStore = async () => {
     try {
       const raw = await fsPromises.readFile(storePath, 'utf8');
@@ -104,6 +150,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     }
   };
 
+  /** 写回存储：先递归创建 0700 目录，再以 0600 权限写入；最后再补一次 chmod（容忍不支持它的实现，失败忽略）。 */
   const writeStore = async (store) => {
     await fsPromises.mkdir(path.dirname(storePath), { recursive: true, mode: 0o700 });
     await fsPromises.writeFile(storePath, JSON.stringify(normalizeStore(store), null, 2), { mode: 0o600 });
@@ -112,6 +159,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     }
   };
 
+  /** 投影出对外安全的客户端字段；刻意不含 tokenHash 等敏感信息。 */
   const publicClient = (client) => ({
     id: client.id,
     label: client.label,
@@ -130,6 +178,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     lastTransport: client.lastTransport ?? null,
   });
 
+  /** 列出全部客户端的公开视图（含已吊销的）。 */
   const listClients = async () => {
     return withStoreMutation(async () => {
       const store = await readStore();
@@ -142,6 +191,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
   // through the relay tunnel (lastTransport). The observed transport is the
   // authoritative signal — it covers records written before usesRelay existed
   // and devices re-paired via a QR that carried no relay candidate.
+  /** 是否存在活跃的 relay 客户端：未被吊销、未过期，且配对时走 relay 或最近实际经 relay 隧道连过。 */
   const hasActiveRelayClients = async () => {
     return withStoreMutation(async () => {
       const store = await readStore();
@@ -155,6 +205,12 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     });
   };
 
+  /**
+   * 签发一个新客户端 token：生成随机 token，只落盘其哈希。
+   * 带 dedupeKey 时替换同设备的旧记录（一台设备一条）；label 取值优先级为
+   * 显式传入 > 被替换记录的原 label > fallbackLabel。
+   * @returns {{ client: object, token: string }} 公开客户端记录与明文 token（仅此一次返回）
+   */
   const createClient = async ({
     label,
     fallbackLabel,
@@ -215,6 +271,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     });
   };
 
+  /** 按 id 吊销客户端（幂等，只补写 revokedAt 时间戳）；id 无效或记录不存在时返回 { revoked: false }。 */
   const revokeClient = async (id) => {
     if (typeof id !== 'string' || id.trim().length === 0) {
       return { revoked: false };
@@ -229,6 +286,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     });
   };
 
+  /** 物理删除所有已吊销记录；返回删除条数（为 0 时不写盘）。 */
   const purgeRevokedClients = async () => {
     return withStoreMutation(async () => {
       const store = await readStore();
@@ -242,6 +300,15 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     });
   };
 
+  /**
+   * 校验 bearer token 并返回认证上下文；前缀不符、哈希不匹配、已吊销或已过期时返回 null。
+   * 请求头带 x-ompchamber-relay-connection 即判定为 relay 传输，并据此自愈 usesRelay
+   * （粘性：之后的 direct 请求不会翻转回来）；lastUsedAt/lastTransport 按节流间隔落盘，
+   * 传输方式变化时立即写。
+   * @param {string} token 客户端 bearer token
+   * @param {object} [req] 请求对象，用于识别传输方式（relay vs direct）
+   * @returns {Promise<{ok:true,clientId:string,sessionToken:string,client:object}|null>}
+   */
   const authenticateBearerToken = async (token, req) => {
     if (typeof token !== 'string' || !token.startsWith(TOKEN_PREFIX)) {
       return null;

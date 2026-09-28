@@ -1,9 +1,18 @@
+/**
+ * OpenCode 环境运行时（env-runtime.js）的单元测试套件。
+ *
+ * 覆盖 PATH 搜索、登录 shell 环境快照应用（AppImage ARGV0 清理）、
+ * omp host 运行时（bun / opencode CLI）的解析优先级，以及 Windows
+ * cmd shim 启动规格的解析。通过临时目录和注入的 spawnSync / homedir
+ * 桩隔离真实环境，避免依赖宿主机安装状态。
+ */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenCodeEnvRuntime } from './env-runtime.js';
 
+// 快照备份：记录被测代码会读取或篡改的环境变量与 process 属性，afterEach 中逐一恢复原值。
 const originalOpencodeBinary = process.env.OPENCODE_BINARY;
 const originalComSpec = process.env.ComSpec;
 const originalPath = process.env.PATH;
@@ -15,20 +24,31 @@ const originalWslBinary = process.env.WSL_BINARY;
 const originalOMPChamberWslBinary = process.env.OMPCHAMBER_WSL_BINARY;
 const originalPlatform = process.platform;
 const tempDirs = [];
+/** 条件用例辅助：condition 为真返回 it，否则返回 it.skip（在该环境跳过用例）。 */
 const itIf = (condition) => condition ? it : it.skip;
 
+/**
+ * 在系统临时目录下创建带前缀的临时目录，并登记进 tempDirs 供 afterEach 统一清理。
+ * @param {string} prefix 传给 fs.mkdtempSync 的目录名前缀
+ * @returns {string} 新建临时目录的绝对路径
+ */
 const createTempDir = (prefix) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
 };
 
+/**
+ * 用 Object.defineProperty 覆写 process.platform 以模拟指定平台；afterEach 会恢复原值。
+ * @param {string} platform 目标平台标识，如 'win32'、'darwin'
+ */
 const setPlatform = (platform) => {
   Object.defineProperty(process, 'platform', {
     value: platform,
   });
 };
 
+/** 每个用例结束后恢复被覆写的 process.platform / resourcesPath、全部快照环境变量，并递归删除临时目录。 */
 afterEach(() => {
   Object.defineProperty(process, 'platform', {
     value: originalPlatform,
@@ -92,6 +112,13 @@ afterEach(() => {
   }
 });
 
+/**
+ * 构造注入桩依赖的 createOpenCodeEnvRuntime 实例：state 捕获各解析结果快照，
+ * settings 作为磁盘设置读取桩的返回值，spawnSync / homedir 可按需覆盖。
+ * @param {object} settings readSettingsFromDiskMigrated 桩返回的设置对象
+ * @param {object} [options] 可选的 spawnSync / homedir 覆盖项
+ * @returns {{ runtime: object, state: object }} 运行时实例与状态捕获对象
+ */
 const createRuntime = (settings, options = {}) => {
   const state = {
     cachedLoginShellEnvSnapshot: null,
@@ -113,6 +140,7 @@ const createRuntime = (settings, options = {}) => {
   return { runtime, state };
 };
 
+/** 验证环境运行时的 PATH 搜索、ARGV0 清理、CLI 解析优先级与 Windows shim 启动规格。 */
 describe('OpenCode env runtime', () => {
   it('searches an explicit PATH without mutating the process environment', () => {
     const defaultDir = createTempDir('ompchamber-default-path-');

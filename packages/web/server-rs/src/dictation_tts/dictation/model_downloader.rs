@@ -4,6 +4,12 @@
 //! verified and renamed into place. An interrupted or failed extraction must
 //! never leave partial files at the final path (the installed check only
 //! verifies file presence).
+//!
+//! 中文说明：本地模型下载器（移植自
+//! `server/lib/dictation/local/model-downloader.js`）。用 reqwest 流式下载
+//! k2-fsa 的 `.tar.bz2` 归档（带进度回调），用系统 `tar` 解压到带时间戳的
+//! 暂存目录，校验必需文件齐全后再原子改名到位。任何失败路径都会清理
+//! 暂存目录并丢弃可疑的缓存归档，保证最终路径不残留半成品。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,8 +19,11 @@ use tokio::io::AsyncWriteExt;
 
 use super::model_catalog::local_model_spec;
 
+/// 下载进度回调：参数为（已下载字节数, 总字节数 `Option`）。
 pub type ProgressFn = Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
+/// 检查模型目录是否含全部必需文件：文件角色须存在且非空，
+/// 目录角色（如 espeak-ng-data）存在即可。
 async fn has_required_files(model_dir: &Path, required_files: &[&str]) -> bool {
     let mut results = Vec::with_capacity(required_files.len());
     for rel in required_files {
@@ -28,6 +37,7 @@ async fn has_required_files(model_dir: &Path, required_files: &[&str]) -> bool {
     results.into_iter().all(|ok| ok)
 }
 
+/// 路径存在、是普通文件且非空。
 async fn is_non_empty_file(path: &Path) -> bool {
     match tokio::fs::metadata(path).await {
         Ok(metadata) => metadata.is_file() && metadata.len() > 0,
@@ -35,6 +45,8 @@ async fn is_non_empty_file(path: &Path) -> bool {
     }
 }
 
+/// 流式下载 url 到 output_path：先写 `.tmp-<毫秒>` 临时文件再原子改名，
+/// 非 2xx 返回带状态码的错误，每收到一个 chunk 触发一次进度回调。
 async fn download_to_file(
     http: &reqwest::Client,
     url: &str,
@@ -87,6 +99,8 @@ async fn download_to_file(
     Ok(())
 }
 
+/// 调用系统 `tar xf` 把归档解压到 dest_dir；启动失败或非零退出码
+/// 均返回 Err。
 async fn extract_tar_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dest_dir)
         .await
@@ -113,6 +127,8 @@ async fn extract_tar_archive(archive_path: &Path, dest_dir: &Path) -> Result<(),
 
 /// `isLocalSttModelInstalled` — whether a model is fully installed (all
 /// required files present).
+///
+/// 中文说明：未知模型 id 直接视为未安装；判定只看文件完整性。
 pub async fn is_local_model_installed(models_dir: &Path, model_id: &str) -> bool {
     let Ok(spec) = local_model_spec(model_id) else {
         return false;
@@ -120,6 +136,7 @@ pub async fn is_local_model_installed(models_dir: &Path, model_id: &str) -> bool
     has_required_files(&models_dir.join(spec.extracted_dir), &spec.required_files()).await
 }
 
+/// 当前 Unix 毫秒时间戳（取值失败为 0），用于临时文件/暂存目录命名。
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -129,6 +146,9 @@ fn now_ms() -> u64 {
 
 /// `ensureLocalSttModel`: ensure a model is downloaded and extracted;
 /// resolves with the model dir.
+///
+/// 中文说明：已安装则直接返回目录；残留半成品目录先清除；缓存归档可
+/// 复用，但暂存内容缺文件或解压失败都会删除归档，让下次重下。
 pub async fn ensure_local_model(
     models_dir: &Path,
     model_id: &str,
@@ -191,11 +211,14 @@ pub async fn ensure_local_model(
     Ok(model_dir)
 }
 
+/// 下载器契约测试：安装判定的文件完整性规则与未知模型拒绝。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 创建唯一的临时目录（静态计数器 + 进程 id 去重）。
     fn temp_dir(label: &str) -> PathBuf {
+        // 临时目录名的去重计数器（嵌套于 temp_dir，随首调用初始化）。
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-dictation-dl-{label}-{}-{}",
@@ -206,6 +229,7 @@ mod tests {
         dir
     }
 
+    /// 验证：安装判定要求每个必需文件存在且非空，缺一即未安装。
     #[tokio::test]
     async fn install_check_requires_every_file_nonempty() {
         let dir = temp_dir("install");
@@ -231,6 +255,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir);
     }
 
+    /// 验证：目录角色（espeak-ng-data）存在即满足安装判定。
     #[tokio::test]
     async fn install_check_accepts_directory_roles() {
         let dir = temp_dir("dir-role");
@@ -246,6 +271,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir);
     }
 
+    /// 验证：未知模型 id 返回 JS 同款错误文案。
     #[tokio::test]
     async fn ensure_rejects_unknown_models() {
         let dir = temp_dir("unknown");

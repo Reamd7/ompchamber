@@ -1,5 +1,17 @@
+/**
+ * GitHub remote URL 解析模块。
+ *
+ * 把 git remote 配置中的 SSH/HTTPS 形态地址解析为 { owner, repo, url }
+ * 结构，并组合 git/index.js 的 getRemoteUrl 提供目录级的仓库解析。
+ */
 import { getRemoteUrl } from '../../git/index.js';
 
+/**
+ * 解析 GitHub remote URL 为 { owner, repo, url }：支持
+ * git@github.com:、ssh://git@github.com/ 与 https://github.com/ 三种
+ * 形态并容忍 .git 后缀，url 统一规整为 https 页面地址；非 GitHub
+ * 地址或路径缺少 owner/repo 时返回 null。
+ */
 export const parseGitHubRemoteUrl = (raw) => {
   if (typeof raw !== 'string') {
     return null;
@@ -43,6 +55,10 @@ export const parseGitHubRemoteUrl = (raw) => {
   }
 };
 
+/**
+ * 读取目录某 remote 的 URL 并解析出 GitHub 仓库；remote 不存在或不是
+ * GitHub 仓库时 repo 为 null（remoteUrl 尽量返回原始值，便于诊断）。
+ */
 export async function resolveGitHubRepoFromDirectory(directory, remoteName = 'origin') {
   const remoteUrl = await getRemoteUrl(directory, remoteName).catch(() => null);
   if (!remoteUrl) {

@@ -23,6 +23,8 @@ use crate::settings::normalization::{
 
 /// Lenient JSON body read: a blank/absent body is `{}` (Express leaves
 /// `req.body` undefined for non-JSON requests); a malformed JSON body is 400.
+/// 宽松读取 JSON 请求体：空白/缺省体视为 `{}`（Express 对非 JSON 请求
+/// 把 req.body 留空）；非法 JSON 映射为 400。
 pub(crate) async fn read_json_body(request: Request) -> Result<Value, AppError> {
     let bytes = axum::body::to_bytes(request.into_body(), 64 * 1024 * 1024)
         .await
@@ -37,13 +39,18 @@ pub(crate) async fn read_json_body(request: Request) -> Result<Value, AppError> 
 #[derive(Debug)]
 pub struct ValidatedDirectory {
     /// Canonical (realpath) directory — what gets persisted.
+    /// 规范（realpath）目录——持久化使用的最终形态。
     pub directory: PathBuf,
     /// Pre-realpath candidate the caller asked for.
+    /// 调用方原始请求（realpath 之前）的词法解析结果。
     pub requested_directory: PathBuf,
 }
 
 /// `validateDirectoryPath` (project-directory-runtime.js): required, must be an
 /// existing directory; returns the realpath.
+/// project-directory-runtime.js 的 `validateDirectoryPath`：路径必填且
+/// 必须是已存在的目录，成功时返回 realpath；错误消息与 JS 逐字对齐
+/// （not found / permission denied / not a directory）。
 pub fn validate_directory_path(candidate: &str) -> Result<ValidatedDirectory, String> {
     let normalized = normalize_directory_path(candidate);
     if normalized.is_empty() {
@@ -74,6 +81,8 @@ pub fn validate_directory_path(candidate: &str) -> Result<ValidatedDirectory, St
 }
 
 /// `readSettingsFromDisk` (lenient): every failure maps to `{}`.
+/// `readSettingsFromDisk`（宽松语义）：读取失败、解析失败或非对象都
+/// 归一为空对象。
 pub(crate) fn read_settings(settings_path: &Path) -> Map<String, Value> {
     std::fs::read_to_string(settings_path)
         .ok()
@@ -87,6 +96,9 @@ pub(crate) fn read_settings(settings_path: &Path) -> Map<String, Value> {
 
 /// `writeSettingsToDisk`: mkdir `0700`, atomic tmp+rename, `0600` file mode,
 /// 2-space pretty JSON like `JSON.stringify(settings, null, 2)`.
+/// `writeSettingsToDisk`：mkdir 0700、临时文件 + rename 原子写、0600
+/// 文件权限、两空格缩进的 pretty JSON（同 JSON.stringify(settings,
+/// null, 2)）；rename 失败时清理临时文件。
 pub(crate) fn write_settings(
     settings_path: &Path,
     settings: &Map<String, Value>,
@@ -129,11 +141,15 @@ pub(crate) fn write_settings(
     rename_result
 }
 
+/// 该 data 目录下 settings.json 的路径。
 fn settings_path(ctx: &RouterContext) -> PathBuf {
     ctx.config.data_dir.join("settings.json")
 }
 
 /// `POST /api/opencode/directory`.
+/// `POST /api/opencode/directory`：校验路径（可选先递归创建目录）→
+/// 更新 projects/activeProjectId/lastDirectory → 原子写盘 → 返回完整
+/// settings；校验失败 400、建目录或写盘失败 500。
 pub(crate) async fn set_directory(State(ctx): State<RouterContext>, request: Request) -> Response {
     let body = match read_json_body(request).await {
         Ok(body) => body,
@@ -248,6 +264,7 @@ pub(crate) async fn set_directory(State(ctx): State<RouterContext>, request: Req
         .into_response()
 }
 
+/// directory 路由与路径工具的测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +274,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Method, Request as HttpRequest};
 
+/// 以 JSON body POST /api/opencode/directory 并返回 (状态码, body)。
     async fn post_directory(ctx: crate::context::RouterContext, body: &str) -> (StatusCode, Value) {
         let request = HttpRequest::builder()
             .method(Method::POST)
@@ -267,6 +285,7 @@ mod tests {
         json_response(router(ctx), request).await
     }
 
+/// 验证路径归一：剥引号、展开 `~`、纯空白返回空串。
     #[test]
     fn validate_directory_path_errors_match_js_shapes() {
         let root = temp_dir("validate");
@@ -339,6 +358,8 @@ mod tests {
         assert_eq!(body, serde_json::json!({ "error": "Path is required" }));
     }
 
+/// 验证激活已有目录会新建/复用项目条目并写盘，重复激活不产生重复
+/// 条目。
     #[tokio::test]
     async fn directory_route_activates_existing_project_and_persists_settings() {
         let data_dir = temp_dir("dir-route-activate");
@@ -404,6 +425,7 @@ mod tests {
         );
     }
 
+/// 验证 create:true 先递归创建目录再激活。
     #[tokio::test]
     async fn directory_route_create_flag_makes_missing_directory() {
         let data_dir = temp_dir("dir-route-create");
@@ -432,6 +454,7 @@ mod tests {
         );
     }
 
+/// 验证写盘保留 settings.json 中的未知字段，且失效的项目条目被剔除。
     #[tokio::test]
     async fn directory_route_preserves_unknown_settings_fields() {
         let data_dir = temp_dir("dir-route-preserve");

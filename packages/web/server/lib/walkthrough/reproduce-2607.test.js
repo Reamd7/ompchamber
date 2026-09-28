@@ -1,3 +1,10 @@
+/**
+ * issue 2607 的回归测试：walkthrough 小模型所属 provider 无可用登录时，
+ * 修复前就绪度误报 ready 且生成返回 500 原始报错；修复后就绪度以
+ * no-provider-login 拒绝、生成与路由返回 401 结构化错误（code、model），
+ * UI 可据此显示阻断提示。用真实 git 仓库 + mock 的模型目录（deepseek 无
+ * 登录）复现。
+ */
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -18,10 +25,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 // answers 401 with the same structured code so the UI can show a blocker.
 // ---------------------------------------------------------------------------
 
+/** 隔离的临时 HOME，防止读到真实 ~/.config 下的 opencode 登录与设置。 */
 const TEMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-home-2607-'));
+// HOME 与数据目录都指向临时目录；被测模块加载时即读取。
 process.env.HOME = TEMP_HOME;
 process.env.OMPCHAMBER_DATA_DIR = path.join(TEMP_HOME, '.config', 'ompchamber');
 
+/** mock 的模型目录：只有 deepseek 一个 provider，且不带任何登录凭据。 */
 const CATALOG = {
   deepseek: {
     id: 'deepseek',
@@ -42,9 +52,12 @@ vi.mock('../../opencode/models-metadata.js', () => ({
   getModelsMetadata: vi.fn(async () => ({ metadata: CATALOG, fromCache: false })),
 }));
 
+/** 测试用来源：working-tree 全部改动。 */
 const SOURCE = { kind: 'working-tree', scope: 'all' };
+/** 临时 git 仓库目录，由 setupGitRepo 初始化并留下一处未暂存修改。 */
 const REPO_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-repo-2607-'));
 
+/** 初始化临时 git 仓库（init/config/首次提交）并写出第二版文件制造 working-tree diff。 */
 const setupGitRepo = () => {
   const run = (args) => {
     try {
@@ -64,9 +77,12 @@ const setupGitRepo = () => {
   fs.writeFileSync(path.join(REPO_DIR, 'src', 'a.ts'), 'export const a = 1;\nexport const b = 2;\n', 'utf8');
 };
 
+/** 被测 walkthrough 服务模块（beforeAll 中动态导入）。 */
 let walkthrough;
+/** small-model 调用层模块（beforeAll 中动态导入）。 */
 let callSmallModel;
 
+/** 修复后的行为：就绪度拒绝、调用层与生成层抛结构化 no-provider-login、路由答 401。 */
 describe('issue 2607 — walkthrough blocks unauthenticated providers', () => {
   beforeAll(async () => {
     setupGitRepo();

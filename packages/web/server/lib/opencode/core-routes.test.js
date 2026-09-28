@@ -1,10 +1,23 @@
+/**
+ * core-routes.js（认证与系统路由注册）的集成测试。
+ *
+ * 用 supertest 驱动真实 Express app，覆盖：/api/system/shutdown 的 UI 与
+ * tunnel 认证门槛、snippet 与自定义 provider 路由的 JSON body 解析、回环
+ * preview URL 探测（API 认证前置、200-599 状态码均视为 ok）、设备配对会话
+ * （创建/兑换/取消、serverUrl 候选排序去重与 relay 候选、按地址与 pairingId
+ * 的兑换限流、通用错误响应）、远程客户端令牌的创建/列表/撤销/清空与
+ * desktop-local 特权范围、passkey 路由的会话认证，以及 /api/system/info
+ * 对端口与 tunnel URL 的上报。
+ */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createTunnelAuth } from './tunnel-auth.js';
 import { registerAuthAndAccessRoutes, registerCommonRequestMiddleware, registerServerStatusRoutes } from './core-routes.js';
 
+/** 覆盖系统关停、JSON body 解析、回环 preview 探测与设备配对会话等核心路由的认证与行为契约。 */
 describe('core-routes', () => {
+  // 每个用例后恢复 vitest 真实定时器（配对限流用例使用 fake timers）。
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -261,6 +274,12 @@ describe('core-routes', () => {
     }
   });
 
+  /**
+   * 搭建注册了配对（pairing）相关路由的 Express app。
+   * 依赖集合全部以 vi.fn 占位（tunnel/ui 认证控制器、远程客户端运行时、
+   * 配对运行时），overrides 可逐项替换；返回 { app, dependencies }
+   * 便于用例断言各 mock 的调用参数。
+   */
   const createPairingRouteApp = (overrides = {}) => {
     const app = express();
     const dependencies = {
@@ -538,7 +557,14 @@ describe('core-routes', () => {
   });
 });
 
+/** 覆盖远程客户端令牌（client token）与连接候选上报、passkey 路由认证及 /api/system/info 元数据。 */
 describe('client auth routes', () => {
+  /**
+   * 构造 client-auth 路由所需的依赖集合：内存版 clients 存储实现创建/
+   * 撤销/清空、默认放行的认证中间件、可注入的 resolveAuthContext，
+   * 以及各 ui/tunnel 控制器的内联处理器。testHooks 暴露 clients 数组与
+   * 认证 mock 供用例断言。
+   */
   const createDependencies = (options = {}) => {
     const clients = [];
     const requireAuth = vi.fn((_req, _res, next) => next());

@@ -1,5 +1,14 @@
+/**
+ * findBranchPrCandidates（open PR 与历史 PR 的取舍）单元测试套件。
+ *
+ * 通过 mock pulls.list 与模块内缓存，验证：open PR 优先且不为它花费
+ * 历史查询、共享 open 列表不完整时由 per-head 查询兜底、历史记录取
+ * 最新一条、历史缓存命中与过期的差异化 TTL 行为，以及次级目标不查询
+ * 历史。
+ */
 import { afterEach, beforeEach, describe, expect, mock, test, vi } from 'bun:test';
 
+/** octokit.rest.pulls.list 的 mock：默认返回空列表，各用例按 state/head 参数改写实现。 */
 const listMock = mock(async () => ({ data: [] }));
 
 mock.module('../git/index.js', () => ({
@@ -15,8 +24,10 @@ mock.module('./rate-limit.js', () => ({
   noteIfGitHubRateLimit: () => {},
 }));
 
+// 在 mock.module 生效后动态加载被测模块。
 const { findBranchPrCandidates, invalidateRepoPullsCache } = await import('./pr-status.js');
 
+/** 测试数据：acme/app 仓库 feature 分支上的一条 open PR（#15）。 */
 const openPr = {
   number: 15,
   state: 'open',
@@ -28,6 +39,7 @@ const openPr = {
   },
 };
 
+/** 测试数据：同一 head 已合并的 PR（#12），作为历史记录候选。 */
 const mergedPr = {
   number: 12,
   state: 'closed',
@@ -40,12 +52,14 @@ const mergedPr = {
   },
 };
 
+/** 测试数据：更早合并的同分支 PR（#7），用于验证历史只取最新一条。 */
 const olderMergedPr = {
   ...mergedPr,
   number: 7,
   merged_at: '2025-11-01T00:00:00Z',
 };
 
+/** 以默认参数调用 findBranchPrCandidates，并允许用例按需覆盖单项。 */
 const call = (overrides = {}) => findBranchPrCandidates({
   octokit: { rest: { pulls: { list: listMock } } },
   target: { repo: { owner: 'acme', repo: 'app' }, remoteName: 'origin' },
@@ -56,6 +70,7 @@ const call = (overrides = {}) => findBranchPrCandidates({
   ...overrides,
 });
 
+/** findBranchPrCandidates 在 open PR 与历史 PR 之间的取舍行为。 */
 describe('findBranchPrCandidates', () => {
   beforeEach(() => {
     listMock.mockReset();

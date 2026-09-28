@@ -2,6 +2,10 @@
 //! acceptance targets: JSONC-tolerant parse + broken-layer isolation,
 //! unknown-field round-trips, worktree-root resolution via an injectable git
 //! runner (see `worktree.rs`), and project-id derivation (`project_id.rs`).
+//!
+//! （中文说明）移植 `server/lib/projects/project-config.test.js`，并覆盖验收
+//! 目标：JSONC 容错解析与损坏层隔离、未知字段往返保留、经可注入 git runner
+//! 的 worktree 根解析（见 `worktree.rs`）、以及项目 id 派生（`project_id.rs`）。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,11 +17,15 @@ use serde_json::{Value, json};
 use super::runtime::ProjectConfigRuntime;
 use super::{Execution, LoopEntry, Schedule, ScheduledTask};
 
+/// 临时目录命名用的全局递增计数器：让同进程内并发测试各自拿到唯一目录。
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 测试用临时目录守卫（元组字段即目录路径）：创建时生成唯一路径，Drop 时递归删除。
 struct TempDir(PathBuf);
 
+/// 临时目录的构造与路径访问。
 impl TempDir {
+    /// 在系统临时目录下创建带 tag、进程 id 与递增计数的唯一目录；创建失败即 panic。
     fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "oc-projects-{}-{}-{}",
@@ -29,22 +37,27 @@ impl TempDir {
         TempDir(path)
     }
 
+    /// 返回临时目录的路径。
     fn path(&self) -> &Path {
         &self.0
     }
 }
 
+/// 测试结束（含 panic 展开）时自动清理临时目录。
 impl Drop for TempDir {
+    /// 递归删除临时目录，忽略删除失败（不阻塞测试收尾）。
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+/// 构建指向 `dir` 的测试 runtime，并把任务 id 工厂固定为 `task-fixed-id` 便于断言。
 fn test_runtime(dir: &Path) -> ProjectConfigRuntime {
     ProjectConfigRuntime::new(dir.to_path_buf())
         .with_task_id_factory(Arc::new(|| "task-fixed-id".to_string()))
 }
 
+/// 生成一个每日 09:30（UTC）执行的示例任务 JSON。
 fn daily_task(name: &str) -> Value {
     json!({
         "name": name,
@@ -54,6 +67,7 @@ fn daily_task(name: &str) -> Value {
     })
 }
 
+/// 生成名为 `name` 的 markdown loop 条目（cron `0 9 * * *`，UTC）。
 fn loop_entry(name: &str) -> LoopEntry {
     LoopEntry {
         scope: "project".to_string(),
@@ -71,10 +85,12 @@ fn loop_entry(name: &str) -> LoopEntry {
     }
 }
 
+/// 读取并解析磁盘上的项目配置 JSON；失败即 panic（仅供测试断言使用）。
 fn read_stored(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// 断言任务为 daily 调度并取出其 times 列表，否则 panic。
 fn daily_times(task: &ScheduledTask) -> &[String] {
     match &task.schedule {
         Schedule::Daily { times, .. } => times,
@@ -82,6 +98,7 @@ fn daily_times(task: &ScheduledTask) -> &[String] {
     }
 }
 
+/// 新建任务会持久化，重新读取后 id、名称、时区与触发时间保持一致。
 #[tokio::test]
 async fn creates_and_persists_a_scheduled_task() {
     let temp = TempDir::new("create");
@@ -100,6 +117,7 @@ async fn creates_and_persists_a_scheduled_task() {
     assert_eq!(daily_times(&reloaded[0]), &["09:30".to_string()]);
 }
 
+/// 非法 cron 表达式被拒绝，错误信息指向 `schedule.cron`。
 #[tokio::test]
 async fn rejects_invalid_cron_expressions() {
     let temp = TempDir::new("cron-invalid");
@@ -122,6 +140,7 @@ async fn rejects_invalid_cron_expressions() {
     );
 }
 
+/// 合法 cron 被接受，而永不匹配的日期（2 月 31 日）被判定为非法。
 #[tokio::test]
 async fn accepts_valid_cron_and_rejects_impossible_dates() {
     let temp = TempDir::new("cron-valid");
@@ -154,6 +173,7 @@ async fn accepts_valid_cron_and_rejects_impossible_dates() {
     assert!(impossible.to_string().contains("schedule.cron is invalid"));
 }
 
+/// 写入任务时保留配置文件里本构建不认识的所有顶层键（notes/todos/actions 等）。
 #[tokio::test]
 async fn preserves_unknown_project_config_keys_when_writing() {
     let temp = TempDir::new("preserve-keys");
@@ -193,6 +213,7 @@ async fn preserves_unknown_project_config_keys_when_writing() {
     assert_eq!(raw["version"], 1);
 }
 
+/// 读取列表不改动已存储的 state 时间戳（createdAt/updatedAt 原样往返）。
 #[tokio::test]
 async fn preserves_scheduled_task_state_timestamps_when_listing() {
     let temp = TempDir::new("timestamps");
@@ -222,6 +243,7 @@ async fn preserves_scheduled_task_state_timestamps_when_listing() {
     assert_eq!(second[0].state.updated_at, 20);
 }
 
+/// `modelRole=default` 的执行配置无需显式 providerID/modelID 即可保存。
 #[tokio::test]
 async fn persists_model_role_default_tasks_without_explicit_identifiers() {
     let temp = TempDir::new("model-role");
@@ -249,6 +271,7 @@ async fn persists_model_role_default_tasks_without_explicit_identifiers() {
     assert!(tasks[0].execution.model_id.is_none());
 }
 
+/// 既无 providerID 又无 `modelRole=default` 的执行配置被拒绝。
 #[tokio::test]
 async fn rejects_identifier_free_execution_without_model_role_default() {
     let temp = TempDir::new("model-missing");
@@ -272,6 +295,7 @@ async fn rejects_identifier_free_execution_without_model_role_default() {
     );
 }
 
+/// 半指定模型（只有 providerID 缺 modelID）被拒绝。
 #[tokio::test]
 async fn rejects_half_pinned_models() {
     let temp = TempDir::new("model-half");
@@ -291,6 +315,7 @@ async fn rejects_half_pinned_models() {
     assert!(error.to_string().contains("execution.modelID is required"));
 }
 
+/// once 调度接受 date+time+timezone 并原样保留。
 #[tokio::test]
 async fn accepts_one_time_schedule_with_date_and_time() {
     let temp = TempDir::new("once");
@@ -321,6 +346,7 @@ async fn accepts_one_time_schedule_with_date_and_time() {
     }
 }
 
+/// once 调度拒绝不存在的日期（2 月 30 日）与非法时间（24:00）。
 #[tokio::test]
 async fn rejects_impossible_once_dates_and_times() {
     let temp = TempDir::new("once-bad");
@@ -358,6 +384,7 @@ async fn rejects_impossible_once_dates_and_times() {
     );
 }
 
+/// JSONC（行/块注释与尾逗号）配置可读取，且随后的写入保留未知键。
 #[tokio::test]
 async fn jsonc_tolerant_parse_accepts_comments_and_trailing_commas() {
     let temp = TempDir::new("jsonc");
@@ -398,6 +425,7 @@ async fn jsonc_tolerant_parse_accepts_comments_and_trailing_commas() {
     assert_eq!(raw["scheduledTasks"].as_array().unwrap().len(), 2);
 }
 
+/// 配置文件损坏时读、写两条路径都报错，绝不静默清空或覆盖磁盘上的坏文件。
 #[tokio::test]
 async fn a_broken_config_file_is_an_isolated_error_never_silently_empty() {
     let temp = TempDir::new("broken-file");
@@ -429,6 +457,7 @@ async fn a_broken_config_file_is_an_isolated_error_never_silently_empty() {
     );
 }
 
+/// 单条损坏任务被隔离跳过，合法兄弟任务照常读取且写回时保持原始字节。
 #[tokio::test]
 async fn a_broken_task_is_skipped_in_isolation_without_blocking_valid_siblings() {
     let temp = TempDir::new("broken-task");
@@ -480,6 +509,7 @@ async fn a_broken_task_is_skipped_in_isolation_without_blocking_valid_siblings()
     assert_eq!(stored_good["state"]["createdAt"], 5);
 }
 
+/// 无效 IANA 时区与越界 weekday（0-6 之外）均被拒绝。
 #[tokio::test]
 async fn rejects_invalid_timezones_and_weekdays() {
     let temp = TempDir::new("tz");
@@ -521,6 +551,7 @@ async fn rejects_invalid_timezones_and_weekdays() {
     );
 }
 
+/// weekly 调度对 weekdays 去重排序、times 去重排序，并合并旧版单数 `time` 字段。
 #[tokio::test]
 async fn weekly_weekdays_dedupe_and_sort_and_times_merge_with_legacy_time() {
     let temp = TempDir::new("weekly");
@@ -562,6 +593,7 @@ async fn weekly_weekdays_dedupe_and_sort_and_times_merge_with_legacy_time() {
     }
 }
 
+/// 更新任务时调度里缺省的 times/timezone 回退沿用已存在的值。
 #[tokio::test]
 async fn schedule_updates_fall_back_to_existing_times_and_timezone() {
     let temp = TempDir::new("fallback");
@@ -596,6 +628,7 @@ async fn schedule_updates_fall_back_to_existing_times_and_timezone() {
     }
 }
 
+/// 删除已存在任务返回 `deleted=true` 且列表同步；删除不存在的任务返回 `deleted=false`。
 #[tokio::test]
 async fn delete_removes_a_task_and_reports_missing_ones() {
     let temp = TempDir::new("delete");
@@ -633,6 +666,7 @@ async fn delete_removes_a_task_and_reports_missing_ones() {
     assert!(!missing.deleted);
 }
 
+/// 项目 id 空白或含非法字符报错；带空白的 id 清洗后与原 id 解析到同一文件。
 #[tokio::test]
 async fn task_id_validation_and_sanitization_errors() {
     let temp = TempDir::new("sanitize");
@@ -654,6 +688,7 @@ async fn task_id_validation_and_sanitization_errors() {
 
 // ============== loop reconciliation (JS `project-config loop reconciliation`) ==============
 
+/// 新发现的 loop 生成确定性 id（`loop:<scope>:<name>`）并持久化，state.createdAt > 0。
 #[tokio::test]
 async fn creates_tasks_for_discovered_loops_with_deterministic_ids() {
     let temp = TempDir::new("loop-create");
@@ -683,6 +718,7 @@ async fn creates_tasks_for_discovered_loops_with_deterministic_ids() {
     assert!(reloaded[0].state.created_at > 0);
 }
 
+/// 同名 JSON 任务被 loop 收养：保留原 id 与运行 state，定义以 loop 为准。
 #[tokio::test]
 async fn adopts_an_existing_task_by_name_preserving_id_and_state() {
     let temp = TempDir::new("loop-adopt");
@@ -732,6 +768,7 @@ async fn adopts_an_existing_task_by_name_preserving_id_and_state() {
     );
 }
 
+/// 驱动文件被移除后，loop 来源的任务在下一次 reconcile 时被取消调度。
 #[tokio::test]
 async fn unschedules_a_loop_sourced_task_when_its_file_is_removed() {
     let temp = TempDir::new("loop-remove");
@@ -754,6 +791,7 @@ async fn unschedules_a_loop_sourced_task_when_its_file_is_removed() {
     );
 }
 
+/// 无匹配 loop 时，纯 JSON 配置的任务在 reconcile 后保持不动。
 #[tokio::test]
 async fn leaves_json_configured_tasks_untouched_when_no_loop_matches() {
     let temp = TempDir::new("loop-untouched");
@@ -771,6 +809,7 @@ async fn leaves_json_configured_tasks_untouched_when_no_loop_matches() {
     assert!(tasks.iter().any(|task| task.name == "loop-only"));
 }
 
+/// 被同名 loop 收养过的任务，在 loop 文件消失后随之被移除。
 #[tokio::test]
 async fn removes_a_task_after_a_loop_with_the_same_name_adopted_then_vanished() {
     let temp = TempDir::new("loop-vanish");
@@ -790,6 +829,7 @@ async fn removes_a_task_after_a_loop_with_the_same_name_adopted_then_vanished() 
     assert!(after_removal.iter().all(|task| task.id != created.task.id));
 }
 
+/// 非法 loop 定义被跳过（仅告警），不影响合法 loop 任务的生成。
 #[tokio::test]
 async fn skips_invalid_loop_definitions_without_blocking_valid_ones() {
     let temp = TempDir::new("loop-invalid");
@@ -809,6 +849,7 @@ async fn skips_invalid_loop_definitions_without_blocking_valid_ones() {
     assert_eq!(names, ["good-loop"]);
 }
 
+/// loop 改名时任务原位更新：id 不变，名称跟随 loop 新名。
 #[tokio::test]
 async fn renames_a_loop_sourced_task_in_place_when_the_loop_name_changes() {
     let temp = TempDir::new("loop-rename");
@@ -842,6 +883,7 @@ async fn renames_a_loop_sourced_task_in_place_when_the_loop_name_changes() {
     );
 }
 
+/// UI 对 loop 任务的改名在下一次 reconcile 时被 loop 定义覆盖回原名。
 #[tokio::test]
 async fn reverts_a_ui_rename_of_a_loop_task_back_to_the_loop_name() {
     let temp = TempDir::new("loop-ui-rename");
@@ -881,6 +923,7 @@ async fn reverts_a_ui_rename_of_a_loop_task_back_to_the_loop_name() {
     assert_eq!(after[0].execution.prompt, "Loop prompt for daily-digest");
 }
 
+/// loop 文件存在但暂不可解析（definition 为 None）时保留任务及其运行 state。
 #[tokio::test]
 async fn keeps_a_loop_sourced_task_while_its_file_exists_but_is_unparseable() {
     let temp = TempDir::new("loop-unparseable");
@@ -918,6 +961,7 @@ async fn keeps_a_loop_sourced_task_while_its_file_exists_but_is_unparseable() {
     assert_eq!(after[0].state.last_status, "success");
 }
 
+/// 同一 loop 文件的孤儿重复任务在 reconcile 时被清除。
 #[tokio::test]
 async fn unschedules_orphan_duplicates_of_the_same_loop_file() {
     let temp = TempDir::new("loop-orphan");
@@ -951,6 +995,7 @@ async fn unschedules_orphan_duplicates_of_the_same_loop_file() {
     assert!(!after.iter().any(|task| task.id == "zombie-copy"));
 }
 
+/// 收养 JSON 任务时保留 UI 写入的 execution 扩展字段（variant/goal 等），prompt 以 loop 为准。
 #[tokio::test]
 async fn preserves_ui_only_execution_fields_when_adopting_a_json_task() {
     let temp = TempDir::new("loop-preserve");
@@ -993,6 +1038,8 @@ async fn preserves_ui_only_execution_fields_when_adopting_a_json_task() {
 
 // ============== fields this build does not know ==============
 
+/// 造一个带"未来字段"的任务：先正常写入，再在磁盘原始 JSON 上手工注入本构建
+/// 不认识的 execution/state/顶层字段，返回任务 id 与配置文件路径。
 async fn seed_foreign_task(runtime: &ProjectConfigRuntime) -> (String, PathBuf) {
     let created = runtime
         .upsert_scheduled_task(
@@ -1015,6 +1062,7 @@ async fn seed_foreign_task(runtime: &ProjectConfigRuntime) -> (String, PathBuf) 
     (created.task.id.clone(), file_path)
 }
 
+/// 从磁盘配置按 id 取出单个任务的原始 JSON；不存在即 panic。
 fn read_stored_task(file_path: &Path, id: &str) -> Value {
     let stored = read_stored(file_path);
     stored["scheduledTasks"]
@@ -1026,6 +1074,7 @@ fn read_stored_task(file_path: &Path, id: &str) -> Value {
         .expect("stored task present")
 }
 
+/// 状态更新与条件认领更新都不会丢失任务上的未来（未知）字段。
 #[tokio::test]
 async fn foreign_fields_survive_a_state_update_and_the_claim_update() {
     let temp = TempDir::new("foreign-state");
@@ -1060,6 +1109,7 @@ async fn foreign_fields_survive_a_state_update_and_the_claim_update() {
     assert_eq!(stored["state"]["lastScheduledFor"], 5000);
 }
 
+/// 新增/删除其他任务或空 reconcile 时，未触碰任务上的未来字段原样保留。
 #[tokio::test]
 async fn foreign_fields_survive_writes_that_touch_other_tasks() {
     let temp = TempDir::new("foreign-other");
@@ -1103,6 +1153,7 @@ async fn foreign_fields_survive_writes_that_touch_other_tasks() {
     );
 }
 
+/// 仅当任务本身被显式保存（upsert）时，其上的未来字段才被重新序列化丢弃。
 #[tokio::test]
 async fn foreign_fields_are_dropped_only_when_the_task_itself_is_saved() {
     let temp = TempDir::new("foreign-save");
@@ -1124,6 +1175,7 @@ async fn foreign_fields_are_dropped_only_when_the_task_itself_is_saved() {
 
 // ============== conditional state updates (occurrence claim) ==============
 
+/// 条件状态更新只在谓词通过时写盘；第二次同值认领不产生写入。
 #[tokio::test]
 async fn conditionally_updates_state_only_when_the_predicate_passes() {
     let temp = TempDir::new("claim");
@@ -1168,6 +1220,7 @@ async fn conditionally_updates_state_only_when_the_predicate_passes() {
     assert_eq!(reloaded[0].state.last_scheduled_for, Some(scheduled_for));
 }
 
+/// 目标任务不存在时状态更新返回 `updated=false`；空白 taskId 报 `taskId is required`。
 #[tokio::test]
 async fn state_updates_for_missing_tasks_report_not_updated() {
     let temp = TempDir::new("state-missing");
@@ -1186,6 +1239,7 @@ async fn state_updates_for_missing_tasks_report_not_updated() {
     assert!(error.to_string().contains("taskId is required"));
 }
 
+/// 状态补丁中的 null 会清空可选字段，且序列化结果完全省略被清空的键。
 #[tokio::test]
 async fn null_patch_values_clear_optional_state_fields() {
     let temp = TempDir::new("null-clear");
@@ -1233,6 +1287,7 @@ async fn null_patch_values_clear_optional_state_fields() {
 
 // ============== cross-process locking ==============
 
+/// 计算某项目配置对应的 `<config>.lock` 路径。
 fn lock_path_for(runtime: &ProjectConfigRuntime, project_id: &str) -> PathBuf {
     PathBuf::from(format!(
         "{}.lock",
@@ -1243,6 +1298,7 @@ fn lock_path_for(runtime: &ProjectConfigRuntime, project_id: &str) -> PathBuf {
     ))
 }
 
+/// 共享同一 projects 目录的两个 runtime 并发写同任务不丢失更新，且锁文件随后被清理。
 #[tokio::test]
 async fn serializes_concurrent_writes_across_two_runtimes_sharing_a_projects_dir() {
     let temp = TempDir::new("lock-contention");
@@ -1274,6 +1330,7 @@ async fn serializes_concurrent_writes_across_two_runtimes_sharing_a_projects_dir
     assert!(!lock_path_for(&runtime_a, "project-lock").exists());
 }
 
+/// 锁龄超过阈值的锁被窃取恢复，操作完成后锁文件被清理。
 #[tokio::test]
 async fn recovers_from_a_stale_by_age_project_config_lock_and_cleans_it_up() {
     let temp = TempDir::new("lock-age");
@@ -1294,6 +1351,7 @@ async fn recovers_from_a_stale_by_age_project_config_lock_and_cleans_it_up() {
     assert!(!lock_path.exists());
 }
 
+/// 属主 pid 已死的锁被恢复（即使时间戳是新鲜的，验证 dead-pid 路径）。
 #[tokio::test]
 async fn recovers_from_a_stale_by_dead_pid_project_config_lock() {
     let temp = TempDir::new("lock-pid");
@@ -1327,6 +1385,7 @@ async fn recovers_from_a_stale_by_dead_pid_project_config_lock() {
     assert!(!lock_path.exists());
 }
 
+/// 守卫释放时不会误删已被他人窃取替换的锁文件。
 #[tokio::test]
 async fn release_does_not_unlink_a_lock_stolen_by_another_holder() {
     let temp = TempDir::new("lock-own");
@@ -1350,6 +1409,7 @@ async fn release_does_not_unlink_a_lock_stolen_by_another_holder() {
     );
 }
 
+/// 活着的持锁者不释放时按 JS 消息超时报错；随后写链已释放，后续写入可正常完成。
 #[tokio::test]
 async fn times_out_when_a_live_lock_holder_never_releases_and_then_recovers() {
     let temp = TempDir::new("lock-timeout");
@@ -1397,6 +1457,7 @@ async fn times_out_when_a_live_lock_holder_never_releases_and_then_recovers() {
     assert_eq!(listed[0].name, "after-timeout");
 }
 
+/// payload 不可解析的锁退化为按 mtime 年龄判断失效并恢复。
 #[tokio::test]
 async fn recovers_from_an_unparseable_lock_using_mtime_age() {
     let temp = TempDir::new("lock-mtime");
@@ -1421,6 +1482,7 @@ async fn recovers_from_an_unparseable_lock_using_mtime_age() {
     assert!(!lock_path.exists());
 }
 
+/// 当前 Unix epoch 毫秒时间戳（测试构造锁 payload 用）。
 fn system_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -1430,6 +1492,7 @@ fn system_time_ms() -> u64 {
 
 // ============== model-level unit checks ==============
 
+/// Execution 序列化使用 JS 端驼峰字段名（providerID/modelID/goalTokenBudget 等）。
 #[test]
 fn execution_wire_shape_uses_js_field_names() {
     let execution = serde_json::to_value(Execution {
@@ -1451,6 +1514,7 @@ fn execution_wire_shape_uses_js_field_names() {
     assert!(object.contains_key("permissionAutoAccept"));
 }
 
+/// ScheduledTask 序列化形状与 JS 对象一致：loopFile、schedule.kind、state.nextRunAt 及顶层键集合。
 #[test]
 fn task_wire_shape_matches_the_js_object() {
     let task = ScheduledTask {
@@ -1512,6 +1576,7 @@ fn task_wire_shape_matches_the_js_object() {
     );
 }
 
+/// 半截/非 object 根解析报错，非 object 与空内容降级为空 map，严格 JSON 正常解析。
 #[test]
 fn jsonc_parse_rejects_partial_and_non_object_roots_like_the_js() {
     use super::runtime::parse_project_config_text;
@@ -1532,10 +1597,12 @@ fn jsonc_parse_rejects_partial_and_non_object_roots_like_the_js() {
     assert_eq!(parsed.get("a"), Some(&json!(1)));
 }
 
+/// 认领路径返回的 Future 满足 Send（谓词带 `+Send+Sync` 约束，可被 `tokio::spawn`）。
 #[tokio::test]
 async fn claim_predicate_future_is_send() {
     // The scheduled-tasks claim path spawns under tokio::spawn: the runtime
     // future must stay Send with the +Send+Sync predicate bound.
+    // 编译期断言辅助：要求 Future 满足 Send。
     fn assert_send<F: Future + Send>(_: &F) {}
     let temp = TempDir::new("send-check");
     let runtime = test_runtime(temp.path());

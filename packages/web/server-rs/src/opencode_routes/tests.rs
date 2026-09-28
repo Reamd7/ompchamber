@@ -1,6 +1,10 @@
 //! Tests for the opencode_routes port: unit coverage of the shared.js
 //! subset (markdown, JSONC layers) plus oneshot route tests over a temp
 //! `OpenCodeEnv` and a mock omp-host engine.
+//!
+//! 中文概述：opencode_routes 移植的测试集——shared.js 子集的单元覆盖
+//! （markdown frontmatter、JSONC 分层安全）+ 基于临时 OpenCodeEnv 与
+//! mock omp-host 引擎的 oneshot 路由测试。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,8 +34,11 @@ use super::{OpenCodeEnv, router_with_env};
 // Fixtures
 // ---------------------------------------------------------------------------
 
+/// 临时目录计数器：为并行测试生成互不冲突的目录名。
 static DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// 在系统临时目录下创建唯一空目录（label + 进程 id + 自增序号）；
+/// 若已存在则先递归删除，返回新目录路径。
 fn temp_dir_unique(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-ocr-{label}-{}-{}",
@@ -43,6 +50,8 @@ fn temp_dir_unique(label: &str) -> PathBuf {
     dir
 }
 
+/// 构造指向独立临时 HOME 的 [`OpenCodeEnv`]：config/data/home 三个目录
+/// 均落在临时根之下，避免污染真实用户环境。
 fn temp_env(label: &str) -> (OpenCodeEnv, PathBuf) {
     let root = temp_dir_unique(label);
     let env = OpenCodeEnv {
@@ -57,12 +66,14 @@ fn temp_env(label: &str) -> (OpenCodeEnv, PathBuf) {
     (env, root)
 }
 
+/// 在 [`temp_env`] 基础上把 custom 层配置文件指到给定路径（模拟 omp custom 配置）。
 fn env_with_custom(label: &str, custom: &Path) -> (OpenCodeEnv, PathBuf) {
     let (mut env, root) = temp_env(label);
     env.custom_config = Some(custom.to_path_buf());
     (env, root)
 }
 
+/// 写文件辅助：自动创建父目录，任一步失败即 panic。
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -70,10 +81,13 @@ fn write_file(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
+/// 读入并解析 JSON 文件，任一步失败即 panic。
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+/// 构造测试用 [`RouterContext`]：端口 0、data 目录指向给定路径，
+/// engine 默认指向 127.0.0.1:9（不可达，测试按需覆盖为 mock 引擎）。
 fn test_context(data_dir: &Path) -> RouterContext {
     let config = ServerConfig {
         port: 0,
@@ -95,10 +109,12 @@ fn test_context(data_dir: &Path) -> RouterContext {
     }
 }
 
+/// 用给定 env 与 context 组装被测 Router（配合 oneshot 调用）。
 fn test_app(env: OpenCodeEnv, ctx: RouterContext) -> Router {
     router_with_env(ctx, env)
 }
 
+/// 构造 HTTP 请求：带 body 时附上 Content-Type 与 Content-Length 头。
 fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some((content, content_type)) = body {
@@ -111,6 +127,8 @@ fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<
     }
 }
 
+/// oneshot 发送请求并收集（状态码, 解析后的 JSON body, 原始文本）三元组；
+/// body 不是合法 JSON 时 JSON 位置为 `Value::Null`。
 async fn send(app: Router, request: Request<Body>) -> (StatusCode, Value, String) {
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
@@ -130,15 +148,25 @@ async fn send(app: Router, request: Request<Body>) -> (StatusCode, Value, String
 
 /// Mock omp-host: an axum server whose `/agent-dir` (and MCP callback)
 /// behavior the test controls.
+///
+/// 中文：在本地起一个 axum 服务扮演 omp-host——`/agent-dir` 的返回值与
+/// MCP 回调请求记录均可由测试动态控制。
 struct MockEngine {
+    /// mock 服务的 base URL（127.0.0.1 随机端口）。
     base_url: String,
+    /// `/agent-dir` 端点的当前返回值；`None` 表示引擎未上报目录。
     agent_dir: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// 收到的 MCP 回调请求记录（标签, 完整路径含查询串）。
     requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// 服务任务句柄（随测试运行时回收，标记允许未读）。
     #[allow(dead_code)]
     handle: tokio::task::JoinHandle<()>,
 }
 
+/// mock 引擎的启动与状态控制。
 impl MockEngine {
+    /// 启动 mock 引擎：随机端口监听，注册 `/agent-dir` 与
+    /// `/mcp/{name}/auth/callback` 两个端点；`agent_dir` 为初始上报目录。
     fn start(agent_dir: Option<String>) -> Self {
         let agent_dir = std::sync::Arc::new(std::sync::Mutex::new(agent_dir));
         let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -187,10 +215,12 @@ impl MockEngine {
         }
     }
 
+    /// 更新 `/agent-dir` 的返回值，模拟引擎切换 profile。
     fn set_agent_dir(&self, dir: Option<String>) {
         *self.agent_dir.lock().unwrap() = dir;
     }
 
+    /// 生成指向本 mock 引擎的 [`RouterContext`]（复用 [`test_context`] 的目录布局）。
     fn context_with_engine(&self, data_dir: &Path) -> RouterContext {
         let mut ctx = test_context(data_dir);
         ctx.engine = EngineState::external(self.base_url.clone(), None);
@@ -198,6 +228,8 @@ impl MockEngine {
     }
 }
 
+/// 构造 engine 必然连接失败的 context：绑定端口后立即释放监听，
+/// 之后连接一律被拒，用于测试引擎不可达时的回退路径。
 fn unreachable_engine_context(data_dir: &Path) -> RouterContext {
     // Bind, learn the port, drop the listener: connections are refused.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -212,8 +244,10 @@ fn unreachable_engine_context(data_dir: &Path) -> RouterContext {
 // shared.js subset — parseMdFile / writeMdFile
 // ---------------------------------------------------------------------------
 
+/// 标准 agent markdown 样例：frontmatter 三字段 + 一段正文。
 const STANDARD_MD: &str = "---\ndescription: My build agent\nmodel: anthropic/claude-sonnet-4\nmode: primary\n---\n\nThis is the prompt body.\n";
 
+/// 验证标准 frontmatter（开闭 `---`）正确切分出字段与正文。
 #[test]
 fn parse_md_file_handles_standard_frontmatter() {
     let dir = temp_dir_unique("md");
@@ -227,6 +261,7 @@ fn parse_md_file_handles_standard_frontmatter() {
     assert_eq!(md.body, "This is the prompt body.");
 }
 
+/// 验证文件在 frontmatter 结束符处截断（无闭合换行）仍可解析且正文为空。
 #[test]
 fn parse_md_file_accepts_eof_closed_frontmatter() {
     let dir = temp_dir_unique("md");
@@ -243,6 +278,7 @@ fn parse_md_file_accepts_eof_closed_frontmatter() {
     assert_eq!(md.body, "");
 }
 
+/// 验证 CRLF 换行与 UTF-8 BOM 前缀均不影响解析。
 #[test]
 fn parse_md_file_accepts_crlf_and_bom() {
     let dir = temp_dir_unique("md");
@@ -260,6 +296,7 @@ fn parse_md_file_accepts_crlf_and_bom() {
     );
 }
 
+/// 验证宽松回退：普通标量值含冒号加空格时整段按字面字符串读取。
 #[test]
 fn parse_md_file_lenient_colon_fallback() {
     let dir = temp_dir_unique("md");
@@ -276,6 +313,7 @@ fn parse_md_file_lenient_colon_fallback() {
     assert_eq!(md.body, "Body");
 }
 
+/// 验证无 frontmatter 的纯正文文件解析为空映射加原文正文。
 #[test]
 fn parse_md_file_plain_body_without_frontmatter() {
     let dir = temp_dir_unique("md");
@@ -286,6 +324,7 @@ fn parse_md_file_plain_body_without_frontmatter() {
     assert_eq!(md.body, "Just a prompt body.");
 }
 
+/// 验证写回只产生一个 frontmatter 块，且修改后的字段与正文可无损重读。
 #[test]
 fn write_md_file_round_trips_single_block() {
     let dir = temp_dir_unique("md");
@@ -311,10 +350,13 @@ fn write_md_file_round_trips_single_block() {
 // shared.js subset — JSONC layer safety
 // ---------------------------------------------------------------------------
 
+/// 合法 JSONC 样例：含注释、尾随逗号与嵌套配置节。
 const VALID_JSONC: &str = "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  // keep me\n  \"plugin\": [\"opencode-see-image\"],\n  \"mcp\": {\n    \"openproject\": {\n      \"type\": \"remote\",\n      \"url\": \"https://openproject.example.com/mcp\",\n      \"enabled\": true,\n    }\n  },\n  \"provider\": {\n    \"ollama-cloud\": {\n      \"npm\": \"@ai-sdk/openai-compatible\",\n      \"name\": \"Ollama Cloud\"\n    }\n  }\n}\n";
 
+/// 非法 JSONC 样例：裸键名——安全加载器必须拒绝的部分解析形态。
 const PARTIAL_PARSE_JSONC: &str = "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  plugin: [\"opencode-see-image\"],\n  mcp: {\n    openproject: {\n      type: \"remote\"\n    }\n  }\n}\n";
 
+/// 验证 JSONC 读取兼容注释与尾随逗号并保留语义。
 #[test]
 fn read_config_file_parses_jsonc_with_comments_and_trailing_commas() {
     let dir = temp_dir_unique("jsonc");
@@ -333,6 +375,7 @@ fn read_config_file_parses_jsonc_with_comments_and_trailing_commas() {
     );
 }
 
+/// 验证缺失、空白与纯注释的配置文件均读取为空对象而非报错。
 #[test]
 fn read_config_file_empty_and_comment_only_files_read_as_empty() {
     let dir = temp_dir_unique("jsonc");
@@ -349,6 +392,7 @@ fn read_config_file_empty_and_comment_only_files_read_as_empty() {
     assert!(layers::read_config_file(&comments).unwrap().is_empty());
 }
 
+/// 验证部分解析形态与非对象根一律拒绝，并带统一的“cannot be loaded safely”错误。
 #[test]
 fn read_config_file_rejects_partial_parse_and_non_object_roots() {
     let dir = temp_dir_unique("jsonc");
@@ -366,6 +410,8 @@ fn read_config_file_rejects_partial_parse_and_non_object_roots() {
     );
 }
 
+/// 验证写配置前先安全加载：不可解析文件拒绝写入且原样保留（不产生备份）；
+/// 合法文件写入成功且旧内容落盘为备份。
 #[test]
 fn write_config_refuses_unparseable_files_and_keeps_valid_ones() {
     let dir = temp_dir_unique("jsonc");
@@ -406,6 +452,8 @@ fn write_config_refuses_unparseable_files_and_keeps_valid_ones() {
     );
 }
 
+/// 验证项目层不可解析时分层读取降级为空并记录 layer error，
+/// MCP 变更只写 custom 层且不动项目文件。
 #[test]
 fn layers_keep_custom_readable_when_project_layer_is_unparseable() {
     let dir = temp_dir_unique("jsonc");
@@ -455,6 +503,8 @@ fn layers_keep_custom_readable_when_project_layer_is_unparseable() {
     assert!(!layers::backup_path(&project_file).exists());
 }
 
+/// 验证条目来源优先级：project 覆盖 user，仅存在于 user 的条目指向 user 文件，
+/// 缺失条目的 exists 为假。
 #[test]
 fn entry_source_prefers_custom_then_project_then_user() {
     let dir = temp_dir_unique("layers");
@@ -487,6 +537,8 @@ fn entry_source_prefers_custom_then_project_then_user() {
 // agents.js / commands.js library behavior
 // ---------------------------------------------------------------------------
 
+/// 验证更新 EOF 截断（无闭合换行）的 agent 文件后仍恰好一组 frontmatter
+/// 分隔符，且未改字段与正文保留。
 #[test]
 fn update_agent_preserves_frontmatter_for_eof_closed_files() {
     let (env, root) = temp_env("agents");
@@ -512,6 +564,7 @@ fn update_agent_preserves_frontmatter_for_eof_closed_files() {
     assert_eq!(md.body, "");
 }
 
+/// 验证更新仅改写目标字段，无关 frontmatter 字段与正文原样保留。
 #[test]
 fn update_agent_preserves_unrelated_fields_and_body() {
     let (env, root) = temp_env("agents");
@@ -538,6 +591,7 @@ fn update_agent_preserves_unrelated_fields_and_body() {
     assert_eq!(md.body, "Body of strateg.");
 }
 
+/// 验证创建 agent 落盘 .md 文件；重复 .md 与重复 JSON 条目分别返回对应错误。
 #[test]
 fn create_agent_conflicts_and_scopes() {
     let (env, root) = temp_env("agents");
@@ -572,6 +626,7 @@ fn create_agent_conflicts_and_scopes() {
     assert_eq!(error, "Agent jsoned already exists in opencode.json");
 }
 
+/// 验证按 scope 删除项目/用户 .md 与用户 JSON 条目；内置或不存在时报错。
 #[test]
 fn delete_agent_scopes_and_built_in_error() {
     let (env, root) = temp_env("agents");
@@ -609,6 +664,7 @@ fn delete_agent_scopes_and_built_in_error() {
     assert_eq!(error, "Agent builtin is built-in or not deletable");
 }
 
+/// 验证权限更新写入定义层：user .md 直接改写；内置 agent 的覆盖写入 user JSON 层。
 #[test]
 fn agent_permission_updates_land_in_the_defining_layer() {
     let (env, root) = temp_env("agents");
@@ -640,6 +696,7 @@ fn agent_permission_updates_land_in_the_defining_layer() {
     );
 }
 
+/// 验证命令建/改/删全流程：.md 层与 JSON 层各自落位，缺失删除报错。
 #[test]
 fn command_crud_round_trip() {
     let (env, root) = temp_env("commands");
@@ -688,6 +745,8 @@ fn command_crud_round_trip() {
 // mcp.js behavior
 // ---------------------------------------------------------------------------
 
+/// 验证 MCP 名称校验规则与条目归一化（丢 name/scope、标量字符串化、
+/// trim 与默认 enabled）。
 #[test]
 fn mcp_name_validation_and_entry_normalization() {
     let (env, _root) = temp_env("mcp");
@@ -736,6 +795,7 @@ fn mcp_name_validation_and_entry_normalization() {
     );
 }
 
+/// 验证 MCP 配置跨 user/project 两层的增查改删、scope 标注与缺失报错。
 #[test]
 fn mcp_crud_over_layers() {
     let (env, root) = temp_env("mcp");
@@ -812,6 +872,8 @@ fn mcp_crud_over_layers() {
 // providers.js behavior
 // ---------------------------------------------------------------------------
 
+/// 验证自定义 provider 校验的逐条错误文案（id/baseURL/models/凭据/npm）
+/// 与两种放行组合。
 #[test]
 fn provider_validation_error_strings() {
     use providers::ProviderValidation::{Err as PErr, Ok as POk};
@@ -876,6 +938,8 @@ fn provider_validation_error_strings() {
     ));
 }
 
+/// 验证 provider 写入 project 层的完整落盘结构、更新时清除 disabled_providers
+/// 记录、删除后来源标记消失。
 #[test]
 fn provider_upsert_project_scope_and_remove() {
     let (env, root) = temp_env("providers");
@@ -948,6 +1012,7 @@ fn provider_upsert_project_scope_and_remove() {
     );
 }
 
+/// 验证 custom scope 只写 custom 层文件，user 层保持不存在。
 #[test]
 fn provider_custom_scope_writes_custom_layer_only() {
     let dir = temp_dir_unique("providers");
@@ -986,6 +1051,8 @@ fn provider_custom_scope_writes_custom_layer_only() {
 // auth.js / claude-cli-auth.js
 // ---------------------------------------------------------------------------
 
+/// 验证 auth.json 写读删全流程：首次写不备份、覆盖写生成备份、
+/// 删除返回真假区分存在与否。
 #[test]
 fn auth_file_round_trip_and_removal() {
     let (env, _root) = temp_env("auth");
@@ -1028,13 +1095,21 @@ fn auth_file_round_trip_and_removal() {
     assert!(!super::auth::remove_provider_auth(&env, "anthropic").unwrap());
 }
 
+/// 记录型同步 spawn 桩：按序回放预置输出、可让首次调用失败，
+/// 并记录全部调用参数供断言。
 struct RecordingSpawn {
+    /// 已记录的（命令, 参数列表）调用序列。
     calls: std::sync::Mutex<Vec<(String, Vec<String>)>>,
+    /// 预置的标准输出队列（越界时重复取最后一项）。
     outputs: Vec<String>,
+    /// 为真时第一次调用返回 error，模拟命令不存在。
     fail_first: bool,
 }
 
+/// 对 SyncSpawn trait 的桩实现：记录每次调用并按序回放预置输出。
 impl super::claude_cli::SyncSpawn for RecordingSpawn {
+    /// 记录命令与参数；fail_first 命中首次时返回 error，
+    /// 否则回放与调用序号对应的预置标准输出。
     fn spawn_sync(
         &self,
         command: &str,
@@ -1064,6 +1139,8 @@ impl super::claude_cli::SyncSpawn for RecordingSpawn {
     }
 }
 
+/// 验证登录态探测：调用 claude auth status --json 并解析 loggedIn；
+/// 登出时返回对应的 reason，且敏感环境变量不会外泄到命令行。
 #[test]
 fn claude_cli_status_reports_login_state() {
     let spawn = RecordingSpawn {
@@ -1100,6 +1177,7 @@ fn claude_cli_status_reports_login_state() {
     );
 }
 
+/// 验证直接执行失败后经登录 shell 定位 claude 可执行文件再执行的三段回退调用链。
 #[test]
 fn claude_cli_falls_back_to_login_shell() {
     let spawn = RecordingSpawn {
@@ -1132,6 +1210,7 @@ fn claude_cli_falls_back_to_login_shell() {
 // Routes — behavior/AGENTS.md (mock agent-dir endpoint + fallback)
 // ---------------------------------------------------------------------------
 
+/// 验证 AGENTS.md 路径优先取引擎上报的 agent 目录，并附带 legacy 路径信息。
 #[tokio::test]
 async fn behavior_agents_md_resolves_from_engine_agent_dir() {
     let (env, root) = temp_env("behavior");
@@ -1162,6 +1241,7 @@ async fn behavior_agents_md_resolves_from_engine_agent_dir() {
     );
 }
 
+/// 验证引擎未上报时回落默认目录且不缓存：profile 切换与引擎恢复后路径随请求更新。
 #[tokio::test]
 async fn behavior_agents_md_falls_back_without_pinning() {
     let (env, root) = temp_env("behavior");
@@ -1230,6 +1310,7 @@ async fn behavior_agents_md_falls_back_without_pinning() {
     );
 }
 
+/// 验证 GET 返回原生 AGENTS.md 内容与 legacy 内容标记；PUT 写回成功并返回延迟重启信封。
 #[tokio::test]
 async fn behavior_agents_md_serves_and_writes_native_file() {
     let (env, root) = temp_env("behavior");
@@ -1277,6 +1358,7 @@ async fn behavior_agents_md_serves_and_writes_native_file() {
     );
 }
 
+/// 验证超过 1 MiB 的内容写入返回 413 与上限错误文案。
 #[tokio::test]
 async fn behavior_put_rejects_oversized_content() {
     let (env, root) = temp_env("behavior");
@@ -1307,6 +1389,7 @@ async fn behavior_put_rejects_oversized_content() {
 // Routes — MCP auth pending + OAuth callback
 // ---------------------------------------------------------------------------
 
+/// 验证 MCP 授权挂起状态的存/查/删全周期与各错误形态（缺 name、缺 state、未知 state）。
 #[tokio::test]
 async fn pending_mcp_auth_lifecycle() {
     let (env, root) = temp_env("pending");
@@ -1401,6 +1484,7 @@ async fn pending_mcp_auth_lifecycle() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// 验证 OAuth 回调成功页触发引擎侧回调、包含桌面 deep link，且完成后清除挂起状态。
 #[tokio::test]
 async fn oauth_callback_completes_and_clears_state() {
     let (env, root) = temp_env("oauth");
@@ -1452,6 +1536,7 @@ async fn oauth_callback_completes_and_clears_state() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// 验证伪造 state 与 provider error 回调均被拒绝（不触达引擎），并清除挂起状态。
 #[tokio::test]
 async fn oauth_callback_rejects_unknown_state_and_provider_errors() {
     let (env, root) = temp_env("oauth");
@@ -1501,6 +1586,7 @@ async fn oauth_callback_rejects_unknown_state_and_provider_errors() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// 验证 web 来源的授权完成页不包含桌面 deep link。
 #[tokio::test]
 async fn oauth_callback_omits_deep_link_for_web_origin() {
     let (env, root) = temp_env("oauth");
@@ -1532,6 +1618,7 @@ async fn oauth_callback_omits_deep_link_for_web_origin() {
 // Routes — provider CRUD
 // ---------------------------------------------------------------------------
 
+/// 验证 PUT /api/provider 的参数、scope 与配置校验失败形态，及 project 目录下的成功持久化。
 #[tokio::test]
 async fn put_provider_validates_and_persists() {
     let (env, root) = temp_env("provroute");
@@ -1628,6 +1715,7 @@ async fn put_provider_validates_and_persists() {
     assert!(Path::new(&path).exists());
 }
 
+/// 验证断开 provider 授权：未连接返回 not-connected 信封、已连接删除并延迟重启、非法 scope 返回 400。
 #[tokio::test]
 async fn delete_provider_auth_flows() {
     let (env, root) = temp_env("provdelete");
@@ -1678,6 +1766,7 @@ async fn delete_provider_auth_flows() {
     assert_eq!(body.get("error"), Some(&json!("Invalid scope")));
 }
 
+/// 验证 provider 来源端点返回各层 exists 标记；非法 directory 返回 400 与错误文案。
 #[tokio::test]
 async fn provider_source_route_shape() {
     let (env, root) = temp_env("provsource");
@@ -1735,6 +1824,7 @@ async fn provider_source_route_shape() {
 // Routes — config entities (agents / commands / mcp)
 // -------------------------------------------------------------------
 
+/// 写入 settings.json 指定 lastDirectory，使路由能解析出默认项目目录。
 fn settings_with_last_directory(data_dir: &Path, directory: &Path) {
     write_file(
         &data_dir.join("settings.json"),
@@ -1746,6 +1836,8 @@ fn settings_with_last_directory(data_dir: &Path, directory: &Path) {
     );
 }
 
+/// 验证 agent 实体路由全流程：目录缺失 400、内置 agent 来源查询、创建
+/// （延迟重启信封）、重复创建 500、配置读取合并、PATCH 局部更新、按 scope 删除。
 #[tokio::test]
 async fn agent_entity_routes_deferred_apply() {
     let (env, root) = temp_env("agentroutes");
@@ -1895,6 +1987,8 @@ async fn agent_entity_routes_deferred_apply() {
     assert!(!agent_file.exists());
 }
 
+/// 验证 command 实体路由通过 directory 查询参数完成建/查/改/删
+/// （引擎不可达不影响延迟重启语义）。
 #[tokio::test]
 async fn command_entity_routes_deferred_apply() {
     let (env, root) = temp_env("cmdroutes");
@@ -1961,6 +2055,7 @@ async fn command_entity_routes_deferred_apply() {
     );
 }
 
+/// 验证 MCP 实体路由：空列表非 null、建/查/改/删信封与 404 错误文案。
 #[tokio::test]
 async fn mcp_entity_routes_shapes() {
     let (env, root) = temp_env("mcproutes");

@@ -1,3 +1,9 @@
+/**
+ * skills.js 的单元测试套件：技能发现（.agents / .opencode 目录）、本地发现与
+ * OpenCode 实时发现列表的合并、SKILL.md 来源解析（含内置虚拟位置与不可读路径），
+ * 以及 renameSkill 的目录重命名、frontmatter 保留、失败回滚与各类非法参数拒绝。
+ * 每个用例的临时目录均在 finally 中递归清理。
+ */
 import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
@@ -5,6 +11,7 @@ import os from 'os';
 import path from 'path';
 import { discoverSkills, getSkillSources, mergeDiscoveredSkills, renameSkill } from './skills.js';
 
+/** 验证技能的发现合并、来源字段解析与重命名的文件操作及失败回滚行为。 */
 describe('skills', () => {
   it('merges locally discovered skills missing from OpenCode live discovery', () => {
     const merged = mergeDiscoveredSkills(

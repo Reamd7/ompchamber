@@ -1,5 +1,9 @@
 //! Port of `server/lib/quota/providers/neuralwatt.js` — NeuralWatt quota via
 //! `GET https://api.neuralwatt.com/v1/quota` (15s timeout).
+//!
+//! 中文概览：NeuralWatt 配额提供方——以 bearer API key 请求
+//! GET https://api.neuralwatt.com/v1/quota（15 秒超时），把订阅 kWh、
+//! 限额（allowance）与余额三类数据转换成统一的用量窗口。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
@@ -12,14 +16,21 @@ use crate::quota::utils::{
     to_number, to_timestamp, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "neuralwatt";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "NeuralWatt";
+/// auth.json 中识别本提供方的别名列表。
 pub const ALIASES: [&str; 1] = ["neuralwatt"];
 
+/// 配额查询端点 URL。
 const NEURALWATT_QUOTA_URL: &str = "https://api.neuralwatt.com/v1/quota";
+/// 请求超时时间（毫秒）。
 const REQUEST_TIMEOUT_MS: u64 = 15_000;
 
 /// 30d month / 365d year are fixed UI approximations.
+/// 将 API 的 period 字符串映射为窗口秒数；month/year 分别按固定 30/365 天
+/// 近似（仅作 UI 展示用途），无法识别的 period 返回 None。
 pub fn period_to_window_seconds(period: &str) -> Option<f64> {
     match period {
         "daily" => Some(86_400.0),
@@ -30,6 +41,8 @@ pub fn period_to_window_seconds(period: &str) -> Option<f64> {
     }
 }
 
+/// 从 auth.json 的 neuralwatt 条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败时返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -41,10 +54,15 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key → 请求配额端点 → 依次组装订阅窗口（kWh 用量百分比，
+/// 超额时记 100%）、allowance 限额窗口（有效上限取 min(limit, credits+spent)，
+/// blocked 记 100%，period 决定窗口 key 与秒数）或 credits 余额展示窗口；
+/// 一个窗口都组装不出来则按失败处理。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

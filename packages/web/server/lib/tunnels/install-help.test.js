@@ -1,3 +1,10 @@
+/**
+ * install-help 模块测试套件。
+ *
+ * 验证各提供商在各平台返回的依赖名、安装命令、下载页与缺失提示文案
+ * （Windows winget、macOS Homebrew、Linux 下载页指引），确保 UI 展示的
+ * 安装指引与当前推荐一致。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import { getTunnelDependencyInstallInfo } from './install-help.js';
@@ -6,6 +13,7 @@ import {
   TUNNEL_PROVIDER_NGROK,
 } from './types.js';
 
+/** 按提供商与平台校验安装指引的内容与提示文案。 */
 describe('getTunnelDependencyInstallInfo', () => {
   it('returns Windows cloudflared winget guidance', () => {
     const info = getTunnelDependencyInstallInfo(TUNNEL_PROVIDER_CLOUDFLARE, 'win32');

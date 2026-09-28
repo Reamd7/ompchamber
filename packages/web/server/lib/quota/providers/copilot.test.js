@@ -1,3 +1,10 @@
+/**
+ * GitHub Copilot 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，以 it.each 同时驱动
+ * 主订阅与 add-on 两个入口，验证只暴露 premium_interactions 窗口、
+ * unlimited 套餐的展示以及 entitlement 不可用时对 percent_remaining 的回退。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +17,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 文档化的配额响应载荷：chat/completions 快照应被忽略，仅 premium_interactions 生效。 */
 const payload = {
   quota_reset_date: '2026-09-01T00:00:00Z',
   quota_snapshots: {
@@ -19,12 +27,14 @@ const payload = {
   },
 };
 
+/** 构造 fetch Response 替身：默认返回上方 payload，可传入自定义 body。 */
 const mockResponse = (body = payload) => ({
   ok: true,
   status: 200,
   json: async () => body,
 });
 
+/** 主订阅与 add-on 订阅共用的配额换算行为。 */
 describe('GitHub Copilot quota provider', () => {
   it.each([
     ['primary provider', fetchQuota],

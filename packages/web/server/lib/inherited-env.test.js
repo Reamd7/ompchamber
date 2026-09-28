@@ -1,3 +1,8 @@
+/**
+ * inherited-env 的单元测试套件（vitest）：ARGV0 的 env 对象剔除、进程环境
+ * 清理（用例内保存并恢复现场）与 Linux PTY 启动命令改写；非对应平台的
+ * 用例自动跳过。
+ */
 import { describe, expect, it } from 'vitest';
 import {
   clearAppImageArgv0FromProcessEnv,
@@ -5,6 +10,7 @@ import {
   stripAppImageArgv0Leak,
 } from './inherited-env.js';
 
+/** stripAppImageArgv0Leak：从子进程 env 对象原地剔除 ARGV0。 */
 describe('stripAppImageArgv0Leak', () => {
   it('removes ARGV0 from a child env object', () => {
     const env = {
@@ -32,6 +38,7 @@ describe('stripAppImageArgv0Leak', () => {
   });
 });
 
+/** clearAppImageArgv0FromProcessEnv：清除 process.env.ARGV0 并恢复现场。 */
 describe('clearAppImageArgv0FromProcessEnv', () => {
   it('removes ARGV0 from process.env', () => {
     const previous = process.env.ARGV0;
@@ -46,6 +53,7 @@ describe('clearAppImageArgv0FromProcessEnv', () => {
   });
 });
 
+/** resolveLinuxPtyLaunch：按平台决定是否用 env -u ARGV0 包裹启动命令。 */
 describe('resolveLinuxPtyLaunch', () => {
   it('wraps the shell with env -u ARGV0 on Linux', () => {
     if (process.platform !== 'linux') return;

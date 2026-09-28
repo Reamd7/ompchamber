@@ -3,6 +3,11 @@
 //!
 //! The weekly `usage` block reports `used`; rate-limit `limits[].detail`
 //! blocks report `remaining` — `used` wins when both exist.
+//!
+//! 中文概览：Kimi for Coding 配额提供方——以 bearer API key 请求
+//! api.kimi.com/coding/v1/usages，把 usage 周用量块与 limits[].detail
+//! 限流块组装成统一的用量窗口；两类块的字段语义不同（周块上报 used、
+//! 限流块上报 remaining），compute_used_percent 负责归一。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -15,13 +20,20 @@ use crate::quota::utils::{
     normalize_auth_entry, to_number, to_timestamp, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "kimi-for-coding";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "Kimi for Coding";
+/// auth.json 中识别本提供方的别名列表（kimi-for-coding 与简写 kimi）。
 pub const ALIASES: [&str; 2] = ["kimi-for-coding", "kimi"];
 
+/// 用量查询端点 URL。
 const USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
 
 /// `computeUsedPercent` — derive usage from whichever field the API returned.
+/// 由 API 实际返回的字段推导已用百分比：优先 used/total，其次
+/// remaining/total 换算；total 缺失或为 0、或 used/remaining 均缺失时
+/// 返回 None。结果夹取到 [0,100]。
 pub fn compute_used_percent(
     total: Option<f64>,
     used: Option<f64>,
@@ -40,6 +52,8 @@ pub fn compute_used_percent(
     None
 }
 
+/// 从 auth.json 的 kimi 别名条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -51,10 +65,14 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key（缺失视为未配置）→ 请求用量端点 → 组装 weekly 窗口
+/// （usage 块）与各限流窗口（limits[].detail，5 小时窗口标签前缀
+/// "Rate Limit (...)"），返回统一结果。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

@@ -2,6 +2,11 @@
 //! re-send the messages the user explicitly pinned as required context, plus
 //! the project-knowledge block, as ONE synthetic prompt so the agent is not
 //! interrupted twice.
+//!
+//! 中文说明：`context-obligatory` runtime——压缩（compaction）发生后，
+//! 把用户显式置顶为必需上下文的消息与项目知识块合并成一条 synthetic
+//! prompt 重新发送，避免 agent 被打断两次。事件驱动：仅 `session.compacted`
+//! 触发工作，同一会话的并发事件去重。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,10 +18,16 @@ use serde_json::{Map, Value, json};
 use super::fetch::{OpenCodeFetch, encode_uri_component};
 use super::knowledge::{Pins, SessionKnowledgeRuntime};
 
+/// 引擎调用的单请求超时（毫秒），对应 index.js 注入的 `AbortSignal.timeout`。
 pub const FETCH_TIMEOUT_MS: u64 = 15_000;
+/// 压缩检测时拉取最近消息的条数上限（JS 的 `limit` query 参数）。
 pub const MESSAGE_FETCH_LIMIT: usize = 20;
 /// `session.metadata.openchamber.context_obligatory_messages`.
+///
+/// 中文说明：置顶必需消息列表在 session metadata 中的存储 key。
 pub const MESSAGES_METADATA_KEY: &str = "context_obligatory_messages";
+/// `session.metadata.openchamber` 下的压缩游标：已注入的 summary 消息 id。
+/// 等于当前 summary id 即表示已补发完毕，无需再次注入。
 pub const LAST_COMPACTION_METADATA_KEY: &str = "context_obligatory_last_compaction_message_id";
 
 // ---------------------------------------------------------------------------
@@ -24,10 +35,14 @@ pub const LAST_COMPACTION_METADATA_KEY: &str = "context_obligatory_last_compacti
 // ---------------------------------------------------------------------------
 
 /// JS `isRecord`.
+///
+/// 中文说明：值存在且为 JSON 对象才视为 record。
 fn is_record(value: Option<&Value>) -> bool {
     value.is_some_and(Value::is_object)
 }
 
+/// 取 JSON 对象值的克隆；缺省或非对象时返回空 Map（对应 JS 的 `?? {}`
+/// 防御式读取）。
 fn object_or_empty(value: Option<&Value>) -> Map<String, Value> {
     value
         .and_then(Value::as_object)
@@ -36,6 +51,9 @@ fn object_or_empty(value: Option<&Value>) -> Map<String, Value> {
 }
 
 /// JS truthiness for the values read off message info.
+///
+/// 中文说明：复刻 JS 真值表——null/undefined/false/0/NaN/空串为假，
+/// 非空数组与对象恒为真。
 fn js_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) | Some(Value::Bool(false)) => false,
@@ -46,21 +64,32 @@ fn js_truthy(value: Option<&Value>) -> bool {
     }
 }
 
+/// 一条被用户置顶为必需上下文的消息的元数据（不含正文，正文按需拉取）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PinnedMessage {
+    /// 引擎侧的消息 id。
     pub id: String,
+    /// 创建时间（epoch 毫秒），用于时间线排序与时间戳渲染。
     pub created_at: f64,
+    /// 消息角色（仅接受 user/assistant）。
     pub role: String,
 }
 
+/// 从 session JSON 解析出的、驱动注入决策的状态快照。
 #[derive(Debug, Clone, Default)]
 pub struct ContextState {
+    /// 会话完整 metadata 对象（含 ompchamber 之外的字段，PATCH 时原样带回）。
     pub metadata: Map<String, Value>,
+    /// metadata.ompchamber 子对象。
     pub ompchamber: Map<String, Value>,
+    /// 通过校验的置顶消息列表（保持存储顺序）。
     pub messages: Vec<PinnedMessage>,
 }
 
 /// JS: `readContextState`.
+///
+/// 中文说明：防御式解析 session JSON 中的 metadata、ompchamber 与置顶
+/// 消息列表；缺字段、角色非法或非对象的置顶条目直接丢弃，不报错。
 pub fn read_context_state(session: &Value) -> ContextState {
     let metadata = if is_record(session.get("metadata")) {
         object_or_empty(session.get("metadata"))
@@ -111,6 +140,9 @@ pub fn read_context_state(session: &Value) -> ContextState {
 }
 
 /// `new Date(ms).toISOString()` — always UTC with millisecond precision.
+///
+/// 中文说明：把 epoch 毫秒格式化为恒定 UTC、毫秒精度的 ISO-8601 字符串，
+/// 负数时间同样正确。
 pub fn iso8601_from_epoch_ms(ms: f64) -> String {
     let whole_ms = ms.floor() as i64;
     let days = whole_ms.div_euclid(86_400_000);
@@ -124,6 +156,9 @@ pub fn iso8601_from_epoch_ms(ms: f64) -> String {
 }
 
 /// Howard Hinnant's civil-from-days algorithm.
+///
+/// 中文说明：Howard Hinnant 的 civil-from-days 算法——把自 1970-01-01 起
+/// 的天数换算为公历 (年, 月, 日)，全程整数运算。
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -138,6 +173,10 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// JS: `buildContextPrompt`.
+///
+/// 中文说明：把置顶消息渲染为时间线（`## role — ISO 时间` 加正文，
+/// 条目间以分隔线连接），前置三段固定说明文字，要求 agent 把其当作
+/// 背景静默续用而非新任务。
 pub fn build_context_prompt(entries: &[(PinnedMessage, String)]) -> String {
     let timeline = entries
         .iter()
@@ -161,24 +200,38 @@ pub fn build_context_prompt(entries: &[(PinnedMessage, String)]) -> String {
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// 构造 [`ContextObligatoryRuntime`] 的依赖注入集合。
 pub struct ContextObligatoryOptions {
+    /// 引擎 fetch 接缝（读写 session、消息与 prompt）。
     pub fetch: OpenCodeFetch,
     /// `sessionKnowledgeRuntime` (optional in the JS factory default).
+    ///
+    /// 中文说明：知识块 runtime，可缺省——缺省时只重发置顶消息。
     pub session_knowledge: Option<Arc<SessionKnowledgeRuntime>>,
 }
 
+/// 压缩后的上下文补发 runtime：监听 `session.compacted`，把置顶消息与
+/// 项目知识块合成一条 synthetic prompt 注入会话。
 pub struct ContextObligatoryRuntime {
+    /// 引擎 fetch 接缝。
     fetch: OpenCodeFetch,
+    /// 可选的 session-knowledge runtime，用于重新投递项目知识块。
     session_knowledge: Option<Arc<SessionKnowledgeRuntime>>,
+    /// 正在处理 tick 的 session id 集合，实现同会话并发事件去重。
     inflight: Mutex<HashSet<String>>,
+    /// 停机标记；置位后不再接受新事件。
     stopped: AtomicBool,
 }
 
+/// 获取互斥锁；锁 poisoned 时降级取出内部数据，避免运行时因一次 panic
+/// 而永久卡死。
 fn lock_set(lock: &Mutex<HashSet<String>>) -> std::sync::MutexGuard<'_, HashSet<String>> {
     lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// runtime 的构造、注入主流程与事件入口。
 impl ContextObligatoryRuntime {
+    /// 以给定选项构造 runtime（返回 Arc 便于跨任务共享）。
     pub fn new(options: ContextObligatoryOptions) -> Arc<Self> {
         Arc::new(Self {
             fetch: options.fetch,
@@ -188,6 +241,8 @@ impl ContextObligatoryRuntime {
         })
     }
 
+    /// 在 fetch 接缝之上补一层 query 渲染：key/value 均按 JS
+    /// `encodeURIComponent` 编码后以 `&` 连接追加到路径。
     async fn open_code_fetch(
         &self,
         path: &str,
@@ -217,6 +272,12 @@ impl ContextObligatoryRuntime {
     }
 
     /// JS: `tick`.
+    ///
+    /// 中文说明：单会话的一次完整注入流程——读会话（子会话直接跳过）、
+    /// 检查最近消息中的压缩 summary 是否已完成且游标未跟上，拉取置顶
+    /// 消息正文（单条失败只跳过该条）与待重发的知识块，按时间正序合成
+    /// synthetic prompt 发送，最后 PATCH 写回压缩游标与知识 signature。
+    /// 任一步失败返回 Err，由调用方记 warn。
     pub async fn tick(&self, session_id: &str, directory: &str) -> anyhow::Result<()> {
         let session_path = format!("/session/{}", encode_uri_component(session_id));
         let session = self
@@ -443,6 +504,10 @@ impl ContextObligatoryRuntime {
 
     /// JS: `processPayload(payload, directoryHint)` — only `session.compacted`
     /// events trigger work; concurrent events for one session dedupe.
+    ///
+    /// 中文说明：hub 事件入口——只处理 `session.compacted`；同一 session
+    /// 的并发事件经 inflight 集合去重，实际工作派发到独立 tokio 任务，
+    /// 失败仅记 warn。directory 优先取事件属性，缺省回退到调用方提示。
     pub fn process_payload(self: &Arc<Self>, payload: &Value, directory_hint: &str) {
         if self.stopped.load(Ordering::SeqCst)
             || payload.get("type").and_then(Value::as_str) != Some("session.compacted")
@@ -478,6 +543,8 @@ impl ContextObligatoryRuntime {
     }
 
     /// JS: `stop`.
+    ///
+    /// 中文说明：置位停机标记，后续事件一律忽略。
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
     }
@@ -486,6 +553,10 @@ impl ContextObligatoryRuntime {
 /// index.js `onPayload` wiring for this runtime: hub frames carry the
 /// event-stream envelope `{payload, directory}` (see
 /// `session_goal::spawn_hub_bridge`).
+///
+/// 中文说明：订阅 hub 帧，剥开 `{payload, directory}` 信封（兼容再包一层
+/// 的 payload 形状），把对象载荷连同 directory 交给 `process_payload`；
+/// 解析失败或非对象载荷直接跳过，订阅通道关闭即退出。
 pub fn spawn_hub_bridge(
     runtime: Arc<ContextObligatoryRuntime>,
     hub: Arc<crate::hub::EventHub>,
@@ -519,6 +590,7 @@ pub fn spawn_hub_bridge(
     })
 }
 
+/// runtime 与纯函数的合同测试：以内存 FakeEngine 驱动真实注入流程。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,24 +599,37 @@ mod tests {
 
     use serde_json::json;
 
+    /// 测试用会话 id。
     const SESSION_ID: &str = "ses_1";
+    /// 测试用项目目录。
     const DIRECTORY: &str = "/work/project";
 
+    /// 单条已记录引擎请求的快照，供测试断言。
     #[derive(Clone, Debug)]
     struct RecordedRequest {
+        /// 请求路径（可能带 query string）。
         path: String,
+        /// HTTP 方法。
         method: String,
+        /// 请求 body（GET 时为 None）。
         body: Option<Value>,
     }
 
+    /// 内存版引擎接缝：记录每次请求，并按路径返回会话/消息/置顶正文。
     struct FakeEngine {
+        /// 已发出的请求记录。
         requests: StdMutex<Vec<RecordedRequest>>,
+        /// GET /session/:id 返回的会话 JSON。
         session: Value,
+        /// GET /session/:id/message 返回的最近消息列表。
         messages: Value,
+        /// 消息 id → 置顶消息正文 JSON。
         pinned_texts: HashMap<String, Value>,
     }
 
+    /// FakeEngine 的场景构造与断言辅助。
     impl FakeEngine {
+        /// 场景：置顶 user msg_1 与 assistant msg_2，压缩 summary 已完成。
         fn session_with_pins() -> Self {
             Self {
                 requests: StdMutex::new(Vec::new()),
@@ -572,6 +657,7 @@ mod tests {
             }
         }
 
+        /// 场景：无置顶消息，但知识块压缩前已投递（signature 与 pin 均在）。
         fn knowledge_session() -> Self {
             Self {
                 requests: StdMutex::new(Vec::new()),
@@ -590,6 +676,8 @@ mod tests {
             }
         }
 
+        /// 把本 FakeEngine 包装成 OpenCodeFetch：记录请求并按路径分发模拟
+        /// 响应（消息列表断言 limit query），未知路径报 404。
         fn fetch(self: &Arc<Self>) -> OpenCodeFetch {
             let engine = Arc::clone(self);
             Arc::new(
@@ -645,6 +733,7 @@ mod tests {
             )
         }
 
+        /// 取请求记录快照（锁 poisoned 时降级）。
         fn requests(&self) -> Vec<RecordedRequest> {
             self.requests
                 .lock()
@@ -653,11 +742,13 @@ mod tests {
         }
     }
 
+    /// 等待 process_payload 派生的 tick 任务收尾。
     async fn drain() {
         // Let spawned tick tasks finish (process_payload spawns).
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 
+    /// 无 session-knowledge 的 runtime 选项（只测置顶消息路径）。
     fn no_knowledge(fetch: OpenCodeFetch) -> ContextObligatoryOptions {
         ContextObligatoryOptions {
             fetch,
@@ -665,6 +756,8 @@ mod tests {
         }
     }
 
+    /// 契约：注入按时间正序排列置顶正文，携带压缩前 provider/model 与
+    /// agent，之后 PATCH 记录 summary 游标；会话恰好被读取两次。
     #[tokio::test]
     async fn injects_pinned_text_in_chronological_order_and_records_the_cursor() {
         let engine = Arc::new(FakeEngine::session_with_pins());
@@ -720,6 +813,8 @@ mod tests {
         assert_eq!(session_gets, 2);
     }
 
+    /// 契约：无置顶消息时仍重发被压缩清除的知识块，并把新的 knowledge
+    /// signature 与压缩游标一并写回 metadata。
     #[tokio::test]
     async fn restores_project_knowledge_even_with_nothing_pinned() {
         let engine = Arc::new(FakeEngine::knowledge_session());
@@ -785,6 +880,7 @@ mod tests {
         );
     }
 
+    /// 契约：prompt 说明文字与时间线格式和文档口径逐字一致。
     #[test]
     fn prompt_builder_renders_the_documented_instructions() {
         let entries = vec![
@@ -817,6 +913,7 @@ mod tests {
         assert_eq!(prompt, expected);
     }
 
+    /// 契约：ISO-8601 格式覆盖 epoch、现代时间与负时间。
     #[test]
     fn iso8601_covers_epoch_and_beyond() {
         assert_eq!(iso8601_from_epoch_ms(0.0), "1970-01-01T00:00:00.000Z");
@@ -827,6 +924,7 @@ mod tests {
         assert_eq!(iso8601_from_epoch_ms(-1.0), "1969-12-31T23:59:59.999Z");
     }
 
+    /// 契约：非 `session.compacted` 事件不做任何引擎请求。
     #[tokio::test]
     async fn ignores_ordinary_idle_events_without_making_requests() {
         let engine = Arc::new(FakeEngine::session_with_pins());
@@ -844,6 +942,7 @@ mod tests {
         assert!(engine.requests().is_empty());
     }
 
+    /// 契约：游标已等于当前 summary id 时不注入。
     #[tokio::test]
     async fn does_nothing_when_already_caught_up() {
         let mut engine = FakeEngine::session_with_pins();
@@ -868,6 +967,7 @@ mod tests {
         );
     }
 
+    /// 契约：同一会话的并发 compacted 事件只注入一次。
     #[tokio::test]
     async fn dedupes_concurrent_events_for_one_session() {
         let engine = Arc::new(FakeEngine::session_with_pins());
@@ -891,6 +991,7 @@ mod tests {
         assert_eq!(prompts, 1);
     }
 
+    /// 契约：找不到压缩前 assistant provider/model 时中止注入，不发送 prompt。
     #[tokio::test]
     async fn missing_provider_model_aborts_the_injection() {
         let mut engine = FakeEngine::session_with_pins();
@@ -914,6 +1015,7 @@ mod tests {
         );
     }
 
+    /// 契约：置顶条目缺字段、角色非法或非对象一律被过滤。
     #[test]
     fn read_context_state_validates_pinned_entries() {
         let state = read_context_state(&json!({
@@ -937,6 +1039,8 @@ mod tests {
         assert_eq!(read_context_state(&json!({})).messages, Vec::new());
     }
 
+    /// 契约：hub 桥能解出 `{payload, directory}` 信封中的 compacted 事件并
+    /// 完成注入。
     #[tokio::test]
     async fn hub_bridge_routes_compacted_events() {
         let engine = Arc::new(FakeEngine::session_with_pins());

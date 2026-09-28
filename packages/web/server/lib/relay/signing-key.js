@@ -6,6 +6,13 @@
 // serverId must stay stable because push token binding depends on it.
 
 /**
+ * 【模块】每服务器 relay 签名身份（ECDSA P-256）。从 lib/notifications/apns-runtime.js
+ * 抽出，使 push relay 与 private relay 共享同一密钥对、因而同一 serverId
+ * （base64url(SHA-256(canonical public JWK))）。存储格式不变：
+ * `settings.relaySigningKey = { privateJwk, publicJwk }` —— 已有安装的 serverId
+ * 必须保持稳定，因为 push token 绑定依赖它。
+ */
+/**
  * @param {{
  *   crypto: typeof import('node:crypto'),
  *   readSettingsFromDiskMigrated: () => Promise<object>,
@@ -14,7 +21,14 @@
  * }} deps
  * @returns {Promise<{ privateKey: import('node:crypto').KeyObject, publicJwk: JsonWebKey }>}
  */
+/**
+ * 读取（或首次生成并持久化）relay 签名密钥对。已存在则包装为 KeyObject 返回；
+ * "不存在"须经严格读取器（readSettingsStrict，损坏/不可读时抛错）复核后才生成新钥——
+ * 宽松读取器把读取失败映射为 `{}`，与首次运行不可区分，而新密钥意味着新 serverId，
+ * 会孤儿化所有已配对设备与 push 绑定，且后续写入会用空展开清掉整个 settings 文件。
+ */
 export const getOrCreateRelaySigningKeypair = async ({ crypto, readSettingsFromDiskMigrated, writeSettingsToDisk, readSettingsStrict }) => {
+  /** 将存储的 { privateJwk, publicJwk } 还原为 { privateKey: KeyObject, publicJwk }。 */
   const toKeypair = (stored) => ({
     privateKey: crypto.createPrivateKey({ key: stored.privateJwk, format: 'jwk' }),
     publicJwk: stored.publicJwk,
@@ -48,12 +62,14 @@ export const getOrCreateRelaySigningKeypair = async ({ crypto, readSettingsFromD
   return { privateKey, publicJwk };
 };
 
+/** 固定字段顺序（crv/kty/x/y）序列化公钥 JWK，使哈希不受存储 JSON 字段顺序影响；与 ompchamber-website apps/api relay-auth.ts 的 canonicalJwk 逐字节一致。 */
 // Fixed key order so the hash is stable regardless of stored JSON field order.
 // Byte-for-byte mirror of canonicalJwk in ompchamber-website apps/api relay-auth.ts.
 /** @param {JsonWebKey} jwk */
 export const canonicalPublicJwkString = (jwk) =>
   JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
 
+/** 由公钥 JWK 派生 serverId：base64url(SHA-256(canonical 公钥 JWK))—— 两个 relay 共用的路由键。 */
 /**
  * serverId = base64url(SHA-256(canonical public JWK)). Must match the push
  * relay's deriveServerId — this id is the routing key for both relays.
@@ -63,6 +79,7 @@ export const canonicalPublicJwkString = (jwk) =>
 export const deriveServerId = ({ crypto }, publicJwk) =>
   crypto.createHash('sha256').update(canonicalPublicJwkString(publicJwk)).digest('base64url');
 
+/** 用 relay 签名私钥对消息做 ECDSA-SHA256 签名，输出 base64url（IEEE P1363 裸 r||s，WebCrypto 可验证的形态）。 */
 /**
  * ECDSA-SHA256, IEEE P1363 (raw r||s) signature — the form WebCrypto verifies.
  * @param {{ crypto: typeof import('node:crypto') }} deps

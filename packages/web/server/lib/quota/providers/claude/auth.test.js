@@ -1,7 +1,17 @@
+/**
+ * Claude 凭据发现测试套件：通过 mock `security` 子进程、fs 与 OpenCode
+ * auth.json，验证 loadClaudeCredential 的来源优先级（Keychain > 凭据文件 >
+ * OpenCode > 环境变量）、跨平台分支（darwin/linux）以及“blob 只含无关
+ * MCP token 时返回 null”的过滤行为。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// mock 的 child_process.execFileSync：默认抛错模拟“Keychain 无条目”，
+// 各用例按需改为返回 Claude Code 凭据 blob。
 const execFileSync = vi.fn();
+// 内存文件系统：path -> 文件内容，供 mock 的 fs.existsSync/readFileSync 使用。
 const files = new Map();
+// mock 的 OpenCode readAuthFile()，默认返回空对象（未登录）。
 const openCodeAuth = vi.fn(() => ({}));
 
 vi.mock('child_process', () => ({ execFileSync: (...args) => execFileSync(...args) }));
@@ -21,6 +31,8 @@ vi.mock('../../../opencode/auth.js', () => ({ readAuthFile: () => openCodeAuth()
 
 import { loadClaudeCredential } from './auth.js';
 
+// 构造 Claude Code 凭据 blob 的 JSON 字符串：混入无关的 MCP token，
+// 确保解析只读取 claudeAiOauth 条目。
 const claudeCodeBlob = (accessToken) => JSON.stringify({
   mcpOAuth: { 'linear|abc': { accessToken: 'unrelated-mcp-token' } },
   claudeAiOauth: {
@@ -31,6 +43,8 @@ const claudeCodeBlob = (accessToken) => JSON.stringify({
   },
 });
 
+// 临时把 process.platform 改为指定值执行 run()，结束后恢复原描述符，
+// 用于覆盖 darwin/linux 分支。
 const withPlatform = (platform, run) => {
   const original = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -41,6 +55,7 @@ const withPlatform = (platform, run) => {
   }
 };
 
+// 每个用例前重置所有 mock 与环境变量，保证来源优先级从干净状态开始。
 beforeEach(() => {
   files.clear();
   execFileSync.mockReset();
@@ -50,11 +65,13 @@ beforeEach(() => {
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 });
 
+// 清理用例中设置的 CLAUDE_* 环境变量，避免泄漏到其它测试文件。
 afterEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 });
 
+// 主 describe：按来源优先级逐级验证凭据发现与降级行为。
 describe('Claude credential discovery', () => {
   it('prefers the macOS Keychain over a stale credentials file', () => {
     execFileSync.mockReturnValue(claudeCodeBlob('keychain-token'));

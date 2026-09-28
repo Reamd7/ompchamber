@@ -1,3 +1,10 @@
+/**
+ * 自定义 OpenAI 兼容 baseURL 的归一化与安全校验：仅接受 http/https、
+ * 拒绝内嵌凭据；非本机地址默认禁止，除非处于 desktop 运行时或显式
+ * 设置 OMPCHAMBER_ALLOW_REMOTE_OPENAI_COMPAT_URLS。合法输入去 query/hash/
+ * 尾斜杠后返回 origin+path。
+ */
+/** 视为"本机"的 hostname 白名单。 */
 const LOCAL_BASE_URL_HOSTS = new Set([
   'localhost',
   '127.0.0.1',
@@ -5,6 +12,7 @@ const LOCAL_BASE_URL_HOSTS = new Set([
   'host.docker.internal',
 ]);
 
+/** 判定环境变量开关：接受 boolean，或字符串 '1'/'true'（大小写不敏感）。 */
 const isEnvFlagEnabled = (value) => {
   if (value === true || value === 1) return true;
   if (typeof value !== 'string') return false;
@@ -12,6 +20,7 @@ const isEnvFlagEnabled = (value) => {
   return normalized === '1' || normalized === 'true';
 };
 
+/** 规范化 hostname：trim + 小写，并去掉 IPv6 字面量的方括号。 */
 const normalizeHostname = (hostname) => {
   if (typeof hostname !== 'string') return '';
   const trimmed = hostname.trim().toLowerCase();
@@ -22,11 +31,18 @@ const normalizeHostname = (hostname) => {
   return trimmed;
 };
 
+/** hostname（规范化后）是否在本机白名单内。 */
 const isAllowedLocalHost = (hostname) => {
   const normalized = normalizeHostname(hostname);
   return LOCAL_BASE_URL_HOSTS.has(normalized);
 };
 
+/**
+ * 校验并归一化自定义 baseURL。
+ * @returns {{ value?: string, error?: string }} 空输入返回 { value: undefined }；
+ *   合法时 value 为去掉 query/hash/尾斜杠 的 protocol//host+path；
+ *   协议非法 / 带凭据 / 远程地址被禁分别返回对应 error
+ */
 export const normalizeCustomOpenAIBaseURL = (value) => {
   if (typeof value !== 'string' || !value.trim()) {
     return { value: undefined };

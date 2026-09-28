@@ -2,6 +2,14 @@
 //! (`computeIntegratePlan`, `getIntegrateConflictDetails`,
 //! `isCherryPickInProgress`, `integrateWorktreeCommits`, `abortIntegrate`,
 //! `continueIntegrate`) backing `/api/git/integrate/*`.
+//!
+//! 中文说明：integrate-worktree 工作流（把 worktree 分支上的提交搬移到目标
+//! 分支）的移植，对应 `server/lib/git/service.js` 中的 `computeIntegratePlan`、
+//! `getIntegrateConflictDetails`、`isCherryPickInProgress`、
+//! `integrateWorktreeCommits`、`abortIntegrate`、`continueIntegrate`，
+//! 支撑 `/api/git/integrate/*` 路由。核心思路：为目标分支创建临时 worktree，
+//! 在其上按计划逐个 cherry-pick 提交；遇到冲突时返回可恢复的状态快照，
+//! 由客户端决定 abort 还是 continue。
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +18,8 @@ use serde_json::{Value, json};
 use super::paths::{absolutize, normalize_directory_path, trim_git_lines};
 use super::service::{GitService, ServiceResult};
 
+/// 从 JSON 取分支名并校验：trim 后非空、不以 `-` 开头且不含 NUL，
+/// 否则返回带字段名的 "… is required" / "Invalid …" 错误。
 fn normalize_branch(value: Option<&Value>, field_name: &str) -> ServiceResult<String> {
     let branch = value
         .and_then(Value::as_str)
@@ -25,6 +35,8 @@ fn normalize_branch(value: Option<&Value>, field_name: &str) -> ServiceResult<St
     Ok(branch)
 }
 
+/// 从 JSON 取 commit SHA 并校验：长度 4..=64 且全为十六进制字符，
+/// 否则返回 "Invalid commit SHA"。
 fn normalize_sha(value: Option<&Value>) -> ServiceResult<String> {
     let sha = value
         .and_then(Value::as_str)
@@ -37,6 +49,7 @@ fn normalize_sha(value: Option<&Value>) -> ServiceResult<String> {
     Ok(sha)
 }
 
+/// 从 JSON 取路径字段：规范化（含 `~` 展开）、要求非空，并转为绝对路径。
 fn normalize_path_field(value: Option<&Value>, field_name: &str) -> ServiceResult<PathBuf> {
     let target = normalize_directory_path(value.and_then(Value::as_str))
         .filter(|v| !v.trim().is_empty())
@@ -44,11 +57,16 @@ fn normalize_path_field(value: Option<&Value>, field_name: &str) -> ServiceResul
     Ok(absolutize(Path::new(&target)))
 }
 
+/// integrate 流程关注的 worktree 条目：路径与其分支引用。
 struct IntegrateWorktreeEntry {
+    /// 工作树绝对路径（`worktree <path>` 行）。
     path: String,
+    /// 完整分支引用（`branch <ref>` 行）；detached HEAD 时为 `None`。
     branch_ref: Option<String>,
 }
 
+/// 运行 `git worktree list --porcelain` 并解析出 (路径, 分支引用) 列表；
+/// git 失败时把 "Failed to list git worktrees" 场景的错误透传为 Err。
 async fn list_worktrees_for_integrate(
     service: &GitService,
     repo_root: &Path,
@@ -88,6 +106,9 @@ async fn list_worktrees_for_integrate(
         .collect())
 }
 
+/// 确保目标分支以本地分支存在并返回本地分支名：`HEAD` 或已有本地分支直接
+/// 返回原名；`remotes/<remote>/<name>` 形态或存在于 origin 远端时用
+/// `branch --track` 建立跟踪分支；否则原样返回交由后续 git 调用暴露错误。
 async fn ensure_local_integrate_branch(
     service: &GitService,
     repo_root: &Path,
@@ -165,6 +186,10 @@ async fn ensure_local_integrate_branch(
     Ok(candidate.to_string())
 }
 
+/// 对应 JS `computeIntegratePlan`：规范化 repoRoot 与两个分支名；任一分支
+/// 为 `HEAD` 时直接返回空提交计划。否则先确保目标分支本地存在，再以
+/// `git cherry <target> <source>` 取带 `+` 前缀（目标分支缺失）的提交，
+/// 与 `rev-list --reverse <target>..<source>` 求交集，得到按序待搬移提交。
 pub async fn compute_integrate_plan(service: &GitService, input: &Value) -> ServiceResult<Value> {
     let repo_root = normalize_path_field(input.get("repoRoot"), "repoRoot")?;
     let source_branch = normalize_branch(input.get("sourceBranch"), "sourceBranch")?;
@@ -225,6 +250,8 @@ pub async fn compute_integrate_plan(service: &GitService, input: &Value) -> Serv
     }))
 }
 
+/// 在 `~/.config/ompchamber/tmp/oc-integrate-<pid><rand>` 下为目标分支创建
+/// 临时 worktree；失败时清理已建目录并把 git 错误文本作为 Err 返回。
 async fn create_integrate_temp_worktree(
     service: &GitService,
     repo_root: &Path,
@@ -266,6 +293,7 @@ async fn create_integrate_temp_worktree(
     Ok(tmp_dir)
 }
 
+/// 生成 10 位十六进制随机后缀，保证临时 worktree 目录名唯一。
 fn rand_suffix() -> String {
     use rand::Rng;
     let mut rng = rand::rng();
@@ -274,6 +302,8 @@ fn rand_suffix() -> String {
         .collect()
 }
 
+/// 尽力清理临时 worktree：先 `worktree remove --force` 再 `worktree prune`；
+/// 所有错误都被忽略（用于成功与失败两条收尾路径）。
 async fn remove_integrate_temp_worktree(service: &GitService, repo_root: &Path, tmp_dir: &Path) {
     let _ = service
         .run(
@@ -284,6 +314,8 @@ async fn remove_integrate_temp_worktree(service: &GitService, repo_root: &Path, 
     let _ = service.run(repo_root, &["worktree", "prune"]).await;
 }
 
+/// 临时 worktree 若配置了 upstream：先 `fetch` 再 `merge --ff-only` 快进到
+/// 远端最新；快进失败返回错误，没有 upstream 时空操作。
 async fn maybe_fast_forward_integrate_upstream(
     service: &GitService,
     tmp_dir: &Path,
@@ -317,6 +349,9 @@ async fn maybe_fast_forward_integrate_upstream(
     Ok(())
 }
 
+/// 对应 JS `getIntegrateConflictDetails`：在临时 worktree 上收集 porcelain
+/// 状态、未合并文件列表、完整 diff，以及 `CHERRY_PICK_HEAD` 的补丁元信息
+/// 与补丁正文（stdout 为空时回退取 stderr）。
 pub async fn get_integrate_conflict_details(
     service: &GitService,
     tmp_dir: Option<&Value>,
@@ -355,6 +390,8 @@ pub async fn get_integrate_conflict_details(
     }))
 }
 
+/// 对应 JS `isCherryPickInProgress`：以 `rev-parse --verify --quiet
+/// CHERRY_PICK_HEAD` 是否成功判断 cherry-pick 是否进行中。
 pub async fn is_cherry_pick_in_progress(
     service: &GitService,
     tmp_dir: Option<&Value>,
@@ -369,6 +406,8 @@ pub async fn is_cherry_pick_in_progress(
     Ok(json!({ "inProgress": head.success }))
 }
 
+/// 找出检出目标分支、不在排除列表且 `status --porcelain` 干净的其它工作树
+/// ——搬移完成后需要把它们的 HEAD 同步到目标分支新位置。
 async fn compute_clean_integrate_worktrees_to_sync(
     service: &GitService,
     repo_root: &Path,
@@ -394,12 +433,15 @@ async fn compute_clean_integrate_worktrees_to_sync(
     Ok(clean)
 }
 
+/// 对每个待同步工作树执行 `reset --hard`（忽略错误），使其跟上目标分支。
 async fn sync_clean_integrate_target_worktrees(service: &GitService, paths: &[String]) {
     for target in paths {
         let _ = service.run(target, &["reset", "--hard"]).await;
     }
 }
 
+/// 校验并规范化客户端回传的 integrate 计划：repoRoot、两个分支名与逐项
+/// 校验过的 SHA 提交列表（缺失的 commits 视为空）。
 async fn normalize_integrate_plan(
     plan: &Value,
 ) -> ServiceResult<(PathBuf, String, String, Vec<String>)> {
@@ -419,17 +461,28 @@ async fn normalize_integrate_plan(
     Ok((repo_root, source_branch, target_branch, commits))
 }
 
+/// 冲突暂停时可序列化的进行时状态：恢复（continue/abort）所需的全部上下文，
+/// 字段名与 JS 版往返 JSON 保持一致。
 struct IntegrateState {
+    /// 主仓库根目录。
     repo_root: PathBuf,
+    /// 临时 worktree 路径（cherry-pick 的执行地）。
     temp_worktree_path: PathBuf,
+    /// 提交来源分支。
     source_branch: String,
+    /// 搬移目标分支。
     target_branch: String,
+    /// 完成后需要 `reset --hard` 同步的干净目标分支工作树列表。
     clean_target_worktrees: Vec<String>,
+    /// 尚未 cherry-pick 的提交（含当前冲突的提交）。
     remaining_commits: Vec<String>,
+    /// 正在 cherry-pick（发生冲突）的提交。
     current_commit: String,
 }
 
+/// 状态与客户端往返的 JSON 表示。
 impl IntegrateState {
+    /// 序列化为客户端持有的状态对象（键名与 JS 版一致）。
     fn to_json(&self) -> Value {
         json!({
             "repoRoot": self.repo_root.to_string_lossy(),
@@ -443,6 +496,8 @@ impl IntegrateState {
     }
 }
 
+/// 从客户端状态 JSON 反向校验并重建 IntegrateState；任一字段非法时返回
+/// 对应的规范化错误。
 fn normalize_integrate_state(state: &Value) -> ServiceResult<IntegrateState> {
     let clean_target_worktrees: Vec<String> =
         match state.get("cleanTargetWorktrees").and_then(Value::as_array) {
@@ -484,6 +539,10 @@ fn normalize_integrate_state(state: &Value) -> ServiceResult<IntegrateState> {
     })
 }
 
+/// 逐个 cherry-pick 剩余提交：成功即弹出继续；出现未合并文件时打包冲突
+/// 状态与详情返回 `{"kind":"conflict"}`；无冲突的失败把 stderr/message
+/// 作为错误返回。全部成功后清理临时 worktree 并返回
+/// `{"kind":"success","moved":N}`。
 #[allow(clippy::too_many_arguments)]
 async fn run_integrate_pick_loop(
     service: &GitService,
@@ -539,6 +598,9 @@ async fn run_integrate_pick_loop(
     Ok(json!({ "kind": "success", "moved": moved }))
 }
 
+/// 对应 JS `integrateWorktreeCommits`：规范化计划后，空提交列表直接返回
+/// noop；否则创建临时 worktree、快进 upstream、确认目标分支工作区干净，
+/// 再进入 cherry-pick 循环；任何错误路径都会清理临时 worktree。
 pub async fn integrate_worktree_commits(
     service: &GitService,
     input_plan: &Value,
@@ -590,6 +652,8 @@ pub async fn integrate_worktree_commits(
     }
 }
 
+/// 对应 JS `abortIntegrate`：对临时 worktree 执行 `cherry-pick --abort` 并
+/// 清理之；两者结果都被忽略，恒返回 success。
 pub async fn abort_integrate(service: &GitService, state_input: &Value) -> ServiceResult<Value> {
     let state = normalize_integrate_state(state_input)?;
     let _ = service
@@ -599,6 +663,10 @@ pub async fn abort_integrate(service: &GitService, state_input: &Value) -> Servi
     Ok(json!({ "success": true }))
 }
 
+/// 对应 JS `continueIntegrate`：先 `cherry-pick --continue`；仍有未合并文件
+/// 则打包新的冲突状态与详情返回，硬失败返回错误。成功后跳过刚完成的当前
+/// 提交、继续 pick 剩余提交；全部完成时清理临时 worktree、同步干净的目标
+/// 分支工作树，并返回搬移的提交数量。
 pub async fn continue_integrate(service: &GitService, state_input: &Value) -> ServiceResult<Value> {
     let state = normalize_integrate_state(state_input)?;
     let cont = service
@@ -682,7 +750,9 @@ pub async fn continue_integrate(service: &GitService, state_input: &Value) -> Se
     Ok(json!({ "kind": "success", "moved": state.remaining_commits.len() }))
 }
 
+/// 手写 Clone（与派生等价），逐字段克隆进行时状态。
 impl Clone for IntegrateState {
+    /// 逐字段深拷贝，保持与 JS 展开语义一致。
     fn clone(&self) -> Self {
         Self {
             repo_root: self.repo_root.clone(),

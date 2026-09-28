@@ -1,3 +1,16 @@
+/**
+ * OpenCode 反向代理（lib/opencode/proxy.js）的行为测试套件（vitest）。
+ *
+ * 用真实 express 实例在本机回环地址上分别拉起「上游 OpenCode 假服务」与
+ * 「挂载了代理路由的 OMPChamber 服务」，端到端验证：
+ * - SSE 流转发：nginx 安全的响应头、上游停滞超时、背压（drain）处理、
+ *   事件块边界追踪；
+ * - 通用 API 代理：外部 base URL 路由、urlencoded/JSON/未解析 body 的重放、
+ *   查询参数透传、实验性 session 列表的净化；
+ * - 超时策略：慢上游走长超时预算、OAuth 回调与整轮 prompt 豁免请求 deadline，
+ *   而不跑 turn 的 session 路由仍受 deadline 约束。
+ */
+
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import express from 'express';
@@ -5,11 +18,19 @@ import path from 'path';
 
 import { createSseBoundaryTracker, registerOpenCodeProxy, writeSseChunkWithBackpressure } from './lib/opencode/proxy.js';
 
+/**
+ * 在回环地址上以随机端口（0）启动 express app，resolve 返回 http server。
+ * 监听失败（端口冲突等）时 reject。
+ */
 const listen = (app, host = '127.0.0.1') => new Promise((resolve, reject) => {
   const server = app.listen(0, host, () => resolve(server));
   server.once('error', reject);
 });
 
+/**
+ * 关闭一个测试用的 http server；server 为空时直接 resolve，关闭出错则
+ * reject，供 afterEach 统一清理，避免端口泄漏影响后续用例。
+ */
 const closeServer = (server) => new Promise((resolve, reject) => {
   if (!server) {
     resolve();
@@ -24,10 +45,12 @@ const closeServer = (server) => new Promise((resolve, reject) => {
   });
 });
 
+/** 端口到端口地验证代理的 SSE 转发、body 重放、净化与超时策略。 */
 describe('OpenCode proxy SSE forwarding', () => {
   let upstreamServer;
   let proxyServer;
 
+  // 每个用例结束后按「代理服务 → 上游服务」的顺序关闭，防止句柄泄漏。
   afterEach(async () => {
     await closeServer(proxyServer);
     await closeServer(upstreamServer);

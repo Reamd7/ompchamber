@@ -15,18 +15,36 @@
 //!   [`distiller`] adapts it to the goal-creation `Distiller` seam, so goal
 //!   mode can wire real small-model evaluation once the composition root
 //!   passes them in.
+//!
+//! 中文说明：`server/lib/small-model/` 的移植——服务端直连 LLM，复用用户既有的
+//! OpenCode provider 登录（~/.local/share/opencode/auth.json），并收编
+//! `server/lib/text/summarization.js`（成为 summarization 子模块，模型缝可注入）。
+//! 组装要点：路由与其它 /api 路由一样挂在 ui-auth 门之后；runtime provider 快照
+//! 接引擎并按 30s TTL 刷新（JS 里的重启重置由 TTL 覆盖）；audit_service 与
+//! distiller 两个适配器把 service 接到 session-goal 的对应缝上。
 
+/// auth.json 的读取、写回与备份。
 pub mod auth_store;
+/// 按 provider 线格式直连小模型的调用层。
 pub mod call;
+/// models.dev 目录缓存（内存 + 磁盘 + 条件网络刷新）。
 pub mod catalog;
+/// 可注入的出站 HTTP 通道与 JS 语义工具函数。
 pub mod http;
+/// OpenCode 配置层的读取与深合并。
 pub mod opencode_config;
+/// 小模型选择的 fallback 链。
 pub mod resolve;
+/// /api/small-model 的 axum 路由。
 pub mod routes;
+/// 引擎 runtime provider 的快照与解析。
 pub mod runtime_providers;
+/// 组装解析与调用的门面 service。
 pub mod service;
+/// 文本摘要（summarization.js 的移植）。
 pub mod summarization;
 
+/// 本模块的集成测试。
 #[cfg(test)]
 mod tests;
 
@@ -57,12 +75,17 @@ use std::sync::Arc;
 use crate::context::RouterContext;
 
 /// The shared service for this server process (JS module state).
+///
+/// 中文补充：进程内共享的 service 工厂（等价 JS 的模块级状态），由引擎与数据目录
+/// 组装出生产实现。
 pub fn service(ctx: &RouterContext) -> Arc<SmallModelService> {
     SmallModelService::production(Arc::clone(&ctx.engine), ctx.config.data_dir.clone())
 }
 
 /// `registerSmallModelRoutes(app, { getSmallModelService })` — the runtime API
 /// surface, gated by the ui-auth middleware like every other `/api` route.
+///
+/// 中文补充：注册 /api/small-model 路由并套上与其它 /api 路由相同的 ui-auth 中间件。
 pub fn router(ctx: RouterContext) -> axum::Router {
     routes::routes(service(&ctx)).layer(crate::ui_auth::middleware(ctx))
 }
@@ -72,6 +95,9 @@ pub fn router(ctx: RouterContext) -> axum::Router {
 /// `getSmallModelService()` + `generateSmallModelText({ restrictToPreferredProvider: true })`,
 /// mapping the 404 "no small model" answer to `Unavailable` and every other
 /// failure to `Failed` (logged by the caller, not here).
+///
+/// 中文补充：404（无小模型）映射为 Unavailable、其余失败映射为 Failed；
+/// 日志由调用方记录。
 pub fn audit_service(service: Arc<SmallModelService>) -> crate::session_goal::AuditService {
     Arc::new(move |request: crate::session_goal::AuditRequest| {
         let service = Arc::clone(&service);
@@ -106,6 +132,9 @@ pub fn audit_service(service: Arc<SmallModelService>) -> crate::session_goal::Au
 /// (`crate::session_goal::create::Distiller`): the JS `fitObjective` prompt,
 /// verbatim. Errors surface as `Err(message)`; the caller warns and falls
 /// back to the head/tail trim.
+///
+/// 中文补充：fitObjective 提示词原样移植；出错以 Err(message) 返回，
+/// 调用方警告并回退到头尾截断。
 pub fn distiller(service: Arc<SmallModelService>) -> crate::session_goal::Distiller {
     Arc::new(move |request: crate::session_goal::DistillRequest<'_>| {
         let service = Arc::clone(&service);

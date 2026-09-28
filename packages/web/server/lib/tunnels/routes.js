@@ -1,3 +1,23 @@
+/**
+ * 隧道 HTTP 路由模块。
+ *
+ * 通过工厂函数 createTunnelRoutesRuntime 创建并注册一组 Express 路由，对外暴露
+ * 隧道相关 REST API：提供商依赖可用性检查、doctor 诊断、提供商能力列表、
+ * 隧道状态查询、托管远端隧道 token 预设管理、隧道启动/停止等。
+ * 全部依赖（crypto、URL、tunnelService、tunnelProviderRegistry、tunnelAuthController、
+ * 各 normalize/校验函数与运行时状态存取器）均由调用方注入，便于测试替换。
+ */
+
+/**
+ * 创建隧道路由运行时。
+ * @param {object} dependencies 注入依赖：crypto/URL 全局对象、tunnelService 隧道服务、
+ *   tunnelProviderRegistry 提供商注册表、tunnelAuthController 隧道鉴权控制器、
+ *   readSettingsFromDiskMigrated/readManagedRemoteTunnelConfigFromDisk 磁盘读取函数、
+ *   各类 normalize/isSupported 校验函数、托管远端隧道 token 的读写函数、
+ *   模式与提供商常量、TunnelServiceError、getActivePort 及活动隧道控制器的存取器。
+ * @returns {{registerRoutes: Function, startTunnelWithNormalizedRequest: Function}}
+ *   返回路由注册函数与归一化启动函数，供 server 装配层使用。
+ */
 export const createTunnelRoutesRuntime = (dependencies) => {
   const {
     crypto,
@@ -30,6 +50,11 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     setActiveTunnelController,
   } = dependencies;
 
+  /**
+   * 读取当前活动隧道的模式并归一化为三种合法模式之一；
+   * 未知或缺失时回退为 TUNNEL_MODE_QUICK。
+   * @returns {string} 归一化后的活动模式
+   */
   const resolveActiveNormalizedTunnelMode = () => {
     const mode = tunnelService.resolveActiveMode();
     if (mode === TUNNEL_MODE_MANAGED_LOCAL) {
@@ -41,6 +66,11 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     return TUNNEL_MODE_QUICK;
   };
 
+  /**
+   * 从隧道公网 URL 中解析 hostname（转小写）。
+   * @param {string} publicUrl 隧道公开地址
+   * @returns {string|null} 入参非字符串、为空或 URL 解析失败时返回 null
+   */
   const resolveNormalizedTunnelHost = (publicUrl) => {
     if (typeof publicUrl !== 'string' || publicUrl.trim().length === 0) {
       return null;
@@ -52,6 +82,12 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     }
   };
 
+  /**
+   * 解析首选隧道提供商，优先级：请求体显式 provider > 当前活动隧道的 provider >
+   * 磁盘设置中的 tunnelProvider（normalizeTunnelProvider 保证最终有合法默认值）。
+   * @param {object|null} reqBody 请求体（可为 null）
+   * @returns {Promise<string>} 归一化后的提供商 id
+   */
   const resolvePreferredTunnelProvider = async (reqBody = null) => {
     if (typeof reqBody?.provider === 'string' && reqBody.provider.trim().length > 0) {
       return normalizeTunnelProvider(reqBody.provider);
@@ -64,6 +100,15 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     return normalizeTunnelProvider(settings?.tunnelProvider);
   };
 
+  /**
+   * 使用已完成归一化的参数启动隧道。
+   * cloudflare + managed-remote 组合会先把 hostname/token 写入进程运行时状态，
+   * 并在 token 与 hostname 同时存在时将其作为预设持久化到托管远端隧道配置。
+   * @param {object} params 归一化后的启动参数（provider/mode/intent/hostname/token/
+   *   configPath/selectedPresetId/selectedPresetName）
+   * @returns {Promise<{publicUrl: string, mode: string, provider: string, providerMetadata: object|null}>}
+   * @throws {TunnelServiceError} 由 tunnelService.start 透传（依赖缺失、校验失败、启动失败等）
+   */
   const startTunnelWithNormalizedRequest = async ({
     provider,
     mode,
@@ -106,6 +151,15 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     };
   };
 
+  /**
+   * 为未实现 diagnose 的提供商生成通用的“按模式”检查结果：
+   * 先构造 startup_readiness 检查项，再逐一核对 requiredFields 中的字段在
+   * doctorRequest 里是否已提供（字符串需非空白，其余按真值判断）。
+   * @param {object} params modeKey 模式 key；requiredFields 该模式必填字段名列表；
+   *   doctorRequest 汇总后的诊断输入；startupReady 提供商依赖检查是否通过
+   * @returns {{mode: string, checks: Array, summary: {ready: boolean, failures: number, warnings: number}, ready: boolean, blockers: Array}}
+   *   blockers 剔除 startup_readiness，仅保留用户可处理的阻塞项
+   */
   const createGenericModeChecks = ({ modeKey, requiredFields, doctorRequest, startupReady }) => {
     const checks = [
       {
@@ -148,6 +202,17 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     };
   };
 
+  /**
+   * 执行隧道 doctor 诊断。
+   * 提供商自身实现了 diagnose 时直接委托（并按 modeFilter 过滤其返回的模式列表）；
+   * 否则走通用路径：检查依赖可用性得到 providerChecks，再按 capabilities.modes
+   * 逐模式调用 createGenericModeChecks 生成检查结果。
+   * @param {object} params providerId 提供商 id；modeFilter 可选的模式过滤；
+   *   doctorRequest 汇总后的诊断输入
+   * @returns {Promise<{ok: boolean, provider: string, providerChecks: Array, modes: Array}>}
+   * @throws {TunnelServiceError} provider_unsupported（注册表中无此提供商）或
+   *   mode_unsupported（提供商能力未声明该模式）
+   */
   const runTunnelDoctor = async ({ providerId, modeFilter, doctorRequest }) => {
     const provider = tunnelProviderRegistry.get(providerId);
     if (!provider) {
@@ -209,7 +274,13 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     };
   };
 
+  /**
+   * 在 Express app 上注册全部隧道 REST 路由（/api/ompchamber/tunnel/*）。
+   * @param {object} app Express 应用实例
+   */
   const registerRoutes = (app) => {
+    // GET /tunnel/check：检查（指定或首选）提供商 CLI 依赖可用性并附带安装指引；
+    // 任何异常都兜底为 available:false 的 JSON，避免诊断接口本身 5xx。
     app.get('/api/ompchamber/tunnel/check', async (req, res) => {
       try {
         const requestedProvider = typeof req?.query?.provider === 'string' && req.query.provider.trim().length > 0
@@ -232,6 +303,14 @@ export const createTunnelRoutesRuntime = (dependencies) => {
       }
     });
 
+    /**
+     * GET/POST /api/ompchamber/tunnel/doctor 的共享处理器。
+     * 汇总 query/body 与磁盘设置，按“请求显式值 > 进程运行时状态 > 托管配置文件 >
+     * 设置存储”的优先级解析出 provider、mode 过滤、hostname 与 token，再交由
+     * runTunnelDoctor 产出诊断结果。
+     * @returns {Promise<void>} 成功返回诊断 JSON；TunnelServiceError 映射 400，
+     *   其余异常记日志后映射 500
+     */
     const handleTunnelDoctor = async (req, res) => {
       try {
         const params = req.query || {};
@@ -318,14 +397,18 @@ export const createTunnelRoutesRuntime = (dependencies) => {
         return res.status(500).json({ ok: false, error: 'Failed to run tunnel doctor' });
       }
     };
+    // doctor 同时接受 GET（链接直达/浏览器）与 POST（可携带 token 请求体）两种调用方式。
     app.post('/api/ompchamber/tunnel/doctor', handleTunnelDoctor);
     app.get('/api/ompchamber/tunnel/doctor', handleTunnelDoctor);
 
+    // GET /tunnel/providers：列出全部已注册提供商的能力声明（capabilities 浅拷贝）。
     app.get('/api/ompchamber/tunnel/providers', (_req, res) => {
       const providers = tunnelProviderRegistry.listCapabilities();
       return res.json({ providers });
     });
 
+    // GET /tunnel/status：汇总隧道与鉴权状态（活动地址、模式、预设、TTL 配置、会话列表）。
+    // 无公网地址时返回 inactive 形态；检测到活动隧道与 auth 控制器状态不一致时自动补同步。
     app.get('/api/ompchamber/tunnel/status', async (_req, res) => {
       try {
         const settings = await readSettingsFromDiskMigrated();
@@ -419,6 +502,8 @@ export const createTunnelRoutesRuntime = (dependencies) => {
       }
     });
 
+    // PUT /tunnel/managed-remote-token：保存/更新托管远端隧道 token 预设；
+    // presetId/presetName/hostname/token 四字段必填，缺一即 400，落盘失败 500。
     app.put('/api/ompchamber/tunnel/managed-remote-token', async (req, res) => {
       try {
         const presetId = typeof req?.body?.presetId === 'string' ? req.body.presetId.trim() : '';
@@ -444,6 +529,10 @@ export const createTunnelRoutesRuntime = (dependencies) => {
       }
     });
 
+    // POST /tunnel/start：启动隧道。校验 provider/mode 合法性，按优先级汇聚 token/hostname
+    // 与 TTL 配置；若替换了已有隧道（模式/提供商/地址变化）先吊销其 bootstrap token 与会话；
+    // 成功后签发新的 bootstrap token 并返回 connect URL。TunnelServiceError 按 code 映射
+    // 400/422/500，任何失败都会清空活动隧道状态。
     app.post('/api/ompchamber/tunnel/start', async (_req, res) => {
       try {
         const settings = await readSettingsFromDiskMigrated();
@@ -582,6 +671,8 @@ export const createTunnelRoutesRuntime = (dependencies) => {
       }
     });
 
+    // POST /tunnel/stop：停止活动隧道并吊销其全部鉴权产物（bootstrap token 与会话），
+    // 返回被吊销的数量统计。
     app.post('/api/ompchamber/tunnel/stop', (_req, res) => {
       let revokedBootstrapCount = 0;
       let invalidatedSessionCount = 0;
@@ -603,6 +694,7 @@ export const createTunnelRoutesRuntime = (dependencies) => {
     });
   };
 
+  // 对外暴露路由注册入口与归一化启动函数两个能力。
   return {
     registerRoutes,
     startTunnelWithNormalizedRequest,

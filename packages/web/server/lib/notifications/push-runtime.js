@@ -1,6 +1,17 @@
+/**
+ * Web Push（VAPID）订阅与发送运行时。
+ *
+ * 订阅按 UI 会话 token 分组持久化到磁盘文件（版本化 JSON），发送时跨会话按
+ * endpoint 去重；VAPID 密钥存放在设置中，缺失时自动生成。
+ * 另维护一份带 TTL 的 UI 可见性心跳表，用于在已有客户端可见时抑制原生 push，
+ * 避免与页面内通知重复打扰。移动端 PWA 订阅与 APNs 共用同一套可见性门控。
+ */
+/** 订阅文件格式版本；version 不匹配的旧文件按空数据丢弃。 */
 const PUSH_SUBSCRIPTIONS_VERSION = 1;
+/** UI 可见性心跳的有效期（30 秒），超时未更新即视为不可见。 */
 const UI_VISIBILITY_TTL_MS = 30_000;
 
+/** 判断 origin 是否为 loopback（localhost / 127.0.0.1 / [::1]）的明文 http 地址。 */
 const isLoopbackHttpOrigin = (value) => {
   if (typeof value !== 'string') {
     return false;
@@ -11,6 +22,12 @@ const isLoopbackHttpOrigin = (value) => {
     || value.startsWith('http://[::1]');
 };
 
+/**
+ * 创建 push 运行时。
+ * deps 注入 fsPromises/path、webPush 库、订阅文件路径 PUSH_SUBSCRIPTIONS_FILE_PATH，
+ * 以及设置读写 readSettingsFromDiskMigrated / writeSettingsToDisk
+ * （存放 VAPID 密钥与 publicOrigin）。
+ */
 export const createPushRuntime = (deps) => {
   const {
     fsPromises,
@@ -21,10 +38,14 @@ export const createPushRuntime = (deps) => {
     writeSettingsToDisk,
   } = deps;
 
+  /** 串行化订阅文件读改写的 Promise 链锁，避免并发更新互相覆盖。 */
   let persistPushSubscriptionsLock = Promise.resolve();
+  /** webPush 是否已完成 VAPID 初始化（懒加载，一次即成）。 */
   let pushInitialized = false;
 
+  /** UI 会话 token -> { visible, updatedAt, platform } 的内存可见性心跳表。 */
   const uiVisibilityByToken = new Map();
+  /** 清理过期或损坏的可见性心跳记录（超过 UI_VISIBILITY_TTL_MS 未更新即删除）。 */
   const pruneUiVisibility = (now = Date.now()) => {
     for (const [token, state] of uiVisibilityByToken) {
       if (!state || now - state.updatedAt > UI_VISIBILITY_TTL_MS) {
@@ -33,6 +54,11 @@ export const createPushRuntime = (deps) => {
     }
   };
 
+  /**
+   * 读取并校验磁盘上的订阅文件。
+   * 文件不存在（ENOENT）、解析失败、version 不符或结构非法时一律返回
+   * 空的版本化结构，绝不抛错（仅告警）。
+   */
   const readPushSubscriptionsFromDisk = async () => {
     try {
       const raw = await fsPromises.readFile(PUSH_SUBSCRIPTIONS_FILE_PATH, 'utf8');
@@ -59,11 +85,16 @@ export const createPushRuntime = (deps) => {
     }
   };
 
+  /** 把订阅数据以两空格缩进的 JSON 写回磁盘，先确保父目录存在。 */
   const writePushSubscriptionsToDisk = async (data) => {
     await fsPromises.mkdir(path.dirname(PUSH_SUBSCRIPTIONS_FILE_PATH), { recursive: true });
     await fsPromises.writeFile(PUSH_SUBSCRIPTIONS_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
   };
 
+  /**
+   * 串行执行一次订阅文件的读改写：经 persistPushSubscriptionsLock 排队，
+   * 读取当前数据、应用 mutate 得到新结构后写盘；返回本次更新后的数据。
+   */
   const persistPushSubscriptionUpdate = async (mutate) => {
     persistPushSubscriptionsLock = persistPushSubscriptionsLock.then(async () => {
       await fsPromises.mkdir(path.dirname(PUSH_SUBSCRIPTIONS_FILE_PATH), { recursive: true });
@@ -79,6 +110,10 @@ export const createPushRuntime = (deps) => {
     return persistPushSubscriptionsLock;
   };
 
+  /**
+   * 获取 VAPID 密钥对：设置中已有合法密钥直接复用；
+   * 否则用 webPush 生成新密钥对并写回设置。返回 { publicKey, privateKey }。
+   */
   const getOrCreateVapidKeys = async () => {
     const settings = await readSettingsFromDiskMigrated();
     const existing = settings?.vapidKeys;
@@ -99,6 +134,10 @@ export const createPushRuntime = (deps) => {
     return { publicKey: generated.publicKey, privateKey: generated.privateKey };
   };
 
+  /**
+   * 规整某会话的订阅记录数组：剔除缺 endpoint/p256dh/auth 的非法项，
+   * 保留 createdAt 与可选的 platform。非数组输入返回空数组。
+   */
   const normalizePushSubscriptions = (record) => {
     if (!Array.isArray(record)) return [];
     return record
@@ -121,6 +160,12 @@ export const createPushRuntime = (deps) => {
       .filter(Boolean);
   };
 
+  /**
+   * 为指定 UI 会话新增或更新一条订阅（按 endpoint 去重，新条目置顶），
+   * 记录 createdAt/lastSeenAt/userAgent；platform 未提供时沿用旧值
+   * （供移动端 PWA 走与 APNs 相同的可见性抑制门控）。
+   * 每会话最多保留 10 条，超出截断。
+   */
   const addOrUpdatePushSubscription = async (uiSessionToken, subscription, userAgent, platform) => {
     if (!uiSessionToken) {
       return;
@@ -159,6 +204,7 @@ export const createPushRuntime = (deps) => {
     });
   };
 
+  /** 删除指定会话中某 endpoint 的订阅；会话订阅清空时连同该会话键一并移除。 */
   const removePushSubscription = async (uiSessionToken, endpoint) => {
     if (!uiSessionToken || !endpoint) return;
 
@@ -177,6 +223,7 @@ export const createPushRuntime = (deps) => {
     });
   };
 
+  /** 从所有会话中删除某 endpoint 的订阅（推送服务报告订阅失效时调用）。 */
   const removePushSubscriptionFromAllSessions = async (endpoint) => {
     if (!endpoint) return;
 
@@ -197,6 +244,10 @@ export const createPushRuntime = (deps) => {
     });
   };
 
+  /**
+   * 向单条订阅发送 push。收到 410/404（订阅已失效）时自动从所有会话
+   * 移除该订阅；其它失败仅告警，不向外抛出。
+   */
   const sendPushToSubscription = async (sub, payload) => {
     await ensurePushInitialized();
     const body = JSON.stringify(payload);
@@ -221,6 +272,12 @@ export const createPushRuntime = (deps) => {
     }
   };
 
+  /**
+   * 向所有会话的全部订阅广播 push（跨会话按 endpoint 去重，并发发送）。
+   * options.requireNoSse 为 true 时按可见性门控抑制：移动端 PWA 订阅仅在
+   * 无可见交互式（桌面/web）客户端时发送；非移动订阅在任意客户端可见时
+   * 即抑制——避免与页面内通知重复打扰。
+   */
   const sendPushToAllUiSessions = async (payload, options = {}) => {
     const requireNoSse = options.requireNoSse === true;
     const store = await readPushSubscriptionsFromDisk();
@@ -254,9 +311,15 @@ export const createPushRuntime = (deps) => {
   // A client is "mobile" if it reports a native mobile platform. Anything else (web, desktop,
   // vscode, or an older client that doesn't report a platform) is treated as interactive — i.e.
   // a surface where the user would actually see the in-app notification.
+  /** 视为移动端的原生平台标识集合。 */
   const MOBILE_PLATFORMS = new Set(['ios', 'android']);
+  /** 判断平台是否为移动端（ios/android）；未上报平台的旧客户端视为非移动端。 */
   const isMobilePlatform = (platform) => typeof platform === 'string' && MOBILE_PLATFORMS.has(platform);
 
+  /**
+   * 更新某 UI 会话的可见性心跳（带平台标识）。
+   * 本次心跳未携带 platform 时沿用上次记录（如纯心跳包）。
+   */
   const updateUiVisibility = (token, visible, platform) => {
     if (!token) return;
     const now = Date.now();
@@ -267,6 +330,7 @@ export const createPushRuntime = (deps) => {
     uiVisibilityByToken.set(token, { visible: nextVisible, updatedAt: now, platform: nextPlatform });
   };
 
+  /** 是否存在任一可见（且心跳未过期）的 UI 客户端；查询前先清理过期心跳。 */
   const isAnyUiVisible = () => {
     const now = Date.now();
     pruneUiVisibility(now);
@@ -282,6 +346,7 @@ export const createPushRuntime = (deps) => {
   // suppress native push to the phone: an active desktop already shows the notification, so the
   // phone doesn't need it. Deliberately based on the desktop's visibility (reliable), never the
   // phone's own (a backgrounded WKWebView can't report "hidden" before iOS suspends it).
+  /** 是否存在至少一个可见的非移动（桌面/web/vscode）客户端；用于抑制发往手机的原生 push。 */
   const isAnyInteractiveClientVisible = () => {
     const now = Date.now();
     pruneUiVisibility(now);
@@ -297,6 +362,7 @@ export const createPushRuntime = (deps) => {
     return false;
   };
 
+  /** 判断指定会话当前是否可见（心跳未过期且 visible 为 true）。 */
   const isUiVisible = (token) => {
     const now = Date.now();
     pruneUiVisibility(now);
@@ -304,6 +370,12 @@ export const createPushRuntime = (deps) => {
     return state?.visible === true && now - state.updatedAt <= UI_VISIBILITY_TTL_MS;
   };
 
+  /**
+   * 解析 VAPID subject：依次取 OMPCHAMBER_VAPID_SUBJECT 环境变量、
+   * OMPCHAMBER_PUBLIC_ORIGIN、设置中的 publicOrigin；
+   * loopback http 地址替换为 'mailto:ompchamber@localhost'
+   * （push 服务不接受内网地址），全部缺失时也兜底到该 mailto。
+   */
   const resolveVapidSubject = async () => {
     const configured = process.env.OMPCHAMBER_VAPID_SUBJECT;
     if (typeof configured === 'string' && configured.trim().length > 0) {
@@ -335,6 +407,11 @@ export const createPushRuntime = (deps) => {
     return 'mailto:ompchamber@localhost';
   };
 
+  /**
+   * 懒初始化 webPush：获取/生成 VAPID 密钥并解析 subject 后调用
+   * setVapidDetails；subject 为兜底 mailto 时告警提示未配置公开 origin。
+   * 幂等，成功后置 pushInitialized。
+   */
   const ensurePushInitialized = async () => {
     if (pushInitialized) return;
     const keys = await getOrCreateVapidKeys();
@@ -348,6 +425,7 @@ export const createPushRuntime = (deps) => {
     pushInitialized = true;
   };
 
+  /** 手动设置初始化标志（供测试重置）。 */
   const setPushInitialized = (value) => {
     pushInitialized = value === true;
   };

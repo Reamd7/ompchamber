@@ -5,6 +5,12 @@
 //! Token Plan endpoint (`/v1/token_plan/remains`, M3) is tried first and
 //! falls back to the legacy Coding Plan endpoint; the two disagree on
 //! `current_interval_usage_count` semantics (remaining vs consumed).
+//!
+//! 中文概览：移植 minimax-shared.js 及两个具体实例——minimax.io 与
+//! minimaxi.com（国内站）的 Coding Plan 配额查询。优先请求新版 Token Plan
+//! 端点（/v1/token_plan/remains，M3），失败后回退旧 Coding Plan 端点；
+//! 两个端点对 current_interval_usage_count 的语义相反（剩余 vs 已用），
+//! 由 is_token_plan 标志区分处理。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -18,17 +24,26 @@ use crate::quota::utils::{
 };
 
 /// Status 3 = window not applicable for the current plan tier.
+/// 周窗口 status=3 表示当前套餐档位不适用周窗口（legacy 套餐）。
 const WINDOW_STATUS_INACTIVE: f64 = 3.0;
+/// 通用文本模型的候选名（小写比较），用于挑选默认展示模型。
 const TEXT_MODELS: [&str; 3] = ["general", "chat", "text"];
 
+/// 一个 MiniMax 站点（国际站/国内站）的静态配置：提供方标识、别名与两个端点 URL。
 pub struct MiniMaxPlan {
+    /// 注册到 quota 注册表的提供方 id。
     pub provider_id: &'static str,
+    /// 提供方展示名称（含站点域名）。
     pub provider_name: &'static str,
+    /// auth.json 中识别该提供方的别名（单元素数组）。
     pub aliases: [&'static str; 1],
+    /// 新版 Token Plan（M3）端点，优先尝试。
     pub token_plan_url: &'static str,
+    /// 旧版 Coding Plan 端点，Token Plan 不可用时回退。
     pub coding_plan_url: &'static str,
 }
 
+/// minimax.io（国际站）实例配置。
 pub const MINIMAX_PLAN: MiniMaxPlan = MiniMaxPlan {
     provider_id: "minimax-coding-plan",
     provider_name: "MiniMax Coding Plan (minimax.io)",
@@ -37,6 +52,7 @@ pub const MINIMAX_PLAN: MiniMaxPlan = MiniMaxPlan {
     coding_plan_url: "https://api.minimax.io/v1/api/openplatform/coding_plan/remains",
 };
 
+/// minimaxi.com（国内站）实例配置。
 pub const MINIMAX_CN_PLAN: MiniMaxPlan = MiniMaxPlan {
     provider_id: "minimax-cn-coding-plan",
     provider_name: "MiniMax Coding Plan (minimaxi.com)",
@@ -45,12 +61,15 @@ pub const MINIMAX_CN_PLAN: MiniMaxPlan = MiniMaxPlan {
     coding_plan_url: "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains",
 };
 
+/// ASCII 大小写不敏感的前缀匹配。
 fn starts_with_ignore_case(haystack: &str, prefix: &str) -> bool {
     haystack.len() >= prefix.len() && haystack[..prefix.len()].eq_ignore_ascii_case(prefix)
 }
 
 /// `pickChatModel` — M3 candidate, then text-model names, then any remaining
 /// percent entry, then the first entry.
+/// 挑选用于展示用量的模型条目，优先级：minimax-m* 且总量大于 0 的 M3 候选，
+/// 其次通用文本模型名，其次带剩余百分比的任意条目，最后回退首个条目。
 pub fn pick_chat_model(model_remains: Option<&Vec<Value>>) -> Option<&Value> {
     let models = model_remains?;
 
@@ -58,6 +77,7 @@ pub fn pick_chat_model(model_remains: Option<&Vec<Value>>) -> Option<&Value> {
         return None;
     }
 
+    // 提取模型条目的非空 model_name 字段。
     fn model_name(model: &Value) -> Option<&str> {
         field(model, "model_name")
             .and_then(Value::as_str)
@@ -90,6 +110,8 @@ pub fn pick_chat_model(model_remains: Option<&Vec<Value>>) -> Option<&Value> {
 
 /// `isUsablePayload` — `base_resp.status_code` must be 0 when present and
 /// `model_remains` must be a non-empty array.
+/// 校验响应可用性：base_resp.status_code 存在时必须为 0，
+/// 且 model_remains 必须是非空数组。
 fn is_usable_payload(payload: &Value) -> bool {
     if let Some(base_resp) = field(payload, "base_resp")
         && field(base_resp, "status_code") != Some(&serde_json::json!(0))
@@ -102,6 +124,8 @@ fn is_usable_payload(payload: &Value) -> bool {
 }
 
 /// `fetchEndpoint` — any failure reads as "no payload".
+/// 以 bearer token 鉴权 GET 请求端点并校验 payload；
+/// 网络失败、非 2xx 或校验不过都按"无数据"处理返回 None。
 async fn fetch_endpoint(deps: &QuotaDeps, url: &str, api_key: &str) -> Option<Value> {
     let request = HttpRequest::get(url)
         .bearer(api_key)
@@ -114,11 +138,13 @@ async fn fetch_endpoint(deps: &QuotaDeps, url: &str, api_key: &str) -> Option<Va
     is_usable_payload(&payload).then_some(payload)
 }
 
+/// 将 JSON 值转为数字并夹取到 [0,100] 区间。
 fn coerce_percent(value: Option<&Value>) -> Option<f64> {
     to_number(value).map(|n| n.clamp(0.0, 100.0))
 }
 
 /// `isWindowActive` — absent status defaults to active; 3 is inactive.
+/// 窗口是否生效：status 缺省视为生效，status=3 视为不生效。
 fn is_window_active(status: Option<&Value>) -> bool {
     match to_number(status) {
         None => true,
@@ -127,6 +153,8 @@ fn is_window_active(status: Option<&Value>) -> bool {
 }
 
 /// `calculateWindowSeconds` — from API timestamps (ms) or `remains_time` (ms).
+/// 计算窗口总时长（秒）：优先用 end_time - start_time 的毫秒差，
+/// 否则用 remains_time（毫秒）；两者皆无效返回 None。
 fn calculate_window_seconds(
     start_at: Option<i64>,
     reset_at: Option<i64>,
@@ -143,17 +171,28 @@ fn calculate_window_seconds(
     None
 }
 
+/// 从单模型条目计算出的用量聚合：间隔窗口与周窗口各自的
+/// 已用百分比、窗口秒数与重置时间戳。
 pub struct MiniMaxUsage {
+    /// 间隔窗口已用百分比（0-100），优先由剩余百分比换算。
     pub interval_used_percent: Option<f64>,
+    /// 间隔窗口总时长（秒）。
     pub interval_window_seconds: Option<f64>,
+    /// 间隔窗口重置时间戳（毫秒）。
     pub interval_reset_at: Option<i64>,
+    /// 周窗口已用百分比（0-100）。
     pub weekly_used_percent: Option<f64>,
+    /// 周窗口总时长（秒）。
     pub weekly_window_seconds: Option<f64>,
+    /// 周窗口重置时间戳（毫秒）。
     pub weekly_reset_at: Option<i64>,
 }
 
 /// `calculateUsage` — token-plan endpoints report *remaining* in the usage
 /// count field, so `used = total - reported`.
+/// 解析单模型条目的间隔/周两窗口用量。注意 Token Plan 端点（is_token_plan）
+/// 的 usage 字段上报的是"剩余"而非"已用"，故 used = total - reported；
+/// legacy Coding Plan 端点则直接用上报值按 total 归一为百分比。
 pub fn calculate_usage(model: &Value, is_token_plan: bool) -> MiniMaxUsage {
     let interval_total = to_number(field(model, "current_interval_total_count"));
     let interval_usage_raw = to_number(field(model, "current_interval_usage_count"));
@@ -212,6 +251,8 @@ pub fn calculate_usage(model: &Value, is_token_plan: bool) -> MiniMaxUsage {
     }
 }
 
+/// 从 auth.json 按别名读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败时返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps, aliases: &[&str]) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, aliases));
@@ -223,10 +264,14 @@ fn load_api_key(deps: &QuotaDeps, aliases: &[&str]) -> Result<Option<String>, St
     }))
 }
 
+/// 指定别名下是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured_for(deps: &QuotaDeps, aliases: &[&str]) -> bool {
     load_api_key(deps, aliases).unwrap_or(None).is_some()
 }
 
+/// 通用拉取流程：读 key → 先 Token Plan 后 Coding Plan 端点 → 挑展示模型 →
+/// 计算用量 → 组装 5h（及套餐支持时的 weekly）窗口结果；
+/// 未配置、无可用数据、无模型条目分别返回对应错误消息。
 pub fn fetch_quota_for(
     rt: std::sync::Arc<QuotaRuntime>,
     plan: &'static MiniMaxPlan,
@@ -341,18 +386,22 @@ pub fn fetch_quota_for(
     })
 }
 
+/// minimax.io 实例的 is_configured 入口。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     is_configured_for(deps, &MINIMAX_PLAN.aliases)
 }
 
+/// minimaxi.com（国内站）实例的 is_configured 入口。
 pub fn is_configured_cn(deps: &QuotaDeps) -> bool {
     is_configured_for(deps, &MINIMAX_CN_PLAN.aliases)
 }
 
+/// minimax.io 实例的注册表 fetch 入口。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     fetch_quota_for(rt, &MINIMAX_PLAN)
 }
 
+/// minimaxi.com（国内站）实例的注册表 fetch 入口。
 pub fn fetch_quota_cn(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     fetch_quota_for(rt, &MINIMAX_CN_PLAN)
 }

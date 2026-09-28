@@ -5,6 +5,9 @@
 //! the JS tests mock (`../git/service.js` and `../small-model/index.js`), so
 //! the real digest, prompt, normalization, and store paths are exercised.
 
+//!
+//! 中文说明：git 与小模型链在接缝处注入假实现，真实的 digest、prompt、
+//! 归一化与 store 路径全部被覆盖；断言对齐 JS 版行为。
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,16 +25,22 @@ use super::small_model::{
 use super::sources::GitDeps;
 use crate::walkthrough::error::WalkthroughError;
 
+/// 测试默认的 source 描述符（working-tree / all）。
 fn source_value() -> Value {
     json!({ "kind": "working-tree", "scope": "all" })
 }
+/// 默认 source 对应的稳定键。
 const SOURCE_KEY: &str = "working-tree:all";
+/// 假 git 接缝固定返回的仓库根。
 const REPO_ROOT: &str = "/repo";
 
+/// 默认的未暂存 diff：单文件、单 hunk、一行新增。
 const PATCH: &str = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n+const added = true;\n";
 
+/// 假模型默认返回的合法 walkthrough JSON（单章单 stop，锚定 h1）。
 const RESPONSE: &str = r#"{"title":"Change","focus":"why","chapters":[{"title":"Data","icon":"doc","blurb":"","stops":[{"title":"Adds a flag","hunks":["h1"],"importance":"normal","prose":"It adds a flag."}]}]}"#;
 
+/// 构造一个各方面都可用的默认模型描述。
 fn default_model() -> ModelDescription {
     ModelDescription {
         provider_id: "anthropic".to_string(),
@@ -47,50 +56,74 @@ fn default_model() -> ModelDescription {
     }
 }
 
+/// 记录一次模型 generate 调用的关键参数。
 #[derive(Debug, Clone)]
 struct GenerateCall {
+    /// 请求的 system prompt。
     system: String,
+    /// 请求是否携带 response schema。
     used_schema: bool,
+    /// 请求申请的输出 token 数。
     max_output_tokens: i64,
+    /// 请求的 `provider/model` 标签。
     model: String,
 }
 
+/// 假接缝的共享可变状态：既驱动行为，也记录调用。
 #[derive(Default)]
 struct FakeState {
+    /// describe 返回的模型；置 `None` 模拟无模型。
     model: Mutex<Option<ModelDescription>>,
+    /// generate 返回的原始文本。
     response_text: Mutex<String>,
     /// Park the model call until `released` (or cancel) when set.
+    /// 中文补充：用于模拟一次挂起的长时间模型调用。
     hang: AtomicBool,
+    /// 解除挂起的开关。
     released: AtomicBool,
     /// Answer a schema request with a 400 (provider refused the shape).
+    /// 中文补充：驱动 schema-拒绝后的降级重试路径。
     fail_schema_with_400: AtomicBool,
+    /// 每次 generate 调用的参数记录。
     generate_calls: Mutex<Vec<GenerateCall>>,
+    /// 每次模型调用时观察到的阶段快照。
     seen_stages: Mutex<Vec<Option<&'static str>>>,
     /// The unstaged diff the fake git returns (mutable for cache-miss tests).
+    /// 中文补充：换 diff 即换缓存键，用于制造缓存未命中。
     unstaged_patch: Mutex<String>,
+    /// 回填的服务句柄，让假 generate 能读取真实阶段。
     service_slot: Mutex<Option<Arc<WalkthroughService>>>,
 }
 
+/// 假状态的便捷读取与修改方法。
 impl FakeState {
+    /// 已发生的模型调用次数。
     fn calls(&self) -> usize {
         self.generate_calls.lock().unwrap().len()
     }
 
+    /// 最近一次模型调用的参数记录。
     fn last_call(&self) -> GenerateCall {
         self.generate_calls.lock().unwrap().last().unwrap().clone()
     }
 
+    /// 替换假 git 返回的未暂存 diff。
     fn set_unstaged(&self, patch: &str) {
         *self.unstaged_patch.lock().unwrap() = patch.to_string();
     }
 }
 
+/// 一个测试用的服务实例及其假状态与临时目录。
 struct Harness {
+    /// 被测服务。
     service: Arc<WalkthroughService>,
+    /// 驱动假接缝的共享状态。
     state: Arc<FakeState>,
+    /// 临时数据目录，drop 时整体删除。
     data_dir: PathBuf,
 }
 
+/// 创建按「测试名-进程-序号」命名的唯一临时目录，避免并行测试互踩。
 fn temp_data_dir(label: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -102,10 +135,12 @@ fn temp_data_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// 以默认模型搭建测试 harness。
 fn harness(label: &str) -> Harness {
     harness_with(label, default_model())
 }
 
+/// 以指定模型搭建 harness：注入假 describe/generate/git 接缝，store 落在真实临时目录。
 fn harness_with(label: &str, model: ModelDescription) -> Harness {
     let state = Arc::new(FakeState {
         model: Mutex::new(Some(model)),
@@ -198,12 +233,15 @@ fn harness_with(label: &str, model: ModelDescription) -> Harness {
     }
 }
 
+/// 测试结束后清理临时数据目录。
 impl Drop for Harness {
+    /// 删除 harness 的临时目录。
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.data_dir);
     }
 }
 
+/// 轮询等待谓词成立，超时 panic（对应 JS 的 waitFor）。
 async fn wait_until(predicate: impl Fn() -> bool) {
     for _ in 0..2000 {
         if predicate() {
@@ -214,12 +252,14 @@ async fn wait_until(predicate: impl Fn() -> bool) {
     panic!("waitFor timed out");
 }
 
+/// 以默认参数（无语言、无显式模型、不强制）发起生成请求。
 async fn generate(service: &Arc<WalkthroughService>) -> Result<Value, WalkthroughError> {
     service
         .generate_walkthrough("/repo", Some(&source_value()), false, None, None)
         .await
 }
 
+/// 以指定语言发起生成请求。
 async fn generate_in(
     service: &Arc<WalkthroughService>,
     language: &str,
@@ -229,6 +269,7 @@ async fn generate_in(
         .await
 }
 
+/// 以指定语言读取 walkthrough，断言成功并返回响应对象。
 async fn read_in(service: &Arc<WalkthroughService>, language: &str) -> Value {
     service
         .get_walkthrough("/repo", Some(&source_value()), None, Some(language))
@@ -240,6 +281,7 @@ async fn read_in(service: &Arc<WalkthroughService>, language: &str) -> Value {
 // Generation jobs
 // ---------------------------------------------------------------------------
 
+/// 第二个请求附着到运行中的任务：只付一次模型调用，两个结果相同。
 #[tokio::test]
 async fn runs_a_second_request_against_the_same_job_instead_of_paying_twice() {
     let harness = harness("attach");
@@ -271,6 +313,7 @@ async fn runs_a_second_request_against_the_same_job_instead_of_paying_twice() {
     assert_eq!(a, b);
 }
 
+/// `isGenerating` 在任务运行时为真、结束后为假。
 #[tokio::test]
 async fn reports_a_running_job_so_a_returning_client_can_show_progress() {
     let harness = harness("running");
@@ -287,6 +330,7 @@ async fn reports_a_running_job_so_a_returning_client_can_show_progress() {
     assert!(!harness.service.is_generating(REPO_ROOT, SOURCE_KEY));
 }
 
+/// 只有显式取消请求会中止任务：返回 abort 错误并注销注册。
 #[tokio::test]
 async fn stops_only_on_an_explicit_cancel() {
     let harness = harness("cancel");
@@ -311,6 +355,7 @@ async fn stops_only_on_an_explicit_cancel() {
     assert!(!harness.service.is_generating(REPO_ROOT, SOURCE_KEY));
 }
 
+/// 无任务运行时取消返回 `{"cancelled": false}`。
 #[tokio::test]
 async fn reports_nothing_to_cancel_when_no_job_is_running() {
     let harness = harness("cancel-none");
@@ -324,6 +369,7 @@ async fn reports_nothing_to_cancel_when_no_job_is_running() {
 
 // The reserve and the request must be the same number: asking for more than
 // was subtracted from the input allowance overruns the context mid-answer.
+/// 请求的 max_output_tokens 必须等于模型解析时预留的储备数字。
 #[tokio::test]
 async fn requests_exactly_the_budget_the_model_resolution_reserved() {
     let mut model = default_model();
@@ -342,6 +388,7 @@ async fn requests_exactly_the_budget_the_model_resolution_reserved() {
     );
 }
 
+/// 首次生成完成后，相同请求直接命中缓存，不再调用模型。
 #[tokio::test]
 async fn serves_the_cache_once_the_job_has_finished_without_calling_the_model_again() {
     let harness = harness("cache");
@@ -360,18 +407,21 @@ async fn serves_the_cache_once_the_job_has_finished_without_calling_the_model_ag
 // pull request wait the same)
 // ---------------------------------------------------------------------------
 
+/// 小 diff 拿到基础超时下限。
 #[test]
 fn generation_timeout_gives_a_small_diff_a_floor() {
     assert_eq!(generation_timeout_ms(0), 120_000);
     assert_eq!(generation_timeout_ms(3), 123_000);
 }
 
+/// 超时随 hunk 数量线性增长。
 #[test]
 fn generation_timeout_grows_with_the_work() {
     assert!(generation_timeout_ms(515) > generation_timeout_ms(138));
     assert_eq!(generation_timeout_ms(515), 635_000);
 }
 
+/// 超时被上限夹住，不随 hunk 数无限增长。
 #[test]
 fn generation_timeout_stays_bounded() {
     assert_eq!(generation_timeout_ms(100_000), 900_000);
@@ -382,27 +432,32 @@ fn generation_timeout_stays_bounded() {
 // reasoning by a model that advertises 384k output tokens)
 // ---------------------------------------------------------------------------
 
+/// 宽裕模型的输出预算远超旧的固定 24k。
 #[test]
 fn output_budget_asks_a_roomy_model_for_far_more_than_the_old_fixed_budget() {
     assert_eq!(walkthrough_output_tokens(1_000_000, Some(384_000)), 96_000);
 }
 
+/// 预算绝不超过模型自报的输出上限。
 #[test]
 fn output_budget_never_asks_for_more_than_the_model_says_it_can_emit() {
     assert_eq!(walkthrough_output_tokens(202_752, Some(32_768)), 32_768);
 }
 
+/// 预算被上下文份额约束。
 #[test]
 fn output_budget_keeps_the_reserve_to_a_share_of_the_context() {
     assert_eq!(walkthrough_output_tokens(200_000, Some(64_000)), 50_000);
 }
 
+/// 小上下文或未编目模型仍保住旧的 24k 下限。
 #[test]
 fn output_budget_holds_the_old_floor_for_a_small_or_uncatalogued_model() {
     assert_eq!(walkthrough_output_tokens(64_000, None), 24_000);
     assert_eq!(walkthrough_output_tokens(0, None), 24_000);
 }
 
+/// 模型自身上限低于下限时，以模型上限为准。
 #[test]
 fn output_budget_yields_to_a_model_whose_own_limit_is_below_the_floor() {
     assert_eq!(walkthrough_output_tokens(128_000, Some(8_192)), 8_192);
@@ -412,6 +467,7 @@ fn output_budget_yields_to_a_model_whose_own_limit_is_below_the_floor() {
 // Generation stages
 // ---------------------------------------------------------------------------
 
+/// 模型运行期间阶段为 asking，任务结束后阶段清空。
 #[tokio::test]
 async fn reports_asking_while_the_model_runs_and_clears_when_the_job_ends() {
     let harness = harness("stage-asking");
@@ -432,6 +488,7 @@ async fn reports_asking_while_the_model_runs_and_clears_when_the_job_ends() {
     );
 }
 
+/// 只有 provider 拒绝 schema 才会观察到 retrying 阶段。
 #[tokio::test]
 async fn reports_retrying_only_when_a_provider_rejects_the_schema() {
     let harness = harness("stage-retrying");
@@ -448,6 +505,7 @@ async fn reports_retrying_only_when_a_provider_rejects_the_schema() {
 
 // Retrying the schema on every generation means paying for a call already
 // known to fail; the refusal has to be remembered.
+/// 拒绝过 schema 的模型在后续生成中直接走无 schema 路径。
 #[tokio::test]
 async fn stops_sending_a_schema_to_a_model_that_already_rejected_one() {
     let harness = harness("schema-memory");
@@ -488,6 +546,7 @@ async fn stops_sending_a_schema_to_a_model_that_already_rejected_one() {
 // Issue 2607: a walkthrough model whose provider has no usable login
 // ---------------------------------------------------------------------------
 
+/// 构造 provider 无可用登录的模型描述（issue 2607 场景）。
 fn unauthenticated_model() -> ModelDescription {
     ModelDescription {
         provider_id: "deepseek".to_string(),
@@ -503,6 +562,7 @@ fn unauthenticated_model() -> ModelDescription {
     }
 }
 
+/// 无登录时 readiness 报 no-provider-login 且不回传模型。
 #[tokio::test]
 async fn readiness_reports_not_ready_without_a_login_and_omits_the_model() {
     let harness = harness_with("2607-read", unauthenticated_model());
@@ -519,6 +579,7 @@ async fn readiness_reports_not_ready_without_a_login_and_omits_the_model() {
     assert!(result["readiness"].get("model").is_none());
 }
 
+/// 无登录时生成返回 401 结构化错误并携带模型信息。
 #[tokio::test]
 async fn generation_rejects_with_structured_no_provider_login() {
     let harness = harness_with("2607-gen", unauthenticated_model());
@@ -544,6 +605,7 @@ async fn generation_rejects_with_structured_no_provider_login() {
 // Readiness reasons
 // ---------------------------------------------------------------------------
 
+/// 模型解析失败时 readiness 报 no-model。
 #[tokio::test]
 async fn readiness_reports_no_model_when_resolution_fails() {
     let harness = harness("no-model");
@@ -559,6 +621,7 @@ async fn readiness_reports_no_model_when_resolution_fails() {
     assert_eq!(result["readiness"]["reason"], json!("no-model"));
 }
 
+/// readiness 区分「无变更」与「只有生成文件变更」两种拒绝理由。
 #[tokio::test]
 async fn readiness_distinguishes_empty_from_only_generated() {
     let empty = harness("empty-diff");
@@ -583,6 +646,7 @@ async fn readiness_distinguishes_empty_from_only_generated() {
     assert_eq!(result["readiness"]["generatedFileCount"], json!(1));
 }
 
+/// 不支持 structured output 的模型被 readiness 拒绝并给出 requiredChars。
 #[tokio::test]
 async fn readiness_refuses_models_without_structured_output() {
     let mut model = default_model();
@@ -602,6 +666,7 @@ async fn readiness_refuses_models_without_structured_output() {
     assert!(result["readiness"]["requiredChars"].is_u64());
 }
 
+/// prompt 超出模型字符预算时 readiness 报 context-too-small。
 #[tokio::test]
 async fn readiness_refuses_when_the_prompt_does_not_fit_the_context() {
     let mut model = default_model();
@@ -620,6 +685,7 @@ async fn readiness_refuses_when_the_prompt_does_not_fit_the_context() {
     assert!(required > 10);
 }
 
+/// 模型可用时 readiness 为 ready，并附带 hunk/file 计数与模型信息。
 #[tokio::test]
 async fn readiness_is_ready_for_a_capable_model_with_counts() {
     let harness = harness("ready");
@@ -643,6 +709,7 @@ async fn readiness_is_ready_for_a_capable_model_with_counts() {
 // Errors for degenerate diffs
 // ---------------------------------------------------------------------------
 
+/// 空 diff 的生成请求被 400 拒绝，且不调用模型。
 #[tokio::test]
 async fn generation_refuses_an_empty_diff() {
     let harness = harness("gen-empty");
@@ -655,6 +722,7 @@ async fn generation_refuses_an_empty_diff() {
     assert_eq!(harness.state.calls(), 0);
 }
 
+/// 只有生成文件变更时，生成被 400 拒绝（only-generated）。
 #[tokio::test]
 async fn generation_refuses_an_only_generated_diff() {
     let harness = harness("gen-generated");
@@ -671,6 +739,7 @@ async fn generation_refuses_an_only_generated_diff() {
     );
 }
 
+/// 无可用模型时生成返回 404 no-model。
 #[tokio::test]
 async fn generation_refuses_without_a_model() {
     let harness = harness("gen-no-model");
@@ -689,6 +758,7 @@ async fn generation_refuses_without_a_model() {
 // Invalid model JSON paths
 // ---------------------------------------------------------------------------
 
+/// 模型输出非法 JSON 映射为结构化失败；无 schema 路径下视为能力问题报 409。
 #[tokio::test]
 async fn invalid_model_output_maps_to_structured_failures() {
     let invalid = harness("invalid-json");
@@ -719,6 +789,7 @@ async fn invalid_model_output_maps_to_structured_failures() {
     );
 }
 
+/// 模型调用的上下文/输出耗尽错误映射为 409 并携带字符数。
 #[tokio::test]
 async fn context_and_output_failures_from_the_model_call_map_to_409() {
     let harness = harness("ctx-fail");
@@ -748,6 +819,7 @@ async fn context_and_output_failures_from_the_model_call_map_to_409() {
 // Language behavior (language.test.js)
 // ---------------------------------------------------------------------------
 
+/// 语言指令进入 system prompt，且语言随生成结果一起记录。
 #[tokio::test]
 async fn sends_the_instruction_and_records_the_language_with_the_result() {
     let harness = harness("lang-uk");
@@ -764,6 +836,7 @@ async fn sends_the_instruction_and_records_the_language_with_the_result() {
     assert_eq!(result["language"], json!("uk"));
 }
 
+/// 不同语言使用不同的缓存条目，互不顶替。
 #[tokio::test]
 async fn does_not_serve_one_language_from_the_other_language_cache_entry() {
     let harness = harness("lang-separate");
@@ -780,6 +853,7 @@ async fn does_not_serve_one_language_from_the_other_language_cache_entry() {
 
 // Switching away and back must not cost a second generation: the earlier
 // walkthrough is still addressed by its own key.
+/// 切回之前的语言时直接命中其缓存条目，不再生成。
 #[tokio::test]
 async fn returns_the_earlier_language_from_cache_when_asked_for_again() {
     let harness = harness("lang-back");
@@ -798,6 +872,7 @@ async fn returns_the_earlier_language_from_cache_when_asked_for_again() {
 // The pointer only knows what was generated here last. After a language
 // switch that is the answer to a different question, and reading it instead
 // left the panel showing English while the picker said Ukrainian.
+/// 读取优先返回所请求语言对应的条目，而不是指针指向的最近一条。
 #[tokio::test]
 async fn reads_back_the_walkthrough_written_in_the_language_being_asked_for() {
     let harness = harness("lang-read");
@@ -813,6 +888,7 @@ async fn reads_back_the_walkthrough_written_in_the_language_being_asked_for() {
     assert_eq!(harness.state.calls(), calls);
 }
 
+/// 反复切换语言读取始终命中缓存，零次新的模型调用。
 #[tokio::test]
 async fn switches_back_and_forth_without_generating_anything() {
     let harness = harness("lang-switch");
@@ -838,6 +914,7 @@ async fn switches_back_and_forth_without_generating_anything() {
 
 // Falling back is still right: an English review beats an empty panel, and
 // the response says which language it is in so the panel can be honest.
+/// 所请求语言无条目时回退到最近一次 walkthrough，并如实报告其语言。
 #[tokio::test]
 async fn falls_back_to_the_last_walkthrough_when_none_exists_in_that_language() {
     let harness = harness("lang-fallback");
@@ -849,6 +926,7 @@ async fn falls_back_to_the_last_walkthrough_when_none_exists_in_that_language() 
     assert_eq!(korean["language"], json!("en"));
 }
 
+/// 未知语言按英文处理而不是失败。
 #[tokio::test]
 async fn treats_an_unknown_language_as_english_rather_than_failing() {
     let harness = harness("lang-unknown");
@@ -863,6 +941,7 @@ async fn treats_an_unknown_language_as_english_rather_than_failing() {
 // Response shape details
 // ---------------------------------------------------------------------------
 
+/// 读取接口完整报告 hunks、陈旧度与覆盖；代码变更后旧 walkthrough 判 stale。
 #[tokio::test]
 async fn get_walkthrough_reports_hunks_staleness_and_coverage() {
     let harness = harness("shape");
@@ -915,6 +994,7 @@ async fn get_walkthrough_reports_hunks_staleness_and_coverage() {
     assert_eq!(after["uncoveredHunkIds"].as_array().unwrap().len(), 1);
 }
 
+/// `utf16_len` 按 UTF-16 码元计数，与 JS `.length` 一致。
 #[test]
 fn utf16_len_counts_code_units_like_js_length() {
     assert_eq!(utf16_len("abc"), 3);
@@ -922,6 +1002,7 @@ fn utf16_len_counts_code_units_like_js_length() {
     assert_eq!(utf16_len("a\u{1F600}b"), 4);
 }
 
+/// 取消信号可独立于服务使用：初始未取消，cancel 后置位。
 #[test]
 fn cancel_signal_wakes_without_a_service() {
     let signal = CancelSignal::default();

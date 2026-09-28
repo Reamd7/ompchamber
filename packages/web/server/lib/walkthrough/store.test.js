@@ -1,3 +1,8 @@
+/**
+ * walkthrough 磁盘存储层的测试：缓存键的稳定性与区分度、条目的读写往返、
+ * 损坏与版本不符容错、原子写无残留与 LRU 淘汰，以及指针的往返、按仓库隔离
+ * 和"仅删除仓库确已消失的指针"的 prune 语义（不可达不误删）。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -5,10 +10,14 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 // The store resolves its directory at import time from the environment, so the
 // temp dir has to be in place before the module is loaded.
+/** 临时数据目录：store 在 import 时读环境变量决定目录，必须先建好。 */
 const TEMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'walkthrough-store-'));
+// 同上：先设置环境变量再动态导入被测模块。
 process.env.OMPCHAMBER_DATA_DIR = TEMP_ROOT;
 
+/** 动态导入被测 store 模块（此时环境变量已生效）。 */
 const store = await import('./store.js');
+/** 解构出待测的导出函数与测试常量。 */
 const {
   buildCacheKey,
   readCachedWalkthrough,
@@ -19,6 +28,7 @@ const {
   __testing,
 } = store;
 
+/** 构造解析后的 files 输入（两个文件三个 hunk），overrides 用于追加文件。 */
 const files = (overrides = []) => ([
   {
     path: 'src/a.ts',
@@ -33,6 +43,7 @@ const files = (overrides = []) => ([
   ...overrides,
 ]);
 
+/** buildCacheKey 的基准输入：仓库、来源、模型与上面的 files。 */
 const baseKeyInput = {
   repoRoot: '/repo',
   sourceKey: 'working-tree:all',
@@ -41,6 +52,7 @@ const baseKeyInput = {
   files: files(),
 };
 
+/** 构造一条完整缓存条目（含最小合法 walkthrough），cacheKey 由参数指定。 */
 const entry = (cacheKey) => ({
   cacheKey,
   generatedAt: '2026-08-02T00:00:00.000Z',
@@ -50,6 +62,7 @@ const entry = (cacheKey) => ({
   walkthrough: { title: 'x', focus: '', chapters: [{ id: 'chapter-1', stops: [] }] },
 });
 
+/** 缓存键：相同输入稳定、忽略文件顺序、任何成分变化都换键。 */
 describe('buildCacheKey', () => {
   it('is stable for identical input', () => {
     expect(buildCacheKey(baseKeyInput)).toBe(buildCacheKey(baseKeyInput));
@@ -80,6 +93,7 @@ describe('buildCacheKey', () => {
   });
 });
 
+/** 缓存条目：往返、miss、损坏与版本不符容错、无临时文件残留、超限 LRU 淘汰。 */
 describe('cache entries', () => {
   beforeEach(() => {
     fs.rmSync(__testing.ENTRIES_DIR, { recursive: true, force: true });
@@ -136,6 +150,7 @@ describe('cache entries', () => {
   });
 });
 
+/** 指针：往返与来源隔离、仓库隔离、prune 只删确已消失的仓库、损坏文件不致崩。 */
 describe('pointers', () => {
   beforeEach(() => {
     fs.rmSync(__testing.POINTERS_DIR, { recursive: true, force: true });
@@ -201,6 +216,7 @@ describe('pointers', () => {
   });
 });
 
+// 清理临时数据目录。
 afterAll(() => {
   fs.rmSync(TEMP_ROOT, { recursive: true, force: true });
 });

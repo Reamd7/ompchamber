@@ -5,6 +5,10 @@
 //!   Unavailable engine (models still download, install-check, and report).
 //! - `openai-compatible`: buffered per-segment transcription against any
 //!   OpenAI-compatible endpoint.
+//!
+//! 中文说明：JS 版 `server/lib/dictation/service.js` 的移植，负责听写
+//! provider 的解析与就绪状态管理。本地模型的下载、安装检查、状态上报、
+//! 删除与 TTS 合成（含按文本语言自动切换模型）均在此模块实现。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -30,19 +34,29 @@ use crate::dictation_tts::tts::stt::{HttpTranscriber, Transcriber};
 /// Download bookkeeping: the JS `downloadStates` (`'downloading'` |
 /// `'error'`), `downloadErrors`, `downloadProgress`, and the in-flight
 /// `downloadPromises` dedupe.
+///
+/// 中文说明：以 model id 为键记录状态标记、错误消息、进度百分比与在途
+/// 任务句柄；`running` 承担 JS `downloadPromises` 的去重职责。
 #[derive(Default)]
 struct Downloads {
+    /// model id → 状态标记（`"downloading"` 或 `"error"`）；无条目表示空闲。
     states: HashMap<String, &'static str>,
+    /// model id → 最近一次下载失败的错误消息（仅 `"error"` 状态时有意义）。
     errors: HashMap<String, String>,
+    /// model id → 下载进度百分比（0-100）；内层 `None` 表示总大小未知。
     progress: HashMap<String, Option<u64>>,
+    /// model id → 在途下载任务句柄，避免同一模型重复启动下载。
     running: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
+/// 下载状态表的只读判断辅助。
 impl Downloads {
+    /// 该模型当前是否处于 `"downloading"` 状态。
     fn is_downloading(&self, model_id: &str) -> bool {
         self.states.get(model_id).copied() == Some("downloading")
     }
 
+    /// 该模型最近一次下载是否以 `"error"` 结束。
     fn is_error(&self, model_id: &str) -> bool {
         self.states.get(model_id).copied() == Some("error")
     }
@@ -50,48 +64,77 @@ impl Downloads {
 
 /// The readiness error shape shared by `createSttSession` and
 /// `synthesizeSpeech`.
+///
+/// 中文说明：JS 中以 `{ error, retryable, reasonCode }` 形状跨 WS/HTTP
+/// 上报；`retryable` 决定客户端是否应稍后重试。
 #[derive(Debug, Clone)]
 pub struct ReadyError {
+    /// 面向用户的错误消息。
     pub error: String,
+    /// 客户端是否应稍后重试（如模型正在下载）。
     pub retryable: bool,
+    /// 机器可读的原因码（如 `model_download_in_progress`）。
     pub reason_code: Option<String>,
 }
 
+/// `synthesizeSpeech` 的成功结果。
 #[derive(Debug, Clone)]
 pub struct SynthesizeSpeech {
+    /// 合成的音频字节（容器格式由 `format` 描述）。
     pub audio: Vec<u8>,
+    /// 音频 MIME 类型（如 `audio/wav`）；空串时路由层回退为 `audio/wav`。
     pub format: String,
+    /// 实际使用的 TTS 模型 id（语言自动切换后可能与请求值不同）。
     pub model_id: String,
+    /// `language: "auto"` 时检测出的语言代码；未启用检测时为 `None`。
     pub language: Option<String>,
 }
 
+/// `synthesizeSpeech` 的入参选项（来自 speak 路由的请求体）。
 #[derive(Debug, Clone, Default)]
 pub struct SynthesizeOptions {
+    /// 要朗读的文本（调用方已 trim 且确认非空）。
     pub text: String,
+    /// 请求的本地 TTS 模型 id；非法或缺失时回退到默认模型。
     pub model: Option<String>,
+    /// 请求的 speaker id；语言切换后可能被目标模型的默认 speaker 覆盖。
     pub speaker_id: Option<i64>,
+    /// 语速倍率（1.0 为正常速度）。
     pub speed: Option<f64>,
+    /// 仅当值为 `"auto"` 时启用语言自动检测（路由层已归一化）。
     pub language: Option<String>,
+    /// 用于语言检测的整条消息样本（短 chunk 不足以判断语言时使用）。
     pub language_sample: Option<String>,
 }
 
 /// `synthesizeSpeech` failures: readiness errors answer 503 with a reason
 /// code; an engine throw answers 500 with the raw message (the JS route's
 /// `catch`).
+///
+/// 中文说明：`Ready` 变体走 503（带 retryable/reasonCode 的 JSON），
+/// `Engine` 变体走 500（原始错误消息）。
 #[derive(Debug, Clone)]
 pub enum SynthesizeError {
+    /// 模型未就绪（下载中/下载失败/引擎不可用）——503 路径。
     Ready(ReadyError),
+    /// 本地引擎合成时抛出的错误——500 路径（JS 路由的 catch）。
     Engine(String),
 }
 
+/// `createSttSession` 的返回值：已连接的会话及其事件流，或就绪错误。
 pub enum SttSessionResolution {
+    /// 会话已连接。
     Session {
+        /// 已连接的流式转写会话对象。
         session: Box<dyn StreamingTranscriptionSession>,
+        /// 会话事件流的接收端（Committed/Transcript/Error）。
         events: mpsc::UnboundedReceiver<SessionEvent>,
     },
+    /// provider 未就绪：携带 WS 协议上报的错误形状。
     NotReady(ReadyError),
 }
 
+/// 解析本地 STT 模型 id：请求值是合法目录项时原样返回，否则回退默认模型。
 fn resolve_local_model_id(requested: Option<&str>) -> String {
     match requested {
         Some(id) if is_local_stt_model_id(id) => id.to_string(),
@@ -99,15 +142,25 @@ fn resolve_local_model_id(requested: Option<&str>) -> String {
     }
 }
 
+/// 听写核心服务：两个 provider 的 STT 会话创建、本地 TTS 合成、就绪状态
+/// 查询与模型下载/删除管理；以 `Arc` 形式被路由层共享。
 pub struct DictationService {
+    /// 本地模型根目录（用户配置目录下的 `speech-models`）。
     models_dir: PathBuf,
+    /// 本地 STT 引擎接缝（默认 Unavailable；`local-speech` 特性下为原生绑定）。
     recognizer: Arc<dyn LocalRecognizer>,
+    /// 本地 TTS 引擎接缝。
     speaker: Arc<dyn LocalSpeaker>,
+    /// openai-compatible provider 使用的 HTTP 转写客户端。
     transcriber: Arc<dyn Transcriber>,
+    /// 下载簿记表（互斥锁保护；跨 await 前先做快照再释放）。
     downloads: Mutex<Downloads>,
 }
 
+/// 服务主体：provider 解析、下载生命周期、STT 会话与 TTS 合成。
 impl DictationService {
+    /// 生产构造函数：按 `local-speech` 特性选择本地引擎（原生 sherpa 绑定
+    /// 或 Unavailable 引擎），HTTP 转写器固定为默认 [`HttpTranscriber`]。
     pub fn new(models_dir: PathBuf) -> Arc<Self> {
         #[cfg(feature = "local-speech")]
         let (recognizer, speaker) = crate::dictation_tts::native_sherpa::engine_pair();
@@ -124,6 +177,7 @@ impl DictationService {
         )
     }
 
+    /// 显式注入引擎的构造函数：测试与未来原生绑定的接线点。
     pub fn with_engines(
         models_dir: PathBuf,
         recognizer: Arc<dyn LocalRecognizer>,
@@ -141,6 +195,9 @@ impl DictationService {
 
     /// `startModelDownload` — deduped and fire-and-forget (`void` in the
     /// JS); the state maps are the observable surface.
+    ///
+    /// 中文说明：先按在途句柄去重再置状态；任务结束时成功则清除状态，
+    /// 失败则写入 `"error"` 与错误消息。进度回调把字节数换算为百分比。
     fn start_model_download(self: &Arc<Self>, model_id: &str) {
         {
             let mut downloads = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
@@ -193,6 +250,10 @@ impl DictationService {
 
     /// `createSttSession`: a connected session for one dictation, or the
     /// readiness error when the provider is not ready.
+    ///
+    /// 中文说明：openai-compatible 路径校验配置后建会话（配置缺失为
+    /// 不可重试的 stt_not_configured）；local 路径在模型缺失时按状态表
+    /// 返回下载中/下载失败，并识别损坏模型触发删除重下。
     pub async fn create_stt_session(self: &Arc<Self>, options: &Value) -> SttSessionResolution {
         let provider = options.get("provider").and_then(Value::as_str);
         if provider == Some("openai-compatible") {
@@ -285,6 +346,9 @@ impl DictationService {
 
     /// `getStatus` — the readiness snapshot for the status route and UI
     /// gating.
+    ///
+    /// 中文说明：按 provider 与 active model 的安装/下载状态拼出
+    /// available、reasonCode 与模型清单（models/ttsModels）。
     pub async fn get_status(&self, options: &Value) -> Value {
         let provider =
             if options.get("provider").and_then(Value::as_str) == Some("openai-compatible") {
@@ -347,6 +411,9 @@ impl DictationService {
     }
 
     /// `describeModel`: id, description, install state, download state.
+    ///
+    /// 中文说明：先对状态表取快照再做异步安装检查，避免检查期间持锁
+    /// 阻塞下载任务的写入。
     async fn describe_model(&self, id: &str) -> Value {
         // Snapshot the maps first — the install check awaits and a download
         // task may want the lock.
@@ -375,6 +442,9 @@ impl DictationService {
     /// model for it (downloaded on first use, reported as in-progress until
     /// it lands). A language no catalog model covers keeps the caller's
     /// model, so text is never silently dropped.
+    ///
+    /// 中文说明：模型缺失时启动后台下载并以 503 就绪错误应答，引擎失败
+    /// 走 500；语言检测基于整条消息样本而非短 chunk。
     pub async fn synthesize_speech(
         self: &Arc<Self>,
         options: SynthesizeOptions,
@@ -455,6 +525,8 @@ impl DictationService {
     }
 
     /// `requestModelDownload` — background download kick for Settings.
+    ///
+    /// 中文说明：未知 id 报错；已安装视为 no-op；否则启动去重的后台下载。
     pub async fn request_model_download(self: &Arc<Self>, model_id: &str) -> Value {
         if !is_local_model_id(model_id) {
             return json!({ "ok": false, "error": "Unknown model id" });
@@ -470,6 +542,9 @@ impl DictationService {
     /// mid-download cannot be deleted; an engine already loaded keeps its
     /// in-memory copy until idle shutdown — the files are simply
     /// re-downloaded on next use.
+    ///
+    /// 中文说明：删除模型目录并清掉残留下载错误；不影响已加载引擎的
+    /// 内存副本（下次使用时会重新下载文件）。
     pub async fn delete_model(&self, model_id: &str) -> Value {
         if !is_local_model_id(model_id) {
             return json!({ "ok": false, "error": "Unknown model id" });
@@ -492,10 +567,13 @@ impl DictationService {
     }
 }
 
+/// 测试专用入口：直接操纵下载状态表。
 #[cfg(test)]
 impl DictationService {
     /// Force the `'downloading'` state without spawning a real download
     /// (test-only; the JS suite reaches this state with mocked fetches).
+    ///
+    /// 中文说明：JS 套件借助 mock fetch 达到同一状态。
     pub(crate) fn mark_downloading_for_test(&self, model_id: &str) {
         self.downloads
             .lock()
@@ -503,6 +581,7 @@ impl DictationService {
             .downloading_marker(model_id);
     }
 
+    /// 清除指定模型的状态与进度标记（测试间隔离用）。
     pub(crate) fn clear_download_state_for_test(&self, model_id: &str) {
         let mut downloads = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
         downloads.states.remove(model_id);
@@ -510,7 +589,9 @@ impl DictationService {
     }
 }
 
+/// 下载状态表的写入辅助。
 impl Downloads {
+    /// 标记进入下载中：写入 `"downloading"`、清除旧错误、进度置 0。
     fn downloading_marker(&mut self, model_id: &str) {
         self.states.insert(model_id.to_string(), "downloading");
         self.errors.remove(model_id);
@@ -518,6 +599,7 @@ impl Downloads {
     }
 }
 
+/// 服务行为契约测试：provider 解析、下载状态机、语言感知 TTS 与模型管理。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,8 +608,10 @@ mod tests {
     use futures::future::BoxFuture;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// 临时目录名的去重计数器。
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
+    /// 创建唯一的临时目录（label + 进程 id + 序号）。
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-dictation-svc-{label}-{}-{}",
@@ -538,8 +622,11 @@ mod tests {
         dir
     }
 
+    /// 恒返回空文本的转写器桩。
     struct NullTranscriber;
+    /// 桩实现：任何音频都转写为空字符串。
     impl Transcriber for NullTranscriber {
+        /// 立即成功返回空文本。
         fn transcribe(
             &self,
             _params: crate::dictation_tts::tts::stt::TranscribeParams,
@@ -548,12 +635,17 @@ mod tests {
         }
     }
 
+    /// 记录 createSession 调用参数的识别器桩，可注入失败消息。
     struct RecordingRecognizer {
+        /// 收到的 model id 调用记录。
         calls: Mutex<Vec<String>>,
+        /// 注入的失败消息（`Some` 时 create_session 返回 Err）。
         fail_with: Option<String>,
     }
 
+    /// 桩实现：记录 model id；成功时返回最小静音会话。
     impl LocalRecognizer for RecordingRecognizer {
+        /// 记录调用并按 `fail_with` 决定成败。
         fn create_session(
             &self,
             _models_dir: &std::path::Path,
@@ -575,14 +667,21 @@ mod tests {
             let error = self.fail_with.clone();
             Box::pin(async move {
                 // A minimal silent session.
+                // 最小静音会话桩（中文补充）。
                 struct NullSession;
+                // 会话契约的空实现。
                 impl StreamingTranscriptionSession for NullSession {
+                    // 固定 16 kHz。
                     fn required_sample_rate(&self) -> u32 {
                         16000
                     }
+                    // 忽略音频。
                     fn append_pcm16(&mut self, _chunk: Vec<u8>) {}
+                    // 空提交。
                     fn commit(&mut self) {}
+                    // 空清除。
                     fn clear(&mut self) {}
+                    // 空关闭。
                     fn close(&mut self) {}
                 }
                 match error {
@@ -599,12 +698,17 @@ mod tests {
         }
     }
 
+    /// 记录合成参数并返回固定音频的 speaker 桩。
     struct RecordingSpeaker {
+        /// 收到的合成参数记录。
         calls: Mutex<Vec<LocalSpeechParams>>,
+        /// 每次合成返回的固定音频字节。
         audio: Vec<u8>,
     }
 
+    /// 桩实现：记录参数并以 audio/wav 返回预置字节。
     impl LocalSpeaker for RecordingSpeaker {
+        /// 记录参数，异步返回预置音频。
         fn synthesize(
             &self,
             params: LocalSpeechParams,
@@ -623,6 +727,7 @@ mod tests {
         }
     }
 
+    /// 在模型目录中伪造 whisper-tiny 的三个必需文件（内容任意但非空）。
     fn install_whisper_tiny(models_dir: &std::path::Path) {
         let model_dir = models_dir.join("sherpa-onnx-whisper-tiny");
         std::fs::create_dir_all(&model_dir).unwrap();
@@ -635,6 +740,8 @@ mod tests {
         }
     }
 
+    /// 验证：本地 provider 且模型缺失时返回可重试的
+    /// model_download_in_progress 并触发后台下载。
     #[tokio::test]
     async fn local_provider_with_missing_models_reports_download_in_progress() {
         let dir = temp_dir("missing");
@@ -663,6 +770,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：非法 localModel id 回退到默认 parakeet 模型（仍缺失时同样
+    /// 报告下载中）。
     #[tokio::test]
     async fn unknown_local_models_fall_back_to_the_default() {
         let dir = temp_dir("default");
@@ -694,6 +803,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：模型已安装但引擎不可用时映射为可重试的 stt_unavailable，
+    /// 错误消息与 JS 完全一致。
     #[tokio::test]
     async fn installed_model_with_unavailable_engine_maps_to_stt_unavailable() {
         let dir = temp_dir("installed");
@@ -729,6 +840,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：加载失败消息含 "Load model"/"Protobuf parsing failed" 时
+    /// 判定模型损坏——删除模型目录并返回 model_corrupt 让下次重下。
     #[tokio::test]
     async fn corrupt_engine_failure_removes_the_model_directory() {
         let dir = temp_dir("corrupt");
@@ -761,6 +874,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：openai-compatible 缺 base URL 时返回不可重试的
+    /// stt_not_configured；配置齐全时成功建立会话。
     #[tokio::test]
     async fn openai_compatible_provider_validates_config() {
         let dir = temp_dir("compat");
@@ -798,6 +913,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：get_status 在模型缺失时报 models_missing 并列出全部 STT/TTS
+    /// 目录项；openai-compatible provider 恒为 available。
     #[tokio::test]
     async fn status_reports_missing_models_with_the_unavailable_local_engine() {
         let dir = temp_dir("status");
@@ -837,6 +954,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：请求的本地模型已安装时状态为 available 并回显 activeModel。
     #[tokio::test]
     async fn status_reports_installed_local_model() {
         let dir = temp_dir("status-installed");
@@ -861,6 +979,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：语言自动检测把英文模型上的乌克兰语文本切到 piper 模型，
+    /// 替换模型无默认 speaker 时丢弃调用方 speaker；英文保持原模型。
     #[tokio::test]
     async fn synthesize_switches_model_for_the_texts_language() {
         let dir = temp_dir("tts-lang");
@@ -934,6 +1054,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：中文文本切到 kokoro-multi-lang 模型并以 zh 的默认 speaker 3
+    /// 覆盖调用方 speaker。
     #[tokio::test]
     async fn synthesize_switches_to_kokoro_multi_lang_for_chinese() {
         let dir = temp_dir("tts-zh");
@@ -991,6 +1113,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：默认 TTS 模型缺失时合成返回 model_download_in_progress。
     #[tokio::test]
     async fn synthesize_missing_model_reports_download_in_progress() {
         let dir = temp_dir("tts-missing");
@@ -1024,6 +1147,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证：下载/删除管理的 id 校验、下载中禁删、已安装模型下载为
+    /// no-op、删除后目录消失。
     #[tokio::test]
     async fn request_and_delete_model_download_management() {
         let dir = temp_dir("manage");

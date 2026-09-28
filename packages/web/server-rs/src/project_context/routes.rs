@@ -8,6 +8,13 @@
 //! the server has no global JSON parser (the OpenCode proxy needs an unread
 //! request stream), so a request without a JSON content type leaves `req.body`
 //! undefined and every write handler rejects it with `Body must be an object`.
+//!
+//! （中文说明）project-context HTTP 路由（axum 移植）：提供项目笔记、待办与
+//! 计划文档的 REST 端点；计划 markdown 以 id 寻址，而非由调用方传入绝对路径。
+//! 请求体解析复刻 JS 端逐路由的 `express.json({ limit: '1mb' })` 语义：server
+//! 不设全局 JSON 解析器（OpenCode proxy 需要未读取的请求流），因此无 JSON
+//! content type 的请求 body 视为未定义（`Value::Null`），所有写 handler 都会
+//! 以 `Body must be an object` 拒绝。
 
 use std::sync::Arc;
 
@@ -21,8 +28,12 @@ use serde_json::{Map, Value, json};
 use super::runtime::ProjectContextRuntime;
 
 /// `express.json({ limit: '1mb' })`.
+/// 请求体大小上限 1 MiB；超限在进入 handler 前即返回 413。
 const BODY_LIMIT: usize = 1024 * 1024;
 
+/// 组装 project-context 路由表并绑定共享 runtime 作为 state：`GET /{projectId}`
+/// 读整体上下文，`PUT .../todos` 整体替换待办，`.../notes` 与 `.../plans`
+/// 提供增删改查及计划置顶切换，全部挂在 `/api/project-context` 前缀下。
 pub fn router(runtime: Arc<ProjectContextRuntime>) -> Router {
     Router::new()
         .route("/api/project-context/{projectId}", get(get_context))
@@ -50,6 +61,11 @@ pub fn router(runtime: Arc<ProjectContextRuntime>) -> Router {
 /// Returns `Value::Null` where express would leave `req.body` undefined (no
 /// JSON content type); an empty JSON body parses as `{}`; malformed JSON is a
 /// 400 and an over-limit body is a 413, both before the handler runs.
+///
+/// 按 express.json 语义解析请求体：Content-Type 非 JSON 时返回 `Value::Null`
+/// （对应 express 中 `req.body` 保持 undefined）；空 JSON body 解析为 `{}`；
+/// JSON 语法错误返回 400、超过 [`BODY_LIMIT`] 返回 413——两者都以
+/// `Err(Response)` 在 handler 之前短路。
 async fn parse_json_body(headers: &HeaderMap, body: axum::body::Body) -> Result<Value, Response> {
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -92,10 +108,14 @@ async fn parse_json_body(headers: &HeaderMap, body: axum::body::Body) -> Result<
 // Response helpers (port of respondWithError)
 // ---------------------------------------------------------------------------
 
+/// 判断错误消息是否属于输入校验类（"is required" / "unsupported characters"）；
+/// `respond_with_error` 借此把这类 runtime 错误降级为 400 而非 500。
 fn is_validation_error(message: &str) -> bool {
     message.contains("is required") || message.contains("unsupported characters")
 }
 
+/// `respondWithError` 的移植：校验类错误返回 400，其余返回 500；错误消息为空
+/// 时用 `fallback_message` 兜底，响应体统一为 `{ "error": message }` JSON。
 fn respond_with_error(error: crate::error::AppError, fallback_message: &str) -> Response {
     let raw_message = error.to_string();
     if is_validation_error(&raw_message) {
@@ -117,23 +137,29 @@ fn respond_with_error(error: crate::error::AppError, fallback_message: &str) -> 
         .into_response()
 }
 
+/// 构造 400 响应，body 为 `{ "error": message }`。
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
 }
 
+/// 构造 404 响应，body 为 `{ "error": message }`。
 fn not_found(message: &str) -> Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": message }))).into_response()
 }
 
+/// 判断 JSON 值是否为 object（JS `typeof x === 'object'` 语义），用于请求体形状校验。
 fn is_object_record(value: &Value) -> bool {
     value.as_object().is_some()
 }
 
+/// 笔记 `source` 字段白名单校验：仅接受 `manual`、`selection` 或 `agent`。
 fn is_valid_note_source(value: &Value) -> bool {
     matches!(value.as_str(), Some("manual" | "selection" | "agent"))
 }
 
 /// `hasValidTodosShape`.
+/// `hasValidTodosShape` 的移植：todos 必须是数组，且每项含字符串 `id` 与
+/// `text`；可选的 `completed` 须为 boolean、`createdAt` 须为数字。
 fn has_valid_todos_shape(value: &Value) -> bool {
     let Some(entries) = value.as_array() else {
         return false;
@@ -153,6 +179,8 @@ fn has_valid_todos_shape(value: &Value) -> bool {
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// GET `/api/project-context/{projectId}`：读取并返回整个项目上下文
+/// （notes + todos + plans 索引）；读取失败按 `respond_with_error` 语义兜底。
 async fn get_context(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path(project_id): Path<String>,
@@ -163,6 +191,8 @@ async fn get_context(
     }
 }
 
+/// PUT `.../todos`：整体替换项目待办列表。请求体必须是 object 且其 `todos`
+/// 字段通过 `has_valid_todos_shape` 校验；成功返回更新后的完整上下文。
 async fn put_todos(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path(project_id): Path<String>,
@@ -187,6 +217,8 @@ async fn put_todos(
     }
 }
 
+/// POST `.../notes`：创建笔记。校验 `body` 为必填字符串、可选 `source` 属于
+/// 白名单、可选 `origin` 为 object；成功返回 201 与 `{ note, context }`。
 async fn post_notes(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path(project_id): Path<String>,
@@ -224,6 +256,9 @@ async fn post_notes(
     }
 }
 
+/// PATCH `.../notes/{noteId}`：部分更新笔记。仅接受可选的 `body`（字符串）与
+/// `pinned`（boolean），其余字段忽略；笔记不存在返回 404，成功返回
+/// `{ note, context }`。
 async fn patch_note(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, note_id)): Path<(String, String)>,
@@ -264,6 +299,8 @@ async fn patch_note(
     }
 }
 
+/// DELETE `.../notes/{noteId}`：删除笔记。`outcome.deleted` 为真时返回更新
+/// 后的上下文，笔记本就不存在则返回 404。
 async fn delete_note(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, note_id)): Path<(String, String)>,
@@ -275,6 +312,8 @@ async fn delete_note(
     }
 }
 
+/// PATCH `.../plans/{planId}`：切换计划置顶。请求体必须是 object 且含
+/// boolean `pinned`；计划不存在返回 404，成功返回 `{ plan, context }`。
 async fn patch_plan_pinned(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, plan_id)): Path<(String, String)>,
@@ -302,6 +341,7 @@ async fn patch_plan_pinned(
     }
 }
 
+/// GET `.../plans/{planId}`：按 id 读取单个计划的解析结果；不存在返回 404。
 async fn get_plan(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, plan_id)): Path<(String, String)>,
@@ -313,6 +353,8 @@ async fn get_plan(
     }
 }
 
+/// PUT `.../plans/{planId}`：整体替换计划 markdown（`raw` 必须为字符串）；
+/// 返回 `{ plan, context, title, body, raw }`，计划不存在返回 404。
 async fn put_plan(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, plan_id)): Path<(String, String)>,
@@ -345,6 +387,8 @@ async fn put_plan(
     }
 }
 
+/// POST `.../plans`：创建新计划。`body`（markdown 文本）为必填字符串，
+/// `title` 为可选字符串（缺省空串）；成功返回 201 与 `{ plan, context }`。
 async fn post_plans(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path(project_id): Path<String>,
@@ -379,6 +423,8 @@ async fn post_plans(
     }
 }
 
+/// DELETE `.../plans/{planId}`：删除计划。`outcome.deleted` 为真时返回更新
+/// 后的上下文，计划本就不存在则返回 404。
 async fn delete_plan(
     State(runtime): State<Arc<ProjectContextRuntime>>,
     Path((project_id, plan_id)): Path<(String, String)>,

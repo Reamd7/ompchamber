@@ -7,6 +7,14 @@
 //! Express `req`/`res` are collapsed into [`TunnelRequestContext`] (the
 //! request facts the JS reads) and returned header strings for `Set-Cookie`,
 //! so handlers stay in charge of the wire.
+//!
+//! 中文说明：移植自 `server/lib/opencode/tunnel-auth.js` 的
+//! `createTunnelAuth`——tunnel 会话认证面。tunnel 进程本身归 tunnels
+//! 模块管理；本控制器负责请求范围分类、一次性 bootstrap token 兑换
+//! （`/connect?t=…`）、内存中的 tunnel 会话（cookie `oc_tunnel_session`）
+//! 以及 connect 限流器。Express 的 req/res 在此收敛为 TunnelRequestContext
+//! （JS 读取的请求事实）与返回的 Set-Cookie 字符串，wire 细节仍由
+//! handler 掌握。
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -20,29 +28,44 @@ use super::time::{Clock, http_date_from_unix_millis};
 use super::util::{constant_time_equal_bytes, random_base64url, sha256_hex};
 use crate::error::{AppError, AppResult};
 
+/// tunnel 会话 cookie 名（与 JS 版一致）。
 pub const TUNNEL_SESSION_COOKIE_NAME: &str = "oc_tunnel_session";
+/// bootstrap token 的随机字节数（32 字节，base64url 后 43 字符）。
 pub(crate) const BOOTSTRAP_TOKEN_COOKIE_SAFE_BYTES: usize = 32;
+/// connect 兑换限流的计数窗口（5 分钟）。
 pub(crate) const CONNECT_RATE_LIMIT_WINDOW_MS: i64 = 5 * 60 * 1000;
+/// 触发限流后的锁定时长（10 分钟）。
 pub(crate) const CONNECT_RATE_LIMIT_LOCK_MS: i64 = 10 * 60 * 1000;
+/// 有客户端 IP 时的失败次数上限（20 次）。
 pub(crate) const CONNECT_RATE_LIMIT_MAX_ATTEMPTS: u64 = 20;
+/// 无 IP 请求（no-ip 桶）更严的失败次数上限（5 次）。
 pub(crate) const CONNECT_RATE_LIMIT_NO_IP_MAX_ATTEMPTS: u64 = 5;
 /// JS rate-limit bucket used when no client IP is derivable.
+/// 中文：无法推导出客户端 IP 时使用的共享限流桶 key。
 pub const NO_IP_RATE_LIMIT_KEY: &str = "connect-rate-limit:no-ip";
 
 /// The request facts `tunnel-auth.js` reads off `req`.
+/// 中文：分类/兑换所需的全部请求事实。
 pub struct TunnelRequestContext<'a> {
+    /// 原始请求头（Host/Cookie/X-Forwarded-* 从这里读取）。
     pub headers: &'a HeaderMap,
     /// Express `req.hostname` (usually derived from the Host header).
+    /// 中文：Express req.hostname（通常来自 Host 头）。
     pub hostname: Option<&'a str>,
     /// `req.socket.remoteAddress`.
+    /// 中文：对端 socket 地址，用于防止伪造 Host 冒充本地。
     pub socket_remote_address: Option<&'a str>,
     /// Express `req.secure` (`req.protocol === 'https'`).
+    /// 中文：Express req.secure（协议是否 https）。
     pub secure: bool,
     /// Express `req.ip` (with `trust proxy` it is XFF-derived).
+    /// 中文：Express req.ip（trust proxy 时取自 XFF）。
     pub ip: Option<&'a str>,
 }
 
+/// 构造辅助。
 impl<'a> TunnelRequestContext<'a> {
+    /// 仅带 headers、其余字段留空的上下文（拿不到更多请求事实时使用）。
     pub fn from_headers(headers: &'a HeaderMap) -> Self {
         Self {
             headers,
@@ -55,14 +78,20 @@ impl<'a> TunnelRequestContext<'a> {
 }
 
 /// JS `classifyRequestScope` result.
+/// 中文：tunnel/local/未知公网三分类，决定请求是否需要 tunnel 会话。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestScope {
+    /// 请求 Host 命中活动 tunnel 的公网域名。
     Tunnel,
+    /// 本地回环/私有来源请求。
     Local,
+    /// 有活动 tunnel 时的未知公网请求——tunnel 域名之外一律按公网对待。
     UnknownPublic,
 }
 
+/// 序列化辅助。
 impl RequestScope {
+    /// 与 JS 一致的小写字符串表示。
     pub fn as_str(self) -> &'static str {
         match self {
             RequestScope::Tunnel => "tunnel",
@@ -74,121 +103,189 @@ impl RequestScope {
 
 /// JS `bootstrapRecord` (the JS `id`/`issuedAt` fields are write-only there
 /// and are dropped here).
+/// 中文：一次性 bootstrap token 的存储记录（只存 hash，不存明文）。
 #[derive(Clone, Debug)]
 struct BootstrapRecord {
+    /// 发号时绑定的活动 tunnel id，兑换时必须匹配。
     tunnel_id: String,
+    /// token 的 SHA-256 hex；兑换走常数时间比较。
     token_hash: String,
+    /// 过期时刻（毫秒）；None 表示不过期。
     expires_at: Option<i64>,
+    /// 已使用时刻；一旦置位即不可再用。
     used_at: Option<i64>,
+    /// 撤销时刻；撤销后不可兑换。
     revoked_at: Option<i64>,
 }
 
+/// 内存中的 tunnel 会话记录（JS 的 sessionRecord）。
 #[derive(Clone, Debug)]
 struct TunnelSessionRecord {
+    /// 会话 id，即 cookie oc_tunnel_session 的值（随机 base64url）。
     session_id: String,
+    /// 所属 tunnel；活动 tunnel 变更后旧会话失效。
     tunnel_id: String,
+    /// tunnel 模式（如 cloudflare）。
     mode: Option<String>,
+    /// 建立会话时的 tunnel 公网 URL 快照。
     public_url: Option<String>,
+    /// 创建时刻（毫秒）。
     created_at: i64,
+    /// 最近一次通过认证的时刻（毫秒）。
     last_seen_at: i64,
+    /// 过期时刻（毫秒）。
     expires_at: i64,
+    /// 撤销时刻；None 表示未撤销。
     revoked_at: Option<i64>,
+    /// 撤销原因（如 tunnel-revoked），对外展示用。
     revoked_reason: Option<String>,
+    /// 惰性标记的过期时刻（首次检查/列表时补写）。
     expired_at: Option<i64>,
 }
 
+/// 单个限流 key 的失败计数与锁定状态。
 #[derive(Clone, Debug, Default)]
 struct RateRecord {
+    /// 窗口内失败次数。
     count: u64,
+    /// 最近一次失败时刻（毫秒）。
     last_attempt: i64,
+    /// 锁定截止时刻；None 表示未锁定。
     locked_until: Option<i64>,
 }
 
+/// Mutex 保护的全部可变状态：活动 tunnel、bootstrap 记录、会话表、限流表。
 #[derive(Default)]
 struct TunnelAuthInner {
+    /// 当前活动 tunnel id；None 表示无活动 tunnel。
     active_tunnel_id: Option<String>,
+    /// 由 public URL 推导的 host，用于请求分类。
     active_tunnel_host: Option<String>,
+    /// 当前 tunnel 模式。
     active_tunnel_mode: Option<String>,
+    /// 当前 tunnel 公网 URL。
     active_tunnel_public_url: Option<String>,
+    /// 当前 bootstrap token 记录（单发单用）。
     bootstrap_record: Option<BootstrapRecord>,
+    /// 历史 + 活动的 tunnel 会话列表。
     tunnel_sessions: Vec<TunnelSessionRecord>,
+    /// 按 key（客户端 IP 或 no-ip）的 connect 兑换限流状态。
     connect_rate_limiter: HashMap<String, RateRecord>,
 }
 
 /// Snapshot returned to callers (JS hands back the live record; consumers
 /// only read fields).
+/// 中文：给调用方的会话快照（JS 返回活记录；这里克隆只读字段）。
 #[derive(Clone, Debug)]
 pub struct TunnelSessionInfo {
+    /// 会话 id（即 cookie 值）。
     pub session_id: String,
+    /// 所属 tunnel id。
     pub tunnel_id: String,
+    /// tunnel 模式。
     pub mode: Option<String>,
+    /// tunnel 公网 URL。
     pub public_url: Option<String>,
+    /// 创建时刻（毫秒）。
     pub created_at: i64,
+    /// 最近活跃时刻（毫秒）。
     pub last_seen_at: i64,
+    /// 过期时刻（毫秒）。
     pub expires_at: i64,
 }
 
 /// `listTunnelSessions` entry.
+/// 中文：listTunnelSessions 的对外条目（camelCase 序列化）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicTunnelSession {
+    /// 会话 id。
     pub session_id: String,
+    /// 所属 tunnel id。
     pub tunnel_id: String,
+    /// tunnel 模式。
     pub mode: Option<String>,
+    /// tunnel 公网 URL。
     pub public_url: Option<String>,
+    /// 创建时刻（毫秒）。
     pub created_at: i64,
+    /// 最近活跃时刻（毫秒）。
     pub last_seen_at: i64,
+    /// 过期时刻（毫秒）。
     pub expires_at: i64,
+    /// 撤销时刻；未撤销为 None。
     pub revoked_at: Option<i64>,
+    /// "active" 或 "inactive"。
     pub status: &'static str,
+    /// inactive 时的原因（revoked/expired/inactive）。
     pub inactive_reason: Option<String>,
 }
 
 /// `issueBootstrapToken` result.
+/// 中文：issueBootstrapToken 的返回。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IssuedBootstrapToken {
+    /// 明文 token（只在发号响应中出现一次）。
     pub token: String,
+    /// 过期时刻（毫秒）；None 表示不过期。
     pub expires_at: Option<i64>,
 }
 
 /// `getBootstrapStatus` result.
+/// 中文：getBootstrapStatus 的返回。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapStatus {
+    /// 是否存在可用（未用/未撤销/未过期）的 bootstrap token。
     pub has_bootstrap_token: bool,
+    /// token 过期时刻（毫秒）。
     pub bootstrap_expires_at: Option<i64>,
 }
 
 /// `revokeTunnelArtifacts` result.
+/// 中文：revokeTunnelArtifacts 的返回计数。
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokedTunnelArtifacts {
+    /// 撤销的 bootstrap token 数（0 或 1）。
     pub revoked_bootstrap_count: usize,
+    /// 因此失效的会话数。
     pub invalidated_session_count: usize,
 }
 
 /// `exchangeBootstrapToken` result.
+/// 中文：exchangeBootstrapToken 的结果（成功/失败原因及 cookie）。
 #[derive(Clone, Debug)]
 pub struct ExchangeOutcome {
+    /// 是否兑换成功。
     pub ok: bool,
     /// Failure reason (`rate-limited`, `inactive`, `missing-token`,
     /// `expired`, `tunnel-mismatch`, `invalid-token`).
+    /// 中文：失败原因字符串，与 JS 一致（rate-limited/inactive/
+    /// missing-token/expired/tunnel-mismatch/invalid-token）。
     pub reason: Option<&'static str>,
     /// Retry-after hint in seconds when rate limited.
+    /// 中文：限流时的 Retry-After 秒数。
     pub retry_after: Option<i64>,
+    /// 成功时新会话的过期时刻（毫秒）。
     pub session_expires_at: Option<i64>,
     /// `Set-Cookie` header value to attach on success.
+    /// 中文：成功时需附带的 Set-Cookie 值。
     pub set_cookie: Option<String>,
 }
 
 /// `requireTunnelSession` rejection: the JS middleware's 401 + cookie clear.
+/// 中文：requireTunnelSession 的拒绝：401 + 清除会话 cookie。
 #[derive(Clone, Debug)]
 pub struct TunnelAuthRejection {
+    /// 清除会话 cookie 的 Set-Cookie 值。
     pub set_cookie: String,
 }
 
+/// 拒绝转换为 axum 响应。
 impl TunnelAuthRejection {
+    /// 渲染 JS 中间件同款 401 JSON（locked/tunnelLocked）并附 Set-Cookie。
     pub fn into_response(self) -> axum::response::Response {
         let mut response = (
             StatusCode::UNAUTHORIZED,
@@ -206,12 +303,17 @@ impl TunnelAuthRejection {
     }
 }
 
+/// tunnel 会话认证控制器（JS createTunnelAuth 的 Rust 对应物）。
 pub struct TunnelAuth {
+    /// 可变状态（活动 tunnel、bootstrap、会话、限流）。
     inner: Mutex<TunnelAuthInner>,
+    /// 注入时钟，测试可控。
     clock: Clock,
 }
 
+/// 控制器公开操作与内部限流实现。
 impl TunnelAuth {
+    /// 以给定时钟构造空状态的控制器。
     pub fn new(clock: Clock) -> Self {
         Self {
             inner: Mutex::new(TunnelAuthInner::default()),
@@ -219,12 +321,14 @@ impl TunnelAuth {
         }
     }
 
+    /// 获取内部状态锁；锁中毒时恢复数据（持有者不会破坏不变量）。
     fn lock(&self) -> std::sync::MutexGuard<'_, TunnelAuthInner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// JS `setActiveTunnel`: record the active tunnel and derive its host
     /// from the public URL.
+    /// 中文：记录活动 tunnel，host 由 public URL 推导。
     pub fn set_active_tunnel(&self, tunnel_id: &str, public_url: Option<&str>, mode: Option<&str>) {
         let mut inner = self.lock();
         inner.active_tunnel_id = Some(tunnel_id.to_string());
@@ -234,6 +338,7 @@ impl TunnelAuth {
     }
 
     /// JS `clearActiveTunnel`: revoke artifacts, then forget everything.
+    /// 中文：先撤销该 tunnel 的工件，再清空全部活动状态与 bootstrap 记录。
     pub fn clear_active_tunnel(&self) {
         let mut inner = self.lock();
         if let Some(tunnel_id) = inner.active_tunnel_id.clone() {
@@ -247,24 +352,30 @@ impl TunnelAuth {
     }
 
     /// JS `revokeTunnelArtifacts`.
+    /// 中文：撤销指定 tunnel 的 bootstrap token 与全部会话。
     pub fn revoke_tunnel_artifacts(&self, tunnel_id: &str) -> RevokedTunnelArtifacts {
         let mut inner = self.lock();
         revoke_tunnel_artifacts_inner(&mut inner, tunnel_id, self.clock.clone())
     }
 
+    /// 当前活动 tunnel id（无则 None）。
     pub fn active_tunnel_id(&self) -> Option<String> {
         self.lock().active_tunnel_id.clone()
     }
 
+    /// 当前活动 tunnel 的 host（无则 None）。
     pub fn active_tunnel_host(&self) -> Option<String> {
         self.lock().active_tunnel_host.clone()
     }
 
+    /// 当前活动 tunnel 的模式（无则 None）。
     pub fn active_tunnel_mode(&self) -> Option<String> {
         self.lock().active_tunnel_mode.clone()
     }
 
     /// JS `issueBootstrapToken`: single-use token bound to the active tunnel.
+    /// 中文：签发绑定活动 tunnel 的单次 token；先撤销旧 token，
+    /// 无活动 tunnel 时报 500。
     pub fn issue_bootstrap_token(&self, ttl_ms: Option<i64>) -> AppResult<IssuedBootstrapToken> {
         let mut inner = self.lock();
         let Some(tunnel_id) = inner.active_tunnel_id.clone() else {
@@ -288,6 +399,7 @@ impl TunnelAuth {
     }
 
     /// JS `getBootstrapStatus`.
+    /// 中文：是否存在可用（未用/未撤销/未过期）的 bootstrap token。
     pub fn bootstrap_status(&self) -> BootstrapStatus {
         let inner = self.lock();
         let now = (self.clock)();
@@ -304,6 +416,9 @@ impl TunnelAuth {
     }
 
     /// JS `classifyRequestScope`.
+    /// 中文：Host 命中活动 tunnel → Tunnel；本地 Host 且对端也是私有/
+    /// 回环 → Local；否则有活动 tunnel 时为 UnknownPublic，无活动
+    /// tunnel 回退 Local。
     pub fn classify_request_scope(&self, ctx: &TunnelRequestContext) -> RequestScope {
         let inner = self.lock();
         let host_header =
@@ -329,6 +444,8 @@ impl TunnelAuth {
 
     /// JS `getTunnelSessionFromRequest`: validate the session cookie against
     /// the in-memory sessions, stamping last-seen on success.
+    /// 中文：校验会话 cookie——查找会话、拒绝已撤销/已过期/不属于
+    /// 活动 tunnel 的记录，成功时刷新 last_seen。
     pub fn get_tunnel_session_from_request(
         &self,
         ctx: &TunnelRequestContext,
@@ -368,6 +485,7 @@ impl TunnelAuth {
     }
 
     /// JS `requireTunnelSession`: session or the cookie-clearing 401.
+    /// 中文：会话守卫：无有效会话则返回 401 拒绝（内含清 cookie 的 Set-Cookie）。
     pub fn require_tunnel_session(
         &self,
         ctx: &TunnelRequestContext,
@@ -382,6 +500,9 @@ impl TunnelAuth {
 
     /// JS `exchangeBootstrapToken`: rate-limited one-time token exchange for
     /// a tunnel session cookie.
+    /// 中文：限流下的一次性 token 兑换；通过后清除该 key 的限流计数、
+    /// 创建会话并返回 Set-Cookie。任何失败（inactive/missing-token/
+    /// expired/tunnel-mismatch/invalid-token）都计入失败次数。
     pub fn exchange_bootstrap_token(
         &self,
         ctx: &TunnelRequestContext,
@@ -489,6 +610,7 @@ impl TunnelAuth {
     }
 
     /// JS `listTunnelSessions` (newest first).
+    /// 中文：列出会话（最新在前），惰性标记过期并计算 active/inactive 与原因。
     pub fn list_tunnel_sessions(&self) -> Vec<PublicTunnelSession> {
         let mut inner = self.lock();
         let now = (self.clock)();
@@ -539,6 +661,7 @@ impl TunnelAuth {
     }
 
     /// JS `clearTunnelSessionCookie` → the `Set-Cookie` header value.
+    /// 中文：构造清除会话 cookie 的 Set-Cookie（Max-Age=0）。
     pub fn clear_tunnel_session_cookie(&self, ctx: &TunnelRequestContext) -> String {
         build_cookie(
             TUNNEL_SESSION_COOKIE_NAME,
@@ -551,6 +674,8 @@ impl TunnelAuth {
 
     // -- connect rate limiter (JS `checkConnectRateLimit` family) ------------
 
+    /// JS checkConnectRateLimit：锁定期内拒绝并给出 Retry-After；
+    /// 窗口过期则重置；达到上限时置 10 分钟锁定。
     fn check_connect_rate_limit(&self, ctx: &TunnelRequestContext) -> RateLimitDecision {
         let key = rate_limit_key(ctx);
         let now = (self.clock)();
@@ -603,6 +728,7 @@ impl TunnelAuth {
         }
     }
 
+    /// 记录一次失败兑换：窗口内累加计数，窗口外重置为 1。
     fn record_connect_failed_attempt(&self, ctx: &TunnelRequestContext) {
         let key = rate_limit_key(ctx);
         let now = (self.clock)();
@@ -626,11 +752,15 @@ impl TunnelAuth {
     }
 }
 
+/// 限流判定结果。
 struct RateLimitDecision {
+    /// 是否放行本次尝试。
     allowed: bool,
+    /// 拒绝时的 Retry-After 秒数（放行为 0）。
     retry_after: i64,
 }
 
+/// 构造统一形状的失败 ExchangeOutcome（无 cookie、无重试提示）。
 fn exchange_failure(reason: &'static str) -> ExchangeOutcome {
     ExchangeOutcome {
         ok: false,
@@ -641,6 +771,8 @@ fn exchange_failure(reason: &'static str) -> ExchangeOutcome {
     }
 }
 
+/// 撤销指定 tunnel 的 bootstrap（若绑定同一 tunnel），并把其全部
+/// 未撤销会话标记为 tunnel-revoked。
 fn revoke_tunnel_artifacts_inner(
     inner: &mut TunnelAuthInner,
     tunnel_id: &str,
@@ -670,6 +802,7 @@ fn revoke_tunnel_artifacts_inner(
     }
 }
 
+/// 标记当前 bootstrap 记录为已撤销；无记录或已撤销返回 0，否则 1。
 fn revoke_bootstrap_token(inner: &mut TunnelAuthInner, clock: Clock) -> usize {
     let Some(record) = inner.bootstrap_record.as_mut() else {
         return 0;
@@ -681,6 +814,7 @@ fn revoke_bootstrap_token(inner: &mut TunnelAuthInner, clock: Clock) -> usize {
     1
 }
 
+/// bootstrap 记录是否仍可兑换：未撤销、未使用、未过期。
 fn is_bootstrap_record_usable(record: &BootstrapRecord, now: i64) -> bool {
     if record.revoked_at.is_some() || record.used_at.is_some() {
         return false;
@@ -694,6 +828,7 @@ fn is_bootstrap_record_usable(record: &BootstrapRecord, now: i64) -> bool {
 }
 
 /// JS `setTunnelSessionCookie` → the `Set-Cookie` header value.
+/// 中文：构造会话 cookie 的 Set-Cookie 值（value 做 percent-encode）。
 fn tunnel_session_cookie_header(session_id: &str, ttl_ms: i64, secure: bool, now: i64) -> String {
     let max_age = (ttl_ms / 1000).max(0);
     build_cookie(
@@ -706,6 +841,8 @@ fn tunnel_session_cookie_header(session_id: &str, ttl_ms: i64, secure: bool, now
 }
 
 /// JS `buildCookie`.
+/// 中文：拼 Set-Cookie：Path=/、HttpOnly、SameSite=Lax、Max-Age/Expires，
+/// secure 时追加 Secure。
 fn build_cookie(name: &str, value: &str, max_age_secs: i64, secure: bool, now: i64) -> String {
     let mut attributes = vec![
         format!("{name}={value}"),
@@ -727,6 +864,7 @@ fn build_cookie(name: &str, value: &str, max_age_secs: i64, secure: bool, now: i
 }
 
 /// JS `isSecureRequest`.
+/// 中文：req.secure，或首个 x-forwarded-proto 为 https。
 fn is_secure_request(ctx: &TunnelRequestContext) -> bool {
     if ctx.secure {
         return true;
@@ -746,12 +884,14 @@ fn is_secure_request(ctx: &TunnelRequestContext) -> bool {
     .unwrap_or(false)
 }
 
+/// 取指定头的字符串值（非法 UTF-8 视为缺失）。
 fn header_str(headers: &HeaderMap, name: impl axum::http::header::AsHeaderName) -> Option<&str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
 /// JS `parseCookies` (percent-decoding is lenient where
 /// `decodeURIComponent` would throw — invalid escapes stay literal).
+/// 中文：把 Cookie 头解析为键值表；百分号解码宽松处理（非法转义保持原样）。
 fn parse_cookies(cookie_header: Option<&str>) -> HashMap<String, String> {
     let mut cookies = HashMap::new();
     let Some(header) = cookie_header else {
@@ -769,6 +909,7 @@ fn parse_cookies(cookie_header: Option<&str>) -> HashMap<String, String> {
     cookies
 }
 
+/// 宽松的百分号解码：仅解码合法的 %XX，其余字节原样保留。
 fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -791,6 +932,7 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// URI 百分号编码：保留 unreserved 字符（字母数字与 -_.~）。
 fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -804,6 +946,7 @@ fn percent_encode(value: &str) -> String {
 }
 
 /// JS `normalizeHost`: trim, lowercase, strip a trailing `:port`.
+/// 中文：host 规范化——trim、小写、剥掉尾部数字端口。
 fn normalize_host(candidate: Option<&str>) -> Option<String> {
     let trimmed = candidate?.trim().to_lowercase();
     if trimmed.is_empty() {
@@ -819,6 +962,7 @@ fn normalize_host(candidate: Option<&str>) -> Option<String> {
 
 /// `new URL(publicUrl).host` — bracket IPv6 literals like the JS `.host`
 /// property does.
+/// 中文：等价 new URL(publicUrl).host；IPv6 字面量补回方括号。
 fn host_from_url(public_url: &str) -> Option<String> {
     let url = url::Url::parse(public_url).ok()?;
     let host = url.host_str()?;
@@ -832,6 +976,8 @@ fn host_from_url(public_url: &str) -> Option<String> {
 }
 
 /// JS `normalizeIpCandidate`.
+/// 中文：IP 候选规范化——小写、去方括号、去 zone id、::ffff: 映射
+/// 还原为 IPv4。
 fn normalize_ip_candidate(candidate: Option<&str>) -> Option<String> {
     let trimmed = candidate?.trim().to_lowercase();
     if trimmed.is_empty() {
@@ -855,6 +1001,7 @@ fn normalize_ip_candidate(candidate: Option<&str>) -> Option<String> {
     Some(without_zone)
 }
 
+/// 是否为点分十进制 IPv4（四段、纯数字、每段 ≤255）。
 fn is_dotted_quad(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     parts.len() == 4
@@ -866,6 +1013,7 @@ fn is_dotted_quad(value: &str) -> bool {
 }
 
 /// JS `isPrivateOrLoopbackIpv4`.
+/// 中文：IPv4 私有/回环段（127/8、10/8、172.16-31、192.168、169.254）。
 fn is_private_or_loopback_ipv4(candidate: &str) -> bool {
     let parts: Vec<u16> = candidate
         .split('.')
@@ -889,6 +1037,7 @@ fn is_private_or_loopback_ipv4(candidate: &str) -> bool {
 }
 
 /// JS `isPrivateOrLoopbackIpv6`.
+/// 中文：IPv6 回环（::1）、ULA（fc/fd）与链路本地（fe8-feb）。
 fn is_private_or_loopback_ipv6(candidate: &str) -> bool {
     if candidate == "::1" {
         return true;
@@ -902,6 +1051,7 @@ fn is_private_or_loopback_ipv6(candidate: &str) -> bool {
         || candidate.starts_with("feb")
 }
 
+/// 规范化后按是否含冒号分派到 v4/v6 判定；无法规范化视为非私有。
 fn is_private_or_loopback_ip(candidate: Option<&str>) -> bool {
     let Some(normalized) = normalize_ip_candidate(candidate) else {
         return false;
@@ -915,6 +1065,8 @@ fn is_private_or_loopback_ip(candidate: Option<&str>) -> bool {
 
 /// JS `isLocalHost`: a local-looking Host header only counts when the socket
 /// peer is also private/loopback (a public peer spoofing Host stays public).
+/// 中文：Host 看起来是本地（localhost/host.docker.internal/私有 IP）
+/// 且对端 socket 也是私有/回环——公网对端伪造 Host 不算本地。
 fn is_local_host(host: Option<&str>, socket_remote_address: Option<&str>) -> bool {
     let Some(host) = host else {
         return false;
@@ -927,6 +1079,8 @@ fn is_local_host(host: Option<&str>, socket_remote_address: Option<&str>) -> boo
 
 /// JS `getClientIp`: first `X-Forwarded-For` entry, else `req.ip` / socket
 /// address; `::ffff:` mappings unwrapped.
+/// 中文：客户端 IP——取 XFF 首项，否则 req.ip / socket 地址；
+/// 剥掉 ::ffff: 前缀。
 fn get_client_ip(ctx: &TunnelRequestContext) -> Option<String> {
     if let Some(forwarded) = header_str(
         ctx.headers,
@@ -940,14 +1094,17 @@ fn get_client_ip(ctx: &TunnelRequestContext) -> Option<String> {
         .map(|ip| strip_ipv6_mapped(ip.trim()))
 }
 
+/// 剥掉 IPv4-mapped IPv6 前缀 ::ffff:。
 fn strip_ipv6_mapped(ip: &str) -> String {
     ip.strip_prefix("::ffff:").unwrap_or(ip).to_string()
 }
 
+/// 限流 key：客户端 IP，取不到时用共享的 no-ip 桶。
 fn rate_limit_key(ctx: &TunnelRequestContext) -> String {
     get_client_ip(ctx).unwrap_or_else(|| NO_IP_RATE_LIMIT_KEY.to_string())
 }
 
+/// 该 key 的失败上限：no-ip 桶更严（5 次 vs 20 次）。
 fn rate_limit_max_for_key(key: &str) -> u64 {
     if key == NO_IP_RATE_LIMIT_KEY {
         CONNECT_RATE_LIMIT_NO_IP_MAX_ATTEMPTS

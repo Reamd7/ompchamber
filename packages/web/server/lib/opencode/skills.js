@@ -1,3 +1,18 @@
+/**
+ * OpenCode 技能（skill）的发现与文件系统 CRUD 核心层。
+ *
+ * 统一处理多套技能目录约定：
+ * - OpenCode 原生：用户级 `~/.config/opencode/skills`（SKILL_DIR）与项目级
+ *   `<项目>/.opencode/skills`，并兼容旧版单数目录 `skill`（读取时旧目录存在且新目录
+ *   不存在则用旧目录，写入时一律用新目录）；
+ * - 外部生态：Claude Code 的 `.claude/skills` 与 agents 约定的 `.agents/skills`
+ *   （均分用户级 home 目录与项目级两种位置）；
+ * - 额外来源：OpenCode 配置 `skills.paths` 声明的目录，以及 XDG 与 macOS cache
+ *   目录中缓存的技能。
+ *
+ * 本模块只做同步文件操作与路径解析，不感知 HTTP；路由层（skill-routes.js）通过
+ * 依赖注入消费这里的导出函数。所有函数失败时直接 throw，由路由层转换为错误响应。
+ */
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -21,8 +36,20 @@ import {
   findWorktreeRoot,
 } from './shared.js';
 
+/**
+ * 内置技能（built-in skill）的虚拟路径哨兵值。
+ * OpenCode 引擎上报内置技能时没有对应的真实文件路径，用该值标记；
+ * 后续的读写、改名、托管路径判断逻辑据此跳过文件系统操作。
+ */
 const BUILT_IN_SKILL_LOCATION = '<built-in>';
 
+/**
+ * 确保项目级技能目录存在（幂等创建）。
+ * 同时补齐新版复数目录 `.opencode/skills` 与旧版单数目录 `.opencode/skill`，
+ * 旧目录仍需存在是因为部分工具链还会读取它。
+ * @param {string} workingDirectory 项目根目录（工作目录）路径
+ * @returns {string} 新版复数形式的技能根目录路径
+ */
 function ensureProjectSkillDir(workingDirectory) {
   const projectSkillDir = path.join(workingDirectory, '.opencode', 'skills');
   if (!fs.existsSync(projectSkillDir)) {
@@ -35,6 +62,10 @@ function ensureProjectSkillDir(workingDirectory) {
   return projectSkillDir;
 }
 
+/**
+ * 解析项目级技能目录：仅当旧版单数目录存在且新版复数目录不存在时返回旧路径，
+ * 否则一律返回新版 `.opencode/skills/<skillName>`，保证新写入总是落到新目录。
+ */
 function getProjectSkillDir(workingDirectory, skillName) {
   const pluralPath = path.join(workingDirectory, '.opencode', 'skills', skillName);
   const legacyPath = path.join(workingDirectory, '.opencode', 'skill', skillName);
@@ -42,6 +73,10 @@ function getProjectSkillDir(workingDirectory, skillName) {
   return pluralPath;
 }
 
+/**
+ * 解析项目级技能的 SKILL.md 路径；目录选择规则与 getProjectSkillDir 相同
+ * （旧版单数目录仅在无新版复数目录时生效）。
+ */
 function getProjectSkillPath(workingDirectory, skillName) {
   const pluralPath = path.join(workingDirectory, '.opencode', 'skills', skillName, 'SKILL.md');
   const legacyPath = path.join(workingDirectory, '.opencode', 'skill', skillName, 'SKILL.md');
@@ -49,6 +84,10 @@ function getProjectSkillPath(workingDirectory, skillName) {
   return pluralPath;
 }
 
+/**
+ * 解析用户级技能目录：优先 `~/.config/opencode/skills/<skillName>`，
+ * 仅当旧版 `~/.config/opencode/skill/<skillName>` 存在且新目录不存在时返回旧路径。
+ */
 function getUserSkillDir(skillName) {
   const pluralPath = path.join(SKILL_DIR, skillName);
   const legacyPath = path.join(OPENCODE_CONFIG_DIR, 'skill', skillName);
@@ -56,6 +95,9 @@ function getUserSkillDir(skillName) {
   return pluralPath;
 }
 
+/**
+ * 解析用户级技能的 SKILL.md 路径；目录选择规则与 getUserSkillDir 相同。
+ */
 function getUserSkillPath(skillName) {
   const pluralPath = path.join(SKILL_DIR, skillName, 'SKILL.md');
   const legacyPath = path.join(OPENCODE_CONFIG_DIR, 'skill', skillName, 'SKILL.md');
@@ -63,38 +105,74 @@ function getUserSkillPath(skillName) {
   return pluralPath;
 }
 
+/**
+ * 解析项目级 Claude Code 兼容技能目录：`<workingDirectory>/.claude/skills/<skillName>`。
+ */
 function getClaudeSkillDir(workingDirectory, skillName) {
   return path.join(workingDirectory, '.claude', 'skills', skillName);
 }
 
+/**
+ * 解析项目级 Claude Code 兼容技能的 SKILL.md 路径。
+ */
 function getClaudeSkillPath(workingDirectory, skillName) {
   return path.join(getClaudeSkillDir(workingDirectory, skillName), 'SKILL.md');
 }
 
+/**
+ * 解析用户级 Claude Code 兼容技能目录：`~/.claude/skills/<skillName>`。
+ */
 function getUserClaudeSkillDir(skillName) {
   return path.join(os.homedir(), '.claude', 'skills', skillName);
 }
 
+/**
+ * 解析用户级 Claude Code 兼容技能的 SKILL.md 路径。
+ */
 function getUserClaudeSkillPath(skillName) {
   return path.join(getUserClaudeSkillDir(skillName), 'SKILL.md');
 }
 
+/**
+ * 解析用户级 agents 约定技能目录：`~/.agents/skills/<skillName>`。
+ */
 function getUserAgentsSkillDir(skillName) {
   return path.join(os.homedir(), '.agents', 'skills', skillName);
 }
 
+/**
+ * 解析用户级 agents 约定技能的 SKILL.md 路径。
+ */
 function getUserAgentsSkillPath(skillName) {
   return path.join(getUserAgentsSkillDir(skillName), 'SKILL.md');
 }
 
+/**
+ * 解析项目级 agents 约定技能目录：`<workingDirectory>/.agents/skills/<skillName>`。
+ */
 function getProjectAgentsSkillDir(workingDirectory, skillName) {
   return path.join(workingDirectory, '.agents', 'skills', skillName);
 }
 
+/**
+ * 解析项目级 agents 约定技能的 SKILL.md 路径。
+ */
 function getProjectAgentsSkillPath(workingDirectory, skillName) {
   return path.join(getProjectAgentsSkillDir(workingDirectory, skillName), 'SKILL.md');
 }
 
+/**
+ * 定位指定技能当前实际落盘的位置，返回其 scope、SKILL.md 路径与来源。
+ *
+ * 查找优先级：discoverSkills 的发现结果（覆盖配置层、skills.paths、cache 等
+ * 全部来源，内置技能路径为 '<built-in>' 哨兵值时原样返回）＞ 项目级 OpenCode 目录
+ * ＞ 项目级 .claude 目录 ＞ 用户级 OpenCode 目录 ＞ 用户级 .claude ＞ 用户级 .agents。
+ *
+ * @param {string} skillName 技能名
+ * @param {string|null} workingDirectory 项目工作目录；为空时跳过所有项目级查找
+ * @returns {{scope: string|null, path: string|null, source: string|null}}
+ *   找不到时三个字段均为 null；source 取 'opencode'、'claude' 或 'agents'
+ */
 function getSkillScope(skillName, workingDirectory) {
   const discovered = discoverSkills(workingDirectory).find((skill) => skill.name === skillName);
   if (discovered?.path) {
@@ -131,6 +209,10 @@ function getSkillScope(skillName, workingDirectory) {
   return { scope: null, path: null, source: null };
 }
 
+/**
+ * 决定新建技能的写入位置：技能已存在时沿用现有路径与 scope；
+ * 否则按请求的 scope（缺省 user）返回对应的目标路径，且总是落在 OpenCode 原生目录。
+ */
 function getSkillWritePath(skillName, workingDirectory, requestedScope) {
   const existing = getSkillScope(skillName, workingDirectory);
   if (existing.path) {
@@ -153,6 +235,20 @@ function getSkillWritePath(skillName, workingDirectory, requestedScope) {
   };
 }
 
+/**
+ * 扫描所有约定目录，返回去重后的完整技能清单。
+ *
+ * 收集顺序：用户级 `.claude`/`.agents` 目录 → 工作目录至 worktree 根之间各级祖先
+ * 目录的项目级 `.claude`/`.agents` 目录 → OpenCode 配置层目录（`skill` 与 `skills`
+ * 两种子目录都扫；用户配置目录标记为 user scope，其余为 project scope）→
+ * 配置文件 `skills.paths` 声明的额外目录（支持 `~/` 前缀与相对路径）→
+ * XDG/macOS cache 目录下的缓存技能（user scope）。
+ *
+ * 同名技能先到先得（addSkillFromMdFile 按 name 去重），因此显式目录天然优先于
+ * cache 目录。任一目录不存在时静默跳过；读配置失败按空处理。
+ * @param {string|null} workingDirectory 工作目录；为空时跳过所有项目级扫描
+ * @returns {Array<object>} 去重后的技能对象数组（name、path、scope、source 等）
+ */
 function discoverSkills(workingDirectory) {
   const skills = new Map();
 
@@ -238,10 +334,16 @@ function discoverSkills(workingDirectory) {
   return Array.from(skills.values());
 }
 
+/**
+ * 合并两份已发现的技能列表：primary 优先，fallback 只补充 primary 中不存在的技能名。
+ * 用于把 OpenCode 引擎上报的技能与本地文件系统扫描结果合并（引擎结果优先）。
+ * 名称 trim 后判重，空名或非法条目直接丢弃，保持原有相对顺序。
+ */
 function mergeDiscoveredSkills(primarySkills = [], fallbackSkills = []) {
   const merged = [];
   const seenNames = new Set();
 
+  // 追加技能：按 trim 后的名称去重，空名或已见过的直接跳过。
   const appendSkill = (skill) => {
     const name = typeof skill?.name === 'string' ? skill.name.trim() : '';
     if (!name || seenNames.has(name)) {
@@ -261,7 +363,23 @@ function mergeDiscoveredSkills(primarySkills = [], fallbackSkills = []) {
   return merged;
 }
 
+/**
+ * 汇总某个技能在各候选位置的元数据，供 UI 展示与编辑定位。
+ *
+ * 返回结构的 `md` 字段是按优先级选出的“当前生效”来源（发现结果 ＞ 项目 OpenCode
+ * ＞ 项目 .claude ＞ 用户 OpenCode ＞ 用户 .claude ＞ 用户 .agents），包含是否存在、
+ * 路径、目录、scope、source、frontmatter 字段列表、description、instructions（正文）
+ * 与支撑文件列表；发现结果为内置技能（path 为 '<built-in>'）时不读文件，直接透传
+ * 引擎提供的 description/content。其余字段 projectMd、claudeMd、userMd、userClaudeMd、
+ * userAgentsMd 分别记录各候选位置的 { exists, path, dir }，供前端做迁移提示。
+ *
+ * @param {string} skillName 技能名
+ * @param {string|null} workingDirectory 工作目录
+ * @param {object|null} [discoveredSkill] 可选的发现结果（避免重复全量扫描）；
+ *   传入但名称不匹配时会被忽略并退回全量发现
+ */
 function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
+  // 判断路径是否为可读的普通文件（stat 失败按不存在处理）。
   const isReadableFile = (filePath) => {
     if (!filePath) return false;
     try {
@@ -412,6 +530,9 @@ function getSkillSources(skillName, workingDirectory, discoveredSkill = null) {
   return sources;
 }
 
+/**
+ * 校验技能名：1-64 个字符，仅小写字母与数字，可用连字符连接但首尾不得是连字符。
+ */
 function isValidSkillName(skillName) {
   return typeof skillName === 'string'
     && skillName.length > 0
@@ -419,12 +540,31 @@ function isValidSkillName(skillName) {
     && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(skillName);
 }
 
+/**
+ * 校验技能名，非法时抛出带原因的 Error（供路由层直接返回给客户端）。
+ */
 function assertValidSkillName(skillName) {
   if (!isValidSkillName(skillName)) {
     throw new Error(`Invalid skill name "${skillName}". Must be 1-64 lowercase alphanumeric characters with hyphens, cannot start or end with hyphen.`);
   }
 }
 
+/**
+ * 新建技能：写入 SKILL.md（frontmatter + 正文），可选写入支撑文件。
+ *
+ * 步骤：确保全局目录存在 → 校验名称 → 确认任意 scope 下均无同名技能（否则抛错）
+ * → 按 scope 与 config.source 选择目标目录 → 创建目录并写 SKILL.md → 逐个落盘
+ * supportingFiles。scope 为 project 时必须提供工作目录，否则降级为 user；
+ * config.source 为 'agents' 时写入 `.agents/skills` 约定目录，否则写 OpenCode 原生目录。
+ * frontmatter.name 缺省用 skillName，description 缺失抛错；config 中的
+ * instructions/scope/source/supportingFiles 不会进入 frontmatter。
+ *
+ * @param {string} skillName 技能名
+ * @param {object} config 技能内容：description 必填，instructions 为正文，
+ *   source 可为 'agents'，supportingFiles 为 [{ path, content }]，其余键并入 frontmatter
+ * @param {string|null} workingDirectory 项目工作目录（project scope 必需）
+ * @param {string} scope 'user' 或 'project'
+ */
 function createSkill(skillName, config, workingDirectory, scope) {
   ensureDirs();
   assertValidSkillName(skillName);
@@ -488,6 +628,22 @@ function createSkill(skillName, config, workingDirectory, scope) {
   console.log(`Created new skill: ${skillName} (scope: ${targetScope}, path: ${targetPath})`);
 }
 
+/**
+ * 更新已有技能：可修改 frontmatter 字段、instructions 正文以及支撑文件。
+ *
+ * targetPath 非空时直接以该绝对路径为目标（必须是 SKILL.md 文件），否则按
+ * getSkillScope 定位；找不到抛 `Skill "<name>" not found`。定位后还会校验文件
+ * frontmatter.name 与 skillName 一致，防止改错文件。
+ *
+ * updates 处理规则：scope/source/targetPath/renameTo 是控制字段，忽略不写入；
+ * instructions 覆盖正文；supportingFiles 数组按条目的 delete 标志删除或按 content
+ * 写入；其余键一律并入 frontmatter。仅在 SKILL.md 内容被修改时才回写文件。
+ *
+ * @param {string} skillName 技能名
+ * @param {object} updates 待更新的字段集合
+ * @param {string|null} workingDirectory 项目工作目录
+ * @param {string|null} [targetPath] 显式指定的 SKILL.md 绝对路径（编辑外部技能时使用）
+ */
 function updateSkill(skillName, updates, workingDirectory, targetPath = null) {
   ensureDirs();
 
@@ -550,6 +706,13 @@ function updateSkill(skillName, updates, workingDirectory, targetPath = null) {
   console.log(`Updated skill: ${skillName} (path: ${mdPath})`);
 }
 
+/**
+ * 删除技能：移除所有约定位置中同名技能的整个目录（含支撑文件）。
+ *
+ * 依次尝试项目级 OpenCode、项目级 .claude、项目级 .agents、用户级 OpenCode、
+ * 用户级 .agents、用户级 .claude 目录，找到即递归删除并记录日志；
+ * 一个都不存在时抛出 `Skill "<name>" not found`。
+ */
 function deleteSkill(skillName, workingDirectory) {
   let deleted = false;
 
@@ -602,6 +765,10 @@ function deleteSkill(skillName, workingDirectory) {
   }
 }
 
+/**
+ * 判断 candidatePath（解析后）是否等于 parentPath 或位于其目录树内。
+ * 前缀匹配时强制带上路径分隔符，避免 `/foo/bar-baz` 误判在 `/foo/bar` 之下。
+ */
 function isPathInside(candidatePath, parentPath) {
   if (!candidatePath || !parentPath) return false;
   const resolvedCandidate = path.resolve(candidatePath);
@@ -610,8 +777,16 @@ function isPathInside(candidatePath, parentPath) {
     || resolvedCandidate.startsWith(`${resolvedParent}${path.sep}`);
 }
 
+/**
+ * 列出本服务“托管”的全部技能根目录（解析并去重后的绝对路径）：
+ * 用户级 OpenCode 新/旧目录、`~/.claude/skills`、`~/.agents/skills`、
+ * OPENCODE_CONFIG_DIR 覆盖目录，以及工作目录至 worktree 根之间各级祖先下的
+ * `.opencode`（新/旧）、`.claude`、`.agents` 目录。
+ * 只有落在这些根目录内的技能才允许改名等管理操作。
+ */
 function getManagedSkillRoots(workingDirectory) {
   const roots = [];
+  // 去重地压入一个解析为绝对路径的根目录。
   const pushRoot = (dir) => {
     if (!dir) return;
     const resolved = path.resolve(dir);
@@ -648,6 +823,10 @@ function getManagedSkillRoots(workingDirectory) {
   return roots;
 }
 
+/**
+ * 判断某个 SKILL.md 路径是否位于托管技能根目录之内。
+ * 空路径与内置技能哨兵值 '<built-in>' 均不算托管路径；rename 前用它做越界防护。
+ */
 function isManagedSkillPath(skillMdPath, workingDirectory) {
   if (!skillMdPath || skillMdPath === BUILT_IN_SKILL_LOCATION) {
     return false;
@@ -656,6 +835,14 @@ function isManagedSkillPath(skillMdPath, workingDirectory) {
   return getManagedSkillRoots(workingDirectory).some((root) => isPathInside(skillDir, root));
 }
 
+/**
+ * 重命名技能：原地重命名技能目录，并同步改写 SKILL.md frontmatter 中的 name。
+ *
+ * 前置校验：新名称合法；新旧名不同；旧技能存在、非内置、目标是 SKILL.md、
+ * 位于托管目录内、frontmatter.name 与旧名一致；新名字无冲突且目标目录不存在。
+ * 校验全部通过后先重命名目录（保证支撑文件与正文一并保留），再改写 name 字段；
+ * 改写失败时尝试把目录回滚到旧名，回滚也失败则记录错误并抛出原始异常。
+ */
 function renameSkill(oldName, newName, workingDirectory) {
   ensureDirs();
   assertValidSkillName(newName);

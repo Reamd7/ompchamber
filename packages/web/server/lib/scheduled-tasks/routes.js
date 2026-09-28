@@ -1,3 +1,10 @@
+/**
+ * 定时任务的 HTTP 路由注册：把 /api/projects/:projectId/scheduled-tasks
+ * 系列 REST 端点与 /api/ompchamber 全局端点挂到 express app 上；参数做
+ * 最小校验后委托给 createScheduledTaskService，服务层错误按 statusCode
+ * 透传，其余包装为 500。此外还挂载全局 SSE 事件流 /api/ompchamber/events
+ * （客户端注册、就绪事件与 25 秒心跳）。
+ */
 const asNonEmptyString = (value) => {
   if (typeof value !== 'string') {
     return null;
@@ -6,9 +13,19 @@ const asNonEmptyString = (value) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/** 从 req.params 提取非空 projectId；缺失返回 null（由各路由转成 400）。 */
 const parseProjectID = (req) => asNonEmptyString(req?.params?.projectId);
+/** 从 req.params 提取非空 taskId；缺失返回 null（由各路由转成 400）。 */
 const parseTaskID = (req) => asNonEmptyString(req?.params?.taskId);
 
+/**
+ * 在 express app 上注册定时任务相关路由。
+ *
+ * @param {object} app express 应用实例
+ * @param {object} dependencies 注入依赖（设置读取、项目清洗、项目配置与
+ *   定时任务运行时、SSE 客户端注册表 getOMPChamberEventClients 与写入器
+ *   writeSseEvent）；scheduledTaskService 缺省时用这些依赖现场构建
+ */
 export const registerScheduledTaskRoutes = (app, dependencies) => {
   const {
     readSettingsFromDiskMigrated,
@@ -20,6 +37,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     scheduledTaskService = createScheduledTaskService(dependencies),
   } = dependencies;
 
+  // 列出项目全部定时任务；projectId 缺失 400，服务层错误按 statusCode 透传。
   app.get('/api/projects/:projectId/scheduled-tasks', async (req, res) => {
     const projectID = parseProjectID(req);
     if (!projectID) {
@@ -36,6 +54,8 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 新增 / 更新任务（body.task 必须为对象，否则 400）；错误消息含
+  // required / invalid 时映射 400，其余 500。
   app.put('/api/projects/:projectId/scheduled-tasks', async (req, res) => {
     const projectID = parseProjectID(req);
     if (!projectID) {
@@ -62,6 +82,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 删除任务（loop 文件管理的任务会被服务层拒绝，需走 loop-file 删除端点）。
   app.delete('/api/projects/:projectId/scheduled-tasks/:taskId', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -81,6 +102,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 切换 loop 文件管理任务的 enabled（写入 markdown frontmatter 而非 JSON 存储）。
   app.patch('/api/projects/:projectId/scheduled-tasks/:taskId/loop-file', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -96,6 +118,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 删除 loop 任务的 markdown 文件本体，返回剩余任务列表。
   app.delete('/api/projects/:projectId/scheduled-tasks/:taskId/loop-file', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -110,6 +133,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 立即执行一次任务；409 / 404 / 500 由服务层错误码透传，成功附带 ok:true。
   app.post('/api/projects/:projectId/scheduled-tasks/:taskId/run', async (req, res) => {
     const projectID = parseProjectID(req);
     const taskID = parseTaskID(req);
@@ -129,6 +153,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 全局定时任务状态汇总（是否存在启用 / 运行中的任务），供关机阻断等逻辑使用。
   app.get('/api/ompchamber/scheduled-tasks/status', async (_req, res) => {
     try {
       return res.json(await scheduledTaskService.status());
@@ -138,12 +163,17 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     }
   });
 
+  // 全局 SSE 事件流：设置 SSE 响应头并冲刷、按 ?browser=1 标记客户端能力、
+  // 注册到客户端集合、发送就绪事件，之后每 25 秒心跳；写入失败或连接关闭
+  // 时清理心跳并从集合移除。
   app.get('/api/ompchamber/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
+    // 中文补充：把“能否驱动浏览器视图”记录在连接上（res.ompchamberBrowserCapable），
+    // 桌面壳与浏览器标签可同时连着同一台服务器，连接级标记不会像全局开关那样过期。
 
     // Whether a client can drive a browser view is a property of that client,
     // not of this server: a desktop shell and a browser tab can be connected to

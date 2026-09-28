@@ -1,3 +1,11 @@
+/**
+ * OMPChamber 控制服务（service.js）的测试套件。
+ *
+ * 用 mock 依赖（OpenCode 客户端、sessionService、scheduledTaskService、
+ * settings）驱动 createOMPChamberControlService.execute：钉住项目/模型投
+ * 影、计划任务映射与校验顺序、session 动作的目录解析与 wait 语义、
+ * session.list/messages 的过滤投影，以及 browser.capture 的落盘契约。
+ */
 import { describe, expect, it, vi } from 'vitest';
 
 import os from 'node:os';
@@ -6,6 +14,11 @@ import fs from 'node:fs/promises';
 
 import { createOMPChamberControlService } from './service.js';
 
+/**
+ * 构造带全套 mock 依赖的控制服务；overrides 可整体替换任一依赖（如
+ * createClient、now、sleep、browserControl）。返回
+ * { service, client, sessionService, scheduledTaskService } 以便断言调用。
+ */
 const createService = (overrides = {}) => {
   const client = {
     session: {
@@ -47,6 +60,7 @@ const createService = (overrides = {}) => {
   return { service, client, sessionService, scheduledTaskService };
 };
 
+// 控制服务各动作的分发契约：见各用例对入参校验、作用域与投影的断言。
 describe('OMPChamber control service', () => {
   it('serves project and model projections without an HTTP or CLI round trip', async () => {
     const { service } = createService();
@@ -266,9 +280,14 @@ describe('OMPChamber control service', () => {
   });
 });
 
+// browser.capture 契约：图片写入项目目录、结果只含可引用路径与展示
+// 提示，base64 不回传；无目录时拒绝。
 describe('browser capture', () => {
+  // 1x1 PNG 像素的 base64，充当浏览器返回的真实图像数据。
   const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
+  // 造一个带临时目录与桩 browserControl.request 的服务；capture 为
+  // 浏览器侧返回的截图载荷。
   const createBrowserService = async (capture) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-capture-'));
     const request = vi.fn(async () => capture);

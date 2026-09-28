@@ -1,5 +1,9 @@
 //! Tests for `cloudflare.rs` (JS precedent: cloudflare-tunnel usage patterns
 //! and the provider diagnose shapes from providers/cloudflare.js).
+//! （中文说明）cloudflare.rs 的测试：既覆盖 URL 提取、日志模式判定、
+//! hostname 归一化等纯函数，也用 FakeRunner 驱动 quick、managed-remote、
+//! managed-local 三种模式的启动 argv、token 文件与错误路径，最后校验
+//! provider 的 diagnose 与 capabilities 响应形状和 JS 版一致。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +13,7 @@ use serde_json::json;
 use super::*;
 use crate::tunnels::runner::testutil::FakeRunner;
 
+/// 缩短超时的选项（2 秒启动、300 毫秒存活回退），加速异步用例。
 fn fast_opts() -> CloudflareTunnelOpts {
     CloudflareTunnelOpts {
         quick_timeout_ms: 2_000,
@@ -17,6 +22,8 @@ fn fast_opts() -> CloudflareTunnelOpts {
     }
 }
 
+/// trycloudflare URL 提取：命中即返回匹配串（保留原大小写）；域名不含
+/// trycloudflare 或无 URL 时返回 None。
 #[test]
 fn extracts_try_cloudflare_urls() {
     assert_eq!(
@@ -35,6 +42,7 @@ fn extracts_try_cloudflare_urls() {
     assert_eq!(extract_try_cloudflare_url("nothing here"), None);
 }
 
+/// cloudflared 就绪日志与致命错误日志行的判定模式集合。
 #[test]
 fn ready_and_fatal_log_patterns() {
     assert!(is_cloudflared_ready_log_line(
@@ -62,6 +70,8 @@ fn ready_and_fatal_log_patterns() {
     assert!(!is_cloudflared_fatal_log_line("INF all good"));
 }
 
+/// hostname 归一化：trim 加小写、可从 URL 中提取；空白或非法输入返回
+/// None。
 #[test]
 fn normalizes_cloudflare_hostnames() {
     assert_eq!(
@@ -80,6 +90,7 @@ fn normalizes_cloudflare_hostnames() {
     );
 }
 
+/// YAML ingress 子集解析按出现顺序提取各规则的 hostname 原文。
 #[test]
 fn yaml_ingress_subset_extracts_hostnames_in_order() {
     let raw = "\
@@ -104,6 +115,7 @@ warp-routing:
     );
 }
 
+/// JSON 配置文件同样能提取首个 ingress hostname 且不产生错误。
 #[test]
 fn json_config_extracts_ingress_hostname() {
     let dir = super::super::managed_config::make_temp_dir("cf-json-cfg").unwrap();
@@ -124,6 +136,7 @@ fn json_config_extracts_ingress_hostname() {
     assert_eq!(hostname.as_deref(), Some("json.example.com"));
 }
 
+/// 非法 JSON 配置返回固定的解析错误文案且 hostname 为 None。
 #[test]
 fn invalid_json_config_reports_parse_error() {
     let dir = super::super::managed_config::make_temp_dir("cf-json-bad").unwrap();
@@ -139,6 +152,7 @@ fn invalid_json_config_reports_parse_error() {
     );
 }
 
+/// managed-local 巡检：配置文件不存在时返回文件未找到错误。
 #[test]
 fn inspect_managed_local_requires_readable_config() {
     let inspection = inspect_managed_local_cloudflare_config(Some("/nonexistent/config.yml"), None);
@@ -151,6 +165,8 @@ fn inspect_managed_local_requires_readable_config() {
     );
 }
 
+/// managed-local 巡检：配置可读但无 ingress hostname 且未显式提供
+/// hostname 时返回缺失错误。
 #[test]
 fn inspect_managed_local_reports_missing_hostname() {
     let dir = super::super::managed_config::make_temp_dir("cf-inspect-nohost").unwrap();
@@ -170,6 +186,7 @@ fn inspect_managed_local_reports_missing_hostname() {
     );
 }
 
+/// 在唯一临时目录写入指定扩展名的配置文件并返回其路径。
 fn write_config(name: &str, body: &str, extension: &str) -> PathBuf {
     let dir = super::super::managed_config::make_temp_dir(name).unwrap();
     let path = dir.join(format!("config.{extension}"));
@@ -177,6 +194,8 @@ fn write_config(name: &str, body: &str, extension: &str) -> PathBuf {
     path
 }
 
+/// quick 模式以 tunnel --url 指向 origin 启动 cloudflared（覆盖 HOME、
+/// 关闭遥测），并从 stdout 提取公开 URL。
 #[tokio::test]
 async fn quick_tunnel_argv_and_url_extraction() {
     let runner = FakeRunner::new()
@@ -210,6 +229,7 @@ async fn quick_tunnel_argv_and_url_extraction() {
     assert!(home.contains("ompchamber-cf-"), "temp HOME dir: {home}");
 }
 
+/// 超时未获得 URL 时返回固定超时文案并 kill 子进程。
 #[tokio::test]
 async fn quick_tunnel_without_url_times_out() {
     let runner = FakeRunner::new().with_probe_stdout("cloudflared version 1");
@@ -227,6 +247,7 @@ async fn quick_tunnel_without_url_times_out() {
     assert!(runner.kill_called(), "child killed on timeout");
 }
 
+/// cloudflared 不可用时直接返回安装缺失错误。
 #[tokio::test]
 async fn quick_tunnel_requires_cloudflared() {
     let runner = FakeRunner::unavailable();
@@ -240,6 +261,8 @@ async fn quick_tunnel_requires_cloudflared() {
     assert_eq!(error, "cloudflared is not installed");
 }
 
+/// managed-remote 把 trim 后的 token 写入临时私有文件并以
+/// tunnel run --token-file 启动，hostname 归一化后拼出公开 URL。
 #[tokio::test]
 async fn managed_remote_argv_token_file_and_url() {
     let runner = FakeRunner::new()
@@ -283,6 +306,7 @@ async fn managed_remote_argv_token_file_and_url() {
     );
 }
 
+/// managed-remote 缺 token 或缺 hostname 分别返回对应必填错误。
 #[tokio::test]
 async fn managed_remote_requires_token_and_hostname() {
     let runner = FakeRunner::new().with_probe_stdout("v");
@@ -304,6 +328,7 @@ async fn managed_remote_requires_token_and_hostname() {
     assert_eq!(error, "Managed remote tunnel hostname is required");
 }
 
+/// stderr 出现致命日志行时启动失败并在错误消息中回显该行。
 #[tokio::test]
 async fn managed_tunnel_fatal_log_fails_start() {
     let runner = FakeRunner::new()
@@ -324,6 +349,7 @@ async fn managed_tunnel_fatal_log_fails_start() {
     );
 }
 
+/// 无任何输出且超过硬超时时返回 managed 初始化超时文案。
 #[tokio::test]
 async fn managed_tunnel_hard_timeout_without_output() {
     let runner = FakeRunner::new().with_probe_stdout("cloudflared version 2024.1.0");
@@ -346,6 +372,7 @@ async fn managed_tunnel_hard_timeout_without_output() {
     );
 }
 
+/// 输出始终匹配不到就绪模式时，存活回退仍判定启动成功。
 #[tokio::test]
 async fn managed_tunnel_liveness_fallback_accepts_output() {
     // Output that never matches a ready pattern: the liveness fallback
@@ -369,6 +396,8 @@ async fn managed_tunnel_liveness_fallback_accepts_output() {
     assert_eq!(controller.mode, "managed-remote");
 }
 
+/// managed-local 以 tunnel --config 指定路径启动，hostname 取自配置
+/// ingress 并回填到 controller 字段。
 #[tokio::test]
 async fn managed_local_argv_with_config_and_hostname_from_config() {
     let config = write_config(
@@ -416,6 +445,7 @@ async fn managed_local_argv_with_config_and_hostname_from_config() {
     );
 }
 
+/// 请求显式指定 hostname 时优先于配置文件内的 ingress hostname。
 #[tokio::test]
 async fn managed_local_hostname_request_beats_config() {
     let config = write_config(
@@ -444,6 +474,7 @@ async fn managed_local_hostname_request_beats_config() {
     );
 }
 
+/// managed-local 配置文件不可读时返回固定的文件未找到文案。
 #[tokio::test]
 async fn managed_local_rejects_unreadable_config() {
     let runner = FakeRunner::new().with_probe_stdout("cloudflared version 1");
@@ -461,6 +492,8 @@ async fn managed_local_rejects_unreadable_config() {
     );
 }
 
+/// quick 模式缺 origin URL 时 provider.start 返回 validation_error
+/// 服务错误。
 #[tokio::test]
 async fn provider_start_requires_origin_url_for_quick_mode() {
     let provider = CloudflareTunnelProvider::new(
@@ -488,6 +521,8 @@ async fn provider_start_requires_origin_url_for_quick_mode() {
     }
 }
 
+/// diagnose 输出依赖与网络两项 provider 检查，以及三个 mode 的逐项
+/// 检查与汇总。
 #[tokio::test]
 async fn provider_diagnose_reports_checks_and_modes() {
     let provider = CloudflareTunnelProvider::new(
@@ -534,6 +569,8 @@ async fn provider_diagnose_reports_checks_and_modes() {
     assert_eq!(modes[1]["checks"][2]["status"], "pass");
 }
 
+/// 未提供 token 与 hostname 但存在已存 profile 时，diagnose 相应检查
+/// 回退判定为通过。
 #[tokio::test]
 async fn provider_diagnose_saved_profile_fallbacks() {
     let provider = CloudflareTunnelProvider::new(
@@ -562,6 +599,8 @@ async fn provider_diagnose_saved_profile_fallbacks() {
     assert_eq!(checks[2]["status"], "pass");
 }
 
+/// capabilities JSON 的 provider、defaults 与 modes 形状和 JS 版逐字段
+/// 一致。
 #[test]
 fn capabilities_json_shape_matches_js() {
     let capabilities = cloudflare_capabilities_json();

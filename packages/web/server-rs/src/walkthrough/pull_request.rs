@@ -1,3 +1,7 @@
+//! 从 GitHub 拉取 PR 的原始 unified diff（GitHub 返回的即 merge-base diff，
+//! 与本地 branch 审阅的三点语义一致）。token 取自
+//! <data_dir>/github-auth.json，remote 解析走移植的 git service，HTTP 走
+//! 共享 rustls client；后两者都是可注入的 seam，供测试观察请求。
 //! Port of `server/lib/walkthrough/pull-request.js`.
 //!
 //! Raw unified diff for a pull request. GitHub already returns the
@@ -23,30 +27,43 @@ use super::error::WalkthroughError;
 use super::small_model::BoxFuture;
 use super::sources::PrDiffFn;
 
+/// GitHub REST API 根地址。
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
+/// 一次发出的 HTTP 请求描述（测试用来观察 seam 收到的请求）。
 /// One issued request, for seam-observing tests.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrDiffHttpRequest {
+/// 完整请求 URL。
     pub url: String,
+/// Accept 头（diff media type）。
     pub accept: String,
+/// Bearer token 头（可选）。
     pub authorization: Option<String>,
 }
 
+/// HTTP 执行 seam：请求描述 → (状态码, 响应体)。
 pub type PrHttpFn = Arc<
     dyn Fn(PrDiffHttpRequest) -> BoxFuture<Result<(u16, String), WalkthroughError>> + Send + Sync,
 >;
 
+/// remote URL 解析 seam：目录 → origin 的 remote URL（可选）。
 pub type RemoteUrlFn = Arc<dyn Fn(String) -> BoxFuture<Option<String>> + Send + Sync>;
 
+/// PR diff 获取器及其全部可注入协作件（data 目录、remote 解析、HTTP）。
 /// The PR-diff differ's collaborators, all injectable.
 pub struct PullRequestDiffer {
+/// 读取 github-auth.json 的根目录。
     data_dir: PathBuf,
+/// 目录 → GitHub remote URL 的解析函数。
     remote_url: RemoteUrlFn,
+/// 实际执行 HTTP 的函数。
     http: PrHttpFn,
 }
 
+/// PR diff 流程：token → remote 解析 → diff 请求。
 impl PullRequestDiffer {
+/// 注入全部协作件构造。
     pub fn new(data_dir: PathBuf, remote_url: RemoteUrlFn, http: PrHttpFn) -> Self {
         Self {
             data_dir,
@@ -55,6 +72,7 @@ impl PullRequestDiffer {
         }
     }
 
+/// 读取已存储的 GitHub OAuth token；文件缺失、不可读、无 token 均 None。
     /// `getOctokitOrNull`, minimal honest form: the stored GitHub OAuth entry
     /// in `<data_dir>/github-auth.json`. Gap (noted): the JS resolution also
     /// falls back to the `gh` CLI credential and honors its settings
@@ -71,6 +89,9 @@ impl PullRequestDiffer {
         (!token.is_empty()).then_some(token)
     }
 
+/// 取某目录对应仓库、指定 PR 号的 diff 文本与 { owner, repo, number }
+/// 元数据。未连接 GitHub 报 401、无 GitHub remote 报 400、非 2xx 报 500、
+/// 空 diff 报 404。
     /// `getPullRequestDiff`.
     pub async fn diff(
         &self,
@@ -127,6 +148,7 @@ impl PullRequestDiffer {
         ))
     }
 
+/// 包装成 sources seam 需要的 PrDiffFn 形状。
     /// Adapt into the sources seam shape.
     pub fn into_pr_diff_fn(self: Arc<Self>) -> PrDiffFn {
         Arc::new(move |directory: String, number: i64| {
@@ -136,19 +158,26 @@ impl PullRequestDiffer {
     }
 }
 
+/// 解析出的 owner/repo 对。
 /// The parsed `owner/repo` pair of a GitHub remote.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepoRef {
+/// 仓库所有者。
     pub owner: String,
+/// 仓库名。
     pub repo: String,
 }
 
+/// 显示为 owner/repo。
 impl std::fmt::Display for RepoRef {
+/// 写出 "owner/repo"。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.owner, self.repo)
     }
 }
 
+/// 解析三种 GitHub remote 形态（scp 式 git@、ssh URL、https URL）为
+/// owner/repo，接受可选 .git 后缀；非 GitHub 或空串返回 None。
 /// Mirrors `parseGitHubRemoteUrl` (and the ported `github::repo` copy):
 /// `git@github.com:`, `ssh://git@github.com/`, and `https://github.com/`
 /// shapes with an optional `.git` suffix.
@@ -187,6 +216,8 @@ pub fn parse_github_remote_url(raw: &str) -> Option<RepoRef> {
     from_owner_repo(path)
 }
 
+/// 生产装配：git service 的 origin remote 解析 + 8 秒超时的共享 rustls
+/// HTTP client。
 /// Production wiring: git remote resolution through the ported git service
 /// and the shared rustls client. The 8s timeout mirrors the github module's
 /// octokit-parity default.
@@ -226,12 +257,14 @@ pub fn pull_request_differ(
     Arc::new(PullRequestDiffer::new(data_dir, remote_url, http))
 }
 
+/// PR diff 流程与 remote 解析测试（HTTP 与 remote 均为记录请求的桩）。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
 
+/// 互不冲突的临时 data 目录。
     fn temp_data_dir() -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -241,6 +274,7 @@ mod tests {
         dir
     }
 
+/// 构造带请求记录桩的 differ：remote 与响应固定。
     fn differ(
         data_dir: &PathBuf,
         remote: Option<&'static str>,
@@ -264,8 +298,10 @@ mod tests {
         (differ, seen)
     }
 
+/// 最小可用 diff 响应体。
     const PATCH: &str = "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n+const added = true;\n";
 
+/// 按解析出的仓库与 PR 号请求 diff，响应头与元数据正确。
     #[tokio::test]
     async fn requests_the_diff_for_the_resolved_repository() {
         let data_dir = temp_data_dir();
@@ -302,6 +338,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+/// 确实没有 remote 时报 400 no-github-remote，且不发任何 HTTP 请求。
     #[tokio::test]
     async fn reports_a_missing_github_remote_only_when_there_really_is_none() {
         let data_dir = temp_data_dir();
@@ -320,6 +357,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+/// 无 token 时先报 401 github-not-connected，不做其余调用。
     #[tokio::test]
     async fn asks_the_user_to_connect_github_before_anything_else() {
         let data_dir = temp_data_dir();
@@ -337,6 +375,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+/// 空白 diff 视为 404 empty-diff，而不是生成一份空导览。
     #[tokio::test]
     async fn treats_an_empty_diff_as_a_missing_pull_request_rather_than_an_empty_review() {
         let data_dir = temp_data_dir();
@@ -358,6 +397,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+/// 非 2xx 状态映射为 500 内部错误（对齐 JS octokit 拒绝的行为）。
     #[tokio::test]
     async fn surfaces_provider_failures_as_internal_errors() {
         let data_dir = temp_data_dir();
@@ -377,6 +417,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
+/// 三种支持形态解析成功；非 GitHub 主机与空串返回 None。
     #[test]
     fn parses_the_supported_remote_shapes() {
         assert_eq!(

@@ -1,3 +1,13 @@
+/**
+ * shared.js 配置读写原语的单元测试套件。
+ *
+ * 覆盖：parseMdFile 的 YAML frontmatter 宽容解析（EOF 结束分隔线、
+ * CRLF 行尾、UTF-8 BOM、值中裸冒号、无 frontmatter），writeMdFile 的
+ * 解析-改写-回写往返一致性，updateAgent 保存单字段时对无关字段的
+ * 保留，以及 readConfigFile / writeConfig 的 JSONC 安全策略（注释与
+ * 尾逗号可读、半截解析结果拒绝读写，防止清空用户配置——对应
+ * issue #2923）。所有用例跑在按进程隔离的临时目录中。
+ */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -7,8 +17,10 @@ import { parseMdFile, writeMdFile, readConfigFile, readConfigLayers, writeConfig
 import { updateAgent } from './agents.js';
 import { updateMcpConfig } from './mcp.js';
 
+/** 用例临时目录（按进程 pid 隔离），各 describe 自行重建与清理。 */
 const FIXTURE_DIR = path.join(os.tmpdir(), `ompchamber-shared-test-${process.pid}`);
 
+/** 标准 frontmatter Markdown 样本：description / model / mode 三键加一段正文。 */
 const STANDARD_MD = [
   '---',
   'description: My build agent',
@@ -20,6 +32,7 @@ const STANDARD_MD = [
   '',
 ].join('\n');
 
+/** 把内容写入临时目录下指定相对路径（自动创建父目录）并返回绝对路径。 */
 const writeFixture = (name, content) => {
   const filePath = path.join(FIXTURE_DIR, name);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -27,12 +40,15 @@ const writeFixture = (name, content) => {
   return filePath;
 };
 
+/** parseMdFile：frontmatter 解析规则与边界形态。 */
 describe('parseMdFile', () => {
+  // 重建干净的临时目录。
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });
   });
 
+  // 删除临时目录。
   afterEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
   });
@@ -105,12 +121,15 @@ describe('parseMdFile', () => {
   });
 });
 
+/** writeMdFile：解析-改写-回写的往返一致性。 */
 describe('writeMdFile', () => {
+  // 重建干净的临时目录。
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });
   });
 
+  // 删除临时目录。
   afterEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
   });
@@ -135,12 +154,15 @@ describe('writeMdFile', () => {
   });
 });
 
+/** updateAgent：保存单个字段时不破坏其余 frontmatter 与正文（OPE-178 回归）。 */
 describe('updateAgent frontmatter preservation', () => {
+  // 重建干净的临时目录。
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });
   });
 
+  // 删除临时目录。
   afterEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
   });
@@ -202,16 +224,20 @@ describe('updateAgent frontmatter preservation', () => {
   });
 });
 
+/** readConfigFile / writeConfig：JSONC 解析安全与拒绝半截解析结果（issue #2923）。 */
 describe('readConfigFile / writeConfig JSONC safety (issue #2923)', () => {
+  // 重建干净的临时目录。
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });
   });
 
+  // 删除临时目录。
   afterEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
   });
 
+    // 合法 JSONC 样本：含注释、尾逗号与混合引号键。
   const VALID_CONFIG = [
     '{',
     '  "$schema": "https://opencode.ai/config.json",',
@@ -236,6 +262,7 @@ describe('readConfigFile / writeConfig JSONC safety (issue #2923)', () => {
 
   // JSON5-style unquoted keys after $schema — jsonc-parser returns a partial
   // tree of only `{ $schema }` when errors are ignored.
+  // JSON5 风格样本：验证半截解析被拒绝而不是静默丢键（背景见上方英文注释）。
   const PARTIAL_PARSE_CONFIG = [
     '{',
     '  "$schema": "https://opencode.ai/config.json",',

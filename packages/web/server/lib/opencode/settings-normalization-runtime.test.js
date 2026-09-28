@@ -1,7 +1,15 @@
+/**
+ * settings-normalization-runtime 测试套件：围绕符号链接解析验证设置持久化
+ * 前的路径规范化——normalizePathForPersistence 的 realpath 解析、异常回退
+ * 与 Windows 盘符大小写处理，sanitizeProjects 的路径解析、默认思考等级
+ * 配对保留与 realpath 去重，以及 normalizeSettingsPaths 的变更标记。
+ * 通过注入假的 os / path / realpathSync 构造纯内存运行时。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createSettingsNormalizationRuntime } from './settings-normalization-runtime.js';
 
+/** 用默认依赖构造被测运行时；overrides 可逐项替换（如自定义 realpathSync）。 */
 const createTestRuntime = (overrides = {}) => {
   const defaults = {
     os: { homedir: () => '/home/testuser' },
@@ -23,7 +31,9 @@ const createTestRuntime = (overrides = {}) => {
   return createSettingsNormalizationRuntime({ ...defaults, ...overrides });
 };
 
+// 符号链接解析主套件。
 describe('settings normalization runtime - symlink resolution', () => {
+  // normalizePathForPersistence：realpath 解析、异常回退与 Windows 盘符处理。
   describe('normalizePathForPersistence', () => {
     it('resolves symlinks via realpathSync', () => {
       const runtime = createTestRuntime({
@@ -75,6 +85,7 @@ describe('settings normalization runtime - symlink resolution', () => {
     });
   });
 
+  // sanitizeProjects：项目路径解析、默认思考等级配对与 realpath 去重。
   describe('sanitizeProjects', () => {
     it('resolves symlinks in project paths', () => {
       const runtime = createTestRuntime({
@@ -139,6 +150,7 @@ describe('settings normalization runtime - symlink resolution', () => {
     });
   });
 
+  // normalizeSettingsPaths：lastDirectory 的符号链接解析与 changed 标记。
   describe('normalizeSettingsPaths', () => {
     it('resolves symlinks in lastDirectory', () => {
       const runtime = createTestRuntime({

@@ -10,6 +10,12 @@
 //! Ids are base64url of `config:scope:spec` (entries) and
 //! `file:scope:fileName` (files); Node's lenient base64url decoding is
 //! mirrored by ignoring non-alphabet characters.
+//!
+//! 中文说明：本模块是 OpenCode 插件配置数据层（plugins.js 的 Rust 移植），
+//! 管理两类资源：配置文件 `plugin` 数组里的插件条目（纯字符串 spec 或
+//! `[spec, options]` 元组），以及配置目录旁 `plugins/` 目录下散落的
+//! `.js/.ts/.mjs/.cjs` 插件文件。所有错误以 CodedError（message + 稳定
+//! 错误码）返回，供 HTTP 层映射状态码与响应文案。
 
 use std::path::{Path, PathBuf};
 
@@ -22,20 +28,30 @@ use super::config_layers::{
 };
 use super::plugin_spec::is_path_spec;
 
+/// 错误码：要创建的插件条目在该 scope 下已存在（ENTRY_EXISTS）。
 const CODE_ENTRY_EXISTS: &str = "ENTRY_EXISTS";
+/// 错误码：要写入的插件文件已存在且未允许覆盖（FILE_EXISTS）。
 const CODE_FILE_EXISTS: &str = "FILE_EXISTS";
+/// 错误码：按 id 查找的插件条目/文件不存在（NOT_FOUND）。
 const CODE_NOT_FOUND: &str = "NOT_FOUND";
+/// 错误码：插件文件名非法（格式不符或含路径穿越）（INVALID_FILENAME）。
 const CODE_INVALID_FILENAME: &str = "INVALID_FILENAME";
+/// 错误码：scope 不是 user/project，或 project scope 缺少工作目录（INVALID_SCOPE）。
 const CODE_INVALID_SCOPE: &str = "INVALID_SCOPE";
+/// 错误码：插件 spec 非法（非字符串、空白、含 NUL 或 id 形状错误）（INVALID_SPEC）。
 const CODE_INVALID_SPEC: &str = "INVALID_SPEC";
 
+/// scope 常量：用户级（OPENCODE_CONFIG 目录所属的配置层）。
 pub(crate) const SCOPE_USER: &str = "user";
+/// scope 常量：项目级（工作目录下 `.opencode/` 内的配置与插件目录）。
 pub(crate) const SCOPE_PROJECT: &str = "project";
 
+/// 以指定错误码构造 CodedError 的便捷包装。
 fn coded(message: impl Into<String>, code: &'static str) -> CodedError {
     CodedError::new(message, code)
 }
 
+/// 校验 scope 必须是 "user" 或 "project"，否则返回 INVALID_SCOPE 错误。
 fn validate_scope(scope: &str) -> Result<(), CodedError> {
     if scope != SCOPE_USER && scope != SCOPE_PROJECT {
         return Err(coded(
@@ -46,6 +62,7 @@ fn validate_scope(scope: &str) -> Result<(), CodedError> {
     Ok(())
 }
 
+/// 校验插件 spec：必须是 trim 后非空且不含 NUL 字节的字符串，返回 trim 后的值；非法时返回 INVALID_SPEC。
 fn validate_plugin_spec(spec: &Value) -> Result<String, CodedError> {
     let Some(text) = spec.as_str() else {
         return Err(coded(
@@ -68,27 +85,33 @@ fn validate_plugin_spec(spec: &Value) -> Result<String, CodedError> {
     Ok(text.trim().to_string())
 }
 
+/// 判断 JSON 值是否为对象（object）。
 fn is_record(value: &Value) -> bool {
     matches!(value, Value::Object(_))
 }
 
+/// 判断 options 是否为有效选项：存在、是对象且非空；决定序列化时是否写成 [spec, options] 元组。
 fn has_options(options: Option<&Value>) -> bool {
     options.is_some_and(|options| {
         is_record(options) && !options.as_object().is_some_and(|m| m.is_empty())
     })
 }
 
+/// 依据 spec 判定插件类别：路径型 spec（见 plugin_spec::is_path_spec）返回 "path"，否则返回 "npm"。
 pub(crate) fn parsed_kind_for_spec(spec: &str) -> &'static str {
     if is_path_spec(spec) { "path" } else { "npm" }
 }
 
 /// `encodePluginId` — base64url (no padding) of `prefix:value`.
+/// 中文注解：把 prefix:value 拼接后做无填充 base64url 编码，生成插件条目/文件的稳定 id。
 pub(crate) fn encode_plugin_id(prefix: &str, value: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{prefix}:{value}"))
 }
 
 /// `decodePluginId` — Node-lenient base64url decode, then split at the first
 /// colon.
+/// 中文注解：先按 Node 宽容策略滤掉非 base64url 字符再解码（失败得到空串），
+/// 随后在解码结果的第一个冒号处切分成 (prefix, value)；无冒号报 INVALID_SPEC。
 pub(crate) fn decode_plugin_id(id: &str) -> Result<(String, String), CodedError> {
     let filtered: String = id
         .chars()
@@ -108,6 +131,8 @@ pub(crate) fn decode_plugin_id(id: &str) -> Result<(String, String), CodedError>
 }
 
 /// `parsePluginRaw` — string or `[string, object]` tuple.
+/// 中文注解：接受纯字符串 spec 或 [spec字符串, options对象] 二元组（空对象也保留为 Some），
+/// 其余形状报 INVALID_SPEC；spec 顺带经过合法性校验。
 pub(crate) fn parse_plugin_raw(raw: &Value) -> Result<ParsedPlugin, CodedError> {
     if let Some(text) = raw.as_str() {
         return Ok(ParsedPlugin {
@@ -130,13 +155,17 @@ pub(crate) fn parse_plugin_raw(raw: &Value) -> Result<ParsedPlugin, CodedError> 
     ))
 }
 
+/// 从配置数组项解析出的插件：spec 与可选 options。
 #[derive(Debug)]
 pub(crate) struct ParsedPlugin {
+    /// 插件标识（npm 包名或文件路径），已 trim。
     pub spec: String,
+    /// 插件选项对象；纯字符串条目时为 None。
     pub options: Option<Value>,
 }
 
 /// `serializePluginEntry` — tuple only when options is a non-empty object.
+/// 中文注解：options 为非空对象时序列化为 [spec, options] 元组，否则序列化为纯字符串。
 pub(crate) fn serialize_plugin_entry(spec: &str, options: Option<&Value>) -> Value {
     if has_options(options) {
         return Value::Array(vec![
@@ -147,15 +176,23 @@ pub(crate) fn serialize_plugin_entry(spec: &str, options: Option<&Value>) -> Val
     Value::from(spec)
 }
 
+/// 一次读取得到的三层插件配置（custom / user / project）内容及各自文件路径。
 struct ConfigLayers {
+    /// 用户层配置内容。
     user_config: Map<String, Value>,
+    /// 项目层配置内容。
     project_config: Map<String, Value>,
+    /// OPENCODE_CONFIG 自定义层配置内容。
     custom_config: Map<String, Value>,
+    /// 用户层配置文件路径（总是存在）。
     user_path: PathBuf,
+    /// 项目层配置文件路径（无工作目录时为 None）。
     project_path: Option<PathBuf>,
+    /// OPENCODE_CONFIG 指定的配置文件路径（未设置该环境变量时为 None）。
     custom_path: Option<PathBuf>,
 }
 
+/// 解析三层配置路径并逐一读取（read_config_layer 对 INVALID_JSONC 降级为空配置），汇总成 ConfigLayers。
 fn read_plugin_config_layers(working_directory: Option<&Path>) -> Result<ConfigLayers, CodedError> {
     let custom_path = active_custom_config_path();
     let user_path = primary_user_config_path();
@@ -173,12 +210,18 @@ fn read_plugin_config_layers(working_directory: Option<&Path>) -> Result<ConfigL
     })
 }
 
+/// 参与插件枚举/写入的一个配置来源：配置内容、文件路径与所属 scope。
 struct ConfigSource {
+    /// 该来源的完整配置对象。
     config: Map<String, Value>,
+    /// 该来源对应的配置文件路径（也是写入目标）。
     file_path: PathBuf,
+    /// 该来源的 scope（user 或 project）。
     scope: &'static str,
 }
 
+/// 把三层配置展开成有序来源列表：设置了 OPENCODE_CONFIG 时 custom 层顶替 user 层（同为 user scope），
+/// 其后追加 project 层；列表顺序即枚举顺序。
 fn config_sources(layers: &ConfigLayers) -> Vec<ConfigSource> {
     let mut sources = Vec::new();
     if let Some(custom_path) = &layers.custom_path {
@@ -204,6 +247,7 @@ fn config_sources(layers: &ConfigLayers) -> Vec<ConfigSource> {
     sources
 }
 
+/// 在第一个冒号处把 "scope:spec" 形式的值切成两段；缺少冒号报 INVALID_SPEC。
 fn split_scoped_value(value: &str) -> Result<(&str, &str), CodedError> {
     let Some(separator) = value.find(':') else {
         return Err(coded(
@@ -215,11 +259,16 @@ fn split_scoped_value(value: &str) -> Result<(&str, &str), CodedError> {
 }
 
 /// A located plugin entry: the owning config source plus the raw array index.
+/// 中文注解：已定位的插件条目，用所属来源下标 + plugin 数组原始下标双重定位。
 struct PluginTarget {
+    /// 所属配置来源在 config_sources() 返回列表中的下标。
     source_index: usize,
+    /// 条目在来源配置 plugin 数组中的下标。
     plugin_index: usize,
 }
 
+/// 解码 id 并在对应 scope 的配置层中按 spec 查找条目位置；prefix 不是 "config" 报 INVALID_SPEC，
+/// 未找到返回 Ok(None)，配置读取错误原样上抛。
 fn find_plugin_target(
     id: &str,
     working_directory: Option<&Path>,
@@ -256,6 +305,8 @@ fn find_plugin_target(
     Ok(None)
 }
 
+/// 解析某 scope 的插件文件目录：project 为 <工作目录>/.opencode/plugins（缺工作目录报 INVALID_SCOPE），
+/// user 为当前 OPENCODE_CONFIG 目录下的 plugins。
 fn plugin_dir_for_scope(
     scope: &str,
     working_directory: Option<&Path>,
@@ -273,12 +324,18 @@ fn plugin_dir_for_scope(
     Ok(active_opencode_config_dir().join("plugins"))
 }
 
+/// 由 "file:" 前缀 id 解析出的插件文件目标：文件名、scope 与绝对路径。
 struct FileTarget {
+    /// 已通过校验的插件文件名。
     file_name: String,
+    /// 文件所属 scope（user 或 project）。
     scope: String,
+    /// 插件目录下该文件的绝对路径。
     absolute_path: PathBuf,
 }
 
+/// 解码并校验 "file:scope:fileName" 形式的 id（prefix、scope、文件名逐项校验），
+/// 再拼出插件目录下的绝对路径；prefix 不符报 INVALID_FILENAME。
 fn file_target_from_id(
     id: &str,
     working_directory: Option<&Path>,
@@ -301,6 +358,8 @@ fn file_target_from_id(
 }
 
 /// `/^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/` plus traversal rejection.
+/// 中文注解：先拒绝路径穿越（/、反斜杠、..），再要求匹配
+/// ^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$；通过则原样返回文件名。
 fn validate_file_name(file_name: &str) -> Result<String, CodedError> {
     if file_name.is_empty() {
         return Err(coded("Plugin file name is required", CODE_INVALID_FILENAME));
@@ -318,6 +377,8 @@ fn validate_file_name(file_name: &str) -> Result<String, CodedError> {
     Ok(file_name.to_string())
 }
 
+/// 纯字符级实现插件文件名正则：扩展名限 js/ts/mjs/cjs，首字符为小写字母或数字，
+/// 其余字符限小写字母/数字/-/_/.。
 fn plugin_file_name_ok(file_name: &str) -> bool {
     let bytes = file_name.as_bytes();
     let Some(dot) = file_name.rfind('.') else {
@@ -340,6 +401,8 @@ fn plugin_file_name_ok(file_name: &str) -> bool {
 }
 
 /// `listPluginEntries` — user layer first, then project.
+/// 中文注解：按 user（或 custom）层在前、project 层在后的顺序枚举全部插件条目，
+/// 输出带 id/spec/options/scope/kind/parsedKind/sourcePath 的 JSON 对象数组。
 pub(crate) fn list_plugin_entries(
     working_directory: Option<&Path>,
 ) -> Result<Vec<Value>, CodedError> {
@@ -379,6 +442,7 @@ pub(crate) fn list_plugin_entries(
     Ok(entries)
 }
 
+/// 按完整 id 在列表结果中查找单个插件条目；找不到返回 Ok(None)。
 pub(crate) fn get_plugin_entry(
     id: &str,
     working_directory: Option<&Path>,
@@ -389,6 +453,8 @@ pub(crate) fn get_plugin_entry(
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(id)))
 }
 
+/// 确保项目配置文件路径可用：无工作目录报 INVALID_SCOPE，必要时创建 <工作目录>/.opencode
+/// 目录（失败报 IO），返回其中 opencode.json 的路径。
 fn ensure_project_config_path(working_directory: Option<&Path>) -> Result<PathBuf, CodedError> {
     let Some(working_directory) = working_directory else {
         return Err(coded(
@@ -402,6 +468,9 @@ fn ensure_project_config_path(working_directory: Option<&Path>) -> Result<PathBu
     Ok(config_dir.join("opencode.json"))
 }
 
+/// 新增插件条目：校验 spec 与 scope；同 scope 内重复 spec 报 ENTRY_EXISTS；
+/// project scope 写项目配置（必要时新建），user scope 优先写 custom 配置层；
+/// 追加序列化条目后经 write_config 落盘。
 pub(crate) fn create_plugin_entry(
     spec: &Value,
     options: Option<&Value>,
@@ -457,6 +526,8 @@ pub(crate) fn create_plugin_entry(
     write_config(&config, &target_path)
 }
 
+/// 按 id 原地更新插件条目：仅覆盖显式传入的 spec/options（options 缺省沿用旧值），
+/// 未找到报 NOT_FOUND；写回经 write_config（带备份）。
 pub(crate) fn update_plugin_entry(
     id: &str,
     updates_spec: Option<&Value>,
@@ -495,6 +566,7 @@ pub(crate) fn update_plugin_entry(
     write_config(&config, &file_path)
 }
 
+/// 按 id 删除插件条目；数组删空时连同 plugin 键一起移除，未找到报 NOT_FOUND。
 pub(crate) fn delete_plugin_entry(
     id: &str,
     working_directory: Option<&Path>,
@@ -524,6 +596,9 @@ pub(crate) fn delete_plugin_entry(
     write_config(&config, &source.file_path)
 }
 
+/// 枚举各 scope 插件目录下的散落插件文件（user 恒定、有工作目录时追加 project），
+/// 跳过子目录与不合命名规则的条目，按 scope 与文件名排序，输出带
+/// id/fileName/scope/kind/absolutePath 的对象。
 pub(crate) fn list_plugin_dir_files(
     working_directory: Option<&Path>,
 ) -> Result<Vec<Value>, CodedError> {
@@ -568,12 +643,17 @@ pub(crate) fn list_plugin_dir_files(
     Ok(files)
 }
 
+/// 读取到的插件文件：文件名、scope 与全文内容。
 pub(crate) struct PluginDirFile {
+    /// 已通过校验的插件文件名。
     pub file_name: String,
+    /// 文件所属 scope（user 或 project）。
     pub scope: String,
+    /// 文件全文内容。
     pub content: String,
 }
 
+/// 按 "file:..." id 读取插件文件；文件不存在返回 Ok(None)，读取失败报 IO。
 pub(crate) fn read_plugin_dir_file(
     id: &str,
     working_directory: Option<&Path>,
@@ -591,6 +671,8 @@ pub(crate) fn read_plugin_dir_file(
     }))
 }
 
+/// 写入插件文件：校验文件名与 scope；overwrite=false 且已存在时报 FILE_EXISTS；
+/// content 为 null 写空串、字符串原样、其余 JSON 序列化；必要时创建目录，写失败报 IO。
 pub(crate) fn write_plugin_dir_file(
     file_name: &Value,
     content: &Value,
@@ -619,6 +701,7 @@ pub(crate) fn write_plugin_dir_file(
     Ok(())
 }
 
+/// 按 "file:..." id 删除插件文件；文件不存在报 NOT_FOUND，删除失败报 IO。
 pub(crate) fn delete_plugin_dir_file(
     id: &str,
     working_directory: Option<&Path>,
@@ -635,24 +718,33 @@ pub(crate) fn delete_plugin_dir_file(
     Ok(())
 }
 
+/// plugins.rs 的单元测试：覆盖条目解析/序列化、CRUD、scope 路由、id 编解码与
+/// 插件目录文件管理；全部经 EnvGuard 串行并隔离 HOME/OPENCODE_CONFIG。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 测试夹具：持有全局环境锁，保存并在 Drop 时恢复 HOME 与 OPENCODE_CONFIG。
     struct EnvGuard {
+        /// http_util::TEST_ENV_MUTEX 的互斥锁守卫，Drop 时释放（串行化所有动环境的测试）。
         _guard: std::sync::MutexGuard<'static, ()>,
+        /// 进入测试前的 HOME 原值。
         previous_home: Option<String>,
+        /// 进入测试前的 OPENCODE_CONFIG 原值。
         previous_config: Option<String>,
     }
 
+    /// Drop 实现：测试结束时恢复被改写的环境变量。
     impl Drop for EnvGuard {
+        /// 依次恢复 HOME 与 OPENCODE_CONFIG。
         fn drop(&mut self) {
             restore("HOME", &self.previous_home);
             restore("OPENCODE_CONFIG", &self.previous_config);
         }
     }
 
+    /// 把环境变量恢复为保存值；未保存则移除（unsafe set_var/remove_var 仅在持锁的单测试内使用）。
     fn restore(key: &str, value: &Option<String>) {
         match value {
             Some(value) => unsafe {
@@ -664,7 +756,9 @@ mod tests {
         }
     }
 
+    /// EnvGuard 的加锁与环境设置逻辑。
     impl EnvGuard {
+        /// 获取全局环境锁并按需设置 HOME/OPENCODE_CONFIG（custom 为 None 时清空两者），返回守卫。
         fn lock(custom: Option<&Path>) -> Self {
             let guard = super::super::http_util::TEST_ENV_MUTEX
                 .lock()
@@ -694,6 +788,7 @@ mod tests {
         }
     }
 
+    /// 为当前测试创建唯一的临时根目录（进程 id + 原子计数防碰撞）。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-plugins-{}-{tag}-{}",
@@ -704,21 +799,27 @@ mod tests {
         dir
     }
 
+    /// 进程内原子递增计数，用于临时目录去重。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
+        // 局部静态计数器：每次调用递增，保证并发测试目录唯一。
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// 测试助手：把 JSON 值 pretty 写入指定路径（自动创建父目录）。
     fn write_json(path: &Path, data: Value) {
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(path, serde_json::to_string_pretty(&data).expect("json")).expect("write");
     }
 
+    /// 测试助手：读取并解析路径上的 JSON 文件。
     fn read_json(path: &Path) -> Value {
         serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("parse")
     }
 
+    /// 验证 parse_plugin_raw 接受字符串与 [spec, options] 元组、拒绝其它形状，
+    /// 且 serialize_plugin_entry 仅在 options 非空对象时输出元组。
     #[test]
     fn parses_and_serializes_raw_entries() {
         assert_eq!(parse_plugin_raw(&json!("foo")).expect("parse").spec, "foo");
@@ -745,6 +846,7 @@ mod tests {
         );
     }
 
+    /// 验证非字符串 spec 与穿越/大写/非法扩展名的文件名分别被 INVALID_SPEC / INVALID_FILENAME 拒绝。
     #[test]
     fn rejects_invalid_specs_and_file_names() {
         let root = temp_root("invalid");
@@ -770,6 +872,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证创建纯字符串与带 options 的条目均写入用户配置，且同 scope 重复 spec 返回 ENTRY_EXISTS。
     #[test]
     fn creates_entries_and_rejects_duplicates() {
         let root = temp_root("create");
@@ -799,6 +902,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证 user 与 project scope 的条目分别写入用户配置与 <project>/.opencode/opencode.json。
     #[test]
     fn routes_entries_by_scope() {
         let root = temp_root("scopes");
@@ -830,6 +934,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证 OPENCODE_CONFIG 在每次调用间被重新读取：两个环境各自写入自己的配置与 plugins 目录，互不串扰。
     #[test]
     fn re_resolves_custom_config_env_between_calls() {
         let root = temp_root("reenv");
@@ -892,6 +997,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证按 id 更新在原下标替换条目：spec 与 options 可独立更新，元组/字符串形态随 options 有无切换。
     #[test]
     fn updates_entries_in_place() {
         let root = temp_root("update");
@@ -930,6 +1036,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证删除唯一条目后 plugin 键被整体移除，配置文件退化为空对象。
     #[test]
     fn deletes_entries_and_prunes_plugin_key() {
         let root = temp_root("delete");
@@ -945,6 +1052,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证项目配置 JSONC 损坏时列表降级为仅用户层，且不改动也不备份损坏文件。
     #[test]
     fn lists_user_plugins_when_project_layer_is_unparseable() {
         let root = temp_root("unparseable");
@@ -978,6 +1086,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证列表跨 user/project 两层输出 scope/kind/parsedKind/sourcePath，用户配置移除后只剩项目层。
     #[test]
     fn lists_entries_with_scopes_and_parsed_kinds() {
         let root = temp_root("list");
@@ -1017,6 +1126,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证 encode/decode_plugin_id 对含 @ 与冒号的 spec 往返一致，纯垃圾输入报 "Invalid plugin id"。
     #[test]
     fn encodes_and_decodes_ids() {
         let id = encode_plugin_id("config", "user:oh-my-openagent@4.3.0");
@@ -1031,6 +1141,7 @@ mod tests {
         assert_eq!(error.message, "Invalid plugin id");
     }
 
+    /// 验证插件文件写入—列表—读取—删除全链路，删除后再次删除报 NOT_FOUND。
     #[test]
     fn round_trips_plugin_dir_files() {
         let root = temp_root("files");
@@ -1070,6 +1181,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证同名文件二次写入报 FILE_EXISTS，overwrite=true 时允许覆盖并落盘新内容。
     #[test]
     fn rejects_duplicate_files_unless_overwrite() {
         let root = temp_root("dupfile");
@@ -1112,6 +1224,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 验证插件目录只列出符合命名规则的普通文件（README.md 之类的条目被过滤）。
     #[test]
     fn lists_only_valid_plugin_dir_files() {
         let root = temp_root("validfiles");

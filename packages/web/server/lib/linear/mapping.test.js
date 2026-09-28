@@ -1,3 +1,10 @@
+/**
+ * Linear 团队-项目路径映射存储（mapping.js）的测试套件。
+ *
+ * 验证空文件兜底、默认路径与团队路径的读写回环、覆盖式写入、非法写入不破坏已有凭据、
+ * 损坏文件报 MALFORMED、与实时团队数据的合并视图及按团队解析优先级，
+ * 以及多 workspace 之间的映射分区隔离。
+ */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -11,8 +18,10 @@ import {
   setStoredLinearMapping,
 } from './mapping.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-mapping-'));
 
+/** 映射文件的读写、校验、视图合并与 workspace 隔离行为。 */
 describe('Linear project mapping storage', () => {
   let dataDir;
   let previousDataDir;

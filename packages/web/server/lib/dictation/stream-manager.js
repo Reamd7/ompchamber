@@ -19,8 +19,15 @@
  * - Applies an adaptive finalization timeout budget based on pending work.
  */
 
+/**
+ * 流式听写的服务端权威状态机（中文说明）：一个管理器负责一条 WebSocket
+ * 连接上的全部听写流——按 seq 重排并确认音频块、重采样 PCM、在自然停顿
+ * 处分段提交、拼接分段转写为实时 partial 与最终文本，并按待处理工作量
+ * 自适应计算收尾超时。
+ */
 import { Pcm16MonoResampler, parsePcmRateFromFormat, pcm16lePeakAbs } from './audio.js';
 
+/** 基础收尾超时；实际值会按待处理分段/音频/缺失 seq 动态加码（见 estimateFinalizationTimeout）。 */
 const DEFAULT_FINAL_TIMEOUT_MS = 10000;
 // Parakeet is a full-attention conformer: decode cost and peak memory grow
 // quadratically with segment length (measured: 60s -> 2.1s/+90MB,
@@ -28,14 +35,22 @@ const DEFAULT_FINAL_TIMEOUT_MS = 10000;
 // lets committed segments decode while the user is still speaking, so only the
 // tail is left to transcribe on stop. Typical dictations are shorter than the
 // minimum and are decoded as a single segment.
+/** 分段下限：达到该时长后，遇到静音块即提交当前分段。 */
 const DEFAULT_SEGMENT_MIN_SECONDS = 60;
+/** 分段硬上限：不停顿的语音到点强制提交，避免解码成本随段长二次方增长。 */
 const DEFAULT_SEGMENT_MAX_SECONDS = 90;
+/** 收尾超时的绝对上限（5 分钟）。 */
 const FINAL_TIMEOUT_MAX_MS = 5 * 60 * 1000;
+/** 每个待出最终转写的已提交分段追加的超时。 */
 const FINAL_TIMEOUT_PER_PENDING_SEGMENT_MS = 15 * 1000;
+/** 每秒待转写音频追加的超时。 */
 const FINAL_TIMEOUT_PER_PENDING_AUDIO_SECOND_MS = 1500;
+/** 每个尚未收到的 seq 追加的超时。 */
 const FINAL_TIMEOUT_PER_MISSING_SEQ_MS = 250;
+/** PCM16 峰值绝对值低于该值视为静音（用于分段与静音段丢弃判定）。 */
 const SILENCE_PEAK_THRESHOLD = 300;
 
+/** 秒数换算为 PCM16 单声道字节数（每样本 2 字节），非正数返回 0。 */
 const secondsToPcm16Bytes = (seconds, sampleRate) =>
   seconds > 0 ? Math.max(1, Math.round(seconds * sampleRate * 2)) : 0;
 
@@ -45,6 +60,7 @@ const secondsToPcm16Bytes = (seconds, sampleRate) =>
  * Client chunks are ~1s, so a quiet chunk is roughly a second of silence — long
  * enough to be a sentence boundary rather than a gap between words.
  */
+/** 是否应切分当前分段：达到硬上限无条件切；达到下限且刚出现静音块时切。 */
 function shouldSplitSegment(state) {
   if (state.segmentMaxBytes > 0 && state.bytesSinceCommit >= state.segmentMaxBytes) {
     return true;
@@ -55,6 +71,11 @@ function shouldSplitSegment(state) {
   return state.lastChunkPeak < SILENCE_PEAK_THRESHOLD;
 }
 
+/**
+ * 服务端权威的流式听写状态机：管理单条 WebSocket 连接上的全部听写流。
+ * 以自己发出的 commit 计数为准（而非信任会话回显的事件），确保客户端
+ * 结束时仍在途的提交不会被静默丢出最终转写。
+ */
 export class DictationStreamManager {
   /**
    * @param {object} params
@@ -67,6 +88,7 @@ export class DictationStreamManager {
    * @param {number} [params.segmentMinSeconds] audio before a pause may split a segment
    * @param {number} [params.segmentMaxSeconds] hard segment cap for pauseless speech
    */
+  /** 中文说明：保存 emit/建会话回调与分段参数，初始化 dictationId → 状态 的 streams 表。 */
   constructor({ emit, createSttSession, finalTimeoutMs, segmentMinSeconds, segmentMaxSeconds }) {
     this.emit = emit;
     this.createSttSession = createSttSession;
@@ -76,6 +98,7 @@ export class DictationStreamManager {
     this.streams = new Map();
   }
 
+  /** 清理全部听写流（连接关闭时调用）。 */
   cleanupAll() {
     for (const dictationId of Array.from(this.streams.keys())) {
       this.cleanupStream(dictationId);
@@ -87,6 +110,7 @@ export class DictationStreamManager {
    * @param {string} format e.g. "audio/pcm;rate=16000;bits=16"
    * @param {object} startOptions provider/config options forwarded to createSttSession
    */
+  /** 中文说明：校验采样率、经 createSttSession 建立转写会话并挂接 committed/transcript/error 事件，初始化流状态并回初始 ack。 */
   async handleStart(dictationId, format, startOptions = {}) {
     this.cleanupStream(dictationId);
 
@@ -192,6 +216,7 @@ export class DictationStreamManager {
   /**
    * @param {{ dictationId: string, seq: number, audioBase64: string }} params
    */
+  /** 中文说明：按 seq 去重重排音频块，重采样后送入转写会话；乱序/重复块只重发当前 ack，越界缓冲后驱动分段与收尾检查。 */
   handleChunk({ dictationId, seq, audioBase64 }) {
     const state = this.streams.get(dictationId);
     if (!state) {
@@ -253,6 +278,7 @@ export class DictationStreamManager {
    * @param {string} dictationId
    * @param {number} finalSeq highest seq the client sent (or -1 if none)
    */
+  /** 中文说明：登记客户端声明的最高 seq；一个音频块都没有则直接报错；否则做封段检查、收尾检查，并按待处理工作量启动收尾超时。 */
   handleFinish(dictationId, finalSeq) {
     const state = this.streams.get(dictationId);
     if (!state) {
@@ -297,14 +323,17 @@ export class DictationStreamManager {
     this.emit({ type: 'finish_accepted', payload: { dictationId, timeoutMs } });
   }
 
+  /** 客户端主动取消：立即清理该听写流（不产出 final）。 */
   handleCancel(dictationId) {
     this.cleanupStream(dictationId);
   }
 
+  /** 向客户端回当前最高连续 seq 的确认。 */
   emitAck(dictationId, ackSeq) {
     this.emit({ type: 'ack', payload: { dictationId, ackSeq } });
   }
 
+  /** 向客户端上报错误（retryable 标记可重试，reasonCode 可选），不清理状态。 */
   failStream(dictationId, error, retryable, reasonCode) {
     this.emit({
       type: 'error',
@@ -317,11 +346,13 @@ export class DictationStreamManager {
     });
   }
 
+  /** 上报错误并清理该听写流。 */
   failAndCleanupStream(dictationId, error, retryable) {
     this.failStream(dictationId, error, retryable);
     this.cleanupStream(dictationId);
   }
 
+  /** 清理听写流：取消收尾定时器、关闭转写会话（忽略关闭异常）并从 streams 移除。 */
   cleanupStream(dictationId) {
     const state = this.streams.get(dictationId);
     if (!state) {
@@ -338,6 +369,7 @@ export class DictationStreamManager {
     this.streams.delete(dictationId);
   }
 
+  /** 估算收尾超时：基础值之上按待出转写的分段数、待转写音频秒数与缺失 seq 数线性加码，封顶 5 分钟。 */
   estimateFinalizationTimeout(state) {
     const bytesPerSecond = Math.max(1, state.outputRate * 2);
     const pendingCommittedSegments = state.committedSegmentIds.reduce((count, segmentId) => {
@@ -369,6 +401,7 @@ export class DictationStreamManager {
     );
   }
 
+  /** 自动分段：达到切分条件时，整段皆静音则丢弃，否则提交当前分段（finish 后不再自动分段）。 */
   maybeAutoCommitSegment(state) {
     if (state.finishRequested) {
       return;
@@ -395,6 +428,7 @@ export class DictationStreamManager {
    * `committed` event; until then the manager must not finalize, or the
    * segment's transcript would be missing from the final text.
    */
+  /** 中文说明：发出一次 commit 并记为在途；在收到 committed 事件前不允许收尾，否则该段转写会缺失。 */
   commitSegment(state) {
     state.pendingCommits += 1;
     try {
@@ -405,6 +439,7 @@ export class DictationStreamManager {
     }
   }
 
+  /** 封段：客户端已 finish 且音频收齐后，对残余音频做静音丢弃或提交，此后不再接收音频。 */
   maybeSealStreamFinish(dictationId) {
     const state = this.streams.get(dictationId);
     if (!state) {
@@ -443,6 +478,7 @@ export class DictationStreamManager {
     state.finishSealed = true;
   }
 
+  /** 丢弃未提交且无最终转写的分段草稿（配合静音丢弃，避免脏 partial 留进最终文本）。 */
   dropUncommittedNonFinalTranscripts(state) {
     const committedSet = new Set(state.committedSegmentIds);
     for (const segmentId of Array.from(state.transcriptsBySegmentId.keys())) {
@@ -456,6 +492,7 @@ export class DictationStreamManager {
     }
   }
 
+  /** 收尾判定：音频收齐、无在途 commit 且所有分段都有最终转写时，按提交顺序拼接并发出 final，然后清理。 */
   maybeFinalizeStream(dictationId) {
     const state = this.streams.get(dictationId);
     if (!state) {

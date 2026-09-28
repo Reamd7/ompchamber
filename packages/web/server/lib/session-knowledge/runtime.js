@@ -15,14 +15,31 @@
  * that has just been summarised away.
  */
 
+/**
+ * 会话项目知识（session knowledge）注入运行时：决定一个会话应当被告知哪些
+ * 项目知识、是否已经告知过，并生成附带在消息前的知识文本块。
+ *
+ * 该决策统一由服务端持有（历史上放在客户端，导致不经 UI 启动的会话拿不到
+ * 任何知识）。三个注入时机共用同一套逻辑：UI 发消息、定时任务、agent 派生
+ * 会话在发出 prompt 时附带；压缩（compaction）之后没有可附着的消息，则由
+ * 发送方单独重发一次。
+ *
+ * 「已送达」记录在会话自身的 metadata（经 openCodeFetch 的 session 接口）
+ * 而非浏览器 tab：签名放在 tab 里会在关闭时丢失，更糟的是压缩发生后 tab
+ * 仍以为 agent 持有刚被摘要掉的上文。
+ */
 const KNOWLEDGE_METADATA_KEY = 'knowledge_context_delivered';
+/** 会话 metadata 中存放项目置顶（pin）清单的键，值为 { notes: [id], plans: [id] } 形式的对象。 */
 const PINS_METADATA_KEY = 'project_context_pins';
 
 /** Total budget for the assembled block; anything past it is cut, loudly. */
+/** 知识块总预算（字符数）；超出部分截断并显式标注 truncated。 */
 const KNOWLEDGE_MAX_LENGTH = 8000;
 
+/** 判断值是否为普通对象（非 null、非数组）；用于防御性地读取外部传入的 metadata。 */
 const isRecord = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 
+/** 把字符串截到 budget 以内并以省略号结尾；budget 已包含省略号的占位。 */
 const truncate = (value, budget) => (
   value.length <= budget ? value : `${value.slice(0, Math.max(0, budget - 1))}…`
 );
@@ -30,6 +47,10 @@ const truncate = (value, budget) => (
 /**
  * Identity of everything the session should be carrying, content revisions
  * included: editing a pinned note must re-send it, not merely renaming one.
+ */
+/**
+ * 计算会话应携带知识的整体签名：按类别拼接条目 id 与内容修订标记后排序，
+ * 元素相同而顺序不同得到相同签名；没有任何知识时返回空串（表示无需注入）。
  */
 export const buildKnowledgeSignature = ({ notes, plans, memory }) => {
   const parts = [
@@ -41,6 +62,7 @@ export const buildKnowledgeSignature = ({ notes, plans, memory }) => {
   return parts.length === 0 ? '' : parts.sort().join('|');
 };
 
+/** 把记忆条目按创建时间排序，渲染成 `- [type] title` 形式的 Markdown 列表。 */
 const renderMemorySection = (entries) => entries
   .slice()
   .sort((a, b) => a.createdAt - b.createdAt)
@@ -50,6 +72,11 @@ const renderMemorySection = (entries) => entries
 /**
  * Titles only for memory, never bodies: an index carrying full text grows
  * without bound until it crowds out the conversation it was meant to inform.
+ */
+/**
+ * 组装记忆索引块：分「关于用户」「关于本项目」两节，只列标题（见上方英文
+ * 说明），并附上必须先用 ompchamber_memory 工具读原文、记忆可能过时需验证
+ * 的提示。无任何记忆时返回空串。
  */
 const buildMemoryBlock = ({ global, project }) => {
   const sections = [];
@@ -71,6 +98,11 @@ const buildMemoryBlock = ({ global, project }) => {
   ].join('\n\n');
 };
 
+/**
+ * 组装用户置顶内容块：置顶笔记按创建时间排序以全文列出；置顶计划附上标题
+ * 与 markdown 正文，正文读不到时标注 (plan content unavailable) 而非静默丢弃。
+ * 块首声明这些是长期背景信息、不是新指令。无置顶内容时返回空串。
+ */
 const buildPinnedBlock = ({ notes, plans }) => {
   const sections = [];
   if (notes.length > 0) {
@@ -96,6 +128,10 @@ const buildPinnedBlock = ({ notes, plans }) => {
   ].join('\n\n');
 };
 
+/**
+ * 组装最终发给会话的知识文本：置顶块与记忆块以空行相连；超过
+ * KNOWLEDGE_MAX_LENGTH 时截断并追加 (project knowledge truncated) 标记。
+ */
 export const buildKnowledgeText = ({ notes, plans, memory }) => {
   const blocks = [buildPinnedBlock({ notes, plans }), buildMemoryBlock(memory)].filter(Boolean);
   if (blocks.length === 0) return '';
@@ -106,6 +142,12 @@ export const buildKnowledgeText = ({ notes, plans, memory }) => {
     : `${truncate(assembled, KNOWLEDGE_MAX_LENGTH)}\n\n(project knowledge truncated)`;
 };
 
+/**
+ * 创建会话知识运行时。依赖：projectContextRuntime（读项目笔记与计划）、
+ * agentMemoryRuntime（读 agent 记忆）、resolveProjectId（目录 → 项目 id）、
+ * isAgentMemoryEnabled（可选的记忆开关）、openCodeFetch（可选，读写会话
+ * metadata）。返回值见各内部方法注释，供路由层与各发送方共用。
+ */
 export const createSessionKnowledgeRuntime = (dependencies) => {
   const {
     projectContextRuntime,
@@ -120,6 +162,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * source never blanks the rest: a memory store that will not load must not
    * take the user's pinned notes down with it.
    */
+  /** 从 session 对象读出置顶清单：做 trim、类型过滤与去重；结构缺失时返回空清单。 */
   const readPins = (session) => {
     const metadata = isRecord(session?.metadata) ? session.metadata : {};
     const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
@@ -130,6 +173,12 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     return { notes: strings(pins.notes), plans: strings(pins.plans) };
   };
 
+  /**
+   * 读取会话应携带的全部知识（最新状态）。单一来源失败不影响其余来源：
+   * 项目上下文读不出时笔记/计划置空但记忆照常；记忆某 scope 加载失败
+   * （globalFailed/projectFailed）或条目被标记 flagged 时按缺失处理，
+   * 而不是当成空索引教 agent 重复存储。任何情况下都不抛错。
+   */
   const collect = async (directory, pins = { notes: [], plans: [] }) => {
     const projectId = directory ? await resolveProjectId(directory) : '';
 
@@ -188,6 +237,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * off disk to show a number would make opening a panel cost what sending a
    * message costs.
    */
+  /** 面板展示用的计数与名称摘要；刻意不读计划正文（原因见上方英文说明）。 */
   const collectSummary = async (directory, pins = { notes: [], plans: [] }) => {
     const projectId = directory ? await resolveProjectId(directory) : '';
     const empty = { notes: [], plans: [], memory: { global: 0, project: 0 } };
@@ -227,6 +277,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     return { notes, plans, memory };
   };
 
+  /** 读会话 metadata 中记录的「已送达」签名；缺失或类型不对时返回空串。 */
   const readDeliveredSignature = (session) => {
     const metadata = isRecord(session?.metadata) ? session.metadata : {};
     const ompchamber = isRecord(metadata.ompchamber) ? metadata.ompchamber : {};
@@ -238,6 +289,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * The text this session still owes, or an empty string when it is already
    * carrying it. `deliveredSignature` comes from the session's metadata.
    */
+  /** 返回 { text, signature }：签名与已送达签名一致、或无任何知识时 text 为空串。 */
   const resolvePending = async (directory, deliveredSignature, pins = { notes: [], plans: [] }) => {
     const collected = await collect(directory, pins);
     const signature = buildKnowledgeSignature(collected);
@@ -247,6 +299,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     return { text: buildKnowledgeText(collected), signature };
   };
 
+  /** 经 openCodeFetch 读取单个会话对象（含 metadata），失败由调用方兜底。 */
   const readSession = async (sessionId, directory) => (
     openCodeFetch(`/session/${encodeURIComponent(sessionId)}`, { directory })
   );
@@ -254,16 +307,23 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
   /**
    * What this session still owes, read from its own stored signature.
    */
+  /** 读不到会话（尚不存在或网络失败）时按「未被告知」处理，等价于签名为空。 */
   const resolvePendingForSession = async (sessionId, directory) => {
     const session = await readSession(sessionId, directory).catch(() => null);
     return resolvePending(directory, readDeliveredSignature(session), readPins(session));
   };
 
+  /** collectSummary 的会话感知版本：先读该会话自身的置顶清单再汇总。 */
   const collectSummaryForSession = async (sessionId, directory) => {
     const session = await readSession(sessionId, directory).catch(() => null);
     return collectSummary(directory, readPins(session));
   };
 
+  /**
+   * 更新某个会话的置顶清单（kind 为 'note' 或 'plan'）。基于最新读取的
+   * metadata 以 PATCH 合并写入，同时清空已送达签名，迫使下一次发送重新下发
+   * 知识块；返回更新后的完整清单。
+   */
   const setPin = async (sessionId, directory, kind, id, pinned) => {
     const fresh = await readSession(sessionId, directory);
     const metadata = isRecord(fresh?.metadata) ? fresh.metadata : {};
@@ -299,6 +359,7 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
    * OMPChamber state — pinned messages among it — and a blind write would
    * drop whatever changed in between.
    */
+  /** 仅在携带知识块的消息真正发出后调用；基于新鲜读取合并写入（原因见上方英文说明）。 */
   const recordDelivered = async (sessionId, directory, signature) => {
     const fresh = await readSession(sessionId, directory);
     const metadata = isRecord(fresh?.metadata) ? fresh.metadata : {};
@@ -315,6 +376,9 @@ export const createSessionKnowledgeRuntime = (dependencies) => {
     });
   };
 
+  // 对外暴露的运行时接口：收集（collect/collectSummary）、待定判断
+  // （resolvePending）、送达记录（recordDelivered）、置顶（setPin/readPins）
+  // 以及两个 metadata 键名。
   return {
     collect,
     collectSummary,

@@ -1,3 +1,11 @@
+/**
+ * 托管 agent 工具运行时 agent-tool/runtime.js 的测试套件。
+ *
+ * 一部分直测 execute 的动作白名单与命名空间解析；另一部分把生成的插
+ * 件文件真实 import 回来，验证插件源码的 schema（工具拆分、参数隔
+ * 离、描述文案）、扁平入参兼容，以及经真实 HTTP 回调与 bearer token
+ * 的端到端执行链路。
+ */
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,12 +18,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentToolRuntime } from './runtime.js';
 import { OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS, OMPCHAMBER_CONTROL_ACTION_DEFINITIONS } from '../openchamber-control/actions.js';
 
+/** 本套件创建的临时目录清单，afterEach 统一清理。 */
 const temporaryDirectories = [];
 
+// 每个用例后：清空清单并递归删除全部临时目录。
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
+/**
+ * 造一个带临时 dataDir 与桩 executeAction 的运行时；overrides 可替换
+ * 任意依赖（如 getActivePort、executeAction）。返回
+ * { runtime, dataDir, executeAction, env }。
+ */
 const createRuntime = async (overrides = {}) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ompchamber-agent-tool-'));
   temporaryDirectories.push(dataDir);
@@ -34,6 +49,7 @@ const createRuntime = async (overrides = {}) => {
   return { runtime, dataDir, executeAction, env };
 };
 
+// 动作白名单：全部控制动作都委托给共享服务；白名单外的动作不触达服务。
 describe('agent tool action allowlist', () => {
   it('defines a short title and agent description for every action', () => {
     expect(OMPCHAMBER_CONTROL_ACTION_DEFINITIONS.every(({ action, title, description }) => action && title && description)).toBe(true);
@@ -74,6 +90,7 @@ describe('agent tool action allowlist', () => {
   });
 });
 
+// 托管工具运行时：插件生成与注入、schema 形状、入参兼容、鉴权与端到端回调。
 describe('managed agent tool runtime', () => {
   it('materializes the plugin and preserves configured plugin entries', async () => {
     const { runtime, dataDir, env } = await createRuntime();

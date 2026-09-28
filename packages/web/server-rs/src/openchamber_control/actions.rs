@@ -8,17 +8,26 @@
 //! and driving a page are different intents, so separate tools — and
 //! separate action sets — keep each description precise. `schedule.status`
 //! is CLI-only (`agent_exposed: false`).
+//! （中文说明）本文件是 `server/lib/openchamber-control/actions.js` 的
+//! 移植：固定动作白名单，供 CLI HTTP 路由、受管 `ompchamber` agent 工具、
+//! 浏览器工具与记忆工具共享；另含按工具限定作用域的 resolver——当调用
+//! 工具自身的名字已经给出命名空间时，允许只写裸 action 名。
 
 /// One entry of the action allowlist. `agent_exposed` marks CLI-only
 /// actions the managed agent tool must not offer (JS `agentExposed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActionDefinition {
+    /// 完整 action 名（含命名空间，如 `session.fork`）。
     pub action: &'static str,
+    /// 展示给用户的短标题。
     pub title: &'static str,
+    /// 提供给模型的参数说明。
     pub description: &'static str,
+    /// 是否对受管 agent 工具暴露（JS `agentExposed`；`false` 为 CLI-only）。
     pub agent_exposed: bool,
 }
 
+/// 白名单条目的紧凑构造器，让定义表每行的四个字段一目了然。
 const fn def(
     action: &'static str,
     title: &'static str,
@@ -34,6 +43,8 @@ const fn def(
 }
 
 /// `OMPCHAMBER_CONTROL_ACTION_DEFINITIONS`.
+/// 控制面（项目/模型/会话/计划任务）动作定义表，含 CLI-only 的
+/// `schedule.status`（`agent_exposed: false`）。
 pub const CONTROL_ACTION_DEFINITIONS: &[ActionDefinition] = &[
     def(
         "projects.list",
@@ -123,6 +134,7 @@ pub const CONTROL_ACTION_DEFINITIONS: &[ActionDefinition] = &[
 
 /// `OMPCHAMBER_CONTROL_ACTIONS` (private in JS; every control action,
 /// including the CLI-only `schedule.status`).
+/// 全部控制动作名（JS 中为私有；包含 CLI-only 的 `schedule.status`）。
 pub const CONTROL_ACTIONS: &[&str] = &[
     "projects.list",
     "models.list",
@@ -142,6 +154,7 @@ pub const CONTROL_ACTIONS: &[&str] = &[
 
 /// `OMPCHAMBER_AGENT_TOOL_ACTIONS` — control actions the managed agent
 /// tool may offer (`agentExposed !== false`).
+/// 受管 agent 工具可提供的控制动作（`agent_exposed != false` 的子集）。
 pub const AGENT_TOOL_ACTIONS: &[&str] = &[
     "projects.list",
     "models.list",
@@ -159,6 +172,7 @@ pub const AGENT_TOOL_ACTIONS: &[&str] = &[
 ];
 
 /// `OMPCHAMBER_WEB_ACTION_DEFINITIONS`.
+/// 内嵌浏览器面板动作定义表（open、snapshot、click 等页面操作）。
 pub const WEB_ACTION_DEFINITIONS: &[ActionDefinition] = &[
     def(
         "browser.open",
@@ -223,6 +237,7 @@ pub const WEB_ACTION_DEFINITIONS: &[ActionDefinition] = &[
 ];
 
 /// `OMPCHAMBER_WEB_ACTIONS`.
+/// 全部浏览器动作名，与 `WEB_ACTION_DEFINITIONS` 一一对应。
 pub const WEB_ACTIONS: &[&str] = &[
     "browser.open",
     "browser.snapshot",
@@ -237,6 +252,7 @@ pub const WEB_ACTIONS: &[&str] = &[
 ];
 
 /// `OMPCHAMBER_MEMORY_ACTION_DEFINITIONS`.
+/// 记忆存取动作定义表（read、list、save、delete）。
 pub const MEMORY_ACTION_DEFINITIONS: &[ActionDefinition] = &[
     def(
         "memory.read",
@@ -265,10 +281,13 @@ pub const MEMORY_ACTION_DEFINITIONS: &[ActionDefinition] = &[
 ];
 
 /// `OMPCHAMBER_MEMORY_ACTIONS`.
+/// 全部记忆动作名。
 pub const MEMORY_ACTIONS: &[&str] = &["memory.read", "memory.list", "memory.save", "memory.delete"];
 
 /// `OMPCHAMBER_ALL_ACTIONS` — everything the callback route dispatches,
 /// whichever tool asked.
+/// 回调路由可派发的全部动作：控制、浏览器、记忆三张表的并集，
+/// 不区分发起请求的是哪个工具。
 pub const ALL_ACTIONS: &[&str] = &[
     // OMPCHAMBER_CONTROL_ACTIONS
     "projects.list",
@@ -305,6 +324,8 @@ pub const ALL_ACTIONS: &[&str] = &[
 
 /// `OMPCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS` — control definitions with
 /// `agent_exposed != false`.
+/// 过滤出 `agent_exposed != false` 的控制动作定义，供受管 agent 工具
+/// 生成自己的描述。
 pub fn agent_tool_action_definitions() -> Vec<&'static ActionDefinition> {
     CONTROL_ACTION_DEFINITIONS
         .iter()
@@ -316,6 +337,10 @@ pub fn agent_tool_action_definitions() -> Vec<&'static ActionDefinition> {
 /// routinely drop the namespace (`read` from `ompchamber_memory`), and the
 /// bare name is unambiguous inside one tool's set even when it is not
 /// across all of them (`delete` belongs to both schedule and memory).
+/// 每个受管工具可请求的动作集合。模型经常省略命名空间（在
+/// `ompchamber_memory` 里只写 `read`），而裸名在单个工具的集合内是明确的
+/// ——即使跨工具不明确（`delete` 同时属于 schedule 与 memory）。
+/// 未识别的工具名返回 `None`。
 pub fn actions_for_tool(tool_name: Option<&str>) -> Option<&'static [&'static str]> {
     match tool_name {
         Some("ompchamber") => Some(AGENT_TOOL_ACTIONS),
@@ -326,6 +351,7 @@ pub fn actions_for_tool(tool_name: Option<&str>) -> Option<&'static [&'static st
 }
 
 /// `bareName` — everything before the first separator is the namespace.
+/// 去掉第一个分隔符之前的命名空间部分，得到裸名。
 fn bare_name(action: &str) -> &str {
     match action.find('.') {
         Some(separator) => &action[separator + 1..],
@@ -334,6 +360,8 @@ fn bare_name(action: &str) -> &str {
 }
 
 /// `uniqueMatch` — the one candidate whose bare name is `requested`.
+/// 候选中裸名恰为 `requested` 的唯一条目；撞名（多于一个）返回 `None`，
+/// 宁可不解析也不猜。
 fn unique_match<'a>(candidates: &[&'a str], requested: &str) -> Option<&'a str> {
     let mut matches = candidates
         .iter()
@@ -346,6 +374,10 @@ fn unique_match<'a>(candidates: &[&'a str], requested: &str) -> Option<&'a str> 
 /// or the reason it could not be resolved. The reason lists what the tool
 /// can actually do: an error that only says "unsupported" leaves the model
 /// to guess again.
+/// 把工具请求的 action 归一为规范全名：先在调用工具的动作集内做全名匹配，
+/// 再做裸名唯一匹配（未表明身份的调用者退到全量表）。无法解析时返回的
+/// 原因字符串会列出该工具实际能做的动作——只回一句 "unsupported" 会让
+/// 模型继续瞎猜。
 pub fn resolve_agent_tool_action(
     requested: Option<&str>,
     tool_name: Option<&str>,
@@ -381,12 +413,14 @@ pub fn resolve_agent_tool_action(
     ))
 }
 
+/// 动作解析与白名单组合的单元测试（对齐 JS 版 action-resolution.test.js）。
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // action-resolution.test.js — both failure cases there came from one
     // real conversation (bare `read`, then bare `get`).
+    /// 验证：记忆工具内的裸名 `read`/`save` 解析为 `memory.read`/`memory.save`。
     #[test]
     fn resolves_a_bare_action_inside_the_calling_tool() {
         assert_eq!(
@@ -399,6 +433,7 @@ mod tests {
         );
     }
 
+    /// 验证：`delete` 这类跨工具重名的裸名，在各自工具作用域内解析到各自动作。
     #[test]
     fn resolves_a_bare_name_ambiguous_only_across_tools() {
         assert_eq!(
@@ -411,6 +446,7 @@ mod tests {
         );
     }
 
+    /// 验证：完整限定名（含命名空间）原样通过，不做改写。
     #[test]
     fn keeps_a_fully_qualified_action_as_it_is() {
         assert_eq!(
@@ -419,12 +455,15 @@ mod tests {
         );
     }
 
+    /// 验证：解析不会越出请求工具的动作集——记忆工具请求 `open` 必须失败，
+    /// 而不是去驱动浏览器。
     #[test]
     fn does_not_reach_outside_the_tool_that_asked() {
         // The memory tool asking for `open` must fail, not drive the browser.
         assert!(resolve_agent_tool_action(Some("open"), Some("ompchamber_memory")).is_err());
     }
 
+    /// 验证：未表明身份的调用者仍可解析全局唯一的裸名（如 `snapshot`）。
     #[test]
     fn unidentified_caller_resolves_unique_bare_names() {
         assert_eq!(
@@ -433,11 +472,13 @@ mod tests {
         );
     }
 
+    /// 验证：未表明身份的调用者遇到多工具共享的裸名（如 `list`）时拒绝解析。
     #[test]
     fn unidentified_caller_refuses_shared_bare_names() {
         assert!(resolve_agent_tool_action(Some("list"), None).is_err());
     }
 
+    /// 验证：无法解析时报错只列出调用工具自己的动作，不掺入其它工具的。
     #[test]
     fn unresolvable_action_names_the_calling_tools_actions() {
         let error = resolve_agent_tool_action(Some("get"), Some("ompchamber_memory"))
@@ -448,6 +489,7 @@ mod tests {
         assert!(!error.contains("browser.open"), "error: {error}");
     }
 
+    /// 验证：action 缺失时按 "missing" 报告，而不是尝试解析。
     #[test]
     fn reports_a_missing_action_rather_than_resolving() {
         let error = resolve_agent_tool_action(Some(""), Some("ompchamber_memory"))
@@ -455,6 +497,7 @@ mod tests {
         assert!(error.contains("missing"), "error: {error}");
     }
 
+    /// 验证：未知工具回退到全量动作表，报错里包含所有工具的动作。
     #[test]
     fn unknown_tool_falls_back_to_the_full_action_list() {
         let error = resolve_agent_tool_action(Some("nonsense"), Some("ompchamber_future"))
@@ -463,6 +506,7 @@ mod tests {
         assert!(error.contains("browser.open"), "error: {error}");
     }
 
+    /// 验证：仅空白字符的请求同样按 "missing" 报告。
     #[test]
     fn whitespace_only_request_reports_missing() {
         let error = resolve_agent_tool_action(Some("  "), Some("ompchamber"))
@@ -472,6 +516,8 @@ mod tests {
 
     // Registry composition: the name lists must stay derived from the
     // definitions (JS maps/filters them; the consts here are spelled out).
+    /// 验证：各名称列表必须与定义表保持派生一致（JS 用 map/filter 派生，
+    /// 这里是显式展开，故需测试锁定）。
     #[test]
     fn name_lists_match_their_definitions() {
         let control: Vec<&str> = CONTROL_ACTION_DEFINITIONS

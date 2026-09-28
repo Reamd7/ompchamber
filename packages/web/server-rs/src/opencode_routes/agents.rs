@@ -1,6 +1,12 @@
 //! Port of `opencode/agents.js`: agent config CRUD across project/user `.md`
 //! files and the JSONC config layers, with the permission-source resolution
 //! and built-in-override semantics of the JS.
+//! 中文说明:本模块移植自 `opencode/agents.js`,实现 agent 配置的增删改查,
+//! 覆盖两类存储:项目/用户目录下的 Markdown 定义(`.opencode/agents/*.md`
+//! 与用户 agent 目录)以及 JSONC 配置层(custom/project/user)中的 `agent`
+//! 段;同时保留 JS 版本的 permission 来源解析与内建 agent 覆盖(built-in
+//! override)语义。本模块只负责纯逻辑与磁盘读写,HTTP 路由封装在
+//! entity_routes 中。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,9 +24,13 @@ use super::md_file::{
 };
 use super::webutil::{js_to_string, js_truthy, object_keys};
 
+/// agent 模块统一的结果别名:错误为携带用户可读消息的 `String`,
+/// 由路由层转换为 HTTP 错误响应。
 pub(crate) type AgentResult<T> = Result<T, String>;
 
+/// 作用域常量:项目级(项目 `.opencode/` 目录下的定义)。
 pub(crate) const SCOPE_PROJECT: &str = "project";
+/// 作用域常量:用户级(用户 agent 目录或用户配置层中的定义)。
 pub(crate) const SCOPE_USER: &str = "user";
 
 // ---------------------------------------------------------------------------
@@ -28,6 +38,9 @@ pub(crate) const SCOPE_USER: &str = "user";
 // ---------------------------------------------------------------------------
 
 /// `ensureProjectAgentDir` — creates both the plural and legacy dirs.
+/// 创建项目级 agent 的两个目录:新版复数目录 `.opencode/agents` 与旧版
+/// 单数目录 `.opencode/agent`,返回复数目录路径;目录已存在则跳过,
+/// 创建失败被静默忽略(错误延迟到后续写文件时才暴露)。
 fn ensure_project_agent_dir(working_directory: &Path) -> PathBuf {
     let project_agent_dir = working_directory.join(".opencode").join("agents");
     if !project_agent_dir.exists() {
@@ -41,6 +54,9 @@ fn ensure_project_agent_dir(working_directory: &Path) -> PathBuf {
 }
 
 /// `getProjectAgentPath` — plural path unless only the legacy file exists.
+/// 计算项目级 agent 的 `.md` 路径:默认返回复数形式
+/// `.opencode/agents/<name>.md`;仅当旧版 `.opencode/agent/<name>.md`
+/// 存在且复数路径不存在时回退到旧版路径。
 pub(crate) fn project_agent_path(working_directory: &Path, agent_name: &str) -> PathBuf {
     let plural = working_directory
         .join(".opencode")
@@ -58,11 +74,18 @@ pub(crate) fn project_agent_path(working_directory: &Path, agent_name: &str) -> 
 
 /// `buildUserAgentIndex`: walk AGENT_DIR depth-first; within each directory
 /// entries are processed in name order and the first `.md` wins per name.
+/// 用户 agent 目录(AGENT_DIR)的名称→路径索引:由深度优先遍历构建,
+/// 同名 agent 以最先遇到的 `.md` 文件为准,用于解析子目录中的定义。
 #[derive(Default)]
 struct UserAgentIndex {
+    /// agent 名称(去掉 `.md` 后缀)→ 源文件完整路径;同名只保留首个。
     by_name: BTreeMap<String, PathBuf>,
 }
 
+/// 构建用户 agent 索引:深度优先遍历 `AGENT_DIR`,每层目录内按名称排序
+/// 处理条目,同名 agent 的第一个 `.md` 获胜;子目录倒序入栈以保持出栈
+/// 顺序与名称排序一致。根目录不存在时直接返回空索引,读取失败的目录
+/// 被跳过。
 fn build_user_agent_index(env: &OpenCodeEnv) -> UserAgentIndex {
     let mut index = UserAgentIndex::default();
     let root = env.agent_dir();
@@ -107,6 +130,9 @@ fn build_user_agent_index(env: &OpenCodeEnv) -> UserAgentIndex {
 }
 
 /// `getUserAgentPath`: flat → legacy → indexed subfolder → flat default.
+/// 解析用户级 agent 的 `.md` 路径,优先级:扁平文件
+/// `AGENT_DIR/<name>.md` → 旧版 `config/agent/<name>.md` → 索引命中的
+/// 子目录路径;全部未命中时返回扁平默认路径(供调用方写入新文件)。
 pub(crate) fn user_agent_path(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -129,11 +155,16 @@ pub(crate) fn user_agent_path(
     plural
 }
 
+/// `build_user_agent_index` 的入口封装:每次调用都重新扫描用户 agent
+/// 目录(与 JS 一致,不做缓存),保证反映最新磁盘状态。
 fn agent_index(env: &OpenCodeEnv) -> UserAgentIndex {
     build_user_agent_index(env)
 }
 
 /// `getAgentScope`.
+/// 判定 agent 当前归属的作用域:先查项目级 `.md`(命中返回 project),
+/// 再查用户级 `.md`(返回 user);两者都不存在时返回 `(None, None)`。
+/// 返回元组为 (作用域标签, 对应文件路径)。
 fn agent_scope(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -154,6 +185,9 @@ fn agent_scope(
 }
 
 /// `getAgentWritePath`.
+/// 计算 agent 更新时的写入路径:已有定义(项目或用户 `.md`)则沿用其
+/// 作用域与路径;否则显式请求 project 作用域且有工作目录时落到项目
+/// 路径,其余情况默认用户级路径。
 fn agent_write_path(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -177,6 +211,11 @@ fn agent_write_path(
 
 /// `getAgentPermissionSource`: project .md → user .md → custom/project/user
 /// JSON layers.
+/// 解析 permission 字段的当前来源,优先级:项目 `.md` frontmatter →
+/// 用户 `.md` frontmatter → custom/project/user JSON 层中首个为
+/// `agent.<name>` 定义了 `permission` 的层。返回 (来源类型
+/// "md"/"json"/None, 作用域, 文件路径);每次调用都重新读取配置层
+/// (与 JS 行为一致),读取失败向上传播 Err。
 fn agent_permission_source(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -228,6 +267,9 @@ fn agent_permission_source(
 
 /// `config.agent[name].permission !== undefined` — the section must be an
 /// object, the entry must be an object, and the field must be present.
+/// 判断某个 JSON 配置层是否为 agent 定义了 `permission`:`agent` 段
+/// 必须是对象、条目必须是对象、且键存在(JSON `null` 也算已定义),
+/// 对应 JS 的 `config.agent[name].permission !== undefined` 判断。
 fn layer_defines_permission(config: &Map<String, Value>, agent_name: &str) -> bool {
     let Some(Value::Object(section)) = config.get("agent") else {
         return false;
@@ -239,6 +281,8 @@ fn layer_defines_permission(config: &Map<String, Value>, agent_name: &str) -> bo
 }
 
 /// `applyAgentPermission` on a frontmatter/entry map.
+/// 将新的 permission 值套用到 frontmatter 或 JSON 条目映射上:
+/// `None` 表示清空(移除 `permission` 键),`Some` 则覆盖写入该键。
 fn apply_agent_permission(target: &mut Map<String, Value>, new_permission: Option<Value>) {
     match new_permission {
         None => {
@@ -255,6 +299,12 @@ fn apply_agent_permission(target: &mut Map<String, Value>, new_permission: Optio
 // ---------------------------------------------------------------------------
 
 /// `getAgentSources`.
+/// 汇总 agent 在 Markdown 与 JSON 两类存储中的来源信息,返回包含
+/// `md`/`json`/`projectMd`/`userMd` 四组的 JSON 对象,每组含 `exists`、
+/// `path`、`scope` 与字段名列表(`.md` 的非空正文以 `prompt` 字段名
+/// 出现)。JSON 来源经 `get_json_entry_source` 解析,无条目时 path 依次
+/// 回退 custom → project → user 层路径;配置层读取或 `.md` 解析失败
+/// 均向上返回 Err。
 pub(crate) fn get_agent_sources(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -342,6 +392,8 @@ pub(crate) fn get_agent_sources(
     }))
 }
 
+/// 把可选路径转换为 JSON 值:`Some` 序列化为字符串,`None` 为 null,
+/// 对齐 JS 中直接返回路径或 `undefined`(最终呈现为 null)的行为。
 fn path_json(path: &Option<PathBuf>) -> Value {
     match path {
         Some(path) => json!(path.to_string_lossy()),
@@ -349,11 +401,17 @@ fn path_json(path: &Option<PathBuf>) -> Value {
     }
 }
 
+/// 用户级 `.md` 路径恒非空(不存在时也是默认路径),直接序列化为
+/// JSON 字符串,供 `getAgentSources` 的 `userMd.path` 使用。
 fn user_path_to_value(path: &Path) -> Value {
     json!(path.to_string_lossy())
 }
 
 /// `getAgentConfig`.
+/// 读取 agent 的生效配置:项目或用户 `.md` 优先(frontmatter 各键加上
+/// 正文写入的 `prompt` 键,source 为 "md");否则查 JSON 层条目
+/// (source 为 "json",project 层路径映射为 project 作用域,其余为
+/// user);都未命中时返回 `source: "none"` 与空配置对象。
 pub(crate) fn get_agent_config(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -412,6 +470,11 @@ pub(crate) fn get_agent_config(
 // ---------------------------------------------------------------------------
 
 /// `createAgent`.
+/// 新建 agent:先确保用户目录存在,再依次检查项目 `.md`、用户 `.md`
+/// 与 JSON 层三处均无同名定义(重复即报错);随后按请求的 scope 选择
+/// 项目或用户写入路径(未指定或无工作目录时默认用户级,project 作用域
+/// 会先创建项目目录)。写入内容:剥离 `prompt`/`scope` 键与 null 值后
+/// 的字段作为 frontmatter,正文取 `prompt` 字符串;成功后记录日志。
 pub(crate) fn create_agent(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -481,6 +544,15 @@ pub(crate) fn create_agent(
 }
 
 /// `updateAgent`.
+/// 按 JS `updateAgent` 语义逐字段更新 agent。先解析 `.md` 写入路径与
+/// JSON 层条目来源;`.md` 与 JSON 均无定义时视为内建覆盖
+/// (is_builtin_override),会新建用户级 `.md`。字段路由规则:
+/// `prompt` 空值清空 `.md` 正文或删除 JSON 中的 prompt(prompt 为文件
+/// 引用时清空引用文件);非空值写入 `.md` 正文或 JSON 条目;`permission`
+/// 按 `agent_permission_source` 就地更新来源(来源文件与写入目标不同则
+/// 直接改写来源文件,无来源时落到 JSON 写入目标);其它字段空值删除、
+/// 非空按其当前所在存储就地更新。循环结束后按 `md_modified`/
+/// `json_modified` 标志分别落盘并记录日志。
 pub(crate) fn update_agent(
     env: &OpenCodeEnv,
     agent_name: &str,
@@ -723,11 +795,18 @@ pub(crate) fn update_agent(
 }
 
 /// `deleteJsonAgentEntry` (via the shared section-field deleter).
+/// 从配置映射的 `agent` 段删除指定条目(条目删空时连 `agent` 段一起
+/// 修剪),复用共享的 `delete_json_entry`;返回是否实际删除了内容。
 fn delete_json_agent_entry(config: &mut Map<String, Value>, agent_name: &str) -> bool {
     delete_json_entry(config, "agent", agent_name)
 }
 
 /// `deleteAgent`.
+/// 删除 agent,按 scope 分支处理:默认(未指定)依次删项目 `.md`、
+/// 用户 `.md`,再从条目实际所在的 JSON 层删除;显式 project 时只处理
+/// 项目 `.md` 与 project 层,显式 user 时只处理用户 `.md` 与
+/// custom/user 层。任何一步成功即返回;全部未命中时报错(agent 为
+/// 内建或不可删除);文件删除或配置写回失败均返回 Err。
 pub(crate) fn delete_agent(
     env: &OpenCodeEnv,
     agent_name: &str,

@@ -8,9 +8,18 @@
  * - 'whisper': encoder/decoder Whisper export
  * `files` maps logical roles to file names inside the extracted directory.
  */
+/**
+ * 本地语音模型目录的中文说明：以模型 id 为键，声明下载地址（k2-fsa
+ * GitHub releases）、解压后的目录名、各逻辑角色对应的文件名与支持
+ * 语言，供 worker 进程、模型下载器与设置界面共同消费。
+ */
 
 import path from 'path';
 
+/**
+ * 本地 STT（语音识别）模型目录；键为模型 id，值含下载/解压信息、
+ * 必需文件映射与识别器构建类型（nemo_transducer 或 whisper）。
+ */
 export const LOCAL_STT_MODEL_CATALOG = {
   'parakeet-tdt-0.6b-v2-int8': {
     type: 'nemo_transducer',
@@ -76,6 +85,11 @@ export const LOCAL_STT_MODEL_CATALOG = {
  * uses it to pick a model for the language a text is written in. Kokoro
  * models carry speaker ids (`voices`); a Piper model is one voice for one
  * language. `lexicon` entries are joined with commas for sherpa-onnx.
+ */
+/**
+ * 本地 TTS（语音合成）模型目录。languages 声明模型擅长的语言，语音
+ * 服务据此为文本选择模型；Kokoro 模型携带说话人 id（voices），
+ * Piper 模型则是单语言单音色；lexicon 条目以逗号拼接交给 sherpa-onnx。
  */
 export const LOCAL_TTS_MODEL_CATALOG = {
   'kokoro-en-v0_19': {
@@ -276,15 +290,22 @@ export const LOCAL_TTS_MODEL_CATALOG = {
   },
 };
 
+/** 未显式选择时默认使用的本地 STT 模型 id。 */
 export const DEFAULT_LOCAL_STT_MODEL = 'parakeet-tdt-0.6b-v2-int8';
+/** 未显式选择时默认使用的本地 TTS 模型 id。 */
 export const DEFAULT_LOCAL_TTS_MODEL = 'kokoro-en-v0_19';
 
+/** 全部本地 STT 模型 id 列表（目录键的快照）。 */
 export const LOCAL_STT_MODEL_IDS = Object.keys(LOCAL_STT_MODEL_CATALOG);
+/** 全部本地 TTS 模型 id 列表（目录键的快照）。 */
 export const LOCAL_TTS_MODEL_IDS = Object.keys(LOCAL_TTS_MODEL_CATALOG);
 
 /**
  * @param {string} modelId
  * @returns {boolean}
+ */
+/**
+ * 判断 modelId 是否为目录内的本地 STT 模型 id。
  */
 export function isLocalSttModelId(modelId) {
   return typeof modelId === 'string' && Object.hasOwn(LOCAL_STT_MODEL_CATALOG, modelId);
@@ -293,6 +314,9 @@ export function isLocalSttModelId(modelId) {
 /**
  * @param {string} modelId
  * @returns {boolean}
+ */
+/**
+ * 判断 modelId 是否为目录内的本地 TTS 模型 id。
  */
 export function isLocalTtsModelId(modelId) {
   return typeof modelId === 'string' && Object.hasOwn(LOCAL_TTS_MODEL_CATALOG, modelId);
@@ -303,6 +327,9 @@ export function isLocalTtsModelId(modelId) {
  * @param {string} modelId
  * @returns {boolean}
  */
+/**
+ * 判断 modelId 是否为任意受管理的本地模型（STT 或 TTS 之一）。
+ */
 export function isLocalModelId(modelId) {
   return isLocalSttModelId(modelId) || isLocalTtsModelId(modelId);
 }
@@ -310,6 +337,10 @@ export function isLocalModelId(modelId) {
 /**
  * Spec lookup across both catalogs (STT and TTS).
  * @param {string} modelId
+ */
+/**
+ * 跨 STT/TTS 两个目录查询模型规格，未知 id 抛错；返回值在原规格上
+ * 附加 id 与 requiredFiles（files 值列表，供安装完整性校验使用）。
  */
 export function getLocalSttModelSpec(modelId) {
   const spec = LOCAL_STT_MODEL_CATALOG[modelId] ?? LOCAL_TTS_MODEL_CATALOG[modelId];
@@ -331,6 +362,11 @@ export function getLocalSttModelSpec(modelId) {
  * @param {string} [preferredModelId]
  * @returns {string | null}
  */
+/**
+ * 为语言选择本地 TTS 模型：用户选中的模型会说该语言则优先保留，
+ * 否则取目录中第一个支持该语言的模型；没有模型覆盖该语言时返回
+ * null（调用方保持原选中模型）。
+ */
 export function resolveLocalTtsModelForLanguage(language, preferredModelId) {
   const speaks = (modelId) => LOCAL_TTS_MODEL_CATALOG[modelId]?.languages?.includes(language) === true;
   if (preferredModelId && speaks(preferredModelId)) return preferredModelId;
@@ -346,6 +382,10 @@ export function resolveLocalTtsModelForLanguage(language, preferredModelId) {
  * @param {string} language
  * @returns {number | undefined}
  */
+/**
+ * 返回模型针对某语言的默认说话人 id（调用方的说话人是为其它语言
+ * 选的时使用）；目录未定义时返回 undefined 以保留调用方的选择。
+ */
 export function getLocalTtsDefaultSpeaker(modelId, language) {
   const speaker = LOCAL_TTS_MODEL_CATALOG[modelId]?.defaultSpeakerByLanguage?.[language];
   return Number.isInteger(speaker) ? speaker : undefined;
@@ -355,6 +395,9 @@ export function getLocalTtsDefaultSpeaker(modelId, language) {
  * @param {string} modelsDir
  * @param {string} modelId
  * @returns {string}
+ */
+/**
+ * 拼接模型解压目录的绝对路径（modelsDir + extractedDir）。
  */
 export function getLocalSttModelDir(modelsDir, modelId) {
   return path.join(modelsDir, getLocalSttModelSpec(modelId).extractedDir);

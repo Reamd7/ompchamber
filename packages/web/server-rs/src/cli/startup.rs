@@ -18,6 +18,16 @@
 //!   `--no-env-snapshot` skips the snapshot exactly like the JS.
 //! - clack intro/log/outro render as plain lines (title, message,
 //!   outro) per the serve port's human-output convention.
+//!
+//! 中文说明：`ompchamber startup status|enable|disable` 的 Rust 实现
+//! （cli-startup.js + commands-startup.js）：通过 macOS launchd
+//! LaunchAgent、Linux systemd user unit、Windows schtasks 集成用户级
+//! 开机自启。关键点：Rust 二进制既是运行时也是 CLI，macOS 用包装脚本
+//! `exec <exe> serve --foreground --port N` 启动；外部命令执行经
+//! StartupCommandRunner trait 注入以便测试伪造 launchctl/systemctl/
+//! schtasks；平台分发做成参数（StartupPlatform）使 plist/unit 生成可在
+//! 任意宿主平台测试；环境快照经 should_persist_startup_env 过滤后写入
+//! plist EnvironmentVariables 或 startup.env（--no-env-snapshot 跳过）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,21 +35,31 @@ use std::path::{Path, PathBuf};
 use super::args::{DEFAULT_PORT, Options, Parsed};
 use super::{CliError, GENERAL_ERROR, OutputMode, USAGE_ERROR};
 
+/// 统一服务标识：macOS plist 文件名/launchd Label 与 Windows schtasks
+/// 任务名都用它。
 const STARTUP_SERVICE_ID: &str = "dev.ompchamber.web";
 
 /// `getStartupServicePaths` platform discriminator (process.platform).
 /// The non-host variants are constructed by tests and by `current_platform`
 /// on their own target platforms; kept unconditionally so the service-path,
 /// plist/unit builders, and enable/disable flows compile everywhere.
+/// 平台判别枚举（对应 process.platform）。非宿主平台的变体仅供测试与
+/// 其它目标平台构造，保证服务路径、plist/unit 构建器与 enable/disable
+/// 流程在任何宿主上都能编译。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) enum StartupPlatform {
+    /// macOS：launchd LaunchAgent + sh 包装脚本。
     Macos,
+    /// Linux：systemd --user 服务 + EnvironmentFile。
     Linux,
+    /// Windows：schtasks 计划任务 + PowerShell 包装脚本。
     Windows,
+    /// 其它平台：不支持自启集成（status 报 unsupported）。
     Other,
 }
 
+/// 按编译目标返回当前平台（macos/linux/windows，其余归入 Other）。
 pub(crate) fn current_platform() -> StartupPlatform {
     #[cfg(target_os = "macos")]
     {
@@ -59,12 +79,22 @@ pub(crate) fn current_platform() -> StartupPlatform {
     }
 }
 
+/// `getStartupServicePaths` 的结果：平台显示名、服务定义路径（Windows
+/// 为任务名而非文件路径）与平台枚举回显。
 pub(crate) struct StartupServicePaths {
+    /// 平台显示名（"macos"/"linux"/"windows" 或 std::env::consts::OS）。
     pub platform: String,
+    /// 服务定义路径；Other 平台为 None（不支持集成）。
     pub service_path: Option<PathBuf>,
+    /// 平台枚举，供后续 match 分发。
     pub kind: StartupPlatform,
 }
 
+/// 计算平台对应的服务定义位置：macOS 为
+/// ~/Library/LaunchAgents/dev.ompchamber.web.plist；Linux 为
+/// ~/.config/systemd/user/ompchamber.service；Windows 为任务名
+/// dev.ompchamber.web（保持 JS 行为：任务名而非文件路径）；其它平台
+/// 无路径（None）。
 fn get_startup_service_paths(platform: StartupPlatform, home: &Path) -> StartupServicePaths {
     let kind = platform;
     let (name, path) = match platform {
@@ -98,6 +128,7 @@ fn get_startup_service_paths(platform: StartupPlatform, home: &Path) -> StartupS
 
 // ── quoting/escaping (cli-startup.js) ─────────────────────────────────
 
+/// XML 实体转义（& < > " '），用于 plist 的键与值。
 fn escape_xml(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -107,26 +138,32 @@ fn escape_xml(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// systemd ExecStart 参数转义：反斜杠与双引号加反斜杠前缀。
 fn systemd_escape_arg(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// POSIX 单引号包裹：内部单引号替换为 '\''（与 cli-startup.js 同款算法）。
 fn startup_shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// systemd unit 文件内的路径转义：反斜杠加倍、空格写为 \x20。
 fn systemd_unit_path(value: &str) -> String {
     value.replace('\\', "\\\\").replace(' ', "\\x20")
 }
 
+/// PowerShell 单引号包裹：内部单引号加倍转义。
 fn powershell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// Windows 包装脚本读取的 startup.env 值引号规则（即 POSIX shell 单引号）。
 fn startup_env_file_quote(value: &str) -> String {
     startup_shell_quote(value)
 }
 
+/// systemd EnvironmentFile 值引号规则：双引号包裹并转义 \ " ` $。
 fn systemd_env_file_quote(value: &str) -> String {
     format!(
         "\"{}\"",
@@ -141,14 +178,20 @@ fn systemd_env_file_quote(value: &str) -> String {
 // ── env snapshot ───────────────────────────────────────────────────────
 
 /// The startup-relevant slice of CLI `Options`.
+/// Options 中与 startup 环境快照相关的字段切片（借用避免克隆）。
 pub(crate) struct StartupEnvOptions<'a> {
+    /// --host 值（空串视为 None）。
     pub host: Option<&'a str>,
+    /// --ui-password 值（空白视为 None）。
     pub ui_password: Option<&'a str>,
+    /// --api-only 旗标。
     pub api_only: bool,
     /// JS `options.envSnapshot !== false`.
+/// 环境快照开关（--no-env-snapshot 置 false）。
     pub env_snapshot: bool,
 }
 
+/// 从完整 Options 抽取并规范化（空值过滤）startup 相关切片。
 fn startup_env_options(options: &Options) -> StartupEnvOptions<'_> {
     StartupEnvOptions {
         host: options.host.as_deref().filter(|h| !h.is_empty()),
@@ -163,6 +206,9 @@ fn startup_env_options(options: &Options) -> StartupEnvOptions<'_> {
 
 /// `shouldPersistStartupEnv`: valid identifier key, single-line string
 /// value, not a shell/session implementation detail.
+/// 判定某个环境变量是否写入自启快照：键必须是合法标识符（字母或
+/// 下划线开头，后续为字母/数字/下划线），值不得含 CR/LF，且不在
+/// shell/会话易变键黑名单（PWD、SHLVL、TERM、VIRTUAL_ENV 等 29 项）内。
 fn should_persist_startup_env(key: &str, value: &str) -> bool {
     let mut chars = key.chars();
     let valid_key = match chars.next() {
@@ -212,6 +258,8 @@ fn should_persist_startup_env(key: &str, value: &str) -> bool {
     !VOLATILE_KEYS.contains(&key) && !VOLATILE_KEYS_EXTRA.contains(&key)
 }
 
+/// Node path.resolve 的等价物：相对路径基于当前目录补全，再做词法
+/// 归一化（不解析符号链接）。
 fn path_resolve(value: &Path) -> PathBuf {
     crate::package_manager::paths::resolve_lexically(&if value.is_absolute() {
         value.to_path_buf()
@@ -222,6 +270,11 @@ fn path_resolve(value: &Path) -> PathBuf {
 
 /// `collectStartupEnv` over an injected environment (tests pass a fixed
 /// one; production passes `std::env::vars`).
+/// 汇总自启服务环境：开启快照时按 should_persist_startup_env 过滤注入
+/// 的环境表，OMPCHAMBER_OMP_HOST_RUNTIME 取环境覆盖值否则用 PATH 里
+/// 找到的 bun；随后无条件叠加 OMPCHAMBER_UI_PASSWORD（如有）、
+/// OMPCHAMBER_API_ONLY（如开），并把 OMPCHAMBER_DATA_DIR 规范化为
+/// 绝对路径（供服务进程内解析一致）。
 pub(crate) fn collect_startup_env(
     env_vars: &BTreeMap<String, String>,
     options: &StartupEnvOptions<'_>,
@@ -268,18 +321,24 @@ pub(crate) fn collect_startup_env(
     env
 }
 
+/// startup.env 文件位置：<data_dir>/startup.env（Linux 的
+/// EnvironmentFile 与 Windows 包装脚本的数据源；macOS 不使用）。
 pub(crate) fn startup_env_file_path(data_dir: &Path) -> PathBuf {
     data_dir.join("startup.env")
 }
 
+/// macOS 启动包装脚本路径：<data_dir>/bin/OMPChamber（plist 指向它）。
 fn macos_startup_wrapper_path(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("OMPChamber")
 }
 
+/// Windows PowerShell 包装脚本路径：<data_dir>/bin/OpenChamber.ps1。
 fn windows_startup_wrapper_path(data_dir: &Path) -> PathBuf {
     data_dir.join("bin").join("OpenChamber.ps1")
 }
 
+/// 创建父目录并写入文件，随后分别设置目录与文件权限（仅 Unix 生效）。
+/// 权限设置失败静默忽略（尽力而为），写盘失败以 io::Error 返回。
 fn write_file_mode(
     path: &Path,
     content: &str,
@@ -295,25 +354,31 @@ fn write_file_mode(
     Ok(())
 }
 
+/// Unix：设置目录权限位，失败忽略。
 #[cfg(unix)]
 fn set_dir_mode(path: &Path, mode: u32) {
 use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
+/// Unix：设置文件权限位，失败忽略。
 #[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) {
 use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
+/// 非 Unix 空实现：无 POSIX 权限位概念。
 #[cfg(not(unix))]
 fn set_dir_mode(_path: &Path, _mode: u32) {}
 
+/// 非 Unix 空实现：无 POSIX 权限位概念。
 #[cfg(not(unix))]
 fn set_file_mode(_path: &Path, _mode: u32) {}
 
 /// `writeStartupEnvFile`: `KEY=quote(value)` lines, 0600, parent 0700.
+/// 逐行写 KEY=quote(value)（空映射写空文件），目录 0700、文件 0600
+/// （内容含密钥类变量）；写入失败忽略。返回文件路径。
 fn write_startup_env_file(
     env: &BTreeMap<String, String>,
     env_file: &Path,
@@ -332,12 +397,15 @@ fn write_startup_env_file(
     env_file.to_path_buf()
 }
 
+/// 删除 startup.env（disable 清理、macOS enable 前清理），失败忽略。
 fn remove_startup_env_file(data_dir: &Path) {
     let _ = std::fs::remove_file(startup_env_file_path(data_dir));
 }
 
 /// `buildStartupArgs` — the Rust binary is the entrypoint, so the argv is
 /// the serve invocation itself.
+/// 构造服务要执行的 argv：serve --foreground --port N，可选 --host 与
+/// --api-only。Rust 二进制即入口，无需再套 cli.js。
 fn build_startup_args(port: u16, host: Option<&str>, api_only: bool) -> Vec<String> {
     let mut args = vec![
         "serve".to_string(),
@@ -355,6 +423,8 @@ fn build_startup_args(port: u16, host: Option<&str>, api_only: bool) -> Vec<Stri
     args
 }
 
+/// 生成 macOS sh 包装脚本内容：`#!/bin/sh` 加 `exec <exe> <args...>`，
+/// 全部参数经 POSIX 单引号转义。
 fn macos_wrapper_content(exe: &Path, args: &[String]) -> String {
     let quoted = args
         .iter()
@@ -368,11 +438,14 @@ fn macos_wrapper_content(exe: &Path, args: &[String]) -> String {
     )
 }
 
+/// 写 macOS 包装脚本（目录/文件 0700），返回脚本路径。
 fn write_macos_startup_wrapper(exe: &Path, args: &[String], wrapper: &Path) -> PathBuf {
     let _ = write_file_mode(wrapper, &macos_wrapper_content(exe, args), 0o700, 0o700);
     wrapper.to_path_buf()
 }
 
+/// 生成 PowerShell 包装脚本：先读 startup.env（兼容 POSIX 单引号值的
+/// 反转义）逐行注入进程环境，再以转义参数调用服务二进制。
 fn windows_wrapper_content(exe: &Path, args: &[String], env_file: &Path) -> String {
     let startup_args = args
         .iter()
@@ -387,6 +460,7 @@ fn windows_wrapper_content(exe: &Path, args: &[String], env_file: &Path) -> Stri
     .join("; ")
 }
 
+/// 写 Windows 包装脚本（0700），返回脚本路径。
 fn write_windows_startup_wrapper(
     exe: &Path,
     args: &[String],
@@ -402,6 +476,8 @@ fn write_windows_startup_wrapper(
     wrapper.to_path_buf()
 }
 
+/// schtasks /TR 使用的任务命令行：powershell.exe -NoProfile
+/// -ExecutionPolicy Bypass -File <wrapper>。
 fn build_windows_startup_task_command(wrapper_path: &Path) -> String {
     format!(
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
@@ -410,6 +486,11 @@ fn build_windows_startup_task_command(wrapper_path: &Path) -> String {
 }
 
 /// `buildMacosLaunchAgent` — writes the wrapper, returns the plist body.
+/// 生成 launchd plist 文本：Label、ProgramArguments 指向包装脚本、
+/// 可选 EnvironmentVariables（快照环境）、ProcessType=Background、
+/// RunAtLoad/KeepAlive、WorkingDirectory=home，日志重定向到
+/// ~/Library/Logs/OMPChamber/startup.{log,err.log}。本函数只生成文本，
+/// 落盘与包装脚本写入由调用方完成。
 fn build_macos_launch_agent(env: &BTreeMap<String, String>, home: &Path, wrapper: &Path) -> String {
     let arg_xml = std::iter::once(wrapper.display().to_string())
         .map(|arg| format!("    <string>{}</string>", escape_xml(&arg)))
@@ -465,6 +546,10 @@ fn build_macos_launch_agent(env: &BTreeMap<String, String>, home: &Path, wrapper
 }
 
 /// `buildSystemdUserService`.
+/// 生成 systemd user unit 文本：Type=simple、EnvironmentFile=-<env>
+/// （前缀 - 容忍文件缺失）、ExecStart 为转义后的二进制与参数、
+/// Restart=always + RestartSec=5、WantedBy=default.target。写盘由
+/// 调用方完成。
 fn build_systemd_user_service(exe: &Path, args: &[String], env_file: &Path, home: &Path) -> String {
     let quoted_args = args
         .iter()
@@ -482,20 +567,30 @@ fn build_systemd_user_service(exe: &Path, args: &[String], env_file: &Path, home
 
 // ── command runner (spawnSync) ────────────────────────────────────────
 
+/// 外部命令执行结果（对应 spawnSync 的 status/stdout/stderr 三元组）。
 #[derive(Clone, Debug)]
 pub(crate) struct StartupCommandOutput {
+    /// 退出码（被信号杀死等无码场景为 -1）。
     pub status: i32,
+    /// 标准输出（UTF-8 有损解码）。
     pub stdout: String,
+    /// 标准错误（UTF-8 有损解码）。
     pub stderr: String,
 }
 
+/// 外部命令执行抽象（launchctl/systemctl/schtasks）：生产环境用
+/// SystemStartupRunner，测试用 FakeRunner 记录调用并回放预置结果。
 pub(crate) trait StartupCommandRunner {
+    /// 同步执行 program 与 args，spawn 失败以 io::Error 返回。
     fn run(&self, program: &str, args: &[&str]) -> std::io::Result<StartupCommandOutput>;
 }
 
+/// 真实执行器：std::process::Command 捕获输出。
 struct SystemStartupRunner;
 
+/// SystemStartupRunner 的 trait 实现。
 impl StartupCommandRunner for SystemStartupRunner {
+    /// 运行子进程并收集 status/stdout/stderr。
     fn run(&self, program: &str, args: &[&str]) -> std::io::Result<StartupCommandOutput> {
         let output = std::process::Command::new(program).args(args).output()?;
         Ok(StartupCommandOutput {
@@ -508,6 +603,9 @@ impl StartupCommandRunner for SystemStartupRunner {
 
 /// `runStartupCommand`: spawn failure and non-zero exit (unless
 /// `allow_failure`) become a GENERAL_ERROR CliError.
+/// 错误映射：spawn 失败（JS 直接抛 Error → 退出码 1）与非零退出
+/// （allow_failure 为 false 时）都转成 GENERAL_ERROR 的 CliError，
+/// 错误详情优先取 stderr，为空再取 stdout。
 fn run_startup_command(
     runner: &dyn StartupCommandRunner,
     program: &str,
@@ -538,6 +636,8 @@ fn run_startup_command(
 }
 
 /// `process.getuid()` — resolved through `id -u` (no libc dependency).
+/// 当前用户 uid：优先 `id -u` 输出，失败回退 UID 环境变量，再失败按 0。
+/// 仅用于拼 launchctl 的 gui/<uid> 目标域。
 fn current_uid() -> u32 {
     if let Ok(output) = std::process::Command::new("id").arg("-u").output() {
         if let Ok(parsed) = String::from_utf8_lossy(&output.stdout)
@@ -557,19 +657,32 @@ fn current_uid() -> u32 {
 
 /// `getStartupStatus` result (JSON shape mirrors the JS exactly, including
 /// which keys are present).
+/// status/enable/disable 的统一结果结构；JSON 输出形状与 JS 逐键对齐
+/// （包括哪些键存在、哪些为 null）。
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StartupResult {
+    /// 本次动作："status"/"enable"/"disable"。
     pub action: String,
+    /// 平台是否支持自启集成。
     pub supported: bool,
+    /// 平台显示名。
     pub platform: String,
+    /// 服务当前是否已安装/启用。
     pub enabled: bool,
     /// `Some(_)` = the `active` key is emitted (value may be JSON null);
     /// `None` = the key is absent (unsupported platform).
+    /// 是否运行中；None 表示未知（JSON 中该键仍输出 null）。
     pub active: Option<bool>,
+    /// systemctl is-active 的原始状态（"active"/"failed"/"inactive" 等）。
     pub active_state: Option<String>,
+    /// 服务定义路径（Windows 为任务名）；不支持平台为 None → JSON null。
     pub service_path: Option<String>,
 }
 
+/// 查询当前状态：Windows 用 schtasks /Query 退出码判定 enabled；Linux
+/// 用 systemctl --user is-enabled/is-active（unit 文件存在也算 enabled，
+/// is-active 空输出按 inactive）；macOS 以 plist 文件是否存在为准。所有
+/// 探测命令都容忍失败（allow_failure=true）。返回 action="status" 的结果。
 fn get_startup_status(
     runner: &dyn StartupCommandRunner,
     platform: StartupPlatform,
@@ -651,14 +764,26 @@ fn get_startup_status(
 }
 
 /// Everything `enableStartupService` needs beyond the flag slice.
+/// enable 所需的安装参数（flag 切片之外的全部输入）。
 pub(crate) struct StartupInstall<'a> {
+    /// 用户主目录（plist/unit 落点与 WorkingDirectory）。
     pub home: &'a Path,
+    /// OMPChamber 数据目录（包装脚本与 startup.env 的落点）。
     pub data_dir: &'a Path,
+    /// 当前二进制路径（服务要 exec 的目标）。
     pub exe: &'a Path,
+    /// 服务监听端口（未指定时调用方取 DEFAULT_PORT）。
     pub port: u16,
+    /// 当前 uid，用于拼 launchctl 的 gui/<uid> 目标域。
     pub uid: u32,
 }
 
+/// 安装并启动自启服务。平台不支持 → USAGE_ERROR。macOS：清理 env 文件、
+/// 写包装脚本与 plist（0600）、确保日志目录存在、launchctl
+/// bootout(容错) → bootstrap(严格) → kickstart(容错)。Linux：写
+/// startup.env 与 unit 文件、daemon-reload(严格)、enable --now(严格)。
+/// Windows：写 startup.env 与 PowerShell 包装脚本、schtasks /Create
+/// ONLOGON(严格) + /Run(容错)。完成后复查状态并返回 StartupResult。
 fn enable_startup_service(
     runner: &dyn StartupCommandRunner,
     platform: StartupPlatform,
@@ -776,6 +901,10 @@ fn enable_startup_service(
     Ok(get_startup_status(runner, platform, install.home))
 }
 
+/// 停止并卸载自启服务。macOS：launchctl bootout(容错) 后删 plist。
+/// Linux：disable --now(容错)、删 unit 文件、daemon-reload(容错)。
+/// Windows：/End 与 /Delete 任务(均容错)、删包装脚本与 startup.env。
+/// 平台不支持 → USAGE_ERROR。完成后复查状态并返回。
 fn disable_startup_service(
     runner: &dyn StartupCommandRunner,
     platform: StartupPlatform,
@@ -833,6 +962,9 @@ fn disable_startup_service(
 
 // ── output rendering (commands-startup.js) ────────────────────────────
 
+/// 结果转 JSON：固定输出 action/supported/platform/enabled/active
+/// （active 未知时输出 null）；activeState 仅有值时写入；servicePath
+/// 有值写入、无值输出 null。键序与存在性对齐 commands-startup.js。
 fn startup_result_json(result: &StartupResult) -> serde_json::Value {
     let mut value = serde_json::json!({
         "action": result.action,
@@ -855,6 +987,8 @@ fn startup_result_json(result: &StartupResult) -> serde_json::Value {
     value
 }
 
+/// quiet 模式单行摘要："startup enabled|disabled platform:<p>
+/// supported:yes|no [path:<path>]"（无路径时省略 path 段）。
 fn startup_quiet_line(result: &StartupResult) -> String {
     format!(
         "startup {} platform:{} supported:{}{}",
@@ -875,6 +1009,10 @@ fn startup_quiet_line(result: &StartupResult) -> String {
 }
 
 /// clack human output as plain lines: title, status lines, outro.
+/// human 模式的多行输出：clack 风格 intro、状态块（servicePath 作为
+/// bar 缩进的明细行）、active_state 按值着色（active 成功色/failed
+/// 错误色/其余警告色）、enable 时追加服务命令提示，最后 outro
+/// （"xxx complete"）。返回行数组由调用方逐行打印。
 fn startup_human_lines(result: &StartupResult) -> Vec<String> {
     let mut lines = vec![
         crate::cli::ui::intro_line("OMPChamber Startup")
@@ -932,6 +1070,8 @@ fn startup_human_lines(result: &StartupResult) -> Vec<String> {
 }
 
 /// commands-startup.js post-action validation.
+/// 动作后的结果校验：不支持平台报 USAGE_ERROR；enable 后 systemd 状态
+/// 为 failed 时报 GENERAL_ERROR 并附 journalctl 排查提示。
 fn validate_startup_result(result: &StartupResult) -> Result<(), CliError> {
     if !result.supported {
         return Err(CliError::usage(format!(
@@ -949,6 +1089,11 @@ fn validate_startup_result(result: &StartupResult) -> Result<(), CliError> {
 }
 
 /// `commands-startup.js` `startupCommand` (the `ompchamber startup` entry).
+/// `ompchamber startup` 的可注入核心（commands-startup.js 的
+/// startupCommand）：规范化 action（未知子命令 → USAGE_ERROR），enable
+/// 走 collect_startup_env + enable_startup_service，disable/status 直接
+/// 执行；结果回填 action 后先校验，再按 json（补 status:"ok" 首键）/
+/// quiet/human 渲染输出。全部依赖以参数注入，便于测试伪造。
 pub(crate) fn startup_command_with(
     runner: &dyn StartupCommandRunner,
     platform: StartupPlatform,
@@ -1011,18 +1156,24 @@ pub(crate) fn startup_command_with(
     Ok(())
 }
 
+/// StartupResult 的辅助方法。
 impl StartupResult {
+    /// 把结果标记为指定动作（覆盖内部推导的 action 字段），链式返回。
     fn with_action(mut self, action: &str) -> Self {
         self.action = action.to_string();
         self
     }
 }
 
+/// `ompchamber startup --help` 的帮助文本（对齐 JS showStartupHelp）。
 pub fn help_text() -> &'static str {
     "\n OMPChamber Startup Commands\n\nUSAGE:\n  ompchamber startup <SUBCOMMAND> [OPTIONS]\n\nSUBCOMMANDS:\n  status      Show startup integration status\n  enable      Install and start native user startup integration\n  disable     Stop and remove native user startup integration\n\nOPTIONS:\n  -p, --port              Web server port used by startup service\n  --host                  Bind address used by startup service\n  --ui-password           Protect browser UI with single password\n  --api-only              Start API routes only, without serving browser UI assets\n  --no-env-snapshot       Do not save current environment for startup service\n  --json                  Output machine-readable JSON\n  -q, --quiet             Suppress non-essential output\n\nEXAMPLES:\n  ompchamber startup enable\n  ompchamber startup enable --port 3000\n  ompchamber startup enable --port 3000 --api-only --host 0.0.0.0\n  ompchamber startup status --json\n\n"
 }
 
 /// `ompchamber startup <action>` — dispatch entry (mod.rs contract).
+/// 真实环境入口：从 parsed 与运行环境解析 home、data_dir、当前二进制、
+/// PATH 中的 bun 与 uid，以 SystemStartupRunner + 当前平台调用
+/// startup_command_with；action 缺省为 "status"。
 pub fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
     let mode = OutputMode::from_options(&options);
     let action = parsed
@@ -1050,6 +1201,7 @@ pub fn command(parsed: &Parsed, options: Options) -> Result<(), CliError> {
 }
 
 /// `searchPathFor` (cli-executables.js): first executable match on PATH.
+/// 用于 bun 的 PATH 查找；Windows 上分隔符为 ;。
 fn search_path_for(command: &str) -> Option<PathBuf> {
     let path_value = std::env::var("PATH").unwrap_or_default();
     let delimiter = if cfg!(windows) { ';' } else { ':' };
@@ -1065,6 +1217,7 @@ fn search_path_for(command: &str) -> Option<PathBuf> {
     None
 }
 
+/// 是否为可执行的普通文件：Unix 检查任意执行位，非 Unix 存在即真。
 fn is_executable(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -1083,12 +1236,17 @@ use crate::os_compat::PermissionsExt;
     }
 }
 
+/// startup 集成的行为契约：环境快照过滤、plist/unit/包装脚本生成、
+/// 三平台 status 判定、enable/disable 的命令序列与错误路径、三种
+/// 输出模式的渲染形状。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    /// 测试辅助：创建按 tag+pid+计数命名的唯一临时目录（已存在则先删）。
     fn temp_dir(tag: &str) -> PathBuf {
+        // 原子自增序号：tag+pid 之外保证同进程多次调用目录互不冲突。
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!(
@@ -1100,13 +1258,19 @@ mod tests {
         dir
     }
 
+    /// 测试用 StartupCommandRunner：记录每次 (program, args) 调用，并按
+    /// 预置队列回放输出；队列耗尽后一律返回成功空输出。
     #[derive(Clone, Default)]
     struct FakeRunner {
+        /// 已发生的调用记录 (program, args)。
         calls: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        /// 预置的回放输出队列。
         results: Arc<Mutex<Vec<StartupCommandOutput>>>,
     }
 
+    /// FakeRunner 的构造与查询辅助。
     impl FakeRunner {
+        /// 以给定输出队列构造（调用记录初始为空）。
         fn with_results(results: Vec<StartupCommandOutput>) -> Self {
             Self {
                 results: Arc::new(Mutex::new(results)),
@@ -1114,6 +1278,7 @@ mod tests {
             }
         }
 
+        /// 取调用记录快照（锁中毒时按已恢复处理）。
         fn calls(&self) -> Vec<(String, Vec<String>)> {
             self.calls
                 .lock()
@@ -1122,7 +1287,9 @@ mod tests {
         }
     }
 
+    /// 记录调用并回放预置结果的 trait 实现。
     impl StartupCommandRunner for FakeRunner {
+        /// push 本次调用；队列非空则弹出队首作为输出，否则返回成功空输出。
         fn run(&self, program: &str, args: &[&str]) -> std::io::Result<StartupCommandOutput> {
             self.calls
                 .lock()
@@ -1147,6 +1314,7 @@ mod tests {
         }
     }
 
+    /// 测试辅助：构造 status=0、stdout 为给定内容的输出。
     fn ok(stdout: &str) -> StartupCommandOutput {
         StartupCommandOutput {
             status: 0,
@@ -1155,6 +1323,7 @@ mod tests {
         }
     }
 
+    /// 测试辅助：(&str, &str) 数组转 BTreeMap 环境快照。
     fn env_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
@@ -1162,6 +1331,7 @@ mod tests {
             .collect()
     }
 
+    /// 测试辅助：固定 port=3456、uid=501 的 StartupInstall。
     fn install<'a>(home: &'a Path, data_dir: &'a Path, exe: &'a Path) -> StartupInstall<'a> {
         StartupInstall {
             home,
@@ -1172,6 +1342,7 @@ mod tests {
         }
     }
 
+    /// 验证环境快照过滤：合法键通过，易变键/非法键名/含换行值被剔除。
     #[test]
     fn should_persist_startup_env_filters_volatile_and_multiline() {
         assert!(should_persist_startup_env("FOO", "bar"));
@@ -1183,6 +1354,7 @@ mod tests {
         assert!(!should_persist_startup_env("VIRTUAL_ENV_PROMPT", "(venv)"));
     }
 
+    /// 验证快照汇总：过滤易变键、bun 回填 OMPCHAMBER_OMP_HOST_RUNTIME、密码与 api-only 落键、数据目录转绝对路径。
     #[test]
     fn collect_startup_env_snapshots_filters_and_flags() {
         let env = env_map(&[
@@ -1223,6 +1395,7 @@ mod tests {
         assert!(data_dir.ends_with("relative/dir"));
     }
 
+    /// 验证关闭快照后环境变量全不写入，但密码/api-only 等旗标仍生效。
     #[test]
     fn collect_startup_env_no_snapshot_still_carries_flags() {
         let env = env_map(&[("FOO", "bar")]);
@@ -1241,6 +1414,7 @@ mod tests {
         );
     }
 
+    /// 验证 plist 含快照环境变量、日志路径与包装脚本 argv，包装脚本 exec 转义正确。
     #[test]
     fn macos_plist_snapshots_env_and_flags() {
         let home = temp_dir("plist-home");
@@ -1266,6 +1440,7 @@ mod tests {
         );
     }
 
+    /// 验证空快照时 plist 省略 EnvironmentVariables 键。
     #[test]
     fn macos_plist_omits_env_without_snapshot() {
         let home = temp_dir("plist-nosnap-home");
@@ -1276,6 +1451,7 @@ mod tests {
         assert!(plist.contains("<key>ProcessType</key>"));
     }
 
+    /// 验证 startup.env 的 systemd 引号格式与 unit 文本的各关键字段。
     #[test]
     fn systemd_unit_and_env_file_generation() {
         let home = temp_dir("unit-home");
@@ -1303,12 +1479,14 @@ mod tests {
         assert!(unit.contains("WantedBy=default.target\n"));
     }
 
+    /// 验证 systemd/shell 两套 env 引号对 $ ` \ ' 的转义结果。
     #[test]
     fn systemd_env_file_quotes_dollar_and_backtick() {
         assert_eq!(systemd_env_file_quote("a$b`c\\d"), "\"a\\$b\\`c\\\\d\"");
         assert_eq!(startup_env_file_quote("it's"), "'it'\\''s'");
     }
 
+    /// 验证 PowerShell 包装脚本三段结构与 schtasks /TR 命令行。
     #[test]
     fn windows_wrapper_and_task_command() {
         let data_dir = temp_dir("win-data");
@@ -1330,6 +1508,7 @@ mod tests {
         );
     }
 
+    /// 验证 Linux status：is-enabled/is-active 输出解析、unit 文件存在也算 enabled、空输出按 inactive。
     #[test]
     fn linux_status_parses_systemctl_output() {
         let home = temp_dir("status-home");
@@ -1384,6 +1563,7 @@ mod tests {
         assert_eq!(status.active_state.as_deref(), Some("inactive"));
     }
 
+    /// 验证 macOS status：enabled 完全由 plist 文件是否存在决定。
     #[test]
     fn macos_status_reflects_plist_presence() {
         let home = temp_dir("macos-status");
@@ -1403,6 +1583,7 @@ mod tests {
         assert!(status.enabled);
     }
 
+    /// 验证 Windows status：schtasks /Query 退出码决定 enabled，servicePath 为任务名。
     #[test]
     fn windows_status_uses_schtasks_exit() {
         let home = temp_dir("win-status");
@@ -1417,6 +1598,7 @@ mod tests {
         assert_eq!(status.service_path.as_deref(), Some("dev.ompchamber.web"));
     }
 
+    /// 验证不支持平台：supported=false 且 JSON 中 active/servicePath 均为 null（键仍存在）。
     #[test]
     fn unsupported_platform_status_shape() {
         let home = temp_dir("other-status");
@@ -1440,6 +1622,7 @@ mod tests {
         assert!(json["servicePath"].is_null());
     }
 
+    /// 验证 macOS enable：写 plist 与包装脚本、删除 env 文件，并按 bootout→bootstrap→kickstart 顺序调用 launchctl。
     #[test]
     fn enable_macos_writes_files_and_invokes_launchctl() {
         let home = temp_dir("enable-home");
@@ -1492,6 +1675,7 @@ mod tests {
         );
     }
 
+    /// 验证 Linux enable 后 is-active=failed 会被校验层转成带 journalctl 提示的 GENERAL_ERROR，且 env/unit 按 systemd 格式写盘。
     #[test]
     fn enable_linux_failed_state_is_reported() {
         let home = temp_dir("enable-linux-home");
@@ -1538,6 +1722,7 @@ mod tests {
         ));
     }
 
+    /// 验证 launchctl bootstrap 非零退出映射为 GENERAL_ERROR，错误信息含命令行与 stderr。
     #[test]
     fn enable_failure_on_bootstrap_is_general_error() {
         let home = temp_dir("boot-home");
@@ -1571,6 +1756,7 @@ mod tests {
         assert!(error.message.ends_with("failed: Bootstrap failed"));
     }
 
+    /// 验证 macOS disable：bootout 后删除 plist 文件。
     #[test]
     fn disable_macos_removes_plist() {
         let home = temp_dir("disable-home");
@@ -1589,6 +1775,7 @@ mod tests {
         assert_eq!(runner.calls()[0].1[0], "bootout");
     }
 
+    /// 验证未知 startup 子命令的 USAGE_ERROR 文案与 JS 逐字一致。
     #[test]
     fn unknown_subcommand_error_matches_js() {
         let home = temp_dir("usage-home");
@@ -1615,6 +1802,7 @@ mod tests {
         );
     }
 
+    /// 验证 quiet 单行与 JSON 两种输出形状（含路径省略与 null 字段）。
     #[test]
     fn quiet_and_json_output_shapes() {
         let mut result = get_startup_status(
@@ -1660,6 +1848,7 @@ mod tests {
         );
     }
 
+    /// 验证 human 模式各行的 clack 框线、明细与 outro 与 JS 渲染一致。
     #[test]
     fn human_lines_match_js_flow() {
         let mut result = get_startup_status(
@@ -1707,6 +1896,7 @@ mod tests {
         );
     }
 
+    /// 验证帮助文本的首尾与关键选项行完整保留。
     #[test]
     fn help_text_matches_show_startup_help() {
         assert!(help_text().starts_with("\n OMPChamber Startup Commands\n\nUSAGE:\n"));

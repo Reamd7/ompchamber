@@ -1,3 +1,10 @@
+/**
+ * z.ai Coding Plan 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，验证 TOKENS_LIMIT 与
+ * TIME_LIMIT 条目到 5h/weekly/MCP Tools 窗口的映射，以及 CREDIT_LIMIT
+ * 条目的积分 valueLabel 与套餐等级 planLabel 的透出。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,12 +17,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 构造最小可用的 fetch Response 替身：默认 200 + JSON 体。 */
 const mockResponse = (body) => ({
   ok: true,
   status: 200,
   json: async () => body,
 });
 
+/** z.ai provider 的限额条目映射与 planLabel 透出行为。 */
 describe('Z.ai quota provider', () => {
   it('surfaces 5-hour, weekly, and MCP quota windows', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({

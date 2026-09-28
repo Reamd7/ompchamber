@@ -13,6 +13,13 @@
 //! `Date.now()` is the injectable [`Clock`]; engine calls sit behind
 //! [`EngineDispatch`]; persistence behind [`ScheduledTaskStore`] (implemented
 //! by the ported `projects` project-config runtime).
+//!
+//! 中文概述：定时任务调度运行时（JS runtime.js 的移植）。核心组成：
+//! 每项目任务表 + tokio 定时器（最多 2 秒抖动）、带全局/单项目并发
+//! 上限的派发队列、跨实例占位声明（#2710，防止多实例重复跑同一次
+//! 计划）、完整运行生命周期的状态写回（含失败重试语义），以及
+//! 一次性任务消费与下次占位重武装。时钟、引擎调用与持久化都是
+//! 可注入 seam，测试用内存替身驱动全流程。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -34,14 +41,21 @@ use super::dispatch::{BoxFut, EngineDispatch, ScheduledCommand};
 use super::loops::{DiscoveredLoop, discover_loops};
 use super::snippets::expand_snippets;
 
+/// 默认全局并发上限：整个进程同时最多 4 个定时任务在跑。
 pub const DEFAULT_GLOBAL_CONCURRENCY: usize = 4;
+/// 默认单项目并发上限：同一项目同时最多 2 个任务。
 pub const DEFAULT_PROJECT_CONCURRENCY: usize = 2;
+/// 单次运行的 watchdog 时长：30 分钟，超时按 error 收尾。
 pub const DEFAULT_MAX_RUN_MS: u64 = 30 * 60 * 1000;
+/// 定时器附加抖动上限（毫秒）：错开同时到期的任务，避免惊群。
 pub const JITTER_MAX_MS: i64 = 2_000;
 
 /// Wall clock in unix ms (JS `Date.now()`).
+///
+/// 中文补充：调度、watchdog 与全部状态时间戳都取自该时钟。
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
+/// 生产时钟：SystemTime 换算的 unix 毫秒（早于 epoch 时取 0）。
 pub fn system_clock() -> Clock {
     Arc::new(|| {
         std::time::SystemTime::now()
@@ -52,29 +66,46 @@ pub fn system_clock() -> Clock {
 }
 
 /// `emitTaskRunEvent` — publishes `ompchamber:scheduled-task-ran` frames.
+///
+/// 中文补充：running 与终态（success/error）各发一次，由上层接到
+/// SSE 广播。
 #[derive(Debug, Clone)]
 pub struct TaskRunEvent {
+    /// 项目 id。
     pub project_id: String,
+    /// 任务 id。
     pub task_id: String,
+    /// 事件产生时间（unix ms）。
     pub ran_at: i64,
+    /// 事件状态：running / success / error。
     pub status: String,
+    /// 关联的引擎会话 id（running 起始即携带）。
     pub session_id: Option<String>,
 }
 
+/// 任务运行事件的发射回调类型：由上层接线到 SSE 广播通道。
 pub type EmitTaskRunEvent = Arc<dyn Fn(&TaskRunEvent) + Send + Sync>;
 
+/// 触发本次运行的原因：定时（携带占位时间戳）或手动。
 #[derive(Debug, Clone)]
 pub enum RunReason {
     /// `scheduled_for` is the armed occurrence timestamp (ms). `None` mirrors
     /// the JS `missing-scheduled-for` path (a scheduled queue item without a
     /// finite occurrence).
+    ///
+    /// 中文补充：定时触发；占位时间戳同时用于跨实例去重。
     Scheduled {
+        /// 触发该运行的计划占位时间戳；None 走 missing-scheduled-for
+        /// 跳过路径（JS 同名语义）。
         scheduled_for: Option<i64>,
     },
+    /// 手动触发（runNow）：不参与占位声明，也不消费一次性任务。
     Manual,
 }
 
+/// RunReason 的字符串表示实现。
 impl RunReason {
+    /// 返回 "scheduled" 或 "manual"，用于日志与事件。
     pub fn as_str(&self) -> &'static str {
         match self {
             RunReason::Scheduled { .. } => "scheduled",
@@ -84,43 +115,65 @@ impl RunReason {
 }
 
 /// Result of one `runTask`/`runNow` invocation (JS return shapes unified).
+///
+/// 中文补充：reason 是机器可读的结果归类（occurrence-claimed、
+/// claim-failed、completion-state-failed 等），配合各布尔位还原 JS
+/// 的多种返回形状。
 #[derive(Debug, Clone, Default)]
 pub struct RunOutcome {
+    /// 本次运行是否成功（完成状态写回失败不影响该位）。
     pub ok: bool,
+    /// 因跳过（禁用/缺失/占位被抢等）未执行。
     pub skipped: bool,
+    /// 去重命中：任务已在运行中。
     pub running: bool,
+    /// 去重命中：任务已在队列中（仅 runNow 检查）。
     pub queued: bool,
+    /// 终态："success" 或 "error"。
     pub status: Option<String>,
+    /// 创建的引擎会话 id（派发启动后可用）。
     pub session_id: Option<String>,
+    /// 运行结束后的最新任务快照（含状态回写结果）。
     pub task: Option<ScheduledTask>,
+    /// 运行/启动失败的错误消息（已截断脱敏）。
     pub error: Option<String>,
+    /// 完成状态写回失败的错误消息（会话本身可能已成功）。
     pub persist_error: Option<String>,
+    /// 机器可读的结果原因码。
     pub reason: Option<String>,
 }
 
 /// Persistence seam over the ported project-config runtime (JS injects the
 /// same object from server/index.js); tests may substitute a double.
+///
+/// 中文补充：方法集合与 JS 注入的 project-config runtime 对象一一
+/// 对应；统一返回 BoxFut 让 trait 保持对象安全。
 pub trait ScheduledTaskStore: Send + Sync {
+    /// 列出某项目的全部定时任务。
     fn list_scheduled_tasks<'a>(
         &'a self,
         project_id: &'a str,
     ) -> BoxFut<'a, AppResult<Vec<ScheduledTask>>>;
+    /// 新增或整体更新一个任务（一次性任务消费复用该入口）。
     fn upsert_scheduled_task<'a>(
         &'a self,
         project_id: &'a str,
         input: &'a Value,
     ) -> BoxFut<'a, AppResult<UpsertResult>>;
+    /// 删除任务。
     fn delete_scheduled_task<'a>(
         &'a self,
         project_id: &'a str,
         task_id: &'a str,
     ) -> BoxFut<'a, AppResult<DeleteResult>>;
+    /// 无条件更新任务运行状态（patch 合并写回）。
     fn update_scheduled_task_state<'a>(
         &'a self,
         project_id: &'a str,
         task_id: &'a str,
         patch: &'a Value,
     ) -> BoxFut<'a, AppResult<StateUpdateResult>>;
+    /// 条件更新：predicate 通过才应用 patch（占位声明的 CAS 语义）。
     fn update_scheduled_task_state_if<'a>(
         &'a self,
         project_id: &'a str,
@@ -128,6 +181,7 @@ pub trait ScheduledTaskStore: Send + Sync {
         predicate: Box<dyn Fn(&ScheduledTask) -> bool + Send + Sync>,
         patch: &'a Value,
     ) -> BoxFut<'a, AppResult<StateUpdateResult>>;
+    /// 把发现的 loop 文件与持久化任务对账（增删同步）。
     fn reconcile_loop_tasks<'a>(
         &'a self,
         project_id: &'a str,
@@ -135,13 +189,17 @@ pub trait ScheduledTaskStore: Send + Sync {
     ) -> BoxFut<'a, AppResult<Vec<ScheduledTask>>>;
 }
 
+/// 用真实的项目配置 runtime 实现存储 seam：把固有异步方法装箱成
+/// BoxFut 以满足对象安全，语义完全委托原实现。
 impl ScheduledTaskStore for ProjectConfigRuntime {
+    /// 委托 ProjectConfigRuntime::list_scheduled_tasks。
     fn list_scheduled_tasks<'a>(
         &'a self,
         project_id: &'a str,
     ) -> BoxFut<'a, AppResult<Vec<ScheduledTask>>> {
         Box::pin(ProjectConfigRuntime::list_scheduled_tasks(self, project_id))
     }
+    /// 委托 ProjectConfigRuntime::upsert_scheduled_task。
     fn upsert_scheduled_task<'a>(
         &'a self,
         project_id: &'a str,
@@ -151,6 +209,7 @@ impl ScheduledTaskStore for ProjectConfigRuntime {
             self, project_id, input,
         ))
     }
+    /// 委托 ProjectConfigRuntime::delete_scheduled_task。
     fn delete_scheduled_task<'a>(
         &'a self,
         project_id: &'a str,
@@ -160,6 +219,7 @@ impl ScheduledTaskStore for ProjectConfigRuntime {
             self, project_id, task_id,
         ))
     }
+    /// 委托 ProjectConfigRuntime::update_scheduled_task_state。
     fn update_scheduled_task_state<'a>(
         &'a self,
         project_id: &'a str,
@@ -170,6 +230,7 @@ impl ScheduledTaskStore for ProjectConfigRuntime {
             self, project_id, task_id, patch,
         ))
     }
+    /// 委托 update_scheduled_task_state_if；谓词闭包包一层以匹配签名。
     fn update_scheduled_task_state_if<'a>(
         &'a self,
         project_id: &'a str,
@@ -185,6 +246,7 @@ impl ScheduledTaskStore for ProjectConfigRuntime {
             .await
         })
     }
+    /// 委托 ProjectConfigRuntime::reconcile_loop_tasks。
     fn reconcile_loop_tasks<'a>(
         &'a self,
         project_id: &'a str,
@@ -197,48 +259,82 @@ impl ScheduledTaskStore for ProjectConfigRuntime {
 }
 
 /// A discovered project (`listProjects` → settings.json projects).
+///
+/// 中文补充：调度器只消费 id 与路径这两个字段。
 #[derive(Debug, Clone)]
 pub struct ProjectRef {
+    /// 项目 id（settings.json projects 的键）。
     pub id: String,
+    /// 项目根目录路径（loop 发现与引擎会话的 cwd）。
     pub path: String,
 }
 
+/// 项目列表访问 seam（生产来自 settings.json 的 projects 配置，
+/// 测试可注入内存列表）。
 pub trait ProjectsAccess: Send + Sync {
+    /// 返回全部已发现项目；失败会让同步流程整体报错。
     fn list_projects(&self) -> BoxFut<'static, AppResult<Vec<ProjectRef>>>;
 }
 
+/// 运行时的全部依赖注入点：存储、项目列表、引擎派发、事件发射、
+/// 时钟与三组并发/时长上限。
 pub struct RuntimeDeps {
+    /// 持久化 seam（见 ScheduledTaskStore）。
     pub store: Arc<dyn ScheduledTaskStore>,
+    /// 项目列表 seam（见 ProjectsAccess）。
     pub projects: Arc<dyn ProjectsAccess>,
+    /// 引擎派发 seam（会话创建、prompt、命令执行）。
     pub dispatch: Arc<dyn EngineDispatch>,
+    /// 任务运行事件的发射回调。
     pub emit_task_run_event: EmitTaskRunEvent,
+    /// 可注入时钟（unix ms）。
     pub clock: Clock,
+    /// 全局并发上限。
     pub max_global_concurrency: usize,
+    /// 单项目并发上限。
     pub max_project_concurrency: usize,
+    /// 单次运行 watchdog 时长（ms）。
     pub max_run_duration_ms: u64,
 }
 
+/// 派发队列中的一项：哪个项目的哪个任务、按哪个占位时间触发。
 #[derive(Debug, Clone)]
 struct QueueItem {
+    /// 项目 id。
     project_id: String,
+    /// 任务 id。
     task_id: String,
+    /// 触发本次排队的计划占位时间戳；入队路径总是 Some。
     scheduled_for: Option<i64>,
 }
 
+/// 单把 Mutex 保护的全部可变调度状态（任务表、定时器、队列与计数）。
+/// 字段只在持锁期间读写；pub(crate) 仅为让测试注入。
 #[derive(Default)]
 pub(crate) struct RuntimeState {
+    /// start() 已置位：定时器允许武装、队列允许泵送。
     pub(crate) started: bool,
+    /// 每项目的任务内存快照（任务 id -> 任务）。
     pub(crate) tasks_by_project: HashMap<String, HashMap<String, ScheduledTask>>,
+    /// 项目 id -> 根路径缓存。
     pub(crate) project_path_by_id: HashMap<String, String>,
+    /// task_key -> 定时器句柄（重武装前先 abort 旧句柄）。
     timers_by_task_key: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// 已入队任务的 task_key 集合（防重复入队）。
     queued_task_keys: HashSet<String>,
+    /// 正在运行任务的 task_key 集合。
     running_task_keys: HashSet<String>,
+    /// 每项目正在运行的任务数。
     running_count_by_project: HashMap<String, usize>,
+    /// 全局正在运行的任务数。
     running_global_count: usize,
+    /// 待派发队列（FIFO）。
     queue: VecDeque<QueueItem>,
 }
 
+/// 内存状态的小型辅助操作。
 impl RuntimeState {
+    /// 用最新快照覆盖内存中的任务；项目不存在时静默丢弃（等下次 sync）。
     fn update_in_memory_task(&mut self, project_id: &str, task: ScheduledTask) {
         if let Some(map) = self.tasks_by_project.get_mut(project_id) {
             map.insert(task.id.clone(), task);
@@ -246,18 +342,26 @@ impl RuntimeState {
     }
 }
 
+/// 调度器本体：不可变依赖 + 一把 Mutex 保护的状态。
 pub struct ScheduledTasksRuntime {
+    /// 注入的依赖集合。
     deps: RuntimeDeps,
+    /// 全部可变状态（含定时器句柄与队列）。
     state: Mutex<RuntimeState>,
 }
 
+/// 运行时共享句柄：定时器任务与泵送级联都持有它。
 pub type SharedRuntime = Arc<ScheduledTasksRuntime>;
 
+/// 拼接 task_key（`{project_id}:{task_id}`），作为定时器/队列/运行的
+/// 统一去重键。
 fn build_task_key(project_id: &str, task_id: &str) -> String {
     format!("{project_id}:{task_id}")
 }
 
+/// 调度器的全部操作：定时器管理、项目同步、队列泵送与运行生命周期。
 impl ScheduledTasksRuntime {
+    /// 构造共享运行时（未启动、空任务表）。
     pub fn new(deps: RuntimeDeps) -> SharedRuntime {
         Arc::new(Self {
             deps,
@@ -265,27 +369,32 @@ impl ScheduledTasksRuntime {
         })
     }
 
+    /// 加锁；锁中毒（某持有者 panic）时恢复并继续，保证调度器不死锁。
     fn lock_state(&self) -> std::sync::MutexGuard<'_, RuntimeState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 测试专用：直接暴露状态守卫以注入任务表。
     #[cfg(test)]
     pub(crate) fn state_for_tests(&self) -> std::sync::MutexGuard<'_, RuntimeState> {
         self.lock_state()
     }
 
+    /// 当前时钟读数（unix ms）。
     fn now_ms(&self) -> i64 {
         (self.deps.clock)()
     }
 
     // -- timers ------------------------------------------------------------
 
+    /// 摘除并 abort 指定 task_key 的定时器（不存在则不动）。
     fn clear_timer_for_key(state: &mut RuntimeState, task_key: &str) {
         if let Some(handle) = state.timers_by_task_key.remove(task_key) {
             handle.abort();
         }
     }
 
+    /// 清掉某项目全部任务的定时器与排队标记（整体替换任务表前调用）。
     fn clear_project_timers(state: &mut RuntimeState, project_id: &str) {
         let keys: Vec<String> = state
             .tasks_by_project
@@ -303,6 +412,7 @@ impl ScheduledTasksRuntime {
         }
     }
 
+    /// 整体替换某项目的内存任务表：先清旧定时器，再插入新 map。
     fn set_project_tasks(state: &mut RuntimeState, project_id: &str, tasks: Vec<ScheduledTask>) {
         Self::clear_project_timers(state, project_id);
         let mut map = HashMap::new();
@@ -315,6 +425,10 @@ impl ScheduledTasksRuntime {
     /// `scheduleTask`: arm a timer for `next_run_at` (ms) with jitter. Tokio
     /// sleeps take arbitrary durations, so the JS `MAX_TIMER_DELAY_MS`
     /// re-arm hop is unnecessary.
+    ///
+    /// 中文补充：先在锁内清旧定时器并算出「剩余延迟 + 随机抖动」，
+    /// 锁外 spawn sleep 任务；到点后在锁内复查启用与启动状态再入队，
+    /// 最后按最新状态登记句柄或丢弃，避免与 stop() 竞态留下孤儿定时器。
     pub(crate) fn schedule_task(
         self: &SharedRuntime,
         project_id: &str,
@@ -380,6 +494,9 @@ impl ScheduledTasksRuntime {
     /// `scheduleFutureRun`: arm only a strictly-future occurrence. Arming a
     /// past slot re-enters the claim path at delay 0 and can spin (notably
     /// for once tasks whose claim cannot advance nextRunAt).
+    ///
+    /// 中文补充：next 缺失或不严格晚于 from_ms 都不武装并返回
+    /// false，由调用方决定是否重算。
     fn schedule_future_run(
         self: &SharedRuntime,
         project_id: &str,
@@ -399,6 +516,10 @@ impl ScheduledTasksRuntime {
 
     /// `rearmFromTaskOrCompute`: prefer a still-future persisted slot, else
     /// compute the next occurrence; never re-arm a past slot.
+    ///
+    /// 中文补充：优先用内存（或 fallback 任务）里持久化的
+    /// nextRunAt，只有它不可用时才用 compute_next_run_at 重算；
+    /// 两个路径都保证只武装未来的时刻。
     fn rearm_from_task_or_compute(
         self: &SharedRuntime,
         project_id: &str,
@@ -433,6 +554,8 @@ impl ScheduledTasksRuntime {
 
     // -- sync --------------------------------------------------------------
 
+    /// 取项目根路径：命中缓存直接返回，否则查项目列表并回填缓存；
+    /// 项目未知时返回 None。
     async fn ensure_project_path(&self, project_id: &str) -> Option<String> {
         if let Some(cached) = self.lock_state().project_path_by_id.get(project_id) {
             return Some(cached.clone());
@@ -448,6 +571,8 @@ impl ScheduledTasksRuntime {
         Some(path)
     }
 
+    /// 把某任务的 nextRunAt 补写进持久化状态，并按返回的最新任务
+    /// 重武装定时器；写失败静默跳过（下次 sync 重试）。
     async fn sync_task_schedule(self: &SharedRuntime, project_id: &str, task: &ScheduledTask) {
         let next_run_at = compute_next_run_at(task, self.now_ms());
         let patch = json!({
@@ -475,6 +600,9 @@ impl ScheduledTasksRuntime {
 
     /// `syncProject`: reconcile loops for a known project path (or list the
     /// persisted tasks), then re-arm every task.
+    ///
+    /// 中文补充：能解析到项目路径才做 loop 对账（否则退化为纯列表，
+    /// 不产生任何写）；随后整体替换内存任务表并逐个补写 nextRunAt。
     pub async fn sync_project(
         self: &SharedRuntime,
         project_id: &str,
@@ -502,6 +630,9 @@ impl ScheduledTasksRuntime {
     }
 
     /// `syncAllProjects`: drop vanished projects, sync active ones.
+    ///
+    /// 中文补充：先在锁内清空路径缓存并剔除已消失项目（连定时器
+    /// 一起），再逐个同步存活项目；任一项目失败即整体返回错误。
     pub async fn sync_all_projects(self: &SharedRuntime) -> AppResult<()> {
         let projects = self.deps.projects.list_projects().await?;
         let active: HashSet<String> = projects.iter().map(|p| p.id.clone()).collect();
@@ -531,6 +662,8 @@ impl ScheduledTasksRuntime {
     }
 
     /// `start()`: begin scheduling and sync every project.
+    ///
+    /// 中文补充：幂等——已启动直接返回 Ok；置位后立即全量同步。
     pub async fn start(self: &SharedRuntime) -> AppResult<()> {
         if self.lock_state().started {
             return Ok(());
@@ -540,6 +673,9 @@ impl ScheduledTasksRuntime {
     }
 
     /// `stop()`: clear timers and the queue.
+    ///
+    /// 中文补充：abort 全部定时器并清空排队状态；已在运行的任务
+    /// 不受影响（由各自的完成路径收尾）。
     pub fn stop(&self) {
         let mut state = self.lock_state();
         if !state.started {
@@ -554,6 +690,8 @@ impl ScheduledTasksRuntime {
     }
 
     /// `getStatus`.
+    ///
+    /// 中文补充：仅统计内存态（启用数/运行数），无任何 I/O。
     pub fn get_status(&self) -> Value {
         let state = self.lock_state();
         let enabled_count = state
@@ -573,6 +711,7 @@ impl ScheduledTasksRuntime {
 
     // -- queue -------------------------------------------------------------
 
+    /// 并发闸门：全局运行数与该项目运行数都未达上限才允许启动。
     fn can_run_task(&self, state: &RuntimeState, project_id: &str) -> bool {
         if state.running_global_count >= self.deps.max_global_concurrency {
             return false;
@@ -585,6 +724,8 @@ impl ScheduledTasksRuntime {
         running < self.deps.max_project_concurrency
     }
 
+    /// 预占运行槽位：登记 task_key 并累加全局/项目计数。必须在锁内
+    /// 调用，保证上限不被穿透。
     fn reserve_slot(state: &mut RuntimeState, project_id: &str, task_key: &str) {
         state.running_task_keys.insert(task_key.to_string());
         state.running_global_count += 1;
@@ -594,6 +735,8 @@ impl ScheduledTasksRuntime {
             .or_insert(0) += 1;
     }
 
+    /// 释放运行槽位：移除 task_key、递减计数；项目计数归零时移除
+    /// 条目。每条运行结束路径都必须恰好调用一次。
     fn release_running_slot(&self, project_id: &str, task_key: &str) {
         let mut state = self.lock_state();
         state.running_task_keys.remove(task_key);
@@ -619,10 +762,15 @@ impl ScheduledTasksRuntime {
     /// The completion pump re-enters `pumpQueue` from spawned tasks; the
     /// recursion goes through a boxed future so the spawned blocks can prove
     /// `Send` (a direct recursive await would be an unprovable cycle).
+    ///
+    /// 中文补充：对外入口只是装箱版的薄封装（见 pump_queue_boxed）。
     pub(crate) async fn pump_queue(self: &SharedRuntime) {
         self.pump_queue_boxed().await
     }
 
+    /// 泵送实现：锁内批量挑出可启动项并同步预占槽位，锁外 spawn
+    /// 各运行任务；每个任务结束后再次泵送形成级联。装箱以打破
+    /// 异步递归的 Send 证明环。
     fn pump_queue_boxed<'a>(self: &'a SharedRuntime) -> BoxFut<'a, ()> {
         Box::pin(async move {
             let mut starts: Vec<(String, String, Option<i64>)> = Vec::new();
@@ -661,6 +809,10 @@ impl ScheduledTasksRuntime {
     // -- running ------------------------------------------------------------
 
     /// `runTask`: full lifecycle; every path releases the running slot.
+    ///
+    /// 中文补充：锁内完成「存在/启用/非运行中」三项检查并预占槽位，
+    /// 失败路径各自返回 skipped/running；随后执行完整生命周期，
+    /// 任何路径都会释放槽位。
     pub async fn run_task(
         self: &SharedRuntime,
         project_id: &str,
@@ -705,6 +857,9 @@ impl ScheduledTasksRuntime {
     }
 
     /// Pump entry point: the slot is already reserved by `pump_queue`.
+    ///
+    /// 中文补充：仅复查任务仍存在且启用；失败同样释放槽位并返回
+    /// skipped。
     async fn run_task_with_reserved_slot(
         self: &SharedRuntime,
         project_id: &str,
@@ -734,6 +889,9 @@ impl ScheduledTasksRuntime {
     }
 
     /// `runNow`: manual trigger; manual runs never claim a schedule slot.
+    ///
+    /// 中文补充：先做运行中/已排队去重（带各自的错误消息），再走
+    /// run_task(Manual)；手动运行不做占位声明。
     pub async fn run_now(self: &SharedRuntime, project_id: &str, task_id: &str) -> RunOutcome {
         let task_key = build_task_key(project_id, task_id);
         {
@@ -758,6 +916,10 @@ impl ScheduledTasksRuntime {
         self.run_task(project_id, task_id, RunReason::Manual).await
     }
 
+    /// 运行生命周期主体：占位声明/手动启动写状态 → watchdog 执行 →
+    /// 一次性任务消费 → 完成状态写回与重武装。所有持久化失败路径
+    /// 都保证内存态收敛到终态；槽位由两个入口（run_task /
+    /// run_task_with_reserved_slot）负责释放。
     async fn run_task_body(
         self: &SharedRuntime,
         project_id: &str,
@@ -1020,6 +1182,10 @@ impl ScheduledTasksRuntime {
 
     /// Claim the occurrence in shared project config (#2710). `Err(outcome)`
     /// means the run must not proceed.
+    ///
+    /// 中文补充：以 lastScheduledFor 在 TASK_DUE_SLACK_MS 内的 CAS
+    /// 谓词抢占该占位；赢者继续运行，输者跳过（occurrence-claimed），
+    /// 存储错误同样跳过（claim-failed）并尽力补记错误状态。
     async fn claim_occurrence(
         self: &SharedRuntime,
         project_id: &str,
@@ -1150,6 +1316,7 @@ impl ScheduledTasksRuntime {
         }
     }
 
+    /// 转发事件到注入的发射回调（SSE 广播）。
     fn emit_event(&self, event: TaskRunEvent) {
         (self.deps.emit_task_run_event)(&event);
     }
@@ -1158,6 +1325,9 @@ impl ScheduledTasksRuntime {
 
     /// `runTaskWithWatchdog` body: wait ready, create the session, emit the
     /// running event, then dispatch the prompt or command.
+    ///
+    /// 中文补充：任一步失败返回 Err(消息)，由外层 watchdog 记为
+    /// error 终态；permission auto-accept 失败仅告警不中断运行。
     async fn execute_run(
         self: &SharedRuntime,
         project_id: &str,
@@ -1259,6 +1429,9 @@ impl ScheduledTasksRuntime {
 
     /// `resolveScheduledCommand`: a slash-command prompt whose command exists
     /// in the engine's command list.
+    ///
+    /// 中文补充：prompt 不是斜杠命令、或命令不在引擎命令列表中
+    /// 时返回 None，退回普通 prompt 派发。
     async fn resolve_scheduled_command(
         &self,
         project_path: &str,
@@ -1276,6 +1449,8 @@ impl ScheduledTasksRuntime {
     }
 }
 
+/// 把 loops 模块发现的 loop 文件转换为存储层的对账条目（scope 字符串
+/// 化、路径转 String、定义转任务输入 JSON）。
 fn loop_entry_from(loop_file: &DiscoveredLoop) -> LoopEntry {
     LoopEntry {
         scope: loop_file.scope.as_str().to_string(),
@@ -1284,6 +1459,9 @@ fn loop_entry_from(loop_file: &DiscoveredLoop) -> LoopEntry {
     }
 }
 
+/// 构造 prompt_async 的请求体：provider+model 齐全才带 model 对象，
+/// 可选 agent/variant；parts 为展开 snippet 后的 prompt 文本，goal
+/// 启用时追加合成的 goal 提醒分片（synthetic=true）。
 fn build_prompt_async_payload(task: &ScheduledTask, project_path: &str) -> Value {
     let mut payload = serde_json::Map::new();
     match (&task.execution.provider_id, &task.execution.model_id) {
@@ -1317,6 +1495,8 @@ fn build_prompt_async_payload(task: &ScheduledTask, project_path: &str) -> Value
     Value::Object(payload)
 }
 
+/// 调度运行时的行为测试：跨实例占位声明、各错误路径的槽位/状态收敛、
+/// 一次性任务消费、状态计数与 loop 对账（对照 JS runtime 的测试用例）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,8 +1506,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    /// 固定的「当前时刻」，让全部测试的调度与占位计算可复现。
     const NOW: i64 = 1_768_000_000_000; // arbitrary fixed instant
 
+    /// 行为契约：两个运行时实例争抢同一占位时，只有赢家真正派发
+    /// （恰好创建一个会话），输家以 occurrence-claimed 跳过。
     #[tokio::test]
     async fn two_instances_claiming_one_occurrence_create_one_session() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1365,6 +1548,8 @@ mod tests {
         assert_eq!(store.claim_attempts.load(Ordering::SeqCst), 2);
     }
 
+    /// 行为契约：同一占位的重复声明在 slack 窗口内被拒，但次日的
+    /// 新占位照常触发第二次运行。
     #[tokio::test]
     async fn same_occurrence_again_is_rejected_but_next_day_fires() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1412,6 +1597,8 @@ mod tests {
         assert_eq!(dispatch.sessions.load(Ordering::SeqCst), 2);
     }
 
+    /// 行为契约：占位声明失败必须释放运行槽位（计数归零），且不阻碍
+    /// 随后的手动 runNow。
     #[tokio::test]
     async fn claim_failure_releases_slot_and_manual_run_still_works() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1442,6 +1629,8 @@ mod tests {
         assert_eq!(runtime.get_status()["runningScheduledTasksCount"], 0);
     }
 
+    /// 行为契约：一次性任务声明失败时补记 error 状态（含错误消息）
+    /// 并保持 enabled，等待下次触发。
     #[tokio::test]
     async fn once_claim_failure_records_error_state() {
         let store = Arc::new(MemoryStore::new(once_task()));
@@ -1474,6 +1663,8 @@ mod tests {
         assert!(stored.enabled);
     }
 
+    /// 行为契约：手动运行的完成状态写失败仍返回会话 id 与
+    /// persistError，内存态收敛为 success 且槽位归零。
     #[tokio::test]
     async fn manual_completion_write_failure_returns_session_and_persist_error() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1500,6 +1691,8 @@ mod tests {
         assert_eq!(runtime.get_status()["runningScheduledTasksCount"], 0);
     }
 
+    /// 行为契约：手动启动的状态写失败会让运行中止、不创建会话，
+    /// 并释放运行槽位。
     #[tokio::test]
     async fn manual_start_state_write_failure_releases_slot() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1515,6 +1708,7 @@ mod tests {
         assert_eq!(runtime.get_status()["runningScheduledTasksCount"], 0);
     }
 
+    /// 行为契约：一次性任务在计划运行后被消费（enabled=false）。
     #[tokio::test]
     async fn once_task_is_consumed_after_scheduled_run() {
         let store = Arc::new(MemoryStore::new(once_task()));
@@ -1539,6 +1733,8 @@ mod tests {
         );
     }
 
+    /// 行为契约：缺失占位时间戳的计划运行按 missing-scheduled-for
+    /// 跳过，不创建任何会话。
     #[tokio::test]
     async fn scheduled_run_without_occurrence_is_skipped() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1560,6 +1756,7 @@ mod tests {
         assert_eq!(dispatch.sessions.load(Ordering::SeqCst), 0);
     }
 
+    /// 行为契约：任务缺失或已禁用时跳过，不创建会话。
     #[tokio::test]
     async fn disabled_or_missing_tasks_skip() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1583,6 +1780,7 @@ mod tests {
         assert_eq!(dispatch.sessions.load(Ordering::SeqCst), 0);
     }
 
+    /// 行为契约：状态计数只统计启用与运行中的任务。
     #[tokio::test]
     async fn status_counts_enabled_and_running_tasks() {
         let store = Arc::new(MemoryStore::new(daily_task()));
@@ -1595,6 +1793,8 @@ mod tests {
         assert_eq!(status["runningScheduledTasksCount"], 0);
     }
 
+    /// 行为契约：prompt 载荷形状与 JS 一致——model 对象、goal 合成
+    /// 分片、角色跟随任务省略 model。
     #[tokio::test]
     async fn prompt_payload_shape_matches_js() {
         let task = daily_task();
@@ -1626,6 +1826,8 @@ mod tests {
     /// JS `reconciles discovered loops when the project path is known`:
     /// the real on-disk project config round-trips loop tasks (persistence
     /// roundtrip through `ProjectConfigRuntime`).
+    ///
+    /// 中文补充：走真实 ProjectConfigRuntime 的端到端持久化往返。
     #[tokio::test]
     async fn sync_project_reconciles_loops_through_real_store() {
         let root = std::env::temp_dir().join(format!(
@@ -1685,6 +1887,8 @@ mod tests {
 
     /// JS `falls back to plain listing when the project path cannot be
     /// resolved`: no reconcile write happens for an unknown project.
+    ///
+    /// 中文补充：同时断言未知项目不产生任何 reconcile 写文件。
     #[tokio::test]
     async fn sync_project_falls_back_to_plain_listing() {
         let root = std::env::temp_dir().join(format!(
@@ -1732,6 +1936,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 行为契约：loop 条目转换保留 scope、路径与定义 JSON。
     #[tokio::test]
     async fn loop_entry_conversion_keeps_scope_and_definition() {
         let def = super::super::loops::LoopDefinition {

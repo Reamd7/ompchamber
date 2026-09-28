@@ -1,7 +1,12 @@
+/**
+ * （中文套件说明）文本摘要测试：TTS 清洗的代码剔除顺序、不再调用已下线
+ * 的 zen provider（reason 固定为不可用），以及 note/notification 的本地兜底行为。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { sanitizeForTTS, summarizeText } from './summarization.js';
 
+// 文本摘要兜底：清洗规则与 provider 下线后的固定返回。
 describe('text summarization stubs', () => {
   it('removes code from TTS text before stripping markdown punctuation', () => {
     expect(sanitizeForTTS('Read `const value = 1` aloud')).toBe('Read aloud');

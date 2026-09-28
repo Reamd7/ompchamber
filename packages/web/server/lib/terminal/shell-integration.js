@@ -1,4 +1,9 @@
 /**
+ * （中文模块说明）OSC 133 shell 集成：扫描 PTY 输出中的命令边界标记，
+ * 并生成 zsh/bash 的注入脚本，使无原生集成能力的 shell 也能上报
+ * 命令开始/结束（配合 runtime 的 command-finished 事件）。
+ */
+/**
  * OSC 133 shell integration: detect command boundary markers in PTY output.
  *
  * Shells emit these when shell-integration is active:
@@ -10,13 +15,20 @@
  * both accepted.
  */
 
+/** 跨 chunk 缓冲上限：超过即只保留尾部，防止无标记输出无限累积。 */
 const MAX_CARRY = 4096;
 
+/** （中文说明）每个 PTY 会话一个扫描器实例，跨 chunk 保存未完成序列。 */
 /** State that persists across chunks for one PTY session. */
 export class Osc133Scanner {
+  // 待续写缓冲：可能包含未终结的 OSC 序列前缀。
   #carry = '';
+  // 最近一次 command-finished 的退出码（当前未被外部消费）。
   #lastCommandExit = null;
 
+  /**
+   * （中文说明）逐块扫描；匹配后从缓冲中删除已消费序列并重置正则游标。
+   */
   /**
    * Scan a chunk of PTY output for OSC 133 markers.
    * @param {string} chunk — raw PTY output
@@ -47,12 +59,17 @@ export class Osc133Scanner {
     return events;
   }
 
+  /** 清空跨 chunk 缓冲与上次退出码（会话重启复用 scanner 前调用）。 */
   reset() {
     this.#carry = '';
     this.#lastCommandExit = null;
   }
 }
 
+/**
+ * （中文说明）生成写入临时 .zshenv 的 wrapper 脚本内容：
+ * 先把 ZDOTDIR 还给用户配置，再挂 precmd/preexec 钩子发标记。
+ */
 /**
  * Build the zsh wrapper script that emits OSC 133 markers.
  * The wrapper is written to a temp .zshenv that gives ZDOTDIR back
@@ -87,6 +104,9 @@ builtin printf '\x1b]777;oc-shell-ready\x07'
 `;
 }
 
+/**
+ * （中文说明）生成 bash --rcfile 用的 rc 片段：链回用户 .bashrc 并挂钩子。
+ */
 /**
  * Build the bash rcfile snippet that emits OSC 133 markers.
  */

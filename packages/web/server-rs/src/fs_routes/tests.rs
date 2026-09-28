@@ -1,6 +1,9 @@
 //! Route-level tests for the fs port — exercised through `Router::oneshot`
 //! exactly like the JS tests drive the registered express handlers, using
 //! temp fixtures and the `x-opencode-directory` header to pin the workspace.
+//! fs 移植的路由级测试：与 JS 测试驱动 express 处理器的方式一致，
+//! 通过 `Router::oneshot` 打真实路由，用临时目录夹具和
+//! `x-opencode-directory` 请求头固定工作区。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,8 +21,10 @@ use crate::context::RouterContext;
 use crate::engine::EngineState;
 use crate::hub::EventHub;
 
+/// 进程内单调递增计数器：为每个临时夹具目录生成唯一后缀，支持测试并行。
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 创建（先清空同名残留）带 label 与唯一后缀的临时夹具目录。
 fn unique_temp_dir(label: &str) -> PathBuf {
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("fsport-{label}-{}-{unique}", std::process::id()));
@@ -28,6 +33,8 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// 构建指向临时目录的 RouterContext：api_only、随机端口、外部 engine 指向
+/// 不可达地址 —— 路由测试不依赖 engine/hub 的真实行为。
 fn test_ctx() -> RouterContext {
     let dir = unique_temp_dir("ctx");
     RouterContext {
@@ -49,17 +56,24 @@ fn test_ctx() -> RouterContext {
     }
 }
 
+/// 用独立测试上下文构建 fs 路由 Router。
 fn app() -> Router {
     router(test_ctx())
 }
 
+/// 一次请求的响应快照（状态、头、体），供断言辅助方法复用。
 struct Sent {
+    /// 响应状态码。
     status: StatusCode,
+    /// 响应头副本。
     headers: HeaderMap,
+    /// 已收集完成的响应体字节。
     body: Vec<u8>,
 }
 
+/// Sent 的响应体解码辅助。
 impl Sent {
+    /// 将响应体解析为 JSON；不是合法 JSON 时 panic 并附上原文便于定位。
     fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or_else(|error| {
             panic!(
@@ -69,11 +83,13 @@ impl Sent {
             )
         })
     }
+    /// 将响应体按 UTF-8 无损解码为字符串。
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).into_owned()
     }
 }
 
+/// 用 oneshot 驱动 router 处理一次请求，收集状态、头与体（上限 64 MiB）。
 async fn send(router: Router, request: Request<Body>) -> Sent {
     let response = router
         .oneshot(request)
@@ -91,6 +107,7 @@ async fn send(router: Router, request: Request<Body>) -> Sent {
     }
 }
 
+/// 构造空 body 的 GET 请求，可附加额外请求头。
 fn get(uri: &str, extra_headers: &[(&str, String)]) -> Request<Body> {
     let mut builder = Request::builder().method(Method::GET).uri(uri);
     for (name, value) in extra_headers {
@@ -99,6 +116,7 @@ fn get(uri: &str, extra_headers: &[(&str, String)]) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
+/// 构造 Content-Type 为 application/json 的 POST 请求。
 fn post_json(uri: &str, body: Value, extra_headers: &[(&str, String)]) -> Request<Body> {
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -110,6 +128,7 @@ fn post_json(uri: &str, body: Value, extra_headers: &[(&str, String)]) -> Reques
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
+/// 构造 Content-Type 为 application/octet-stream 的 POST 请求（upload 专用）。
 fn post_octet(uri: &str, body: &[u8], extra_headers: &[(&str, String)]) -> Request<Body> {
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -121,6 +140,7 @@ fn post_octet(uri: &str, body: &[u8], extra_headers: &[(&str, String)]) -> Reque
     builder.body(Body::from(body.to_vec())).unwrap()
 }
 
+/// 绕过 HTTP 直接在夹具目录写文件（自动创建父目录）。
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -132,6 +152,7 @@ fn write_file(path: &Path, content: &str) {
 // GET /api/fs/home
 // ---------------------------------------------------------------------------
 
+/// 验证 /api/fs/home 返回 HOME 环境变量指定的主目录。
 #[tokio::test]
 async fn home_returns_the_home_directory() {
     let sent = send(app(), get("/api/fs/home", &[])).await;
@@ -156,6 +177,8 @@ async fn home_returns_the_home_directory() {
 // GET /api/fs/list
 // ---------------------------------------------------------------------------
 
+/// 验证 list 返回目录树条目（目录/文件标志正确），且响应 path 保持
+/// 调用方请求的路径空间而非 realpath（issue 2627）。
 #[tokio::test]
 async fn list_lists_tree_and_keeps_requested_path_space() {
     let fixture = unique_temp_dir("list");
@@ -226,6 +249,7 @@ async fn list_lists_tree_and_keeps_requested_path_space() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 list 能经符号链接读取真实目录，但条目 path 仍用符号链接路径。
 #[cfg(unix)]
 #[tokio::test]
 async fn list_resolves_symlinked_directories_but_reports_requested_paths() {
@@ -258,6 +282,7 @@ async fn list_resolves_symlinked_directories_but_reports_requested_paths() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 list 缺失目录返回 404 并携带 reason: not-found 的 JS 错误体。
 #[tokio::test]
 async fn list_missing_directory_is_404_with_reason() {
     let fixture = unique_temp_dir("listmissing");
@@ -274,6 +299,7 @@ async fn list_missing_directory_is_404_with_reason() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 list 对缺失的 .opencode/plans 目录返回 200 空列表而非 404。
 #[tokio::test]
 async fn list_missing_plans_directory_answers_empty_200() {
     let fixture = unique_temp_dir("plans");
@@ -288,6 +314,7 @@ async fn list_missing_plans_directory_answers_empty_200() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 list 目标是文件时返回 400 not-directory。
 #[tokio::test]
 async fn list_file_target_is_rejected_as_not_directory() {
     let fixture = unique_temp_dir("listfile");
@@ -309,6 +336,8 @@ async fn list_file_target_is_rejected_as_not_directory() {
 // POST /api/fs/write + GET /api/fs/read + GET /api/fs/stat
 // ---------------------------------------------------------------------------
 
+/// 验证 write→read→stat 全链路内容一致、Content-Type 正确，
+/// 且重写相同内容是成功 no-op。
 #[tokio::test]
 async fn write_read_stat_roundtrip() {
     let fixture = crate::settings::normalization::strip_verbatim_prefix(
@@ -364,6 +393,7 @@ async fn write_read_stat_roundtrip() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 write 自动创建缺失的多级父目录。
 #[tokio::test]
 async fn write_creates_missing_parent_directories() {
     let fixture = std::fs::canonicalize(unique_temp_dir("writeparents")).unwrap();
@@ -382,6 +412,7 @@ async fn write_creates_missing_parent_directories() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 write 缺 path / content 分别返回对应 400 错误文案。
 #[tokio::test]
 async fn write_requires_path_and_content() {
     let fixture = unique_temp_dir("writebad");
@@ -412,6 +443,7 @@ async fn write_requires_path_and_content() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 `..` 逃逸工作区的 write/read 均被拒绝，外部文件内容未被触碰。
 #[tokio::test]
 async fn traversal_escaping_the_workspace_is_rejected_with_js_error() {
     let fixture = unique_temp_dir("traversal");
@@ -454,6 +486,8 @@ async fn traversal_escaping_the_workspace_is_rejected_with_js_error() {
     std::fs::remove_dir_all(&outside).ok();
 }
 
+/// 验证 read/stat 对缺失文件默认 404；optional=true 时分别返回
+/// 空 200 与 exists:false 的 200。
 #[tokio::test]
 async fn read_missing_file_maps_to_404_and_optional_empty() {
     let fixture = unique_temp_dir("readmissing");
@@ -492,6 +526,7 @@ async fn read_missing_file_maps_to_404_and_optional_empty() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 read 目标是目录时返回 400 "Specified path is not a file"。
 #[tokio::test]
 async fn read_directory_target_is_rejected() {
     let fixture = unique_temp_dir("readdir");
@@ -510,6 +545,7 @@ async fn read_directory_target_is_rejected() {
 // POST /api/fs/mkdir + /api/fs/delete + /api/fs/rename
 // ---------------------------------------------------------------------------
 
+/// 验证 mkdir 递归创建多级目录，且 allowOutsideWorkspace 无 grant 时被 403 拒绝。
 #[tokio::test]
 async fn mkdir_creates_directories_and_rejects_outside_grants() {
     let fixture = unique_temp_dir("mkdir");
@@ -545,6 +581,8 @@ async fn mkdir_creates_directories_and_rejects_outside_grants() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 delete 对缺失目标成功（force 语义）、递归删除目录树，
+/// 越界路径在触盘前即被 400 拒绝。
 #[tokio::test]
 async fn delete_missing_path_is_force_success_and_outside_is_400() {
     let fixture = unique_temp_dir("delete");
@@ -611,6 +649,7 @@ async fn delete_missing_path_is_force_success_and_outside_is_400() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 rename 移动文件并保留内容；跨工作区根的目标被 400 拒绝且源未动。
 #[tokio::test]
 async fn rename_moves_files_and_requires_shared_root() {
     let fixture = unique_temp_dir("rename");
@@ -665,6 +704,7 @@ async fn rename_moves_files_and_requires_shared_root() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 rename 源缺失时返回 404 "Source path not found"。
 #[tokio::test]
 async fn rename_missing_source_is_404() {
     let fixture = unique_temp_dir("renamemissing");
@@ -692,8 +732,12 @@ async fn rename_missing_source_is_404() {
 /// Serializes the upload tests: one of them mutates
 /// OMPCHAMBER_FS_UPLOAD_MAX_BYTES (process-global), so no other upload test
 /// may stream concurrently.
+/// 串行化全部 upload 测试：其中一个会修改进程级环境变量
+/// OMPCHAMBER_FS_UPLOAD_MAX_BYTES，期间不允许其它 upload 测试并发流式传输。
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// 验证 upload 流式落盘成功、目录无 .upload- 临时文件残留、无 overwrite
+/// 时冲突 409 already-exists、overwrite 后提交新字节、错误 Content-Type 415。
 #[tokio::test]
 async fn upload_streams_and_commits_atomically() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -761,6 +805,7 @@ async fn upload_streams_and_commits_atomically() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 upload 目标是已存在目录时返回 400 "Specified path is a directory"。
 #[tokio::test]
 async fn upload_directory_target_is_rejected() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -783,6 +828,8 @@ async fn upload_directory_target_is_rejected() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 upload 对声明的 Content-Length 超限与流式超限都返回 413，
+/// 且目标未创建、超限临时文件被清理。
 #[tokio::test]
 async fn upload_rejects_declared_and_streamed_oversize_bodies() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -844,6 +891,7 @@ async fn upload_rejects_declared_and_streamed_oversize_bodies() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 给已构造完成的请求补上 x-opencode-directory 头以固定工作区。
 fn with_directory(request: Request<Body>, directory: &str) -> Request<Body> {
     let mut request = request;
     request
@@ -852,6 +900,7 @@ fn with_directory(request: Request<Body>, directory: &str) -> Request<Body> {
     request
 }
 
+/// 生成 ("x-opencode-directory", 夹具路径) 头对，供请求构造函数使用。
 fn directory_header_of(fixture: &Path) -> (&'static str, String) {
     (
         "x-opencode-directory",
@@ -859,6 +908,7 @@ fn directory_header_of(fixture: &Path) -> (&'static str, String) {
     )
 }
 
+/// 对路径做 URI 组件编码后拼入查询串，避免分隔符被截断。
 fn urlencoding_of(path: &Path) -> String {
     super::paths::encode_uri_component(&path.to_string_lossy())
 }
@@ -867,6 +917,8 @@ fn urlencoding_of(path: &Path) -> String {
 // GET /api/fs/raw + /api/fs/serve
 // ---------------------------------------------------------------------------
 
+/// 验证 raw 按扩展名设置 MIME 与 no-store，download=true 时输出 RFC 5987
+/// 双文件名（非 ASCII 名带 ASCII 回退），未走 grant 时无 Referrer-Policy 头。
 #[tokio::test]
 async fn raw_sets_mime_download_and_cache_headers() {
     let fixture = unique_temp_dir("raw");
@@ -926,6 +978,8 @@ async fn raw_sets_mime_download_and_cache_headers() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 serve 设置 nosniff/no-store，拒绝 allowOutsideWorkspace（403），
+/// 超过 100 MiB 上限的文件返回 413。
 #[tokio::test]
 async fn serve_sets_nosniff_and_rejects_outside_flag_and_oversize() {
     let fixture = unique_temp_dir("serve");
@@ -972,6 +1026,7 @@ async fn serve_sets_nosniff_and_rejects_outside_flag_and_oversize() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 将整个绝对路径编码为单个 {*path} 路由参数段（'/' 保持 %2F 编码）。
 fn encode_segment(path: &str) -> String {
     // Path params arrive percent-encoded; encode '/' so the whole path rides
     // the {*path} wildcard.
@@ -982,6 +1037,8 @@ fn encode_segment(path: &str) -> String {
 // Outside-file grants (allowOutsideWorkspace=true)
 // ---------------------------------------------------------------------------
 
+/// 验证外部文件读取必须持 grant：无 grant 返回 400；grant 令牌不能跨
+/// router 实例使用（对应 JS 进程级 grant map 的语义）。
 #[tokio::test]
 async fn outside_file_grants_gate_read_raw_stat() {
     let fixture = unique_temp_dir("grants");
@@ -1035,6 +1092,8 @@ async fn outside_file_grants_gate_read_raw_stat() {
     std::fs::remove_dir_all(&outside).ok();
 }
 
+/// 验证 grant 的路径不匹配、scope 不足、缺少令牌与目录目标分别返回
+/// 与 JS 逐字一致的错误消息。
 #[tokio::test]
 async fn grant_mismatch_and_scope_errors_use_js_messages() {
     let outside = unique_temp_dir("grantmismatch");
@@ -1098,6 +1157,9 @@ async fn grant_mismatch_and_scope_errors_use_js_messages() {
 // POST /api/fs/exec + GET /api/fs/exec/{jobId}
 // ---------------------------------------------------------------------------
 
+/// 验证 exec 逐条执行命令并汇报 stdout/exitCode/success，任一失败置
+/// success=false；非法命令条目带最小 JS 形状；job 可经同一 router 查询，
+/// 未知 jobId 返回 404。
 #[tokio::test]
 async fn exec_runs_commands_and_exposes_the_job() {
     let fixture = unique_temp_dir("exec");
@@ -1171,6 +1233,8 @@ async fn exec_runs_commands_and_exposes_the_job() {
     std::fs::remove_dir_all(&fixture).ok();
 }
 
+/// 验证 exec 对缺 commands、缺 cwd、background=true、越界 cwd、文件 cwd
+/// 分别返回对应的 400/403 校验错误。
 #[tokio::test]
 async fn exec_validates_input_and_workspace() {
     let fixture = unique_temp_dir("execbad");
@@ -1261,6 +1325,7 @@ async fn exec_validates_input_and_workspace() {
 // GET /api/fs/git-dirs
 // ---------------------------------------------------------------------------
 
+/// 验证 git-dirs 能发现嵌套仓库与 worktree（.git 文件），缺 path 参数返回 400。
 #[tokio::test]
 async fn git_dirs_discovers_nested_repositories() {
     let fixture = unique_temp_dir("gitdirs");
@@ -1295,6 +1360,8 @@ async fn git_dirs_discovers_nested_repositories() {
 // Pure helper units
 // ---------------------------------------------------------------------------
 
+/// 验证 reveal_invocation 在 macOS/Linux/Windows 下生成的程序、参数与
+/// 是否等待退出完全匹配预期形状。
 #[test]
 fn reveal_invocation_matches_platform_shapes() {
     let file = Path::new("/repo/file.txt");
@@ -1332,6 +1399,8 @@ fn reveal_invocation_matches_platform_shapes() {
     assert!(wait);
 }
 
+/// 验证从带 .git 后缀、query、fragment、scp 风格等各类远端 URL 推断
+/// 目录名与 JS 实现一致。
 #[test]
 fn derive_clone_directory_name_matches_js() {
     assert_eq!(
@@ -1354,6 +1423,7 @@ fn derive_clone_directory_name_matches_js() {
     assert_eq!(derive_clone_directory_name("https://host/"), "");
 }
 
+/// 验证 SSH 私钥路径被单引号包裹；含危险字符的路径返回错误消息。
 #[test]
 fn escape_clone_ssh_key_path_quotes_and_rejects_dangerous_chars() {
     let quoted = super::handlers::escape_clone_ssh_key_path("/home/u/id_ed25519");

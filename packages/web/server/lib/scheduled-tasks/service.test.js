@@ -1,3 +1,10 @@
+/**
+ * 【测试套件】定时任务 service（service.js）与 HTTP 路由（routes.js）：
+ * 列表前的 loop 文件 reconcile 及失败上抛、loop 任务的启停/删除必须改写权威
+ * loop 文件（坏文件不被重写）、loop-file PATCH/DELETE 路由转发、remove 对
+ * loop 来源任务的守卫（文件在场禁止删、孤儿允许删）与 JSON 任务正常删除、
+ * run 透传 runtime 的 persistError。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import os from 'os';
 import path from 'path';
@@ -5,6 +12,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 import { createScheduledTaskService } from './service.js';
 import { registerScheduledTaskRoutes } from './routes.js';
 
+/** 构建被测 service：mock projectConfigRuntime / scheduledTasksRuntime（可用 overrides 覆盖），返回 { service, projectConfigRuntime, scheduledTasksRuntime }。 */
 const createService = (overrides = {}) => {
   const projectConfigRuntime = {
     listScheduledTasks: vi.fn(async () => []),
@@ -26,6 +34,7 @@ const createService = (overrides = {}) => {
   return { service, projectConfigRuntime, scheduledTasksRuntime };
 };
 
+// 样例 loop 来源任务：id 前缀 loop:、指向 .agents/loops/daily-digest.md、cron 每天 09:00。
 const loopTask = {
   id: 'loop:project:daily-digest',
   name: 'daily-digest',
@@ -35,6 +44,7 @@ const loopTask = {
   execution: { prompt: 'digest', providerID: 'openai', modelID: 'gpt-4.1' },
 };
 
+// describe：list —— 返回任务前先 reconcile loop 文件，reconcile 失败时上抛而非返回陈旧列表。
 describe('scheduled-task service list', () => {
   it('reconciles loop files before returning tasks', async () => {
     const syncedTasks = [loopTask];
@@ -65,6 +75,7 @@ describe('scheduled-task service list', () => {
   });
 });
 
+// describe：loop-file 变更 —— 启停只改 frontmatter 的 enabled 并 reconcile、删除即删权威文件、格式损坏的 loop 不被重写。
 describe('scheduled-task loop-file mutations', () => {
   it('updates only enabled in loop frontmatter and reconciles the task', async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-loop-toggle-'));
@@ -137,7 +148,9 @@ Run the digest.
   });
 });
 
+// describe：loop-file 路由 —— PATCH 启停与 DELETE 删文件经由 loop-file service 转发并返回其结果。
 describe('scheduled-task loop-file routes', () => {
+  // 最小 express 风格 response 桩：status()/json() 链式记录 statusCode 与 payload 供断言。
   const createResponse = () => ({
     statusCode: 200,
     payload: null,
@@ -151,6 +164,7 @@ describe('scheduled-task loop-file routes', () => {
     },
   });
 
+  // 注册真实路由到伪 app，仅捕获 PATCH/DELETE 的 handler，返回 route -> handler 映射。
   const captureHandlers = (scheduledTaskService) => {
     const handlers = new Map();
     const app = {
@@ -199,6 +213,7 @@ describe('scheduled-task loop-file routes', () => {
   });
 });
 
+// describe：remove —— loop 文件仍在场时拒绝删除（须删文件），孤儿 loop 任务与普通 JSON 任务允许直接删除并同步项目。
 describe('scheduled-task service remove', () => {
   it('rejects deleting a loop-sourced task while its loop file still exists', async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-loop-delete-'));
@@ -263,6 +278,7 @@ describe('scheduled-task service remove', () => {
   });
 });
 
+// describe：run —— runtime 上报完成态持久化失败（persistError）时如式透传给调用方。
 describe('scheduled-task service run', () => {
   it('forwards persistError when the runtime reports a completion persist failure', async () => {
     const { service } = createService({

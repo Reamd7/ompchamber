@@ -1,14 +1,23 @@
+/**
+ * walkthrough 输出契约（schema.js）的单元测试：normalizeWalkthrough 的别名
+ * 重解析、捏造别名丢弃、每个 hunk 只属一个停靠点、无锚点/无正文停靠点剔除、
+ * 全部失效时拒绝、标题截断与枚举回退、停靠点总数上限；以及 parseModelJson
+ * 对干净 JSON、代码围栏、尾随散文的提取与失败报错。
+ */
 import { describe, expect, it } from 'vitest';
 import { normalizeWalkthrough, parseModelJson, MAX_STOPS } from './schema.js';
 
+/** 别名 -> 真实 hunk id 的映射，模拟 digest 提供给归一化的 idByAlias。 */
 const ALIASES = new Map([
   ['h1', 'working:src/a.ts:aaaa1111'],
   ['h2', 'working:src/a.ts:bbbb2222'],
   ['h3', 'working:src/b.ts:cccc3333'],
 ]);
 
+/** 用给定 chapters 构造一个最小合法的原始模型输出。 */
 const walkthrough = (chapters) => ({ title: 'Change', focus: 'why', chapters });
 
+/** 归一化：锚点解析、去重、剔除、拒绝与上限截断。 */
 describe('normalizeWalkthrough', () => {
   it('maps aliases to real hunk ids and assigns stable local ids', () => {
     const result = normalizeWalkthrough(walkthrough([
@@ -122,6 +131,7 @@ describe('normalizeWalkthrough', () => {
   });
 });
 
+/** JSON 提取：干净对象、代码围栏、尾随散文与彻底失败。 */
 describe('parseModelJson', () => {
   it('parses a clean object', () => {
     expect(parseModelJson('{"title":"x"}')).toEqual({ title: 'x' });

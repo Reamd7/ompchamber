@@ -2,6 +2,11 @@
 // modules in packages/ui/src/lib/relay. bun runs TS directly, so import the TS
 // client handshake and drive a full TS-client <-> JS-host exchange both ways.
 
+/**
+ * 【测试套件】JS host 与 TS 客户端的跨端互通验证：bun 可直接运行 TS，故此处
+ * 直接导入 packages/ui/src/lib/relay 的权威 TS 模块，驱动 TS-client <-> JS-host
+ * 的双向完整交换（E2EE 握手、隧道帧编解码、batching 协商与回退）。
+ */
 import { describe, expect, it } from 'bun:test';
 
 import { createHostHandshake, exportPublicKeyJwk, generateEcdhKeyPair } from './e2ee.js';
@@ -21,6 +26,7 @@ import {
 } from '../../../../ui/src/lib/relay/tunnel-codec.ts';
 import { TunnelFrameType as TsFrameType } from '../../../../ui/src/lib/relay/protocol.ts';
 
+// 主 describe：覆盖 JS host（e2ee / tunnel-codec）与 TS 客户端（ui 侧权威实现）之间的互通性。
 describe('relay JS-host <-> TS-client cross compatibility', () => {
   it('completes a handshake and exchanges frames both ways', async () => {
     const hostKeys = await generateEcdhKeyPair();

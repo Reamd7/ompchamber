@@ -1,3 +1,9 @@
+/**
+ * Linear 团队列表（teams.js）的测试套件。
+ *
+ * 验证未连接时不发起任何 Linear 请求、跨分页拉取全部团队且响应不泄漏 token、
+ * 以及 GraphQL 401 后清除本地凭据并返回未连接状态。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
@@ -5,13 +11,16 @@ import path from 'path';
 import { clearLinearAuth, setLinearAuth } from './auth.js';
 import { listLinearTeams } from './teams.js';
 
+/** 为每个用例创建独立的临时数据目录，避免污染真实配置。 */
 const makeTempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-linear-teams-'));
 
+/** 把对象包装成 JSON Response，模拟 Linear GraphQL 的 fetch 返回。 */
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status,
   headers: { 'Content-Type': 'application/json' },
 });
 
+/** 团队列表的分页拉取、脱敏与未连接处理行为。 */
 describe('Linear teams list', () => {
   let dataDir;
   let previousDataDir;

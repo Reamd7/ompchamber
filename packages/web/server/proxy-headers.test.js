@@ -1,3 +1,10 @@
+/**
+ * proxy-headers 模块的单元测试套件（vitest）。
+ *
+ * 验证 OpenCode 反向代理的 header 白名单行为：客户端凭证与
+ * hop-by-hop header 不被转发、受管上游鉴权正确注入、上游响应中
+ * content-encoding / transfer-encoding 等被剔除而普通 header 保留。
+ */
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +13,7 @@ import {
   shouldForwardProxyResponseHeader,
 } from './proxy-headers.js';
 
+/** 覆盖转发请求 header 的组装规则：剔除白名单键、注入受管鉴权。 */
 describe('OpenCode proxy header handling', () => {
   it('drops accept-encoding from forwarded request headers', () => {
     const headers = collectForwardProxyHeaders({

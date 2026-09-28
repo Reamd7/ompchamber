@@ -20,16 +20,25 @@
  *     { type: 'pong' }
  */
 
+/**
+ * 听写运行时（中文说明）：注册 /api/dictation/ws 流式听写 WebSocket
+ * 端点与 HTTP 状态/模型管理路由；每条连接一个 DictationStreamManager，
+ * upgrade 前做 UI 认证与 Origin 校验。
+ */
 import { WebSocketServer } from 'ws';
 
 import { DictationStreamManager } from './stream-manager.js';
 import { createDictationService } from './service.js';
 
+/** 流式听写 WebSocket 端点路径。 */
 const DICTATION_WS_PATH = '/api/dictation/ws';
 
+/** 单帧最大载荷（base64 音频块），超限由 ws 直接断开。 */
 const DICTATION_WS_MAX_PAYLOAD_BYTES = 512 * 1024;
+/** 服务端 ping 心跳间隔，防止空闲连接被中间层掐断。 */
 const DICTATION_WS_HEARTBEAT_INTERVAL_MS = 30000;
 
+/** 解析请求 URL 的 pathname；URL 非法则退化为按 '?' 截断的字符串。 */
 const parseRequestPathname = (url) => {
   try {
     return new URL(url, 'http://localhost').pathname;
@@ -38,6 +47,17 @@ const parseRequestPathname = (url) => {
   }
 };
 
+/**
+ * 创建听写运行时：挂 HTTP 路由（TTS 合成、状态查询、模型下载/删除）
+ * 与 WebSocket 端点，并返回 stop() 用于优雅关闭。
+ * @param {object} app express 应用
+ * @param {object} server HTTP 服务器（挂 upgrade 事件）
+ * @param {object} express express 实例（用于 json 中间件）
+ * @param {object} uiAuthController UI 认证控制器（enabled 时校验会话）
+ * @param {(req: object) => Promise<boolean>} isRequestOriginAllowed Origin 白名单判定
+ * @param {(socket: object, status: number, message: string) => void} rejectWebSocketUpgrade 拒绝 upgrade 的统一出口
+ * @param {string} modelsDir 本地模型根目录
+ */
 export function createDictationRuntime({
   app,
   server,
@@ -47,10 +67,12 @@ export function createDictationRuntime({
   rejectWebSocketUpgrade,
   modelsDir,
 }) {
+  // 听写/TTS 服务实例（本运行时独占）。
   const service = createDictationService({ modelsDir });
 
   // Local text-to-speech (Kokoro in the dictation worker). Returns WAV bytes;
   // 503 with a reason code while the model is still downloading.
+  // 本地 TTS：成功返回 WAV 字节；模型缺失/下载中回 503 并带 reasonCode。
   app.post('/api/dictation/tts/speak', express.json({ limit: '1mb' }), async (req, res) => {
     try {
       const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
@@ -83,6 +105,7 @@ export function createDictationRuntime({
     }
   });
 
+  // 状态查询：provider/localModel 查询参数决定要检查哪套配置。
   app.get('/api/dictation/status', async (req, res) => {
     try {
       const provider = typeof req.query.provider === 'string' ? req.query.provider : undefined;
@@ -94,6 +117,7 @@ export function createDictationRuntime({
     }
   });
 
+  // 触发指定模型的预下载（设置页使用）。
   app.post('/api/dictation/models/:modelId/download', async (req, res) => {
     try {
       const result = await service.requestModelDownload(req.params.modelId);
@@ -107,6 +131,7 @@ export function createDictationRuntime({
     }
   });
 
+  // 删除已安装模型（下载中会被服务层拒绝）。
   app.delete('/api/dictation/models/:modelId', async (req, res) => {
     try {
       const result = await service.deleteModel(req.params.modelId);
@@ -120,12 +145,15 @@ export function createDictationRuntime({
     }
   });
 
+  // noServer 模式：由 upgradeHandler 认证后手动完成握手。
   const wsServer = new WebSocketServer({
     noServer: true,
     maxPayload: DICTATION_WS_MAX_PAYLOAD_BYTES,
   });
 
+  // 每条连接：一个发送函数 + 一个管理该连接全部听写流的 manager。
   wsServer.on('connection', (socket) => {
+    /** 向客户端发送 JSON 消息；socket 已关闭或发送失败时静默忽略（close 时统一清理）。 */
     const send = (msg) => {
       if (socket.readyState !== 1) {
         return;
@@ -137,6 +165,7 @@ export function createDictationRuntime({
       }
     };
 
+    // 本连接的听写流状态机：emit 回调统一走上面的 send。
     const manager = new DictationStreamManager({
       emit: ({ type, payload }) => send({ type, ...payload }),
       createSttSession: (options) => service.createSttSession(options),
@@ -144,6 +173,7 @@ export function createDictationRuntime({
 
     send({ type: 'ready' });
 
+    // 心跳：只要连接还开着就定期 ping。
     const heartbeatInterval = setInterval(() => {
       if (socket.readyState !== 1) {
         return;
@@ -155,6 +185,7 @@ export function createDictationRuntime({
       }
     }, DICTATION_WS_HEARTBEAT_INTERVAL_MS);
 
+    // 消息分发：只认 JSON 文本帧，字段不合法的帧直接忽略。
     socket.on('message', (raw, isBinary) => {
       if (isBinary) {
         return;
@@ -216,6 +247,7 @@ export function createDictationRuntime({
       }
     });
 
+    // 连接关闭：停心跳并清理该连接上的全部听写流。
     socket.on('close', () => {
       clearInterval(heartbeatInterval);
       manager.cleanupAll();
@@ -226,12 +258,17 @@ export function createDictationRuntime({
     });
   });
 
+  /**
+   * upgrade 事件处理：只认领听写路径；认证失败回 401、Origin 不允许回
+   * 403，全部通过才完成 WebSocket 握手，异常统一回 500。
+   */
   const upgradeHandler = (req, socket, head) => {
     const pathname = parseRequestPathname(req.url);
     if (pathname !== DICTATION_WS_PATH) {
       return;
     }
 
+    /** 异步执行认证与握手；任何异常都转化为一次 upgrade 拒绝。 */
     const handleUpgrade = async () => {
       try {
         if (uiAuthController?.enabled) {
@@ -259,8 +296,10 @@ export function createDictationRuntime({
     void handleUpgrade();
   };
 
+  // 挂到 HTTP 服务器的 upgrade 事件上。
   server.on('upgrade', upgradeHandler);
 
+  /** 优雅关闭：摘除 upgrade 监听、以 1001 关闭全部客户端、关 WSS 并停服务。 */
   const stop = () => {
     server.off('upgrade', upgradeHandler);
     for (const client of wsServer.clients) {
@@ -278,5 +317,6 @@ export function createDictationRuntime({
     service.shutdown();
   };
 
+  // 运行时对外的停止函数。
   return { stop };
 }

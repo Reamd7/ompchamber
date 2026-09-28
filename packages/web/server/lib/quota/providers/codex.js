@@ -1,3 +1,10 @@
+/**
+ * Codex（ChatGPT 订阅）配额 provider。
+ *
+ * 用 OpenCode auth 中的 OAuth access token 请求 chatgpt.com 的 wham/usage
+ * 内部端点，读取主/次限流窗口、credits 余额与企业账户的美元消费上限，
+ * 组装成统一的窗口结构。
+ */
 import { readAuthFile } from '../../opencode/auth.js';
 import {
   getAuthEntry,
@@ -10,16 +17,26 @@ import {
   formatMoney
 } from '../utils/index.js';
 
+/** 对外 provider 标识。 */
 export const providerId = 'codex';
+/** 展示名。 */
 export const providerName = 'Codex';
+/** OpenCode auth 文件中的凭据匹配别名（覆盖 openai/codex/chatgpt 三种写法）。 */
 const aliases = ['openai', 'codex', 'chatgpt'];
 
+/** 读取 auth 文件，存在 OAuth access token 或 API token 即视为已配置。 */
 export const isConfigured = () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return Boolean(entry?.access || entry?.token);
 };
 
+/**
+ * 拉取 Codex 配额：主/次限流窗口按各自时长经 resolveWindowLabel 命名
+ * （如 5h、weekly）；credits 存在时输出余额窗口（Unlimited 套餐直接展示
+ * 文案）；企业账户的 spend_control.individual_limit 额外输出为 credits
+ * 窗口。有 accountId 时附带 ChatGPT-Account-Id 头；401 提示重新登录。
+ */
 export const fetchQuota = async () => {
   const auth = readAuthFile();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));

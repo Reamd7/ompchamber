@@ -1,3 +1,9 @@
+/**
+ * 插件（plugin）配置的 CRUD 路由：管理 opencode.json 中的插件条目（entry）与
+ * plugin 目录下的独立文件（file），另提供 npm registry 规格批量校验端点。
+ * 通过 registerPluginRoutes 依赖注入挂载；具体存储与编解码逻辑由 plugins.js、
+ * plugin-spec.js 提供，npm 查询默认走 npm-registry.js 的缓存实现。
+ */
 import fs from 'fs';
 import os from 'os';
 
@@ -5,11 +11,24 @@ import { getNpmInfo as defaultGetNpmInfo } from './npm-registry.js';
 import { isExactSemver as defaultIsExactSemver, isPathSpec as defaultIsPathSpec, parseNpmSpec as defaultParseNpmSpec, parsePathSpec as defaultParsePathSpec } from './plugin-spec.js';
 import { buildDeferredRestartResponse } from './config-mutation-response.js';
 
+/** 视为"插件条目已存在"冲突（HTTP 409）的错误码集合。 */
 const ENTRY_EXISTS_CODES = new Set(['ENTRY_EXISTS', 'EEXIST']);
+/** 视为"插件文件已存在"冲突（HTTP 409）的错误码集合。 */
 const FILE_EXISTS_CODES = new Set(['FILE_EXISTS', 'EEXIST']);
+/** 视为"未找到"（HTTP 404）的错误码集合。 */
 const NOT_FOUND_CODES = new Set(['NOT_FOUND', 'ENOENT']);
+/** 视为"请求参数非法"（HTTP 400）的错误码集合。 */
 const BAD_REQUEST_CODES = new Set(['INVALID_FILENAME', 'INVALID_SCOPE', 'INVALID_SPEC', 'EINVAL']);
 
+/**
+ * 在 Express app 上注册 /api/config/plugins 系列路由：条目与文件的增删改查、
+ * 以及 registry 规格校验。所有插件读写、ID 编解码与 npm 查询能力经
+ * dependencies 注入（未提供时回退到 plugin-spec.js / npm-registry.js 默认实现）。
+ * @param {import('express').Express} app Express 应用实例
+ * @param {object} dependencies 插件存储操作（listPluginEntries 等）、encodePluginId /
+ *   decodePluginId、resolveOptionalProjectDirectory 及可覆盖的 npm 校验函数集合
+ * @returns {void}
+ */
 export const registerPluginRoutes = (app, dependencies) => {
   const {
     resolveOptionalProjectDirectory,
@@ -31,8 +50,11 @@ export const registerPluginRoutes = (app, dependencies) => {
     isPathSpec = defaultIsPathSpec,
   } = dependencies;
 
+  // 依据语法判断 spec 类型：路径规格为 'path'，否则视为 npm 规格。
   const parsedKindForSpec = (spec) => (isPathSpec(spec) ? 'path' : 'npm');
 
+  // 解析可选项目目录；query 无效时直接回 400。返回 null 表示"无目录"或"已写响应"，
+  // 调用方需结合 res.headersSent 判断是否中止。
   const resolveDirectory = async (req, res) => {
     const { directory, error } = await resolveOptionalProjectDirectory(req);
     if (error) {
@@ -42,6 +64,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     return directory || null;
   };
 
+  // 执行插件变更并统一返回"延迟重启生效"响应；operation 文案转为过去式嵌入提示。
   const completePluginMutation = async (res, operation, _noun, applyChange) => {
     applyChange();
 
@@ -51,6 +74,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     ));
   };
 
+  // 校验 id 解码后前缀为 config（插件条目），否则抛出 NOT_FOUND 错误。
   const validateEntryId = (id) => {
     const decoded = decodePluginId(id);
     if (decoded.prefix !== 'config') {
@@ -60,6 +84,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   };
 
+  // 校验 id 解码后前缀为 file（插件文件），否则抛出 NOT_FOUND 错误。
   const validateFileId = (id) => {
     const decoded = decodePluginId(id);
     if (decoded.prefix !== 'file') {
@@ -69,6 +94,8 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   };
 
+  // 将底层错误码映射为 HTTP 响应：存在冲突（按 existsKind 区分条目/文件）→409、
+  // 未找到→404、非法参数→400；其余记录日志后返回 500 与兜底文案。
   const handlePluginError = (res, error, fallbackMessage, context, existsKind = null) => {
     const code = error?.code;
     if ((existsKind === 'entry' && ENTRY_EXISTS_CODES.has(code)) || (existsKind === 'file' && FILE_EXISTS_CODES.has(code))) {
@@ -85,6 +112,8 @@ export const registerPluginRoutes = (app, dependencies) => {
     return res.status(500).json({ error: fallbackMessage });
   };
 
+  // GET /api/config/plugins：列出当前项目目录下的插件条目与 plugin 目录文件；
+  // 目录参数非法时 400，读取失败 500。
   app.get('/api/config/plugins', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -100,6 +129,11 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/plugins/registry?specs=a,b&refresh=true：批量校验规格。
+  // specs 逗号分隔（逐个 decodeURIComponent、去空、去重，上限 100 个）；路径规格
+  // 用 fs 检查存在性/可读性，npm 规格按包名合并查询 registry（refresh=true 强制
+  // 绕过缓存），逐条返回 kind：npm-ok / npm-missing-package / npm-missing-version /
+  // npm-network / npm-malformed / path-ok / path-missing / path-unreadable。
   app.get('/api/config/plugins/registry', async (req, res) => {
     try {
       const { directory, error: directoryError } = await resolveOptionalProjectDirectory(req);
@@ -213,6 +247,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/plugins/entry/:id：读取单个插件条目；id 前缀不符或条目缺失返回 404。
   app.get('/api/config/plugins/entry/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -229,6 +264,8 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/plugins/entry：新建插件条目（spec / options / scope）；
+  // 成功返回延迟重启响应，同名条目已存在返回 409。
   app.post('/api/config/plugins/entry', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -246,6 +283,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // PATCH /api/config/plugins/entry/:id：更新插件条目的 spec / options；成功返回延迟重启响应。
   app.patch('/api/config/plugins/entry/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -263,6 +301,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/plugins/entry/:id：删除插件条目；成功返回延迟重启响应。
   app.delete('/api/config/plugins/entry/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -277,6 +316,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/plugins/file/:id：读取单个插件文件内容；id 前缀不符或文件缺失返回 404。
   app.get('/api/config/plugins/file/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -293,6 +333,8 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/plugins/file：新建插件文件。以 scope:fileName 命名空间编码出
+  // file id 并校验前缀，写入内容；同名文件已存在返回 409。
   app.post('/api/config/plugins/file', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -312,6 +354,8 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // PUT /api/config/plugins/file/:id：覆盖更新已存在插件文件的内容（沿用原文件名
+  // 与 scope，overwrite 强制写入）；目标不存在返回 404。
   app.put('/api/config/plugins/file/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);
@@ -335,6 +379,7 @@ export const registerPluginRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/plugins/file/:id：删除插件文件；成功返回延迟重启响应。
   app.delete('/api/config/plugins/file/:id', async (req, res) => {
     try {
       const directory = await resolveDirectory(req, res);

@@ -5,6 +5,11 @@
 //! oneshot over the same runtime — the JS http suite used fake runtimes to
 //! catch missing body parsers; here the body-parser semantics are part of the
 //! port, so exercising them through the real handlers is strictly stronger.
+//!
+//! 中文说明：对应 JS 版 runtime.test.js 与 routes.http.test.js 的移植。
+//! 运行时测试在真实的临时 projects 目录上进行，并注入计数式 id 工厂
+//! （对应 JS 的 createId 缝）；路由测试经 oneshot 挂载真实 router 到
+//! 同一运行时之上，从而在真实 handler 中覆盖 body-parser 语义。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,10 +24,13 @@ use tower::ServiceExt;
 use super::routes;
 use super::runtime::{NoteOrigin, ProjectContextRuntime, parse_plan_markdown};
 
+/// 全部测试共用的固定 projectId（合法字符形态，避免每个测试重复定义）。
 const PROJECT_ID: &str = "path_dGVzdA";
 
+/// 临时目录自增计数器，保证并行测试的目录互不冲突。
 static DIR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// 创建带 tag / 进程号 / 自增序号的唯一临时 projects 目录。
 fn temp_projects_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "ompchamber-project-context-{tag}-{}-{}",
@@ -33,6 +41,7 @@ fn temp_projects_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// 构造注入计数 id 工厂（plan-1、plan-2 …）的运行时，让断言可预期。
 fn make_runtime(dir: &Path) -> ProjectContextRuntime {
     let counter = Arc::new(StdMutex::new(0u64));
     let factory: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || {
@@ -43,18 +52,22 @@ fn make_runtime(dir: &Path) -> ProjectContextRuntime {
     ProjectContextRuntime::new(dir.to_path_buf()).with_id_factory(factory)
 }
 
+/// 测试项目的 context.json 路径。
 fn context_path(dir: &Path) -> PathBuf {
     dir.join(PROJECT_ID).join("context.json")
 }
 
+/// 测试项目的 plans 目录路径。
 fn plans_dir(dir: &Path) -> PathBuf {
     dir.join(PROJECT_ID).join("plans")
 }
 
+/// 测试项目的旧版 `<projectId>.json` 配置路径（迁移源）。
 fn legacy_config_path(dir: &Path) -> PathBuf {
     dir.join(format!("{PROJECT_ID}.json"))
 }
 
+/// 以 pretty JSON 写入文件（自动创建父目录），失败即 panic。
 fn write_json(path: &Path, value: &Value) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("parent dir");
@@ -66,6 +79,7 @@ fn write_json(path: &Path, value: &Value) {
     .expect("write json");
 }
 
+/// 读取并解析 JSON 文件，失败即 panic。
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).expect("read json")).expect("parse json")
 }
@@ -74,6 +88,7 @@ fn read_json(path: &Path) -> Value {
 // projectId validation
 // ---------------------------------------------------------------------------
 
+/// 验证 projectId 校验：路径穿越（`../`、`/`）与空白 id 都被拒绝。
 #[tokio::test]
 async fn rejects_traversal_and_empty_project_ids() {
     let dir = temp_projects_dir("validate");
@@ -93,6 +108,7 @@ async fn rejects_traversal_and_empty_project_ids() {
 // readContext
 // ---------------------------------------------------------------------------
 
+/// 验证 context.json 缺失时返回权威空上下文（version 2，三个列表皆空）。
 #[tokio::test]
 async fn missing_context_file_is_authoritative_empty() {
     let dir = temp_projects_dir("empty");
@@ -107,6 +123,7 @@ async fn missing_context_file_is_authoritative_empty() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证损坏的 context.json 报错而非静默当作空数据。
 #[tokio::test]
 async fn malformed_stored_context_fails_instead_of_reading_empty() {
     let dir = temp_projects_dir("malformed");
@@ -120,6 +137,8 @@ async fn malformed_stored_context_fails_instead_of_reading_empty() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证清洗逻辑：无 id 的 todo、路径逃逸/无扩展名的 plan 条目被丢弃，
+/// 合法条目保留且读取不报错。
 #[tokio::test]
 async fn drops_malformed_todo_and_plan_entries_without_failing() {
     let dir = temp_projects_dir("drops");
@@ -171,6 +190,7 @@ async fn drops_malformed_todo_and_plan_entries_without_failing() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证存储中超长 note 正文被截断到 3000。
 #[tokio::test]
 async fn clamps_a_stored_note_body_to_the_maximum_length() {
     let dir = temp_projects_dir("clamp-note");
@@ -191,6 +211,7 @@ async fn clamps_a_stored_note_body_to_the_maximum_length() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 v1 的单字符串便签格式被转换为一条 manual 来源的便签。
 #[tokio::test]
 async fn converts_a_version_1_string_note_into_one_entry() {
     let dir = temp_projects_dir("v1-string");
@@ -209,6 +230,7 @@ async fn converts_a_version_1_string_note_into_one_entry() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证空白字符串形态的 v1 便签转换为空列表。
 #[tokio::test]
 async fn an_empty_version_1_string_converts_to_no_notes() {
     let dir = temp_projects_dir("v1-empty");
@@ -224,6 +246,7 @@ async fn an_empty_version_1_string_converts_to_no_notes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 notes 按 createdAt 降序排列（最新在前）。
 #[tokio::test]
 async fn newest_note_is_listed_first() {
     let dir = temp_projects_dir("order-notes");
@@ -258,6 +281,7 @@ async fn newest_note_is_listed_first() {
 // legacy migration
 // ---------------------------------------------------------------------------
 
+/// 验证迁移：三个 legacy key 搬入 context.json，旧配置中的其余字段原样保留。
 #[tokio::test]
 async fn migration_moves_the_three_keys_and_preserves_the_rest() {
     let dir = temp_projects_dir("migrate");
@@ -315,6 +339,7 @@ async fn migration_moves_the_three_keys_and_preserves_the_rest() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证迁移会从记录的原始路径抢救 plans/ 目录之外的 markdown 文件。
 #[tokio::test]
 async fn migration_recovers_a_plan_recorded_outside_the_plans_dir() {
     let dir = temp_projects_dir("migrate-stray");
@@ -338,6 +363,7 @@ async fn migration_recovers_a_plan_recorded_outside_the_plans_dir() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 markdown 已丢失的链接在迁移中被剔除，其余数据仍正常迁移。
 #[tokio::test]
 async fn migration_drops_a_link_whose_markdown_is_gone() {
     let dir = temp_projects_dir("migrate-gone");
@@ -366,6 +392,8 @@ async fn migration_drops_a_link_whose_markdown_is_gone() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证旧配置不含三个 legacy key 时不触发迁移
+/// （不写 context.json，也不改写旧配置）。
 #[tokio::test]
 async fn migration_does_not_run_without_context_keys() {
     let dir = temp_projects_dir("migrate-skip");
@@ -387,6 +415,7 @@ async fn migration_does_not_run_without_context_keys() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证迁移幂等：重复读取结果一致，legacy key 只被摘除一次。
 #[tokio::test]
 async fn migration_is_idempotent_across_repeated_reads() {
     let dir = temp_projects_dir("migrate-idempotent");
@@ -404,6 +433,7 @@ async fn migration_is_idempotent_across_repeated_reads() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证并发读取触发迁移时收敛到相同内容（两次原子写不产生撕裂数据）。
 #[tokio::test]
 async fn concurrent_reads_converge_on_the_same_migrated_content() {
     let dir = temp_projects_dir("migrate-concurrent");
@@ -442,6 +472,7 @@ async fn concurrent_reads_converge_on_the_same_migrated_content() {
 // todos
 // ---------------------------------------------------------------------------
 
+/// 验证 saveTodos 写盘后 readContext 能完整读回。
 #[tokio::test]
 async fn todos_round_trip_through_disk() {
     let dir = temp_projects_dir("todos");
@@ -465,6 +496,7 @@ async fn todos_round_trip_through_disk() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 saveTodos 只替换 todos，不影响已有的 notes 与 plans。
 #[tokio::test]
 async fn saving_todos_preserves_notes_and_plans() {
     let dir = temp_projects_dir("todos-keep");
@@ -508,6 +540,7 @@ async fn saving_todos_preserves_notes_and_plans() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证并发 saveTodos 经写锁串行化，最终文件仍完整（恰好一组数据）。
 #[tokio::test]
 async fn concurrent_todo_writes_serialize_without_losing_the_file() {
     let dir = temp_projects_dir("todos-concurrent");
@@ -529,6 +562,7 @@ async fn concurrent_todo_writes_serialize_without_losing_the_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证超长 todo 文本被截断到 120。
 #[tokio::test]
 async fn oversized_todo_text_is_clamped() {
     let dir = temp_projects_dir("todos-clamp");
@@ -552,6 +586,7 @@ async fn oversized_todo_text_is_clamped() {
 // notes
 // ---------------------------------------------------------------------------
 
+/// 验证 createNote 默认 manual 来源、未置顶，且新便签排在列表首位。
 #[tokio::test]
 async fn create_note_prepends_and_reports_manual_source() {
     let dir = temp_projects_dir("notes-create");
@@ -581,6 +616,7 @@ async fn create_note_prepends_and_reports_manual_source() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 selection 来源会记录 sessionId/messageId 来源信息。
 #[tokio::test]
 async fn create_note_records_selection_provenance() {
     let dir = temp_projects_dir("notes-origin");
@@ -610,6 +646,7 @@ async fn create_note_records_selection_provenance() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证缺少 sessionId 的 origin 被整体丢弃。
 #[tokio::test]
 async fn create_note_drops_an_origin_without_a_session() {
     let dir = temp_projects_dir("notes-origin-drop");
@@ -627,6 +664,7 @@ async fn create_note_drops_an_origin_without_a_session() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证空白 body 报 "body is required"。
 #[tokio::test]
 async fn create_note_rejects_an_empty_body() {
     let dir = temp_projects_dir("notes-empty");
@@ -641,6 +679,7 @@ async fn create_note_rejects_an_empty_body() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证超长便签正文被截断到 3000。
 #[tokio::test]
 async fn create_note_clamps_an_oversized_body() {
     let dir = temp_projects_dir("notes-clamp");
@@ -655,6 +694,7 @@ async fn create_note_clamps_an_oversized_body() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证修改 body 只刷新 updatedAt，createdAt 保持不变。
 #[tokio::test]
 async fn update_note_bumps_updated_at_without_touching_created_at() {
     let dir = temp_projects_dir("notes-update");
@@ -681,6 +721,7 @@ async fn update_note_bumps_updated_at_without_touching_created_at() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证仅置顶时不动 body 也不刷新 updatedAt。
 #[tokio::test]
 async fn pinning_a_note_alone_leaves_body_and_updated_at_untouched() {
     let dir = temp_projects_dir("notes-pin");
@@ -703,6 +744,7 @@ async fn pinning_a_note_alone_leaves_body_and_updated_at_untouched() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证空 patch（无 body/pinned）报 "body or pinned is required"。
 #[tokio::test]
 async fn update_note_rejects_an_empty_patch() {
     let dir = temp_projects_dir("notes-patch-empty");
@@ -721,6 +763,7 @@ async fn update_note_rejects_an_empty_patch() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证把 body 改为空白被拒绝（"body is required"）。
 #[tokio::test]
 async fn update_note_rejects_blanking_the_body() {
     let dir = temp_projects_dir("notes-blank");
@@ -739,6 +782,7 @@ async fn update_note_rejects_blanking_the_body() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证更新未知便签返回 None。
 #[tokio::test]
 async fn update_note_returns_none_for_an_unknown_note() {
     let dir = temp_projects_dir("notes-unknown");
@@ -753,6 +797,7 @@ async fn update_note_returns_none_for_an_unknown_note() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证删除只移除目标便签，其余便签保留。
 #[tokio::test]
 async fn delete_note_removes_only_the_requested_note() {
     let dir = temp_projects_dir("notes-delete");
@@ -785,6 +830,7 @@ async fn delete_note_removes_only_the_requested_note() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证删除未知便签时 deleted=false。
 #[tokio::test]
 async fn deleting_an_unknown_note_reports_no_deletion() {
     let dir = temp_projects_dir("notes-delete-unknown");
@@ -796,6 +842,7 @@ async fn deleting_an_unknown_note_reports_no_deletion() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证已存满 200 条便签时再创建报上限错误。
 #[tokio::test]
 async fn create_note_refuses_to_grow_past_the_limit() {
     let dir = temp_projects_dir("notes-limit");
@@ -820,6 +867,7 @@ async fn create_note_refuses_to_grow_past_the_limit() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证并发创建的便签经写锁串行化后全部落盘。
 #[tokio::test]
 async fn concurrent_note_creates_all_survive() {
     let dir = temp_projects_dir("notes-concurrent");
@@ -850,6 +898,8 @@ async fn concurrent_note_creates_all_survive() {
 // plans
 // ---------------------------------------------------------------------------
 
+/// 验证 createPlan 生成 `<时间戳>-<slug>.md` 文件，且 readPlan 能
+/// 解析回标题、正文与 raw。
 #[tokio::test]
 async fn create_plan_writes_markdown_and_reads_back() {
     let dir = temp_projects_dir("plans-create");
@@ -878,6 +928,7 @@ async fn create_plan_writes_markdown_and_reads_back() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 plans 按创建时间降序排列（最新在前）。
 #[tokio::test]
 async fn newest_plan_is_listed_first() {
     let dir = temp_projects_dir("plans-order");
@@ -906,6 +957,7 @@ async fn newest_plan_is_listed_first() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证读取未知 plan 返回 None。
 #[tokio::test]
 async fn reading_an_unknown_plan_returns_none() {
     let dir = temp_projects_dir("plans-unknown");
@@ -916,6 +968,7 @@ async fn reading_an_unknown_plan_returns_none() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 markdown 文件被删后读取返回 None（不因清单残留而报错）。
 #[tokio::test]
 async fn reading_a_plan_whose_markdown_was_deleted_returns_none() {
     let dir = temp_projects_dir("plans-md-gone");
@@ -936,6 +989,7 @@ async fn reading_a_plan_whose_markdown_was_deleted_returns_none() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证删除同时移除清单条目与 markdown 文件。
 #[tokio::test]
 async fn delete_plan_removes_entry_and_markdown() {
     let dir = temp_projects_dir("plans-delete");
@@ -957,6 +1011,7 @@ async fn delete_plan_removes_entry_and_markdown() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证删除未知 plan 时状态保持不变（deleted=false，条目仍在）。
 #[tokio::test]
 async fn deleting_an_unknown_plan_keeps_state() {
     let dir = temp_projects_dir("plans-delete-unknown");
@@ -982,6 +1037,7 @@ async fn deleting_an_unknown_plan_keeps_state() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证同一毫秒内并发创建的 plan 通过 `-1`/`-2` 后缀避免文件名冲突。
 #[tokio::test]
 async fn plans_created_in_the_same_millisecond_do_not_collide() {
     let dir = temp_projects_dir("plans-collide");
@@ -1009,6 +1065,7 @@ async fn plans_created_in_the_same_millisecond_do_not_collide() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 updatePlan 原样覆写 markdown 并从新内容重算清单标题。
 #[tokio::test]
 async fn update_plan_rewrites_markdown_verbatim_and_rederives_title() {
     let dir = temp_projects_dir("plans-update");
@@ -1041,6 +1098,7 @@ async fn update_plan_rewrites_markdown_verbatim_and_rederives_title() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证标题变化只重算清单标题，不重命名文件。
 #[tokio::test]
 async fn update_plan_keeps_the_file_name_when_the_title_changes() {
     let dir = temp_projects_dir("plans-rename");
@@ -1068,6 +1126,7 @@ async fn update_plan_keeps_the_file_name_when_the_title_changes() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证更新未知 plan 返回 None，且不产生任何文件写入（plans 目录都未创建）。
 #[tokio::test]
 async fn update_plan_returns_none_without_writing_anything() {
     let dir = temp_projects_dir("plans-update-unknown");
@@ -1083,6 +1142,7 @@ async fn update_plan_returns_none_without_writing_anything() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证 markdown 被删除后 updatePlan 拒绝复活该 plan（不重建文件）。
 #[tokio::test]
 async fn update_plan_refuses_to_recreate_deleted_markdown() {
     let dir = temp_projects_dir("plans-resurrect");
@@ -1108,6 +1168,7 @@ async fn update_plan_refuses_to_recreate_deleted_markdown() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证缺少字符串 raw 的载荷报 "raw is required"。
 #[tokio::test]
 async fn update_plan_rejects_a_non_string_payload() {
     let dir = temp_projects_dir("plans-raw");
@@ -1126,6 +1187,7 @@ async fn update_plan_rejects_a_non_string_payload() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证更新 plan 不影响已有的 notes 与 todos。
 #[tokio::test]
 async fn update_plan_does_not_disturb_notes_or_todos() {
     let dir = temp_projects_dir("plans-undisturb");
@@ -1167,6 +1229,7 @@ async fn update_plan_does_not_disturb_notes_or_todos() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证置顶只改 pinned 位，标题与文件名保持不变。
 #[tokio::test]
 async fn pinning_a_plan_leaves_its_title_and_file_alone() {
     let dir = temp_projects_dir("plans-pin");
@@ -1191,6 +1254,7 @@ async fn pinning_a_plan_leaves_its_title_and_file_alone() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证置顶未知 plan 返回 None。
 #[tokio::test]
 async fn pinning_an_unknown_plan_returns_none() {
     let dir = temp_projects_dir("plans-pin-unknown");
@@ -1204,6 +1268,7 @@ async fn pinning_an_unknown_plan_returns_none() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证编辑 plan 正文会保留其置顶状态。
 #[tokio::test]
 async fn editing_a_plan_preserves_its_pin_state() {
     let dir = temp_projects_dir("plans-pin-edit");
@@ -1229,6 +1294,7 @@ async fn editing_a_plan_preserves_its_pin_state() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 验证空标题/空正文创建的 plan 回退为标题 "Plan" 的 markdown。
 #[tokio::test]
 async fn an_untitled_plan_still_produces_a_titled_markdown_file() {
     let dir = temp_projects_dir("plans-untitled");
@@ -1253,6 +1319,7 @@ async fn an_untitled_plan_still_produces_a_titled_markdown_file() {
 // parsePlanMarkdown
 // ---------------------------------------------------------------------------
 
+/// 验证解析取首个 `#` 标题为标题、其余内容为正文。
 #[test]
 fn parse_reads_the_leading_heading_as_the_title() {
     assert_eq!(
@@ -1264,6 +1331,7 @@ fn parse_reads_the_leading_heading_as_the_title() {
     );
 }
 
+/// 验证无标题时回退取首个非空行作标题，正文为 trim 后的全文。
 #[test]
 fn parse_falls_back_to_the_first_non_empty_line() {
     assert_eq!(
@@ -1275,6 +1343,7 @@ fn parse_falls_back_to_the_first_non_empty_line() {
     );
 }
 
+/// 验证 CRLF 输入先归一为 LF 再解析。
 #[test]
 fn parse_normalizes_crlf_input() {
     assert_eq!(
@@ -1286,6 +1355,7 @@ fn parse_normalizes_crlf_input() {
     );
 }
 
+/// 验证空输入解析为默认标题 "Plan" 与空正文。
 #[test]
 fn parse_empty_input_yields_the_default_title() {
     assert_eq!(
@@ -1297,6 +1367,8 @@ fn parse_empty_input_yields_the_default_title() {
     );
 }
 
+/// 验证 `#` 之后必须紧跟空白才算标题：`## No space` 走回退路径
+/// （剥掉 `#` 前缀取行文本，正文为全文）。
 #[test]
 fn parse_heading_requires_whitespace_after_the_hash_marks() {
     assert_eq!(
@@ -1312,15 +1384,19 @@ fn parse_heading_requires_whitespace_after_the_hash_marks() {
 // Routes (ports of routes.http.test.js, over the real runtime)
 // ---------------------------------------------------------------------------
 
+/// 路由层测试（routes.http.test.js 的移植）：经 oneshot 挂载真实 router，
+/// 覆盖 body 校验、错误码映射与持久化行为。
 mod routes_tests {
     use super::*;
     use axum::http::Method;
     use axum::response::Response;
 
+    /// 用给定目录的运行时构建项目上下文 router。
     fn app(dir: &Path) -> axum::Router {
         routes::router(Arc::new(make_runtime(dir)))
     }
 
+    /// 读取响应体并解析为 JSON，失败即 panic。
     async fn body_json(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1328,6 +1404,7 @@ mod routes_tests {
         serde_json::from_slice(&bytes).expect("json body")
     }
 
+    /// 构造带 application/json 内容类型的请求。
     fn json_request(method: Method, uri: &str, body: &str) -> Request<Body> {
         Request::builder()
             .method(method)
@@ -1337,6 +1414,7 @@ mod routes_tests {
             .expect("request")
     }
 
+    /// 构造无 body 的请求（GET/DELETE 用）。
     fn plain_request(method: Method, uri: &str) -> Request<Body> {
         Request::builder()
             .method(method)
@@ -1345,8 +1423,10 @@ mod routes_tests {
             .expect("request")
     }
 
+    /// 测试项目的路由前缀（含固定 projectId）。
     const BASE: &str = "/api/project-context/path_dGVzdA";
 
+    /// 验证 GET 基础路由返回 version 2 的空上下文。
     #[tokio::test]
     async fn get_returns_the_context() {
         let dir = temp_projects_dir("route-get");
@@ -1362,6 +1442,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 PUT todos 接受 JSON body 并持久化到 context.json。
     #[tokio::test]
     async fn put_todos_accepts_a_json_body_and_persists() {
         let dir = temp_projects_dir("route-todos");
@@ -1386,6 +1467,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证非 JSON 内容类型返回 400 "Body must be an object"。
     #[tokio::test]
     async fn put_todos_rejects_a_non_json_body() {
         let dir = temp_projects_dir("route-todos-plain");
@@ -1407,6 +1489,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 todo 形状非法（id 非字符串）返回 400 校验错误。
     #[tokio::test]
     async fn put_todos_rejects_malformed_todo_shapes() {
         let dir = temp_projects_dir("route-todos-shape");
@@ -1429,6 +1512,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证语法破损的 JSON body 返回 400。
     #[tokio::test]
     async fn put_todos_rejects_syntactically_broken_json() {
         let dir = temp_projects_dir("route-todos-broken");
@@ -1447,6 +1531,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 POST notes 创建返回 201、携带来源信息并落盘到 context.json。
     #[tokio::test]
     async fn post_note_creates_with_provenance_and_persists() {
         let dir = temp_projects_dir("route-note-create");
@@ -1474,6 +1559,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 body 字段类型错误返回 400 "body must be a string"。
     #[tokio::test]
     async fn post_note_rejects_a_genuinely_malformed_body() {
         let dir = temp_projects_dir("route-note-malformed");
@@ -1496,6 +1582,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证非对象的 JSON body（如数组）返回 400 "Body must be an object"。
     #[tokio::test]
     async fn post_note_rejects_a_non_object_body() {
         let dir = temp_projects_dir("route-note-array");
@@ -1518,6 +1605,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证未知 source 枚举值返回 400。
     #[tokio::test]
     async fn post_note_rejects_an_unknown_source() {
         let dir = temp_projects_dir("route-note-source");
@@ -1540,6 +1628,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证非对象形态的 origin 返回 400 "origin must be an object"。
     #[tokio::test]
     async fn post_note_rejects_a_non_object_origin() {
         let dir = temp_projects_dir("route-note-origin");
@@ -1562,6 +1651,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 通过运行时直接写入一条种子便签，返回其 id。
     async fn seed_one_note(_dir: &Path, runtime: &ProjectContextRuntime) -> String {
         runtime
             .create_note(PROJECT_ID, &json!({ "body": "seed" }))
@@ -1571,6 +1661,7 @@ mod routes_tests {
             .id
     }
 
+    /// 验证 PATCH notes 仅置顶时不改动 body。
     #[tokio::test]
     async fn patch_note_pins_without_touching_the_body() {
         let dir = temp_projects_dir("route-note-pin");
@@ -1594,6 +1685,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 PATCH notes 修改 body 成功，且响应仍带 pinned 字段。
     #[tokio::test]
     async fn patch_note_edits_the_body() {
         let dir = temp_projects_dir("route-note-edit");
@@ -1617,6 +1709,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 pinned 非布尔返回 400 "pinned must be a boolean"。
     #[tokio::test]
     async fn patch_note_rejects_a_non_boolean_pin() {
         let dir = temp_projects_dir("route-note-pin-type");
@@ -1639,6 +1732,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 PATCH 未知便签返回 404 "Note not found"。
     #[tokio::test]
     async fn patch_note_returns_404_for_an_unknown_note() {
         let dir = temp_projects_dir("route-note-404");
@@ -1661,6 +1755,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 DELETE note 返回更新后的上下文，未知便签返回 404。
     #[tokio::test]
     async fn delete_note_returns_the_context_and_404_for_unknown() {
         let dir = temp_projects_dir("route-note-delete");
@@ -1693,6 +1788,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 通过运行时直接创建一条种子 plan，返回其 id。
     async fn seed_one_plan(_dir: &Path, runtime: &ProjectContextRuntime) -> String {
         runtime
             .create_plan(PROJECT_ID, &json!({ "title": "Seed", "body": "x" }))
@@ -1702,6 +1798,7 @@ mod routes_tests {
             .id
     }
 
+    /// 验证 PATCH plans 置顶成功，且 pinned 非布尔返回 400。
     #[tokio::test]
     async fn patch_plan_pins() {
         let dir = temp_projects_dir("route-plan-pin");
@@ -1739,6 +1836,8 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 GET plan 返回解析后的字段集合
+    /// （body/createdAt/file/id/raw/title），未知 plan 返回 404。
     #[tokio::test]
     async fn get_plan_returns_the_parsed_shape() {
         let dir = temp_projects_dir("route-plan-get");
@@ -1779,6 +1878,8 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 PUT plans 原样保存 raw 并重算标题；raw 非字符串 400，
+    /// 未知 plan 404。
     #[tokio::test]
     async fn put_plan_saves_raw_content() {
         let dir = temp_projects_dir("route-plan-put");
@@ -1833,6 +1934,8 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 POST plans 创建返回 201 且文件名以 slug 结尾；
+    /// title/body 字段类型错误分别返回 400。
     #[tokio::test]
     async fn post_plan_creates_and_validates() {
         let dir = temp_projects_dir("route-plan-post");
@@ -1885,6 +1988,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证 DELETE plan 返回更新后的上下文，未知 plan 返回 404。
     #[tokio::test]
     async fn delete_plan_returns_the_context_and_404_for_unknown() {
         let dir = temp_projects_dir("route-plan-delete");
@@ -1917,6 +2021,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证路径穿越形态的 projectId 映射为 400 客户端错误。
     #[tokio::test]
     async fn traversal_project_id_is_a_client_error() {
         let dir = temp_projects_dir("route-traversal");
@@ -1938,6 +2043,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证损坏的 context.json 映射为 500 及固定的错误文案。
     #[tokio::test]
     async fn malformed_stored_context_is_a_server_error_with_the_exact_message() {
         let dir = temp_projects_dir("route-malformed");
@@ -1955,6 +2061,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证便签条数上限溢出映射为 500 及固定错误文案。
     #[tokio::test]
     async fn note_limit_surfaces_as_a_server_error() {
         let dir = temp_projects_dir("route-limit");
@@ -1987,6 +2094,7 @@ mod routes_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 验证超过 body 大小限制（>1MB）的请求返回 413 Payload Too Large。
     #[tokio::test]
     async fn oversized_body_is_rejected_as_payload_too_large() {
         let dir = temp_projects_dir("route-limit-bytes");

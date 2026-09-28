@@ -1,9 +1,15 @@
+/**
+ * 项目图标路由测试：当项目元数据指向的图标文件缺失时，GET
+ * /api/projects/:projectId/icon 应回退到磁盘上实际存在的文件并按其扩展
+ * 名推导 MIME（元数据写 png、实际是 jpg 时返回 image/jpeg）。
+ */
 import { describe, expect, it, vi } from 'vitest';
 import crypto from 'crypto';
 import path from 'path';
 
 import { registerProjectIconRoutes } from './project-icon-routes.js';
 
+/** 构造记录型 app 桩：按 "METHOD /path" 保存路由处理器，便于直接调用。 */
 const createRouteRegistry = () => {
   const routes = new Map();
 
@@ -28,6 +34,7 @@ const createRouteRegistry = () => {
   };
 };
 
+/** 构造链式 response 桩：记录状态码、header（键统一小写）与响应体。 */
 const createMockResponse = () => {
   const headers = new Map();
   let statusCode = 200;
@@ -61,6 +68,7 @@ const createMockResponse = () => {
   };
 };
 
+// 项目图标路由主套件。
 describe('project icon routes', () => {
   it('uses fallback file extension MIME when metadata points to a missing icon', async () => {
     const { app, getRoute } = createRouteRegistry();

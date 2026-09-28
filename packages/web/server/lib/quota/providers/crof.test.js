@@ -1,3 +1,10 @@
+/**
+ * CrofAI 配额 provider 测试套件。
+ *
+ * 用 vi.mock 替换 auth 文件读取并 stub 全局 fetch，验证 credits 余额的
+ * 展示（数字、数字字符串、缺失字段）以及 401、5xx、JSON 解析失败等
+ * 错误路径的文案映射。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +17,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 构造最小可用的 fetch Response 替身：默认 200 + JSON 体，可被 init 覆盖。 */
 const mockResponse = (body, init = {}) => ({
   ok: true,
   status: 200,
@@ -17,6 +25,7 @@ const mockResponse = (body, init = {}) => ({
   ...init,
 });
 
+/** CrofAI provider 的余额展示与错误映射行为。 */
 describe('Crof quota provider', () => {
   it('reports credits balance as valueLabel with null percent', async () => {
     // Documented /usage_api/ response from https://crof.ai/docs.md

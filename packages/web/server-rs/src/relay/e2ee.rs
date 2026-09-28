@@ -13,6 +13,17 @@
 //! salt = handshake nonce, 64 bytes of output) → `hkdf`, AES-256-GCM frames
 //! `[1B version][12B IV][ct+16B tag]` (WebCrypto and RustCrypto both append
 //! the tag after the ciphertext).
+//!
+//! 中文说明：本模块为私有 relay 的 E2EE 原语与响应方握手（Layer 2），
+//! 移植自 `server/lib/relay/e2ee.js`。JS 模块本身又是
+//! `packages/ui/src/lib/relay/{protocol,crypto,handshake}.ts` 规范实现的
+//! 镜像，三者必须保持字节级兼容；`byte_compat_tests` 中的固定向量由
+//! 真实 JS 实现以固定密钥/nonce/IV 生成，是本移植的跨实现门禁。
+//! 加密映射：WebCrypto ECDH P-256 → `p256::ecdh::diffie_hellman`（共享
+//! 秘密为 32 字节大端 x 坐标，同 `subtle.deriveBits(..., 256)`）；
+//! HKDF-SHA256（info=`ompchamber-relay-v1`、salt=握手 nonce、输出 64
+//! 字节）→ `hkdf`；AES-256-GCM 帧格式为 `[1B 版本][12B IV][密文+16B tag]`
+//! （WebCrypto 与 RustCrypto 均把 tag 追加在密文之后）。
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key as AesKey, Nonce};
@@ -22,43 +33,66 @@ use p256::{EncodedPoint, PublicKey, SecretKey};
 use serde_json::Value;
 use sha2::Sha256;
 
+/// relay 协议版本号；握手消息中必须匹配。
 pub const RELAY_PROTOCOL_VERSION: u64 = 1;
+/// HKDF 的 info 字节串，把密钥材料绑定到 relay v1 用途。
 pub const RELAY_HKDF_INFO: &[u8] = b"ompchamber-relay-v1";
 
 /// Encrypted frame layout: `[1 byte version][12 byte IV][ciphertext + 16 byte GCM tag]`.
+/// 中文：加密帧首字节的版本号，当前为 1。
 pub const ENCRYPTED_FRAME_VERSION: u8 = 1;
+/// 加密帧中 IV 的固定长度（12 字节）。
 pub const ENCRYPTED_FRAME_IV_BYTES: usize = 12;
+/// 加密帧头长度（1 字节版本 + 12 字节 IV）。
 pub const ENCRYPTED_FRAME_HEADER_BYTES: usize = 1 + ENCRYPTED_FRAME_IV_BYTES;
+/// 单帧明文最大长度（64 KiB）；超出即拒绝加密。
 pub const MAX_PLAINTEXT_FRAME_BYTES: usize = 64 * 1024;
 
 /// Relay-assigned WebSocket close codes (subset the host needs).
+/// 重协商不匹配：已建立通道上出现不同客户端公钥的 hello。
 pub const CLOSE_REKEY_MISMATCH: u16 = 1008;
+/// 通道失败：握手后收到明文、解密失败等致命情况。
 pub const CLOSE_CHANNEL_FAILURE: u16 = 1011;
 
+/// 握手 nonce 固定长度（16 字节）。
 const HANDSHAKE_NONCE_BYTES: usize = 16;
+/// 单方向会话密钥长度（32 字节，AES-256）。
 const SESSION_KEY_BYTES: usize = 32;
+/// GCM 认证标签长度（16 字节）。
 const GCM_TAG_BYTES: usize = 16;
 /// IV = 4-byte random per-direction prefix || 8-byte big-endian frame counter.
+/// 中文：每方向 4 字节随机 IV 前缀的长度。
 const IV_PREFIX_BYTES: usize = 4;
+/// IV 中 8 字节大端帧计数器的长度。
 const IV_COUNTER_BYTES: usize = 8;
 
 /// Error messages are pinned to the JS `RelayCryptoError` strings.
+/// 中文：E2EE 错误类型；内部字符串与 JS `RelayCryptoError` 逐字对齐，
+/// 保证跨实现的错误信息一致。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayCryptoError(pub &'static str);
 
+/// 直接输出固定的错误字符串。
 impl std::fmt::Display for RelayCryptoError {
+    /// 输出固定的错误消息字符串（`self.0`）。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
     }
 }
 
+/// 标准错误 trait 的空实现（消息已由 Display 提供）。
 impl std::error::Error for RelayCryptoError {}
 
+/// 公钥 JWK 无效时的固定错误消息。
 const INVALID_PUBLIC_JWK: &str = "invalid ECDH public key JWK";
+/// 私钥 JWK 无效时的固定错误消息。
 const INVALID_PRIVATE_JWK: &str = "invalid ECDH private key JWK";
 
 /// Generates an ECDH P-256 keypair (JS `generateEcdhKeyPair`). The scalar is
 /// drawn from the OS RNG and retried until it lands in `[1, n-1]`.
+/// 中文：生成 ECDH P-256 密钥对（对应 JS `generateEcdhKeyPair`）：标量
+/// 取自 OS 随机源并重试直到落在 `[1, n-1]`，最多 8 次，仍失败则报熵源
+/// 错误。
 pub fn generate_ecdh_key_pair() -> Result<(SecretKey, PublicKey), RelayCryptoError> {
     let mut bytes = [0u8; 32];
     for _ in 0..8 {
@@ -71,6 +105,7 @@ pub fn generate_ecdh_key_pair() -> Result<(SecretKey, PublicKey), RelayCryptoErr
     Err(RelayCryptoError("entropy source failed"))
 }
 
+/// 由私钥标量推导对应的公钥点。
 fn public_from_secret(secret: &SecretKey) -> PublicKey {
     // SecretKey::public_key() needs the arithmetic feature (enabled via ecdh);
     // derive the point through the scalar's public key accessor.
@@ -79,6 +114,8 @@ fn public_from_secret(secret: &SecretKey) -> PublicKey {
 
 /// Public JWK reduced to the fields that define the point (JS
 /// `exportPublicKeyJwk` returns `{ kty, crv, x, y }`).
+/// 中文：导出仅含定义曲线点所需字段的公钥 JWK（对应 JS
+/// `exportPublicKeyJwk`，返回 `{ kty, crv, x, y }`）。
 pub fn export_public_key_jwk(public: &PublicKey) -> Value {
     let point = public.to_encoded_point(false);
     let bytes = point.as_bytes();
@@ -92,6 +129,9 @@ pub fn export_public_key_jwk(public: &PublicKey) -> Value {
 
 /// JS `importEcdhPublicKey` — accepts a raw JSON object; requires
 /// `kty === 'EC'`, `crv === 'P-256'`, string `x`/`y`, and a valid curve point.
+/// 中文：导入 ECDH 公钥（对应 JS `importEcdhPublicKey`）：接受原始 JSON
+/// 对象，要求 `kty === 'EC'`、`crv === 'P-256'`、x/y 为字符串且解码后
+/// 构成合法曲线点；任何不满足都返回固定错误。
 pub fn import_ecdh_public_key(jwk: &Value) -> Result<PublicKey, RelayCryptoError> {
     let get = |key: &str| -> Option<&str> {
         jwk.get(key)
@@ -126,6 +166,8 @@ pub fn import_ecdh_public_key(jwk: &Value) -> Result<PublicKey, RelayCryptoError
 
 /// JS `importEcdhPrivateKey` — needs a valid `d` scalar; the point fields are
 /// accepted but the scalar alone defines the key.
+/// 中文：导入 ECDH 私钥（对应 JS `importEcdhPrivateKey`）：只需合法的
+/// `d` 标量；点字段可出现但密钥完全由标量决定。
 pub fn import_ecdh_private_key(jwk: &Value) -> Result<SecretKey, RelayCryptoError> {
     let d = jwk
         .get("d")
@@ -141,6 +183,9 @@ pub fn import_ecdh_private_key(jwk: &Value) -> Result<SecretKey, RelayCryptoErro
 /// Stable fingerprint of a public key, used to detect rekey attempts on
 /// re-hello. Mirrors `JSON.stringify({ crv, kty, x, y })` including
 /// `JSON.stringify`'s omission of `undefined` values and its field order.
+/// 中文：公钥的稳定指纹，用于在重发 hello 时检测重协商攻击；逐字段镜像
+/// `JSON.stringify({ crv, kty, x, y })`，包括其对 undefined 值的省略与
+/// 字段顺序。
 pub fn public_key_jwk_fingerprint(jwk: &Value) -> String {
     let mut out = String::from("{");
     let mut first = true;
@@ -178,6 +223,7 @@ pub fn public_key_jwk_fingerprint(jwk: &Value) -> String {
     out
 }
 
+/// 生成 16 字节密码学随机握手 nonce。
 pub fn generate_handshake_nonce() -> Result<[u8; HANDSHAKE_NONCE_BYTES], RelayCryptoError> {
     let mut nonce = [0u8; HANDSHAKE_NONCE_BYTES];
     rand::fill(&mut nonce);
@@ -186,12 +232,18 @@ pub fn generate_handshake_nonce() -> Result<[u8; HANDSHAKE_NONCE_BYTES], RelayCr
 
 /// Both sides call this with their own private key and the peer's public key;
 /// ECDH yields the same shared secret, so the derived key pair matches.
+/// 中文：双方向会话密钥；双方各自以己方私钥加对方公钥调用派生，ECDH
+/// 得到相同共享秘密，因此派生结果一致。
 #[derive(Clone)]
 pub struct SessionKeys {
+    /// 客户端到主机方向的 AES-256-GCM 密钥。
     pub client_to_host: Aes256Gcm,
+    /// 主机到客户端方向的 AES-256-GCM 密钥。
     pub host_to_client: Aes256Gcm,
 }
 
+/// 由 ECDH 共享秘密加握手 nonce 经 HKDF-SHA256（info 为 `RELAY_HKDF_INFO`）
+/// 派生双方向 AES-256-GCM 会话密钥；nonce 长度不符或派生失败返回错误。
 pub fn derive_session_keys(
     own_private_key: &SecretKey,
     peer_public_key: &PublicKey,
@@ -216,6 +268,7 @@ pub fn derive_session_keys(
     })
 }
 
+/// 把帧计数器以 8 字节大端写入目标切片。
 fn write_counter(target: &mut [u8], counter: u64) {
     for (i, byte) in target.iter_mut().enumerate().take(IV_COUNTER_BYTES) {
         let shift = 8 * (IV_COUNTER_BYTES - 1 - i);
@@ -223,6 +276,7 @@ fn write_counter(target: &mut [u8], counter: u64) {
     }
 }
 
+/// 从源切片读取 8 字节大端帧计数器。
 fn read_counter(source: &[u8]) -> u64 {
     let mut value: u64 = 0;
     for byte in source.iter().take(IV_COUNTER_BYTES) {
@@ -232,14 +286,21 @@ fn read_counter(source: &[u8]) -> u64 {
 }
 
 /// AES-256-GCM frame encryptor for one direction (JS `createFrameEncryptor`).
+/// 中文：单方向 AES-256-GCM 帧加密器（对应 JS `createFrameEncryptor`），
+/// 持有随机 IV 前缀与单调递增计数器。
 #[derive(Clone)]
 pub struct FrameEncryptor {
+    /// 该方向的 AES-256-GCM 实例。
     cipher: Aes256Gcm,
+    /// 本方向随机的 4 字节 IV 前缀。
     iv_prefix: [u8; IV_PREFIX_BYTES],
+    /// 已加密帧数，同时充当 IV 计数器（从 1 开始递增）。
     counter: u64,
 }
 
+/// `FrameEncryptor` 的构造与加密。
 impl FrameEncryptor {
+    /// 以随机 IV 前缀构造加密器；熵源失败返回错误。
     pub fn new(key: Aes256Gcm) -> Result<Self, RelayCryptoError> {
         let mut iv_prefix = [0u8; IV_PREFIX_BYTES];
         rand::fill(&mut iv_prefix);
@@ -252,6 +313,8 @@ impl FrameEncryptor {
 
     /// Test vector hook: the production constructor draws a random prefix;
     /// pinned byte-compat tests need a deterministic one.
+    /// 中文：测试向量钩子——生产构造器使用随机前缀，固定字节兼容测试
+    /// 需要确定性前缀。
     pub fn with_prefix(key: Aes256Gcm, iv_prefix: [u8; IV_PREFIX_BYTES]) -> Self {
         Self {
             cipher: key,
@@ -260,6 +323,8 @@ impl FrameEncryptor {
         }
     }
 
+    /// 加密一帧明文：拒绝超限明文，计数器加 1 后以前缀加计数器为 IV
+    /// 加密，输出 `[版本][IV][密文+tag]`。
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, RelayCryptoError> {
         if plaintext.len() > MAX_PLAINTEXT_FRAME_BYTES {
             return Err(RelayCryptoError("plaintext frame exceeds maximum size"));
@@ -283,13 +348,20 @@ impl FrameEncryptor {
 /// Enforces strictly increasing per-direction counters: the relay WS preserves
 /// ordering, so any regression or replay means tampering and must fail closed
 /// (JS `createFrameDecryptor`).
+/// 中文：帧解密器，强制每方向计数器严格递增（对应 JS
+/// `createFrameDecryptor`）：relay WS 保序，任何回退或重放都意味着篡改，
+/// 必须 fail closed。
 #[derive(Clone)]
 pub struct FrameDecryptor {
+    /// 该方向的 AES-256-GCM 实例。
     cipher: Aes256Gcm,
+    /// 最近一次成功解密的帧计数器；新帧必须严格更大。
     last_counter: u64,
 }
 
+/// `FrameDecryptor` 的构造与解密。
 impl FrameDecryptor {
+    /// 构造解密器，初始 last_counter 为 0。
     pub fn new(key: Aes256Gcm) -> Self {
         Self {
             cipher: key,
@@ -297,6 +369,8 @@ impl FrameDecryptor {
         }
     }
 
+    /// 解密一帧：校验最小长度与版本字节、检查计数器严格递增，GCM 认证
+    /// 失败即返回错误；成功后推进 last_counter。
     pub fn decrypt(&mut self, frame: &[u8]) -> Result<Vec<u8>, RelayCryptoError> {
         if frame.len() < ENCRYPTED_FRAME_HEADER_BYTES + GCM_TAG_BYTES {
             return Err(RelayCryptoError("encrypted frame too short"));
@@ -322,9 +396,13 @@ impl FrameDecryptor {
 }
 
 /// One established channel: encrypt host→client, decrypt client→host.
+/// 中文：一条已建立的双向加密通道：主机到客户端方向加密，客户端到
+/// 主机方向解密。
 #[derive(Clone)]
 pub struct Channel {
+    /// 主机到客户端方向的帧加密器。
     pub encryptor: FrameEncryptor,
+    /// 客户端到主机方向的帧解密器。
     pub decryptor: FrameDecryptor,
 }
 
@@ -332,7 +410,9 @@ pub struct Channel {
 // base64url helpers (JS `bytesToBase64Url` / `base64UrlToBytes`)
 // ---------------------------------------------------------------------------
 
+/// 字节转 base64url（无填充）字符串，镜像 JS `bytesToBase64Url`。
 pub fn bytes_to_base64_url(bytes: &[u8]) -> String {
+    // base64url 字母表（URL 安全字符集）。
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -354,7 +434,10 @@ pub fn bytes_to_base64_url(bytes: &[u8]) -> String {
     out
 }
 
+/// base64url 字符串转字节；出现非字母表字符或长度非法（模 4 余 1）返回
+/// 错误，镜像 JS `base64UrlToBytes`。
 pub fn base64_url_to_bytes(value: &str) -> Result<Vec<u8>, RelayCryptoError> {
+    // base64url 字母表字节到 6 位值的映射；非法字符返回 -1。
     const fn alphabet_value(byte: u8) -> i8 {
         match byte {
             b'A'..=b'Z' => (byte - b'A') as i8,
@@ -396,33 +479,51 @@ pub fn base64_url_to_bytes(value: &str) -> Result<Vec<u8>, RelayCryptoError> {
 // - plaintext after `ready`, or any decrypt failure -> close 1011.
 // ---------------------------------------------------------------------------
 
+/// 握手状态机对一帧入站文本的处理结果指令。
 pub enum HandshakeAction {
     /// Send this plaintext frame.
+    /// 中文：发送这帧明文。
     SendText { text: String },
     /// Send `reply_text` first, then switch to encrypted frames.
+    /// 中文：先发送 reply_text，随后切换到加密帧；携带协商结果与通道。
     Established {
+        /// 是否协商开启批量合并。
         batch: bool,
+        /// 建立后需先发送的 ready 明文。
         reply_text: String,
+        /// 已建立的双向加密通道。
         channel: Channel,
     },
     /// Drop the frame.
+    /// 中文：忽略该帧。
     Ignore,
     /// Close the socket with `close_code`.
+    /// 中文：以指定关闭码关闭 socket。
     Fail {
+        /// WebSocket 关闭码。
         close_code: u16,
+        /// 关闭原因（静态字符串）。
         reason: &'static str,
     },
 }
 
+/// 解析后的握手消息：合法 hello 或其他（忽略）。
 enum ParsedHandshakeMessage {
+    /// 满足协议版本与字段要求的 hello 消息。
     Hello {
+        /// 客户端 ECDH 公钥 JWK。
         client_pub_jwk: Value,
+        /// 客户端生成的握手 nonce（base64url 字符串）。
         nonce: String,
+        /// 客户端是否声明支持批量合并。
         batch: bool,
     },
+    /// 非 hello 消息（含 ready、版本不符、畸形 JSON）。
     Other,
 }
 
+/// 解析一帧握手文本：仅当版本匹配且 t=hello、nonce 为字符串、
+/// clientPubJwk 为对象时识别为 Hello；t=ready 或版本不符一律归为 Other。
 fn parse_handshake_message(raw: &str) -> ParsedHandshakeMessage {
     let Ok(Value::Object(parsed)) = serde_json::from_str::<Value>(raw) else {
         return ParsedHandshakeMessage::Other;
@@ -457,16 +558,26 @@ fn parse_handshake_message(raw: &str) -> ParsedHandshakeMessage {
 
 /// Host (responder) handshake. Feed every inbound text frame to
 /// [`HostHandshake::handle_text`].
+/// 中文：主机（响应方）握手状态机，镜像 handshake.ts 的
+/// `createHostHandshake`：把每个入站文本帧交给
+/// [`HostHandshake::handle_text`]，按返回的 [`HandshakeAction`] 驱动。
 pub struct HostHandshake {
+    /// 主机加密身份的 ECDH 私钥。
     host_enc_private_key: SecretKey,
+    /// 本端是否愿意批量合并（协商还需对端同意）。
     local_batch: bool,
+    /// 通道是否已建立。
     established: bool,
+    /// 已接受客户端公钥的指纹；用于识别重试与 rekey 攻击。
     accepted_client_key_fingerprint: Option<String>,
+    /// 已发送的 ready 明文缓存，供客户端重试 hello 时重发。
     ready_text: Option<String>,
 }
 
+/// `HostHandshake` 的构造与消息处理。
 impl HostHandshake {
     /// `batch` defaults true; set false to force legacy behavior.
+    /// 中文：`batch` 默认 true；置 false 强制 legacy 行为。
     pub fn with_options(host_enc_private_key: SecretKey, batch: bool) -> Self {
         Self {
             host_enc_private_key,
@@ -477,14 +588,20 @@ impl HostHandshake {
         }
     }
 
+    /// 以默认批量开启构造握手状态机。
     pub fn new(host_enc_private_key: SecretKey) -> Self {
         Self::with_options(host_enc_private_key, true)
     }
 
+    /// 通道是否已建立。
     pub fn established(&self) -> bool {
         self.established
     }
 
+    /// 处理一帧入站明文：已建立后收到明文即 fail-closed（1011）；同一
+    /// 公钥重复 hello 重发缓存的 ready（客户端重试竞态）；不同公钥的
+    /// hello 判为 rekey 攻击关闭 1008；首次合法 hello 校验密钥与 nonce、
+    /// 派生会话密钥并返回 Established（含协商的批量标志与 ready 文本）。
     pub fn handle_text(&mut self, raw: &str) -> HandshakeAction {
         let message = parse_handshake_message(raw);
         let ParsedHandshakeMessage::Hello {

@@ -1,5 +1,19 @@
+/**
+ * 静态资源路由运行时工厂。
+ *
+ * 依据前端构建产物目录是否存在，为 express app 注册两类路由：产物存在时
+ * 挂载 dist 静态目录、PWA manifest 路由与 SPA history 回退（非 API、非静态
+ * 资源路径一律返回 index.html）；产物缺失时对同范围路径返回 404 与
+ * 「请先构建」提示。另提供 API-only（headless）模式的说明页路由
+ * registerApiOnlyFallbackRoutes。全部依赖经 dependencies 注入，便于测试替换。
+ */
 import { registerPwaManifestRoute } from './pwa-manifest-routes.js';
 
+/**
+ * 创建静态路由运行时：dependencies 注入 fs、path、process、__dirname、
+ * express 及 PWA manifest 所需依赖；返回 registerStaticRoutes 与
+ * registerApiOnlyFallbackRoutes 两个注册函数。
+ */
 export const createStaticRoutesRuntime = (dependencies) => {
   const {
     fs,
@@ -15,6 +29,7 @@ export const createStaticRoutesRuntime = (dependencies) => {
     normalizePwaOrientation,
   } = dependencies;
 
+  /** 解析前端构建产物目录：优先取环境变量 OMPCHAMBER_DIST_DIR（trim 后 resolve），否则回退到模块目录上一级的 dist。 */
   const resolveDistPath = () => {
     const env = typeof process.env.OMPCHAMBER_DIST_DIR === 'string' ? process.env.OMPCHAMBER_DIST_DIR.trim() : '';
     if (env) {
@@ -23,6 +38,12 @@ export const createStaticRoutesRuntime = (dependencies) => {
     return path.join(__dirname, '..', 'dist');
   };
 
+  /**
+   * 注册静态资源路由：dist 存在时挂载 express.static（对 sw.js 强制 no-store，
+   * 避免 iOS 缓存旧 Service Worker）、注册 PWA manifest 路由，并把非 API、
+   * 非静态资源文件的路径回退到 index.html（SPA history 模式）；dist 缺失时
+   * 对同范围路径返回 404 提示先构建应用。
+   */
   const registerStaticRoutes = (app) => {
     const distPath = resolveDistPath();
 
@@ -59,6 +80,11 @@ export const createStaticRoutesRuntime = (dependencies) => {
     });
   };
 
+  /**
+   * 注册 API-only（headless）模式的回退路由：对非 API/auth/health/linear 与
+   * 非静态资源路径，按 Accept 协商返回说明页（HTML/JSON/纯文本），提示通过
+   * 桌面或移动端 App 连接，并提供可复制的 ompchamber connect-url --help 命令。
+   */
   const registerApiOnlyFallbackRoutes = (app) => {
     app.get(/^(?!\/api|\/auth|\/health|\/linear|.*\.(js|css|svg|png|jpg|jpeg|gif|ico|woff|woff2|ttf|eot|map)).*$/, (req, res) => {
       const command = 'ompchamber connect-url --help';

@@ -1,9 +1,17 @@
+/**
+ * walkthrough 生成任务（jobs 表）的行为测试：同一来源的并发请求复用同一任务、
+ * 运行状态与阶段上报、只有显式取消才终止、输出预算与超时的取值、缓存复用，
+ * 以及 provider 拒绝 schema 后的降级与记忆。git 与 small-model 均 mock，但走
+ * 真实的 digest 与 prompt 路径。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** 临时数据目录：在动态 import 被测模块前设置，隔离落盘副作用。 */
 const TEMP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'walkthrough-jobs-'));
+// store 相关模块在 import 时读取该环境变量，必须先于 import 设置。
 process.env.OMPCHAMBER_DATA_DIR = TEMP_DATA_DIR;
 
 // Mocking git rather than this module's own source loading: fewer of our own
@@ -19,6 +27,7 @@ vi.mock('../small-model/index.js', () => ({
   describeSmallModel: vi.fn(),
   generateSmallModelText: vi.fn(),
 }));
+/** 被测模块的任务 API 与测试导出（在环境变量与 mock 就位后动态导入）。 */
 const {
   generateWalkthrough,
   cancelWalkthroughGeneration,
@@ -26,10 +35,13 @@ const {
   getGenerationStage,
   __testing: walkthroughTesting,
 } = await import('./index.js');
+/** 取回 small-model 的 mock，供各用例配置返回值。 */
 const { describeSmallModel, generateSmallModelText } = await import('../small-model/index.js');
+/** 取回 git service 的 getDiff mock。 */
 const { getDiff } = await import('../git/service.js');
 
 // bun's vitest shim has no `vi.waitFor`.
+/** 轮询断言辅助：每 interval 毫秒检查一次 predicate，超时抛错（补 bun 的 vitest shim 缺失的 vi.waitFor）。 */
 const waitFor = async (predicate, { timeout = 2_000, interval = 5 } = {}) => {
   const deadline = Date.now() + timeout;
   for (;;) {
@@ -39,8 +51,10 @@ const waitFor = async (predicate, { timeout = 2_000, interval = 5 } = {}) => {
   }
 };
 
+/** 测试用来源：working-tree 全部改动。 */
 const SOURCE = { kind: 'working-tree', scope: 'all' };
 
+/** 测试用 diff：单文件单 hunk。 */
 const PATCH = `diff --git a/src/a.ts b/src/a.ts
 --- a/src/a.ts
 +++ b/src/a.ts
@@ -48,6 +62,7 @@ const PATCH = `diff --git a/src/a.ts b/src/a.ts
 +const added = true;
 `;
 
+/** 测试用模型回复：一章一停靠点的合法 walkthrough JSON。 */
 const RESPONSE = JSON.stringify({
   title: 'Change',
   focus: 'why',
@@ -59,6 +74,7 @@ const RESPONSE = JSON.stringify({
   }],
 });
 
+/** 生成任务的生命周期：并发去重、状态上报、显式取消、预算一致性与缓存复用。 */
 describe('generation jobs', () => {
   beforeEach(() => {
     fs.rmSync(path.join(TEMP_DATA_DIR, 'walkthroughs'), { recursive: true, force: true });
@@ -172,6 +188,7 @@ describe('generation jobs', () => {
 // A fixed deadline made a three-hunk edit and a 500-hunk pull request wait the
 // same, so the small case guarded nothing and the big case died just short of
 // the finish line.
+/** 超时函数：小 diff 有保底、随 hunk 数增长且有上限。 */
 describe('generation timeout', () => {
   const { generationTimeoutMs } = walkthroughTesting;
 
@@ -193,6 +210,7 @@ describe('generation timeout', () => {
 // The failure this replaced: a flat 24k ask, spent entirely on reasoning by a
 // model that advertises 384k output tokens and a million of context. The ceiling
 // exists because the same number is reserved out of the input allowance.
+/** 输出预算函数：上下限、上下文比例与模型自身输出上限的相互作用。 */
 describe('output budget', () => {
   const { walkthroughOutputTokens } = walkthroughTesting;
 
@@ -218,6 +236,7 @@ describe('output budget', () => {
   });
 });
 
+/** 阶段上报：asking 与 retrying 的出现时机，以及任务结束后的清空。 */
 describe('generation stages', () => {
   beforeEach(() => {
     // Without this the previous suite's cache entry is a hit for the same
@@ -267,6 +286,7 @@ describe('generation stages', () => {
 
 // Retrying the schema on every generation means paying for a call already known
 // to fail; the refusal has to be remembered.
+/** schema 拒绝记忆：被 4xx 拒过的 provider 不再重复发送 schema。 */
 describe('schema refusal memory', () => {
   beforeEach(() => {
     fs.rmSync(path.join(TEMP_DATA_DIR, 'walkthroughs'), { recursive: true, force: true });

@@ -1,3 +1,14 @@
+/**
+ * OMPChamber 会话服务与 HTTP 路由（openchamber-sessions）。
+ *
+ * createOMPChamberSessionService 实现会话的 create/send/fork 全链路：
+ * 目录/项目解析、可选 worktree 建立与引导等待、模型/agent/variant 的
+ * 校验与缺省回退、goal 元数据创建、slash 命令分发、prompt_async 派发
+ * 与"落盘确认"，并把结果经 emitSessionCreatedEvent 广播。
+ * registerOMPChamberSessionRoutes 把它们挂到 POST /api/ompchamber/sessions
+ * （及 /:sessionId/send、/:sessionId/fork），错误统一经 OMPChamberControlError
+ * 映射（含 fork-created / goal-configured 的 partial 详情）。
+ */
 import express from 'express';
 import { createLocalEngineClient } from '../opencode/local-engine-client.js';
 import { createWorktree, getWorktreeBootstrapStatus } from '../git/index.js';
@@ -6,12 +17,14 @@ import { expandCommandGoalObjective, parseScheduledCommandPrompt } from '../sche
 import { buildGoalIntroText, createSessionGoal } from '../session-goal/create.js';
 import { OMPChamberControlError, asControlError } from '../openchamber-control/error.js';
 
+/** 规整可选字符串：trim 后非空返回 trim 结果，否则返回 null。 */
 const asNonEmptyString = (value) => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 };
 
+/** 拆分 "provider/model"；缺省或格式非法返回 null（不抛错）。 */
 const splitModel = (value) => {
   const model = asNonEmptyString(value);
   if (!model) return null;
@@ -23,6 +36,7 @@ const splitModel = (value) => {
   };
 };
 
+/** 从 payload 解析请求模型：优先 model 字符串，其次 providerID+modelID 组合；都没有返回 null。 */
 const resolveRequestedModel = (payload) => {
   const model = splitModel(payload?.model);
   if (model) return model;
@@ -32,11 +46,20 @@ const resolveRequestedModel = (payload) => {
   return providerID && modelID ? { providerID, modelID } : null;
 };
 
+/** 模型全缺省时的兜底 provider id。 */
 const FALLBACK_PROVIDER_ID = 'opencode';
+/** 模型全缺省时的兜底 model id。 */
 const FALLBACK_MODEL_ID = 'big-pickle';
+/** goal token 预算下限。 */
 const MIN_GOAL_TOKEN_BUDGET = 1_000;
+/** goal token 预算上限。 */
 const MAX_GOAL_TOKEN_BUDGET = 100_000_000;
 
+/**
+ * 解析 goal 输入并校验组合：goalTokenBudget 必须搭配 goal；goal 必须有
+ * prompt；预算必须是 [MIN, MAX] 内的整数。返回 {ok, enabled, tokenBudget}
+ * 或 {ok:false, error}——校验失败不抛错，由调用方决定状态码。
+ */
 const resolveGoalInput = (payload, prompt) => {
   const enabled = payload?.goal === true;
   if (payload?.goalTokenBudget !== undefined && !enabled) {
@@ -57,19 +80,26 @@ const resolveGoalInput = (payload, prompt) => {
   return { ok: true, enabled, tokenBudget };
 };
 
+/** 判断 agent mode 是否可作为主入口（未声明、primary 或 all）。 */
 const isPrimaryAgentMode = (mode) => !mode || mode === 'primary' || mode === 'all';
 
+/** 取 provider 的模型列表；models 可能是数组也可能是对象（取 values）。 */
 const providerModels = (provider) => {
   if (Array.isArray(provider?.models)) return provider.models;
   if (provider?.models && typeof provider.models === 'object') return Object.values(provider.models);
   return [];
 };
 
+/** 判断 providers 里是否存在指定的 provider/model 组合。 */
 const hasProviderModel = (providers, providerID, modelID) => {
   return providers.some((provider) => provider?.id === providerID
     && providerModels(provider).some((model) => model?.id === modelID));
 };
 
+/**
+ * 校验 variant 是否属于该模型：模型不存在或 variants 里没有该键时返回
+ * undefined（视为未指定），存在则原样返回。
+ */
 const resolveVariant = (providers, providerID, modelID, variant) => {
   const normalized = asNonEmptyString(variant);
   if (!normalized) return undefined;
@@ -80,8 +110,10 @@ const resolveVariant = (providers, providerID, modelID, variant) => {
     : undefined;
 };
 
+/** 解析配置里的默认模型字符串（settings.defaultModel / opencode model）。 */
 const parseConfigModel = (value) => splitModel(value);
 
+/** 构造 OpenCode 的目录 header；directory 为空时不携带该 header。 */
 const buildDirectoryHeaders = (directory) => ({
   // OpenCode rejects non-ASCII header values; the official SDK sends this
   // header percent-encoded, so match that wire format (non-ASCII checkout
@@ -89,6 +121,7 @@ const buildDirectoryHeaders = (directory) => ({
   ...(directory ? { 'x-opencode-directory': encodeURIComponent(directory) } : {}),
 });
 
+/** 带 auth + 目录 header 拉取 JSON；非 2xx 或解析失败一律返回 fallback。 */
 const fetchJson = async (url, authHeaders, fallback, directory) => {
   const response = await fetch(url.toString(), {
     headers: { ...authHeaders, ...buildDirectoryHeaders(directory), accept: 'application/json' },
@@ -97,6 +130,11 @@ const fetchJson = async (url, authHeaders, fallback, directory) => {
   return response.json().catch(() => fallback);
 };
 
+/**
+ * 并行拉取模型/agent 选择所需的全部输入：settings（磁盘）、providers、
+ * agents、OpenCode config（默认 agent 与默认模型）；任何一项失败回退
+ * 空值，不阻塞其余项。
+ */
 const fetchSelectionInputs = async ({ buildOpenCodeUrl, authHeaders, directory, readSettingsFromDiskMigrated }) => {
   const settings = await readSettingsFromDiskMigrated();
   const providersUrl = new URL(buildOpenCodeUrl('/config/providers', ''));
@@ -121,6 +159,13 @@ const fetchSelectionInputs = async ({ buildOpenCodeUrl, authHeaders, directory, 
   };
 };
 
+/**
+ * 解析缺省 agent 与模型：agent 依次尝试 settings 默认 → OpenCode 默认
+ * （须为主模式且未隐藏）→ build → 第一个主 agent → 第一个 agent；模型
+ * 依次尝试 settings 默认（须真实存在）→ 已解析 agent 的模型 → OpenCode
+ * 默认 → opencode/big-pickle 兜底 → 第一个 provider 的第一个模型，并尽
+ * 力带上匹配的 variant。
+ */
 const resolveDefaultSelection = ({ agents, providers, settings, opencodeDefaultAgent, opencodeDefaultModel }) => {
   const primaryAgents = agents.filter((agent) => isPrimaryAgentMode(agent?.mode) && agent?.hidden !== true);
   let resolvedAgent = null;
@@ -176,6 +221,7 @@ const resolveDefaultSelection = ({ agents, providers, settings, opencodeDefaultA
   };
 };
 
+/** 直接向 OpenCode 的 prompt_async 端点 POST payload；非 2xx 抛带状态码与响应体的错误。 */
 const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, directory, payload }) => {
   const promptUrl = new URL(`${baseUrl}/session/${encodeURIComponent(sessionID)}/prompt_async`);
   promptUrl.searchParams.set('directory', directory);
@@ -196,6 +242,7 @@ const runPromptAsync = async ({ baseUrl, authHeaders, sessionID, directory, payl
   }
 };
 
+/** 经 REST 创建空会话并返回其 id；失败或响应缺 id 抛错。 */
 const createSession = async ({ baseUrl, authHeaders, directory, title }) => {
   const sessionUrl = new URL(`${baseUrl}/session`);
   sessionUrl.searchParams.set('directory', directory);
@@ -223,6 +270,7 @@ const createSession = async ({ baseUrl, authHeaders, directory, title }) => {
   return sessionID;
 };
 
+/** 经 SDK 客户端 fork 会话（messageID 可选为分叉边界）；响应缺 id 抛错。 */
 const forkSession = async ({ client, sessionID, directory, messageID }) => {
   const response = await client.session.fork({
     sessionID,
@@ -236,6 +284,10 @@ const forkSession = async ({ client, sessionID, directory, messageID }) => {
   return session;
 };
 
+/**
+ * 找会话里最近一条已完成的 assistant 消息 id（send 等待的基线）；拉取
+ * 失败返回 null，没有已完成 assistant 消息也返回 null。
+ */
 const latestCompletedAssistantMessageID = async ({ client, sessionID, directory }) => {
   let response;
   try {
@@ -253,6 +305,11 @@ const latestCompletedAssistantMessageID = async ({ client, sessionID, directory 
   return asNonEmptyString(latest?.id);
 };
 
+/**
+ * 解析目标目录：payload 带 projectId/projectID 时按项目表查路径（查无
+ * 404），否则用 directory 字段；最终都经 validateDirectoryPath 校验（失
+ * 败 400）。成功返回 {ok, directory, projectId?}。
+ */
 const resolveRequestedDirectory = async ({ payload, readSettingsFromDiskMigrated, sanitizeProjects, validateDirectoryPath }) => {
   const projectID = asNonEmptyString(payload?.projectId) || asNonEmptyString(payload?.projectID);
   if (projectID) {
@@ -275,7 +332,9 @@ const resolveRequestedDirectory = async ({ payload, readSettingsFromDiskMigrated
     : { ok: false, status: 400, error: validated.error || 'Invalid directory' };
 };
 
+/** 等待 prompt 落盘（出现在会话消息里）的超时（毫秒）。 */
 const PROMPT_LANDED_TIMEOUT_MS = 5_000;
+/** prompt 落盘轮询间隔（毫秒）。 */
 const PROMPT_LANDED_POLL_MS = 150;
 
 // createWorktree returns while the worktree is still being populated in the
@@ -284,9 +343,18 @@ const PROMPT_LANDED_POLL_MS = 150;
 // UnknownError (agent and config files are not there yet), so wait until the
 // bootstrap reaches git-ready (population done) or fails before creating the
 // session and dispatching.
+// 中文补充：createWorktree 返回时 worktree 仍在后台填充（--no-checkout
+// add 之后的 git reset --hard）。往填了一半的目录里派 prompt 会让
+// opencode 的运行以 UnknownError 暴死（agent 与配置文件还没就位），所以
+// 创建会话、派发之前必须等到引导达到 git-ready（填充完成）或失败。
 const WORKTREE_BOOTSTRAP_TIMEOUT_MS = 60_000;
+/** worktree 引导状态轮询间隔（毫秒）。 */
 const WORKTREE_BOOTSTRAP_POLL_MS = 150;
 
+/**
+ * 轮询 worktree 引导直到 ready/git-ready/setup-ready；status 为 failed
+ * 或超时（60s）抛 OMPChamberControlError（500）。
+ */
 const waitForWorktreeBootstrapReady = async ({ directory }) => {
   const deadline = Date.now() + WORKTREE_BOOTSTRAP_TIMEOUT_MS;
   for (;;) {
@@ -303,6 +371,10 @@ const waitForWorktreeBootstrapReady = async ({ directory }) => {
   }
 };
 
+/**
+ * 找会话里最近一条 user 消息 id；拉取失败返回 {ok:false}（调用方不应把
+ * 查询失败当作 prompt 丢失的证据）。
+ */
 const latestUserMessageID = async ({ client, sessionID, directory }) => {
   let response;
   try {
@@ -323,6 +395,9 @@ const latestUserMessageID = async ({ client, sessionID, directory }) => {
 // `prompt_async` answers 204 as soon as OpenCode forks the run, and every later
 // failure is reported only on the session event stream. Confirm the prompt was
 // actually recorded so `promptDispatched` never claims a dispatch that vanished.
+// 中文补充：prompt_async 在 OpenCode 分叉出运行后立刻回 204，之后的
+// 失败只出现在会话事件流上。这里确认 prompt 确实被记录，保证
+// promptDispatched 永不虚报一个消失了的派发。
 const waitForPromptLanded = async ({ client, sessionID, directory, baselineUserMessageID }) => {
   const deadline = Date.now() + PROMPT_LANDED_TIMEOUT_MS;
   for (;;) {
@@ -335,6 +410,7 @@ const waitForPromptLanded = async ({ client, sessionID, directory, baselineUserM
   }
 };
 
+/** 从 payload 提取 worktree 输入；未提供或没有 name 返回 null（name 缺失由调用方报 400）。 */
 const resolveWorktreeInput = (payload) => {
   if (!payload?.worktree || typeof payload.worktree !== 'object') return null;
   const name = asNonEmptyString(payload.worktree.name);
@@ -350,6 +426,13 @@ const resolveWorktreeInput = (payload) => {
   };
 };
 
+/**
+ * 创建 OMPChamber 会话服务（create/send/fork）。dependencies 注入
+ * settings 读取、项目清洗、目录校验、OpenCode URL/认证/就绪等待、
+ * 会话创建事件广播、可选的 createSessionGoal 覆盖与
+ * sessionKnowledgeRuntime（项目背景知识注入）。返回
+ * { create, send, fork }，三者共享目录解析与 prompt 派发管线。
+ */
 export const createOMPChamberSessionService = (dependencies) => {
   const {
     readSettingsFromDiskMigrated,
@@ -365,6 +448,8 @@ export const createOMPChamberSessionService = (dependencies) => {
 
   // Last user message of an existing session, as a selection to reuse. Returns
   // null when the session has no user message carrying a model.
+  // 中文补充：取既有会话最后一条带模型的 user 消息，作为可复用的选择；
+  // 会话里没有携带模型的 user 消息时返回 null。
   const fetchLastUserSelection = async ({ client, sessionID, directory }) => {
     try {
       const response = await client.session.messages({ sessionID, directory, limit: 20 });
@@ -389,6 +474,9 @@ export const createOMPChamberSessionService = (dependencies) => {
   // Explicit model/agent/variant are never checked by `prompt_async`: an unknown
   // agent makes the forked run fail silently, leaving a session with no message.
   // Reject them before any session, worktree, or goal side effect happens.
+  // 中文补充：显式 model/agent/variant 从不被 prompt_async 校验：未知的
+  // agent 会让分叉出的运行静默失败、留下一个没有消息的会话。这里在
+  // 任何会话、worktree 或 goal 副作用发生之前先把它们拒掉。
   const validateRequestedSelection = async ({ directory, requestedModel, requestedAgent, requestedVariant }) => {
     if (!requestedModel && !requestedAgent && !requestedVariant) return;
     const authHeaders = getOpenCodeAuthHeaders();
@@ -428,6 +516,12 @@ export const createOMPChamberSessionService = (dependencies) => {
     }
   };
 
+  // prompt 派发管线：补齐选择（reuseSessionSelection 时优先复用会话上次
+  // 的模型/agent/variant，缺项再走缺省解析，模型仍无则 400）→ 展开片段
+  // → 识别 slash 命令 → goal 启用时先创建 goal 元数据（命令则用展开后的
+  // 模板为目标）→ 命令走 session.command，普通 prompt 走 prompt_async
+  // （前置项目背景知识、goal 引言），随后确认 prompt 落盘；goal 已配置
+  // 时的派发失败会打上 goalConfigured 标记。
   const dispatchPrompt = async ({
     client,
     baseUrl,
@@ -503,6 +597,7 @@ export const createOMPChamberSessionService = (dependencies) => {
       });
     }
 
+    // 给派发失败打 goalConfigured 标记：goal 元数据已建，调用方需披露。
     const markGoalPartial = (error) => {
       if (goalInput.enabled && error && typeof error === 'object') error.goalConfigured = true;
       return error;
@@ -579,6 +674,10 @@ export const createOMPChamberSessionService = (dependencies) => {
     return { model, agent, variant, promptDispatched: true, dispatchedAsCommand: Boolean(resolvedCommand) };
   };
 
+  // 新建会话：校验 goal 组合与目录/项目（worktree 缺 name 报 400）→ 等
+  // 引擎就绪 → 有 prompt 时先校验显式选择（避免无谓副作用）→ 可选建立
+  // worktree 并等引导完成 → 创建会话 → 派发 prompt → 组装结果并尽力广
+  // 播 session-created 事件（广播失败不影响结果）。
   const create = async (payload = {}) => {
     const title = asNonEmptyString(payload.title);
     const prompt = asNonEmptyString(payload.prompt);
@@ -689,6 +788,11 @@ export const createOMPChamberSessionService = (dependencies) => {
     return result;
   };
 
+  // 对既有会话执行 send/fork：要求 sessionId 与 prompt（400），先解析目
+  // 录、校验选择，fork 时先分叉（messageId 为边界）并记录基线 assistant
+  // 消息，再复用会话既有选择派发；fork 成功后广播 session-created。任
+  // 何失败统一转 OMPChamberControlError，且 fork 已建或 goal 已配置时附
+  // partial 详情，让调用方知道留下了什么。
   const runExisting = async (action, sourceSessionId, payload = {}) => {
     const sourceSessionID = asNonEmptyString(sourceSessionId);
     const prompt = asNonEmptyString(payload.prompt);
@@ -813,11 +917,14 @@ export const createOMPChamberSessionService = (dependencies) => {
 
   return {
     create,
+    // 对既有会话发送新 prompt（复用会话上次的选择）。
     send: (sessionID, payload) => runExisting('send', sessionID, payload),
+    // 从 messageId（缺省为末尾）分叉会话并发送新 prompt。
     fork: (sessionID, payload) => runExisting('fork', sessionID, payload),
   };
 };
 
+/** 把任意错误写入统一 JSON 错误响应：statusCode + 文案，partial 时附部分结果详情。 */
 const sendServiceError = (res, error, fallback) => {
   const controlError = asControlError(error, fallback);
   return res.status(controlError.statusCode).json({
@@ -831,9 +938,16 @@ const sendServiceError = (res, error, fallback) => {
   });
 };
 
+/**
+ * 在 express app 上注册会话路由：POST /api/ompchamber/sessions（创建）、
+ * /:sessionId/send 与 /:sessionId/fork（body 限 1MB）。dependencies 可
+ * 直接注入 sessionService（测试），否则现场用其余依赖构造。
+ */
 export const registerOMPChamberSessionRoutes = (app, dependencies) => {
+  // 优先使用注入的服务（测试桩）；缺省现场装配。
   const service = dependencies.sessionService || createOMPChamberSessionService(dependencies);
 
+  // 创建会话：body 非对象时按空 payload 处理；失败记日志并走统一错误响应。
   app.post('/api/ompchamber/sessions', express.json({ limit: '1mb' }), async (req, res) => {
     try {
       return res.json(await service.create(req.body && typeof req.body === 'object' ? req.body : {}));
@@ -843,6 +957,7 @@ export const registerOMPChamberSessionRoutes = (app, dependencies) => {
     }
   });
 
+  // 向既有会话发送 prompt；:sessionId 取自路径参数。
   app.post(
     '/api/ompchamber/sessions/:sessionId/send',
     express.json({ limit: '1mb' }),
@@ -855,6 +970,7 @@ export const registerOMPChamberSessionRoutes = (app, dependencies) => {
       }
     },
   );
+  // 分叉既有会话并发送 prompt；:sessionId 取自路径参数。
   app.post(
     '/api/ompchamber/sessions/:sessionId/fork',
     express.json({ limit: '1mb' }),

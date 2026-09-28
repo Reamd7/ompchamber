@@ -1,5 +1,30 @@
+/**
+ * OpenCode 配置实体（agent / command / MCP / snippet）的 CRUD 路由模块。
+ *
+ * 统一挂载四类配置资产的 REST 端点：agent 走 /api/config/agents、
+ * command 走 /api/config/commands、MCP server 走 /api/config/mcp、
+ * snippet 走 /api/config/snippets。所有写操作只落盘，OpenCode 引擎
+ * 重启被推迟到用户显式的 Apply & Restart（响应统一用
+ * buildDeferredRestartResponse 标注 restartDeferred），避免打断在跑
+ * 会话。各实体的实际存取实现由 dependencies 注入（agents.js /
+ * commands.js / mcp.js / snippets.js 等），本模块只负责参数解包、
+ * 目录解析、错误码映射与响应包装。
+ */
 import { buildDeferredRestartResponse } from './config-mutation-response.js';
 
+/**
+ * 在 express app 上注册 agent / command / MCP / snippet 配置路由。
+ *
+ * @param app express 应用实例
+ * @param dependencies 注入依赖：resolveProjectDirectory /
+ *   resolveOptionalProjectDirectory 解析请求对应的项目目录（后者允许
+ *   无目录的全局配置请求）；getAgentSources / getAgentConfig /
+ *   createAgent / updateAgent / deleteAgent、getCommandSources /
+ *   createCommand / updateCommand / deleteCommand、listMcpConfigs /
+ *   getMcpConfig / createMcpConfig / updateMcpConfig / deleteMcpConfig、
+ *   listSnippets / getSnippet / createSnippet / updateSnippet /
+ *   deleteSnippet / expandSnippets 为各实体的具体存取函数。
+ */
 export const registerConfigEntityRoutes = (app, dependencies) => {
   const {
     resolveProjectDirectory,
@@ -28,6 +53,10 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
 
   // Persist to disk immediately; OpenCode restart is deferred to an explicit
   // Apply & Restart so settings edits do not interrupt live sessions.
+  /**
+   * MCP 变更收尾：先同步执行 applyChange 落盘，再按动作词拼出过去式
+   * 消息并返回 deferred-restart 响应（不立即重启引擎，见上方英文注释）。
+   */
   const completeMcpMutation = async (res, action, name, applyChange) => {
     applyChange();
     const past = action === 'delete' ? 'deleted' : `${action}d`;
@@ -36,6 +65,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     ));
   };
 
+  // GET /api/config/agents/:name — 返回指定 agent 的来源信息（md/json
+  // 双源）、生效 scope 与 isBuiltIn；项目目录解析失败 400，内部异常 500。
   app.get('/api/config/agents/:name', async (req, res) => {
     try {
       const agentName = req.params.name;
@@ -61,6 +92,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/agents/:name/config — 返回该 agent 的完整配置
+  // （getAgentConfig 的合并结果）；目录解析失败 400，读取异常 500。
   app.get('/api/config/agents/:name/config', async (req, res) => {
     try {
       const agentName = req.params.name;
@@ -77,6 +110,9 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/agents/:name — 创建 agent：body 中的 scope 单独
+  // 取出，其余作为配置写入；成功返回 deferred-restart 响应，目录解析
+  // 失败 400，创建异常 500（透出 error.message）。
   app.post('/api/config/agents/:name', async (req, res) => {
     try {
       const agentName = req.params.name;
@@ -100,6 +136,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // PATCH /api/config/agents/:name — 用 body 作为增量更新 agent，
+  // 成功返回 deferred-restart 响应；目录解析失败 400，更新异常 500。
   app.patch('/api/config/agents/:name', async (req, res) => {
     try {
       const agentName = req.params.name;
@@ -127,6 +165,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/agents/:name — 删除 agent（body.scope 可指定
+  // 删除范围）；成功返回 deferred-restart 响应；错误路径同上。
   app.delete('/api/config/agents/:name', async (req, res) => {
     try {
       const agentName = req.params.name;
@@ -146,6 +186,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/mcp — 列出全部 MCP server 配置（用 optional 目录
+  // 解析器，允许无项目目录的全局请求）；解析失败 400，读取异常 500。
   app.get('/api/config/mcp', async (req, res) => {
     try {
       const { directory, error } = await resolveOptionalProjectDirectory(req);
@@ -160,6 +202,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/mcp/:name — 返回单个 MCP server 配置；不存在 404，
+  // 目录解析失败 400，其余异常 500。
   app.get('/api/config/mcp/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -178,6 +222,9 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/mcp/:name — 创建 MCP server：body 拆出 scope 后
+  // 其余作为配置；落盘后经 completeMcpMutation 返回 deferred-restart
+  // 响应；异常 500。
   app.post('/api/config/mcp/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -197,6 +244,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // PATCH /api/config/mcp/:name — 增量更新 MCP server；目标不存在的
+  // 错误消息被识别为 404，其余异常 500。
   app.patch('/api/config/mcp/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -219,6 +268,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/mcp/:name — 删除 MCP server 并返回
+  // deferred-restart 响应；异常 500。
   app.delete('/api/config/mcp/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -237,6 +288,9 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/commands/:name — 返回指定 command 的来源信息
+  // （md/json 双源）、生效 scope 与 isBuiltIn；目录解析失败 400，
+  // 内部异常 500。
   app.get('/api/config/commands/:name', async (req, res) => {
     try {
       const commandName = req.params.name;
@@ -262,6 +316,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/commands/:name — 创建 command：body 拆出 scope 后
+  // 其余作为配置，成功返回 deferred-restart 响应。
   app.post('/api/config/commands/:name', async (req, res) => {
     try {
       const commandName = req.params.name;
@@ -285,6 +341,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // PATCH /api/config/commands/:name — 增量更新 command，成功返回
+  // deferred-restart 响应；目录解析失败 400，异常 500。
   app.patch('/api/config/commands/:name', async (req, res) => {
     try {
       const commandName = req.params.name;
@@ -312,6 +370,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/commands/:name — 删除 command，成功返回
+  // deferred-restart 响应；目录解析失败 400，异常 500。
   app.delete('/api/config/commands/:name', async (req, res) => {
     try {
       const commandName = req.params.name;
@@ -330,6 +390,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/snippets — 列出全部 snippet；目录解析失败 400，
+  // 读取异常 500。
   app.get('/api/config/snippets', async (req, res) => {
     try {
       const { directory, error } = await resolveOptionalProjectDirectory(req);
@@ -343,6 +405,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/snippets/expand — 对 body.text 做 snippet 展开
+  // （{snippet:name} 引用替换），返回 { text }；异常 500。
   app.post('/api/config/snippets/expand', async (req, res) => {
     try {
       const { directory, error } = await resolveOptionalProjectDirectory(req);
@@ -356,6 +420,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/config/snippets/:name — 返回单个 snippet；不存在 404，
+  // 名称非法（错误消息含 “Snippet name”）400，其余 500。
   app.get('/api/config/snippets/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -377,6 +443,9 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/snippets/:name — 创建 snippet（scope 缺省
+  // global）；已存在 409，名称/目录非法 400，成功返回
+  // { success, snippet }。
   app.post('/api/config/snippets/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -398,6 +467,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // PATCH /api/config/snippets/:name — 更新 snippet；不存在 404，
+  // 名称非法 400，成功返回 { success, snippet }。
   app.patch('/api/config/snippets/:name', async (req, res) => {
     try {
       const name = req.params.name;
@@ -418,6 +489,8 @@ export const registerConfigEntityRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/config/snippets/:name — 删除 snippet；不存在 404，
+  // 名称非法 400，成功返回 { success: true }。
   app.delete('/api/config/snippets/:name', async (req, res) => {
     try {
       const name = req.params.name;

@@ -1,6 +1,11 @@
 //! Port of the `shared.js` markdown-file and prompt-file subset used by
 //! `agents.js` / `commands.js`: `parseMdFile`, `writeMdFile`, `ensureDirs`,
 //! `isPromptFileReference`, `resolvePromptFilePath`, `writePromptFile`.
+//!
+//! 中文说明：移植 `shared.js` 中被 `agents.js`/`commands.js` 用到的
+//! markdown 文件与 prompt 文件子集——frontmatter 解析/清洗/写回、
+//! 目录确保，以及 `{file:...}` 引用的识别与落盘。YAML 由内部的
+//! `yaml` 模块（allow-list 友好的子集实现）处理。
 
 use std::path::{Path, PathBuf};
 
@@ -9,14 +14,20 @@ use serde_json::{Map, Value};
 use super::OpenCodeEnv;
 use super::yaml;
 
+/// 中文：markdown 文件操作的统一错误类型（字符串错误，镜像 JS 抛错文案）。
 pub(crate) type MdResult<T> = Result<T, String>;
 
+/// 中文：解析后的 markdown 文件：frontmatter 键值映射 + trim 过的正文。
 pub(crate) struct MdFile {
+    /// frontmatter 解析结果（无 frontmatter 时为空映射）。
     pub frontmatter: Map<String, Value>,
+    /// 正文（已 trim）。
     pub body: String,
 }
 
 /// `shared.js` `ensureDirs`.
+/// 中文：确保配置目录存在：config 根目录及 agents/commands/skills
+/// 三个子目录，缺则递归创建（失败静默，后续读写自然会报错）。
 pub(crate) fn ensure_dirs(env: &OpenCodeEnv) {
     let dirs = [
         env.config_dir.clone(),
@@ -34,6 +45,9 @@ pub(crate) fn ensure_dirs(env: &OpenCodeEnv) {
 /// Mirror of OpenCode's markdown frontmatter sanitizer: lines whose unquoted
 /// scalar value contains a colon (`description: Build agent: creates builds`)
 /// are rewritten as block scalars so a second parse pass accepts them.
+/// 中文：清洗 frontmatter 文本：跳过注释/空行/续行/已引号行，仅把
+/// "未加引号且值中含冒号" 的行改写为 `key: |-` 块标量，让第二次
+/// YAML 解析能够接受；其余行原样保留。
 fn sanitize_frontmatter(frontmatter: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     for line in frontmatter.split('\n') {
@@ -68,6 +82,8 @@ fn sanitize_frontmatter(frontmatter: &str) -> String {
 }
 
 /// `^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$` per line.
+/// 中文：按 JS 正则 `^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.*)$` 拆分单行
+/// 键值；不匹配（首字符非法、缺冒号）返回 `None`。
 fn split_key_line(line: &str) -> Option<(&str, &str)> {
     let bytes = line.as_bytes();
     if bytes.is_empty() || !(bytes[0].is_ascii_alphabetic() || bytes[0] == b'_') {
@@ -94,6 +110,8 @@ fn split_key_line(line: &str) -> Option<(&str, &str)> {
 
 /// `shared.js` `parseMdFile`: BOM-stripped, frontmatter closed by an exact
 /// `---` line (newline or EOF after it), lenient YAML retry, trimmed body.
+/// 中文：读取并解析 markdown 文件：先剥掉 UTF-8 BOM 再交给
+/// [`parse_md_content`]；读取失败返回带路径上下文的错误。
 pub(crate) fn parse_md_file(file_path: &Path) -> MdResult<MdFile> {
     let raw = std::fs::read_to_string(file_path)
         .map_err(|error| format!("Failed to read markdown file: {error}"))?;
@@ -101,6 +119,9 @@ pub(crate) fn parse_md_file(file_path: &Path) -> MdResult<MdFile> {
     parse_md_content(content)
 }
 
+/// 中文：解析 markdown 文本：无 frontmatter 时返回空映射 + trim 后
+/// 正文；frontmatter 先按原样解析，失败则用清洗版重试，再失败按
+/// 空映射降级（仅记录 warn 日志）。
 pub(crate) fn parse_md_content(content: &str) -> MdResult<MdFile> {
     let Some((frontmatter_text, body)) = split_frontmatter(content) else {
         return Ok(MdFile {
@@ -130,6 +151,9 @@ pub(crate) fn parse_md_content(content: &str) -> MdResult<MdFile> {
 
 /// JS regex `^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$`: the closing
 /// `---` must be its own line (lazy first match).
+/// 中文：对应 JS 正则 `^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$`：
+/// 开头必须是独立的 `---` 行，闭合 `---` 也必须独占一行（其后是换行
+/// 或 EOF）；惰性匹配取第一个闭合。返回 (frontmatter 文本, 正文)。
 fn split_frontmatter(content: &str) -> Option<(String, String)> {
     let opener_len = if content.starts_with("---\r\n") {
         5
@@ -168,6 +192,9 @@ fn split_frontmatter(content: &str) -> Option<(String, String)> {
 }
 
 /// `shared.js` `writeMdFile`.
+/// 中文：写回 markdown 文件：过滤掉值为 null 的 frontmatter 键，
+/// YAML 序列化后以 `---` 围栏 + 空行 + 正文重组并覆盖写。写失败时
+/// 记录 error 日志并返回统一错误文案。
 pub(crate) fn write_md_file(
     file_path: &Path,
     frontmatter: &Map<String, Value>,
@@ -191,6 +218,8 @@ pub(crate) fn write_md_file(
 // ---------------------------------------------------------------------------
 
 /// `/^\{file:(.+)\}$/i`.
+/// 中文：判断 JSON 值是否为 `{file:路径}` 形式的 prompt 文件引用
+/// （大小写不敏感的 JS 正则 `/^\{file:(.+)\}$/i` 对应实现）。
 pub(crate) fn is_prompt_file_reference(value: &Value) -> bool {
     let Some(text) = value.as_str() else {
         return false;
@@ -198,6 +227,7 @@ pub(crate) fn is_prompt_file_reference(value: &Value) -> bool {
     parse_file_reference(text).is_some()
 }
 
+/// 中文：提取 `{file:...}` 内部非空路径文本；不匹配返回 `None`。
 fn parse_file_reference(trimmed: &str) -> Option<String> {
     let inner = trimmed.strip_prefix("{file:")?.strip_suffix('}')?;
     // `.+` requires a non-empty capture.
@@ -209,6 +239,8 @@ fn parse_file_reference(trimmed: &str) -> Option<String> {
 
 /// `shared.js` `resolvePromptFilePath` — `{file:...}` target relative to the
 /// OpenCode config dir (`./`-prefixed and bare names included).
+/// 中文：把 `{file:...}` 引用解析为实际路径：`./` 前缀与裸名相对
+/// OpenCode 配置目录，绝对路径原样返回；非字符串/格式不符返回 `None`。
 pub(crate) fn resolve_prompt_file_path(env: &OpenCodeEnv, reference: &Value) -> Option<PathBuf> {
     let text = reference.as_str()?;
     let target = parse_file_reference(text.trim())?.trim().to_string();
@@ -225,6 +257,8 @@ pub(crate) fn resolve_prompt_file_path(env: &OpenCodeEnv, reference: &Value) -> 
 }
 
 /// `shared.js` `writePromptFile`.
+/// 中文：写 prompt 文件：先确保父目录存在再覆盖写；失败仅记录
+/// error 日志（不向调用方报错，镜像 JS 的静默行为）。
 pub(crate) fn write_prompt_file(file_path: &Path, content: &str) {
     if let Some(parent) = file_path.parent() {
         let _ = std::fs::create_dir_all(parent);

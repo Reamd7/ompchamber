@@ -3,6 +3,11 @@
 //!
 //! Auth resolution: OpenCode `auth.json` entry first, then the merged OpenCode
 //! config layers' `provider[alias].options.apiKey`.
+//!
+//! 中文概览：智谱 AI Coding Plan 配额提供方——以 API key 请求
+//! open.bigmodel.cn 的 quota/limit 端点，把 limits 中的 TOKENS_LIMIT
+//! （5 小时 token 窗口）与 TIME_LIMIT（固定 30 天的 "MCP Tools" 窗口）
+//! 转换成统一的用量窗口。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -15,13 +20,21 @@ use crate::quota::utils::{
     resolve_window_seconds, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "zhipuai-coding-plan";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "Zhipu AI Coding Plan";
+/// auth.json 中识别本提供方的别名列表（含简写 zhipuai/zhipu）。
 pub const ALIASES: [&str; 3] = ["zhipuai-coding-plan", "zhipuai", "zhipu"];
 
+/// 配额限额查询端点 URL。
 const LIMIT_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
+/// "MCP Tools" 窗口使用的固定时长（30 天，API 未返回窗口秒数）。
 const MONTH_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 
+/// 解析 API key：优先取 auth.json 别名条目的 key/token 字段，
+/// 否则回退到合并后的 OpenCode 配置层 provider[alias].options.apiKey
+/// （回退层吞掉错误）；auth 文件本身读取失败则向上返回 Err。
 fn get_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     // JS: readAuthFile() runs outside the try — a read error propagates to
     // the registry catch; only the config-layer fallback swallows errors.
@@ -54,10 +67,14 @@ fn get_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// 是否已配置：能解析出 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     get_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key（缺失视为未配置）→ 请求限额端点 → 从 limits 中
+/// 挑出 TOKENS_LIMIT 与 TIME_LIMIT 分别组装 "Tokens"（窗口秒数由条目
+/// 决定）与 "MCP Tools"（固定 30 天）窗口，返回统一结果。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

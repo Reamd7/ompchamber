@@ -1,7 +1,15 @@
+/**
+ * shutdown-runtime（优雅关闭运行时）的单元测试。
+ *
+ * 覆盖三个场景：服务器先于超时关闭时必须清掉 close 定时器；关闭阶段
+ * 卡死时 watchdog 强制退出并指名卡住的阶段；嵌入式调用（exitProcess:
+ * false）被 watchdog 解除阻塞但不退出宿主进程。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createGracefulShutdownRuntime } from './shutdown-runtime.js';
 
+/** 用全套默认 stub 依赖构造被测运行时；overrides 可按需覆盖个别依赖。 */
 const createRuntime = (server, overrides = {}) => createGracefulShutdownRuntime({
   process: { exit: vi.fn() },
   shutdownTimeoutMs: 1000,
@@ -34,6 +42,7 @@ const createRuntime = (server, overrides = {}) => createGracefulShutdownRuntime(
   ...overrides,
 });
 
+// 优雅关闭运行时的行为验证（fake timers 驱动超时与 watchdog）
 describe('graceful shutdown runtime', () => {
   afterEach(() => {
     vi.useRealTimers();

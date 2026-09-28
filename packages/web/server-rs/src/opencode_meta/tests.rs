@@ -1,6 +1,13 @@
 //! Tests for the `opencode_meta` port — core logic plus oneshot route
 //! coverage, mirroring `models-metadata.test.js`, `npm-registry.test.js`,
 //! `project-icon-routes.test.js`, and `openchamber-routes.test.js`.
+//!
+//! 中文说明：`opencode_meta` 移植的集成测试，逐点镜像 JS 侧的
+//! `models-metadata.test.js`、`npm-registry.test.js`、
+//! `project-icon-routes.test.js` 与 `openchamber-routes.test.js`：覆盖
+//! 目录缓存分层与 proxy 重试、npm 查询/缓存/去重、图标路由与更新路由的
+//! 行为契约。文件下方先定义共享测试 harness（临时目录、fake fetch、fake
+//! 包管理器），再按被测模块分组排列各测试。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,6 +42,7 @@ use crate::package_manager::PackageManagerRuntime;
 // Harness
 // ---------------------------------------------------------------------------
 
+/// 创建进程内唯一的临时目录（前缀 + PID + 随机数），避免测试间互相干扰。
 fn temp_dir_unique(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "opencode-meta-{prefix}-{}-{:x}",
@@ -45,6 +53,8 @@ fn temp_dir_unique(prefix: &str) -> PathBuf {
     dir
 }
 
+/// 构造指向给定数据目录的 `RouterContext`：固定端口 7897、不可达的引擎
+/// 地址与全新 `EventHub`，只填路由挂载所需的最低字段。
 fn test_context(data_dir: &Path) -> RouterContext {
     let config = ServerConfig {
         port: 7897,
@@ -66,6 +76,8 @@ fn test_context(data_dir: &Path) -> RouterContext {
     }
 }
 
+/// 构造 oneshot 请求；可选 (body, content-type) 会附带 Content-Type 与
+/// Content-Length 头。
 fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<Body> {
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some((content, content_type)) = body {
@@ -78,6 +90,7 @@ fn request_json(method: &str, uri: &str, body: Option<(&str, &str)>) -> Request<
     }
 }
 
+/// 读取响应体并按 JSON 解析；任何失败都直接 panic（测试断言用）。
 async fn body_json(response: axum::response::Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -85,6 +98,7 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).expect("json body")
 }
 
+/// 读取响应体的原始字节（二进制图标内容断言用）。
 async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
     axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -94,6 +108,7 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 
 // HTTP fetch fakes (models.dev + npm).
 
+/// 构造一个 fake HTTP 响应（models.dev 与 npm 的 fetch 桩共用）。
 fn ok_response(status: u16, headers: Vec<(&str, &str)>, body: &str) -> HttpResponse {
     HttpResponse {
         status,
@@ -105,6 +120,8 @@ fn ok_response(status: u16, headers: Vec<(&str, &str)>, body: &str) -> HttpRespo
     }
 }
 
+/// 记录型 fake fetch：每次调用记录请求并计数，固定返回给定响应；
+/// 用于断言请求头与请求次数。
 fn recording_fetch(
     response: HttpResponse,
 ) -> (HttpFetch, Arc<Mutex<Vec<HttpRequest>>>, Arc<AtomicUsize>) {
@@ -126,6 +143,8 @@ fn recording_fetch(
     (fetch, requests, calls)
 }
 
+/// 基于移植 fake 的确定性包管理器运行时：清空检测缓存，并把 OMPCHAMBER_*
+/// 环境旋钮强制置空，保证测试不受宿主机环境影响。
 /// Deterministic package-manager runtime over the ported fakes, with the
 /// OMPCHAMBER_* env knobs forced unset.
 fn fake_package_manager(
@@ -145,16 +164,20 @@ fn fake_package_manager(
     }
     Arc::new(PackageManagerRuntime::with_seams(runner, transport).with_env_overrides(env))
 }
+/// 绝不允许被调用的 proxy GET 桩：被调用即返回错误，用于断言“不该走
+/// proxy”的路径。
 fn never_proxy_get() -> super::models_metadata::ProxyGet {
     Arc::new(|_, _, _, _| {
         Box::pin(async move { Err("must not be called".to_string()) }) as BoxFuture<_>
     })
 }
 
+/// 恒返回空列表的 proxy 候选桩：模拟“未配置任何 proxy”的环境。
 fn empty_candidates() -> super::models_metadata::ProxyCandidates {
     Arc::new(|| Box::pin(async move { Vec::new() }) as BoxFuture<_>)
 }
 
+/// 恒失败的 fake fetch：每次请求都返回同一个错误（网络失败路径用）。
 fn failing_fetch(error: HttpError) -> HttpFetch {
     Arc::new(move |_request: HttpRequest| {
         let error = error.clone();
@@ -162,6 +185,7 @@ fn failing_fetch(error: HttpError) -> HttpFetch {
     })
 }
 
+/// 组装测试用目录缓存：注入给定 fetch、禁用 proxy、使用真实系统时钟。
 fn fake_catalog(fetch: HttpFetch, cache_path: PathBuf) -> Arc<ModelsMetadataCache> {
     Arc::new(ModelsMetadataCache::new(
         CatalogIo {
@@ -174,6 +198,7 @@ fn fake_catalog(fetch: HttpFetch, cache_path: PathBuf) -> Arc<ModelsMetadataCach
     ))
 }
 
+/// 直接向磁盘写入一份合法的目录缓存文件（预热/老化测试的种子数据）。
 fn write_disk_cache(cache_path: &Path, etag: &str, fetched_at: u64, data: Value) {
     std::fs::write(
         cache_path,
@@ -192,6 +217,7 @@ fn write_disk_cache(cache_path: &Path, etag: &str, fetched_at: u64, data: Value)
 // models-metadata.js
 // ---------------------------------------------------------------------------
 
+/// 验证：网络彻底失败时，过期的磁盘缓存以 stale 身份兜底返回。
 #[tokio::test]
 async fn disk_cache_serves_stale_when_network_fails() {
     let dir = temp_dir_unique("models-stale");
@@ -220,6 +246,7 @@ async fn disk_cache_serves_stale_when_network_fails() {
     assert_eq!(result.metadata, json!({ "anthropic": {} }));
 }
 
+/// 验证：磁盘缓存仍在 TTL 内时直接命中，完全不发起网络请求。
 #[tokio::test]
 async fn fresh_disk_cache_is_served_without_touching_the_network() {
     let dir = temp_dir_unique("models-fresh");
@@ -247,6 +274,7 @@ async fn fresh_disk_cache_is_served_without_touching_the_network() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
+/// 验证：成功刷新后新 ETag 与新正文被写回磁盘缓存文件。
 #[tokio::test]
 async fn refresh_persists_etag_and_payload_back_to_disk() {
     let dir = temp_dir_unique("models-persist");
@@ -283,6 +311,7 @@ async fn refresh_persists_etag_and_payload_back_to_disk() {
     );
 }
 
+/// 验证：刷新时携带 If-None-Match；304 保留原正文并推进时间戳（随即视为新鲜）。
 #[tokio::test]
 async fn etag_revalidation_sends_if_none_match_and_keeps_body_on_304() {
     let dir = temp_dir_unique("models-304");
@@ -332,6 +361,7 @@ async fn etag_revalidation_sends_if_none_match_and_keeps_body_on_304() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
+/// 验证：源站 503 属真实回答，不触发 proxy 重试（proxy 与候选探测零调用），最终回退 stale 缓存。
 #[tokio::test]
 async fn origin_http_errors_do_not_trigger_the_proxy_retry() {
     let dir = temp_dir_unique("models-503");
@@ -392,6 +422,7 @@ async fn origin_http_errors_do_not_trigger_the_proxy_retry() {
     );
 }
 
+/// 验证：直连网络级失败后按候选顺序经 proxy 重试并采用其响应。
 #[tokio::test]
 async fn direct_network_failure_retries_through_the_proxy() {
     let dir = temp_dir_unique("models-proxy");
@@ -442,6 +473,7 @@ async fn direct_network_failure_retries_through_the_proxy() {
     assert_eq!(result.metadata, json!({ "via": "proxy" }));
 }
 
+/// 验证：网络与 proxy 全部失败且无任何缓存时，向上返回错误。
 #[tokio::test]
 async fn total_failure_without_any_cache_is_an_error() {
     let dir = temp_dir_unique("models-error");
@@ -460,6 +492,7 @@ async fn total_failure_without_any_cache_is_an_error() {
     assert_eq!(error.message, "no proxy configured");
 }
 
+/// 验证：env proxy 解析只接受 http/https（socks 与非法 URL 跳过），且 env 列表本身不去重。
 #[test]
 fn env_proxy_candidates_parse_and_dedupe_http_proxies_only() {
     let candidates = env_proxies_from(&[
@@ -490,6 +523,7 @@ fn env_proxy_candidates_parse_and_dedupe_http_proxies_only() {
     );
 }
 
+/// 验证：scutil 输出解析只提取已启用（Enable=1）的代理键值对。
 #[test]
 fn scutil_output_parsing_reads_enabled_proxies() {
     let stdout = "\
@@ -512,6 +546,7 @@ fn scutil_output_parsing_reads_enabled_proxies() {
     assert!(parse_scutil_output("scutil: no proxies").is_empty());
 }
 
+/// 当前时间减去给定毫秒（饱和减法），用于把缓存种子“老化”到过期。
 fn system_now_minus(delta: u64) -> u64 {
     models_metadata::system_now_ms().saturating_sub(delta)
 }
@@ -520,14 +555,19 @@ fn system_now_minus(delta: u64) -> u64 {
 // npm-registry.js
 // ---------------------------------------------------------------------------
 
+/// npm 测试串行化：它们共享进程级 CACHE/INFLIGHT 静态量，并行测试的
+/// `clear_cache()` 会在查找进行中清掉 per-name mutex 与缓存。
 /// Serializes the npm tests: they share the process-wide CACHE/INFLIGHT
 /// statics, and a parallel test's `clear_cache()` during an in-flight
 /// lookup would wipe the per-name mutex and the cache mid-test.
 async fn npm_test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+    // 所有 npm 测试共享的进程级串行锁。
     static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     SERIAL.lock().await
 }
 
+/// 由同步 handler 构造记录型 `NpmIo`（fake fetch + 请求日志），registry
+/// 指向官方地址。
 fn npm_io_with(
     handler: impl Fn(HttpRequest) -> Result<HttpResponse, HttpError> + Send + Sync + 'static,
 ) -> (NpmIo, Arc<Mutex<Vec<HttpRequest>>>) {
@@ -537,6 +577,7 @@ fn npm_io_with(
     })
 }
 
+/// 同 [`npm_io_with`]，但 handler 返回 future，可延迟应答（in-flight 去重测试用）。
 /// Same as [`npm_io_with`] for handlers that need to await before answering
 /// (in-flight dedup tests).
 fn npm_io_with_future(
@@ -548,6 +589,8 @@ fn npm_io_with_future(
     npm_io_from(handler)
 }
 
+/// 记录型 `NpmIo` 的共同实现：把 handler 包装为记录请求的 `HttpFetch`，
+/// 并共享请求日志供断言。
 fn npm_io_from(
     handler: impl Fn(HttpRequest) -> BoxFuture<'static, Result<HttpResponse, HttpError>>
     + Send
@@ -575,6 +618,7 @@ fn npm_io_from(
     )
 }
 
+/// 验证：npm 查询成功时返回 latest、全部版本号与 dist-tags 映射。
 #[tokio::test]
 async fn npm_lookup_success_returns_latest_versions_and_dist_tags() {
     let _npm_serial = npm_test_serial().await;
@@ -598,6 +642,7 @@ async fn npm_lookup_success_returns_latest_versions_and_dist_tags() {
     );
 }
 
+/// 验证：dist-tags/versions 缺失时以 null/空数组等 JS 兼容形状返回 ok。
 #[tokio::test]
 async fn npm_lookup_handles_missing_dist_tags_and_versions() {
     let _npm_serial = npm_test_serial().await;
@@ -610,6 +655,7 @@ async fn npm_lookup_handles_missing_dist_tags_and_versions() {
     );
 }
 
+/// 验证：registry 404 映射为 "Package not found" 错误。
 #[tokio::test]
 async fn npm_lookup_404_returns_package_not_found() {
     let _npm_serial = npm_test_serial().await;
@@ -625,6 +671,7 @@ async fn npm_lookup_404_returns_package_not_found() {
     );
 }
 
+/// 验证：registry 500 映射为 "Registry returned 500" 错误。
 #[tokio::test]
 async fn npm_lookup_500_returns_registry_error() {
     let _npm_serial = npm_test_serial().await;
@@ -640,6 +687,7 @@ async fn npm_lookup_500_returns_registry_error() {
     );
 }
 
+/// 验证：网络层错误返回 status=Network 的错误形状。
 #[tokio::test]
 async fn npm_lookup_network_error_returns_network_status() {
     let _npm_serial = npm_test_serial().await;
@@ -655,6 +703,7 @@ async fn npm_lookup_network_error_returns_network_status() {
     );
 }
 
+/// 验证：scoped 包名中的斜杠被编码为 %2F 拼入 registry URL。
 #[tokio::test]
 async fn npm_scoped_names_encode_the_slash_in_the_registry_url() {
     let _npm_serial = npm_test_serial().await;
@@ -665,6 +714,7 @@ async fn npm_scoped_names_encode_the_slash_in_the_registry_url() {
     assert_eq!(requests[0].url, "https://registry.npmjs.org/@scope%2Fpkg");
 }
 
+/// 验证：registry 请求携带 ompchamber-server/ User-Agent 与 Accept 头。
 #[tokio::test]
 async fn npm_user_agent_and_accept_headers_are_present() {
     let _npm_serial = npm_test_serial().await;
@@ -687,6 +737,7 @@ async fn npm_user_agent_and_accept_headers_are_present() {
     );
 }
 
+/// 验证：缓存命中时两次查询返回同一结果（不再发请求）。
 #[tokio::test]
 async fn npm_cache_hit_reuses_definitive_success() {
     let _npm_serial = npm_test_serial().await;
@@ -703,6 +754,7 @@ async fn npm_cache_hit_reuses_definitive_success() {
     assert_eq!(first, second);
 }
 
+/// 验证：缓存条目超过 1 小时 TTL 后过期，触发第二次网络请求。
 #[tokio::test]
 async fn npm_cache_miss_after_ttl_fetches_again() {
     let _npm_serial = npm_test_serial().await;
@@ -724,6 +776,7 @@ async fn npm_cache_miss_after_ttl_fetches_again() {
     assert_eq!(requests.len(), 2);
 }
 
+/// 验证：force 刷新绕过缓存直接发起网络请求。
 #[tokio::test]
 async fn npm_force_refresh_bypasses_the_cache() {
     let _npm_serial = npm_test_serial().await;
@@ -735,6 +788,7 @@ async fn npm_force_refresh_bypasses_the_cache() {
     assert_eq!(requests.len(), 2);
 }
 
+/// 验证：同名包的并发查询合并为一次 registry 请求（per-name 串行 + 缓存复读）。
 #[tokio::test]
 async fn npm_in_flight_requests_dedup_by_package_name() {
     let _npm_serial = npm_test_serial().await;
@@ -771,6 +825,7 @@ async fn npm_in_flight_requests_dedup_by_package_name() {
     assert_eq!(requests.len(), 1, "one registry fetch");
 }
 
+/// 克隆 `NpmIo` 句柄（fetch 闭包共享），供移动进 spawn 的任务使用。
 /// Clone handle for moving the io into a spawned task.
 fn fake_npm_io_handle(io: &NpmIo) -> NpmIo {
     NpmIo {
@@ -779,12 +834,14 @@ fn fake_npm_io_handle(io: &NpmIo) -> NpmIo {
     }
 }
 
+/// 验证：网络错误不进缓存（下次重新请求），而 404 作为确定性结果被缓存。
 #[tokio::test]
 async fn npm_network_failure_is_not_cached_but_404_is() {
     let _npm_serial = npm_test_serial().await;
     npm_registry::clear_cache();
     let (io, requests) = npm_io_with(|_| {
         use std::sync::atomic::AtomicU8;
+        // 计数器：第一次调用模拟网络错误，之后返回成功。
         static CALL: AtomicU8 = AtomicU8::new(0);
 
         if CALL.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -813,6 +870,7 @@ async fn npm_network_failure_is_not_cached_but_404_is() {
     assert_eq!(requests.len(), 1, "404 is cached");
 }
 
+/// 验证：包名编码与 JS 的 encodeURIComponent 行为一致（@ 保留、斜杠转 %2F、空格转 %20）。
 #[test]
 fn npm_encode_name_matches_uri_component_plus_at_restore() {
     assert_eq!(npm_registry::encode_name("foo"), "foo");
@@ -824,6 +882,7 @@ fn npm_encode_name_matches_uri_component_plus_at_restore() {
 // openchamber-routes.js — pure helpers
 // ---------------------------------------------------------------------------
 
+/// 验证：UA 嗅探正确区分 unknown/tablet/mobile/desktop。
 #[test]
 fn infer_device_class_sniffs_the_user_agent() {
     assert_eq!(infer_device_class(""), "unknown");
@@ -836,6 +895,7 @@ fn infer_device_class_sniffs_the_user_agent() {
     assert_eq!(infer_device_class("Mozilla/5.0 Macintosh"), "desktop");
 }
 
+/// 验证：reportUsage 只有字面 false/0/no 退出，缺省与其它值视为同意上报。
 #[test]
 fn parse_report_usage_opts_out_only_on_literal_false_spellings() {
     assert_eq!(parse_report_usage(None), None);
@@ -846,6 +906,7 @@ fn parse_report_usage_opts_out_only_on_literal_false_spellings() {
     assert_eq!(parse_report_usage(Some("")), Some(true));
 }
 
+/// 验证：systemd unit 解析要求 INVOCATION_ID 存在、默认 unit 兜底、拒绝不安全名。
 #[test]
 fn systemd_unit_resolution_requires_invocation_id_and_a_safe_unit() {
     assert_eq!(
@@ -880,6 +941,7 @@ fn systemd_unit_resolution_requires_invocation_id_and_a_safe_unit() {
     );
 }
 
+/// 验证：安装决策树的四个分支（容器优先、前台±systemd、daemon）。
 #[test]
 fn install_decision_walks_the_js_tree() {
     use InstallDecision::*;
@@ -902,6 +964,7 @@ fn install_decision_walks_the_js_tree() {
 // project-icon-routes.js — pure helpers
 // ---------------------------------------------------------------------------
 
+/// 验证：SVG 主题注入把默认主题色写进紧跟 <svg> 开标签的 <style>。
 #[test]
 fn svg_theme_injects_the_default_color_after_the_svg_open_tag() {
     let markup = r#"<?xml version="1.0"?><svg xmlns="a"><path d="M0 0"/></svg>"#;
@@ -913,6 +976,7 @@ fn svg_theme_injects_the_default_color_after_the_svg_open_tag() {
     assert!(themed.contains("color:#111111!important"));
 }
 
+/// 验证：显式颜色优先于主题色；无主题不动原文；<svgx 不误匹配。
 #[test]
 fn svg_theme_explicit_color_wins_and_no_theme_leaves_markup_alone() {
     let markup = "<SVG viewBox='0 0 1 1'><g/></SVG>";
@@ -931,6 +995,7 @@ fn svg_theme_explicit_color_wins_and_no_theme_leaves_markup_alone() {
     );
 }
 
+/// 验证：查询串解析的 first/single 语义与 Express 版一致。
 #[test]
 fn query_parsing_first_and_single_semantics_match_express() {
     let query = parse_query(Some("theme=dark&theme=light&iconColor=%23abc&plain"));
@@ -946,10 +1011,14 @@ fn query_parsing_first_and_single_semantics_match_express() {
 // project-icon-routes.js — routes
 // ---------------------------------------------------------------------------
 
+/// 计算字符串的 SHA-1 hex 摘要（复用 walkthrough 的 Node 兼容实现），
+/// 用于拼出图标文件名。
 fn sha1_hex(value: &str) -> String {
     crate::walkthrough::sha1::sha1_hex(value.as_bytes())
 }
 
+/// 在数据目录种下一个项目：创建目录、生成确定性 id
+/// （path_<base64url(规范化路径)>）并把项目写进 settings.json，返回 id。
 fn seed_project(data_dir: &Path, project_path: &Path, icon_image: Value) -> String {
     std::fs::create_dir_all(project_path).unwrap();
     let canonical = std::fs::canonicalize(project_path).unwrap();
@@ -975,6 +1044,7 @@ fn seed_project(data_dir: &Path, project_path: &Path, icon_image: Value) -> Stri
     id
 }
 
+/// 把字节编码为 `data:image/png;base64,...` 的 data URL（PUT 请求体用）。
 fn png_data_url(bytes: &[u8]) -> String {
     use base64::engine::Engine as _;
     format!(
@@ -983,6 +1053,8 @@ fn png_data_url(bytes: &[u8]) -> String {
     )
 }
 
+/// 挂载完整 meta 路由（图标测试用）：目录缓存指向必然失败的 fetch，
+/// 包管理器走空 fake transport。
 fn icon_app_router(data_dir: &Path) -> axum::Router {
     super::router_with(
         test_context(data_dir),
@@ -994,6 +1066,7 @@ fn icon_app_router(data_dir: &Path) -> axum::Router {
     )
 }
 
+/// 验证：元数据指向的图标缺失时按扩展名候选回退，MIME 由扩展名推导。
 #[tokio::test]
 async fn get_icon_uses_fallback_extension_mime_when_metadata_points_to_a_missing_icon() {
     let data_dir = temp_dir_unique("icon-fallback");
@@ -1034,6 +1107,7 @@ async fn get_icon_uses_fallback_extension_mime_when_metadata_points_to_a_missing
     assert_eq!(body_bytes(response).await, jpg_bytes);
 }
 
+/// 验证：GET 图标支持 ?theme= 对 SVG 注入主题色并带正确的 Content-Type。
 #[tokio::test]
 async fn get_icon_serves_themed_svg_with_query_color() {
     let data_dir = temp_dir_unique("icon-svg");
@@ -1074,6 +1148,7 @@ async fn get_icon_serves_themed_svg_with_query_color() {
     );
 }
 
+/// 验证：projectId 为空 400、项目未知 404、无图标文件 404 的完整错误路径。
 #[tokio::test]
 async fn get_icon_requires_a_project_and_finds_the_icon() {
     let data_dir = temp_dir_unique("icon-404s");
@@ -1121,6 +1196,7 @@ async fn get_icon_requires_a_project_and_finds_the_icon() {
     );
 }
 
+/// 验证：PUT 落盘新图标、写回 iconImage 元数据并清理其它扩展名旧文件。
 #[tokio::test]
 async fn put_icon_uploads_persists_and_clears_other_extensions() {
     let data_dir = temp_dir_unique("icon-put");
@@ -1172,6 +1248,7 @@ async fn put_icon_uploads_persists_and_clears_other_extensions() {
     );
 }
 
+/// 验证：dataUrl 校验的各失败分支返回与 JS 一致的 400 文案，校验通过后才查项目（404）。
 #[tokio::test]
 async fn put_icon_validates_the_data_url() {
     let data_dir = temp_dir_unique("icon-put-validation");
@@ -1247,6 +1324,7 @@ async fn put_icon_validates_the_data_url() {
     );
 }
 
+/// 验证：DELETE 删除全部图标文件并把 iconImage 置空持久化。
 #[tokio::test]
 async fn delete_icon_removes_files_and_clears_metadata() {
     let data_dir = temp_dir_unique("icon-delete");
@@ -1280,6 +1358,7 @@ async fn delete_icon_removes_files_and_clears_metadata() {
     assert!(!icon_path.exists());
 }
 
+/// 验证：discover 收养路径最短的 favicon，复制为 source=auto 的图标。
 #[tokio::test]
 async fn discover_icon_adopts_the_shortest_favicon_path() {
     let data_dir = temp_dir_unique("icon-discover");
@@ -1317,6 +1396,7 @@ async fn discover_icon_adopts_the_shortest_favicon_path() {
     );
 }
 
+/// 验证：已有 custom 图标时 discover 跳过并返回 skipped=true。
 #[tokio::test]
 async fn discover_icon_skips_custom_icons_without_force() {
     let data_dir = temp_dir_unique("icon-skip");
@@ -1352,6 +1432,7 @@ async fn discover_icon_skips_custom_icons_without_force() {
     );
 }
 
+/// 验证：force=true 时 discover 覆盖 custom 图标改为自动收养。
 #[tokio::test]
 async fn discover_icon_force_overrides_a_custom_icon() {
     let data_dir = temp_dir_unique("icon-force");
@@ -1385,6 +1466,7 @@ async fn discover_icon_force_overrides_a_custom_icon() {
     );
 }
 
+/// 验证：无 favicon 404；jpeg 能被发现但无 MIME 映射 → 415。
 #[tokio::test]
 async fn discover_icon_reports_missing_and_unsupported_favicons() {
     let data_dir = temp_dir_unique("icon-discover-404");
@@ -1425,6 +1507,7 @@ async fn discover_icon_reports_missing_and_unsupported_favicons() {
     );
 }
 
+/// 验证：发现到空文件 favicon 时以 400 拒绝。
 #[tokio::test]
 async fn discover_icon_rejects_empty_favicons() {
     let data_dir = temp_dir_unique("icon-discover-empty");
@@ -1452,6 +1535,8 @@ async fn discover_icon_rejects_empty_favicons() {
 // openchamber-routes.js — routes
 // ---------------------------------------------------------------------------
 
+/// 构造 GitHub release fake transport：releases/latest 返回给定 tag，
+/// CHANGELOG.md 返回给定状态码。
 fn release_transport(
     tag: &str,
     changelog_status: u16,
@@ -1465,6 +1550,7 @@ fn release_transport(
     transport.when("CHANGELOG.md", FakeTransport::status(changelog_status));
     Arc::clone(&transport)
 }
+/// 用共享 harness 组装完整的 meta 路由（openchamber 路由测试用）。
 fn meta_app(
     data_dir: &Path,
     models: Arc<ModelsMetadataCache>,
@@ -1473,6 +1559,7 @@ fn meta_app(
     super::router_with(test_context(data_dir), models, package_manager)
 }
 
+/// 验证：update-check 报告可用更新并附 releaseUrl/updateCommand，changelog 404 时无 body。
 #[tokio::test]
 async fn update_check_reports_an_available_release() {
     let data_dir = temp_dir_unique("uc-available");
@@ -1514,6 +1601,7 @@ async fn update_check_reports_an_available_release() {
     assert!(payload.get("downloadUrl").is_none());
 }
 
+/// 验证：changelog 可取时 body 只包含当前版本之后的段落。
 #[tokio::test]
 async fn update_check_includes_changelog_notes_when_fetchable() {
     let data_dir = temp_dir_unique("uc-changelog");
@@ -1553,6 +1641,7 @@ async fn update_check_includes_changelog_notes_when_fetchable() {
     assert!(!body.contains("[1.0.0]"));
 }
 
+/// 验证：release 信息取不到时回答 "Unable to determine versions" 而非报错。
 #[tokio::test]
 async fn update_check_without_releases_answers_unable_to_determine() {
     let data_dir = temp_dir_unique("uc-none");
@@ -1587,6 +1676,7 @@ async fn update_check_without_releases_answers_unable_to_determine() {
     );
 }
 
+/// 验证：无可用更新时 update-install 返回 400 "No update available"。
 #[tokio::test]
 async fn update_install_rejects_when_no_update_is_available() {
     let data_dir = temp_dir_unique("ui-400");
@@ -1611,6 +1701,7 @@ async fn update_install_rejects_when_no_update_is_available() {
     );
 }
 
+/// 验证：daemon 模式下 update-install 返回 409 与“本构建不可自更新”文案。
 #[tokio::test]
 async fn update_install_daemon_mode_answers_the_honest_not_available_shape() {
     let data_dir = temp_dir_unique("ui-daemon");
@@ -1640,6 +1731,7 @@ async fn update_install_daemon_mode_answers_the_honest_not_available_shape() {
     );
 }
 
+/// 验证：前台且无 systemd unit 时返回与 JS 逐字一致的 409 拒绝文案。
 #[tokio::test]
 async fn update_install_foreground_without_systemd_keeps_the_exact_js_409() {
     let data_dir = temp_dir_unique("ui-fg");
@@ -1679,6 +1771,7 @@ async fn update_install_foreground_without_systemd_keeps_the_exact_js_409() {
 // models-metadata + zen routes
 // ---------------------------------------------------------------------------
 
+/// 验证：models-metadata 路由新鲜响应 max-age=300、缓存命中 max-age=60，并落盘。
 #[tokio::test]
 async fn models_metadata_route_serves_fresh_then_cached_headers() {
     let data_dir = temp_dir_unique("mm-route");
@@ -1723,6 +1816,7 @@ async fn models_metadata_route_serves_fresh_then_cached_headers() {
     assert!(cache_path.exists(), "disk cache populated");
 }
 
+/// 验证：直连超时且无 proxy 时最终错误是 "no proxy configured"，路由按 JS 映射为 502。
 #[tokio::test]
 async fn models_metadata_route_maps_a_direct_timeout_to_502_like_the_js() {
     // JS fidelity: the JS `fetchCatalog` runs the proxy attempt after a
@@ -1751,6 +1845,7 @@ async fn models_metadata_route_maps_a_direct_timeout_to_502_like_the_js() {
     );
 }
 
+/// 验证：非超时类失败统一映射为 502。
 #[tokio::test]
 async fn models_metadata_route_maps_other_failures_to_502() {
     let data_dir = temp_dir_unique("mm-502");
@@ -1770,6 +1865,7 @@ async fn models_metadata_route_maps_other_failures_to_502() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
 }
 
+/// 验证：zen models 恒返回空列表与 300 秒 Cache-Control。
 #[tokio::test]
 async fn zen_models_serves_the_stubbed_empty_list() {
     let data_dir = temp_dir_unique("zen");

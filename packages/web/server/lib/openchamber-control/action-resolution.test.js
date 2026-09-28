@@ -1,3 +1,10 @@
+/**
+ * resolveAgentToolAction（actions.js）的测试套件。
+ *
+ * 覆盖三条路径：工具内裸名解析（含跨工具歧义、工具内无歧义的 delete）、
+ * 未识别调用者的全表唯一匹配，以及解析失败时错误文案必须列出该工具
+ * 实际可用的动作而不是笼统的"不支持"。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import { resolveAgentToolAction } from './actions.js';
@@ -7,6 +14,7 @@ import { resolveAgentToolAction } from './actions.js';
  * then `get` on `ompchamber_memory`, having dropped the namespace its own tool
  * name appeared to supply, and gave up after the second bare "unsupported".
  */
+// 工具名已隐含命名空间时的解析：裸名在发起工具内闭合，不越界。
 describe('a namespace the tool name already implies', () => {
   test('resolves a bare action inside the calling tool', () => {
     expect(resolveAgentToolAction('read', 'ompchamber_memory')).toEqual({ action: 'memory.read' });
@@ -29,6 +37,7 @@ describe('a namespace the tool name already implies', () => {
   });
 });
 
+// 未识别调用工具（toolName 为 null/未知）时的解析：只在全表唯一时放行。
 describe('an unidentified caller', () => {
   test('still resolves a bare name that means one thing everywhere', () => {
     expect(resolveAgentToolAction('snapshot', null)).toEqual({ action: 'browser.snapshot' });
@@ -39,6 +48,7 @@ describe('an unidentified caller', () => {
   });
 });
 
+// 解析失败的错误文案契约：列出发起工具可用的动作，缺失动作点名 missing。
 describe('what an unresolvable action reports', () => {
   test('names the actions the calling tool actually has', () => {
     const { error } = resolveAgentToolAction('get', 'ompchamber_memory');

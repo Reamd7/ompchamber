@@ -1,5 +1,20 @@
+/**
+ * OpenCode web server 的核心路由与通用中间件注册。
+ *
+ * 按功能拆分为四组：服务器状态/系统路由（registerServerStatusRoutes）、
+ * 认证与设备访问路由（registerAuthAndAccessRoutes）、设置工具路由
+ * （registerSettingsUtilityRoutes）以及通用请求中间件
+ * （registerCommonRequestMiddleware）。
+ */
 import { buildExternalManualRestartResponse } from './config-mutation-response.js';
 
+/**
+ * 解析并校验一个回环（loopback）URL：仅接受 http/https 协议且 hostname
+ * 为 localhost/127.0.0.1/::1/0.0.0.0。供 /api/system/probe-url 使用，
+ * 防止把服务端探测请求发往任意地址（SSRF 防护）。
+ * @param {*} rawUrl 原始输入
+ * @returns {URL|null} 合法的回环 URL；否则 null
+ */
 const parseLoopbackUrl = (rawUrl) => {
   if (typeof rawUrl !== 'string') {
     return null;
@@ -24,6 +39,26 @@ const parseLoopbackUrl = (rawUrl) => {
   return url;
 };
 
+/**
+ * 注册服务器状态与系统管理路由：/health、/api/version、
+ * /api/system/shutdown、/api/system/dev-shutdown、/api/system/info、
+ * /api/system/free-port。
+ *
+ * @param {object} app express 应用实例
+ * @param {object} dependencies 依赖注入集合
+ * @param {object} dependencies.express express 模块（用于 json 中间件）
+ * @param {object} dependencies.process 宿主进程对象（读 env/pid/ppid）
+ * @param {string} dependencies.ompchamberVersion 当前版本号
+ * @param {string} dependencies.runtimeName 运行时名称（web/desktop/ssh-remote 等）
+ * @param {string} dependencies.serverStartedAt 启动时间戳
+ * @param {Function} dependencies.gracefulShutdown 优雅停机函数
+ * @param {Function} dependencies.getHealthSnapshot 返回健康快照字段
+ * @param {Function} [dependencies.getServerPort] 返回服务端口；旧接线缺省为 null
+ * @param {Function} [dependencies.getTunnelUrl] 返回隧道公网 URL；未启用为 null
+ * @param {Function} [dependencies.getServerId] 返回稳定服务器身份（签名公钥哈希，非机密）
+ * @param {object} [dependencies.tunnelAuthController] 隧道会话认证控制器
+ * @param {object} [dependencies.uiAuthController] UI 会话认证控制器
+ */
 export const registerServerStatusRoutes = (app, dependencies) => {
   const {
     express,
@@ -50,7 +85,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
 
   // The identity is immutable for the process lifetime; resolve once, and never
   // let an identity failure break health reporting.
+  // 进程生命周期内不变的 serverId 缓存；解析失败固定为 null，不影响健康上报。
   let cachedServerId = null;
+  /**
+   * 解析（并缓存）稳定服务器身份；获取失败返回 null 而非抛错。
+   * @returns {Promise<string|null>}
+   */
   const resolveServerId = async () => {
     if (cachedServerId) return cachedServerId;
     try {
@@ -62,6 +102,11 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     return cachedServerId;
   };
 
+  /**
+   * 在 127.0.0.1 上临时 listen(0) 获取一个空闲端口后立即释放并返回
+   * （尽力而为的端口提示，返回前可能被其它进程抢占）。
+   * @returns {Promise<number>} 分配到的端口号
+   */
   const allocateLoopbackPort = async () => {
     const net = await import('node:net');
     return await new Promise((resolve, reject) => {
@@ -85,6 +130,8 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   };
 
+  // 客户端兼容性声明：API 版本与能力位列表（健康检查、runtime URL、
+  // 原始文件、SSE、全局事件 WebSocket、terminal WebSocket 等）。
   const compatibility = {
     apiVersion: 1,
     minClientApiVersion: 1,
@@ -98,12 +145,22 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     ],
   };
 
+  /**
+   * 是否允许 dev-only 的整组进程关闭逃生口（OMPCHAMBER_DEV_SHUTDOWN
+   * 显式开启）；生产运行时永远为 false。
+   * @returns {boolean}
+   */
   const isDevShutdownAllowed = () => {
     // Dev-only escape hatch: allow terminating the whole dev process group.
     // This should never be enabled in production runtimes.
     return process.env.OMPCHAMBER_DEV_SHUTDOWN === 'true';
   };
 
+  /**
+   * 校验请求 Origin 头与 Host 一致（防跨站站点触发 dev-shutdown）。
+   * @param {object} req express 请求
+   * @returns {boolean} 是否同源
+   */
   const isSameOriginRequest = (req) => {
     const rawOrigin = typeof req.get === 'function' ? req.get('origin') : '';
     const rawHost = typeof req.get === 'function' ? req.get('host') : '';
@@ -118,6 +175,11 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 用 ps 查询进程所属的进程组 id（pgid）；Windows 或查询失败返回 null。
+   * @param {number} pid 目标进程 pid
+   * @returns {Promise<number|null>}
+   */
   const resolveProcessGroupId = async (pid) => {
     if (!pid || typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) {
       return null;
@@ -139,6 +201,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 从 URL 提取回环端口号：复用 parseLoopbackUrl 的协议/回环校验，
+   * 缺省端口按协议补 443/80，越界返回 null。
+   * @param {*} rawUrl 原始输入
+   * @returns {number|null}
+   */
   const parseLoopbackPort = (rawUrl) => {
     if (typeof rawUrl !== 'string') {
       return null;
@@ -163,6 +231,12 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     return port;
   };
 
+  /**
+   * 终止占用指定回环端口的监听进程（仅非 Windows）：lsof 找到 pid 后
+   * 先 SIGTERM，1.2 秒后对仍存活者补 SIGKILL；失败静默忽略。
+   * @param {number} port 目标端口
+   * @returns {Promise<void>}
+   */
   const killListenPort = async (port) => {
     if (!Number.isFinite(port) || port <= 0) {
       return;
@@ -204,6 +278,8 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   };
 
+  // GET /health：无鉴权健康检查，返回状态、版本、运行时、兼容性声明、
+  // 健康快照与可选 serverId（供客户端在发送 bearer token 前核对身份）。
   app.get('/health', async (_req, res) => {
     const serverId = await resolveServerId();
     res.json({
@@ -217,6 +293,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   });
 
+  // GET /api/version：版本与启动信息，附兼容性声明与可选 serverId。
   app.get('/api/version', async (_req, res) => {
     const serverId = await resolveServerId();
     res.json({
@@ -229,6 +306,10 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     });
   });
 
+  /**
+   * shutdown 路由的鉴权中间件：隧道/公网未知来源走隧道会话校验，其余
+   * 走 UI 会话校验；未配置控制器时直接放行（本地开发场景）。
+   */
   const requireShutdownAuth = async (req, res, next) => {
     if (!uiAuthController || typeof uiAuthController.requireAuth !== 'function') {
       return next();
@@ -245,6 +326,8 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     return uiAuthController.requireAuth(req, res, next);
   };
 
+  // POST /api/system/shutdown：鉴权通过后先应答 { ok: true }，再异步执行
+  // 优雅停机（exitProcess）；停机失败只记录日志。
   app.post('/api/system/shutdown', async (req, res, next) => {
     try {
       await requireShutdownAuth(req, res, () => {
@@ -258,6 +341,9 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/system/dev-shutdown：dev 专用逃生口。校验开关与同源后先应答，
+  // 再清理 UI 提供的回环预览端口进程，并对自身/父进程所在进程组先
+  // SIGTERM 后 SIGKILL 整组终止，兜底强制退出，保证 bun run dev 不留孤儿。
   app.post('/api/system/dev-shutdown', express.json({ limit: '64kb' }), async (req, res) => {
     if (!isDevShutdownAllowed()) {
       return res.status(403).json({ ok: false, error: 'Dev shutdown is disabled' });
@@ -322,6 +408,8 @@ export const registerServerStatusRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/system/info：当前实例的服务信息（版本、运行时、pid、启动时间、
+  // 服务端口与隧道公网 URL），供 UI 展示实际可达的服务地址。
   app.get('/api/system/info', (_req, res) => {
     res.json({
       ompchamberVersion,
@@ -335,6 +423,7 @@ export const registerServerStatusRoutes = (app, dependencies) => {
 
   // Allocates a best-effort free TCP port hint on 127.0.0.1.
   // Another process can still claim it before the preview server binds.
+  // GET /api/system/free-port：返回一个尽力分配的空闲回环端口提示。
   app.get('/api/system/free-port', async (_req, res) => {
     try {
       const port = await allocateLoopbackPort();
@@ -349,6 +438,27 @@ export const registerServerStatusRoutes = (app, dependencies) => {
 
 };
 
+/**
+ * 注册认证与设备访问路由：会话/密码/URL token/passkey 登录、远程客户端
+ * （client token）管理、设备配对（创建/列表/取消/兑换）、连接候选刷新、
+ * /connect 引导链接，以及挂在 /api 前缀上的统一鉴权中间件。
+ *
+ * @param {object} app express 应用实例
+ * @param {object} dependencies 依赖注入集合
+ * @param {object} dependencies.express express 模块
+ * @param {object} dependencies.tunnelAuthController 隧道会话认证控制器
+ * @param {object} dependencies.uiAuthController UI 会话认证控制器
+ * @param {object} dependencies.remoteClientAuthRuntime 远程客户端管理运行时
+ * @param {object} dependencies.clientPairingRuntime 设备配对运行时
+ * @param {Function} dependencies.readSettingsFromDiskMigrated 读取（含迁移的）设置
+ * @param {Function} dependencies.normalizeTunnelSessionTtlMs 规范化隧道会话 TTL
+ * @param {Function} [dependencies.getRelayPairingCandidate] 返回 relay 配对候选（未启用为 null）
+ * @param {Function} [dependencies.reconcileRelay] 配对/设备变化后重估 relay 生命周期
+ * @param {Function} [dependencies.getPairingTransports] 返回直连传输 URL（local/lan/relayAvailable）
+ * @param {Function} [dependencies.getDirectCandidateUrls] 返回当前全部可达的直连 LAN URL
+ * @param {Function} [dependencies.getServerId] 返回稳定服务器身份
+ * @param {Function} [dependencies.getServerLabel] 配对设备显示的本服务器名称
+ */
 export const registerAuthAndAccessRoutes = (app, dependencies) => {
   const {
     express,
@@ -378,10 +488,22 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     // hostname), distinct from the per-device pairing label typed by the operator.
     getServerLabel = () => 'OMPChamber',
   } = dependencies;
+  // 配对兑换限流：滑动窗口时长与窗口内最大尝试次数。
   const PAIRING_REDEEM_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+  // 窗口内允许的最大兑换尝试次数。
   const PAIRING_REDEEM_RATE_LIMIT_MAX_ATTEMPTS = 10;
+  // 「IP:pairingId」到尝试计数的限流状态表。
   const pairingRedeemAttempts = new Map();
 
+  /**
+   * 在 UI 会话鉴权之后执行 handler；sessionOnly 为 true 时改用
+   * requireSessionAuth（不接受 URL token）。错误交给 next(error)。
+   * @param {object} req express 请求
+   * @param {object} res express 响应
+   * @param {Function} next 下一个中间件
+   * @param {Function} handler 业务处理函数
+   * @param {{sessionOnly?: boolean}} [options] sessionOnly 强制仅会话鉴权
+   */
   const runWithUiAuth = async (req, res, next, handler, options = {}) => {
     try {
       const requireAuth = options.sessionOnly === true && typeof uiAuthController.requireSessionAuth === 'function'
@@ -395,6 +517,11 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 设备管理类接口的鉴权包装：接受 UI 会话或 client bearer（不允许
+   * URL token）；两者都无法解析时回落到仅会话鉴权。handler 收到
+   * authContext（type 为 session 或 client）。
+   */
   const runWithClientManagementAuth = async (req, res, next, handler) => {
     try {
       if (typeof uiAuthController.resolveAuthContext === 'function') {
@@ -416,6 +543,10 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 创建类接口的鉴权包装：UI 会话或 desktop-local 客户端可用；其它
+   * client token 一律 403（客户端令牌不能再创建远程客户端）。
+   */
   const runWithClientCreateAuth = async (req, res, next, handler) => {
     try {
       if (typeof uiAuthController.resolveAuthContext === 'function') {
@@ -445,11 +576,22 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 从鉴权上下文提取 client id；缺失返回 null。
+   * @param {object} context 鉴权上下文
+   * @returns {string|null}
+   */
   const clientIdFromAuthContext = (context) => {
     const raw = context?.client?.id || context?.clientId;
     return typeof raw === 'string' && raw.length > 0 ? raw : null;
   };
 
+  /**
+   * 从鉴权上下文解析完整 client 记录：上下文已内嵌记录直接使用，否则
+   * 按 id 从远程客户端列表查找；查不到返回 null。
+   * @param {object} context 鉴权上下文
+   * @returns {Promise<object|null>}
+   */
   const clientRecordFromAuthContext = async (context) => {
     if (context?.client && typeof context.client === 'object') {
       return context.client;
@@ -460,6 +602,12 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return clients.find((client) => client.id === clientId) || null;
   };
 
+  /**
+   * 计算请求对外呈现的 origin（优先 X-Forwarded-Proto，其次 socket 是否
+   * 加密，再拼上 Host 头）；缺 Host 返回 null。
+   * @param {object} req express 请求
+   * @returns {string|null}
+   */
   const requestOrigin = (req) => {
     const forwardedProto = typeof req.headers?.['x-forwarded-proto'] === 'string'
       ? req.headers['x-forwarded-proto'].split(',')[0].trim()
@@ -470,17 +618,34 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return `${protocol}://${host}`;
   };
 
+  /**
+   * 取客户端 IP：直接读 socket 地址而非 req.ip（trust proxy 下 express
+   * 会用 X-Forwarded-For 改写 req.ip，而兑换限流发生在鉴权之前）。
+   * @param {object} req express 请求
+   * @returns {string}
+   */
   const requestIp = (req) => {
     // Do not use req.ip here: Express rewrites it from X-Forwarded-For when
     // trust proxy is enabled, and redeem is unauthenticated before this limit.
     return req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
   };
 
+  /**
+   * 从请求体取 pairingId（缺失记为 'missing'），作为限流 key 的一部分。
+   * @param {object} req express 请求
+   * @returns {string}
+   */
   const pairingIdFromRequest = (req) => {
     const raw = typeof req.body?.pairingId === 'string' ? req.body.pairingId.trim() : '';
     return raw || 'missing';
   };
 
+  /**
+   * 检查并累计配对兑换限流：按「IP:pairingId」在滑动窗口内最多 N 次，
+   * 顺带清理过期表项。
+   * @param {object} req express 请求
+   * @returns {{allowed: boolean, remaining: number, reset: number, retryAfter?: number}}
+   */
   const checkPairingRedeemRateLimit = (req) => {
     const now = Date.now();
     const key = `${requestIp(req)}:${pairingIdFromRequest(req)}`;
@@ -507,10 +672,17 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return { allowed: true, remaining: PAIRING_REDEEM_RATE_LIMIT_MAX_ATTEMPTS - entry.count, reset };
   };
 
+  /** 兑换成功后清除对应的限流表项。 */
   const clearPairingRedeemRateLimit = (req) => {
     pairingRedeemAttempts.delete(`${requestIp(req)}:${pairingIdFromRequest(req)}`);
   };
 
+  /**
+   * 规范化候选 URL：仅接受 http/https，去掉 hash、查询串与尾部斜杠；
+   * 非法输入返回 null。
+   * @param {*} value 原始输入
+   * @returns {string|null}
+   */
   const normalizeCandidateUrl = (value) => {
     if (typeof value !== 'string' || !value.trim()) return null;
     try {
@@ -524,6 +696,11 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 判断候选 URL 类型：https 视为 tunnel，其余按 lan 处理。
+   * @param {string} url 候选 URL
+   * @returns {string} 'tunnel' 或 'lan'
+   */
   const candidateUrlType = (url) => {
     try {
       return new URL(url).protocol === 'https:' ? 'tunnel' : 'lan';
@@ -532,6 +709,11 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   };
 
+  /**
+   * 判断候选 URL 是否为回环地址；解析失败按回环处理（保守跳过）。
+   * @param {string} url 候选 URL
+   * @returns {boolean}
+   */
   const isLoopbackCandidateUrl = (url) => {
     try {
       const hostname = new URL(url).hostname.toLowerCase();
@@ -551,6 +733,14 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
   //   false → direct only, never relay;
   //   undefined → legacy: advertise relay only if it is already enabled.
   // `includeDirect === false` produces a relay-only link (no direct candidate).
+  /**
+   * 组装配对链接的服务器候选列表：直连候选（preferredServerUrl 或请求
+   * origin，非回环的额外 origin 一并带上）加可选的 relay 候选；客户端
+   * 按 priority 竞速，直连不通才落到 relay（relay priority 数值更大）。
+   * @param {object} req express 请求
+   * @param {{preferredServerUrl?: string, includeRelay?: boolean, includeDirect?: boolean}} [options] 传输选择
+   * @returns {Promise<Array<{type: string, url: string, priority: number}>>}
+   */
   const pairingServerCandidates = async (req, { preferredServerUrl, includeRelay, includeDirect = true } = {}) => {
     const candidates = [];
     if (includeDirect) {
@@ -584,11 +774,21 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return candidates;
   };
 
+  /**
+   * 以 error.statusCode（缺省 400）返回统一的「配对会话无效或过期」错误，
+   * 不泄露具体失败原因（兑换端点在鉴权之前，必须防枚举）。
+   * @param {object} res express 响应
+   * @param {object} error 捕获的错误
+   */
   const sendPairingRedeemError = (res, error) => {
     const statusCode = typeof error?.statusCode === 'number' ? error.statusCode : 400;
     res.status(statusCode).json({ error: 'Invalid or expired pairing session' });
   };
 
+  /**
+   * /api 统一鉴权中间件：隧道/公网未知来源走隧道会话校验，其余走 UI
+   * 会话校验。挂在全部具体 /api 路由之后，为后续注册的 API 兜底。
+   */
   const requireApiAuth = async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -597,6 +797,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return uiAuthController.requireAuth(req, res, next);
   };
 
+  // GET /auth/session：查询会话状态；隧道范围内只认隧道会话（无效即清除
+  // cookie 并 401 tunnelLocked），否则委托 uiAuthController.handleSessionStatus。
   app.get('/auth/session', async (req, res) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -615,6 +817,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /auth/session：密码登录；隧道/公网未知范围内一律 403（禁用密码登录）。
   app.post('/auth/session', (req, res) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -623,6 +826,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return uiAuthController.handleSessionCreate(req, res);
   });
 
+  // POST /auth/url-token：用一次性 URL token 换取会话。
   app.post('/auth/url-token', async (req, res, next) => {
     try {
       await uiAuthController.handleUrlAuthToken(req, res);
@@ -631,6 +835,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /auth/passkey/status：passkey 可用状态；隧道范围内固定为禁用。
   app.get('/auth/passkey/status', (req, res) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -639,6 +844,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return uiAuthController.handlePasskeyStatus(req, res);
   });
 
+  // POST /auth/passkey/authenticate/options：生成 passkey 登录挑战；隧道范围内 403。
   app.post('/auth/passkey/authenticate/options', (req, res) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -647,6 +853,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return uiAuthController.handlePasskeyAuthenticationOptions(req, res);
   });
 
+  // POST /auth/passkey/authenticate/verify：校验 passkey 登录断言；隧道范围内 403。
   app.post('/auth/passkey/authenticate/verify', (req, res) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -655,6 +862,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     return uiAuthController.handlePasskeyAuthenticationVerify(req, res);
   });
 
+  // POST /auth/passkey/register/options：需已登录会话，生成 passkey 注册挑战；隧道范围内 403。
   app.post('/auth/passkey/register/options', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -669,6 +877,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /auth/passkey/register/verify：需已登录会话，完成 passkey 注册；隧道范围内 403。
   app.post('/auth/passkey/register/verify', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -683,6 +892,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/passkeys：列出已注册 passkey（需会话；隧道范围内 403）。
   app.get('/api/passkeys', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -697,6 +907,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // DELETE /api/passkeys/:id：吊销指定 passkey（需会话；隧道范围内 403）。
   app.delete('/api/passkeys/:id', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -711,6 +922,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/auth/reset：全局登出（需会话；隧道范围内 403）。
   app.post('/api/auth/reset', async (req, res, next) => {
     const requestScope = tunnelAuthController.classifyRequestScope(req);
     if (requestScope === 'tunnel' || requestScope === 'unknown-public') {
@@ -725,6 +937,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /api/client-auth/clients：列出远程客户端；desktop-local 客户端与
+  // UI 会话可见全部，其它 client token 只能看到自己的记录。
   app.get('/api/client-auth/clients', async (req, res, next) => {
     await runWithClientManagementAuth(req, res, next, async (authContext) => {
       if (authContext.type === 'client') {
@@ -741,6 +955,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/client-auth/clients：创建远程客户端（UI 会话或 desktop-local
+  // 客户端；响应 no-store 缓存，201 返回新客户端凭据）。
   app.post('/api/client-auth/clients', express.json({ limit: '64kb' }), async (req, res, next) => {
     await runWithClientCreateAuth(req, res, next, async () => {
       const result = await remoteClientAuthRuntime.createClient({
@@ -753,6 +969,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // DELETE /api/client-auth/clients/:id：吊销指定客户端；desktop-local 或
+  // UI 会话可吊销任意，其它 client token 只能吊销自己（403/404）。
   app.delete('/api/client-auth/clients/:id', async (req, res, next) => {
     await runWithClientManagementAuth(req, res, next, async (authContext) => {
       if (authContext.type === 'client') {
@@ -775,6 +993,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // DELETE /api/client-auth/clients：清除全部已吊销的客户端（仅 UI 会话
+  // 或 desktop-local；成功后重估 relay 需求）。
   app.delete('/api/client-auth/clients', async (req, res, next) => {
     await runWithClientManagementAuth(req, res, next, async (authContext) => {
       if (authContext.type === 'client') {
@@ -791,6 +1011,9 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/client-auth/pairing/sessions：创建配对会话；请求体可指定
+  // serverUrl/includeRelay/includeDirect 决定候选传输，响应附候选服务器
+  // 列表（含 relay）与配对密钥（no-store，201）。
   app.post('/api/client-auth/pairing/sessions', express.json({ limit: '64kb' }), async (req, res, next) => {
     await runWithClientCreateAuth(req, res, next, async (authContext) => {
       const candidates = await pairingServerCandidates(req, {
@@ -823,9 +1046,12 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
   // later /health probes of the learned addresses — to this server's identity
   // before trusting them with its bearer token.
   // Auth: UI session or client bearer; never the short-lived URL token.
+  // GET /api/client-auth/connection/candidates：已配对设备刷新当前可达的
+  // 直连 LAN URL（加可选 relay 候选）与服务器身份，用于更新保存的候选集。
   app.get('/api/client-auth/connection/candidates', async (req, res, next) => {
     await runWithClientManagementAuth(req, res, next, async () => {
       const candidates = [];
+      // 读取当前可达的直连 URL 列表（接口抛错时按空列表处理）。
       const directUrls = (() => {
         try {
           const urls = getDirectCandidateUrls(req);
@@ -857,6 +1083,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
   });
 
   // Direct transports the server can be reached on (for the create-device dialog).
+  // GET /api/client-auth/pairing/transports：创建设备对话框使用的直连传输信息。
   app.get('/api/client-auth/pairing/transports', async (req, res, next) => {
     await runWithClientCreateAuth(req, res, next, async () => {
       res.setHeader('Cache-Control', 'no-store');
@@ -866,6 +1093,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
 
   // Pending pairing sessions (link created, device not yet connected) for the
   // "pending devices" list. Secrets are never included.
+  // GET /api/client-auth/pairing/sessions：列出待配对会话（绝不含密钥）。
   app.get('/api/client-auth/pairing/sessions', async (req, res, next) => {
     await runWithClientCreateAuth(req, res, next, async () => {
       const pending = await clientPairingRuntime.listPendingSessions();
@@ -874,6 +1102,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // DELETE /api/client-auth/pairing/sessions/:id：取消指定配对会话；不存在 404。
   app.delete('/api/client-auth/pairing/sessions/:id', async (req, res, next) => {
     await runWithClientCreateAuth(req, res, next, async () => {
       const result = await clientPairingRuntime.cancelPairingSession(req.params?.id);
@@ -885,6 +1114,9 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     });
   });
 
+  // POST /api/client-auth/pairing/redeem：设备端用配对码兑换 client token；
+  // 按「IP:pairingId」限流（429），无效/过期统一 400/401，成功返回客户端
+  // 凭据、服务器地址与指纹，并重估 relay 需求。
   app.post('/api/client-auth/pairing/redeem', express.json({ limit: '64kb' }), async (req, res, next) => {
     try {
       const rateLimit = checkPairingRedeemRateLimit(req);
@@ -930,6 +1162,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // GET /connect?t=...：引导链接入口；用一次性 bootstrap token 换隧道
+  // 会话 cookie 后 302 跳转首页。限流 429、无效/过期 401，异常 500。
   app.get('/connect', async (req, res) => {
     try {
       const token = typeof req.query?.t === 'string' ? req.query.t : '';
@@ -959,6 +1193,8 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/system/probe-url：服务端代为探测一个回环 URL 的可达性
+  // （仅限回环地址、1.5s 超时、不跟随重定向；2xx-5xx 均算可达）。
   app.post('/api/system/probe-url', express.json({ limit: '16kb' }), async (req, res, next) => {
     try {
       await requireApiAuth(req, res, async () => {
@@ -983,6 +1219,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
     }
   });
 
+  // 挂在 /api 前缀上的统一鉴权中间件（为其后注册的全部 API 路由兜底）。
   app.use('/api', async (req, res, next) => {
     try {
       await requireApiAuth(req, res, next);
@@ -992,6 +1229,14 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
   });
 };
 
+/**
+ * 注册设置相关的工具路由：自定义主题列表与手动配置重载。
+ * @param {object} app express 应用实例
+ * @param {object} dependencies 依赖注入集合
+ * @param {Function} dependencies.readCustomThemesFromDisk 从磁盘读取自定义主题
+ * @param {Function} dependencies.refreshOpenCodeAfterConfigChange 配置变更后刷新 OpenCode
+ * @param {number} dependencies.clientReloadDelayMs 客户端重载前的延迟毫秒数
+ */
 export const registerSettingsUtilityRoutes = (app, dependencies) => {
   const {
     readCustomThemesFromDisk,
@@ -999,6 +1244,7 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
     clientReloadDelayMs,
   } = dependencies;
 
+  // GET /api/config/themes：读取并返回自定义主题列表；读取失败 500。
   app.get('/api/config/themes', async (_req, res) => {
     try {
       const customThemes = await readCustomThemesFromDisk();
@@ -1009,6 +1255,8 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
     }
   });
 
+  // POST /api/config/reload：手动重载配置并刷新 OpenCode；外部服务器模式
+  // 返回提示用户自行重启的响应，受管模式则要求客户端延时后刷新界面。
   app.post('/api/config/reload', async (_req, res) => {
     try {
       console.log('[Server] Manual configuration reload requested');
@@ -1037,9 +1285,19 @@ export const registerSettingsUtilityRoutes = (app, dependencies) => {
   });
 };
 
+/**
+ * 注册通用请求中间件：按路径前缀选择 JSON body 大小限制（/api/behavior
+ * 1MB、配置/文件类 50MB、其余 50MB）、urlencoded 解析与可选的请求日志。
+ * @param {object} app express 应用实例
+ * @param {object} dependencies 依赖注入集合
+ * @param {object} dependencies.express express 模块
+ * @param {boolean} [dependencies.verboseRequestLogs] 是否打印每个请求的日志
+ */
 export const registerCommonRequestMiddleware = (app, dependencies) => {
   const { express, verboseRequestLogs = false } = dependencies;
 
+  // 按路径前缀分派 JSON 解析器与大小限制：/api/behavior 1MB；配置/文件类
+  // 路径 50MB；其余 /api 路径跳过（交给各自路由的解析器）；非 API 路径 50MB。
   app.use((req, res, next) => {
     if (req.path.startsWith('/api/behavior')) {
       const contentLength = parseInt(req.headers['content-length'] || '0', 10);
@@ -1083,8 +1341,10 @@ export const registerCommonRequestMiddleware = (app, dependencies) => {
     }
   });
 
+  // 解析 urlencoded 请求体（extended 模式，上限 50MB）。
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+  // verboseRequestLogs 开启时打印每个请求的方法与路径。
   app.use((req, _res, next) => {
     if (verboseRequestLogs) {
       console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);

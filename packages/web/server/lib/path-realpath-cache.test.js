@@ -1,7 +1,14 @@
+/**
+ * createRealpathCache 的单元测试套件（vitest）。通过注入可控的 now 与
+ * realpath 覆盖：成功 TTL 内的缓存复用与过期重查、同路径并发请求共享
+ * in-flight Promise、默认抛出 realpath 错误、fallbackOnError 下的原路径回退
+ * 与失败结果的短暂缓存。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createRealpathCache } from './path-realpath-cache.js';
 
+/** 缓存核心行为：TTL 过期、并发去重与错误处理。 */
 describe('createRealpathCache', () => {
   it('caches successful realpath lookups until the success TTL expires', async () => {
     let now = 1_000;
@@ -26,6 +33,7 @@ describe('createRealpathCache', () => {
 
   it('shares in-flight realpath lookups for the same path', async () => {
     let calls = 0;
+    // 稍后手动放行 pending Promise 的开关，制造 in-flight 窗口。
     let release = () => undefined;
     const pending = new Promise((resolve) => {
       release = () => resolve('/real/path');

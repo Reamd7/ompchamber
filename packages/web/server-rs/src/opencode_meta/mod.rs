@@ -17,13 +17,24 @@
 //! package-manager install that replaces the running server, then
 //! restarting it) return the JS response shape with honest
 //! not-available semantics — see `openchamber_routes` module docs.
+//!
+//! 中文说明：OpenChamber 元信息模块聚合层（对应 JS `server/lib/opencode/`
+//! 的 openchamber-routes / models-metadata / npm-registry / project-icon-routes
+//! 四个文件）。这里统一装配路由、共享的 Express 请求语义辅助（query 解析、
+//! JSON body 解析、字符串清洗）以及模块级状态 [`MetaState`]。
 
+/// HTTP 传输接缝：请求/响应/错误类型与可注入的 fetch 函数。
 mod http;
+/// models.dev 模型目录缓存（TTL + 磁盘持久化 + proxy 重试）。
 mod models_metadata;
+/// npm 包元数据查询（1h TTL 缓存 + 在途请求去重）；库模块，无自有路由。
 mod npm_registry;
+/// OpenChamber 元信息路由：update-check / update-install / models-metadata / zen models。
 mod openchamber_routes;
+/// 项目图标路由：`GET/PUT/DELETE /api/projects/{id}/icon` 与 icon/discover。
 mod project_icon_routes;
 
+/// 路由层集成测试，与 JS 侧 Express 行为对拍。
 #[cfg(test)]
 mod tests;
 
@@ -44,7 +55,9 @@ const MODELS_METADATA_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 
 /// Module-local state (JS module-level closures capture these once).
 pub(crate) struct MetaState {
+/// 全局设置存储（JS 闭包捕获的 settings 单例等价物）。
     settings: Arc<SettingsStore>,
+/// models.dev 目录缓存实例（update-check / models-metadata 路由共享）。
     models: Arc<ModelsMetadataCache>,
     /// `../package-manager.js` import target (detection state is
     /// process-wide inside the runtime, so one instance per router is
@@ -55,6 +68,7 @@ pub(crate) struct MetaState {
     /// JS `server.address()?.port || 3000` source (the requested bind port).
     port: u16,
 }
+/// 生产组合入口：创建真实 models.dev 缓存与 package-manager 运行时后装配路由。
 pub fn router(ctx: RouterContext) -> Router {
     let models = Arc::new(ModelsMetadataCache::production(
         models_metadata::cache_file_path(&ctx.config.data_dir),
@@ -87,6 +101,8 @@ pub(crate) fn router_with(
 /// semantics — repeated keys become arrays).
 pub(crate) struct QueryValues(Vec<(String, Vec<String>)>);
 
+/// 解析原始 query string（express/qs 语义：`+` 解码为空格、重复键聚合为
+/// 数组、无值键得到空串值）。
 pub(crate) fn parse_query(raw: Option<&str>) -> QueryValues {
     let Some(raw) = raw else {
         return QueryValues(Vec::new());
@@ -137,6 +153,7 @@ fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Express 风格取值辅助，对拍 JS 侧对重复键的数组判定。
 impl QueryValues {
     /// Express `Array.isArray(req.query.key) ? req.query.key[0] : req.query.key`
     /// — the first value when a key repeats.
@@ -181,6 +198,7 @@ pub(crate) async fn parse_json_body(
     use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
 
+// express.json({ limit: '50mb' }) 的请求体大小上限。
     const BODY_LIMIT: usize = 50 * 1024 * 1024;
 
     let content_type = headers
@@ -210,6 +228,7 @@ pub(crate) async fn parse_json_body(
     }
 }
 
+/// 当前毫秒时间戳；委托 models_metadata 的时钟入口以便测试替换。
 pub(crate) fn now_ms() -> u64 {
     models_metadata::system_now_ms()
 }

@@ -1,3 +1,8 @@
+/**
+ * （中文套件说明）终端 WebSocket 协议单元测试：路径常量与匹配、控制帧
+ * 编解码与非法载荷拒绝、消息载荷归一化、请求 pathname 解析，
+ * 以及 rebind 频控的窗口裁剪与阈值判断。
+ */
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -13,6 +18,7 @@ import {
   readTerminalWsControlFrame,
 } from './terminal-ws-protocol.js';
 
+// 终端 WebSocket 协议：帧编码/解码、载荷归一化、路径解析与 rebind 频控。
 describe('terminal websocket protocol', () => {
   it('uses fixed websocket paths', () => {
     expect(TERMINAL_WS_PATH).toBe('/api/terminal/ws');

@@ -3,6 +3,11 @@
 //! whether it has been told yet. See that module's DOCUMENTATION.md for the
 //! behavioral contract (two-call delivery, failure isolation, title-only
 //! memory index).
+//!
+//! 中文说明：session-knowledge runtime——会话必须被告知的项目知识（置顶
+//! notes/plans + agent-memory 标题索引）以及是否已告知。行为契约见 JS 模块
+//! 的 DOCUMENTATION.md：两段式投递（先取文本、消息发出后回报 signature）、
+//! 各数据源失败相互隔离、memory 索引只列标题。
 
 use std::collections::HashSet;
 use std::pin::Pin;
@@ -13,77 +18,125 @@ use serde_json::{Map, Value, json};
 use super::fetch::{OpenCodeError, OpenCodeFetch, encode_uri_component};
 
 /// `session.metadata.openchamber.knowledge_context_delivered`.
+///
+/// 中文说明：已投递知识块的 signature 在 session metadata 中的存储 key。
 pub const KNOWLEDGE_METADATA_KEY: &str = "knowledge_context_delivered";
 /// `session.metadata.openchamber.project_context_pins`.
+///
+/// 中文说明：会话置顶（notes/plans id 列表）在 session metadata 中的存储 key。
 pub const PINS_METADATA_KEY: &str = "project_context_pins";
 /// Total budget for the assembled block; anything past it is cut, loudly.
+///
+/// 中文说明：拼装后知识块的总字符预算；超出即显式截断并附标记。
 pub const KNOWLEDGE_MAX_LENGTH: usize = 8_000;
 /// JS index.js injects a 15s `AbortSignal.timeout` for this runtime's
 /// engine calls.
+///
+/// 中文说明：本 runtime 引擎调用的 15 秒超时，对应 index.js 注入的
+/// `AbortSignal.timeout`。
 pub const FETCH_TIMEOUT_MS: u64 = 15_000;
 
 // ---------------------------------------------------------------------------
 // Typed snapshot the builders operate on
 // ---------------------------------------------------------------------------
 
+/// 一条置顶项目笔记的快照（正文全文随知识块投递）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {
+    /// 笔记 id。
     pub id: String,
+    /// 笔记正文。
     pub body: String,
+    /// 创建时间（epoch 毫秒），用于排序。
     pub created_at: f64,
+    /// 更新时间（epoch 毫秒），进入 signature——编辑过就必须重发。
     pub updated_at: f64,
 }
 
+/// 一条置顶计划的快照。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
+    /// 计划 id。
     pub id: String,
+    /// 计划标题（进入 signature）。
     pub title: String,
     /// Empty when the plan markdown could not be read (marked, not dropped).
+    ///
+    /// 中文说明：计划 markdown 正文；读取失败时保持空串并被显式标注，
+    /// 而非整条丢弃。
     pub body: String,
 }
 
+/// 一条 agent-memory 条目的元数据。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemoryEntry {
+    /// 条目 id。
     pub id: String,
+    /// 条目标题（索引中唯一可见的文本）。
     pub title: String,
+    /// 条目类型（如 fact）。
     pub entry_type: String,
+    /// 创建时间（epoch 毫秒），用于排序。
     pub created_at: f64,
+    /// 更新时间（epoch 毫秒），进入 signature。
     pub updated_at: f64,
     /// Threat-pattern match: kept in the store, withheld from the model.
+    ///
+    /// 中文说明：命中威胁模式——保留在存储里，但对模型隐藏。
     pub flagged: bool,
 }
 
+/// 按 scope 分组的 memory 条目集合。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MemorySet {
+    /// 全局（关于用户）条目。
     pub global: Vec<MemoryEntry>,
+    /// 项目级条目。
     pub project: Vec<MemoryEntry>,
 }
 
+/// 一次采集得到的完整知识集合，驱动 signature 与正文拼装。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct KnowledgeSet {
+    /// 置顶笔记（已按 pin 过滤）。
     pub notes: Vec<Note>,
+    /// 置顶计划（正文已尽力读取）。
     pub plans: Vec<Plan>,
+    /// agent-memory 标题索引。
     pub memory: MemorySet,
 }
 
 /// `readAll` result shape (`globalFailed` / `projectFailed` flags included —
 /// a scope that failed to load is left out, never indexed as empty).
+///
+/// 中文说明：readAll 的结果形状——含 globalFailed/projectFailed 标记；
+/// 加载失败的 scope 整体留空，绝不按空集索引。
 #[derive(Debug, Clone, Default)]
 pub struct AgentMemorySnapshot {
+    /// 全局 scope 的原始条目 JSON。
     pub global: Vec<Value>,
+    /// 项目 scope 的原始条目 JSON。
     pub project: Vec<Value>,
+    /// 全局 scope 读取失败标记。
     pub global_failed: bool,
+    /// 项目 scope 读取失败标记。
     pub project_failed: bool,
 }
 
 /// Session pin lists (`readPins` output).
+///
+/// 中文说明：会话的置顶列表（readPins 输出）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pins {
+    /// 置顶笔记 id 列表。
     pub notes: Vec<String>,
+    /// 置顶计划 id 列表。
     pub plans: Vec<String>,
 }
 
+/// 从 session JSON 解析置顶列表。
 impl Pins {
+    /// 防御式读取 metadata.ompchamber 下的 pin 记录；缺省返回空列表。
     pub fn from_session(session: &Value) -> Self {
         let pins = session
             .get("metadata")
@@ -103,6 +156,8 @@ impl Pins {
 // JS value coercions (defensive, exactly like the untyped JS reads)
 // ---------------------------------------------------------------------------
 
+/// JS 的字符串列表读取：过滤非字符串与空白项、trim、去重且保持首次
+/// 出现顺序。
 fn string_list(value: Option<&Value>) -> Vec<String> {
     // JS: [...new Set(value.filter(isStringAndNonEmptyTrim).map(trim))]
     let Some(items) = value.and_then(Value::as_array) else {
@@ -126,6 +181,9 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
 
 /// JS `${number}` template rendering: integers without a fraction part, other
 /// finite values via their shortest form.
+///
+/// 中文说明：复刻 JS 模板字符串对 number 的渲染——安全整数范围内的整数
+/// 不带小数点，NaN/Infinity 用字面量，其余取最短表示。
 fn number_to_js_string(value: f64) -> String {
     if value.is_finite() && value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
         format!("{}", value as i64)
@@ -142,10 +200,12 @@ fn number_to_js_string(value: f64) -> String {
     }
 }
 
+/// 取 JSON 数值；缺省或非数字时按 0.0。
 fn value_number(value: Option<&Value>) -> f64 {
     value.and_then(Value::as_f64).unwrap_or(0.0)
 }
 
+/// 取字符串值；缺省或非字符串时按空串。
 fn value_string(value: Option<&Value>) -> String {
     value.and_then(Value::as_str).unwrap_or("").to_string()
 }
@@ -155,6 +215,8 @@ fn value_string(value: Option<&Value>) -> String {
 // ---------------------------------------------------------------------------
 
 /// JS: `truncate` — cut to `budget - 1` chars and append the ellipsis marker.
+///
+/// 中文说明：截到 budget-1 个字符并追加省略号标记；未超预算原样返回。
 fn truncate(value: &str, budget: usize) -> String {
     if value.chars().count() <= budget {
         return value.to_string();
@@ -168,6 +230,10 @@ fn truncate(value: &str, budget: usize) -> String {
 
 /// Identity of everything the session should be carrying, content revisions
 /// included: editing a pinned note must re-send it, not merely renaming one.
+///
+/// 中文说明：会话应携带内容的身份指纹（含内容修订）——note 取
+/// id+updatedAt、plan 取 id+title、memory 取 id+updatedAt，条目排序后以
+/// `|` 连接；集合为空返回空串。编辑置顶笔记因此必然改变 signature。
 pub fn build_knowledge_signature(set: &KnowledgeSet) -> String {
     let mut parts: Vec<String> = Vec::new();
     for note in &set.notes {
@@ -201,6 +267,7 @@ pub fn build_knowledge_signature(set: &KnowledgeSet) -> String {
     parts.join("|")
 }
 
+/// 按创建时间排序后，把条目渲染为 `- [type] title` 行。
 fn render_memory_section(entries: &[MemoryEntry]) -> String {
     let mut sorted = entries.to_vec();
     sorted.sort_by(|a, b| {
@@ -217,6 +284,11 @@ fn render_memory_section(entries: &[MemoryEntry]) -> String {
 
 /// Titles only for memory, never bodies: an index carrying full text grows
 /// without bound until it crowds out the conversation it informs.
+///
+/// 中文说明：拼装 memory 索引——只列标题不列正文，否则索引会无限膨胀
+/// 直到挤占它本该服务的对话；前置三段固定说明（标题只是缩写、用
+/// ompchamber_memory 工具读全文、记忆可能过时需先验证），再按
+/// global/project 分节。
 fn build_memory_block(memory: &MemorySet) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !memory.global.is_empty() {
@@ -252,6 +324,8 @@ fn build_memory_block(memory: &MemorySet) -> String {
     .join("\n\n")
 }
 
+/// 拼装置顶内容块：笔记按创建时间排序成节，计划逐条成节；读不到正文的
+/// 计划显式标注 unavailable，不静默丢弃。
 fn build_pinned_block(notes: &[Note], plans: &[Plan]) -> String {
     let mut sections: Vec<String> = Vec::new();
     if !notes.is_empty() {
@@ -293,6 +367,9 @@ fn build_pinned_block(notes: &[Note], plans: &[Plan]) -> String {
 
 /// JS: `buildKnowledgeText` — assembled block, truncated loudly past the
 /// 8000-char budget.
+///
+/// 中文说明：拼装最终知识块——置顶块与 memory 块以分隔线连接，超过
+/// 8000 字符预算时显式截断并附截断标记。
 pub fn build_knowledge_text(set: &KnowledgeSet) -> String {
     let blocks: Vec<String> = [
         build_pinned_block(&set.notes, &set.plans),
@@ -316,6 +393,8 @@ pub fn build_knowledge_text(set: &KnowledgeSet) -> String {
 }
 
 /// JS: `readDeliveredSignature` — the stored signature, or ''.
+///
+/// 中文说明：读取会话已存储的已投递 signature；缺失时返回空串。
 pub fn read_delivered_signature(session: &Value) -> String {
     session
         .get("metadata")
@@ -332,28 +411,46 @@ pub fn read_delivered_signature(session: &Value) -> String {
 // Dependency seams (the JS `dependencies` object)
 // ---------------------------------------------------------------------------
 
+/// [`ResolveProjectId`] 接缝的 boxed future 类型。
 pub type ResolveProjectIdFuture = Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>>;
 /// JS `resolveProjectId(directory)` → project id ('' when unresolved).
+///
+/// 中文说明：目录 → memory project id 的解析接缝；解析不出返回空串。
 pub type ResolveProjectId = Arc<dyn Fn(&str) -> ResolveProjectIdFuture + Send + Sync>;
 
+/// [`ReadContext`] 接缝的 boxed future 类型。
 pub type ReadContextFuture = Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>;
 /// JS `projectContextRuntime.readContext(projectId)` →
 /// `{ notes: [...], todos: [...], plans: [...] }`.
+///
+/// 中文说明：读取项目上下文（notes/todos/plans）的接缝。
 pub type ReadContext = Arc<dyn Fn(&str) -> ReadContextFuture + Send + Sync>;
 
+/// [`ReadPlan`] 接缝的 boxed future 类型。
 pub type ReadPlanFuture = Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>;
 /// JS `projectContextRuntime.readPlan(projectId, planId)` → `{ body }`.
+///
+/// 中文说明：读取单个计划 markdown 正文的接缝。
 pub type ReadPlan = Arc<dyn Fn(&str, &str) -> ReadPlanFuture + Send + Sync>;
 
+/// [`ReadAllMemory`] 接缝的 boxed future 类型。
 pub type ReadAllFuture = Pin<Box<dyn Future<Output = anyhow::Result<AgentMemorySnapshot>> + Send>>;
 /// JS `agentMemoryRuntime.readAll(projectId | null)`.
+///
+/// 中文说明：读取全部 memory（global + project，带失败标记）的接缝；
+/// 参数为 project id 或 None（仅全局）。
 pub type ReadAllMemory = Arc<dyn Fn(Option<&str>) -> ReadAllFuture + Send + Sync>;
 
+/// [`IsMemoryEnabled`] 接缝的 boxed future 类型。
 pub type IsMemoryEnabledFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 /// JS `isAgentMemoryEnabled()` — a rejected read counts as disabled.
+///
+/// 中文说明：memory 开关接缝——读取失败即视为关闭。
 pub type IsMemoryEnabled = Arc<dyn Fn() -> IsMemoryEnabledFuture + Send + Sync>;
 
 /// Always-disabled memory switch (agent-memory module not wired).
+///
+/// 中文说明：恒为关闭的 memory 开关（agent-memory 模块未接线时使用）。
 pub fn memory_disabled() -> IsMemoryEnabled {
     Arc::new(|| Box::pin(async { false }))
 }
@@ -361,6 +458,9 @@ pub fn memory_disabled() -> IsMemoryEnabled {
 /// Project-context source that never resolves a project — until the
 /// `project_context` module lands, sessions owe no pinned context (the JS
 /// "unresolved project" path).
+///
+/// 中文说明：永不解析出项目的 project-context 源——对应 JS 的"项目未
+/// 解析"路径，会话不欠任何置顶上下文。
 pub fn unresolved_project_context() -> (ResolveProjectId, ReadContext, ReadPlan) {
     (
         Arc::new(|_directory: &str| Box::pin(async { Ok(String::new()) })),
@@ -375,6 +475,9 @@ pub fn unresolved_project_context() -> (ResolveProjectId, ReadContext, ReadPlan)
 
 /// Agent-memory source whose store will not load — the documented failure
 /// path: memory is left out, pinned notes still deliver.
+///
+/// 中文说明：存储无法加载的 memory 源——文档化的失败路径：memory 缺席，
+/// 置顶笔记照常投递。
 pub fn unavailable_agent_memory() -> ReadAllMemory {
     Arc::new(|_project_id: Option<&str>| {
         Box::pin(async { Err(anyhow::anyhow!("agent memory unavailable")) })
@@ -385,25 +488,43 @@ pub fn unavailable_agent_memory() -> ReadAllMemory {
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// 构造 [`SessionKnowledgeRuntime`] 的依赖注入集合（对应 JS 工厂的
+/// dependencies 对象）。
 pub struct SessionKnowledgeOptions {
+    /// 引擎 fetch 接缝（读写 session metadata）。
     pub fetch: OpenCodeFetch,
+    /// 目录 → project id 解析接缝。
     pub resolve_project_id: ResolveProjectId,
+    /// 项目上下文读取接缝。
     pub read_context: ReadContext,
+    /// 计划正文读取接缝。
     pub read_plan: ReadPlan,
+    /// memory 全量读取接缝。
     pub read_all_memory: ReadAllMemory,
+    /// memory 开关接缝。
     pub is_memory_enabled: IsMemoryEnabled,
 }
 
+/// session-knowledge runtime：采集项目知识、比对 signature、产出待投递
+/// 文本并维护 session metadata 中的投递状态。
 pub struct SessionKnowledgeRuntime {
+    /// 引擎 fetch 接缝。
     fetch: OpenCodeFetch,
+    /// 目录 → project id 解析接缝。
     resolve_project_id: ResolveProjectId,
+    /// 项目上下文读取接缝。
     read_context: ReadContext,
+    /// 计划正文读取接缝。
     read_plan: ReadPlan,
+    /// memory 全量读取接缝。
     read_all_memory: ReadAllMemory,
+    /// memory 开关接缝。
     is_memory_enabled: IsMemoryEnabled,
 }
 
+/// runtime 的构造、采集、欠账比对与 metadata 写回。
 impl SessionKnowledgeRuntime {
+    /// 以给定接缝构造 runtime（返回 Arc 便于跨任务共享）。
     pub fn new(options: SessionKnowledgeOptions) -> Arc<Self> {
         Arc::new(Self {
             fetch: options.fetch,
@@ -415,14 +536,17 @@ impl SessionKnowledgeRuntime {
         })
     }
 
+    /// 已投递 signature 在 metadata 中的 key（常量透出）。
     pub fn metadata_key(&self) -> &'static str {
         KNOWLEDGE_METADATA_KEY
     }
 
+    /// 置顶列表在 metadata 中的 key（常量透出）。
     pub fn pins_metadata_key(&self) -> &'static str {
         PINS_METADATA_KEY
     }
 
+    /// GET 单个会话的完整 JSON。
     async fn read_session(
         &self,
         session_id: &str,
@@ -432,6 +556,7 @@ impl SessionKnowledgeRuntime {
         (self.fetch)(&path, Some(directory), "GET", None).await
     }
 
+    /// PATCH 会话 metadata（整对象替换写入）。
     async fn patch_metadata(
         &self,
         session_id: &str,
@@ -449,6 +574,7 @@ impl SessionKnowledgeRuntime {
         Ok(())
     }
 
+    /// 把 memory 条目 JSON 防御式转为 [`MemoryEntry`]；缺 id 时返回 None。
     fn memory_entry(value: &Value) -> Option<MemoryEntry> {
         let id = value.get("id").and_then(Value::as_str)?;
         Some(MemoryEntry {
@@ -462,6 +588,10 @@ impl SessionKnowledgeRuntime {
     }
     /// Everything the session should be carrying, read fresh. A failure in
     /// one source never blanks the rest.
+    ///
+    /// 中文说明：现读会话应携带的全部内容——置顶笔记与计划正文逐条读取，
+    /// memory 按 scope 组装；任一数据源失败只影响自身、不清空其余（计划
+    /// 读不到标记为空正文，失败的 memory scope 整体留空）。
     pub async fn collect(&self, directory: &str, pins: &Pins) -> anyhow::Result<KnowledgeSet> {
         let project_id = if directory.is_empty() {
             String::new()
@@ -560,6 +690,9 @@ impl SessionKnowledgeRuntime {
 
     /// What the session is carrying, for display. Deliberately does not read
     /// plan bodies: the panel states counts and names.
+    ///
+    /// 中文说明：面向展示的采集——只取 id/标题与计数，刻意不读计划正文；
+    /// resolver 或项目解析失败时返回空 summary 形状。
     pub async fn collect_summary(&self, directory: &str, pins: &Pins) -> Value {
         let project_id = match if directory.is_empty() {
             Ok(String::new())
@@ -636,6 +769,9 @@ impl SessionKnowledgeRuntime {
 
     /// The text this session still owes, or an empty string when it is
     /// already carrying it.
+    ///
+    /// 中文说明：计算该会话仍欠的文本——signature 为空或与已投递一致时
+    /// 返回空 text；否则返回拼装正文与新 signature。
     pub async fn resolve_pending(
         &self,
         directory: &str,
@@ -654,6 +790,9 @@ impl SessionKnowledgeRuntime {
     }
 
     /// What this session still owes, read from its own stored signature.
+    ///
+    /// 中文说明：先读会话自身的 pin 列表与已投递 signature 再求欠账；
+    /// 会话读取失败按空会话处理，不向调用方报错。
     pub async fn resolve_pending_for_session(
         &self,
         session_id: &str,
@@ -670,6 +809,8 @@ impl SessionKnowledgeRuntime {
 
     /// Counts and names for the work status panel, reading the session's own
     /// pin list.
+    ///
+    /// 中文说明：以会话自身的 pin 列表采集工作状态面板所需的计数与名称。
     pub async fn collect_summary_for_session(&self, session_id: &str, directory: &str) -> Value {
         let session = self
             .read_session(session_id, directory)
@@ -681,6 +822,9 @@ impl SessionKnowledgeRuntime {
 
     /// Pin toggle: fresh-read merge write, invalidating the delivered
     /// signature so the next send carries the change.
+    ///
+    /// 中文说明：置顶开关——先现读会话再合并写回（保留无关 metadata），
+    /// 同时清空已投递 signature 使下次发送携带变更；返回更新后的 pins。
     pub async fn set_pin(
         &self,
         session_id: &str,
@@ -728,6 +872,9 @@ impl SessionKnowledgeRuntime {
 
     /// Recorded only once the message carrying it has actually gone out,
     /// merged onto a fresh read so concurrent metadata writes survive.
+    ///
+    /// 中文说明：两段式投递的第二步——仅在携带知识块的消息真正发出后
+    /// 调用；基于现读合并写入，避免覆盖并发修改。
     pub async fn record_delivered(
         &self,
         session_id: &str,
@@ -744,6 +891,7 @@ impl SessionKnowledgeRuntime {
     }
 }
 
+/// 空项目 id 归一为 None（表示仅读取全局 memory scope）。
 fn project_id_option(project_id: &str) -> Option<&str> {
     if project_id.is_empty() {
         None
@@ -752,6 +900,7 @@ fn project_id_option(project_id: &str) -> Option<&str> {
     }
 }
 
+/// 取 JSON 对象的克隆；非对象或缺省时返回空 Map。
 fn object_or_empty(value: Option<&Value>) -> Map<String, Value> {
     value
         .and_then(Value::as_object)
@@ -759,10 +908,12 @@ fn object_or_empty(value: Option<&Value>) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
+/// 解析失败时返回的空 summary 形状。
 fn empty_summary() -> Value {
     json!({ "notes": [], "plans": [], "memory": { "global": 0, "project": 0 } })
 }
 
+/// 采集、signature、拼装与两段式投递的合同测试（Harness 提供内存接缝）。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,9 +922,12 @@ mod tests {
 
     use serde_json::json;
 
+    /// 测试用项目目录。
     const DIRECTORY: &str = "/work/project";
+    /// 测试用解析出的 project id。
     const PROJECT_ID: &str = "path_project";
 
+    /// 构造基准笔记 JSON，可用 overrides 覆盖字段（对应 JS 测试助手）。
     fn note_value(overrides: Value) -> Value {
         // JS test helper: `{ id: 'n1', body: 'Pinned note body.', createdAt: 1,
         // updatedAt: 1, pinned: true, ...overrides }`.
@@ -792,6 +946,7 @@ mod tests {
         base
     }
 
+    /// 构造一条 memory 条目 JSON（正文固定，flagged 可控）。
     fn memory_entry(id: &str, title: &str, flagged: bool) -> Value {
         json!({
             "id": id,
@@ -804,16 +959,26 @@ mod tests {
         })
     }
 
+    /// 测试依赖集合：context/计划正文/memory 状态，加上引擎请求与会话
+    /// 存储的内存实现。
     struct Harness {
+        /// readContext 返回的项目上下文 JSON。
         context: Value,
+        /// 计划 id → 正文读取结果（Ok/Err 模拟可读与不可读）。
         plan_bodies: HashMap<String, Result<Value, String>>,
+        /// readAll 返回的 memory 快照。
         memory: AgentMemorySnapshot,
+        /// memory 开关状态。
         memory_enabled: bool,
+        /// 已发出的 (path, method) 记录。
         requests: Mutex<Vec<(String, String)>>,
+        /// sessionId → 会话 JSON 存储（PATCH metadata 写回这里）。
         sessions: Mutex<HashMap<String, Value>>,
     }
 
+    /// Harness 的 runtime 装配。
     impl Harness {
+        /// 默认场景：一条置顶笔记、一个可读计划、一条全局 memory。
         fn new() -> Self {
             Self {
                 context: json!({
@@ -837,6 +1002,7 @@ mod tests {
             }
         }
 
+        /// 把本 Harness 的各状态接缝注入 SessionKnowledgeRuntime。
         fn runtime(self: &Arc<Self>) -> Arc<SessionKnowledgeRuntime> {
             let fetch_harness = Arc::clone(self);
             let context_harness = Arc::clone(self);
@@ -911,6 +1077,7 @@ mod tests {
         }
     }
 
+    /// 由字面量列表构造 Pins 的速记。
     fn pins(notes: &[&str], plans: &[&str]) -> Pins {
         Pins {
             notes: notes.iter().map(|s| s.to_string()).collect(),
@@ -918,6 +1085,7 @@ mod tests {
         }
     }
 
+    /// 契约：知识块同时包含置顶笔记正文、计划标题与正文、memory 标题。
     #[tokio::test]
     async fn carries_pinned_notes_plan_bodies_and_memory_index() {
         let harness = Arc::new(Harness::new());
@@ -934,6 +1102,7 @@ mod tests {
         assert!(text.contains("Uses bun"));
     }
 
+    /// 契约：memory 只按标题索引，正文绝不出现。
     #[tokio::test]
     async fn memory_is_indexed_by_title_never_by_body() {
         let harness = Arc::new(Harness::new());
@@ -950,6 +1119,7 @@ mod tests {
         );
     }
 
+    /// 契约：未置顶的笔记与计划不进入知识块。
     #[tokio::test]
     async fn unpinned_notes_and_plans_stay_out() {
         let mut harness = Harness::new();
@@ -972,6 +1142,7 @@ mod tests {
         );
     }
 
+    /// 契约：无置顶且无 memory 时 signature 与 text 均为空。
     #[tokio::test]
     async fn nothing_pinned_and_nothing_remembered_owes_nothing() {
         let mut harness = Harness::new();
@@ -987,6 +1158,7 @@ mod tests {
         assert_eq!(pending["text"], json!(""));
     }
 
+    /// 契约：已投递 signature 与当前一致时不再欠正文。
     #[tokio::test]
     async fn owes_nothing_when_signature_matches() {
         let harness = Arc::new(Harness::new());
@@ -1007,6 +1179,7 @@ mod tests {
         assert_eq!(second["signature"], first["signature"]);
     }
 
+    /// 契约：笔记 updatedAt 变化即改变 signature，编辑后必须重发。
     #[test]
     fn an_edited_note_owes_the_block_again() {
         let before = build_knowledge_signature(&KnowledgeSet {
@@ -1030,6 +1203,7 @@ mod tests {
         assert_ne!(before, after);
     }
 
+    /// 契约：会话中途新增 memory 条目同样改变 signature。
     #[test]
     fn a_memory_saved_mid_session_owes_the_block_again() {
         let entry = |id: &str| MemoryEntry {
@@ -1057,6 +1231,7 @@ mod tests {
         assert_ne!(before, after);
     }
 
+    /// 契约：signature 对条目顺序不敏感（排序后拼接）。
     #[test]
     fn the_same_set_in_a_different_order_is_the_same_signature() {
         let note = |id: &str| Note {
@@ -1076,6 +1251,7 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// 契约：memory 读取失败只缺席自身，置顶笔记照常投递。
     #[tokio::test]
     async fn a_broken_memory_store_still_delivers_the_pinned_notes() {
         let harness = Arc::new(Harness::new());
@@ -1112,6 +1288,7 @@ mod tests {
         );
     }
 
+    /// 契约：读取失败的 memory scope 整体留空，不按空集索引。
     #[tokio::test]
     async fn a_scope_that_failed_to_load_is_left_out() {
         let mut harness = Harness::new();
@@ -1125,6 +1302,7 @@ mod tests {
         assert!(!pending["text"].as_str().unwrap_or("").contains("Uses bun"));
     }
 
+    /// 契约：读不到正文的计划以 unavailable 标注保留在块中。
     #[tokio::test]
     async fn an_unreadable_plan_is_marked_not_dropped() {
         let mut harness = Harness::new();
@@ -1142,6 +1320,7 @@ mod tests {
         assert!(text.contains("plan content unavailable"));
     }
 
+    /// 契约：project-context 失败只缺席自身，memory 索引照常投递。
     #[tokio::test]
     async fn a_broken_project_context_still_delivers_memory() {
         let mut harness = Harness::new();
@@ -1155,6 +1334,7 @@ mod tests {
         assert!(pending["text"].as_str().unwrap_or("").contains("Uses bun"));
     }
 
+    /// 契约：feature 关闭时 memory 整体缺席，置顶内容不受影响。
     #[tokio::test]
     async fn memory_is_left_out_entirely_while_the_feature_is_off() {
         let mut harness = Harness::new();
@@ -1170,6 +1350,7 @@ mod tests {
         assert!(text.contains("Pinned note body."));
     }
 
+    /// 契约：summary 计数包含 flagged 条目（仅对模型隐藏）。
     #[tokio::test]
     async fn collect_summary_counts_flagged_entries() {
         let mut harness = Harness::new();
@@ -1184,6 +1365,7 @@ mod tests {
         assert_eq!(summary["notes"], json!([]));
     }
 
+    /// 契约：开关读取失败按关闭处理，memory 不进入正文。
     #[tokio::test]
     async fn memory_gate_failure_keeps_memory_out() {
         let harness = Arc::new(Harness::new());
@@ -1220,6 +1402,7 @@ mod tests {
         assert!(!pending["text"].as_str().unwrap_or("").contains("Uses bun"));
     }
 
+    /// 契约：pin 解析容忍缺字段、非字符串、空白与重复；plans 非数组按空。
     #[test]
     fn pins_are_isolated_per_session_metadata_record() {
         assert_eq!(
@@ -1241,6 +1424,8 @@ mod tests {
         );
     }
 
+    /// 契约：置顶只发 GET+PATCH 目标会话，写回保留无关 metadata 并清空
+    /// 已投递 signature。
     #[tokio::test]
     async fn pinning_updates_only_the_target_session_and_invalidates_the_signature() {
         let harness = Arc::new(Harness::new());
@@ -1299,6 +1484,7 @@ mod tests {
         assert_eq!(patched["metadata"]["otherKey"], json!(true));
     }
 
+    /// 契约：回执基于现读合并写入，不覆盖并发存在的 pins 与无关状态。
     #[tokio::test]
     async fn delivered_two_phase_contract_records_from_a_fresh_read() {
         let harness = Arc::new(Harness::new());
@@ -1338,6 +1524,7 @@ mod tests {
         assert_eq!(ompchamber["unrelated"], json!("state"));
     }
 
+    /// 契约：能读出已存 signature，缺失时返回空串。
     #[test]
     fn finds_the_signature_stored_on_the_session() {
         assert_eq!(
@@ -1349,6 +1536,7 @@ mod tests {
         assert_eq!(read_delivered_signature(&json!({})), "");
     }
 
+    /// 契约：超预算的知识块被截断且以截断标记结尾。
     #[test]
     fn an_oversized_block_is_cut_and_says_so() {
         let text = build_knowledge_text(&KnowledgeSet {
@@ -1371,6 +1559,7 @@ mod tests {
         assert!(text.ends_with("(project knowledge truncated)"));
     }
 
+    /// 契约：flagged 条目不进入告知会话的文本。
     #[tokio::test]
     async fn a_flagged_memory_is_kept_out_of_what_the_session_is_told() {
         let mut harness = Harness::new();
@@ -1389,6 +1578,7 @@ mod tests {
         assert!(!text.contains("Ignore previous instructions"));
     }
 
+    /// 契约：按会话自身 metadata 判定欠账——signature 一致时 text 为空。
     #[tokio::test]
     async fn resolve_pending_for_session_reads_the_session_metadata() {
         let harness = Arc::new(Harness::new());
@@ -1422,6 +1612,7 @@ mod tests {
         assert_eq!(pending["signature"], once["signature"]);
     }
 
+    /// 契约：signature 中的时间戳按 JS number 渲染（无小数点）。
     #[test]
     fn js_number_rendering_in_signatures() {
         let set = KnowledgeSet {

@@ -10,15 +10,30 @@ import { getRuntimeProvider } from './runtime-providers.js';
 // Direct, non-streaming text generation against the provider APIs, replicating
 // how OpenCode authenticates each of them (see the plugin auth loaders in the
 // opencode repo). auth.json credentials never leave this process.
+/**
+ * 小模型的直连调用层：绕过 OpenCode，直接用各 provider 的原生 HTTP 协议
+ * （OpenAI chat/completions、Responses、Anthropic messages、Google
+ * generateContent、Copilot 端点协商、codex SSE 流）完成非流式文本生成。
+ * 各 provider 的认证方式逐一复刻 OpenCode 的插件 auth loader；
+ * auth.json 凭证只在当前进程内使用、绝不外发。
+ */
 
+/** 单次生成请求的默认超时（毫秒）；调用方可用 timeoutMs 覆盖（如 diff 走查需要更长时限）。 */
 const REQUEST_TIMEOUT_MS = 60_000;
+/** 拉取 Copilot /models 端点元数据的独立短超时，避免拖慢主请求。 */
 const COPILOT_MODELS_TIMEOUT_MS = 5_000;
 // Generous default: thinking models that can't be switched off (DeepSeek,
 // Qwen, …) spend part of this budget on reasoning before the actual answer.
+/** 默认输出 token 预算：给无法关闭思考的模型留出推理开销。 */
 const DEFAULT_MAX_OUTPUT_TOKENS = 4_000;
 
+/** 发给 provider 的 User-Agent，与 OpenCode 客户端标识保持一致。 */
 const USER_AGENT = 'opencode/1.0 ompchamber';
 
+/**
+ * 大小写不敏感地合并 HTTP 头：overrides 中与 base 同名（忽略大小写）的键
+ * 会替换 base 里的原键，其余原样保留；返回合并后的新对象。
+ */
 const mergeHeadersCaseInsensitive = (base, overrides) => {
   const merged = { ...base };
   for (const [name, value] of Object.entries(overrides || {})) {
@@ -31,10 +46,18 @@ const mergeHeadersCaseInsensitive = (base, overrides) => {
   return merged;
 };
 
+/** OpenAI OAuth refresh token 端点（codex / ChatGPT 计划）。 */
 const CODEX_TOKEN_URL = 'https://auth.openai.com/oauth/token';
+/** codex 后端使用的 OAuth client id，与 OpenCode 一致。 */
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+/** ChatGPT 计划的 codex Responses 端点。 */
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
 
+/**
+ * 把非 2xx 的 fetch 响应转换为带上下文的 Error：消息含状态码与响应体前
+ * 300 字符，并挂 status/provider 属性，供调用方区分 "请求形状被拒"
+ * 与 "服务不可用" 两类失败。
+ */
 const httpError = async (response, provider) => {
   const body = await response.text().catch(() => '');
   const snippet = body ? `: ${body.slice(0, 300)}` : '';
@@ -49,15 +72,21 @@ const httpError = async (response, provider) => {
 // Callers own two independent reasons to stop: their own abort signal (user
 // navigated away, request cancelled) and a per-call deadline. Long-running
 // callers such as the diff walkthrough need a deadline well past the default.
+/**
+ * 组合调用方的 AbortSignal 与按 timeoutMs 计算的截止信号，任一触发即中止
+ * 请求；timeoutMs 缺省或非正数时回落到默认超时。
+ */
 const requestSignal = (timeoutMs, signal) => {
   const deadline = AbortSignal.timeout(Number(timeoutMs) > 0 ? Number(timeoutMs) : REQUEST_TIMEOUT_MS);
   return signal ? AbortSignal.any([deadline, signal]) : deadline;
 };
 
+/** structured output 模式下统一的 schema 名称（response_format 或 tool 名）。 */
 const STRUCTURED_OUTPUT_NAME = 'response';
 
 // Google's schema dialect is OpenAPI-flavored and rejects JSON Schema keywords
 // it does not know, so unsupported keys are dropped rather than passed through.
+/** Google 方言不认识的 JSON Schema 关键字，转换时直接丢弃。 */
 const GOOGLE_UNSUPPORTED_SCHEMA_KEYS = new Set([
   '$schema',
   'additionalProperties',
@@ -67,6 +96,10 @@ const GOOGLE_UNSUPPORTED_SCHEMA_KEYS = new Set([
   'strict',
 ]);
 
+/**
+ * 递归剔除 schema 中 Google 不支持的关键字，其余结构原样保留，
+ * 以适配 Gemini 的 OpenAPI 风格 schema 方言。
+ */
 const toGoogleSchema = (schema) => {
   if (Array.isArray(schema)) return schema.map(toGoogleSchema);
   if (!schema || typeof schema !== 'object') return schema;
@@ -83,8 +116,10 @@ const toGoogleSchema = (schema) => {
 // refreshed token written back to auth.json exactly like OpenCode does.
 // ---------------------------------------------------------------------------
 
+/** 进行中的 OpenAI OAuth 刷新 Promise，并发刷新去重（single-flight）。 */
 let openaiRefreshPromise = null;
 
+/** 解出 JWT 的 payload claims；token 格式非法时返回 null 而不抛错。 */
 const decodeJwtClaims = (token) => {
   try {
     const payload = token.split('.')[1];
@@ -94,6 +129,10 @@ const decodeJwtClaims = (token) => {
   }
 };
 
+/**
+ * 从访问令牌的 JWT claims 里取 ChatGPT 账号 id（chatgpt_account_id）；
+ * 缺失或不是非空字符串时返回 null。
+ */
 const extractChatgptAccountId = (accessToken) => {
   const claims = decodeJwtClaims(accessToken);
   const auth = claims?.['https://api.openai.com/auth'];
@@ -101,6 +140,11 @@ const extractChatgptAccountId = (accessToken) => {
   return typeof value === 'string' && value ? value : null;
 };
 
+/**
+ * 用 refresh token 向 OpenAI 换取新的访问令牌，并把结果写回 auth.json
+ * （与 OpenCode 行为一致）。并发调用共享同一个 Promise（single-flight），
+ * 结束后清空共享状态以便后续重试。
+ */
 const refreshOpenaiOauth = async (entry) => {
   if (!openaiRefreshPromise) {
     openaiRefreshPromise = (async () => {
@@ -142,6 +186,10 @@ const refreshOpenaiOauth = async (entry) => {
   return openaiRefreshPromise;
 };
 
+/**
+ * 确保拿到未过期的访问令牌：当前 access 仍有效则原样返回，否则触发刷新；
+ * 没有 refresh token 时直接抛错。
+ */
 const ensureFreshOpenaiOauth = async (entry) => {
   if (entry.access && Number(entry.expires) > Date.now()) {
     return entry;
@@ -156,6 +204,13 @@ const ensureFreshOpenaiOauth = async (entry) => {
 // Wire formats
 // ---------------------------------------------------------------------------
 
+/**
+ * OpenAI 兼容 wire format：POST {baseURL}/chat/completions。
+ * 支持 system 消息、max_tokens、json_schema 结构化输出与 extraBody 合并；
+ * 把 content 为字符串或分段数组两种返回形状归一为纯文本。思考型模型把
+ * 输出预算全花在 reasoning 上时，抛 code 为 'output-exhausted' 的错误
+ * （预算问题，与传输失败区分开，便于调用方处置）。
+ */
 const callOpenaiCompatible = async ({ baseURL, headers, modelID, prompt, system, maxOutputTokens, providerLabel, extraBody, responseSchema, timeoutMs, signal }) => {
   const trimmedBase = baseURL.replace(/\/+$/, '');
   console.log('[small-model:diagnostic] request', {
@@ -246,6 +301,11 @@ const callOpenaiCompatible = async ({ baseURL, headers, modelID, prompt, system,
   return text;
 };
 
+/**
+ * OpenAI Responses API wire format：POST {baseURL}/responses。
+ * system 走 instructions 字段；输出从 output_text 或 output 数组中的
+ * output_text 分段归并；结构化输出用 text.format.json_schema 表达。
+ */
 const callOpenaiResponses = async ({ baseURL, headers, modelID, prompt, system, maxOutputTokens, providerLabel, responseSchema, timeoutMs, signal }) => {
   const trimmedBase = baseURL.replace(/\/+$/, '');
   const response = await fetch(`${trimmedBase}/responses`, {
@@ -298,6 +358,11 @@ const callOpenaiResponses = async ({ baseURL, headers, modelID, prompt, system, 
   return text;
 };
 
+/**
+ * Anthropic messages wire format 的通用实现（也被 Copilot 的 /v1/messages
+ * 端点复用）。messages API 没有 response_format，结构化输出改用强制
+ * tool_choice 调用单个工具，并把 tool_use.input 序列化为 JSON 字符串返回。
+ */
 const callMessages = async ({ url, headers, modelID, prompt, system, maxOutputTokens, providerLabel, responseSchema, timeoutMs, signal }) => {
   const response = await fetch(url, {
     method: 'POST',
@@ -351,6 +416,10 @@ const callMessages = async ({ url, headers, modelID, prompt, system, maxOutputTo
   return text;
 };
 
+/**
+ * Anthropic 官方 API 调用：baseURL 视为完整 API 前缀（通常已含 /v1），
+ * 直接追加 /messages，避免把配置里的 /v1 重复拼一遍；凭证走 x-api-key 头。
+ */
 const callAnthropic = async ({ apiKey, baseURL, modelID, prompt, system, maxOutputTokens, responseSchema, timeoutMs, signal }) => callMessages({
   // Matches @ai-sdk/anthropic: baseURL is the full API prefix (commonly
   // already ending in /v1), so it gets /messages appended as-is rather than
@@ -370,6 +439,11 @@ const callAnthropic = async ({ apiKey, baseURL, modelID, prompt, system, maxOutp
   signal,
 });
 
+/**
+ * 查询 Copilot /models，确定目标模型支持的文本端点（优先级 /v1/messages
+ * > /responses > /chat/completions）；未标注 supported_endpoints 时按
+ * 'chat' 处理；模型不在列表或元数据非法时抛错。
+ */
 const getCopilotEndpoint = async ({ baseURL, headers, modelID }) => {
   const trimmedBase = baseURL.replace(/\/+$/, '');
   const response = await fetch(`${trimmedBase}/models`, {
@@ -415,6 +489,11 @@ const getCopilotEndpoint = async ({ baseURL, headers, modelID }) => {
   throw new Error(`GitHub Copilot model "${modelID}" has no supported text endpoint`);
 };
 
+/**
+ * Google generateContent 调用：按模型代系关闭或调低思考（gemini-3 用
+ * thinkingLevel，gemini-2 用 thinkingBudget: 0）；schema 先经 toGoogleSchema
+ * 清洗；无文本输出时抛错。
+ */
 const callGoogle = async ({ apiKey, modelID, prompt, system, maxOutputTokens, responseSchema, timeoutMs, signal }) => {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelID)}:generateContent`;
   const lowerModelID = modelID.toLowerCase();
@@ -454,6 +533,11 @@ const callGoogle = async ({ apiKey, modelID, prompt, system, maxOutputTokens, re
 
 // ChatGPT-plan traffic goes to the codex backend, which only speaks the
 // streaming Responses API — collect the output_text deltas from the SSE body.
+/**
+ * ChatGPT 计划的 codex 后端只支持流式 Responses API：读取 SSE 响应体，
+ * 聚合 output_text.delta 增量（若收到 output_text.done 的完整文本则以其
+ * 优先），遇到 response.failed 或 error 事件时抛错。
+ */
 const callCodexResponses = async ({ accessToken, accountId, modelID, prompt, system, timeoutMs, signal }) => {
   const response = await fetch(CODEX_RESPONSES_URL, {
     method: 'POST',
@@ -521,6 +605,11 @@ const callCodexResponses = async ({ accessToken, accountId, modelID, prompt, sys
 // Custom provider configuration support
 // ---------------------------------------------------------------------------
 
+/**
+ * 解析 provider 配置中的 {env:NAME} 与 {file:path} 占位值：env 取进程
+ * 环境变量；file 的相对路径以 "声明该值的配置文件所在目录" 为基准解析
+ * （~ 展开为主目录），读取失败或文件为空时抛错；普通字符串原样返回。
+ */
 const resolveConfigValue = (value, workingDirectory, providerID, headerName = null) => {
   const envMatch = value.match(/^\{env:([^}]+)\}$/i);
   if (envMatch) {
@@ -569,6 +658,10 @@ const resolveConfigValue = (value, workingDirectory, providerID, headerName = nu
  * URL. Gateways fronted by an API-management layer reject a bearer-only request
  * outright, because the header is the credential rather than a supplement to it.
  */
+/**
+ * 读取配置里的 options.headers 并做与 apiKey 相同的 {env:…}/{file:…}
+ * 占位符替换；非字符串的畸形条目跳过，全部解析为空时返回 null。
+ */
 const readConfiguredHeaders = (providerCfg, workingDirectory, providerID) => {
   const configured = providerCfg?.options?.headers;
   if (!isPlainObject(configured)) return null;
@@ -583,6 +676,11 @@ const readConfiguredHeaders = (providerCfg, workingDirectory, providerID) => {
   return Object.keys(headers).length ? headers : null;
 };
 
+/**
+ * 读取 OpenCode 配置中 provider.<id> 的 baseURL/apiKey/headers；apiKey
+ * 经占位符解析后包装成 {type:'api'} 形状的 auth 条目，使其能参与统一的
+ * 凭证优先级比较。配置读取失败时返回 null（回退到仅目录解析）。
+ */
 const readProviderConfig = (workingDirectory, providerID) => {
   try {
     const config = readConfig(workingDirectory);
@@ -618,12 +716,14 @@ const readProviderConfig = (workingDirectory, providerID) => {
  * credential never stands in for them, and the runtime listing skips them
  * because the auth.json scan already covers them.
  */
+/** 走专用 wire format 的 provider 集合（token 交换、OAuth 刷新或非 bearer 头认证）；运行时 apiKey 不适用于它们，由 auth.json 扫描覆盖。 */
 export const DEDICATED_WIRE_FORMAT_PROVIDERS = new Set(['github-copilot', 'copilot', 'openai', 'anthropic', 'google']);
 
 /**
  * The runtime credential shaped as an auth entry, or `null` when the provider
  * owns its credential handling or OpenCode reports nothing usable.
  */
+/** 把运行时 apiKey 包装成 auth 条目形状；专用 wire format provider 或无凭证时返回 null。 */
 const runtimeCredential = (providerID, runtime) => (
   !DEDICATED_WIRE_FORMAT_PROVIDERS.has(providerID) && runtime?.apiKey
     ? { type: 'api', key: runtime.apiKey }
@@ -637,6 +737,12 @@ const runtimeCredential = (providerID, runtime) => (
  * Callers that need to refuse before spending a request (walkthrough readiness)
  * must use this rather than inventing a second rule.
  */
+/**
+ * 与请求路径完全相同的凭证解析优先级：配置 provider.<id>.options.apiKey
+ * > OpenCode 运行时凭证（插件 provider 凭证的唯一来源）> auth.json 条目；
+ * 都没有时返回 null。需要在发请求前判定可用性（如 walkthrough 就绪检查）
+ * 的调用方必须复用这里，而不是另立第二套规则。
+ */
 export async function resolveProviderLogin({ auth, workingDirectory, providerID }) {
   const providerConfig = readProviderConfig(workingDirectory, providerID);
   return providerConfig?.auth
@@ -645,6 +751,15 @@ export async function resolveProviderLogin({ auth, workingDirectory, providerID 
     || null;
 }
 
+/**
+ * 小模型调用总入口：解析凭证与端点后按 provider 分发到对应 wire format。
+ * github-copilot：存储的 token 直接作 bearer，按 /models 协商端点；
+ * openai 的 oauth 登录：走 codex 流（不支持结构化输出，带 schema 直接报错）；
+ * anthropic / google：各自原生 API；其余一律按 OpenAI 兼容
+ * chat/completions 调用，baseURL 依次取 配置 > openai 默认 > 运行时 > 目录。
+ * 无法关闭思考的已知模型附加 thinking disabled 开关；任何凭证都解析不到时
+ * 抛 statusCode 401 / code 'no-provider-login'，供调用方展示阻塞原因。
+ */
 export async function callSmallModel({ auth, catalog, workingDirectory, providerID, modelID, prompt, system, maxOutputTokens, responseSchema, timeoutMs, signal }) {
   const tokens = Number(maxOutputTokens) > 0 ? Number(maxOutputTokens) : DEFAULT_MAX_OUTPUT_TOKENS;
   const providerConfig = readProviderConfig(workingDirectory, providerID);

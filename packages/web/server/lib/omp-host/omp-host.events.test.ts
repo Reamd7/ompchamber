@@ -4,7 +4,14 @@ import { OmpEventBus, WireEventBus, estimateJsonValueSize } from './events.ts';
 // Ring cap/gap contracts (docs/plan.md §5.1/§5.2, acceptance §10.1 event
 // ring). Byte figures are the bus's declared serialized estimate (UTF-16
 // units + per-node overhead), never a JS-heap claim.
+/**
+ * 环形事件总线（RingEventBus）容量与缺口契约测试（docs/plan.md
+ * §5.1/§5.2，验收 §10.1 event ring）。覆盖条数/字节双上限、洞（hole）
+ * 与 replayState 判定、subscribeSince 重入边界及 estimateJsonValueSize
+ * 的体积估算；it() 用例逐条固化上述契约。
+ */
 
+/** 容量契约：条数/字节上限、超预算事件、hole 合并与上限塌缩。 */
 describe('RingEventBus caps', () => {
   test('entry cap bounds durable replay for the all-durable wire bus', () => {
     const bus = new WireEventBus({ capacity: 3 });
@@ -117,6 +124,7 @@ describe('RingEventBus caps', () => {
   });
 });
 
+/** replayState 判定：restart/gap/ok 的游标边界与 epoch 实例标识。 */
 describe('RingEventBus replayState', () => {
   test('restart when the cursor is at or after nextEventId', () => {
     const bus = new WireEventBus({ capacity: 8 });
@@ -152,6 +160,7 @@ describe('RingEventBus replayState', () => {
   });
 });
 
+/** subscribeSince 边界：重入 emit、pending 顺序与监听器抛错的注销。 */
 describe('RingEventBus subscribeSince boundaries', () => {
   test('listener emitting during replay neither misses nor duplicates events', () => {
     const bus = new WireEventBus({ capacity: 64 });
@@ -249,6 +258,7 @@ describe('RingEventBus subscribeSince boundaries', () => {
   });
 });
 
+/** estimateJsonValueSize：有界遍历、键名计入与超字节预算事件的入环拒绝。 */
 describe('estimateJsonValueSize', () => {
   test('bounded traversal verdicts over-budget instead of walking forever', () => {
     const wide: string[] = [];

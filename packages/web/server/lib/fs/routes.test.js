@@ -1,3 +1,10 @@
+/**
+ * routes.js 的单元测试套件：用内存路由注册表与 mock 依赖直接驱动各
+ * /api/fs/* 处理器，覆盖写入、上传、读取、文件管理器打开、exec 的
+ * git-read 缓存、下载响应头、symlink 路径空间（issue 2627）、嵌套 git
+ * 仓库发现，以及 stat 工作区围栏（issue 3019）等行为与错误路径。
+ */
+
 import { EventEmitter } from 'events';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -5,13 +12,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mintOutsideFileGrant, registerFsRoutes } from './routes.js';
 import { createProjectDirectoryRuntime } from '../opencode/project-directory-runtime.js';
 
+/** 极简 Express app 替身：记录 get/post 注册的处理器，并按 "METHOD path" 取回。 */
 const createRouteRegistry = () => {
   const routes = new Map();
   return {
     app: {
+      /** 记录 GET 路由处理器，key 为 "GET <path>"。 */
       get(routePath, handler) {
         routes.set(`GET ${routePath}`, handler);
       },
+      /** 记录 POST 路由处理器，key 为 "POST <path>"。 */
       post(routePath, handler) {
         routes.set(`POST ${routePath}`, handler);
       },
@@ -22,6 +32,7 @@ const createRouteRegistry = () => {
   };
 };
 
+/** mock Express response：记录 status/body/headers，链式方法都返回自身以便断言。 */
 const createMockResponse = () => {
   let statusCode = 200;
   let body = null;
@@ -59,6 +70,7 @@ const createMockResponse = () => {
 };
 
 // Fake child process: emits the configured stdout then closes with the given code.
+/** 造一个假 spawn：按命令名回放预置 stdout，并在微任务里以给定退出码 close；同时记录调用。 */
 const createSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
   const calls = [];
   const spawn = vi.fn((_shell, args) => {
@@ -78,6 +90,7 @@ const createSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
   return { spawn, calls };
 };
 
+/** 可手动放行的假 spawn：子进程保持 pending，直到调用 closeNext 才回放输出并 close，用于构造并发时序。 */
 const createDeferredSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
   const calls = [];
   const pending = [];
@@ -91,6 +104,7 @@ const createDeferredSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
     pending.push({ child, command });
     return child;
   });
+  /** 放行最早一个 pending 子进程：回放其预置 stdout 并触发 close。 */
   const closeNext = () => {
     const entry = pending.shift();
     if (!entry) return;
@@ -101,6 +115,7 @@ const createDeferredSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
   return { spawn, calls, closeNext };
 };
 
+/** 注册路由并返回 POST /api/fs/exec 处理器；注入假的 os/path/fs/crypto 等依赖，工作区固定为 /repo。 */
 const registerExec = ({ spawn }) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -121,6 +136,7 @@ const registerExec = ({ spawn }) => {
   return getRoute('POST', '/api/fs/exec');
 };
 
+/** 注册路由并返回 POST /api/fs/write 处理器；realpath 为恒等映射，其余 fs 行为由传入的 fsPromises 覆盖。 */
 const registerWrite = (fsPromises) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -141,6 +157,7 @@ const registerWrite = (fsPromises) => {
   return getRoute('POST', '/api/fs/write');
 };
 
+/** 注册路由并返回 POST /api/fs/upload 处理器；默认 realpath 只认 /repo、stat 报告为文件，其余由 fsPromises 覆盖。 */
 const registerUpload = (fsPromises) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -165,6 +182,7 @@ const registerUpload = (fsPromises) => {
   return getRoute('POST', '/api/fs/upload');
 };
 
+/** 注册路由并返回 GET /api/fs/read 处理器；resolveProjectDirectory 可覆盖以模拟不同的活动工作区。 */
 const registerRead = (fsPromises, resolveProjectDirectory = async () => ({ directory: '/repo' })) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -185,6 +203,7 @@ const registerRead = (fsPromises, resolveProjectDirectory = async () => ({ direc
   return getRoute('GET', '/api/fs/read');
 };
 
+/** 注册路由并返回 GET /api/fs/raw 处理器；fsPromises 覆盖默认的恒等 realpath。 */
 const registerRaw = (fsPromises) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -205,6 +224,7 @@ const registerRaw = (fsPromises) => {
   return getRoute('GET', '/api/fs/raw');
 };
 
+/** 注册路由并返回 POST /api/fs/mkdir 处理器；fsPromises 覆盖默认的恒等 realpath。 */
 const registerMkdir = (fsPromises) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -225,6 +245,7 @@ const registerMkdir = (fsPromises) => {
   return getRoute('POST', '/api/fs/mkdir');
 };
 
+/** 注册路由并返回 POST /api/fs/reveal 处理器；platform 可覆盖以驱动各平台分支，spawn 可注入假实现。 */
 const registerReveal = ({ fsPromises, spawn, platform = 'linux' }) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
@@ -246,18 +267,24 @@ const registerReveal = ({ fsPromises, spawn, platform = 'linux' }) => {
   return getRoute('POST', '/api/fs/reveal');
 };
 
+/** 以给定 body 调用 exec 处理器并返回 mock 响应。 */
 const callExec = async (handler, body) => {
   const res = createMockResponse();
   await handler({ body }, res);
   return res;
 };
 
+/** 以给定 body 调用 write 处理器并返回 mock 响应。 */
 const callWrite = async (handler, body) => {
   const res = createMockResponse();
   await handler({ body }, res);
   return res;
 };
 
+/**
+ * 构造带 octet-stream 请求头与可异步迭代 body 的上传请求并调用处理器。
+ * 可控制上传分块、是否携带 Content-Length 以及目标路径与 overwrite。
+ */
 const callUpload = async (handler, {
   body = Buffer.from('upload'),
   chunks,
@@ -280,30 +307,35 @@ const callUpload = async (handler, {
   return res;
 };
 
+/** 以给定 query 调用 read 处理器并返回 mock 响应。 */
 const callRead = async (handler, query) => {
   const res = createMockResponse();
   await handler({ query }, res);
   return res;
 };
 
+/** 以给定 query 调用 raw 处理器并返回 mock 响应。 */
 const callRaw = async (handler, query) => {
   const res = createMockResponse();
   await handler({ query }, res);
   return res;
 };
 
+/** 以给定 body 调用 mkdir 处理器并返回 mock 响应。 */
 const callMkdir = async (handler, body) => {
   const res = createMockResponse();
   await handler({ body }, res);
   return res;
 };
 
+/** 以给定 body 调用 reveal 处理器并返回 mock 响应。 */
 const callReveal = async (handler, body) => {
   const res = createMockResponse();
   await handler({ body }, res);
   return res;
 };
 
+/** 文件写入端点：内容未变化时短路不重写、原子写（临时文件 + rename）与错误映射。 */
 describe('fs write', () => {
   it('does not rewrite a file when content is unchanged', async () => {
     const fsPromises = {
@@ -387,6 +419,7 @@ describe('fs write', () => {
   });
 });
 
+/** 二进制上传端点：流式写临时文件、无覆盖时的硬链接提交与超限、冲突等失败路径。 */
 describe('fs upload', () => {
   it('streams a binary file to temp storage before committing it without overwrite', async () => {
     const write = vi.fn(async (_buffer, _offset, length) => ({ bytesWritten: length }));
@@ -548,6 +581,7 @@ describe('fs upload', () => {
   });
 });
 
+/** 文本读取端点：经由指向工作区外的 symlink 读取、grant 授权与各类错误路径。 */
 describe('fs read', () => {
   it('reads workspace files through symlinks that resolve outside the workspace', async () => {
     const fsPromises = {
@@ -770,6 +804,7 @@ describe('fs read', () => {
     warn.mockRestore();
   });
 });
+/** 文件管理器打开端点：linux、darwin、win32 各平台的启动命令与参数选择。 */
 describe('fs reveal', () => {
   it.each([
     ['linux', 'xdg-open', ['/repo']],
@@ -841,6 +876,7 @@ describe('fs reveal', () => {
   });
 });
 
+/** exec 的 git 只读命令缓存：命中、过期、并发请求合并与非缓存命令直通。 */
 describe('fs exec git-read cache', () => {
   beforeEach(() => {
     delete process.env.OMPCHAMBER_GIT_READ_CACHE_TTL_MS;
@@ -1007,6 +1043,7 @@ describe('fs exec git-read cache', () => {
   });
 });
 
+/** raw 下载响应头：非 ASCII 文件名按 RFC 5987 编码到 filename* 字段。 */
 describe('fs raw download Content-Disposition', () => {
   it('uses RFC 5987 filename*= encoding for non-ASCII filenames on download', async () => {
     const fsPromises = {
@@ -1046,7 +1083,9 @@ describe('fs raw download Content-Disposition', () => {
   });
 });
 
+/** list 端点经由 symlink 列目录（issue 2627）：条目路径必须保留调用方的逻辑路径空间。 */
 describe('fs list symlink path space (issue 2627)', () => {
+  /** 注册路由并返回 GET /api/fs/list 处理器，工作区固定为 /workspace，fsPromises 覆盖恒等 realpath。 */
   const registerList = (fsPromises) => {
     const { app, getRoute } = createRouteRegistry();
     registerFsRoutes(app, {
@@ -1067,6 +1106,7 @@ describe('fs list symlink path space (issue 2627)', () => {
     return getRoute('GET', '/api/fs/list');
   };
 
+  /** 以给定 query 调用 list 处理器并返回 mock 响应。 */
   const callList = async (handler, query) => {
     const res = createMockResponse();
     await handler({ query }, res);
@@ -1136,7 +1176,9 @@ describe('fs list symlink path space (issue 2627)', () => {
   }
 });
 
+/** 嵌套 git 仓库发现：仓库边界停止下钻、深度与访问数量上限、不可读子目录容错。 */
 describe('fs git-dirs', () => {
+  /** 构造带名字与类型判定函数的假 Dirent。 */
   const createDirent = (name, type) => ({
     name,
     isDirectory: () => type === 'dir',
@@ -1145,6 +1187,7 @@ describe('fs git-dirs', () => {
   });
 
   // tree maps directory path -> [[name, type], ...]
+  /** 用“目录路径到 [名字, 类型] 数组”的树构造假文件系统，返回 git-dirs 处理器与 readdir spy。 */
   const registerGitDirs = (tree, { stat, readdir: readdirOverride } = {}) => {
     const { app, getRoute } = createRouteRegistry();
     const readdir = readdirOverride ?? vi.fn(async (dirPath) => (tree[dirPath] ?? []).map(([name, type]) => createDirent(name, type)));
@@ -1167,6 +1210,7 @@ describe('fs git-dirs', () => {
     return { handler: getRoute('GET', '/api/fs/git-dirs'), readdir };
   };
 
+  /** 以给定 query（默认空对象）调用 git-dirs 处理器并返回 mock 响应。 */
   const callGitDirs = async (handler, query) => {
     const res = createMockResponse();
     await handler({ query: query ?? {} }, res);
@@ -1355,12 +1399,14 @@ describe('fs git-dirs', () => {
   });
 });
 
+/** stat 的工作区围栏（issue 3019）：x-opencode-directory 请求头优先于 lastDirectory 兜底。 */
 describe('fs stat directory scope (issue 3019)', () => {
   // Wires the real project-directory runtime so the stat route resolves the
   // workspace exactly as the server does: explicit x-opencode-directory header
   // first, then the settings.lastDirectory fallback. The renderer's file
   // reference probes must send the header because lastDirectory reflects the
   // directory the UI last browsed, not the session's directory.
+  /** 接入真实 project-directory 运行时注册 stat 路由（lastDirectory 为 /repo-a），验证会话目录头与兜底的优先级。 */
   const registerStatWithProjectDirectoryRuntime = () => {
     const projectDirectoryRuntime = createProjectDirectoryRuntime({
       fsPromises: {
@@ -1398,6 +1444,7 @@ describe('fs stat directory scope (issue 3019)', () => {
     return getRoute('GET', '/api/fs/stat');
   };
 
+  /** 以给定 query 与可选请求头（模拟 x-opencode-directory）调用 stat 处理器并返回 mock 响应。 */
   const callStat = async (handler, { headers = {}, query }) => {
     const res = createMockResponse();
     const req = {

@@ -1,3 +1,9 @@
+/**
+ * 技能仓库扫描模块：浅克隆一个 git 仓库，枚举其中所有含 SKILL.md 的技能
+ * 目录，解析 YAML frontmatter（name/description），并标注可安装性与告警。
+ * 优先用 sparse-checkout 只检出 SKILL.md 再从磁盘解析（免去逐个 git show），
+ * 失败时回退到 git ls-tree + git show 逐文件读取。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -6,14 +12,20 @@ import yaml from 'yaml';
 import { assertGitAvailable, looksLikeAuthError, runGit } from './git.js';
 import { parseSkillRepoSource } from './source.js';
 
+/** OpenCode 合法技能名的正则：小写字母/数字/连字符，首尾不能是连字符（另允许单个字符）。 */
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 
+/** 校验技能名是否为 OpenCode 合法格式：字符串、1-64 字符且匹配 SKILL_NAME_PATTERN。 */
 function validateSkillName(skillName) {
   if (typeof skillName !== 'string') return false;
   if (skillName.length < 1 || skillName.length > 64) return false;
   return SKILL_NAME_PATTERN.test(skillName);
 }
 
+/**
+ * 解析 SKILL.md 的 YAML frontmatter。缺分隔符或 YAML 解析失败均非致命：
+ * 返回空 frontmatter 并附告警，扫描结果仍能列出该技能。
+ */
 function parseSkillMd(content) {
   const text = typeof content === 'string' ? content : '';
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -37,6 +49,7 @@ function parseSkillMd(content) {
   }
 }
 
+/** 递归删除目录（recursive + force），失败静默忽略；仅用于临时克隆目录的清理。 */
 async function safeRm(dir) {
   try {
     await fs.promises.rm(dir, { recursive: true, force: true });
@@ -45,6 +58,10 @@ async function safeRm(dir) {
   }
 }
 
+/**
+ * 浅克隆（--depth 1 --no-checkout）到 tempDir。优先 blob:none 部分克隆，
+ * 旧版 git 不支持时回退普通浅克隆；两次都失败时返回最后一次的错误。
+ */
 async function cloneRepo({ cloneUrl, identity, tempDir }) {
   const preferred = ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', cloneUrl, tempDir];
   const fallback = ['clone', '--depth', '1', '--no-checkout', cloneUrl, tempDir];
@@ -61,6 +78,12 @@ async function cloneRepo({ cloneUrl, identity, tempDir }) {
   };
 }
 
+/**
+ * 扫描仓库中的全部技能。返回 { ok, normalizedRepo, effectiveSubpath, items }，
+ * items 按技能名排序，每项含 skillDir、skillName、frontmatterName、
+ * description、installable 与 warnings。克隆认证失败返回 authRequired；
+ * subpath 不存在时视为空扫描（items 为空数组）而非错误。
+ */
 export async function scanSkillsRepository({
   source,
   subpath,
@@ -92,6 +115,7 @@ export async function scanSkillsRepository({
       return { ok: false, error: { kind: 'networkError', message: msg || 'Failed to clone repository' } };
     }
 
+    /** 把仓库内相对 POSIX 路径转成 tempBase 下的本地文件系统路径。 */
     const toFsPath = (posixPath) => path.join(tempBase, ...String(posixPath || '').split('/').filter(Boolean));
 
     const patterns = effectiveSubpath
@@ -158,6 +182,7 @@ export async function scanSkillsRepository({
     const maxParallel = 10;
     let idx = 0;
 
+    /** 并发 worker：从共享下标领取技能目录，读 SKILL.md（磁盘优先、git show 兜底）并解析出目录项。 */
     const worker = async () => {
       while (idx < uniqueSkillDirs.length) {
         const skillDir = uniqueSkillDirs[idx++];

@@ -1,9 +1,19 @@
+/**
+ * 事件流运行时（runtime.js）的单元测试，运行于 vitest。
+ *
+ * 覆盖两部分：全局 UI 事件广播器的 SSE/WS 双通道分发与失效客户端
+ * 剔除；消息流 WebSocket 运行时的全局上游 SSE 共享、Last-Event-ID
+ * 断线重放、目录级独立上游、上游不可用时的关闭与重连恢复、合成事件
+ * 处理以及 close() 的兜底超时。
+ */
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGlobalUiEventBroadcaster, createMessageStreamWsRuntime } from './runtime.js';
 
+/** 伪造的 WebSocket：记录 send 出的 JSON 帧与 close 调用，模拟连接生命周期。 */
 class FakeSocket extends EventEmitter {
+  /** readyState=1 表示 OPEN；sent 与 closeCalls 供断言使用。 */
   constructor() {
     super();
     this.readyState = 1;
@@ -11,14 +21,17 @@ class FakeSocket extends EventEmitter {
     this.closeCalls = [];
   }
 
+  /** 解析并记录发出的 JSON 帧。 */
   send(payload) {
     this.sent.push(JSON.parse(payload));
   }
 
+  /** 空实现：满足心跳路径对 ping 方法的调用。 */
   ping() {
     void 0;
   }
 
+  /** 幂等关闭：置 CLOSED、记录 code/reason 并发出 'close' 事件。 */
   close(code, reason) {
     if (this.readyState === 3) {
       return;
@@ -29,6 +42,10 @@ class FakeSocket extends EventEmitter {
   }
 }
 
+/**
+ * 构造伪造的 fetch 响应：body.getReader() 依次返回 SSE 文本块；
+ * holdOpen 时读完块后挂起，等待 signal 中止（模拟持续推送的上游）。
+ */
 function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -64,6 +81,7 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   };
 }
 
+/** 全局 UI 事件广播器：合成事件向 SSE 与 WS 客户端分发及失效客户端清理。 */
 describe('event stream broadcaster', () => {
   it('fans out synthetic events to SSE and WS clients', () => {
     const sseEvents = [];
@@ -126,6 +144,7 @@ describe('event stream broadcaster', () => {
   });
 });
 
+/** 消息流 WebSocket 运行时：全局上游共享、断线重放、目录隔离与上游故障处理。 */
 describe('message stream websocket runtime', () => {
   it('shares one global upstream SSE reader across multiple websocket clients', async () => {
     const server = new EventEmitter();

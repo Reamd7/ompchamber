@@ -1,7 +1,10 @@
+//! 从 hunks.test.js 移植的解析契约测试：文件与 hunk 拆分、id 稳定性、
+//! 跨 scope 隔离、字节级重复去重、状态与二进制标记、索引解析。
 //! Tests ported from `server/lib/walkthrough/hunks.test.js`.
 
 use super::{index_hunks, list_hunk_ids, parse_diff_files};
 
+/// 标准测试 diff：两个文件共三个 hunk，第二个文件为新增。
 const TWO_FILE_DIFF: &str = "diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
 --- a/src/a.ts
@@ -24,6 +27,7 @@ index 0000000..3333333
 +export const y = 2;
 ";
 
+/// 文件与 hunk 正确拆分：行区间、增删计数与新增文件的状态。
 #[test]
 fn splits_files_and_hunks_with_line_ranges_and_counts() {
     let files = parse_diff_files(TWO_FILE_DIFF, "working");
@@ -47,6 +51,7 @@ fn splits_files_and_hunks_with_line_ranges_and_counts() {
     assert_eq!((files[1].hunks[0].added, files[1].hunks[0].deleted), (2, 0));
 }
 
+/// 每个 hunk 的 patch 可独立应用：带文件头且只含这一个 hunk。
 #[test]
 fn produces_a_standalone_applicable_patch_per_hunk() {
     let files = parse_diff_files(TWO_FILE_DIFF, "working");
@@ -66,6 +71,7 @@ fn produces_a_standalone_applicable_patch_per_hunk() {
     assert!(!patch.contains("const b = 2;"));
 }
 
+/// 相同输入重复解析得到相同且唯一的 id 列表。
 #[test]
 fn keeps_ids_stable_across_reparses_of_identical_input() {
     let first = list_hunk_ids(&parse_diff_files(TWO_FILE_DIFF, "working"));
@@ -76,6 +82,7 @@ fn keeps_ids_stable_across_reparses_of_identical_input() {
     assert_eq!(unique.len(), first.len());
 }
 
+/// 邻近 hunk 被编辑时，未改动的 hunk 保持原 id 不变。
 #[test]
 fn keeps_an_untouched_hunk_addressable_when_a_neighbour_changes() {
     let before = &parse_diff_files(TWO_FILE_DIFF, "working")[0].hunks;
@@ -87,6 +94,7 @@ fn keeps_an_untouched_hunk_addressable_when_a_neighbour_changes() {
     assert_ne!(after[1].id, before[1].id);
 }
 
+/// 不同 scope 中的相同 hunk 得到不同的 id。
 #[test]
 fn separates_identical_hunks_in_different_scopes() {
     let staged = &parse_diff_files(TWO_FILE_DIFF, "staged")[0].hunks[0].id;
@@ -95,6 +103,7 @@ fn separates_identical_hunks_in_different_scopes() {
     assert_ne!(staged, working);
 }
 
+/// 同一文件内字节级重复的 hunk 通过后缀区分，id 仍然唯一。
 #[test]
 fn disambiguates_byte_identical_hunks_inside_one_file() {
     let repeated = "diff --git a/src/dup.ts b/src/dup.ts
@@ -113,6 +122,7 @@ fn disambiguates_byte_identical_hunks_inside_one_file() {
     assert_eq!(unique.len(), 2);
 }
 
+/// rename 与 delete 的状态、新旧路径被正确记录。
 #[test]
 fn records_renames_and_deletions() {
     let renamed = "diff --git a/src/old.ts b/src/new.ts
@@ -141,6 +151,7 @@ deleted file mode 100644
     assert_eq!(files[1].status, "deleted");
 }
 
+/// 二进制文件被标记且不产生任何 hunk。
 #[test]
 fn marks_binary_files_and_gives_them_no_hunks() {
     let binary = "diff --git a/logo.png b/logo.png
@@ -155,12 +166,14 @@ Binary files a/logo.png and b/logo.png differ
     assert!(files[0].hunks.is_empty());
 }
 
+/// 空输入与纯空白输入都解析为空列表。
 #[test]
 fn returns_nothing_for_empty_or_whitespace_input() {
     assert!(parse_diff_files("", "working").is_empty());
     assert!(parse_diff_files("   \n", "working").is_empty());
 }
 
+/// 带引号的含空格路径，两侧都能正确解析。
 #[test]
 fn parses_quoted_paths_containing_spaces() {
     let quoted = "diff --git \"a/old name.ts\" \"b/new name.ts\"
@@ -175,6 +188,7 @@ fn parses_quoted_paths_containing_spaces() {
     assert_eq!(files[0].old_path.as_deref(), Some("old name.ts"));
 }
 
+/// 省略计数的 hunk 头按 1 解析，头行原文保留。
 #[test]
 fn parses_hunk_headers_with_default_counts_and_context() {
     let patch = "diff --git a/x b/x
@@ -192,6 +206,7 @@ fn parses_hunk_headers_with_default_counts_and_context() {
     assert_eq!(hunk.header, "@@ -7 +7,2 @@");
 }
 
+/// 首个文件头之前的杂行被忽略，不影响解析。
 #[test]
 fn ignores_leading_junk_before_the_first_file_header() {
     let patch = "some trailing noise\ndiff --git a/x b/x
@@ -205,6 +220,7 @@ fn ignores_leading_junk_before_the_first_file_header() {
     assert_eq!(files[0].path, "x");
 }
 
+/// 索引中每个 id 都能解析回带所属文件路径的 hunk。
 #[test]
 fn index_hunks_maps_every_id_to_its_hunk_with_the_owning_file_path() {
     let files = parse_diff_files(TWO_FILE_DIFF, "working");

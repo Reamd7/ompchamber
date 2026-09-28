@@ -5,6 +5,11 @@
 //! API key; here the key resolution (env → OpenCode auth file) is preserved
 //! behind an injectable source and the HTTP call goes through a provider
 //! seam so route tests can fake the network.
+//!
+//! 中文说明：移植自 `server/lib/tts/service.js`——服务端对接 OpenAI（或调用方
+//! 指定的任意 OpenAI 兼容服务器）的语音合成。JS 版用 OpenAI Node SDK 并按
+//! API key 缓存 client；此处保留 key 解析顺序（env → OpenCode auth 文件）并
+//! 把它抽象为可注入来源，HTTP 调用走 provider 接缝，路由测试即可伪造网络。
 
 use std::sync::Arc;
 
@@ -14,6 +19,7 @@ use serde_json::{Map, Value};
 use super::base_url::normalize_custom_openai_base_url;
 
 /// `TTS_VOICES`.
+/// 顺序与 JS `TTS_VOICES` 一致，status 路由原样返回。
 pub const TTS_VOICES: [&str; 13] = [
     "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse",
     "marin", "cedar",
@@ -22,52 +28,77 @@ pub const TTS_VOICES: [&str; 13] = [
 /// `getOpenAIApiKey` seam: the production source reads `OPENAI_API_KEY`
 /// then the OpenCode auth file (`auth.openai`/`auth.codex`/`auth.chatgpt`,
 /// string form or `{access, token}` object form).
+/// 每次调用现取，便于测试注入固定返回值。
 pub type ApiKeySource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// One `generateSpeechStream` request. `voice`/`model`/`speed`/
 /// `instructions` keep the raw JSON value because JS destructuring defaults
 /// apply to `undefined` only and the values are forwarded verbatim.
+///
+/// `text` 是唯一必填项（服务层校验非空）；其余字段保持原始 JSON 形态转发。
 #[derive(Debug, Clone, Default)]
 pub struct GenerateOptions {
+    /// 要合成的文本（服务层要求 trim 后非空）。
     pub text: String,
+    /// voice 名；`None` 时服务层用默认值 "coral"。
     pub voice: Option<Value>,
+    /// 模型名；`None` 时服务层用默认值 "gpt-4o-mini-tts"。
     pub model: Option<Value>,
+    /// 语速；`None` 时服务层用默认值 1.0。
     pub speed: Option<Value>,
+    /// 风格指令；仅官方 OpenAI 端点转发，且需通过 JS 真值判定。
     pub instructions: Option<Value>,
+    /// 客户端提供的 API key；空串按未提供处理（走 "not-required" 占位）。
     pub api_key: Option<String>,
+    /// 自定义 OpenAI 兼容 base URL；先经 `normalize_custom_openai_base_url`
+    /// 校验（远程主机受安全策略限制）。
     pub base_url: Option<String>,
 }
 
+/// provider 成功时的合成结果。
 #[derive(Debug, Clone)]
 pub struct SpeechOutput {
+    /// 完整音频字节（OpenAI 端点为 mp3 流）。
     pub buffer: Vec<u8>,
+    /// 随字节一起返回的 Content-Type。
     pub content_type: &'static str,
 }
 
+/// 错误以字符串消息形式返回（与 JS 抛错的 message 对应）。
 pub type SpeechFuture = BoxFuture<'static, Result<SpeechOutput, String>>;
 
 /// Injectable `client.audio.speech.create`.
+/// trait 化使路由测试可以注入 fake，不必真实联网。
 pub trait SpeechProvider: Send + Sync {
+    /// 发起一次合成请求；future 由实现方 box 好。
     fn generate_speech(&self, request: SpeechRequest) -> SpeechFuture;
 }
 
 /// The POST `{baseURL}/audio/speech` request the OpenAI SDK issues.
+/// 三个字段与 OpenAI SDK 实际发出的请求一一对应。
 #[derive(Debug, Clone)]
 pub struct SpeechRequest {
     /// `https://api.openai.com/v1` unless a normalized custom URL applies.
+    /// 形如 `https://api.openai.com/v1/audio/speech` 或自定义服务器等价路径。
     pub endpoint: String,
     /// `apiKey`, or the literal `not-required` placeholder the JS sends for
     /// custom servers used without a key.
+    /// 自定义服务器无 key 时为占位符，仅作 Bearer 头的形式值。
     pub api_key: String,
+    /// 发给 `/audio/speech` 的 JSON 请求体。
     pub body: Value,
 }
 
 /// Production provider over reqwest.
+/// 唯一字段 `http` 可注入定制过的 client（如带代理）。
 pub struct HttpSpeechProvider {
+    /// 实际发请求的 reqwest client（clone 开销很小）。
     pub http: reqwest::Client,
 }
 
+/// 默认构造一个全新 reqwest client。
 impl Default for HttpSpeechProvider {
+    /// Default trait 实现：新建默认 reqwest client。
     fn default() -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -75,7 +106,10 @@ impl Default for HttpSpeechProvider {
     }
 }
 
+/// 用 Bearer key POST 到 `endpoint`；非 2xx 时尽量从响应体取 `error.message`
+/// 拼进错误文案，模拟 SDK `APIError.message` 的格式。
 impl SpeechProvider for HttpSpeechProvider {
+    /// 执行 HTTP 请求并把整个响应体读成音频字节。
     fn generate_speech(&self, request: SpeechRequest) -> SpeechFuture {
         let http = self.http.clone();
         Box::pin(async move {
@@ -122,6 +156,7 @@ impl SpeechProvider for HttpSpeechProvider {
 }
 
 /// `getOpenAIApiKey` (env first, then the OpenCode auth file).
+/// env 中的 key 优先且必须非空，auth 文件只是兜底。
 pub fn resolve_configured_api_key() -> Option<String> {
     if let Ok(env_key) = std::env::var("OPENAI_API_KEY")
         && !env_key.is_empty()
@@ -131,6 +166,9 @@ pub fn resolve_configured_api_key() -> Option<String> {
     read_api_key_from_auth_file()
 }
 
+/// 依序尝试 `auth.openai`/`auth.codex`/`auth.chatgpt`：先按 JS 真值筛掉空
+/// 条目，字符串形式直接作为 key，对象形式先取 `access`（OAuth）再取
+/// `token`；auth 文件读取失败只记 warn 并返回 `None`（不影响启动）。
 fn read_api_key_from_auth_file() -> Option<String> {
     use crate::small_model::auth_store::{AuthStore, FsAuthStore};
     let store = FsAuthStore::default();
@@ -174,12 +212,17 @@ fn read_api_key_from_auth_file() -> Option<String> {
 }
 
 /// `TTSService`.
+/// 生产经 [`TtsService::production`] 构造为 `Arc` 共享。
 pub struct TtsService {
+    /// 实际发起合成调用的 provider。
     provider: Arc<dyn SpeechProvider>,
+    /// 服务端 API key 的解析来源（env + auth 文件）。
     key_source: ApiKeySource,
 }
 
+/// 可用性判定与一次合成请求的完整组装。
 impl TtsService {
+    /// 注入 provider 与 key 来源构造服务。
     pub fn new(provider: Arc<dyn SpeechProvider>, key_source: ApiKeySource) -> Self {
         Self {
             provider,
@@ -188,6 +231,7 @@ impl TtsService {
     }
 
     /// Production wiring: real HTTP provider, env + auth-file key source.
+    /// 真实 HTTP provider 加 env/auth 文件 key 解析。
     pub fn production() -> Arc<Self> {
         Arc::new(Self::new(
             Arc::new(HttpSpeechProvider::default()),
@@ -196,11 +240,18 @@ impl TtsService {
     }
 
     /// `isAvailable`: an OpenAI key is configured on the server.
+    /// 只探测 key 来源是否返回 `Some`，不发网络请求。
     pub fn is_available(&self) -> bool {
         (self.key_source)().is_some()
     }
 
     /// `generateSpeechStream`.
+    ///
+    /// key/endpoint 决策：有自定义 baseURL 或客户端 key 时走自定义路径（空
+    /// key 用 "not-required" 占位），否则要求服务端配置 key；都没有则返回固定
+    /// 错误文案。请求体组装：voice/model/speed 带默认值；`instructions` 与
+    /// `response_format=mp3` 仅在未使用自定义 baseURL 时发送（兼容服务器可能
+    /// 不支持这两个参数，但都支持 `speed`）。
     pub async fn generate_speech_stream(
         &self,
         options: GenerateOptions,
@@ -282,17 +333,23 @@ impl TtsService {
     }
 }
 
+/// 服务层行为测试：key/endpoint 决策与请求体组装契约。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    /// 记录请求并返回预设结果的 provider fake。
     struct FakeProvider {
+        /// 收到的请求记录（供断言）。
         requests: Mutex<Vec<SpeechRequest>>,
+        /// 预设结果（音频字节或错误消息）。
         result: Result<Vec<u8>, String>,
     }
 
+    /// fake 的 trait 实现。
     impl SpeechProvider for FakeProvider {
+        /// 入队请求后异步返回预设结果。
         fn generate_speech(&self, request: SpeechRequest) -> SpeechFuture {
             self.requests
                 .lock()
@@ -308,11 +365,15 @@ mod tests {
         }
     }
 
+    /// 服务 + fake 的装配件。
     struct Fixture {
+        /// 被测服务。
         service: TtsService,
+        /// 记录请求的 fake。
         provider: Arc<FakeProvider>,
     }
 
+    /// 用给定结果与 key 构造装配件。
     fn fixture(result: Result<Vec<u8>, String>, key: Option<&str>) -> Fixture {
         let provider = Arc::new(FakeProvider {
             requests: Mutex::new(Vec::new()),
@@ -328,6 +389,7 @@ mod tests {
         }
     }
 
+    /// 仅含文本 "hello" 的默认选项。
     fn default_options() -> GenerateOptions {
         GenerateOptions {
             text: "hello".to_string(),
@@ -335,6 +397,7 @@ mod tests {
         }
     }
 
+    /// 取出 fake 记录的最后一条请求。
     fn captured(fixture: &Fixture) -> SpeechRequest {
         fixture
             .provider
@@ -345,12 +408,14 @@ mod tests {
             .unwrap()
     }
 
+    /// 验证 `is_available` 完全跟随注入的 key 来源。
     #[test]
     fn availability_follows_the_key_source() {
         assert!(fixture(Ok(vec![]), Some("k")).service.is_available());
         assert!(!fixture(Ok(vec![]), None).service.is_available());
     }
 
+    /// 验证无 key 且无自定义服务器时的固定错误文案。
     #[tokio::test]
     async fn errors_without_any_key_or_custom_server() {
         let error = fixture(Ok(vec![]), None)
@@ -364,6 +429,7 @@ mod tests {
         );
     }
 
+    /// 验证空白文本被拒绝（"Text is required for TTS"）。
     #[tokio::test]
     async fn rejects_blank_text() {
         let error = fixture(Ok(vec![]), Some("k"))
@@ -377,6 +443,8 @@ mod tests {
         assert_eq!(error, "Text is required for TTS");
     }
 
+    /// 验证服务端 key 走官方端点并带全量参数（含 instructions 与
+    /// response_format）。
     #[tokio::test]
     async fn configured_key_targets_openai_with_full_params() {
         let fixture = fixture(Ok(vec![1, 2, 3]), Some("server-key"));
@@ -401,6 +469,8 @@ mod tests {
         assert_eq!(request.body["response_format"], "mp3");
     }
 
+    /// 验证自定义 baseURL 走安全参数子集（不带 instructions/response_format，
+    /// key 用 "not-required" 占位）。
     #[tokio::test]
     async fn custom_base_url_sends_the_safe_subset() {
         let fixture = fixture(Ok(vec![]), None);
@@ -421,6 +491,7 @@ mod tests {
         assert!(request.body.get("speed").is_some());
     }
 
+    /// 验证 provider 错误消息原样透传。
     #[tokio::test]
     async fn provider_errors_pass_through() {
         let error = fixture(Err("boom".to_string()), Some("k"))

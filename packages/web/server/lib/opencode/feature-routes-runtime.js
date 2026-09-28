@@ -1,3 +1,10 @@
+/**
+ * OMPChamber 功能路由的装配层：createFeatureRoutesRuntime 汇总 fs、quota、
+ * skills、plugins、scheduled-tasks、openchamber-sessions 等几十个路由注册器，
+ * 并把宿主传入的共享依赖（设置读写、OpenCode 代理、SSE 事件、目录解析等）
+ * 按需分发给各注册器。重量级模块（quota / small-model / walkthrough / git）
+ * 通过动态 import 惰性加载，避免拖慢启动。
+ */
 import { registerFsRoutes } from '../fs/routes.js';
 import { registerQuotaRoutes } from '../quota/routes.js';
 import { registerSmallModelRoutes } from '../small-model/routes.js';
@@ -52,12 +59,21 @@ import { scanSkillsRepository } from '../skills-catalog/scan.js';
 import { installSkillsFromRepository } from '../skills-catalog/install.js';
 import { fetchGitHubRepoMetas } from '../skills-catalog/github-meta.js';
 
+/**
+ * 创建功能路由运行时：封装惰性加载的服务句柄与统一的 registerRoutes 装配入口。
+ * @param {object} dependencies 宿主依赖；目前仅 clientReloadDelayMs
+ *   （配置变更后通知客户端刷新前的延迟毫秒数，透传给各注册器）
+ * @returns {{ registerRoutes: (app: import('express').Express, routeDependencies: object) => Promise<void> }}
+ *   暴露 registerRoutes 的运行时对象
+ */
 export const createFeatureRoutesRuntime = (dependencies) => {
   const {
     clientReloadDelayMs,
   } = dependencies;
 
+  // quota 服务模块句柄缓存（首次动态 import 后复用）。
   let quotaProviders = null;
+  // 惰性加载 ../quota/index.js 并缓存模块句柄，供 quota 路由按需取用。
   const getQuotaProviders = async () => {
     if (!quotaProviders) {
       quotaProviders = await import('../quota/index.js');
@@ -65,7 +81,9 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     return quotaProviders;
   };
 
+  // small-model 服务模块句柄缓存（首次动态 import 后复用）。
   let smallModelService = null;
+  // 惰性加载 ../small-model/index.js 并缓存模块句柄，供小模型路由按需取用。
   const getSmallModelService = async () => {
     if (!smallModelService) {
       smallModelService = await import('../small-model/index.js');
@@ -73,7 +91,10 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     return smallModelService;
   };
 
+  // walkthrough 服务对象缓存：由服务模块与 pull-request 模块的能力合并而成。
   let walkthroughService = null;
+  // 惰性加载 walkthrough 服务与 pull-request 差异模块，把 getPullRequestDiff
+  // 合并进服务对象后缓存。
   const getWalkthroughService = async () => {
     if (!walkthroughService) {
       const [service, pullRequest] = await Promise.all([
@@ -85,6 +106,9 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     return walkthroughService;
   };
 
+  // 向 Express app 注册全部功能路由：从 routeDependencies 解构共享能力并分发给
+  // 各注册器（设置、OpenCode 配置实体、技能、插件、计划任务、会话、fs 等）；
+  // git profiles / profile 在注册 skill 路由前动态加载获取。
   const registerRoutes = async (app, routeDependencies) => {
     const {
       crypto,

@@ -1,17 +1,49 @@
+/**
+ * GitHub 集成路由模块。
+ *
+ * 在 Express app 上注册 /api/github 系列端点，覆盖：OAuth device flow
+ * 认证与多账号（含 gh CLI 凭证）切换、PR 状态/创建/更新/合并/转 ready、
+ * 仓库 upstream（fork 检测）与分支列表、issue 列表/详情/评论，以及 PR
+ * 详情上下文（评论、文件、diff、check runs 与 annotations）。
+ *
+ * 关键设计：
+ * - PR 状态带 TTL 内存缓存与速率限制退避，transient 失败时优先回吐上次
+ *   缓存，避免客户端徽标被清空；
+ * - 单次状态解析用 withTimeout 限流兜底，防止 GitHub 二级限流拖住响应；
+ * - checks 汇总优先用 Actions check runs，回退到 classic commit statuses；
+ * - 仓库解析支持请求显式指定 owner/repo，但仅当目标属于该目录 repo
+ *   network（fork 网络）时才放行，防止越权访问任意仓库。
+ */
+
+/** PR 状态缓存 TTL：90 秒内重复请求同一 directory/branch/remote 直接回缓存。 */
 const PR_STATUS_CACHE_TTL_MS = 90_000;
+/** PR 状态缓存最大条目数；写满后按插入顺序淘汰最旧一条。 */
 const PR_STATUS_CACHE_MAX_ENTRIES = 200;
 // Upper bound for resolving a single PR status. resolveGitHubPrStatus makes many
 // serial GitHub API calls; under GitHub secondary-rate-limiting a single request
 // can otherwise hang 20s+. We bound it so the route fails fast instead of holding
 // the response (and a client socket) open — the client keeps its last-known
 // status on error, and a later poll fills it in.
+/** 单次 PR 状态解析的耗时上限（背景见上方英文说明）：超时以 ETIMEDOUT 拒绝以快速失败。 */
 const PR_STATUS_RESOLVE_TIMEOUT_MS = 12_000;
+/** PR 状态缓存：key 形如 "directory::branch::remote"，value 为 { data, fetchedAt }。 */
 const prStatusCache = new Map();
+/** gh CLI 凭证登录名的 memoized Promise：无持久化 user 记录时经 API 解析一次并缓存复用。 */
 let resolvedAuthLoginPromise = null;
+/** PR 详情上下文（pulls/context）缓存的 TTL，短于状态缓存以更快反映评论等变化。 */
 const PR_CONTEXT_CACHE_TTL_MS = 30_000;
+/** PR 详情上下文缓存最大条目数；写满后淘汰最旧一条。 */
 const PR_CONTEXT_CACHE_MAX_ENTRIES = 50;
+/** PR 详情上下文缓存：key 为 JSON.stringify([directory, number, includeDiff, 仓库全名或 null])。 */
 const prContextCache = new Map();
 
+/**
+ * 使 PR 详情上下文缓存失效。
+ *
+ * PR 更新/合并/转 ready 后调用，保证下一次 pulls/context 重新拉取。
+ * @param {string} directory 项目目录（与缓存 key 中的目录精确匹配）
+ * @param {number|null} number PR 号；传 null 时清空该目录下的全部条目
+ */
 function invalidatePrContextCache(directory, number) {
   for (const key of prContextCache.keys()) {
     try {
@@ -32,6 +64,7 @@ function invalidatePrContextCache(directory, number) {
 // A re-run leaves the previous completed check run in the listForRef payload
 // alongside the new in-progress one. GitHub's UI shows only the latest run
 // per (app, name); mirror that so counts match what users see on github.com.
+/** 依据去重后的 check runs 聚合（语义见上方英文说明）：同一 (app, name) 仅保留最新一次 run。 */
 function dedupeCheckRuns(checkRuns) {
   const byName = new Map();
   for (const run of checkRuns) {
@@ -51,6 +84,16 @@ function dedupeCheckRuns(checkRuns) {
   return Array.from(byName.values());
 }
 
+/**
+ * 将 check runs 聚合为 { state, total, success, failure, pending, inProgress, queued }。
+ *
+ * pending = queued + in_progress + 无 conclusion 的 run，兼容既有消费方；
+ * 同时保留三类细分计数，并记录最早的 started_at（ISO 字符串，仅在存在
+ * in_progress run 时携带）供 UI 展示"已运行 N 分钟"。state 判定：任一
+ * failure 即 failure，否则任一 pending 即 pending，否则有成功项即 success，
+ * 空列表为 unknown。
+ * @param {Array<object>} checkRuns GitHub check run 对象数组
+ */
 function summarizeCheckRuns(checkRuns) {
   const counts = { success: 0, failure: 0, pending: 0, inProgress: 0, queued: 0 };
   let startedAt = null;
@@ -88,6 +131,13 @@ function summarizeCheckRuns(checkRuns) {
   return { state, total, ...counts, ...(startedAt ? { startedAt } : {}) };
 }
 
+/**
+ * 将 classic commit statuses 聚合成与 summarizeCheckRuns 相同的形状。
+ *
+ * pending 状态同时计入 pending 与 inProgress（queued 恒为 0），保证
+ * check-runs 与 statuses 两条汇总路径对前端结构一致。
+ * @param {Array<{state: string}>} statuses combined status 接口返回的 statuses 数组
+ */
 function summarizeCombinedStatuses(statuses) {
   const counts = { success: 0, failure: 0, pending: 0 };
   statuses.forEach((s) => {
@@ -102,6 +152,15 @@ function summarizeCombinedStatuses(statuses) {
   return { state, total, ...counts, inProgress: counts.pending, queued: 0 };
 }
 
+/**
+ * 为 promise 增加超时竞争：到时以 code=ETIMEDOUT 的 Error reject。
+ *
+ * 无论先完成还是先超时，最终都会清理定时器；timer 已 unref，不会阻塞
+ * 进程退出。
+ * @param {Promise} promise 待限时的 promise
+ * @param {number} timeoutMs 超时毫秒数
+ * @param {string} label 超时错误信息中标识调用来源的标签
+ */
 function withTimeout(promise, timeoutMs, label) {
   let timer;
   const timeout = new Promise((_resolve, reject) => {
@@ -115,12 +174,27 @@ function withTimeout(promise, timeoutMs, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * 从 query 中读取显式指定的仓库（owner/repo，均 trim）。
+ * @returns {{owner: string, repo: string}|null} 任一字段缺失或非字符串时返回 null
+ */
 function getRequestedRepo(req) {
   const owner = typeof req.query?.owner === 'string' ? req.query.owner.trim() : '';
   const repo = typeof req.query?.repo === 'string' ? req.query.repo.trim() : '';
   return owner && repo ? { owner, repo } : null;
 }
 
+/**
+ * 解析本次请求应操作的 GitHub 仓库。
+ *
+ * 未显式指定时直接使用目录 remote 推导的仓库；显式指定时要求与目录推导
+ * 结果一致，或属于该目录的 repo network（fork 网络，resolveRepoNetwork）
+ * 成员，否则返回 null——路由据此按"无仓库"降级响应，防止借参数越权
+ * 访问任意仓库。
+ * @param {object} octokit 已认证的 Octokit 实例
+ * @param {string} directory 本地项目目录
+ * @param {{owner: string, repo: string}|null} requestedRepo query 中显式指定的仓库
+ */
 async function resolveRepoForRequest(octokit, directory, requestedRepo) {
   const { resolveGitHubRepoFromDirectory } = await import('./index.js');
   const { repo } = await resolveGitHubRepoFromDirectory(directory);
@@ -139,6 +213,12 @@ async function resolveRepoForRequest(octokit, directory, requestedRepo) {
   return allowed ? requestedRepo : null;
 }
 
+/**
+ * 写入 PR 状态缓存；容量已满且写入的是新 key 时，先按插入顺序淘汰最旧条目。
+ * @param {string} key "directory::branch::remote" 形式的缓存 key
+ * @param {object} data 状态响应体（自带 fetchedAt 新鲜度戳）
+ * @param {number} fetchedAt 数据获取时间戳，与 data.fetchedAt 保持一致
+ */
 function setPrStatusCache(key, data, fetchedAt) {
   // Evict oldest entry when cache exceeds max size
   if (prStatusCache.size >= PR_STATUS_CACHE_MAX_ENTRIES && !prStatusCache.has(key)) {
@@ -150,8 +230,17 @@ function setPrStatusCache(key, data, fetchedAt) {
   prStatusCache.set(key, { data, fetchedAt });
 }
 
+/**
+ * 在 Express app 上注册全部 /api/github 路由（auth、PR、repo、issue、pulls）。
+ *
+ * GitHub 库依赖经 getGitHubLibraries 懒加载导入，避免路由注册阶段产生
+ * 副作用。各 handler 统一 try/catch：401/403 视为凭证失效会清除本地
+ * GitHub auth；其余错误打印日志并返回 5xx 或降级载荷。
+ * @param {object} app Express 应用实例（需提供 get/post/delete 注册方法）
+ */
 export function registerGitHubRoutes(app) {
   let githubLibraries = null;
+  /** 懒加载并 memoize ./index.js 导出的 GitHub 库（auth、octokit 等），避免注册期副作用。 */
   const getGitHubLibraries = async () => {
     if (!githubLibraries) {
       githubLibraries = await import('./index.js');
@@ -159,6 +248,13 @@ export function registerGitHubRoutes(app) {
     return githubLibraries;
   };
 
+  /**
+   * 拉取当前认证用户的摘要信息（login/id/avatarUrl/name/email）。
+   *
+   * profile email 缺失时再请求邮箱列表：优先取 primary 且 verified 的邮箱，
+   * 其次任意 verified 邮箱；邮箱接口失败（scope 不足等）静默忽略。
+   * @param {object} octokit 已认证的 Octokit 实例
+   */
   const getGitHubUserSummary = async (octokit) => {
     const me = await octokit.rest.users.getAuthenticated();
 
@@ -184,9 +280,14 @@ export function registerGitHubRoutes(app) {
     };
   };
 
+  /** 判断 GitHub API 错误是否表示凭证失效（401/403），用于触发清除本地 auth。 */
   const isGitHubAuthInvalid = (error) => error?.status === 401 || error?.status === 403;
+  /** 判断 GitHub API 错误是否表示资源不可访问（403/404），用于按"无数据"软降级。 */
   const isGitHubResourceUnavailable = (error) => error?.status === 403 || error?.status === 404;
 
+  // GET /api/github/auth/status：GitHub 连接状态总览——OAuth 账号列表、gh CLI
+  // 凭证可用性（实时校验其用户摘要）、当前激活账号与用户信息；凭证失效时
+  // 自动清除本地 auth 并返回未连接。
   app.get('/api/github/auth/status', async (_req, res) => {
     try {
       const { getGitHubAuth, getOctokitOrNull, clearGitHubAuth, getGitHubAuthAccounts, GH_CLI_ACCOUNT_ID, isGhCliActive, isGhCliDisabled, setGhCliActive } = await getGitHubLibraries();
@@ -224,6 +325,7 @@ export function registerGitHubRoutes(app) {
           });
       }
 
+      // 组装 ghCli 子对象：是否可用/被禁用/是否激活，可选携带用户摘要。
       const buildGhCli = (activeUser = null) => ({
         available: ghToken !== null,
         disabled: ghCliDisabled,
@@ -261,6 +363,7 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/auth/gh-cli：启用或禁用 gh CLI 凭证来源，并清除其 token 缓存。
   app.post('/api/github/auth/gh-cli', async (req, res) => {
     try {
       const { setGhCliDisabled, isGhCliDisabled } = await getGitHubLibraries();
@@ -275,6 +378,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/auth/start：发起 OAuth device flow，返回 deviceCode/userCode/
+  // verificationUri 等轮询参数；未配置 client id（OMPCHAMBER_GITHUB_CLIENT_ID）返回 400。
   app.post('/api/github/auth/start', async (_req, res) => {
     try {
       const { getGitHubClientId, getGitHubScopes, startDeviceFlow } = await getGitHubLibraries();
@@ -307,6 +412,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/auth/complete：用 deviceCode 换取 access token 并落库 GitHub
+  // auth；GitHub 侧错误（如 expired_token）以 connected:false + 原始 status 返回。
   app.post('/api/github/auth/complete', async (req, res) => {
     try {
       const { getGitHubClientId, exchangeDeviceCode, setGitHubAuth, getGitHubAuthAccounts } = await getGitHubLibraries();
@@ -363,6 +470,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/auth/activate：切换当前激活账号（OAuth 多账号或 gh CLI 虚拟
+  // 账号），校验目标凭证可用后返回新的账号列表与用户摘要。
   app.post('/api/github/auth/activate', async (req, res) => {
     try {
       const { activateGitHubAuth, getGitHubAuth, getOctokitOrNull, clearGitHubAuth, getGitHubAuthAccounts, GH_CLI_ACCOUNT_ID, isGhCliDisabled, setGhCliActive } = await getGitHubLibraries();
@@ -459,6 +568,7 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // DELETE /api/github/auth：断开 GitHub 连接，清除本地 auth，返回是否确有移除。
   app.delete('/api/github/auth', async (_req, res) => {
     try {
       const { clearGitHubAuth } = await getGitHubLibraries();
@@ -470,6 +580,7 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // GET /api/github/me：当前认证用户摘要；401/403 视为 token 失效，清除 auth 后返回 401。
   app.get('/api/github/me', async (_req, res) => {
     try {
       const { getOctokitOrNull, clearGitHubAuth } = await getGitHubLibraries();
@@ -496,6 +607,10 @@ export function registerGitHubRoutes(app) {
 
   // ================= GitHub PR APIs =================
 
+  // GET /api/github/pr/status：当前分支关联 PR 的完整状态（PR 元数据、checks 汇总、
+  // 当前用户可否合并）。带 TTL 缓存与限流退避：命中缓存、限流中、超时或其它
+  // transient 失败时优先回吐上次缓存（即使已过期）；已关闭/已合并的 PR 跳过
+  // checks 与权限查询；401 时清除 auth。
   app.get('/api/github/pr/status', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -711,6 +826,9 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/pr/create：创建 PR。支持 fork 工作流（headRemote 指定来源、
+  // targetRepo 显式指定目标），分支引用会做归一化，跨仓库 PR 使用 "owner:branch"
+  // 形式的 head 并预检分支远端存在性；成功后使 PR 状态与仓库 PR 列表缓存失效。
   app.post('/api/github/pr/create', async (req, res) => {
     try {
       const directory = typeof req.body?.directory === 'string' ? req.body.directory.trim() : '';
@@ -749,6 +867,7 @@ export function registerGitHubRoutes(app) {
         return res.status(400).json({ error: 'Unable to resolve GitHub repo from git remote' });
       }
 
+      // 归一化分支引用：剥离 refs/heads、heads、remotes 前缀，以及已知 remote 名前缀。
       const normalizeBranchRef = (value, remoteNames = new Set()) => {
         if (!value) {
           return value;
@@ -916,6 +1035,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/pr/update：更新 PR 标题/正文；401/403/404/422 映射为对应
+  // 客户端错误，成功后使该 PR 的详情上下文缓存失效。
   app.post('/api/github/pr/update', async (req, res) => {
     try {
       const directory = typeof req.body?.directory === 'string' ? req.body.directory.trim() : '';
@@ -993,6 +1114,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/pr/merge：按指定方式（merge/squash/rebase）合并 PR；405/409
+  // 视为"当前不可合并"返回 merged:false 而非报错，成功后失效相关缓存。
   app.post('/api/github/pr/merge', async (req, res) => {
     try {
       const directory = typeof req.body?.directory === 'string' ? req.body.directory.trim() : '';
@@ -1040,6 +1163,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // POST /api/github/pr/ready：将 draft PR 标记为 ready for review（GraphQL
+  // mutation）；已是非 draft 时幂等地直接返回 ready:true。
   app.post('/api/github/pr/ready', async (req, res) => {
     try {
       const directory = typeof req.body?.directory === 'string' ? req.body.directory.trim() : '';
@@ -1096,6 +1221,8 @@ export function registerGitHubRoutes(app) {
 
   // ================= GitHub Repo APIs =================
 
+  // GET /api/github/repo/upstream：fork 检测——解析目录所属 repo network，返回
+  // upstream 仓库（含默认分支、其 HEAD SHA 与指向它的本地 remote 名，若配置过）。
   app.get('/api/github/repo/upstream', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -1162,6 +1289,7 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // GET /api/github/repo/branches：分页拉取指定仓库的全部分支名。
   app.get('/api/github/repo/branches', async (req, res) => {
     try {
       const owner = typeof req.query?.owner === 'string' ? req.query.owner.trim() : '';
@@ -1197,6 +1325,9 @@ export function registerGitHubRoutes(app) {
 
   // ================= GitHub Issue APIs =================
 
+  // GET /api/github/issues/list：列出目录所属 repo network（fork 场景含 upstream）
+  // 的 open issues；支持搜索词（走 search API）与分页，单仓拉取失败仅告警
+  // 不影响其余仓库。
   app.get('/api/github/issues/list', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -1224,6 +1355,7 @@ export function registerGitHubRoutes(app) {
       const effectivePage = Number.isFinite(page) && page > 0 ? page : 1;
       const reposToQuery = repoNetwork || [{ ...repo, source: 'origin' }];
 
+      // 将 GitHub issue 载荷映射为前端摘要（编号/标题/作者/标签/来源仓库）。
       const mapIssueSummary = (item, repoRef) => ({
         number: item.number,
         title: item.title,
@@ -1272,6 +1404,7 @@ export function registerGitHubRoutes(app) {
         }
       }
 
+      // 拉取单个仓库的 open issues（剔除 PR），依据 Link header 判断是否还有下一页。
       const queryRepo = async (repoRef) => {
         try {
           const list = await octokit.rest.issues.listForRepo({
@@ -1304,6 +1437,8 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // GET /api/github/issues/get：获取单个 issue 详情（PR 对象返回 400）；支持显式
+  // owner/repo，但须经 repo network 校验（resolveRepoForRequest）。
   app.get('/api/github/issues/get', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -1365,6 +1500,7 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // GET /api/github/issues/comments：列出单个 issue 的评论（作者、正文与时间戳）。
   app.get('/api/github/issues/comments', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -1410,6 +1546,8 @@ export function registerGitHubRoutes(app) {
 
   // ================= GitHub Pull Request Context APIs =================
 
+  // GET /api/github/pulls/list：列出 repo network 内的 open PR；搜索模式下先经
+  // search API 定位，再逐个 pulls.get 补全 head 仓库等汇总字段。
   app.get('/api/github/pulls/list', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';
@@ -1437,6 +1575,7 @@ export function registerGitHubRoutes(app) {
       const effectivePage = Number.isFinite(page) && page > 0 ? page : 1;
       const reposToQuery = repoNetwork || [{ ...repo, source: 'origin' }];
 
+      // 将 GitHub PR 载荷映射为前端摘要（含合并态、head 仓库信息与来源仓库）。
       const mapPrSummary = (pr, repoRef) => {
         const mergedState = pr.merged_at ? 'merged' : (pr.state === 'closed' ? 'closed' : 'open');
         const headRepo = pr.head?.repo
@@ -1481,6 +1620,7 @@ export function registerGitHubRoutes(app) {
           });
           const totalCount = searchResult.data.total_count;
           const items = Array.isArray(searchResult.data.items) ? searchResult.data.items : [];
+          // 从搜索结果的 repository_url 反查所属 repo network 成员，未命中时回退首个。
           const findRepoForSearchItem = (item) => {
             const repositoryUrl = typeof item?.repository_url === 'string' ? item.repository_url : '';
             const match = repositoryUrl.match(/\/repos\/([^/]+)\/([^/]+)$/);
@@ -1517,6 +1657,7 @@ export function registerGitHubRoutes(app) {
         }
       }
 
+      // 拉取单个仓库的 open PR 列表，依据 Link header 判断是否还有下一页。
       const queryRepo = async (repoRef) => {
         try {
           const list = await octokit.rest.pulls.list({
@@ -1552,6 +1693,9 @@ export function registerGitHubRoutes(app) {
     }
   });
 
+  // GET /api/github/pulls/context：PR 详情上下文（元数据、issue/review 评论、变更
+  // 文件、可选 diff、checks 汇总与可选 check run 明细含 Actions jobs 和失败
+  // annotations）；带 30 秒缓存，含明细的缓存可满足不含明细的请求。
   app.get('/api/github/pulls/context', async (req, res) => {
     try {
       const directory = typeof req.query?.directory === 'string' ? req.query.directory.trim() : '';

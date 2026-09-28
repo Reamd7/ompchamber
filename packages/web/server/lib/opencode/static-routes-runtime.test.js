@@ -1,8 +1,16 @@
+/**
+ * static-routes-runtime 的 API-only 模式回退路由测试。
+ *
+ * 覆盖：浏览器 UI 路由返回包含 connect-url 引导命令的 HTML 回退页；
+ * JSON 客户端得到 { ok, mode: 'api-only' } 说明；API、认证与健康检查
+ * 路由不被回退逻辑拦截。依赖全部使用最小 stub（无磁盘 UI 资源场景）。
+ */
 import { describe, expect, it } from 'bun:test';
 import express from 'express';
 import request from 'supertest';
 import { createStaticRoutesRuntime } from './static-routes-runtime.js';
 
+/** 以最小 stub 依赖构造被测的静态路由运行时（existsSync 恒为 false）。 */
 const createRuntime = () => createStaticRoutesRuntime({
   fs: { existsSync: () => false },
   path: { join: (...parts) => parts.join('/'), resolve: (value) => value, sep: '/' },
@@ -17,6 +25,7 @@ const createRuntime = () => createStaticRoutesRuntime({
   normalizePwaOrientation: (value) => value,
 });
 
+// API-only 模式下回退路由的内容与旁路行为
 describe('static routes runtime', () => {
   it('returns API-only HTML fallback for browser UI routes', async () => {
     const app = express();

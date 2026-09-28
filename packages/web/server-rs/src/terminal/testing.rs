@@ -5,6 +5,12 @@
 //! over a real loopback listener through a minimal RFC6455 client (the crate
 //! has no client WS dependency, and exercising the real upgrade path is the
 //! point).
+//!
+//! 中文说明：终端模块的运行时集成测试。单元测试位于各自实现文件旁
+//!（protocol/history/theme/shell_integration/shells/grid），本文件覆盖运行
+//! 时行为：用 Router::oneshot 挂 fake PTY provider 驱动 HTTP 路由，并通过
+//! 手写的最小 RFC6455 客户端连真实回环 listener 验证 WebSocket 传输
+//!（crate 未引入客户端 WS 依赖，走真实升级路径正是测试目的）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +34,7 @@ use crate::terminal::{protocol, test_router};
 // Harness
 // ---------------------------------------------------------------------------
 
+/// 测试用 shell 依赖：SHELL=/bin/sh，仅 /bin/sh 可执行，无 /etc/shells。
 fn test_shell_deps() -> ShellDeps {
     ShellDeps {
         platform: Platform::Posix,
@@ -42,6 +49,7 @@ fn test_shell_deps() -> ShellDeps {
     }
 }
 
+/// 构造挂 fake PTY 的 TerminalState；终止宽限期压到 10ms 便于观察信号序列。
 fn test_state() -> (Arc<TerminalState>, Arc<FakePtyProvider>) {
     let provider = Arc::new(FakePtyProvider::new());
     let state = TerminalState::new(
@@ -56,6 +64,7 @@ fn test_state() -> (Arc<TerminalState>, Arc<FakePtyProvider>) {
     (state, provider)
 }
 
+/// 建一个进程内唯一的临时目录（进程 id + UUID 防并行冲突），作 create 的 cwd。
 fn unique_dir(label: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "oc-terminal-test-{label}-{}-{}",
@@ -66,6 +75,7 @@ fn unique_dir(label: &str) -> std::path::PathBuf {
     dir
 }
 
+/// 用 oneshot 发一次 JSON 请求；返回 (状态码, 解析后的 JSON 体)，空体按 Null 处理。
 async fn request_json(
     router: &mut Router,
     method: Method,
@@ -98,6 +108,7 @@ async fn request_json(
 }
 
 /// Poll until `probe` holds or the deadline passes (the session pump is async).
+/// 中文补充：最多 500 次 × 10ms；超时 panic，避免异步副作用导致的假失败。
 async fn eventually<F>(probe: F)
 where
     F: Fn() -> bool,
@@ -111,6 +122,7 @@ where
     panic!("condition not met within 5s");
 }
 
+/// 取第 index 个 spawn 出的假进程句柄（下标即 spawn 顺序）。
 fn fake_at(provider: &FakePtyProvider, index: usize) -> Arc<FakePtyProcess> {
     Arc::clone(&provider.spawned.lock().unwrap_or_else(|e| e.into_inner())[index])
 }
@@ -119,6 +131,8 @@ fn fake_at(provider: &FakePtyProvider, index: usize) -> Arc<FakePtyProcess> {
 // HTTP route behavior
 // ---------------------------------------------------------------------------
 
+/// 创建带客户端 id 的会话：cwd/尺寸/主题色正确进入 spawn 环境，OSC 主题
+/// 握手与外观变更按预期写回 PTY，合法 resize 生效、超界 resize 返回 400。
 #[tokio::test]
 async fn creates_client_identified_sessions_and_forwards_bounded_resizes() {
     let (state, provider) = test_state();
@@ -208,6 +222,7 @@ async fn creates_client_identified_sessions_and_forwards_bounded_resizes() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
+/// cwd 指向普通文件时创建被拒，错误文案为 Invalid working directory。
 #[tokio::test]
 async fn rejects_regular_files_as_working_directories() {
     let (state, _provider) = test_state();
@@ -226,6 +241,9 @@ async fn rejects_regular_files_as_working_directories() {
     assert_eq!(body, json!({ "error": "Invalid working directory" }));
 }
 
+/// 各类非法参数（尺寸越界/null/命令串/类型不符/未知 shell/超长 id）逐条
+/// 命中与 JS 一致的错误文案，且全程不 spawn 任何进程；sh 不支持登录模式
+/// 的错误会点名 shell。
 #[tokio::test]
 async fn rejects_invalid_dimensions_shells_and_login_modes_with_exact_messages() {
     let (state, provider) = test_state();
@@ -301,6 +319,8 @@ async fn rejects_invalid_dimensions_shells_and_login_modes_with_exact_messages()
     );
 }
 
+/// sessions 列表暴露 id/cwd/状态/创建时间并支持按 cwd 过滤；touch 只刷新
+/// 存在的字符串 id，其余静默跳过。
 #[tokio::test]
 async fn lists_sessions_scoped_to_a_working_directory_and_touches() {
     let (state, provider) = test_state();
@@ -374,6 +394,8 @@ async fn lists_sessions_scoped_to_a_working_directory_and_touches() {
     assert_eq!(body, json!({ "touched": 0 }));
 }
 
+/// 重启原子替换：旧进程收到 TERM 后 KILL、新进程以新 cwd 启动；替代 shell
+/// 不可用时重启失败且原进程原样保留。
 #[tokio::test]
 async fn restarts_atomically_and_preserves_the_process_on_bad_restarts() {
     let (state, provider) = test_state();
@@ -444,6 +466,8 @@ async fn restarts_atomically_and_preserves_the_process_on_bad_restarts() {
     );
 }
 
+/// 并发重启被串行化：两次请求都成功，两个旧进程各收到终止信号，最终只剩
+/// 一个存活的新进程（无孤儿替代进程）。
 #[tokio::test]
 async fn serializes_concurrent_restarts_without_orphaning_replacements() {
     let (state, provider) = test_state();
@@ -500,6 +524,9 @@ async fn serializes_concurrent_restarts_without_orphaning_replacements() {
     );
 }
 
+/// 并发同参创建被去重为一次 spawn；对在途创建以不同 cwd 或不同 shell 干扰
+/// 会被拒绝为冲突（多线程 runtime：spawn 延迟阻塞工作线程，pending 窗口
+/// 必须在另一线程上仍可观察）。
 // Multi-thread runtime: the fake provider's spawn delay blocks its worker
 // thread, and the pending-create window must stay observable on another.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -587,6 +614,7 @@ async fn deduplicates_concurrent_creates_and_rejects_conflicts() {
     blocker.await.unwrap();
 }
 
+/// 达到 MAX_SESSIONS 上限后再创建返回 429，且不多 spawn 进程。
 #[tokio::test]
 async fn enforces_the_session_cap_with_429() {
     let (state, provider) = test_state();
@@ -625,6 +653,8 @@ async fn enforces_the_session_cap_with_429() {
     );
 }
 
+/// 退出后的会话保留在列表里（仍可 resize），直到显式删除；删除后进程已清空、
+/// 不再补发信号，重复删除返回 404。
 #[tokio::test]
 async fn retains_exited_sessions_and_closes_on_delete() {
     let (state, provider) = test_state();
@@ -686,6 +716,8 @@ async fn retains_exited_sessions_and_closes_on_delete() {
     assert_eq!(body, json!({ "error": "Terminal session not found" }));
 }
 
+/// 带 claimant 的删除只释放该窗口认领：其余认领存活则进程保留；把幸存认领
+/// 改成过期时间戳后，再删除会真正击杀。
 #[tokio::test]
 async fn releases_only_the_closing_claimant_and_kills_when_the_last_claim_goes() {
     let (state, provider) = test_state();
@@ -752,6 +784,7 @@ async fn releases_only_the_closing_claimant_and_kills_when_the_last_claim_goes()
     eventually(|| fake_at(&provider, 0).kills().first().is_some()).await;
 }
 
+/// 不带 claimant 的删除是无条件击杀：即使仍有存活认领也照杀不误。
 #[tokio::test]
 async fn closes_unconditionally_without_a_claimant_even_while_claims_are_live() {
     let (state, provider) = test_state();
@@ -785,6 +818,7 @@ async fn closes_unconditionally_without_a_claimant_even_while_claims_are_live() 
     eventually(|| fake_at(&provider, 0).kills().first().is_some()).await;
 }
 
+/// force-kill 按 cwd 精确命中目标会话（SIGKILL），不波及其它目录的会话。
 #[tokio::test]
 async fn force_kill_targets_a_session_or_working_directory() {
     let (state, provider) = test_state();
@@ -819,6 +853,8 @@ async fn force_kill_targets_a_session_or_working_directory() {
     assert!(fake_at(&provider, 1).kills().is_empty());
 }
 
+/// 子进程环境剥离宿主私有变量（ARGV0/ELECTRON_RUN_AS_NODE/BASH_ENV），
+/// PATH 替换为增强版并注入 COLORFGBG/NODE_CHANNEL_FD，HOME 等正常保留。
 #[tokio::test]
 async fn child_env_strips_host_private_variables() {
     let mut parent = HashMap::new();
@@ -846,12 +882,17 @@ async fn child_env_strips_host_private_variables() {
 // Minimal RFC6455 client + loopback server
 // ---------------------------------------------------------------------------
 
+/// 手写的最小 WebSocket 客户端：裸 TCP 上完成 RFC6455 升级握手并收发帧。
 struct WsClient {
+    /// 到回环服务器的 TCP 流。
     stream: tokio::net::TcpStream,
+    /// 已接收未消费的字节，作为帧解析的缓冲区（握手残余也在这里）。
     buffer: Vec<u8>,
 }
 
+/// 帧收发与控制消息解码。
 impl WsClient {
+    /// 发送升级请求并断言 101；握手响应里多读的字节转入缓冲区。
     async fn connect(port: u16) -> Self {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
@@ -889,6 +930,7 @@ impl WsClient {
         }
     }
 
+    /// 构造并发出一个带固定掩码的客户端帧（按载荷长度选择 7/16/64 位长度编码）。
     async fn send_frame(&mut self, opcode: u8, payload: &[u8]) {
         let mut frame = vec![0x80 | opcode];
         let mask_key = [0x11u8, 0x22, 0x33, 0x44];
@@ -913,15 +955,18 @@ impl WsClient {
         self.stream.write_all(&frame).await.expect("frame send");
     }
 
+    /// 把 JSON 控制消息打包成 binary 帧发送。
     async fn send_control(&mut self, message: &Value) {
         self.send_frame(0x2, &protocol::create_terminal_ws_control_frame(message))
             .await;
     }
 
+    /// 发送 text 帧，用于验证服务端拒绝非 binary 帧。
     async fn send_text(&mut self, text: &str) {
         self.send_frame(0x1, text.as_bytes()).await;
     }
 
+    /// 从流里读一块进缓冲区；EOF 或错误返回 false。
     async fn fill_buffer(&mut self) -> bool {
         let mut chunk = [0u8; 64 * 1024];
         match self.stream.read(&mut chunk).await {
@@ -934,6 +979,7 @@ impl WsClient {
     }
 
     /// Next data frame payload (binary or text); `None` on close/EOF.
+    /// 中文补充：服务器帧不带掩码，此处只解析长度与 opcode；ping/pong 被跳过。
     async fn recv_payload(&mut self) -> Option<Vec<u8>> {
         loop {
             if self.buffer.len() >= 2 {
@@ -970,6 +1016,7 @@ impl WsClient {
     }
 
     /// Next decoded control message of the given type (and optional session).
+    /// 中文补充：不匹配的帧被丢弃，直到类型（及可选 session）符合为止。
     async fn next(&mut self, kind: &str, session: Option<&str>) -> Value {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -989,6 +1036,7 @@ impl WsClient {
         }
     }
 
+    /// 收集在途消息直到流连续静默（连续 4 个 50ms 窗口无帧或连接关闭）。
     async fn drain_pending(&mut self) -> Vec<Value> {
         let mut messages = Vec::new();
         let mut quiet = 0;
@@ -1009,6 +1057,7 @@ impl WsClient {
     }
 }
 
+/// 在随机端口起一个真实的后台 axum server，返回端口号。
 async fn serve(router: Router) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1021,6 +1070,7 @@ async fn serve(router: Router) -> u16 {
 }
 
 /// Minimal percent-encoding for query strings in test URLs.
+/// 中文补充：仅编码查询串用途，斜杠保持原样。
 fn urlencoding_lite(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -1034,6 +1084,9 @@ fn urlencoding_lite(value: &str) -> String {
     encoded
 }
 
+/// WS 全链路 happy path：hello 后 attach 先发快照；scoped write 落到对应进程；
+/// 输出带递增序号 q；detach 只停对应终端的投递；重连按有界历史对账；退出
+/// 携带 exitCode；HTTP 删除触发 fatal 的 CLOSED error 广播。
 #[tokio::test]
 async fn ws_runs_snapshot_first_attach_scoped_io_replay_and_close() {
     let (state, provider) = test_state();
@@ -1144,6 +1197,9 @@ async fn ws_runs_snapshot_first_attach_scoped_io_replay_and_close() {
     assert_eq!(error["message"], "Terminal closed");
 }
 
+/// 帧校验与错误路径：text 帧/坏 tag/旧版本帧返回 BAD_FRAME（非 fatal）；
+/// 未知会话的 attach 返回 fatal 的 SESSION_NOT_FOUND；ping 应答 pong；
+/// 空输入与死进程写入分别返回 BAD_INPUT/NOT_RUNNING 且不断连。
 #[tokio::test]
 async fn ws_rejects_text_frames_and_unknown_sessions_and_pongs_pings() {
     let (state, provider) = test_state();
@@ -1220,6 +1276,8 @@ async fn ws_rejects_text_frames_and_unknown_sessions_and_pongs_pings() {
     assert_eq!(error["code"], "NOT_RUNNING");
 }
 
+/// 洪泛抑制：从不 ack 时投递被压制在远小于发送量的字节内且 exit 不被抑制；
+/// ack 之后以有界快照恢复直播，晚到的 attach 拿到同样有界的尾部历史。
 #[tokio::test]
 async fn ws_bounds_flood_output_with_ack_driven_suppression_and_snapshot_recovery() {
     let (state, provider) = test_state();
@@ -1314,6 +1372,9 @@ async fn ws_bounds_flood_output_with_ack_driven_suppression_and_snapshot_recover
     assert!(late_history.ends_with("x\n"));
 }
 
+/// 视口所有权协商：IDLE 下取最小尺寸、claimViewport 抢占驱动权、follower
+/// 的 viewport 更新不再改 PTY 尺寸、release 回到最小尺寸、驱动断连自动
+/// 释放并重协商、未 attach 的连接不能 claim（NOT_ATTACHED）。
 // The debug-build future for this flow exceeds the default 2 MiB test-thread
 // stack, so it runs on a dedicated big-stack thread with its own runtime.
 #[test]
@@ -1332,6 +1393,7 @@ fn ws_negotiates_viewport_ownership_across_connections() {
         .expect("test thread panicked");
 }
 
+/// 上一测试的实际执行体：在独立的大栈线程 + 自建 runtime 中 block_on。
 async fn ws_negotiates_viewport_body() {
     let (state, provider) = test_state();
     let cwd = unique_dir("ws-viewport").to_string_lossy().into_owned();
@@ -1431,6 +1493,9 @@ async fn ws_negotiates_viewport_body() {
     assert_eq!(fake_at(&provider, 0).resizes().last(), Some(&(100, 30)));
 }
 
+/// grid feed：attach feed=grid 后输出以解析过的 rows 差分帧投递（含颜色），
+/// byte 附件照常收原始字节且序号恰好 +1；grid 重连从解析屏幕而非字节历史
+/// 对账；resize 以新尺寸触发全量帧。
 #[tokio::test]
 async fn ws_grid_feed_delivers_parsed_frames_and_byte_feed_coexists() {
     let (state, provider) = test_state();
@@ -1557,6 +1622,7 @@ async fn ws_grid_feed_delivers_parsed_frames_and_byte_feed_coexists() {
     assert_eq!(frame["g"]["rows"], 4);
 }
 
+/// resync 控制消息让服务端重发携带最新历史的快照。
 #[tokio::test]
 async fn ws_resync_sends_a_fresh_snapshot() {
     let (state, provider) = test_state();

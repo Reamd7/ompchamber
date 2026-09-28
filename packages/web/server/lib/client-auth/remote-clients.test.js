@@ -1,3 +1,10 @@
+/**
+ * 远程客户端认证运行时（remote-clients.js）的行为测试套件。
+ *
+ * 用真实的 fs/crypto 在临时目录里跑完整存储路径，覆盖 token 的
+ * 签发-认证-列举-吊销-清理生命周期、dedupeKey 重签、磁盘权限、
+ * relay 传输自愈以及并发认证下吊销不丢失。
+ */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -5,6 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRemoteClientAuthRuntime } from './remote-clients.js';
 
+/** 在临时目录里构造使用真实 fs/crypto 的认证运行时；调用方负责在 finally 里清理目录。 */
 const createRuntime = async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ompchamber-remote-clients-test-'));
   const runtime = createRemoteClientAuthRuntime({
@@ -16,6 +24,7 @@ const createRuntime = async () => {
   return { dir, runtime };
 };
 
+/** 覆盖 token 全生命周期、去重重签、存储权限、relay 需求自愈与并发一致性。 */
 describe('remote client auth runtime', () => {
   it('creates, authenticates, lists, and revokes client tokens', async () => {
     const { dir, runtime } = await createRuntime();

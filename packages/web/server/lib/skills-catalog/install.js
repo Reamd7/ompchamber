@@ -1,3 +1,8 @@
+/**
+ * 技能安装模块：克隆 git 仓库并把选中的 skill 目录安装到用户级或项目级
+ * 目录。负责参数与名称校验、冲突检测（skipAll/overwriteAll/逐项决策）、
+ * sparse-checkout 选择性检出，以及拒绝 symlink 与路径穿越的安全复制。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -5,8 +10,13 @@ import path from 'path';
 import { assertGitAvailable, looksLikeAuthError, runGit } from './git.js';
 import { parseSkillRepoSource } from './source.js';
 
+/** OpenCode 合法技能名的正则：小写字母/数字/连字符，首尾不能是连字符（另允许单个字符）。 */
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 
+/**
+ * 兼容旧版单数路径 ~/.config/opencode/skill：只有旧目录存在且复数目录不存在时
+ * 才沿用旧路径，否则一律视为指向 ~/.config/opencode/skills。
+ */
 function normalizeUserSkillDir(userSkillDir) {
   if (!userSkillDir) return null;
   const legacySkillDir = path.join(os.homedir(), '.config', 'opencode', 'skill');
@@ -18,12 +28,14 @@ function normalizeUserSkillDir(userSkillDir) {
   return userSkillDir;
 }
 
+/** 校验技能名是否为 OpenCode 合法格式：字符串、1-64 字符且匹配 SKILL_NAME_PATTERN。 */
 function validateSkillName(skillName) {
   if (typeof skillName !== 'string') return false;
   if (skillName.length < 1 || skillName.length > 64) return false;
   return SKILL_NAME_PATTERN.test(skillName);
 }
 
+/** 递归删除目录（recursive + force），失败静默忽略；仅用于临时目录与安装失败的清理。 */
 async function safeRm(dir) {
   try {
     await fs.promises.rm(dir, { recursive: true, force: true });
@@ -32,6 +44,7 @@ async function safeRm(dir) {
   }
 }
 
+/** 把仓库内的相对 POSIX 路径拼接为本地文件系统路径（逐段过滤空串与空白）。 */
 function toFsPath(repoDir, repoRelPosixPath) {
   const parts = String(repoRelPosixPath || '')
     .split('/')
@@ -40,14 +53,21 @@ function toFsPath(repoDir, repoRelPosixPath) {
   return path.join(repoDir, ...parts);
 }
 
+/** 递归创建目录；已存在时不报错。 */
 async function ensureDir(dirPath) {
   await fs.promises.mkdir(dirPath, { recursive: true });
 }
 
+/**
+ * 递归复制技能目录。逐项 lstat 拒绝 symlink，并用 realpath 校验每一层的
+ * 父目录仍位于 srcReal 之下以防路径穿越；文件复制后尽力保留权限位
+ * （chmod 失败忽略）。socket、设备等其它类型直接跳过。
+ */
 async function copyDirectoryNoSymlinks(srcDir, dstDir) {
   const srcReal = await fs.promises.realpath(srcDir);
   await ensureDir(dstDir);
 
+  /** 深度优先遍历复制：目录递归、常规文件复制、symlink 抛错。 */
   const walk = async (currentSrc, currentDst) => {
     const entries = await fs.promises.readdir(currentSrc, { withFileTypes: true });
     for (const entry of entries) {
@@ -89,6 +109,10 @@ async function copyDirectoryNoSymlinks(srcDir, dstDir) {
   await walk(srcDir, dstDir);
 }
 
+/**
+ * 浅克隆（--depth 1 --no-checkout）到 tempDir。优先 blob:none 部分克隆，
+ * 旧版 git 不支持时回退普通浅克隆；两次都失败时返回最后一次的错误。
+ */
 async function cloneRepo({ cloneUrl, identity, tempDir }) {
   const preferred = ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', cloneUrl, tempDir];
   const fallback = ['clone', '--depth', '1', '--no-checkout', cloneUrl, tempDir];
@@ -105,6 +129,11 @@ async function cloneRepo({ cloneUrl, identity, tempDir }) {
   };
 }
 
+/**
+ * 计算技能的目标安装目录。scope=user 时装到用户目录（agents 源为
+ * ~/.agents/skills，opencode 源为 userSkillDir）；scope=project 时必须提供
+ * workingDirectory，装到其下的 .agents/skills 或 .opencode/skills。
+ */
 function getTargetSkillDir({ scope, targetSource, workingDirectory, userSkillDir, skillName }) {
   const source = targetSource === 'agents' ? 'agents' : 'opencode';
 
@@ -126,6 +155,14 @@ function getTargetSkillDir({ scope, targetSource, workingDirectory, userSkillDir
   return path.join(workingDirectory, '.opencode', 'skills', skillName);
 }
 
+/**
+ * 从 git 仓库安装选中的技能。流程：校验 git 可用与各项参数 → 解析仓库源 →
+ * 无副作用地预检名称与冲突（存在同名目录、无逐项决策且无自动策略时返回
+ * kind 'conflicts' 交给调用方确认）→ 临时目录克隆 + sparse-checkout 检出
+ * 所选目录 → 逐项安装（缺 SKILL.md 或名称非法则跳过；冲突按 skip/overwrite
+ * 决策；复制失败删除半成品）。返回 { ok, installed, skipped }；克隆认证
+ * 失败返回 authRequired（sshOnly）。临时目录在 finally 中清理。
+ */
 export async function installSkillsFromRepository({
   source,
   subpath,

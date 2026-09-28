@@ -1,7 +1,18 @@
+/**
+ * 浏览器控制中介 broker.js 的测试套件。
+ *
+ * 用可注入的定时器与记录型 emitRequest 桩覆盖：结果回传、无客户端时
+ * 快速失败、超时与迟到响应、取消传播、客户端断开时的全量失败，以及
+ * "一个请求只有一个执行者"的认领语义与按动作区分的客户端能力。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import { BrowserControlError, createBrowserControlBroker } from './broker.js';
 
+/**
+ * 造一个带记录型 emitRequest 与顺序 id 的 broker 桩；options.listeners
+ * 控制有多少客户端在听，options.overrides 直改工厂参数（如定时器）。
+ */
 const createBroker = (options = {}) => {
   const emitted = [];
   let sequence = 0;
@@ -19,6 +30,7 @@ const createBroker = (options = {}) => {
   return { broker, emitted };
 };
 
+// 中介本体：请求-响应主路径、各类失败模式与取消传播。
 describe('browser control broker', () => {
   test('resolves with the data the client posted back', async () => {
     const { broker, emitted } = createBroker();
@@ -129,7 +141,10 @@ describe('browser control broker', () => {
  * once, and either may arrive or leave at any moment. The broker is told how
  * many clients could actually perform each action.
  */
+// 中文补充：页面能否被驱动取决于连着哪个客户端而非服务端；broker 拿到
+// 的是"每个动作真正可执行的客户端数"。
 describe('client capability', () => {
+  // 造一个按动作返回可执行客户端数的 broker 桩。
   const createCapabilityBroker = (capableFor) => {
     const emitted = [];
     let sequence = 0;
@@ -165,6 +180,7 @@ describe('client capability', () => {
   });
 });
 
+// 一个请求一个执行者：首个认领生效、其余拒绝；已结算的请求不再授权。
 describe('one request, one performer', () => {
   test('grants the request to the first claimant and refuses the rest', async () => {
     const broker = createBrowserControlBroker({ emitRequest: () => 2, createId: () => 'req-1' });

@@ -3,6 +3,11 @@
 //! - `GET /api/small-model` — resolution preview.
 //! - `POST /api/small-model/generate` — `{ prompt, system?, maxOutputTokens?,
 //!   model?, directory? }` → `{ text, providerID, modelID, source }`.
+//!
+//! 中文说明：`server/lib/small-model/routes.js` 的移植——GET /api/small-model
+//! 提供解析预览；POST /api/small-model/generate 接收
+//! { prompt, system?, maxOutputTokens?, model?, directory? } 并返回
+//! { text, providerID, modelID, source }。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +22,8 @@ use serde_json::{Map, Value};
 use crate::small_model::http::js_positive_number;
 use crate::small_model::service::{GenerateParams, SmallModelService};
 
+/// 构建本模块路由：GET /api/small-model 与 POST /api/small-model/generate，
+/// 并注入共享的 SmallModelService 作为状态。
 pub fn routes(service: Arc<SmallModelService>) -> Router {
     Router::new()
         .route("/api/small-model", get(describe))
@@ -24,10 +31,13 @@ pub fn routes(service: Arc<SmallModelService>) -> Router {
         .with_state(service)
 }
 
+/// 取查询参数的克隆值；键不存在返回 None。
 fn query_string(params: &HashMap<String, String>, key: &str) -> Option<String> {
     params.get(key).cloned()
 }
 
+/// GET /api/small-model：解析当前生效的小模型，返回 available、model 与
+/// authenticatedProviders；解析失败记 error 日志并返回 500 + error 消息。
 async fn describe(
     State(service): State<Arc<SmallModelService>>,
     Query(params): Query<HashMap<String, String>>,
@@ -83,6 +93,8 @@ async fn describe(
 
 /// express's `express.json()` body parser: only `*json` content types
 /// populate `req.body`; anything else (or malformed) reads as absent.
+///
+/// 中文补充：仅当 Content-Type 含 "json" 才尝试解析；失败按无 body（Null）处理。
 fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Value {
     let json_content_type = headers
         .get("content-type")
@@ -94,10 +106,14 @@ fn parse_json_body(headers: &HeaderMap, body: &[u8]) -> Value {
     serde_json::from_slice(body).unwrap_or(Value::Null)
 }
 
+/// 取 JSON body 顶层的字符串字段。
 fn body_str(body: &Value, key: &str) -> Option<String> {
     body.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+/// POST /api/small-model/generate：按 express.json 语义解析 body 后调用 service。
+/// maxOutputTokens 沿用 JS Number() 的宽松折算；404 映射"无可用小模型"文案，
+/// 其余错误保留原始状态码并返回提示用户更换小模型的固定文案（5xx 记 error 日志）。
 async fn generate(
     State(service): State<Arc<SmallModelService>>,
     headers: HeaderMap,

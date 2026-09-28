@@ -12,6 +12,12 @@
 //! `getDesktopRuntimeConfig()` from Electron. The standalone Rust server reads
 //! `OMPCHAMBER_DESKTOP_API_BASE_URL` + `OMPCHAMBER_DESKTOP_REQUEST_HEADERS`
 //! (JSON object) — set by the desktop shell that embeds this binary.
+//!
+//! 中文说明：本模块是桌面实时代理：Electron 桌面端在进程内运行 web server，
+//! 并把一组固定白名单的实时端点（SSE + WebSocket）转发到自己的 loopback UI
+//! 运行时。目标解析 fail-closed：只有当桌面运行时配置存在、路径在该传输类型
+//! 的白名单内、协议匹配且目标 origin 等于运行时 API base origin 时，
+//! `?url=` 参数才被接受。`authorization` 头绝不转发。
 
 use std::collections::HashMap;
 
@@ -20,9 +26,12 @@ use axum::extract::{Request, State};
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
 
+/// SSE 代理端点的本地路由路径。
 const PROXY_SSE_PATH: &str = "/api/ompchamber/realtime-proxy/sse";
+/// WebSocket 代理端点的本地路由路径。
 const PROXY_WS_PATH: &str = "/api/ompchamber/realtime-proxy/ws";
 
+/// 判断目标路径是否在 SSE 代理白名单内（事件流与通知流端点）。
 pub fn is_allowed_sse_path(pathname: &str) -> bool {
     matches!(
         pathname,
@@ -30,6 +39,7 @@ pub fn is_allowed_sse_path(pathname: &str) -> bool {
     )
 }
 
+/// 判断目标路径是否在 WebSocket 代理白名单内（事件与终端 WS 端点）。
 pub fn is_allowed_web_socket_path(pathname: &str) -> bool {
     matches!(
         pathname,
@@ -37,12 +47,14 @@ pub fn is_allowed_web_socket_path(pathname: &str) -> bool {
     )
 }
 
+/// 规范化 base URL：去首尾空白并去掉结尾斜杠。
 fn normalize_base_url(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
 }
 
 /// sanitizeHeaders: drop empty values, header-injection characters, and
 /// `authorization`.
+/// 中文说明：过滤后仅保留名称与值都非空、不含注入字符（CR/LF/冒号）的条目。
 pub fn sanitize_headers(headers: &HashMap<String, String>) -> HashMap<String, String> {
     let mut next = HashMap::new();
     for (name, value) in headers {
@@ -62,25 +74,32 @@ pub fn sanitize_headers(headers: &HashMap<String, String>) -> HashMap<String, St
     next
 }
 
+/// 桌面运行时配置：外部 UI 运行时的 API base URL 与应附加的请求头。
 #[derive(Debug, Clone, Default)]
 pub struct DesktopRuntimeConfig {
+    /// 外部运行时的 API base URL（origin 匹配的判据）。
     pub api_base_url: String,
+    /// 附加到代理请求的头（已 sanitize，不含 authorization）。
     pub request_headers: HashMap<String, String>,
 }
 
 /// The desktop control channel pushes live external-host config here
 /// (the JS server queried Electron through a callback on every request).
+/// 中文说明：桌面控制通道的 `runtimeConfig` op 在运行期写入此处；
+/// 从未设置时回退到启动时的环境变量配置。
 static DYNAMIC_CONFIG: std::sync::OnceLock<std::sync::RwLock<Option<DesktopRuntimeConfig>>> =
     std::sync::OnceLock::new();
 
 /// Update the live config (desktop control `runtimeConfig` op). `None`
 /// clears it; env config remains the fallback when never set.
+/// 中文说明：传入 None 清除动态配置；之后 `active_config` 回退到环境变量。
 pub fn set_dynamic_config(config: Option<DesktopRuntimeConfig>) {
     let cell = DYNAMIC_CONFIG.get_or_init(|| std::sync::RwLock::new(None));
     *cell.write().unwrap_or_else(|e| e.into_inner()) = config;
 }
 
 /// Build + store a live config from raw shell-provided parts.
+/// 中文说明：任一部分为空（base URL 为空或头被清空）则视为清除动态配置。
 pub fn set_dynamic_config_from_parts(api_base_url: &str, request_headers: &serde_json::Value) {
     let headers = serde_json::from_str::<HashMap<String, String>>(&request_headers.to_string())
         .ok()
@@ -99,14 +118,19 @@ pub fn set_dynamic_config_from_parts(api_base_url: &str, request_headers: &serde
 }
 
 /// Effective config: the shell-pushed value wins over the boot-time env.
+/// 中文说明：壳推送的动态配置优先；未推送时读启动时的环境变量。
 pub fn active_config() -> Option<DesktopRuntimeConfig> {
     let cell = DYNAMIC_CONFIG.get_or_init(|| std::sync::RwLock::new(None));
     let guard = cell.read().unwrap_or_else(|e| e.into_inner());
     guard.clone().or_else(DesktopRuntimeConfig::from_env)
 }
 
+/// `DesktopRuntimeConfig` 的构造与校验。
 impl DesktopRuntimeConfig {
     /// Stand-in for Electron's injected config provider (see module docs).
+    /// 中文说明：独立运行时由桌面壳通过 OMPCHAMBER_DESKTOP_API_BASE_URL +
+    /// OMPCHAMBER_DESKTOP_REQUEST_HEADERS（JSON 对象）注入配置；任一缺失
+    /// 或头为空则返回 None。
     pub fn from_env() -> Option<Self> {
         let api_base_url = std::env::var("OMPCHAMBER_DESKTOP_API_BASE_URL").ok()?;
         let api_base_url = normalize_base_url(&api_base_url);
@@ -125,6 +149,8 @@ impl DesktopRuntimeConfig {
     }
 }
 
+/// 目标 origin 是否与运行时 API base origin 一致；比较前把 ws/wss 换算为
+/// http/https（JS 的协议对齐逻辑）。
 fn urls_match_runtime(target: &url::Url, api_base_url: &str) -> bool {
     let base = normalize_base_url(api_base_url);
     if base.is_empty() {
@@ -144,6 +170,7 @@ fn urls_match_runtime(target: &url::Url, api_base_url: &str) -> bool {
     target_for_compare.origin() == base_url.origin()
 }
 
+/// 目标协议是否与代理类型匹配：WS 代理要求 ws/wss，SSE 代理要求 http/https。
 fn protocol_matches_proxy_type(target: &url::Url, ws: bool) -> bool {
     if ws {
         matches!(target.scheme(), "ws" | "wss")
@@ -152,6 +179,7 @@ fn protocol_matches_proxy_type(target: &url::Url, ws: bool) -> bool {
     }
 }
 
+/// 目标路径是否在该传输类型（WS/SSE）的白名单内。
 fn path_matches_proxy_type(target: &url::Url, ws: bool) -> bool {
     if ws {
         is_allowed_web_socket_path(target.path())
@@ -161,6 +189,8 @@ fn path_matches_proxy_type(target: &url::Url, ws: bool) -> bool {
 }
 
 /// Fail-closed target resolution for a request's `?url=` param.
+/// 中文说明：依次校验配置存在、请求头非空、URL 非空、协议匹配、路径白名单、
+/// origin 匹配；任一不过即 None（fail-closed，绝不做宽松回退）。
 pub fn resolve_proxy_target(
     raw_url: Option<&str>,
     config: Option<&DesktopRuntimeConfig>,
@@ -187,6 +217,7 @@ pub fn resolve_proxy_target(
     Some((target, config.request_headers.clone()))
 }
 
+/// 构造指向本地 SSE 代理端点的 URL：`<origin>/api/ompchamber/realtime-proxy/sse?url=<target>`。
 pub fn build_realtime_proxy_sse_url(local_origin: &str, target_url: &str) -> Option<String> {
     let mut url = url::Url::parse(local_origin).ok()?;
     url.set_path(PROXY_SSE_PATH);
@@ -194,6 +225,8 @@ pub fn build_realtime_proxy_sse_url(local_origin: &str, target_url: &str) -> Opt
     Some(url.to_string())
 }
 
+/// 构造指向本地 WS 代理端点的 URL，并把 scheme 换算为 ws/wss
+/// （https → wss，其余 → ws）。
 pub fn build_realtime_proxy_ws_url(local_origin: &str, target_url: &str) -> Option<String> {
     let mut url = url::Url::parse(local_origin).ok()?;
     url.set_path(PROXY_WS_PATH);
@@ -206,16 +239,22 @@ pub fn build_realtime_proxy_ws_url(local_origin: &str, target_url: &str) -> Opti
     Some(url.to_string())
 }
 
+/// 路由处理器共享的模块状态快照。
 #[derive(Clone)]
 struct ModuleState {
+    /// 启动时从环境变量读取的运行时配置（请求期动态配置经 active_config 获取）。
     config: Option<DesktopRuntimeConfig>,
 }
 
+/// 构造统一形状的 JSON 错误应答：`{"error": message}` + 指定状态码。
 fn sse_error(status: axum::http::StatusCode, message: &str) -> axum::response::Response {
     use axum::response::IntoResponse;
     (status, axum::Json(json!({ "error": message }))).into_response()
 }
 
+/// SSE 代理处理器：先做 origin 检查（复刻 JS 的 403 形状），再 fail-closed
+/// 解析 `?url=` 目标；透传 Accept / Last-Event-ID 头（运行时头优先），
+/// 以流式方式把上游响应体转发给客户端（text/event-stream + no-cache）。
 async fn proxy_sse(State(state): State<ModuleState>, request: Request) -> axum::response::Response {
     use axum::body::Body;
     use axum::http::{StatusCode, header};
@@ -309,7 +348,9 @@ async fn proxy_sse(State(state): State<ModuleState>, request: Request) -> axum::
         .into_response()
 }
 
+/// 模块级共享的上游 HTTP 客户端（10s 连接超时，LazyLock 单例）。
 fn state_upstream_client() -> &'static reqwest::Client {
+    // 首次调用时构造一次的全局客户端（LazyLock 线程安全惰性初始化）。
     static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
@@ -318,6 +359,7 @@ fn state_upstream_client() -> &'static reqwest::Client {
     });
     &CLIENT
 }
+/// 在 form-urlencoded 查询串中查找指定 key 的值（松散百分号解码 + `+` 转空格）。
 fn form_urlencoded_lookup(query: &str, key: &str) -> Option<String> {
     for pair in query.split('&') {
         let (name, value) = pair.split_once('=')?;
@@ -328,6 +370,7 @@ fn form_urlencoded_lookup(query: &str, key: &str) -> Option<String> {
     None
 }
 
+/// 松散百分号解码：`+` 视为空格，`%XX` 合法十六进制才解码，否则原样保留字节。
 fn percent_decode_loose(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -352,6 +395,8 @@ fn percent_decode_loose(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// WebSocket 代理处理器：解析 `?url=` 目标；不可用时完成升级后立即以
+/// 1008 关闭；可用则进入双向桥接。
 async fn proxy_ws(
     State(state): State<ModuleState>,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
@@ -375,6 +420,7 @@ async fn proxy_ws(
     })
 }
 
+/// 以指定 close code 与原因关闭客户端 WebSocket。
 async fn close_with(mut socket: WebSocket, code: u16, reason: &str) -> Result<(), axum::Error> {
     socket
         .send(Message::Close(Some(axum::extract::ws::CloseFrame {
@@ -386,6 +432,9 @@ async fn close_with(mut socket: WebSocket, code: u16, reason: &str) -> Result<()
 
 /// Bidirectional bridge: client ↔ upstream, close-code and error propagation
 /// mirrored from the JS (upstream close ⇒ same code; upstream error ⇒ 1011).
+/// 中文说明：tungstenite 连接上游（带运行时头），select! 双向转发；
+/// 客户端关闭 → 优雅关闭上游；上游错误 → 向客户端回 1011；任一方向发送
+/// 失败即结束桥接。
 async fn proxy_ws_bridge(
     mut client: WebSocket,
     target: &str,
@@ -436,6 +485,8 @@ async fn proxy_ws_bridge(
     }
 }
 
+/// axum WS 消息 → tungstenite 消息；Close 帧返回 None（由关闭逻辑处理，
+/// 不作为数据转发）。
 fn convert_axum_to_tungstenite(
     message: Message,
 ) -> Option<tokio_tungstenite::tungstenite::Message> {
@@ -449,6 +500,7 @@ fn convert_axum_to_tungstenite(
     })
 }
 
+/// tungstenite 消息 → axum WS 消息；Close 帧与原始 Frame 返回 None。
 fn convert_tungstenite_to_axum(
     message: tokio_tungstenite::tungstenite::Message,
 ) -> Option<Message> {
@@ -463,6 +515,7 @@ fn convert_tungstenite_to_axum(
     })
 }
 
+/// 构建实时代理路由：注册 SSE 与 WS 两个代理端点，共享启动时的环境配置状态。
 pub fn router(_ctx: crate::context::RouterContext) -> axum::Router {
     let state = ModuleState {
         config: DesktopRuntimeConfig::from_env(),
@@ -473,10 +526,12 @@ pub fn router(_ctx: crate::context::RouterContext) -> axum::Router {
         .with_state(state)
 }
 
+/// 实时代理的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 构造带单个测试头的运行时配置。
     fn config(base: &str) -> DesktopRuntimeConfig {
         DesktopRuntimeConfig {
             api_base_url: base.to_string(),
@@ -484,6 +539,7 @@ mod tests {
         }
     }
 
+    /// 验证：SSE 与 WS 白名单与 JS 版一致（端点集合、无交叉）。
     #[test]
     fn allowlists_match_js() {
         assert!(is_allowed_sse_path("/api/event"));
@@ -497,6 +553,7 @@ mod tests {
         assert!(!is_allowed_web_socket_path("/api/event"));
     }
 
+    /// 验证：头清理丢弃 authorization、注入字符与空值，仅保留干净条目。
     #[test]
     fn sanitize_drops_auth_and_injection() {
         let headers = HashMap::from([
@@ -511,6 +568,8 @@ mod tests {
         assert_eq!(out["X-Good"], "v");
     }
 
+    /// 验证：目标解析 fail-closed——错误传输类型、错误路径、错误 origin、
+    /// 缺配置、缺 URL 全部拒绝；ws/wss origin 与 http 运行时 base 可匹配。
     #[test]
     fn target_resolution_is_fail_closed() {
         let cfg = config("http://127.0.0.1:3000");
@@ -550,6 +609,7 @@ mod tests {
         );
     }
 
+    /// 验证：SSE/WS 代理 URL 构造的路径、查询参数与 scheme 换算正确。
     #[test]
     fn url_builders_shape() {
         let sse = build_realtime_proxy_sse_url(
@@ -572,6 +632,7 @@ mod tests {
         assert!(wss.starts_with("wss://localhost:3999/"));
     }
 
+    /// 验证：查询串查找支持 `+` 转空格与百分号解码，缺失 key 返回 None。
     #[test]
     fn query_lookup_decodes_plus_and_percent() {
         assert_eq!(

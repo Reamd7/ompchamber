@@ -1,3 +1,8 @@
+/**
+ * omp 对齐组合回归测试：RingEventBus/OmpEventBus 基本契约、分隔符投影
+ * （spec 05 §5.5）、defaultModelPointer（spec 01 §5.3）、registerEndpoints
+ * 装配冒烟（含多条接线回归守卫）、能力通告与事件覆盖 CI 守卫。
+ */
 import { describe, expect, test, afterAll } from 'vitest';
 import { RingEventBus, WireEventBus, OmpEventBus } from './events.ts';
 import type { OmpHostEngine } from './engine.ts';
@@ -15,13 +20,20 @@ import { fileURLToPath } from 'node:url';
 // cannot construct; each double below implements exactly the mounting surface
 // its test exercises, and registerEndpoints reads nothing beyond it. This is
 // the single test-double seam — no other cast bridges into the engine type.
+/** SAFETY：OmpHostEngine 是携带私有状态的具名类，字面量无法构造；下方每
+ * 个替身只实现其用例触及的装配面，registerEndpoints 不读取面外成员——
+ * 这是本文件唯一的测试替身接缝。 */
 const asEngineDouble = <T,>(double: T): OmpHostEngine => double as OmpHostEngine;
 import type { RouteHandler } from './endpoints.ts';
+/** 直调已挂载 handler 时使用的部分路由 ctx（url/headers/params）。 */
 /** Partial route ctx used when tests invoke mounted handlers directly. */
 type RouteContextLite = { url?: URL; headers?: Headers; params?: Record<string, string> };
 
+/** 固定时间基准（毫秒），保证投影 id 的确定性。 */
 const now = 1_700_000_000_000;
 
+/** RingEventBus 基本契约：wire 总线全持久可重放；易失事件只达在线订阅者、
+ * 绝不在新订阅时复活。 */
 describe('RingEventBus', () => {
   test('wire bus keeps every event durable and replayable', () => {
     const bus = new WireEventBus({ capacity: 8 });
@@ -48,6 +60,8 @@ describe('RingEventBus', () => {
   });
 });
 
+/** OmpEventBus 契约：信封字段完整、目录过滤订阅、restart/gap 重放判定，
+ * 以及 resync 控制帧绝不入环。 */
 describe('OmpEventBus', () => {
   test('envelope carries id/type/directory/sessionID/schemaVersion/createdAt and clean payload', () => {
     const bus = new OmpEventBus({ schemaVersion: '1.1' });
@@ -91,6 +105,9 @@ describe('OmpEventBus', () => {
   });
 });
 
+/** 分隔符投影（spec 05 §5.5）：compactionSummary/branchSummary 投影为
+ * 确定 metadata 的 assistant 分隔符；执行/文件提及角色投影为 user 侧
+ * 独立段且 id 确定。 */
 describe('divider projection (spec 05 §5.5)', () => {
   test('compactionSummary projects as a deterministic assistant divider with metadata', () => {
     const projected = projectDividerMessage(
@@ -158,6 +175,8 @@ describe('divider projection (spec 05 §5.5)', () => {
   });
 });
 
+/** pointer 用例创建的临时目录清单（afterAll 尽力递归清理，容忍 Windows
+ * 文件锁导致的清理失败）。 */
 const pointerCleanup: string[] = [];
 afterAll(() => {
   for (const dir of pointerCleanup) {
@@ -169,6 +188,9 @@ afterAll(() => {
   }
 });
 
+/** 加载真实 Settings：兄弟套件对 SDK 包说明符做了 mock.module（桩掉不带
+ * loadIsolated 的 Settings），源路径 import 穿透该注册表，使 pointer 集成
+ * 断言始终跑在真实加载器上。 */
 /**
  * Real Settings for the pointer tests. Sibling suites mock.module the SDK
  * package specifier (stub Settings without loadIsolated); the source-path
@@ -186,6 +208,8 @@ const loadRealSettings = async () => {
   return (await import(pathToFileURL(settingsFile).href)).Settings;
 };
 
+/** defaultModelPointer（spec 01 §5.3/GAP-03）：指针指向 modelRoles.default
+ * 而非排序首个模型；无角色默认可解析或 store 缺席/抛错时省略指针。 */
 describe('defaultModelPointer (spec 01 §5.3/GAP-03)', () => {
   test('points at modelRoles.default, never the first-sorted model', async () => {
     const Settings = await loadRealSettings();
@@ -218,6 +242,8 @@ describe('defaultModelPointer (spec 01 §5.3/GAP-03)', () => {
   });
 });
 
+/** registerEndpoints 装配冒烟（接线回归守卫）：对桩引擎挂载全部路由组不
+ * 抛错，并覆盖 store 包装面、delete/abort/PATCH 语义与目录作用域等回归。 */
 describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
   test('mounts every route group against a stub engine without throwing', async () => {
     const { registerEndpoints } = await import('./endpoints.ts');
@@ -469,6 +495,8 @@ describe('registerEndpoints mounting smoke (wiring regression guard)', () => {
   });
 });
 
+/** 能力通告（spec 05 §5.2.3，master R2）：事件 schema 版本与各域特性
+ * 开关的正确组合（已落地域开启、上游门控面保持关闭）。 */
 describe('capabilities (spec 05 §5.2.3, master R2)', () => {
   test('advertises event schema and feature flags', () => {
     const caps = buildCapabilities();
@@ -484,6 +512,8 @@ describe('capabilities (spec 05 §5.2.3, master R2)', () => {
   });
 });
 
+/** 事件覆盖 CI 守卫（scripts/check-event-coverage.mjs）：当前树通过；SDK
+ * 事件联合类型新增未登记成员时守卫必须失败。 */
 describe('coverage CI guard (scripts/check-event-coverage.mjs)', () => {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
   const guard = path.join(repoRoot, 'scripts/check-event-coverage.mjs');

@@ -1,3 +1,12 @@
+/**
+ * 终端运行时（WebSocket 版）：为 Web UI 提供基于 node-pty/bun-pty 的交互式
+ * shell 会话。核心职责：PTY 进程生命周期（创建/重启/优雅终止/空闲回收）、
+ * 回放历史（512 KiB 尾部契约的 chunk deque）、输出事件多路广播（byte feed
+ * 与 grid feed 两种按 attachment 订阅的模式）、发送端流量控制（ack 驱动的
+ * lag 抑制）、多设备视口协商（隐式最小宽度 + 显式 driver 抢占）、
+ * OSC 133 shell 集成与终端主题查询应答，以及 /api/terminal/* HTTP 路由
+ * 与 /api/terminal/ws 的 upgrade 握手。
+ */
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import {
@@ -20,11 +29,15 @@ import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.
 import { GridCore } from './vendor/ompchamber-terminal-server/index.mjs';
 import { createRequire } from 'node:module';
 
+/** 单个 server 实例允许同时存在的终端会话上限；超出后 create 返回 429。 */
 const MAX_SESSIONS = 20;
+/** 回放历史（snapshot.history）的字节上限：物化时只保留最近 512 KiB 尾部。 */
 const MAX_HISTORY_BYTES = 512 * 1024;
+/** 历史 deque 的松弛上限：允许暂留一个超限 chunk，物化快照仍受 MAX_HISTORY_BYTES 约束。 */
 // History deque slack: one extra chunk may be retained before trimming, so
 // materialized snapshots stay within MAX_HISTORY_BYTES + this slack.
 const MAX_HISTORY_CHUNK_BYTES = 128 * 1024;
+/** 发送端流控三阈值（字节）：进入抑制 / 退出抑制恢复 / 从不 ack 连接的兜底抑制。 */
 // Send-side flow control. Bun's server WebSocket exposes no send-buffer
 // signal and buffers unbounded data per socket, so consumers acknowledge the
 // sequences they applied and each attachment tracks sent-but-unacknowledged
@@ -34,23 +47,32 @@ const MAX_HISTORY_CHUNK_BYTES = 128 * 1024;
 // once its lag drains below SEND_LAG_EXIT_BYTES. Connections that never
 // acknowledge are suppressed after SEND_LAG_FALLBACK_BYTES as a fail-safe.
 const SEND_LAG_ENTER_BYTES = 4 * 1024 * 1024;
+/** 退出抑制阈值：积压降至此以下后恢复发送（先补发快照完成重同步）。 */
 const SEND_LAG_EXIT_BYTES = 1 * 1024 * 1024;
+/** 兜底阈值：从未 ack 过的连接发送总量超过即直接抑制。 */
 const SEND_LAG_FALLBACK_BYTES = 8 * 1024 * 1024;
+/** 单条 write 输入帧允许的最大字符数，超出即拒绝（BAD_INPUT）。 */
 const MAX_INPUT_CHARS = 65_536;
+/** 会话空闲回收窗口：无 attachment 且超过该时长无活动（claim/touch/输入）即被 sweep 强杀。 */
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+/** terminateProcess 先 SIGTERM 后升级 SIGKILL 的默认宽限期（可被注入覆盖）。 */
 const TERMINATION_GRACE_MS = 1000;
+/** 校验终端行列数是否为 1..max 的整数；用于拒绝非法 create/resize 参数。 */
 const validateSize = (value, max) => Number.isInteger(value) && value >= 1 && value <= max;
+/** 把历史字节裁剪到 MAX_HISTORY_BYTES 尾部；起始处跳过 UTF-8 续字节避免切出乱码。 */
 const trimHistoryBytes = (bytes) => {
   if (bytes.byteLength <= MAX_HISTORY_BYTES) return bytes.toString('utf8');
   let start = bytes.byteLength - MAX_HISTORY_BYTES;
   while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
   return bytes.subarray(start).toString('utf8');
 };
+/** 清空历史 chunk deque（会话首次启动或重启时复位）。 */
 // History is a chunk deque: appending is O(chunk) and the byte-exact 512 KiB
 // tail contract is applied when the text is materialized (snapshot path
 // only). A single accumulating string instead copies ~512 KiB per PTY chunk,
 // which is gigabytes of memcpy under a flood.
 const historyChunksReset = (session) => { session.historyChunks = []; session.historyBytes = 0; };
+/** 追加一段可见输出到历史 deque；超过 MAX_HISTORY_BYTES+松弛量时从头部整块丢弃。 */
 const appendHistory = (session, visible) => {
   const chunks = session.historyChunks;
   chunks.push(visible);
@@ -60,6 +82,7 @@ const appendHistory = (session, visible) => {
     chunks.shift();
   }
 };
+/** 物化历史文本：拼接全部 chunk 并套用字节级尾部裁剪（snapshot.history 的数据源）。 */
 const historyText = (session) => {
   const bytes = Buffer.from(session.historyChunks.join(''));
   // A dropped head chunk can split a UTF-8 sequence; skip leading
@@ -69,21 +92,41 @@ const historyText = (session) => {
   return trimHistoryBytes(bytes.subarray(start));
 };
 
+/**
+ * 构建终端运行时并把它挂载到传入的 app/server 上（HTTP 路由 + WS upgrade）。
+ * @param {object} deps 依赖注入（便于测试替换）：app（express 实例）、server（http server，
+ *   承接 'upgrade' 事件）、fs/path（文件系统抽象）、uiAuthController（UI 鉴权，升级前校验
+ *   session token）、buildAugmentedPath/searchPathFor/isExecutable（PATH 检索工具）、
+ *   isRequestOriginAllowed/rejectWebSocketUpgrade（origin 白名单与升级拒绝）、
+ *   TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS（WS 心跳间隔）、loadPtyProvider（PTY 后端加载器，
+ *   缺省时自动在 bun-pty 与 node-pty 间选择）、terminalTerminationGraceMs（终止宽限）
+ * @returns {{ shutdown: () => Promise<void> }} 仅暴露 shutdown：摘除路由、终止全部会话、关闭 WS server
+ */
 export function createTerminalRuntime({
   app, server, fs, path, uiAuthController, buildAugmentedPath, searchPathFor, isExecutable,
   isRequestOriginAllowed, rejectWebSocketUpgrade, TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS,
   loadPtyProvider, terminalTerminationGraceMs = TERMINATION_GRACE_MS,
 }) {
+  // 会话表：sessionId -> session 状态对象（进程、历史 deque、grid、claims 等）。
   const sessions = new Map();
+  // 进行中的 create 请求：并发同 id 创建只 spawn 一次，同时用于 cwd/shell/login 冲突检测。
   const pendingSessionCreates = new Map();
+  // 每个 session 串行化的 restart promise 链，防止并发重启交错改写状态。
   const pendingSessionRestarts = new Map();
+  // 活跃 WS 连接集合；每个 connection 持有 attachments: sessionId -> attachment 状态。
   const connections = new Set();
+  // 尚未落定的 PTY 终止 promise；shutdown 时统一等待，避免僵尸进程。
   const pendingTerminations = new Set();
+  // 宿主运行时标识（node|bun），随 snapshot 下发供客户端做能力判断。
   const runtime = typeof globalThis.Bun === 'undefined' ? 'node' : 'bun';
+  // PTY provider 的单例加载 promise（bun-pty 优先，回退 node-pty）。
   let ptyProviderPromise = null;
+  // noServer 模式的 WS server；maxPayload 限制单帧 64 KiB 防滥用。
   let wsServer = new WebSocketServer({ noServer: true, maxPayload: TERMINAL_WS_MAX_PAYLOAD_BYTES });
+  // shell 发现/解析器（见 shells.js），服务于 spawnPty 与 /api/terminal/shells。
   const shellResolver = createTerminalShellResolver({ fs, path, searchPathFor, isExecutable, buildAugmentedPath });
 
+  /** 惰性加载 PTY provider 并缓存 promise：Bun 下优先 bun-pty，失败或 Node 下回退 node-pty。 */
   const getPtyProvider = async () => {
     if (!ptyProviderPromise) {
       ptyProviderPromise = loadPtyProvider ? loadPtyProvider() : (async () => {
@@ -97,6 +140,7 @@ export function createTerminalRuntime({
     return ptyProviderPromise;
   };
 
+  // 探测 node-pty 自带的 conpty.dll 是否随包存在（仅 Windows，详见下方英文说明）。
   // Windows: the bundled conpty.dll lives next to node-pty's native module
   // (prebuilds/win32-*/conpty/conpty.dll). Resolve its presence once; when a
   // packaging gap omits it, spawnPty silently falls back to the OS-built-in
@@ -112,6 +156,15 @@ export function createTerminalRuntime({
     }
   }
 
+  /**
+   * 解析 shell 并启动一个 PTY 子进程。
+   * 依次尝试解析结果中的每个可执行文件；组装环境（增强 PATH、TERM/真彩色、按主题的
+   * COLORFGBG），清理 daemon IPC fd 与 AppImage ARGV0 泄漏，注入 OSC 133 shell 集成，
+   * Linux 上按需用 `env -u ARGV0` 包装启动；Windows 优先捆绑 conpty.dll（吞吐约 3x，
+   * 加载失败则粘性回退内置 pseudoconsole）。
+   * @returns {{ process: object, backend: string, shell: string, loginShell: boolean, conptyDll: boolean }}
+   * @throws 全部候选失败时抛出最后一个错误（或 No executable shell found）
+   */
   const spawnPty = async ({ cwd, cols, rows, themeMode, shell, loginShell }) => {
     const provider = await getPtyProvider();
     const resolvedShell = await shellResolver.resolve(shell);
@@ -160,6 +213,10 @@ export function createTerminalRuntime({
     throw lastError ?? new Error('No executable shell found');
   };
 
+  /**
+   * （中文说明）向 shell 启动参数注入 OSC 133 命令边界标记，运行时据此发布
+   * command-finished 事件（未读角标等）。尽力而为：失败绝不阻塞 spawn。
+   */
   /**
    * OSC 133 shell-integration injection: emit command-boundary markers so the
    * runtime can publish command-finished events (unread badges, OSC 133
@@ -215,6 +272,7 @@ export function createTerminalRuntime({
     return null;
   };
 
+  /** 杀掉 PTY 进程：POSIX 上先对整个进程组发信号，再对 PTY 本体发；force 时用 SIGKILL。 */
   const killProcess = (ptyProcess, force = false) => {
     if (!ptyProcess) return;
     if (process.platform !== 'win32' && Number.isInteger(ptyProcess.pid) && ptyProcess.pid > 0) {
@@ -223,6 +281,7 @@ export function createTerminalRuntime({
     try { ptyProcess.kill(force ? 'SIGKILL' : undefined); } catch { /* already gone */ }
   };
 
+  /** 优雅终止：先 SIGTERM（或 PTY kill），等待 onExit 或宽限期到后强制 SIGKILL；promise 记入 pendingTerminations 供 shutdown 等待。 */
   const terminateProcess = (ptyProcess, force = false) => {
     if (!ptyProcess) return Promise.resolve();
     if (force) { killProcess(ptyProcess, true); return Promise.resolve(); }
@@ -245,11 +304,13 @@ export function createTerminalRuntime({
     return termination;
   };
 
+  /** 向 WS 发送一条二进制控制帧；socket 未就绪（readyState!==1）或发送异常返回 false。 */
   const send = (socket, message) => {
     if (socket?.readyState !== 1) return false;
     try { socket.send(createTerminalWsControlFrame(message), { binary: true }); return true; } catch { return false; }
   };
 
+  /** 向所有仍 attach 该 session 的连接广播致命 error 帧并解除 attach（会话关闭/被杀/超时回收时调用）。 */
   const closeAttachments = (sessionId, code, message) => {
     for (const connection of connections) {
       if (!connection.attachments.delete(sessionId)) continue;
@@ -257,6 +318,7 @@ export function createTerminalRuntime({
     }
   };
 
+  /** 构造 snapshot 帧：byte feed 携带物化历史文本，grid feed 置空 history 并附当前全量 grid 帧。 */
   const snapshot = (session, { grid = false } = {}) => ({
     t: 'snapshot', v: 3, s: session.id, q: session.sequence, history: grid ? '' : historyText(session),
     status: session.status, exitCode: session.exitCode, signal: session.signal,
@@ -267,6 +329,7 @@ export function createTerminalRuntime({
     ...(grid ? { grid: session.grid ? session.grid.fullFrame() : null } : {}),
   });
 
+  // （中文说明）判断该 session 是否仍有 grid feed 的 attachment 在订阅。
   // Server-side parsing feed: one GridCore per session turns the raw PTY
   // stream into parsed grid diff frames, published to attachments that
   // opted in via feed:'grid'. Attachments on the default byte feed are
@@ -279,6 +342,7 @@ export function createTerminalRuntime({
     return false;
   };
 
+  /** 重建会话的 GridCore 解析器并注册 onFrame：仅 running 且有 grid attachment 时发布帧（避免 byte feed 客户端看到无法消费的序号漂移）。 */
   const resetGrid = (session, cols, rows) => {
     session.grid?.dispose();
     session.grid = new GridCore({ cols, rows });
@@ -292,12 +356,14 @@ export function createTerminalRuntime({
     };
   };
 
+  /** 计算某个 attachment 的发送积压：全部已发送未 ack 条目的字节之和。 */
   const lagOf = (attachment) => {
     let lag = 0;
     for (const entry of attachment.pendingAcks) lag += entry.bytes;
     return lag;
   };
 
+  // （中文说明）向单个 attachment 发送快照，并把其字节计入流控账户。
   // Send a snapshot to one attachment and account for its bytes like any
   // other frame, so a client that attaches and never reads is bounded too.
   const sendSnapshotTo = (connection, session) => {
@@ -311,6 +377,7 @@ export function createTerminalRuntime({
     attachment.pendingAcks.push({ q: session.sequence, bytes });
   };
 
+  /** 会话事件广播核心：先递增序号，再按 attachment 的 feed 类型与流控状态分发 output/grid 帧（抑制时跳过但序号照走），其余事件直接发送。 */
   const publish = (session, event) => {
     session.sequence += 1;
     const message = { ...event, v: 3, s: session.id, q: session.sequence };
@@ -349,6 +416,7 @@ export function createTerminalRuntime({
     }
   };
 
+  // （中文说明）ack 处理：裁剪已确认前缀；被抑制的 attachment 积压排干后重发快照完成重同步。
   // An attachment recovers (lag drained) by acknowledgment: prune the
   // acknowledged prefix, and if it was suppressed, resynchronize it with a
   // snapshot before live output resumes.
@@ -366,6 +434,7 @@ export function createTerminalRuntime({
     }
   };
 
+  // （中文说明）事件队列的分片参数：每片字节数与墙钟时间上限。
   // The drain is sliced by bytes and wall time and yields between slices so a
   // flood cannot monopolize the event loop: HTTP and other sockets keep
   // being served while megabytes stream through. Small outputs (interactive
@@ -373,6 +442,7 @@ export function createTerminalRuntime({
   const DRAIN_SLICE_BYTES = 256 * 1024;
   const DRAIN_SLICE_MS = 4;
 
+  /** 分片消费事件队列（每片 256 KiB / 4ms，setImmediate 让出事件循环）：output 走主题应答、历史清洗、广播、grid 解析与 OSC 133 扫描；exit 落定终态并广播。 */
   const drainEvents = (session) => {
     if (session.draining) return;
     session.draining = true;
@@ -428,6 +498,7 @@ export function createTerminalRuntime({
     step();
   };
 
+  /** 把 PTY 的 onData/onExit 事件接入会话事件队列并触发 drain。 */
   const wire = (session, ptyProcess) => {
     ptyProcess.onData((data) => {
       session.eventQueue.push({ type: 'output', process: ptyProcess, data });
@@ -437,12 +508,14 @@ export function createTerminalRuntime({
     ptyProcess.onExit(({ exitCode, signal }) => { session.eventQueue.push({ type: 'exit', process: ptyProcess, exitCode, signal }); drainEvents(session); });
   };
 
+  /** 校验 cwd：非空字符串且真实存在为目录，否则抛错（create/restart 共用）。 */
   const validateCwd = async (cwd) => {
     if (typeof cwd !== 'string' || !cwd.trim()) throw new Error('cwd is required');
     const stats = await fs.promises.stat(cwd).catch(() => null);
     if (!stats?.isDirectory()) throw new Error('Invalid working directory');
   };
 
+  /** 应用主题外观（themeMode/前景/背景）；有变化且 2031 模式已启用时向 PTY 写入当前明暗模式上报序列。 */
   const applyAppearance = (session, { themeMode, terminalBackground, terminalForeground }) => {
     const previous = [session.themeMode, session.terminalBackground, session.terminalForeground];
     if (themeMode === 'light' || themeMode === 'dark') session.themeMode = themeMode;
@@ -454,6 +527,7 @@ export function createTerminalRuntime({
     }
   };
 
+  /** 在给定 session 对象上启动新 PTY 并接通全部管线；clear=true（首次创建）时先复位历史与主题协商状态。 */
   const startSession = async (session, { cwd, cols, rows, themeMode = 'dark', terminalBackground, terminalForeground, shell, loginShell }, clear = true) => {
     await validateCwd(cwd);
     const spawned = await spawnPty({ cwd, cols, rows, themeMode, shell, loginShell });
@@ -473,6 +547,7 @@ export function createTerminalRuntime({
     wire(session, spawned.process);
   };
 
+  /** 创建（或复用/合并）终端会话：校验尺寸/shell/login，合并同 id 并发创建并检测 cwd/shell/login 冲突，超过 MAX_SESSIONS 拒绝；返回 session 对象。 */
   const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false }) => {
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
     if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
@@ -509,6 +584,7 @@ export function createTerminalRuntime({
     finally { if (pendingSessionCreates.get(id) === pendingEntry) pendingSessionCreates.delete(id); }
   };
 
+  /** 收集该 session 所有 attachment 上报的 (connectionId, cols, rows)，供隐式视口协商。 */
   const collectViewportSizes = (sessionId) => {
     const sizes = [];
     for (const connection of connections) {
@@ -519,6 +595,7 @@ export function createTerminalRuntime({
     }
     return sizes;
   };
+  /** 视口协商核心：DRIVEN 模式把 PTY 锁定到 driver 的有效宽度；IDLE 模式取全部 attachment 的最小宽/最小高并广播 resized（ownerId 随行）。 */
   const recomputeGrid = (session) => {
     // DRIVEN (forced ownership): the grid is locked to the claimer's effective
     // width and follows their container/zoom changes. No floor, no negotiation.
@@ -553,6 +630,7 @@ export function createTerminalRuntime({
     publish(session, { t: 'resized', ownerId: owner.connectionId, cols, rows });
   };
 
+  /** 广播当前 driver 归属与尺寸；driverId:null 表示回到隐式协商模式。 */
   const broadcastDriverChanged = (session) => {
     if (session.viewportDriver) {
       publish(session, { t: 'driverChanged', driverId: session.viewportDriver.connectionId, cols: session.viewportDriver.cols, rows: session.viewportDriver.rows });
@@ -562,11 +640,13 @@ export function createTerminalRuntime({
   };
 
 
+  /** 新 WS 连接：注册到 connections、下发 hello（含 connectionId）、启动心跳，并挂载消息分发与关闭清理。 */
   wsServer.on('connection', (socket) => {
     const connection = { socket, attachments: new Map(), connectionId: randomUUID() };
     connections.add(connection);
     send(socket, { t: 'hello', v: 3, connectionId: connection.connectionId });
     const heartbeat = setInterval(() => { try { socket.ping(); } catch { /* closed */ } }, TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS);
+    // 控制帧分发：ping/hello/detach/attach/viewport/claimViewport/releaseViewport/resync/ack/write。
     socket.on('message', (raw, isBinary) => {
       if (!isBinary) { send(socket, { t: 'error', v: 3, code: 'BAD_FRAME', message: 'Binary control frame required', fatal: false }); return; }
       const message = readTerminalWsControlFrame(raw);
@@ -672,6 +752,7 @@ export function createTerminalRuntime({
         try { session.process.write(message.d); session.lastActivity = Date.now(); } catch { send(socket, { t: 'error', v: 3, s: id, code: 'WRITE_FAILED', message: 'Failed to write to terminal', fatal: false }); }
       }
     });
+    /** 连接关闭清理：停心跳、摘除 connection、释放其持有的 driver 角色并对受影响 session 重算视口（含已 detach 会话的兜底扫描）。 */
     const cleanup = () => {
       clearInterval(heartbeat);
       const attached = [...connection.attachments.keys()];
@@ -703,6 +784,7 @@ export function createTerminalRuntime({
   });
 
 
+  /** HTTP upgrade 处理：仅接管 /api/terminal/ws；启用 UI 鉴权时先校验 session token 与 origin（401/403 拒绝），成功后交给 wsServer 完成握手。 */
   const upgradeHandler = (req, socket, head) => {
     if (parseRequestPathname(req.url) !== TERMINAL_WS_PATH) return;
     void (async () => {
@@ -718,6 +800,7 @@ export function createTerminalRuntime({
   };
   server.on('upgrade', upgradeHandler);
 
+  /** GET /api/terminal/shells — 列出可用 shell（id/name/supportsLogin），失败 500。 */
   app.get('/api/terminal/shells', async (_req, res) => {
     try {
       const shells = await shellResolver.list();
@@ -726,6 +809,7 @@ export function createTerminalRuntime({
       res.status(500).json({ error: error?.message || 'Failed to list terminal shells' });
     }
   });
+  /** GET /api/terminal/sessions — 列出全部会话；可选 ?cwd= 按已解析的工作目录精确过滤。 */
   app.get('/api/terminal/sessions', (req, res) => {
     const rawCwd = typeof req.query?.cwd === 'string' ? req.query.cwd.trim() : '';
     const cwdFilter = rawCwd ? path.resolve(rawCwd) : null;
@@ -741,6 +825,7 @@ export function createTerminalRuntime({
     }
     res.json({ sessions: list });
   });
+  /** POST /api/terminal/touch — 会话心跳续活；携带 claimant（窗口级客户端实例 id）时记录 claim，作为条件删除的存活依据。 */
   app.post('/api/terminal/touch', (req, res) => {
     const rawIds = Array.isArray(req.body?.sessionIds) ? req.body.sessionIds : [];
     // A claimant is a per-window terminal client instance id. Touching with
@@ -760,10 +845,12 @@ export function createTerminalRuntime({
     }
     res.json({ touched });
   });
+  /** POST /api/terminal/create — 创建终端会话；达到 MAX_SESSIONS 返回 429，其余参数错误 400。 */
   app.post('/api/terminal/create', async (req, res) => {
     try { const session = await createSession(req.body ?? {}); res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status }); }
     catch (error) { res.status(error?.message === 'Maximum terminal sessions reached' ? 429 : 400).json({ error: error?.message || 'Failed to create terminal session' }); }
   });
+  /** POST /api/terminal/:sessionId/resize — 直接调整 PTY 与 grid 尺寸并广播 resized（无下限：尺寸策略归协商模型所有）。 */
   app.post('/api/terminal/:sessionId/resize', (req, res) => {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
@@ -780,12 +867,14 @@ export function createTerminalRuntime({
     }
     catch (error) { res.status(500).json({ error: error?.message || 'Failed to resize terminal' }); }
   });
+  /** POST /api/terminal/:sessionId/appearance — 更新主题外观并按需向 PTY 上报明暗模式；会话不存在 404。 */
   app.post('/api/terminal/:sessionId/appearance', (req, res) => {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     applyAppearance(session, req.body ?? {});
     res.json({ success: true });
   });
+  /** POST /api/terminal/:sessionId/restart — 与同 session 在途 restart 串行：spawn 新 PTY、复位历史/grid/主题协商、优雅终止旧进程并广播 restarted（history 置空）。 */
   app.post('/api/terminal/:sessionId/restart', async (req, res) => {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
@@ -819,6 +908,7 @@ export function createTerminalRuntime({
     } catch (error) { res.status(400).json({ error: error?.message || 'Failed to restart terminal' }); }
     finally { if (pendingSessionRestarts.get(session.id) === restart) pendingSessionRestarts.delete(session.id); }
   });
+  /** DELETE /api/terminal/:sessionId — 带 ?claimant= 时仅释放该 claimant 的 claim（仍有活跃 claim 则不杀，返回 killed:false）；否则强制销毁会话并通知全部 attachment。 */
   app.delete('/api/terminal/:sessionId', async (req, res) => {
     const session = sessions.get(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
@@ -846,6 +936,7 @@ export function createTerminalRuntime({
     await terminateProcess(session.process);
     res.json({ success: true, released: true, killed: true });
   });
+  /** POST /api/terminal/force-kill — 按 sessionId 或 cwd 批量强杀会话（忽略 claim），返回被杀数量与 id 列表。 */
   app.post('/api/terminal/force-kill', (req, res) => {
     const { sessionId, cwd } = req.body ?? {}; let killedCount = 0;
     const killedSessionIds = [];
@@ -856,6 +947,7 @@ export function createTerminalRuntime({
     res.json({ success: true, killedCount, killedSessionIds });
   });
 
+  /** 每 5 分钟的空闲回收：无任何 attachment 且超过 IDLE_TIMEOUT_MS 无活动的会话被强杀并通知。 */
   const idleSweep = setInterval(() => {
     const now = Date.now();
     for (const [id, session] of sessions) {
@@ -866,6 +958,7 @@ export function createTerminalRuntime({
     }
   }, 5 * 60 * 1000);
 
+  /** 停机：摘 upgrade 监听与 sweep、等待在途 restart 落定、强杀全部会话、等待终止 promise，最后在 1s 上限内关闭 WS server。 */
   const shutdown = async () => {
     server.off('upgrade', upgradeHandler); clearInterval(idleSweep);
     await Promise.allSettled([...pendingSessionRestarts.values()]);

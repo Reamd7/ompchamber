@@ -1,3 +1,11 @@
+/**
+ * agent memory 存储运行时 runtime.js 的测试套件。
+ *
+ * 在每个用例独立的临时目录里跑真实的文件存储，覆盖：scope 与
+ * projectId 校验（含路径穿越拒绝）、读取的容错（坏文件报错、坏条目剔
+ * 除、缺文件为权威空）、创建（同名去重、字段截断、容量上限、并发安
+ * 全）、删除、双 scope 合读，以及"复述去重"与用户修正两类更新语义。
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
@@ -5,22 +13,30 @@ import path from 'node:path';
 
 import { createAgentMemoryRuntime } from './runtime.js';
 
+/** 测试用的项目 ID（path_ 前缀 + 路径编码）。 */
 const PROJECT_ID = 'path_dGVzdA';
+/** 全局 scope 的目标对象。 */
 const GLOBAL = { scope: 'global' };
+/** 项目 scope 的目标对象。 */
 const PROJECT = { scope: 'project', projectId: PROJECT_ID };
 
+// 每个用例重建的三件套：临时根目录、被测运行时、递增 id 计数器。
 let rootDir;
 let runtime;
 let idCounter;
 
+/** 全局存储文件的路径（config/memory.json）。 */
 const globalPath = () => path.join(rootDir, 'config', 'memory.json');
+/** 项目存储文件的路径（config/projects/<id>/memory.json）。 */
 const projectPath = () => path.join(rootDir, 'config', 'projects', PROJECT_ID, 'memory.json');
 
+/** 把 JSON 写到指定路径（自动建目录），用于直接向存储文件注入预置内容。 */
 const writeJson = async (filePath, value) => {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
   await fsPromises.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
 };
 
+// 每个用例：新建临时根目录，并构造注入递增 id 的运行时。
 beforeEach(async () => {
   rootDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-agent-memory-'));
   idCounter = 0;
@@ -33,10 +49,12 @@ beforeEach(async () => {
   });
 });
 
+// 每个用例后：递归删除临时目录。
 afterEach(async () => {
   await fsPromises.rm(rootDir, { recursive: true, force: true });
 });
 
+// scope 解析：两个 scope 各自独立存储；非法目标在落盘之前就被拒绝。
 describe('scope resolution', () => {
   test('the two scopes are separate files', async () => {
     await runtime.create(GLOBAL, { title: 'Speaks Ukrainian', body: 'Replies should be in Ukrainian.' });
@@ -62,6 +80,7 @@ describe('scope resolution', () => {
   });
 });
 
+// 读取：缺文件等于权威空、坏文件要报错、坏条目剔除、最新更新的排前面。
 describe('read', () => {
   test('missing file is authoritative empty', async () => {
     expect(await runtime.read(GLOBAL)).toEqual({ version: 1, entries: [] });
@@ -110,6 +129,7 @@ describe('read', () => {
   });
 });
 
+// 创建：字段校验与截断、同名更新不重复、容量上限（全局更紧）与并发安全。
 describe('create', () => {
   test('stores title, body, type and provenance', async () => {
     const { entry } = await runtime.create(PROJECT, {
@@ -186,6 +206,7 @@ describe('create', () => {
   });
 });
 
+// 删除：只删指定条目；未知 id 如实报告未删除。
 describe('remove', () => {
   test('deletes only the requested entry', async () => {
     const keep = await runtime.create(PROJECT, { title: 'Keep', body: 'x' });
@@ -201,6 +222,7 @@ describe('remove', () => {
   });
 });
 
+// 双 scope 合读：一侧损坏不拖垮另一侧，并显式标记失败而非伪装成空。
 describe('readAll', () => {
   test('returns both scopes', async () => {
     await runtime.create(GLOBAL, { title: 'G', body: 'x' });
@@ -233,6 +255,7 @@ describe('readAll', () => {
   });
 });
 
+// 复述去重：同一事实换个说法应替换原条目；仅词汇重叠的不算重复。
 describe('restated duplicates', () => {
   test('a reworded restatement replaces the entry instead of adding a second', async () => {
     await runtime.create(PROJECT, {
@@ -304,6 +327,7 @@ describe('restated duplicates', () => {
   });
 });
 
+// 用户修正 update：改写措辞不动身份（id、createdAt）；空补丁与未知 id 被拒。
 describe('user corrections', () => {
   test('rewrites the wording without changing identity', async () => {
     const { entry } = await runtime.create(PROJECT, { title: 'Vague', body: 'Original.' });

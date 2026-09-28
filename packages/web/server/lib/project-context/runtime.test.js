@@ -1,3 +1,12 @@
+/**
+ * project-context runtime 的单元测试。
+ *
+ * 覆盖：projectId 合法性校验；readContext 的三态语义（缺失=权威空、
+ * 损坏=报错、正常=清洗后返回）；旧版配置的一次性迁移（含绝对路径找回、
+ * 幂等与并发收敛）；todos/notes/plans 的增删改查边界与并发串行化；
+ * 以及 parsePlanMarkdown 的标题解析与兜底。每个用例使用独立的临时
+ * 项目存储目录与确定性 ID 工厂（plan-1、plan-2 …）。
+ */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
@@ -5,21 +14,30 @@ import path from 'node:path';
 
 import { createProjectContextRuntime, parsePlanMarkdown } from './runtime.js';
 
+// 固定的测试用 projectId（base64 风格，模拟真实 id 形状）
 const PROJECT_ID = 'path_dGVzdA';
 
+// 每个用例独立的临时项目存储根目录（beforeEach 创建、afterEach 删除）
 let projectsDirPath;
+// beforeEach 中重建的被测运行时
 let runtime;
+// 确定性 ID 工厂计数器（配合 createId 生成 plan-1、plan-2 …）
 let idCounter;
 
+/** 旧版客户端自有配置文件（迁移源）的完整路径。 */
 const legacyConfigPath = () => path.join(projectsDirPath, `${PROJECT_ID}.json`);
+/** 被测项目 context.json 的完整路径。 */
 const contextPath = () => path.join(projectsDirPath, PROJECT_ID, 'context.json');
+/** 被测项目 plans 目录的完整路径。 */
 const plansDir = () => path.join(projectsDirPath, PROJECT_ID, 'plans');
 
+/** 写出格式化 JSON 测试夹具（自动创建父目录）。 */
 const writeJson = async (filePath, value) => {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
   await fsPromises.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
 };
 
+/** 读取并解析磁盘 JSON，用于断言最终落盘内容。 */
 const readJson = async (filePath) => JSON.parse(await fsPromises.readFile(filePath, 'utf8'));
 
 beforeEach(async () => {
@@ -37,6 +55,7 @@ afterEach(async () => {
   await fsPromises.rm(projectsDirPath, { recursive: true, force: true });
 });
 
+// projectId 的合法字符与必填校验
 describe('projectId validation', () => {
   test('rejects traversal and empty ids', async () => {
     await expect(runtime.readContext('../escape')).rejects.toThrow('unsupported characters');
@@ -45,6 +64,7 @@ describe('projectId validation', () => {
   });
 });
 
+// readContext：缺失即权威空、损坏即报错、字段清洗与 v1 字符串就地迁移
 describe('readContext', () => {
   test('missing file is authoritative empty', async () => {
     expect(await runtime.readContext(PROJECT_ID)).toEqual({
@@ -118,6 +138,7 @@ describe('readContext', () => {
   });
 });
 
+// 旧版 <projectId>.json 中三个上下文键的一次性迁移
 describe('legacy migration', () => {
   test('moves the three keys out of the client-owned config and preserves the rest', async () => {
     await fsPromises.mkdir(plansDir(), { recursive: true });
@@ -199,6 +220,7 @@ describe('legacy migration', () => {
   });
 });
 
+// 待办列表的整存、与备注/计划的隔离、并发串行化与长度截断
 describe('todos', () => {
   test('round-trips through disk', async () => {
     await runtime.saveTodos(PROJECT_ID, [{ id: 't1', text: 'do it', completed: false, createdAt: 1 }]);
@@ -234,6 +256,7 @@ describe('todos', () => {
   });
 });
 
+// 备注的创建、补丁更新、删除、来源记录、上限与并发行为
 describe('notes', () => {
   test('create returns the stored note and prepends it', async () => {
     const first = await runtime.createNote(PROJECT_ID, { body: 'first' });
@@ -340,6 +363,7 @@ describe('notes', () => {
   });
 });
 
+// 计划的创建、读取、覆写、置顶与删除的边界条件
 describe('plans', () => {
   test('create writes markdown and returns a readable plan', async () => {
     const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'My Plan', body: 'step one' });
@@ -479,6 +503,7 @@ describe('plans', () => {
   });
 });
 
+// parsePlanMarkdown 的标题提取、首行兜底与换行归一化
 describe('parsePlanMarkdown', () => {
   test('reads the leading heading as the title', () => {
     expect(parsePlanMarkdown('# Title\n\nbody')).toEqual({ title: 'Title', body: 'body' });

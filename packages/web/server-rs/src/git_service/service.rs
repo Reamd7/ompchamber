@@ -13,6 +13,15 @@
 //! - `git.log()` runs a `--pretty=format:ò…` boundary format whose parsed
 //!   fields are `hash,date,message,refs,body,author_name,author_email`.
 //! - `git.branch()` runs `branch -v -a` (or `branch -v` for local-only).
+//!
+//! 中文说明：本模块是 git 服务的核心，移植自旧 JS server 的
+//! `server/lib/git/service.js` 导出函数族，支撑 `/api/git/*` 路由。
+//! 本文件承载：git 命令执行封装（对齐 simple-git 的 `git.raw` 失败
+//! 语义）、按仓库根串行化的 index 变更队列、remote 存在性缓存
+//! （30 秒 TTL）、worktree 引导状态表、status/diff 查询 API 以及一组
+//! 纯解析辅助函数；提交、日志、分支、stash、push/pull 等其余操作在
+//! 同模块的 service_ops.rs / worktrees.rs 等文件的 `impl GitService`
+//! 块中扩展。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,42 +38,70 @@ use super::paths::{
     normalize_directory_path, require_directory, to_git_path,
 };
 
+/// 服务层统一返回类型：成功值 T，或携带人类可读错误消息的 Err；
+/// 错误消息字符串会直接透传给 `/api/git/*` 的客户端。
 pub type ServiceResult<T> = Result<T, String>;
 
+/// 附加在所有 diff 调用上的固定参数 `--no-ext-diff`：
+/// 禁用 diff.external / gitattributes 配置的外部 diff 驱动，
+/// 保证输出格式稳定可解析。
 pub(crate) const NO_EXT_DIFF: &str = "--no-ext-diff";
+/// remote 存在性缓存的存活时长（对应 JS 侧的 30 秒 TTL），
+/// 用于抑制对 `git remote get-url` 的重复探测。
 const REMOTE_EXISTENCE_CACHE_TTL: Duration = Duration::from_secs(30);
+/// 二进制内容嗅探最多读取的字节数：只检查文件开头这些字节中是否含 NUL。
 const BINARY_SNIFF_BYTES: usize = 8192;
+/// get_status 为新增文件补充行数统计时最多处理的文件条数，超出即截断。
 const MAX_NEW_FILE_STATS: usize = 200;
+/// 参与新增文件行数统计的单文件大小上限（1 MiB），
+/// 更大的文件跳过统计以避免整文件读取开销。
 const MAX_NEW_FILE_STAT_SIZE: u64 = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Module state (JS module-scope maps)
 // ---------------------------------------------------------------------------
 
+/// worktree 引导（bootstrap）任务的进度快照，
+/// 对应 JS 模块级 `worktreeBootstrapState` Map 中每个仓库的条目值。
 #[derive(Debug, Clone)]
 pub struct BootstrapState {
+    /// 引导整体状态（由调用方定义的状态机值，如 running/done/error）。
     pub status: String,
+    /// 当前引导阶段的人类可读描述。
     pub phase: String,
+    /// 引导失败时的错误消息；尚未失败为 None。
     pub error: Option<String>,
+    /// 本快照最近一次更新的 Unix 毫秒时间戳。
     pub updated_at_ms: u64,
 }
 
+/// git 服务主体：组合底层命令执行器与一组对应 JS 模块级可变状态的
+/// 内部表（串行队列、缓存、引导状态），是 `/api/git/*` 的实现核心。
 pub struct GitService {
+    /// 底层 git 命令执行器（真实进程实现或测试注入），以 Arc 共享。
     runner: GitRunner,
     /// JS `gitIndexMutationQueues` — one serialized queue per repository root.
+    /// 按仓库根目录键的 tokio 互斥锁表：同一仓库的 index 变更排队串行执行。
     pub(crate) queues: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
     /// JS `remoteExistenceCache` (`REMOTE_EXISTENCE_CACHE_TTL_MS` = 30s).
+    /// remote 存在性缓存，键为 归一化目录 + NUL + remote 名，
+    /// 值为 (是否存在, 探测时刻)。
     remote_existence_cache: Mutex<HashMap<String, (bool, Instant)>>,
     /// JS `worktreeBootstrapState`.
+    /// 各仓库的 worktree 引导进度快照表。
     pub(crate) bootstrap_state: Mutex<HashMap<PathBuf, BootstrapState>>,
     /// JS `activeWorktreeBootstrapTasks` — a held lock marks an active task.
+    /// 活跃引导任务表：条目持有的锁被占用即表示该仓库引导正在进行。
     pub(crate) active_bootstrap: Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 /// Task body accepted by [`GitService::with_index_queue`]: receives the
 /// service by shared reference for the queued duration.
+/// 中文补充：任务体在持锁期间运行，生命周期绑定对服务的借用期，
+/// 返回 `ServiceResult<T>`。
 pub(crate) type QueuedTask<'a, T> = Pin<Box<dyn Future<Output = ServiceResult<T>> + Send + 'a>>;
 
+/// 当前 Unix epoch 毫秒时间戳；系统时钟早于 epoch 时回退为 0。
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -72,17 +109,24 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 默认实现：与 `GitService::new` 等价，使用真实 git 进程执行器。
 impl Default for GitService {
+    /// 委托给 `GitService::new`，二者完全等价。
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// 主实现块：命令执行封装、按仓库的串行队列、仓库/文件上下文解析，
+/// 以及 status/diff 查询等 API；其余操作见 service_ops.rs 等
+/// 同模块文件中的其它 `impl GitService` 块。
 impl GitService {
+    /// 使用真实 git 进程执行器构造服务实例。
     pub fn new() -> Self {
         Self::with_runner(real_runner())
     }
 
+    /// 使用注入的执行器构造服务，测试可借此替换为确定性的模拟实现。
     pub fn with_runner(runner: GitRunner) -> Self {
         Self {
             runner,
@@ -93,15 +137,20 @@ impl GitService {
         }
     }
 
+    /// 克隆返回底层执行器（Arc 共享，开销低）。
     pub(crate) fn runner(&self) -> GitRunner {
         Arc::clone(&self.runner)
     }
 
+    /// 在指定目录执行 git 子命令（无附加环境变量），
+    /// 原样返回执行结果，不在此处判定成败。
     pub(crate) async fn run(&self, cwd: impl AsRef<Path>, args: &[&str]) -> GitCommandResult {
         let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         (self.runner)(cwd.as_ref().to_path_buf(), argv, HashMap::new()).await
     }
 
+    /// `run` 的带环境变量版本：env 会整体传给执行器
+    /// （例如注入 GIT_SSH_COMMAND 指定私钥）。
     pub(crate) async fn run_with_env(
         &self,
         cwd: impl AsRef<Path>,
@@ -112,6 +161,7 @@ impl GitService {
         (self.runner)(cwd.as_ref().to_path_buf(), argv, env).await
     }
 
+    /// `run` 的参数变体：直接接受 `&[String]`，避免调用方先借用再转换。
     pub(crate) async fn run_strings(
         &self,
         cwd: impl AsRef<Path>,
@@ -122,6 +172,8 @@ impl GitService {
 
     /// simple-git `git.raw` semantics: `Err` only when git exited non-zero
     /// with stderr output; the failure message is stdout+stderr.
+    /// 中文补充：失败消息为 stdout 与 stderr 的直接拼接；
+    /// 退出非零但 stderr 为空时仍按成功返回 stdout。
     pub(crate) async fn raw(
         &self,
         cwd: impl AsRef<Path>,
@@ -141,6 +193,7 @@ impl GitService {
         }
     }
 
+    /// `raw` 的带环境变量版本：失败判定与消息拼接语义完全一致。
     pub(crate) async fn raw_env(
         &self,
         cwd: impl AsRef<Path>,
@@ -162,6 +215,8 @@ impl GitService {
     }
 
     /// `runGitCommandOrThrow` — failure message falls back per JS.
+    /// 中文补充：消息选择顺序为 命令输出 message → fallback_message
+    /// → 兜底 "Git command failed"。
     pub(crate) async fn run_or_throw(
         &self,
         cwd: impl AsRef<Path>,
@@ -184,6 +239,8 @@ impl GitService {
 
     /// JS `withGitIndexMutationQueue` — serializes index mutations per repo.
     /// The task receives the service by reference for the queued duration.
+    /// 中文补充：队列键为目录所属仓库根；任务结束后若无其它等待者
+    /// 则移除表项，防止队列 Map 无限增长。
     pub(crate) async fn with_index_queue<T>(
         &self,
         directory: Option<&str>,
@@ -218,6 +275,8 @@ impl GitService {
         result
     }
 
+    /// 计算串行队列键：目录归一化后解析所属仓库根，
+    /// 解析失败时退回目录绝对路径；目录无效返回 None（调用方不排队直接执行）。
     async fn queue_key(&self, directory: &str) -> Option<PathBuf> {
         let normalized = normalize_directory_path(Some(directory))?;
         if normalized.trim().is_empty() {
@@ -231,6 +290,9 @@ impl GitService {
 
     // -- repository context --------------------------------------------------
 
+    /// 用 `rev-parse --show-toplevel` 解析仓库根并绝对化；
+    /// 输出为空（不在仓库内）时返回 Err("Git directory is required")，
+    /// 相对输出则相对 directory_path 归一化。
     pub(crate) async fn resolve_repository_root(
         &self,
         directory_path: &str,
@@ -254,6 +316,8 @@ impl GitService {
         }
     }
 
+    /// 校验并归一化目录、解析仓库根，打包为 RepoContext；
+    /// 是绝大多数公开 API 的公共前置步骤，目录无效时报错。
     pub(crate) async fn repository_context(&self, directory: &str) -> ServiceResult<RepoContext> {
         let directory_path = require_directory(Some(directory))?;
         let repo_root = self.resolve_repository_root(&directory_path).await?;
@@ -265,6 +329,8 @@ impl GitService {
 
     /// JS `resolveGitInternalPath` — `rev-parse --git-path <name>` resolved
     /// against the repository root.
+    /// 中文补充：命令失败时以空输出继续（解析结果即仓库根本身），
+    /// 调用方按“文件不存在”处理；结果一律绝对化。
     pub(crate) async fn resolve_git_internal_path(
         &self,
         repo_root: &Path,
@@ -284,6 +350,8 @@ impl GitService {
 
     /// JS `resolveGitFileContext` — resolve a caller-supplied file path to an
     /// in-repo path that exists in the worktree, the index, or HEAD.
+    /// 中文补充：候选顺序为 仓库根/路径、目录/路径，且必须位于仓库内；
+    /// 工作区中须是普通文件或符号链接。
     pub(crate) async fn resolve_git_file_context(
         &self,
         directory_path: &Path,
@@ -341,6 +409,8 @@ impl GitService {
     }
 
     /// JS `hasRemote` with the module-level 30s existence cache.
+    /// 中文补充：探测命令为 `remote get-url <name>`（输出非空即存在），
+    /// 结果按 归一化目录 + NUL + remote 名 缓存 REMOTE_EXISTENCE_CACHE_TTL。
     pub(crate) async fn has_remote(&self, cwd: &Path, directory: &str, remote_name: &str) -> bool {
         let remote = remote_name.trim();
         if remote.is_empty() {
@@ -379,6 +449,8 @@ impl GitService {
     }
 
     /// JS `gitRefExists` — deliberately without `--quiet`.
+    /// 中文补充：返回 `show-ref --verify <ref>` 是否执行成功，
+    /// 用于校验具名引用/分支是否存在于本地。
     pub(crate) async fn git_ref_exists(&self, cwd: &Path, reference: &str) -> bool {
         self.run(cwd, &["show-ref", "--verify", reference])
             .await
@@ -386,6 +458,8 @@ impl GitService {
     }
 
     /// JS `getConfig(key, scope)` → last configured value.
+    /// 中文补充：底层命令为 `config --<scope> --null --get-all <key>`，
+    /// 作用域取值如 local/global；键不存在返回 None。
     pub async fn get_config(&self, cwd: &Path, key: &str, scope: &str) -> Option<String> {
         // simple-git getConfig: `config --<scope> --null --get-all <key>`;
         // the last configured value wins.
@@ -395,6 +469,8 @@ impl GitService {
         parse_config_null_value(&output.stdout)
     }
 
+    /// 写入配置项（`config --<scope> <key> <value>`）；
+    /// 失败时错误消息固定为 "Failed to set config"。
     pub async fn add_config(
         &self,
         cwd: &Path,
@@ -415,6 +491,8 @@ impl GitService {
     // Repository / identity queries
     // -----------------------------------------------------------------------
 
+    /// 判定目录是否位于 git 仓库：目录串非空、路径存在
+    /// 且 `rev-parse --git-dir` 执行成功三者缺一不可。
     pub async fn is_git_repository(&self, directory: &str) -> bool {
         let Some(directory_path) =
             normalize_directory_path(Some(directory)).filter(|v| !v.trim().is_empty())
@@ -429,6 +507,8 @@ impl GitService {
             .success
     }
 
+    /// 读取 HOME 目录下的 --global 配置（user.name、user.email、
+    /// core.sshCommand），以 JSON 对象返回；缺失的键为 null。
     pub async fn get_global_identity(&self) -> Value {
         let home = crate::config::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let user_name = self.get_config(&home, "user.name", "global").await;
@@ -441,6 +521,8 @@ impl GitService {
         })
     }
 
+    /// 读取指定 remote 的 URL（`remote get-url`）；
+    /// 目录无效、命令失败或输出为空均返回 None。
     pub async fn get_remote_url(&self, directory: &str, remote_name: &str) -> Option<String> {
         let directory_path = require_directory(Some(directory)).ok()?;
         let result = self
@@ -454,6 +536,8 @@ impl GitService {
         }
     }
 
+    /// 读取实际生效的身份：每个键先查仓库 local 配置，缺失时回退
+    /// HOME 下的 global 配置；返回字段与 get_global_identity 相同。
     pub async fn get_current_identity(&self, directory: &str) -> Value {
         let home = crate::config::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let directory_path = normalize_directory_path(Some(directory)).unwrap_or_default();
@@ -482,6 +566,8 @@ impl GitService {
         })
     }
 
+    /// 判定仓库是否配置了本地身份：
+    /// user.name 或 user.email 任一存在于 --local 配置即返回 true。
     pub async fn has_local_identity(&self, directory: &str) -> bool {
         let Ok(directory_path) = require_directory(Some(directory)) else {
             return false;
@@ -494,6 +580,11 @@ impl GitService {
         self.get_config(&cwd, "user.email", "local").await.is_some()
     }
 
+    /// 把身份配置档写入仓库本地配置：始终设置 user.name/user.email；
+    /// authType=ssh（默认）时写 core.sshCommand 并清除 credential.helper，
+    /// authType=token 时反向（写 credential.helper=store、清 core.sshCommand）；
+    /// signCommits 开启且给出 signingKey 时再配置 gpg.format=ssh、
+    /// user.signingkey 与 commit.gpgsign。成功返回 true。
     pub async fn set_local_identity(
         &self,
         directory: &str,
@@ -578,6 +669,14 @@ impl GitService {
     // Status
     // -----------------------------------------------------------------------
 
+    /// 获取仓库状态概览（`/api/git/status` 的实现）。
+    /// mode="light" 时跳过 diff 统计与 upstream 比较；完整模式额外做四件事：
+    /// 合并 staged/working 两份 numstat 得到 diffStats；为状态码 ?/A 且
+    /// 尚无插入统计的新文件读取内容计算行数（受 MAX_NEW_FILE_STATS 条数与
+    /// MAX_NEW_FILE_STAT_SIZE 大小限制，含 NUL 字节的按二进制保留 0 计数）；
+    /// 无上游跟踪时用基准引用估算 ahead；存在 upstream remote 时附带
+    /// upstreamComparison。同时附带 mergeInProgress / rebaseInProgress。
+    /// 目录不是仓库时返回 NOT_A_REPO_MESSAGE。
     pub async fn get_status(&self, directory: &str, mode: Option<&str>) -> ServiceResult<Value> {
         let light_mode = mode == Some("light");
         let normalized = require_directory(Some(directory))?;
@@ -784,6 +883,9 @@ impl GitService {
         Ok(Value::Object(payload))
     }
 
+    /// 为没有上游跟踪的分支挑选“未发布提交数”的基准引用：
+    /// 候选依次为 origin/HEAD 指向的分支、origin/main、origin/master、
+    /// main、master，返回第一个本地可解析的引用；都不可用返回 None。
     async fn select_base_ref_for_unpublished(
         &self,
         repo_root: &Path,
@@ -827,6 +929,9 @@ impl GitService {
         None
     }
 
+    /// 统计 HEAD 相对 refs/remotes/<remote>/<branch> 的领先/落后数量
+    /// （`rev-list --left-right --count HEAD...ref`）；
+    /// 远端引用本地不存在时返回 None。
     async fn remote_branch_comparison(
         &self,
         repo_root: &Path,
@@ -861,6 +966,8 @@ impl GitService {
             .map(|(ahead, behind)| (remote_name.to_string(), branch.to_string(), ahead, behind))
     }
 
+    /// 检测 merge 进行中：MERGE_HEAD 可解析时读取其 7 位短 SHA 与
+    /// MERGE_MSG 首行，返回 { head, message }；否则返回 Null。
     async fn detect_merge_in_progress(&self, context: &RepoContext) -> Value {
         let merge_head_exists = self
             .raw(
@@ -899,6 +1006,9 @@ impl GitService {
         json!({ "head": head_sha, "message": message })
     }
 
+    /// 检测 rebase 进行中：仓库内存在 rebase-merge 或 rebase-apply 目录时，
+    /// 读取其 head-name/onto 文件并返回 { headName, onto }
+    /// （分支名去掉 refs/heads/ 前缀，onto 取 7 位短 SHA）；否则返回 Null。
     async fn detect_rebase_in_progress(&self, context: &RepoContext) -> Value {
         let rebase_merge = self
             .resolve_git_internal_path(&context.repo_root, "rebase-merge")
@@ -937,6 +1047,11 @@ impl GitService {
     // Diffs
     // -----------------------------------------------------------------------
 
+    /// 获取统一 diff 文本。staged 为真时附加 --cached；指定文件时先解析
+    /// FileContext 并限定路径；context_lines 映射为 -U<n>（负数按 0 处理）。
+    /// 对 diff 为空的未跟踪文件回退：符号链接手工合成 mode 120000 的
+    /// 新文件 diff，其余文件用 `--no-index /dev/null <path>` 生成
+    /// （该命令退出码 1 且有输出时，输出本身就是 diff）。
     pub async fn get_diff(
         &self,
         directory: &str,
@@ -1032,6 +1147,8 @@ impl GitService {
         }
     }
 
+    /// 列出未被 ignore 规则排除的未跟踪文件
+    /// （`ls-files --others --exclude-standard`）；命令失败时静默返回空列表。
     pub async fn list_untracked_paths(&self, directory: &str) -> ServiceResult<Vec<String>> {
         let context = self.repository_context(directory).await?;
         let result = self
@@ -1051,6 +1168,8 @@ impl GitService {
             .collect())
     }
 
+    /// 批量生成未跟踪文件相对 /dev/null 的新文件 diff；
+    /// 结果顺序与输入路径一一对应，单个文件失败时对应位置为空字符串。
     pub async fn get_untracked_diffs(
         &self,
         directory: &str,
@@ -1091,6 +1210,10 @@ impl GitService {
         Ok(results)
     }
 
+    /// 获取 base...head 的三点 diff。base 的解析增强顺序：
+    /// refs/remotes/origin/<base> 可用则改写为 origin/<base>；否则（base
+    /// 不含通配/范围字符时）用 for-each-ref 在 refs/remotes/*/ 下模糊匹配；
+    /// 随后校验两端引用本地可解析，再执行 `diff -U<n> base...head [-- path]`。
     pub async fn get_range_diff(
         &self,
         directory: &str,
@@ -1172,6 +1295,8 @@ impl GitService {
             .map_err(|f| f.message.trim().to_string())
     }
 
+    /// 逐个校验引用能解析到 commit（`rev-parse --verify --quiet <ref>^{commit}`）；
+    /// 任一失败返回 "Ref ... is not available locally. Fetch it before comparing."。
     async fn assert_range_refs_resolve(
         &self,
         repo_root: &Path,
@@ -1201,6 +1326,9 @@ impl GitService {
         Ok(())
     }
 
+    /// 从分支 reflog 推断其创建来源作为 base：取最旧的
+    /// "branch: Created from <src>" 条目（来源须为具名引用）；
+    /// 来源等于分支自身、当前不可解析或 reflog 不可读时返回 { base: null }。
     pub async fn get_branch_base(&self, directory: &str, branch: &str) -> ServiceResult<Value> {
         let branch_name = branch.trim().to_string();
         if branch_name.is_empty() {
@@ -1247,6 +1375,10 @@ impl GitService {
         Ok(json!({ "base": source }))
     }
 
+    /// 列出 base...head 的变更文件（`diff --name-status -z -C`，
+    /// 开启重命名/复制检测）：解析 NUL 分隔的记录，R/C 状态会跳过
+    /// 相似度得分与旧路径、取新路径，返回 [{ path, status }]，
+    /// status 取首字母（缺省 M）。
     pub async fn get_range_files(
         &self,
         directory: &str,
@@ -1321,6 +1453,11 @@ impl GitService {
         Ok(files)
     }
 
+    /// 获取单文件差异的两侧内容。图片文件以 data:<mime>;base64 形式返回
+    /// HEAD 与（staged 时）index 中的版本；非图片先做二进制判定
+    /// （内容嗅探 + git numstat），命中则返回 isBinary=true 且内容为空；
+    /// 符号链接的 modified 为链接目标路径；普通文件直接读工作区内容，
+    /// 文件不存在视为已删除（modified 为空）。两侧内容统一把 CRLF 规范为 LF。
     pub async fn get_file_diff(
         &self,
         directory: &str,
@@ -1451,6 +1588,9 @@ impl GitService {
         }))
     }
 
+    /// 判定指定文件的 diff 是否为二进制：先看 numstat 是否给出 `-` 计数；
+    /// 未跟踪文件再跑 `--no-index --numstat`，并在其 stdout/stderr/message
+    /// 中查找 `-` 计数或 "binary files"/"git binary patch" 字样。
     async fn is_binary_diff(&self, repo_root: &Path, repo_path: &str, staged: bool) -> bool {
         let mut args: Vec<String> = vec!["diff".into(), "--numstat".into()];
         if staged {
@@ -1505,6 +1645,9 @@ impl GitService {
     // Status parsing (simple-git StatusSummary port)
     // -----------------------------------------------------------------------
 
+    /// 执行 `status --porcelain -b -u --null`（附加 extra_args，
+    /// 如 -uall）并把 stdout 解析为 StatusSummary；
+    /// 执行失败时 stdout 为空，自然得到空 summary。
     pub(crate) async fn parse_status(&self, cwd: &Path, extra_args: &[&str]) -> StatusSummary {
         let mut argv: Vec<String> = vec![
             "status".into(),
@@ -1523,35 +1666,57 @@ impl GitService {
 // Shared value types
 // ---------------------------------------------------------------------------
 
+/// 一次仓库操作的定位信息：调用目录与仓库根。
 pub(crate) struct RepoContext {
+    /// 调用方传入的工作目录（已校验非空并归一化）。
     pub directory_path: PathBuf,
+    /// `rev-parse --show-toplevel` 解析出的仓库根绝对路径。
     pub repo_root: PathBuf,
 }
 
+/// 解析后的仓库内文件定位信息。
 pub(crate) struct FileContext {
+    /// 文件在工作区中的绝对路径。
     pub absolute_path: PathBuf,
+    /// 相对仓库根、传给 git 命令使用的路径（已转为 POSIX 分隔符）。
     pub repo_path: String,
+    /// 是否为符号链接；符号链接的“内容”按链接目标路径处理。
     pub is_symbolic_link: bool,
 }
 
+/// porcelain 输出中单个文件的状态条目。
 #[derive(Debug, Clone)]
 pub struct StatusFile {
+    /// 仓库相对路径；重命名记录取 NUL 分隔符前的新路径。
     pub path: String,
+    /// index（暂存区）状态码，即 XY 对中的 X；空格表示该侧无变化。
     pub index: String,
+    /// 工作区状态码，即 XY 对中的 Y；空格表示该侧无变化。
     pub working_dir: String,
 }
 
+/// `git status --porcelain -b -u --null` 的解析结果，
+/// 字段语义对齐 simple-git 的 StatusSummary。
 #[derive(Debug, Clone, Default)]
 pub struct StatusSummary {
+    /// 当前分支名；分支头未提供分支信息时为 None。
     pub current: Option<String>,
+    /// 上游跟踪分支（分支头 "..." 之后的部分）；无跟踪关系时为 None。
     pub tracking: Option<String>,
+    /// 领先上游的提交数；分支头未给出时为 0。
     pub ahead: i64,
+    /// 落后上游的提交数；分支头未给出时为 0。
     pub behind: i64,
+    /// 是否处于 detached HEAD（分支头包含 "(no branch)"）。
     pub detached: bool,
+    /// 全部未被忽略文件的状态条目（含未跟踪与冲突文件）。
     pub files: Vec<StatusFile>,
+    /// 处于冲突合并状态的文件路径列表（状态码 DD/AU/UD/UA/DU/AA/UU）。
     pub conflicted: Vec<String>,
 }
 
+/// 目录不是 git 仓库时返回给客户端的标准错误文本；
+/// 刻意与 git 自身的 fatal 输出保持一致，客户端据此识别该场景。
 pub(crate) const NOT_A_REPO_MESSAGE: &str =
     "fatal: not a git repository (or any of the parent directories): .git";
 
@@ -1559,11 +1724,15 @@ pub(crate) const NOT_A_REPO_MESSAGE: &str =
 // Pure parsing helpers
 // ---------------------------------------------------------------------------
 
+/// 计算 target 相对 root 的路径字符串；target 不在 root 之下时
+/// 退化为 target 自身的字符串（损失式转换）。
 fn relative_path_string(root: &Path, target: &Path) -> String {
     let relative = target.strip_prefix(root).unwrap_or(target);
     relative.to_string_lossy().to_string()
 }
 
+/// 解析 `config --null --get-all` 的输出：按 NUL 分段，取最后一个非空段；
+/// 没有任何值时返回 None（调用方据此映射为 JSON null）。
 pub(crate) fn parse_config_null_value(stdout: &str) -> Option<String> {
     // `--null --get-all` emits value\0value\0…; the last configured value
     // wins. An empty final value is an empty string (caller maps to null).
@@ -1574,6 +1743,8 @@ pub(crate) fn parse_config_null_value(stdout: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+/// 解析 `rev-list --left-right --count` 的 "ahead behind" 两段输出为数值对；
+/// 不足两段或任一段非数字时返回 None。
 pub(crate) fn parse_ahead_behind_counts(value: &str) -> Option<(i64, i64)> {
     let mut parts = value.split_whitespace();
     let ahead = parts.next().and_then(|v| v.parse::<i64>().ok());
@@ -1584,6 +1755,9 @@ pub(crate) fn parse_ahead_behind_counts(value: &str) -> Option<(i64, i64)> {
     }
 }
 
+/// 把一份 numstat 输出按路径累加进统计 Map（同一路径再次出现时
+/// insertions/deletions 与已有值相加），供 staged 与 working
+/// 两份输出合并成完整 diffStats。
 fn accumulate_numstat(raw: &str, map: &mut serde_json::Map<String, Value>) {
     for line in raw.split('\n').map(str::trim).filter(|l| !l.is_empty()) {
         let parts: Vec<&str> = line.split('\t').collect();
@@ -1609,6 +1783,7 @@ fn accumulate_numstat(raw: &str, map: &mut serde_json::Map<String, Value>) {
     }
 }
 
+/// 解析 numstat 的单个计数字段：`-`（二进制标记）或解析失败时返回 0。
 fn parse_numstat_count(raw: &str) -> i64 {
     if raw == "-" {
         0
@@ -1617,6 +1792,8 @@ fn parse_numstat_count(raw: &str) -> i64 {
     }
 }
 
+/// 从 numstat 风格的输出判定二进制：首个非空行的增加数或删除数列
+/// 为 `-` 即视为二进制；空输出返回 false。
 pub(crate) fn parse_is_binary_from_numstat(raw: &str) -> bool {
     let text = raw.trim();
     if text.is_empty() {
@@ -1633,6 +1810,8 @@ pub(crate) fn parse_is_binary_from_numstat(raw: &str) -> bool {
     added == "-" || deleted == "-"
 }
 
+/// 内容嗅探判定二进制：读取文件前 BINARY_SNIFF_BYTES 字节，
+/// 其中出现 NUL 字节即判定为二进制；打开或读取失败按非二进制处理。
 async fn looks_binary_by_sniff(absolute_path: &Path) -> bool {
     use tokio::io::AsyncReadExt;
     let Ok(mut handle) = tokio::fs::File::open(absolute_path).await else {
@@ -1647,6 +1826,8 @@ async fn looks_binary_by_sniff(absolute_path: &Path) -> bool {
 
 /// Port of simple-git's `parseStatusSummary` for
 /// `git status --porcelain -b -u --null [-uall]`.
+/// 中文补充：输出按 NUL 分段逐条解析；以 R 开头的分段会与其后一段
+/// （旧路径）拼成一条记录后再交给 push_status_line。
 pub(crate) fn parse_status_summary(stdout: &str) -> StatusSummary {
     let mut summary = StatusSummary::default();
     let chunks: Vec<&str> = stdout.split('\0').collect();
@@ -1667,6 +1848,9 @@ pub(crate) fn parse_status_summary(stdout: &str) -> StatusSummary {
     summary
 }
 
+/// 解析单条 porcelain 记录（XY 状态码 + 路径）：XY 前缀非法的行被丢弃；
+/// `##` 行转交分支头解析；`!!`（被忽略文件）不记录；冲突状态码的路径
+/// 额外计入 conflicted；重命名记录取 NUL 分隔符前的新路径。
 fn push_status_line(summary: &mut StatusSummary, line: &str) {
     let bytes = line.as_bytes();
     let (index, working_dir, path) = if bytes.len() > 2 && bytes[2] == b' ' {
@@ -1712,6 +1896,9 @@ fn push_status_line(summary: &mut StatusSummary, line: &str) {
     });
 }
 
+/// 解析分支头（`## ` 之后的内容）：提取 ahead/behind 计数、
+/// current/tracking 分支名，并处理 "No commits yet on <branch>"
+/// 与 "(no branch)"（detached HEAD）两种特殊形态。
 fn parse_status_branch_header(summary: &mut StatusSummary, rest: &str) {
     // `rest` is everything after "## " (already sliced by the caller).
     let line = rest.trim_start_matches(' ');
@@ -1752,6 +1939,8 @@ fn parse_status_branch_header(summary: &mut StatusSummary, rest: &str) {
     }
 }
 
+/// 提取 line 中 marker 之后紧随的连续 ASCII 数字并解析为整数；
+/// marker 不存在或其后没有数字时返回 None。
 fn extract_count_after(line: &str, marker: &str) -> Option<i64> {
     let pos = line.find(marker)?;
     let tail = &line[pos + marker.len()..];
@@ -1761,6 +1950,8 @@ fn extract_count_after(line: &str, marker: &str) -> Option<i64> {
 
 /// JS `parseBranchCreationSource` — oldest "branch: Created from <src>" entry
 /// whose source is a named ref (not bare/positional HEAD, not a raw hash).
+/// 中文补充：reflog 输出最新条目在前，此处反向（从最旧条目）扫描，
+/// 返回首个命中的来源；来源为空串时直接返回 None。
 pub fn parse_branch_creation_source(reflog_text: &str) -> Option<String> {
     let lines: Vec<&str> = reflog_text
         .lines()
@@ -1787,6 +1978,10 @@ pub fn parse_branch_creation_source(reflog_text: &str) -> Option<String> {
     None
 }
 
+/// 解析日志查询的起点引用：`from` 为空返回 None；否则依次探测 `from`
+/// 原值、`refs/remotes/origin/<from>`（命中则改写为 `origin/<from>`）；
+/// 都未命中时原样返回 `from`，交给后续 git 命令自行报错。
+/// `check_ref` 为异步的引用存在性探测回调。
 pub fn resolve_base_ref_for_log(
     from: Option<&str>,
     check_ref: impl Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + 'static,
@@ -1808,6 +2003,8 @@ pub fn resolve_base_ref_for_log(
 }
 
 /// JS `new Date().toISOString()` — UTC ISO-8601 with millisecond precision.
+/// 中文补充：由 epoch 毫秒手工换算得到（日期部分见 civil_from_days），
+/// 不引入 chrono 依赖。
 pub fn iso_now() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1829,6 +2026,8 @@ pub fn iso_now() -> String {
     )
 }
 
+/// 把自 1970-01-01 起的天数换算为公历 (年, 月, 日)：
+/// Howard Hinnant 的 civil_from_days 算法，纯整数运算并正确处理闰年。
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);

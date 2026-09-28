@@ -1,3 +1,10 @@
+/**
+ * dev server 端口枚举解析器（parse.js）的单元测试套件。
+ *
+ * 覆盖 lsof/netstat//proc/net/tcp 三种来源的解析、主机可达性判定与
+ * 候选筛选（排除自身端口与基础设施端口），重点验证分组、IPv6 方括号、
+ * 通配绑定与畸形输出的容错。
+ */
 import { describe, expect, test } from 'bun:test';
 
 import {
@@ -8,6 +15,7 @@ import {
   selectDevServerCandidates,
 } from './parse.js';
 
+/** lsof -F pcn 输出解析：进程分组、去重、IPv6、排序与容错。 */
 describe('lsof listener parsing', () => {
   test('associates every socket with the process record above it', () => {
     const output = [
@@ -56,7 +64,9 @@ describe('lsof listener parsing', () => {
   });
 });
 
+/** Windows netstat 输出解析：只取监听中的 loopback/通配 socket。 */
 describe('netstat listener parsing', () => {
+  // netstat 样例：表头 + 两个应被采纳的监听条目 + LAN 绑定与 ESTABLISHED 干扰项。
   const output = [
     'Active Connections',
     '',
@@ -84,6 +94,7 @@ describe('netstat listener parsing', () => {
   });
 });
 
+/** 主机可达性：loopback 与通配绑定可达，特定 LAN 地址不可达。 */
 describe('host reachability', () => {
   test('accepts loopback and wildcard binds', () => {
     for (const host of ['127.0.0.1', 'localhost', '[::1]', '*', '0.0.0.0', '[::]']) {
@@ -96,7 +107,9 @@ describe('host reachability', () => {
   });
 });
 
+/** 候选筛选：剔除自身端口/进程与基础设施端口，保留其余。 */
 describe('candidate selection', () => {
+  // 共用的监听列表样例：含 dev server、postgres、OMPChamber 自身与普通 node 进程。
   const listeners = [
     { port: 5173, pid: 10, command: 'node' },
     { port: 5432, pid: 11, command: 'postgres' },
@@ -125,7 +138,9 @@ describe('candidate selection', () => {
   });
 });
 
+/** /proc/net/tcp 与 tcp6 解析：状态、地址与端口的十六进制读取。 */
 describe('proc net tcp parsing', () => {
+  // /proc/net/tcp 的表头行（解析器靠列数与状态码识别，表头本身应被忽略）。
   const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode';
 
   test('takes listening sockets on loopback and wildcard binds', () => {

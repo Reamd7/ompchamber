@@ -6,6 +6,13 @@
 //! The JS test injects an `os` object for a fake home; the port threads
 //! `home` explicitly. `OPENCODE_CONFIG_DIR` and `XDG_CACHE_HOME` are read per
 //! call like the JS.
+//!
+//! 中文说明：OpenCode skill 的发现、配置 CRUD、支撑文件与重命名实现，
+//! 并内置 JS `shared.js` 中的 skill 文件辅助（walkSkillMdFiles、
+//! addSkillFromMdFile、带路径包含校验的支撑文件 IO、getAncestors、
+//! findWorktreeRoot）。home 目录用参数显式传入（JS 测试注入 os 对象的
+//! 等价做法）；`OPENCODE_CONFIG_DIR` / `XDG_CACHE_HOME` 与 JS 一样每次
+//! 调用时读取。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -15,14 +22,19 @@ use serde_json::{Map, Value, json};
 use super::config_layers::read_config_layer;
 use super::md_yaml::{parse_md_content, write_md_file};
 
+/// 内置 skill 的占位路径：无磁盘文件，元数据由内置清单直接提供。
 pub(crate) const BUILT_IN_SKILL_LOCATION: &str = "<built-in>";
+/// scope 字面量 "user"：home 目录下的 skill。
 const SKILL_SCOPE_USER: &str = "user";
+/// scope 字面量 "project"：项目目录/worktree 内的 skill。
 const SKILL_SCOPE_PROJECT: &str = "project";
 
+/// 用户级 OpenCode 配置目录 `~/.config/opencode`。
 pub(crate) fn opencode_config_dir(home: &Path) -> PathBuf {
     home.join(".config").join("opencode")
 }
 
+/// 用户级 OpenCode skill 目录 `~/.config/opencode/skills`。
 pub(crate) fn skill_dir(home: &Path) -> PathBuf {
     opencode_config_dir(home).join("skills")
 }
@@ -38,6 +50,8 @@ pub(crate) fn ensure_dirs(home: &Path) {
     }
 }
 
+/// 自 `start_dir` 逐级向上查找包含 `.git` 的祖先（worktree 根）；
+/// 到文件系统根仍未命中则返回 `None`。
 pub(crate) fn find_worktree_root(start_dir: &Path) -> Option<PathBuf> {
     let mut current = super::http_util::resolve_path(&start_dir.to_string_lossy());
     loop {
@@ -52,6 +66,8 @@ pub(crate) fn find_worktree_root(start_dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// 自 `start_dir`（含）逐级向上收集祖先目录，直到 `stop_dir`（含）
+/// 或文件系统根为止。
 pub(crate) fn get_ancestors(start_dir: &Path, stop_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut result = Vec::new();
     let mut current = super::http_util::resolve_path(&start_dir.to_string_lossy());
@@ -76,6 +92,8 @@ pub(crate) fn get_ancestors(start_dir: &Path, stop_dir: Option<&Path>) -> Vec<Pa
     result
 }
 
+/// 确保项目 `.opencode/skills` 与 legacy `.opencode/skill` 目录存在，
+/// 返回新式（复数）目录路径。
 fn ensure_project_skill_dir(working_directory: &Path) -> PathBuf {
     let project_skill_dir = working_directory.join(".opencode").join("skills");
     if !project_skill_dir.exists() {
@@ -88,6 +106,8 @@ fn ensure_project_skill_dir(working_directory: &Path) -> PathBuf {
     project_skill_dir
 }
 
+/// 项目级 skill 目录：优先 `.opencode/skills/<name>`，仅当 legacy
+/// `.opencode/skill/<name>` 存在且新目录不存在时回退到 legacy。
 fn get_project_skill_dir(working_directory: &Path, skill_name: &str) -> PathBuf {
     let plural = working_directory
         .join(".opencode")
@@ -103,10 +123,13 @@ fn get_project_skill_dir(working_directory: &Path, skill_name: &str) -> PathBuf 
     plural
 }
 
+/// 项目级 skill 的 SKILL.md 完整路径。
 fn get_project_skill_path(working_directory: &Path, skill_name: &str) -> PathBuf {
     get_project_skill_dir(working_directory, skill_name).join("SKILL.md")
 }
 
+/// 用户级 skill 目录：优先 `~/.config/opencode/skills/<name>`，仅当
+/// legacy `skill/<name>` 存在且新目录不存在时回退到 legacy。
 fn get_user_skill_dir(home: &Path, skill_name: &str) -> PathBuf {
     let plural = skill_dir(home).join(skill_name);
     let legacy = opencode_config_dir(home).join("skill").join(skill_name);
@@ -116,10 +139,12 @@ fn get_user_skill_dir(home: &Path, skill_name: &str) -> PathBuf {
     plural
 }
 
+/// 用户级 skill 的 SKILL.md 完整路径。
 fn get_user_skill_path(home: &Path, skill_name: &str) -> PathBuf {
     get_user_skill_dir(home, skill_name).join("SKILL.md")
 }
 
+/// 项目内 Claude 兼容 skill 目录 `.claude/skills/<name>`。
 fn get_claude_skill_dir(working_directory: &Path, skill_name: &str) -> PathBuf {
     working_directory
         .join(".claude")
@@ -127,10 +152,12 @@ fn get_claude_skill_dir(working_directory: &Path, skill_name: &str) -> PathBuf {
         .join(skill_name)
 }
 
+/// 项目内 Claude 兼容 skill 的 SKILL.md 路径。
 fn get_claude_skill_path(working_directory: &Path, skill_name: &str) -> PathBuf {
     get_claude_skill_dir(working_directory, skill_name).join("SKILL.md")
 }
 
+/// 用户级 Claude 兼容 skill 的 SKILL.md 路径（`~/.claude/skills/<name>/SKILL.md`）。
 fn get_user_claude_skill_path(home: &Path, skill_name: &str) -> PathBuf {
     home.join(".claude")
         .join("skills")
@@ -138,14 +165,17 @@ fn get_user_claude_skill_path(home: &Path, skill_name: &str) -> PathBuf {
         .join("SKILL.md")
 }
 
+/// 用户级 agents skill 目录 `~/.agents/skills/<name>`。
 fn get_user_agents_skill_dir(home: &Path, skill_name: &str) -> PathBuf {
     home.join(".agents").join("skills").join(skill_name)
 }
 
+/// 用户级 agents skill 的 SKILL.md 路径。
 fn get_user_agents_skill_path(home: &Path, skill_name: &str) -> PathBuf {
     get_user_agents_skill_dir(home, skill_name).join("SKILL.md")
 }
 
+/// 项目内 agents skill 目录 `.agents/skills/<name>`。
 fn get_project_agents_skill_dir(working_directory: &Path, skill_name: &str) -> PathBuf {
     working_directory
         .join(".agents")
@@ -153,6 +183,7 @@ fn get_project_agents_skill_dir(working_directory: &Path, skill_name: &str) -> P
         .join(skill_name)
 }
 
+/// 项目内 agents skill 的 SKILL.md 路径。
 fn get_project_agents_skill_path(working_directory: &Path, skill_name: &str) -> PathBuf {
     get_project_agents_skill_dir(working_directory, skill_name).join("SKILL.md")
 }
@@ -160,15 +191,23 @@ fn get_project_agents_skill_path(working_directory: &Path, skill_name: &str) -> 
 /// A discovered skill row (the JSON wire shape of the list/get routes).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DiscoveredSkill {
+/// skill 名（frontmatter `name` 去除首尾空白后非空）。
     pub name: String,
+/// SKILL.md 绝对路径；内置 skill 使用 `<built-in>` 占位符。
     pub path: Option<String>,
+/// 归属 scope："user" 或 "project"。
     pub scope: Option<String>,
+/// 来源标签："opencode" / "claude" / "agents"。
     pub source: Option<String>,
+/// frontmatter `description`（缺省为空串）。
     pub description: Option<String>,
+/// 内置 skill 的正文；磁盘发现的 skill 不填充此字段。
     pub content: Option<String>,
 }
 
+/// `DiscoveredSkill` 的 wire 序列化（list/get 路由的 JSON 形状）。
 impl DiscoveredSkill {
+/// 转成路由 JSON：`content` 仅在存在时输出，其余缺失字段输出 null。
     pub(crate) fn to_value(&self) -> Value {
         let mut map = Map::new();
         map.insert("name".into(), Value::from(self.name.clone()));
@@ -198,13 +237,19 @@ impl DiscoveredSkill {
     }
 }
 
+/// getSkillScope 的判定结果：命中的 scope / 路径 / 来源，全空表示未找到。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SkillScope {
+/// 命中的 scope（"user"/"project"），未命中为 None。
     pub scope: Option<String>,
+/// 命中的 SKILL.md 路径，未命中为 None。
     pub path: Option<String>,
+/// 命中的来源标签（"opencode"/"claude"/"agents"）。
     pub source: Option<String>,
 }
 
+/// 判定 skill 归属：优先取 discovery 结果；否则按 project(opencode→claude)
+/// → user(opencode→claude→agents) 顺序探测磁盘路径；全部未命中返回空结构。
 pub(crate) fn get_skill_scope(
     skill_name: &str,
     working_directory: Option<&Path>,
@@ -276,6 +321,8 @@ pub(crate) fn walk_skill_md_files(root_dir: &Path) -> Vec<PathBuf> {
     results
 }
 
+/// `walk_skill_md_files` 的递归体：目录下钻，文件名为 `SKILL.md` 的收集；
+/// 不可读目录静默跳过（同 JS 的 readdir 容错）。
 fn walk_dir_for_skill_md(dir: &Path, results: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -293,6 +340,8 @@ fn walk_dir_for_skill_md(dir: &Path, results: &mut Vec<PathBuf>) {
     }
 }
 
+/// `addSkillFromMdFile`：解析 SKILL.md frontmatter，`name` 缺失或为空的
+/// 文件直接跳过；同名 skill 后写入者覆盖先写入者（discovery 优先级实现）。
 fn add_skill_from_md_file(
     skills: &mut BTreeMap<String, DiscoveredSkill>,
     skill_md_path: &Path,
@@ -394,6 +443,7 @@ fn read_merged_config(working_directory: Option<&Path>, home: &Path) -> Value {
     Value::Object(merged)
 }
 
+/// 深合并两层配置 map：键在双侧均为对象时递归合并，否则 overlay 覆盖 base。
 fn merge_config_maps(base: &mut Map<String, Value>, overlay: &Map<String, Value>) {
     for (key, value) in overlay {
         match (base.get(key), value) {
@@ -572,6 +622,8 @@ pub(crate) fn list_skill_supporting_files(skill_dir: &Path) -> Vec<Value> {
     files
 }
 
+/// `list_skill_supporting_files` 的递归体：按文件名排序遍历，目录下钻，
+/// 收集除 SKILL.md 外每个文件的 name / path / fullPath。
 fn walk_supporting_files(dir: &Path, relative_path: &str, files: &mut Vec<Value>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -617,9 +669,13 @@ fn assert_path_within_skill_dir(
     Ok(target)
 }
 
+/// 路径越界（试图逃逸 skill 目录）或目标不可访问；路由层映射为
+/// EACCES "Access to file denied"。
 #[derive(Debug)]
 pub(crate) struct AccessError;
 
+/// 读取 skill 支撑文件：先做路径包含校验，文件不存在返回 `Ok(None)`，
+/// 越界或读取失败返回 `AccessError`。
 pub(crate) fn read_skill_supporting_file(
     skill_dir: &Path,
     relative_path: &str,
@@ -633,6 +689,7 @@ pub(crate) fn read_skill_supporting_file(
         .map_err(|_| AccessError)
 }
 
+/// 写入 skill 支撑文件（自动创建父目录）；越界或写入失败返回 `AccessError`。
 pub(crate) fn write_skill_supporting_file(
     skill_dir: &Path,
     relative_path: &str,
@@ -645,6 +702,8 @@ pub(crate) fn write_skill_supporting_file(
     std::fs::write(&full_path, content).map_err(|_| AccessError)
 }
 
+/// 删除 skill 支撑文件，并自底向上清理因此变空的父目录（直至 skill 根）；
+/// 文件本身不存在时视为成功（幂等）。
 pub(crate) fn delete_skill_supporting_file(
     skill_dir: &Path,
     relative_path: &str,
@@ -676,6 +735,7 @@ pub(crate) fn delete_skill_supporting_file(
     Ok(())
 }
 
+/// 路径存在且为普通文件（getSkillSources 用它决定能否用磁盘内容覆盖元数据）。
 fn is_readable_file(path: Option<&str>) -> bool {
     path.is_some_and(|path| std::fs::metadata(path).is_ok_and(|m| m.is_file()))
 }
@@ -963,6 +1023,7 @@ pub(crate) fn is_valid_skill_name(skill_name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
+/// 名称不合法时返回固定文案错误（create/rename 的前置校验）。
 fn assert_valid_skill_name(skill_name: &str) -> Result<(), String> {
     if !is_valid_skill_name(skill_name) {
         return Err(format!(
@@ -1066,6 +1127,7 @@ pub(crate) fn create_skill(
     Ok(())
 }
 
+/// 写支撑文件失败的固定错误文案。
 fn error_message_for_support_write() -> String {
     "Failed to write skill supporting file".to_string()
 }
@@ -1408,10 +1470,12 @@ pub(crate) fn rename_skill(
     Ok(())
 }
 
+/// 端到端行为测试：目录布局发现、CRUD、rename 与回滚、路径包含安全边界。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+/// 创建以 tag + pid + 计数器命名的临时根目录，充当测试的假 home。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-skills-{tag}-{}-{}",
@@ -1422,12 +1486,15 @@ mod tests {
         dir
     }
 
+/// 单调递增计数器，保证并行测试的临时目录互不冲突。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
+// 进程内单调递增计数器。
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
+/// 写一个带 name/description frontmatter 与正文的 SKILL.md 测试夹具。
     fn write_skill_md(dir: &Path, name: &str, description: &str, body: &str) -> PathBuf {
         std::fs::create_dir_all(dir).expect("skill dir");
         let path = dir.join("SKILL.md");
@@ -1439,6 +1506,8 @@ mod tests {
         path
     }
 
+/// 验证技能名规则：1-64 位小写字母数字加连字符、首尾不得为连字符，
+/// 非法名称返回固定文案错误。
     #[test]
     fn skill_name_validation() {
         assert!(is_valid_skill_name("a"));
@@ -1453,6 +1522,8 @@ mod tests {
         assert!(error.contains("Invalid skill name"));
     }
 
+/// 验证项目内 `.agents/skills` 下的 skill 被 discovery 识别为 project 作用域、
+/// agents 来源，并带全路径与描述。
     #[test]
     fn discovers_repository_local_agents_skills() {
         let root = temp_root("discover");
@@ -1487,6 +1558,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 mergeDiscoveredSkills 以 primary 列表优先，按去除空白后的名字去重。
     #[test]
     fn merge_dedupes_primary_first() {
         let skill = |name: &str| DiscoveredSkill {
@@ -1512,6 +1584,8 @@ mod tests {
         );
     }
 
+/// 验证内置 skill（`<built-in>` 占位路径）不读盘：md 元数据直接来自
+/// discovered 的 description/instructions，fields 固定为两者。
     #[test]
     fn built_in_sources_without_file_metadata() {
         let root = temp_root("builtin");
@@ -1547,6 +1621,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 discovered 路径不可读时元数据被清空（exists=false、path/scope 为
+/// null），description 仍保留兜底值。
     #[test]
     fn unreadable_discovered_path_clears_metadata() {
         let root = temp_root("unreadable");
@@ -1575,6 +1651,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证真实磁盘上的 SKILL.md 会以文件内容覆盖 discovered 的兜底元数据
+/// （description、instructions、fields 均取自实际文件）。
     #[test]
     fn enriches_real_markdown_locations() {
         let root = temp_root("enrich");
@@ -1614,6 +1692,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 create/update/delete 全链路：按 scope/source 落盘、重名与缺
+/// description 报错、更新写回 frontmatter 与正文、删除后再删报 not found。
     #[test]
     fn creates_updates_deletes_skills() {
         let root = temp_root("crud");
@@ -1699,6 +1779,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证支撑文件写/读/列举/删除往返、`..` 越界访问被拒、删除后清理空目录。
     #[test]
     fn supporting_files_round_trip_and_containment() {
         let root = temp_root("support");
@@ -1723,6 +1804,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 rename 做目录整体迁移：frontmatter（除 name）、正文与支撑文件
+/// 原样保留，且 getSkillSources 能读回新位置。
     #[test]
     fn renames_skill_directory_preserving_body_and_support() {
         let root = temp_root("rename");
@@ -1780,6 +1863,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 rename 的全部拒绝分支：非法新名、源不存在、目标冲突、frontmatter
+/// 名与目录不匹配、非受管理路径，且失败后磁盘无残留。
     #[test]
     fn rename_rejections() {
         let root = temp_root("rename-reject");
@@ -1839,6 +1924,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证 isManagedSkillPath 的命中/排除边界（含内置占位符）与
+/// isPathInside 的相等、父子、前缀碰撞语义。
     #[test]
     fn managed_path_and_inside_helpers() {
         let root = temp_root("managed");
@@ -1872,6 +1959,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+/// 验证缓存根（`~/.cache/opencode/skills`）下的 skill 可被 discovery 发现，
+/// 但不属于受管理路径（不可 rename）。
     #[test]
     fn cache_root_skills_discover_and_are_not_managed() {
         let root = temp_root("cache");

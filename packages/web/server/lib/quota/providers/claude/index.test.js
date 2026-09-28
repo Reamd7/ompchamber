@@ -1,5 +1,13 @@
+/**
+ * Claude 订阅配额 provider 测试套件。
+ *
+ * mock 掉凭据加载并 stub 全局 fetch，验证：未配置分支、窗口与套餐标签
+ * 的正常返回、并发请求合并、429 冷却期间回放缓存且不再请求 Anthropic、
+ * 账户切换后不串用旧缓存，以及 401 与网络失败的错误文案。
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** loadClaudeCredential 的 mock 句柄：按用例返回不同凭据或 null。 */
 const credential = vi.fn();
 
 vi.mock('./auth.js', () => ({
@@ -8,6 +16,7 @@ vi.mock('./auth.js', () => ({
 
 import { fetchQuota, isConfigured, resetClaudeQuotaCache } from './index.js';
 
+/** 标准测试凭据：max 套餐、keychain 来源、token 互不相同（供指纹区分）。 */
 const CREDENTIAL = {
   accessToken: 'access-a',
   refreshToken: 'refresh-a',
@@ -16,6 +25,7 @@ const CREDENTIAL = {
   source: 'keychain',
 };
 
+/** 文档化的 Anthropic 用量载荷：会话窗口 5%、周窗口 4%。 */
 const PAYLOAD = {
   limits: [
     { kind: 'session', percent: 5, resets_at: '2026-08-14T19:10:00Z', scope: null },
@@ -23,6 +33,7 @@ const PAYLOAD = {
   ],
 };
 
+/** 构造 200 JSON 成功响应替身（带空 Headers）。 */
 const jsonResponse = (body) => ({
   ok: true,
   status: 200,
@@ -30,6 +41,7 @@ const jsonResponse = (body) => ({
   json: async () => body,
 });
 
+/** 构造指定状态码（可带响应头）的错误响应替身。 */
 const errorResponse = (status, headers = {}) => ({
   ok: false,
   status,
@@ -46,6 +58,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Claude provider 的缓存、限流冷却与凭据切换行为。 */
 describe('Claude quota provider', () => {
   it('reports not configured when no credential source has a token', async () => {
     credential.mockReturnValue(null);

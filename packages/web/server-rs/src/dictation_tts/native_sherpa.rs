@@ -12,6 +12,12 @@
 //! offline stream with the same automatic gain control (peak-normalize to
 //! 0.6, capped at 50x), emitting one Transcript event per decode. TTS is a
 //! direct OfflineTts call returning 16-bit PCM WAV.
+//!
+//! 中文说明：`local-speech` feature 开启时的原生本地引擎实现。识别路径：
+//! 会话命令经 std channel 送入专属线程，PCM16 累积在会话缓冲里，每次
+//! commit 用新建的 offline stream 全量解码（同样的 AGC：峰值归一到 0.6、
+//! 增益上限 50x），每次解码发出一个 Transcript 事件；TTS 路径为一次
+//! OfflineTts 调用，产出 16-bit PCM WAV。
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
@@ -30,10 +36,15 @@ use super::dictation::model_catalog::catalog_spec;
 use super::dictation::session::{random_uuid, SessionEvent, StreamingTranscriptionSession};
 use tokio::sync::mpsc;
 
+/// 识别会话固定的输入采样率（16 kHz PCM16）。
 const SAMPLE_RATE: i32 = 16_000;
+/// AGC 目标峰值（与 JS worker 相同的 0.6）。
 const TARGET_PEAK: f32 = 0.6;
+/// AGC 增益上限（50 倍），防止极安静输入被过度放大。
 const MAX_GAIN: f32 = 50.0;
 
+/// 定位模型目录下指定角色（tokens/encoder/decoder/model/voices）的文件。
+/// 未知模型 id、目录缺该角色或文件不存在均返回带下载指引的 Err 文案。
 fn model_file(models_dir: &Path, model_id: &str, role: &str) -> Result<PathBuf, String> {
     let spec = catalog_spec(model_id).ok_or_else(|| format!("unknown local model: {model_id}"))?;
     let file = spec
@@ -52,6 +63,8 @@ fn model_file(models_dir: &Path, model_id: &str, role: &str) -> Result<PathBuf, 
     Ok(path)
 }
 
+/// PCM16 小端字节流转 f32 样本并应用 AGC：峰值低于 TARGET_PEAK 时放大
+/// 到目标电平（增益封顶 MAX_GAIN）；空输入返回空向量。
 fn pcm16_to_normalized_f32(pcm16: &[u8]) -> Vec<f32> {
     let samples: Vec<i16> = pcm16
         .chunks_exact(2)
@@ -77,10 +90,15 @@ fn pcm16_to_normalized_f32(pcm16: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// 发给解码线程的会话命令。
 enum DriverCommand {
+    /// 追加一段 PCM16 字节到会话缓冲。
     Append(Vec<u8>),
+    /// 解码整个缓冲并发出转写事件；`final_segment` 标记是否最后一段。
     Commit { final_segment: bool },
+    /// 清空会话缓冲（丢弃纯静音段）。
     Clear,
+    /// 结束解码线程。
     Close,
 }
 
@@ -88,34 +106,48 @@ enum DriverCommand {
 #[derive(Debug, Clone, Default)]
 pub struct SherpaLocalEngine;
 
+/// 会话句柄：把 trait 调用转发为解码线程命令。
 struct SherpaSession {
+    /// 指向解码线程的命令通道；线程退出后发送失败被静默忽略。
     tx: std_mpsc::Sender<DriverCommand>,
+    /// 会话要求的输入采样率（固定 16 kHz）。
     sample_rate: u32,
 }
 
+/// `StreamingTranscriptionSession` 实现：所有操作都是向解码线程投递命令。
 impl StreamingTranscriptionSession for SherpaSession {
+    /// 固定返回 16 kHz。
     fn required_sample_rate(&self) -> u32 {
         self.sample_rate
     }
 
+    /// 追加 PCM16 音频到解码缓冲（线程已退出则忽略）。
     fn append_pcm16(&mut self, chunk: Vec<u8>) {
         let _ = self.tx.send(DriverCommand::Append(chunk));
     }
 
+    /// 请求解码当前缓冲（非最终段）。
     fn commit(&mut self) {
         let _ = self.tx.send(DriverCommand::Commit { final_segment: false });
     }
 
+    /// 丢弃当前缓冲中的音频。
     fn clear(&mut self) {
         let _ = self.tx.send(DriverCommand::Clear);
     }
 
+    /// 通知解码线程退出。
     fn close(&mut self) {
         let _ = self.tx.send(DriverCommand::Close);
     }
 }
 
+/// `LocalRecognizer` seam 的实现：校验模型文件并驱动原生识别。
 impl LocalRecognizer for SherpaLocalEngine {
+    /// 创建本地识别会话：按 catalog 校验 tokens/encoder/decoder（NeMo
+    /// transducer 额外需要 joiner），构造 OfflineRecognizer 并 spawn 专属
+    /// 解码线程。返回会话句柄与事件流；模型缺失或初始化失败时返回与
+    /// JS 对齐的错误文案。
     fn create_session(
         &self,
         models_dir: &Path,
@@ -210,6 +242,8 @@ impl LocalRecognizer for SherpaLocalEngine {
     }
 }
 
+/// 将 f32 样本编码为 16-bit 单声道 PCM WAV：写 44 字节标准 RIFF 头，
+/// 样本裁剪到 [-1, 1] 后缩放为 i16。
 fn encode_wav_pcm16(samples: &[f32], sample_rate: i32) -> Vec<u8> {
     let data_len = samples.len() * 2;
     let mut wav = Vec::with_capacity(44 + data_len);
@@ -233,7 +267,11 @@ fn encode_wav_pcm16(samples: &[f32], sample_rate: i32) -> Vec<u8> {
     wav
 }
 
+/// `LocalSpeaker` seam 的实现：构造 OfflineTts 并完成合成。
 impl LocalSpeaker for SherpaLocalEngine {
+    /// 本地 TTS 合成：按模型类型（kokoro/vits）解析 model、tokens（kokoro
+    /// 还有 voices）与 espeak-ng 数据目录，生成语音后封为 WAV 返回。
+    /// speaker 缺省 0、speed 缺省 1.0 且限幅到 [0.1, 10]。
     fn synthesize(
         &self,
         params: LocalSpeechParams,
@@ -310,10 +348,12 @@ pub fn engine_pair() -> (Arc<SherpaLocalEngine>, Arc<SherpaLocalEngine>) {
     (Arc::new(SherpaLocalEngine), Arc::new(SherpaLocalEngine))
 }
 
+/// 单元测试：模型缺失/未知 id 的错误文案、WAV 头正确性与 AGC 语义。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证：模型文件缺失时返回带"先下载"指引的错误文案，而不是 panic。
     #[test]
     fn missing_model_files_surface_actionable_errors() {
         let engine = SherpaLocalEngine;
@@ -336,6 +376,7 @@ mod tests {
         );
     }
 
+    /// 验证：catalog 之外的模型 id 被直接拒绝（unknown local model）。
     #[test]
     fn unknown_model_id_is_rejected() {
         let engine = SherpaLocalEngine;
@@ -354,6 +395,7 @@ mod tests {
         assert!(error.contains("unknown local model"));
     }
 
+    /// 验证：WAV 封装的 RIFF/WAVE/data 头与长度字段正确。
     #[test]
     fn wav_header_is_wellformed() {
         let wav = encode_wav_pcm16(&[0.0, 0.5, -0.5], 16_000);
@@ -363,6 +405,7 @@ mod tests {
         assert_eq!(wav.len(), 44 + 6);
     }
 
+    /// 验证：AGC 与 JS 语义一致——安静信号被拉到 0.6 峰值，响亮信号不变。
     #[test]
     fn pcm_gain_matches_js_semantics() {
         // A quiet signal (peak 0.1) gains 6x to reach the 0.6 target.

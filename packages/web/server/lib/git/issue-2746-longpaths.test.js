@@ -11,6 +11,15 @@ import {
   populateWorktreeWithLockRecovery,
 } from './service.js';
 
+/**
+ * issue #2746（"[Bug] new worktree, Filename too long"）回归测试套件。
+ *
+ * 验证新建 worktree 的 bootstrap 流程会在填充（git reset --hard）前启用
+ * core.longpaths，从而在 Windows MAX_PATH 限制下也能检出深层嵌套文件；
+ * 同时模拟单段文件名超过 NAME_MAX 的不可恢复场景，断言 bootstrap 以
+ * failed 状态结束并给出含 path-length limit 的引导性错误。依赖真实 git
+ * 可执行文件，环境缺失时用例静默跳过。
+ */
 // ---------------------------------------------------------------------------
 // Regression for https://github.com/openchamber/openchamber/issues/2746
 //
@@ -23,14 +32,17 @@ import {
 // git aborts with "Filename too long" unless `core.longpaths` is enabled.
 // ---------------------------------------------------------------------------
 
+/** 本套件各用例创建的临时目录（含临时 XDG_DATA_HOME），afterEach 统一递归清理。 */
 const tempDirs = [];
 
+/** 创建带 ompchamber-git-issue2746- 前缀的临时目录并登记到 tempDirs 以便统一清理。 */
 const createTempDir = () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-git-issue2746-'));
   tempDirs.push(dir);
   return dir;
 };
 
+/** 在 cwd 同步执行 git 子命令并返回 utf8 stdout；可选通过 stdin 传入 input。 */
 const runGit = (cwd, args, input) =>
   execFileSync('git', args, {
     cwd,
@@ -39,6 +51,7 @@ const runGit = (cwd, args, input) =>
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
+/** 探测环境是否可用 git（git --version）；不可用时用例直接 return 跳过。 */
 const canRunGit = () => {
   try {
     execFileSync('git', ['--version'], { stdio: 'ignore' });
@@ -48,12 +61,14 @@ const canRunGit = () => {
   }
 };
 
+// 递归删除本用例登记的所有临时目录。
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
+/** 长路径支持：新建 worktree 自动启用 core.longpaths、设置的幂等性，以及不可恢复失败时的引导性错误。 */
 describe('issue #2746 - worktree long path support', () => {
   it('enables core.longpaths and populates a deeply nested worktree checkout', async () => {
     if (!canRunGit()) return;

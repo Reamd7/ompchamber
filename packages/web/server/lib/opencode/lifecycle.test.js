@@ -1,8 +1,21 @@
+/**
+ * lifecycle.js（OpenCode 进程生命周期运行时）的单元测试。
+ *
+ * 通过 mock node:child_process 的 spawn/spawnSync、globalThis.fetch 与启动性能
+ * 记录，覆盖：外部 OPENCODE_HOST 连接的就绪/失败终态事件、托管进程的启动参数与
+ * 环境变量（managed PATH、绑定 hostname、AppImage ARGV0 剥离、Google 凭据别名
+ * 镜像）、健康检查与崩溃重启（诊断信息跨重启保留、Authorization 凭据脱敏、
+ * onOpenCodeRestarted 回调时机）、就绪超时熔断，以及 Windows 平台
+ * killProcessOnPort 的 taskkill 行为。
+ */
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/** child_process.spawn 的 mock，托管进程启动断言与子进程模拟都走它。 */
 const spawnMock = vi.fn();
+/** child_process.spawnSync 的 mock，Windows 端口占用探测（powershell/taskkill）断言走它。 */
 const spawnSyncMock = vi.fn();
+/** startup-performance.js 记录函数的 mock，用于断言启动性能埋点调用。 */
 const recordStartupPerformanceMock = vi.fn();
 
 vi.mock('node:child_process', () => ({
@@ -20,10 +33,18 @@ vi.mock('./startup-performance.js', () => ({
 
 const { createOpenCodeLifecycleRuntime } = await import('./lifecycle.js');
 
+/**
+ * 保存三个全局环境/内置的原始值（OPENCODE_BINARY、PATH、fetch），
+ * afterEach 中逐一恢复，避免用例间相互污染。
+ */
 const originalOpencodeBinary = process.env.OPENCODE_BINARY;
 const originalPath = process.env.PATH;
 const originalFetch = globalThis.fetch;
 
+/**
+ * 每个用例结束后恢复现场：重置三个 mock、还原 globalThis.fetch、
+ * OPENCODE_BINARY 与 PATH。
+ */
 afterEach(() => {
   spawnMock.mockReset();
   spawnSyncMock.mockReset();
@@ -42,6 +63,11 @@ afterEach(() => {
   }
 });
 
+/**
+ * 构造一个最小可用的 spawn 子进程 mock：EventEmitter 形态的进程与
+ * stdout/stderr、pid 与退出码字段。kill() 记录 SIGTERM 并在微任务里异步派发
+ * close 事件，模拟真实进程“收到信号后稍后退出”的时序。
+ */
 const createMockChild = () => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -57,6 +83,15 @@ const createMockChild = () => {
   return child;
 };
 
+/**
+ * 创建被测的 lifecycle 运行时，并注入全套测试替身。
+ *
+ * @param {object} [overrides] 覆盖传给 createOpenCodeLifecycleRuntime 的依赖
+ *   （如 waitForReady、resolveManagedOpenCodeLaunchSpec、onOpenCodeRestarted 等）
+ * @param {object} [stateOverrides] 覆盖内部 state 对象的初始字段
+ * @param {object} [envOverrides] 覆盖环境快照（引擎端口、hostname、跳过启动等开关）
+ * @returns 运行时对象；附 testState 字段暴露内部 state 供断言
+ */
 const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) => {
   const state = {
     openCodeWorkingDirectory: '/tmp/project',
@@ -120,6 +155,7 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
   return runtime;
 };
 
+/** 覆盖 OpenCode 生命周期运行时：外部连接终态、托管进程启动/重启/诊断与就绪熔断。 */
 describe('OpenCode lifecycle', () => {
   it('records an authoritative ready terminal event for external startup', async () => {
     globalThis.fetch = vi.fn(async () => ({
@@ -861,13 +897,16 @@ describe('OpenCode lifecycle', () => {
   });
 });
 
+/** 验证 Windows 上 killProcessOnPort 用 powershell 定位端口占用者并以 taskkill 强杀，且绝不误杀自身进程。 */
 describe('killProcessOnPort on Windows', () => {
+  // 保存真实 platform，afterEach 中恢复。
   const originalPlatform = process.platform;
 
   afterEach(() => {
     Object.defineProperty(process, 'platform', { value: originalPlatform });
   });
 
+  // 将 process.platform 覆盖为指定值（defineProperty 可配置，便于 afterEach 还原）。
   const setPlatform = (platform) => {
     Object.defineProperty(process, 'platform', { value: platform, configurable: true });
   };

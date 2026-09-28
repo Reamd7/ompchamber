@@ -4,6 +4,12 @@
 //! TOKENS_LIMIT and the renamed CREDIT_LIMIT entries map to the same windows;
 //! CREDIT_LIMIT entries additionally carry usage/currentValue/remaining which
 //! surface as a credit `valueLabel`, and `data.level` becomes `planLabel`.
+//!
+//! 中文概览：z.ai Coding Plan 配额提供方——以 bearer API key 请求
+//! quota/limit 端点，把 limits 中的 TOKENS_LIMIT 与改名后的 CREDIT_LIMIT
+//! 条目映射为同名窗口（CREDIT_LIMIT 额外带 usage/currentValue，展示为
+//! credits valueLabel），TIME_LIMIT 映射为固定 30 天的 "MCP Tools" 窗口，
+//! data.level 作为 planLabel 透传。
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value, json};
@@ -16,14 +22,20 @@ use crate::quota::utils::{
     resolve_window_label, resolve_window_seconds, to_number, to_usage_window, usage_payload,
 };
 
+/// 提供方唯一标识。
 pub const PROVIDER_ID: &str = "zai-coding-plan";
+/// 提供方展示名称（用于 UI 渲染）。
 pub const PROVIDER_NAME: &str = "z.ai";
+/// auth.json 中识别本提供方的别名列表（含简写 zai 与域名写法 z.ai）。
 pub const ALIASES: [&str; 3] = ["zai-coding-plan", "zai", "z.ai"];
 
+/// 配额限额查询端点 URL。
 const LIMIT_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
+/// "MCP Tools" 窗口使用的固定时长（30 天，API 未返回窗口秒数）。
 const MCP_TOOLS_WINDOW_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 
 /// `formatCreditAmount` — plain under 1k, `12k`-style above.
+/// 格式化 credit 数量：低于 1000 原样输出，否则缩写成 "12k" 风格。
 pub fn format_credit_amount(value: f64) -> String {
     if value < 1000.0 {
         num_str(value)
@@ -33,6 +45,8 @@ pub fn format_credit_amount(value: f64) -> String {
 }
 
 /// `formatCreditValueLabel` — `used / total credits`.
+/// 由 limit 条目的 currentValue(已用) 与 usage(总量) 拼 "used / total credits"
+/// 展示标签；任一字段缺失返回 None。
 pub fn format_credit_value_label(limit: &Value) -> Option<String> {
     let used = to_number(field(limit, "currentValue"))?;
     let total = to_number(field(limit, "usage"))?;
@@ -43,6 +57,8 @@ pub fn format_credit_value_label(limit: &Value) -> Option<String> {
     ))
 }
 
+/// 从 auth.json 的 z.ai 别名条目读取 API key（优先 key 字段，回退 token 字段）；
+/// auth 文件读取失败时返回 Err（携带错误消息）。
 fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     let auth = deps.read_auth_value()?;
     let entry = normalize_auth_entry(get_auth_entry(&auth, &ALIASES));
@@ -54,10 +70,14 @@ fn load_api_key(deps: &QuotaDeps) -> Result<Option<String>, String> {
     }))
 }
 
+/// 是否已配置：能读到 API key 即视为已配置。
 pub fn is_configured(deps: &QuotaDeps) -> bool {
     load_api_key(deps).unwrap_or(None).is_some()
 }
 
+/// 注册表入口：读 key → 请求限额端点 → 遍历 limits 组装窗口
+/// （TOKENS_LIMIT/CREDIT_LIMIT 按窗口秒数归类，TIME_LIMIT 固定 30 天），
+/// 成功时携带 data.level 作为套餐标签。
 pub fn fetch_quota(rt: std::sync::Arc<QuotaRuntime>) -> BoxFuture<'static, Value> {
     Box::pin(async move {
         let deps = rt.deps.clone();

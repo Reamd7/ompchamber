@@ -1,3 +1,9 @@
+/**
+ * Walkthrough 的"来源"解析与 diff 分节加载：把客户端提交的来源描述
+ * （working-tree / branch / pr）校验为规范对象，再解析成一个或多个
+ * { scope, patch } 分节。staged 与 working 各占独立 scope，使针对已暂存
+ * 代码写下的停靠点不会静默重锚到同一行的未暂存修改上。
+ */
 import { getDiff, getRangeDiff, getUntrackedDiffs, listUntrackedPaths } from '../git/service.js';
 
 // A walkthrough source resolves to one or more diff *sections*. A section is a
@@ -5,9 +11,15 @@ import { getDiff, getRangeDiff, getUntrackedDiffs, listUntrackedPaths } from '..
 // changes in separate scopes means a stop written against staged code never
 // silently re-anchors onto an unstaged edit of the same lines.
 
+/** working-tree 来源允许的 scope 枚举。 */
 const WORKING_TREE_SCOPES = new Set(['all', 'staged', 'working']);
 
+/**
+ * 来源不合法时抛出的用户错误：携带 statusCode（默认 400）与可选机器码
+ * code，路由层据此返回结构化错误而不是 500。
+ */
 export class WalkthroughSourceError extends Error {
+  /** 构造错误；message 面向用户，statusCode/code 挂在实例上供路由层读取。 */
   constructor(message, statusCode = 400, code = undefined) {
     super(message);
     this.statusCode = statusCode;
@@ -17,6 +29,10 @@ export class WalkthroughSourceError extends Error {
 
 /**
  * Normalize and validate an untrusted source descriptor from the client.
+ */
+/**
+ * 归一化并校验来自客户端的来源描述：working-tree 需合法 scope，branch 需
+ * baseRef 与 headRef，pr 需正整数编号；不合法一律抛 WalkthroughSourceError。
  */
 export function parseSource(raw) {
   if (!raw || typeof raw !== 'object') {
@@ -55,6 +71,7 @@ export function parseSource(raw) {
  * Stable string form of a source, used as the pointer key and as part of the
  * cache key. Must not change shape casually — it addresses persisted files.
  */
+/** 来源的稳定字符串形式（working-tree:scope / branch:base...head / pr:n），用作指针键并参与缓存键，不可随意改形。 */
 export function sourceKey(source) {
   if (source.kind === 'working-tree') return `working-tree:${source.scope}`;
   if (source.kind === 'branch') return `branch:${source.baseRef}...${source.headRef}`;
@@ -64,6 +81,7 @@ export function sourceKey(source) {
 // `git diff` never reports untracked files, so a brand-new file would be
 // invisible in a walkthrough of local work. The batch helper resolves the
 // repository once and bounds how many diff processes run at a time.
+/** 读取未跟踪文件并批量生成其 diff patch；git diff 不报告未跟踪文件，缺了这步新建文件在导读里不可见。 */
 const untrackedSections = async (directory) => {
   const untracked = await listUntrackedPaths(directory);
   if (untracked.length === 0) return [];
@@ -76,6 +94,11 @@ const untrackedSections = async (directory) => {
  * Resolve a source into diff sections.
  *
  * @returns {Promise<{sections: Array<{scope: string, patch: string}>, meta: object}>}
+ */
+/**
+ * 把来源解析为 diff 分节：working-tree 按 scope 取 staged 与（或）working
+ * （working 合并未跟踪文件的 patch）；branch 走区间 diff；pr 经注入的
+ * getPullRequestDiff 获取 patch（未注入则抛 500）。meta 携带来源附带信息。
  */
 export async function loadSourceSections(directory, source, { getPullRequestDiff } = {}) {
   if (source.kind === 'working-tree') {

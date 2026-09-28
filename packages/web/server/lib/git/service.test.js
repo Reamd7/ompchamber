@@ -1,3 +1,14 @@
+/**
+ * git/service.js 的行为测试套件。
+ *
+ * 在真实临时 git 仓库（simple-git 或裸 git 命令）中验证：基准 ref 解析、
+ * 索引路径越权防护、按 hunk 的暂存/丢弃/反暂存、diff（symlink 与外部
+ * diff.external 驱动）、status、worktree 根解析与增删/bootstrap、分支与
+ * 提交操作（checkout、cherry-pick、revert、reset）、hash 校验，以及分支
+ * 列表、未推送计数、区间 diff/文件、分支创建来源等只读 API。依赖 git
+ * 二进制的组用 describe.runIf(canRunGit()) 守卫，无 git 环境自动跳过；
+ * 所有临时目录登记进 tempDirs，由 afterEach 统一清理。
+ */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,15 +50,18 @@ import {
 // Shared test infrastructure
 // ---------------------------------------------------------------------------
 
+/** 本套件创建的全部临时目录登记表；afterEach 统一递归删除。 */
 const tempDirs = [];
 
 /** Create a temp dir and register it for afterEach cleanup. */
+/** 新建临时目录并登记到 tempDirs，由 afterEach 统一清理。 */
 const createTempDir = () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ompchamber-git-service-'));
   tempDirs.push(dir);
   return dir;
 };
 
+/** 在指定 cwd 同步执行 git 命令（utf8 输出）；失败直接抛错终止用例。 */
 const runGit = (cwd, args) =>
   execFileSync('git', args, {
     cwd,
@@ -60,6 +74,7 @@ const runGit = (cwd, args) =>
  * recorded as that remote's HEAD — the shape of every repository whose default
  * branch is not one of the conventional names.
  */
+/** （中文）构造"本地在 next、唯一远端发布 defaultBranch 且远端 HEAD 指向它"的仓库对 { remote, repository }——默认分支名非 main/master 惯例名的仓库形态。 */
 const createRepositoryWithRemote = ({ remoteName = 'origin', defaultBranch = 'react' } = {}) => {
   const remote = createTempDir();
   const repository = createTempDir();
@@ -77,6 +92,7 @@ const createRepositoryWithRemote = ({ remoteName = 'origin', defaultBranch = 're
   return { remote, repository };
 };
 
+/** 探测环境是否有可用 git 二进制；describe.runIf 依赖它决定依赖 git 的组是否跳过。 */
 const canRunGit = () => {
   try {
     execFileSync('git', ['--version'], { stdio: 'ignore' });
@@ -86,6 +102,7 @@ const canRunGit = () => {
   }
 };
 
+/** 每个用例结束后递归删除 tempDirs 里的全部临时目录（splice 清空登记）。 */
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -96,6 +113,7 @@ afterEach(() => {
  * Create a temp repo using simple-git (for tests that need its assertion API).
  * The dir is registered in tempDirs so afterEach handles cleanup automatically.
  */
+/** （中文）用 simple-git 新建临时仓库并配置 local 身份（需要其断言 API 的用例使用）；目录已登记、自动清理。返回 { tmpDir, git }。 */
 async function createTempRepo() {
   const tmpDir = createTempDir();
   const git = simpleGit(tmpDir);
@@ -110,6 +128,7 @@ async function createTempRepo() {
 // resolveBaseRefForLog
 // ---------------------------------------------------------------------------
 
+/** resolveBaseRefForLog：基准 ref 的解析与回退——本地存在优先本地，其次 origin/<from>，都失败保留原值；from 为空/空白返回 undefined。 */
 describe('resolveBaseRefForLog', () => {
   it('returns the local ref unchanged when it exists, even if origin also exists', async () => {
     const checkRef = async (ref) => ref === 'main' || ref === 'refs/remotes/origin/main';
@@ -146,6 +165,7 @@ describe('resolveBaseRefForLog', () => {
 // git index path validation
 // ---------------------------------------------------------------------------
 
+/** git index 路径校验：stage/unstage 在调用 git 之前拒绝逃出仓库的路径。 */
 describe('git index path validation', () => {
   it('rejects stage paths outside the repository before invoking git', async () => {
     await expect(stageFiles('/repo', ['../secret.txt'])).rejects.toThrow(
@@ -160,6 +180,7 @@ describe('git index path validation', () => {
   });
 });
 
+/** setLocalIdentity（需可用 git）：把 profile 写入 local 配置，并验证 SSH 命令的 simple-git 定向放行生效。 */
 describe.runIf(canRunGit())('setLocalIdentity', () => {
   it('configures the local SSH command with the targeted simple-git opt-in', async () => {
     const { tmpDir } = await createTempRepo();
@@ -182,6 +203,7 @@ describe.runIf(canRunGit())('setLocalIdentity', () => {
 // ---------------------------------------------------------------------------
 
 /** Minimal unified-diff splitter: returns standalone per-hunk patches. */
+/** （中文）把 unified diff 拆成逐 hunk 的独立补丁（各带文件头），供 applyHunk 的单 hunk 用例构造输入。 */
 const splitHunks = (patch) => {
   const lines = patch.split(/\r?\n/);
   const headerEnd = lines.findIndex((line) => /^@@\s/.test(line));
@@ -198,19 +220,26 @@ const splitHunks = (patch) => {
     .map((hunk) => (hunk.endsWith('\n') ? hunk : `${hunk}\n`));
 };
 
+/** 向 repo 内写入指定文件（utf8）。 */
 const writeFile = (repo, name, contents) =>
   fs.promises.writeFile(path.join(repo, name), contents, 'utf8');
 
 // Build a 20-line file so changes on line 1 and line 20 stay in separate hunks
 // (default 3-line diff context would merge closer edits into one hunk).
+/** 生成首尾可改的 20 行文件：让第 1 行与第 20 行的改动落在两个独立 hunk。 */
 const makeFile = (first, last) =>
   [first, ...Array.from({ length: 18 }, (_, i) => `line${i + 2}`), last].join('\n') + '\n';
+/** applyHunk 用例的基准文件内容（line1…line20）。 */
 const ORIGINAL_FILE = makeFile('line1', 'line20');
+/** 修改后的文件内容（首行 TOP、末行 BOTTOM，形成两个 hunk）。 */
 const EDITED_FILE = makeFile('TOP', 'BOTTOM');
 
+/** 读取工作区 file.txt 并把 CRLF 归一为 LF。 */
 const readWorking = (repo) => fs.promises.readFile(path.join(repo, 'file.txt'), 'utf8').then((c) => c.replace(/\r\n/g, '\n'));
+/** 读取暂存区 :file.txt（git show）并把 CRLF 归一为 LF。 */
 const readStaged = async (git) => (await git.raw(['show', ':file.txt'])).replace(/\r\n/g, '\n');
 
+/** applyHunk：单 hunk 粒度的 stage/discard/unstage；含非法 action、无 hunk 头、目标路径不匹配与带空格路径。 */
 describe('applyHunk', () => {
   it('rejects an invalid action or a patch without a hunk header', async () => {
     const { tmpDir } = await createTempRepo();
@@ -314,6 +343,7 @@ describe('applyHunk', () => {
   });
 });
 
+/** symlink diff：未跟踪目录 symlink 在 patch/split diff 中按链接处理而非递归目录。 */
 describe('symlink diffs', () => {
   it('treats an untracked directory symlink as a link in patch and split diffs', async () => {
     if (!canRunGit() || process.platform === 'win32') return;
@@ -338,6 +368,7 @@ describe('symlink diffs', () => {
 // getDiff with a user-configured external diff driver
 // ---------------------------------------------------------------------------
 
+/** 配置了 diff.external 驱动时 getDiff 返回 git 原生补丁，不执行用户驱动程序。 */
 describe('getDiff under a diff.external driver', () => {
   it('returns git\'s own patch instead of the driver output', async () => {
     if (!canRunGit() || process.platform === 'win32') return;
@@ -371,6 +402,7 @@ describe('getDiff under a diff.external driver', () => {
 // getStatus
 // ---------------------------------------------------------------------------
 
+/** getStatus：无上游跟踪、非 git 目录（且 cwd 在别处）、嵌套仓库等场景的状态读取与容错。 */
 describe('getStatus', () => {
   it('handles repositories without upstream tracking', async () => {
     if (!canRunGit()) return;
@@ -469,6 +501,7 @@ describe('getStatus', () => {
 // worktree root resolution
 // ---------------------------------------------------------------------------
 
+/** worktree 根解析：仓库子目录上溯 toplevel、由 linked worktree 解析主 worktree 根。 */
 describe('worktree root resolution', () => {
   it('resolves the git toplevel for a repository subdirectory', async () => {
     if (!canRunGit()) return;
@@ -503,6 +536,7 @@ describe('worktree root resolution', () => {
 // getWorktrees
 // ---------------------------------------------------------------------------
 
+/** getWorktrees：非 git 目录静默返回空列表，真实仓库返回 worktree 列表（无 git 时整组跳过）。 */
 describe('getWorktrees', () => {
   if (!canRunGit()) {
     it.skip('git binary not available', () => {});
@@ -548,6 +582,7 @@ describe('getWorktrees', () => {
 // createWorktree
 // ---------------------------------------------------------------------------
 
+/** createWorktree：bootstrap 状态机（目录/Git/setup 阶段与 legacy 兼容）、post-checkout hook 执行与容错、陈旧索引锁恢复、删除前等待 bootstrap 及分支占用预检。 */
 describe('createWorktree', () => {
   it('returns ready/setup-ready when no bootstrap state is recorded', async () => {
     const directory = path.join(createTempDir(), 'missing-worktree');
@@ -894,6 +929,7 @@ describe('createWorktree', () => {
 // createWorktree from a forked GitHub PR head (issue #2422)
 // ---------------------------------------------------------------------------
 
+/** 从 fork 出的 GitHub PR head 创建 worktree（#2422）：fork 可达则正常创建，不可达时报可操作错误、不留目录、不写上游跟踪。 */
 describe('createWorktree from a forked GitHub PR', () => {
   const withDataHome = async (test) => {
     const previousXdgDataHome = process.env.XDG_DATA_HOME;
@@ -1022,6 +1058,7 @@ describe('createWorktree from a forked GitHub PR', () => {
 // removeWorktree
 // ---------------------------------------------------------------------------
 
+/** removeWorktree：遗忘未托管孤儿条目但不删文件等删除语义。 */
 describe('removeWorktree', () => {
   it('forgets unmanaged orphan worktree entries without deleting files', async () => {
     if (!canRunGit()) return;
@@ -1062,6 +1099,7 @@ describe('removeWorktree', () => {
 // checkoutCommit
 // ---------------------------------------------------------------------------
 
+/** checkoutCommit：有效提交进入 detached HEAD；无效/不存在的 hash 抛错。 */
 describe('checkoutCommit', () => {
   it('checks out a valid commit and puts the repo in detached HEAD state', async () => {
     const { tmpDir, git } = await createTempRepo();
@@ -1091,6 +1129,7 @@ describe('checkoutCommit', () => {
 // checkoutBranch
 // ---------------------------------------------------------------------------
 
+/** checkoutBranch：本地/远端分支切换语义——远端分支建立跟踪本地分支、remotes/ 前缀、同名歧义优先本地、远端独有分支自动 fetch（#2735）。 */
 describe('checkoutBranch', () => {
   it('checks out a local branch by name', async () => {
     const { repository } = createRepositoryWithRemote();
@@ -1177,6 +1216,7 @@ describe('checkoutBranch', () => {
 // cherryPick
 // ---------------------------------------------------------------------------
 
+/** cherryPick：干净应用与冲突时返回冲突信息；非法 hash 抛错。 */
 describe('cherryPick', () => {
   it('cherry-picks a commit that applies cleanly', async () => {
     const { tmpDir, git } = await createTempRepo();
@@ -1232,6 +1272,7 @@ describe('cherryPick', () => {
 // revertCommit
 // ---------------------------------------------------------------------------
 
+/** revertCommit：生成反向提交并暂存；冲突时返回冲突信息。 */
 describe('revertCommit', () => {
   it('reverts a commit and stages the revert changes', async () => {
     const { tmpDir, git } = await createTempRepo();
@@ -1285,6 +1326,7 @@ describe('revertCommit', () => {
 // resetToCommit
 // ---------------------------------------------------------------------------
 
+/** resetToCommit：soft/mixed/hard 三种模式的语义，以及脏工作区 hard 需显式 force 的保护。 */
 describe('resetToCommit', () => {
   it('soft reset moves HEAD without touching the working tree', async () => {
     const { tmpDir, git } = await createTempRepo();
@@ -1401,6 +1443,7 @@ describe('resetToCommit', () => {
 // hash validation
 // ---------------------------------------------------------------------------
 
+/** hash 校验：checkout/cherry-pick/revert/reset 一律拒绝非十六进制 hash 与 ref 名。 */
 describe('hash validation', () => {
   it('checkoutCommit rejects non-hex hash', async () => {
     await expect(checkoutCommit('/tmp', '--hard')).rejects.toThrow('Invalid commit hash');
@@ -1459,6 +1502,7 @@ describe('hash validation', () => {
   });
 });
 
+/** getBranches（需可用 git）：默认分支推断（远端 HEAD、非惯例名）、失联远端保留分支、远端独有分支与已删引用 prune（#2098）。 */
 describe.runIf(canRunGit())('getBranches', () => {
   it('returns a remote default branch whose name is not a conventional fallback', async () => {
     const { repository } = createRepositoryWithRemote({ remoteName: 'origin', defaultBranch: 'react' });
@@ -1532,6 +1576,7 @@ describe.runIf(canRunGit())('getBranches', () => {
   });
 });
 
+/** getUnpushedBranchCounts（需可用 git）：只统计相对本地已知上游领先的提交数。 */
 describe.runIf(canRunGit())('getUnpushedBranchCounts', () => {
   it('counts only commits ahead of a locally known upstream', async () => {
     const { repository } = createRepositoryWithRemote();
@@ -1547,6 +1592,7 @@ describe.runIf(canRunGit())('getUnpushedBranchCounts', () => {
   });
 });
 
+/** getRangeDiff（需可用 git）：base 仅存在于非 origin 远端时的解析，及未 fetch 远端引用的命名（#2735）。 */
 describe.runIf(canRunGit())('getRangeDiff', () => {
   it('resolves a base that exists only on a remote other than origin', async () => {
     const { repository } = createRepositoryWithRemote({ remoteName: 'upstream', defaultBranch: 'react' });
@@ -1570,6 +1616,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
   });
 });
 
+/** parseBranchCreationSource：从 reflog 最早创建条目取来源 ref；detached HEAD、裸提交等无来源场景返回 null。 */
 describe('parseBranchCreationSource', () => {
   it('returns the source ref from the oldest creation entry', () => {
     // Reflog lists newest entries first; creation is the last line.
@@ -1609,6 +1656,7 @@ describe('parseBranchCreationSource', () => {
   });
 });
 
+/** getRangeFiles（需可用 git）：区间变更文件与状态字母；rename/copy 报告目标路径（含空格）。 */
 describe.runIf(canRunGit())('getRangeFiles', () => {
   it('returns added and modified paths with their status letters', async () => {
     const { repository } = createRepositoryWithRemote();

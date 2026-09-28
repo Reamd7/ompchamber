@@ -7,11 +7,19 @@
 //! addon into the per-user cache, or download the platform tarball when the
 //! package is absent. Failures warn and leave the engine to surface its own
 //! actionable error: a missing addon must not block unrelated server work.
+//!
+//! 中文说明：本模块负责 `pi_natives` 原生插件的运行时装配：引擎启动时从
+//! `~/.omp/natives/<version>/` dlopen 该插件。npm/tarball 安装虽把对应平台
+//! 包放在 node_modules，但加载器不会去那里找——因此在从源码拉起 host 前，
+//! 把已安装的插件复制到每用户缓存；包缺失时下载平台 tarball。失败仅告警，
+//! 让引擎自行给出可操作的错误：缺插件不能阻塞服务器其它工作。
 
 use std::path::{Path, PathBuf};
 
+/// 元包名：从中读取与平台包一致的插件版本号。
 const META_PACKAGE: &str = "@oh-my-pi/pi-natives";
 
+/// 当前平台的 natives 标签（win32/darwin/linux）；不支持的平台返回 None。
 fn natives_platform_tag() -> Option<&'static str> {
     match std::env::consts::OS {
         "windows" => Some("win32"),
@@ -21,6 +29,7 @@ fn natives_platform_tag() -> Option<&'static str> {
     }
 }
 
+/// 列出目录中所有匹配插件文件名模式的文件；目录不可读时返回空列表。
 fn list_addon_files(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -36,6 +45,7 @@ fn list_addon_files(dir: &Path) -> Vec<String> {
 }
 
 /// `^pi_natives\..+\.node$`
+/// 中文说明：前缀 `pi_natives.`、后缀 `.node`、中间至少一个字符。
 fn is_addon_file(name: &str) -> bool {
     let Some(rest) = name.strip_prefix("pi_natives.") else {
         return false;
@@ -49,6 +59,7 @@ fn is_addon_file(name: &str) -> bool {
 /// Candidate node_modules roots: from the crate dir upward and from cwd
 /// upward (the JS uses the resolver's lookup paths — these are the same
 /// roots in practice for this repo layout).
+/// 中文说明：包含 bun 全局安装树、crate 目录向上、cwd 向上三组候选根。
 fn package_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     // Bun's global install tree (dev machines run the engine from a global
@@ -72,6 +83,8 @@ fn package_roots() -> Vec<PathBuf> {
 /// npm/bun layouts the plain lookup misses: direct links at each root,
 /// bun's hoist root (`.bun/node_modules`), and bun's workspace store
 /// entries (`.bun/@scope+pkg@ver/node_modules/pkg`).
+/// 中文说明：依次探测 `node_modules/<name>`、`.bun/node_modules/<name>` 与
+/// bun workspace store 条目；存在 package.json 即认定有效。
 fn resolve_package_dir(name: &str) -> Option<PathBuf> {
     let store_prefix = format!("{}@", name.replace('/', "+"));
     for root in package_roots() {
@@ -100,6 +113,8 @@ fn resolve_package_dir(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// 解析 npm registry 地址：NPM_CONFIG_REGISTRY 优先，其次 cwd 与 home 下的
+/// .npmrc `registry=` 行，最后回退 https://registry.npmjs.org。
 fn read_npm_registry() -> String {
     if let Ok(explicit) = std::env::var("NPM_CONFIG_REGISTRY") {
         let explicit = explicit.trim().trim_end_matches('/');
@@ -133,6 +148,10 @@ fn read_npm_registry() -> String {
     "https://registry.npmjs.org".to_string()
 }
 
+/// 从 registry 下载平台 tarball 并解出插件文件到目标目录。
+///
+/// 流程：拼 tarball URL → 下载（300s 超时）→ 写入临时目录 → tar 解压 →
+/// 拷贝全部插件文件；临时目录无论成败都清理。tarball 中没有插件文件视为错误。
 async fn download_platform_package(
     package_name: &str,
     version: &str,
@@ -206,6 +225,8 @@ async fn download_platform_package(
 /// Ensure the per-user natives cache holds the addon for this platform.
 /// No-op when the cache already has any addon for the engine's natives
 /// version; warns (never errors) when staging fails.
+/// 中文说明：缓存已有插件则直接返回；未安装元包、平台不支持等前置条件
+/// 不满足时静默跳过；本地已装平台包则复制，否则下载；任何失败只告警。
 pub async fn ensure_omp_host_natives() {
     let Some(tag) = natives_platform_tag() else {
         return;
@@ -258,10 +279,12 @@ pub async fn ensure_omp_host_natives() {
     }
 }
 
+/// natives 装配逻辑的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证：插件文件名判定与 JS 正则 `^pi_natives\..+\.node$` 一致。
     #[test]
     fn addon_file_pattern_matches_js() {
         assert!(is_addon_file("pi_natives.darwin-aarch64.node"));
@@ -271,6 +294,7 @@ mod tests {
         assert!(!is_addon_file("other.darwin.node"));
     }
 
+    /// 验证：能在本仓库的 node_modules 中解析到已安装的元包。
     #[test]
     fn resolves_installed_package_in_node_modules() {
         // This repo has the meta package installed under node_modules.
@@ -281,6 +305,7 @@ mod tests {
         );
     }
 
+    /// 验证：设置 NPM_CONFIG_REGISTRY 时 registry 解析以它为准并去除尾斜杠。
     #[test]
     fn registry_env_wins_and_trims_trailing_slash() {
         // Not isolated from ambient env; assert shape only when set.

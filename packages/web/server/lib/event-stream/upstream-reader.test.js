@@ -1,7 +1,19 @@
+/**
+ * createUpstreamSseReader 的测试套件：用伪造的 fetch 与 SSE 响应体
+ * 覆盖事件解析与游标推进、失速重连（Last-Event-ID 回传）、动态
+ * 失速超时、上游不可用时的持续重试、超预算块的两条处置路径
+ * （提取 id 合成 resync / 无 id 中止重连），以及 stop 后监听解绑。
+ */
+
 import { describe, expect, it } from 'vitest';
 
 import { createUpstreamSseReader } from './upstream-reader.js';
 
+/**
+ * 构造形如 fetch Response 的伪 SSE 响应：按块依次返回编码字节；
+ * 块耗尽后结束（holdOpen=false）或挂起直到 signal 中止
+ * （holdOpen=true，模拟一条不会自行结束的上游长连接）。
+ */
 function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   const encoder = new TextEncoder();
   let index = 0;
@@ -22,6 +34,7 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
             }
 
             return new Promise((_resolve, reject) => {
+              // 中止时以 AbortError 拒绝挂起的 read，模拟真实 fetch 行为。
               const onAbort = () => {
                 signal.removeEventListener('abort', onAbort);
                 const error = new Error('Aborted');
@@ -37,6 +50,10 @@ function createSseResponse({ blocks = [], signal, holdOpen = false }) {
   };
 }
 
+/**
+ * 构造带监听计数的伪 AbortSignal：仅记录/移除 abort 监听，
+ * 用于断言 stop 之后外部 signal 上的监听被清理干净。
+ */
 function createTrackedSignal() {
   const listeners = new Set();
   return {
@@ -59,6 +76,7 @@ function createTrackedSignal() {
   };
 }
 
+// 覆盖上游 SSE 读取器的解析、重连、超预算处置与清理行为。
 describe('createUpstreamSseReader', () => {
   it('emits parsed events and tracks the latest event id', async () => {
     const events = [];

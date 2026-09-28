@@ -1,3 +1,9 @@
+/**
+ * Codex（ChatGPT 订阅）配额 provider 测试套件。
+ *
+ * stub 全局 fetch 后验证主/次限流窗口按时长自动命名（weekly/5h），
+ * 以及企业账户 spend_control.individual_limit 到 credits 窗口的映射。
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../opencode/auth.js', () => ({
@@ -10,6 +16,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 把给定的 rate_limit 载荷注入全局 fetch stub，构造 wham/usage 响应。 */
 const mockUsage = (rateLimit) => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
     ok: true,
@@ -17,6 +24,7 @@ const mockUsage = (rateLimit) => {
   }));
 };
 
+/** Codex provider 的窗口命名与企业消费上限映射行为。 */
 describe('Codex quota windows', () => {
   it('labels a weekly-only primary window from its duration', async () => {
     mockUsage({

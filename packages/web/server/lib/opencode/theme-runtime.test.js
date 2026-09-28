@@ -1,7 +1,13 @@
+/**
+ * theme-runtime 测试套件：用内存桩（readdir / stat / readFile）驱动
+ * readCustomThemesFromDisk，验证合法主题文件正常加载、目录项为符号
+ * 链接的 .json 文件仍可读取、以及 stat 解析后是目录的 .json 条目被跳过。
+ */
 import { describe, expect, it } from 'vitest';
 
 import { createThemeRuntime } from './theme-runtime.js';
 
+/** 构造一份字段齐全的合法主题对象（可指定 id）。 */
 const validTheme = (id = 'custom-theme') => ({
   metadata: {
     id,
@@ -69,6 +75,7 @@ const validTheme = (id = 'custom-theme') => ({
   },
 });
 
+/** 构造 fs.Dirent 风格的目录项桩（file / directory / symlink）。 */
 const fileEntry = (name, type = 'file') => ({
   name,
   isFile: () => type === 'file',
@@ -76,6 +83,7 @@ const fileEntry = (name, type = 'file') => ({
   isSymbolicLink: () => type === 'symlink',
 });
 
+/** 用内存文件系统桩创建被测运行时。 */
 const createTestRuntime = ({ entries, files, stats }) => createThemeRuntime({
   fsPromises: {
     readdir: async () => entries,
@@ -88,7 +96,9 @@ const createTestRuntime = ({ entries, files, stats }) => createThemeRuntime({
   logger: { warn: () => {} },
 });
 
+// 主题运行时主套件。
 describe('theme runtime', () => {
+  // readCustomThemesFromDisk：磁盘扫描与目录项类型过滤。
   describe('readCustomThemesFromDisk', () => {
     it('loads valid theme files', async () => {
       const runtime = createTestRuntime({

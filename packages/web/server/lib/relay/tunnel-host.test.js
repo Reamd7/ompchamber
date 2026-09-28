@@ -1,9 +1,15 @@
+/**
+ * 【测试套件】tunnel-host 隧道 HTTP 请求体的转发行为：验证 host 如何缓冲隧道化的
+ * body 帧、区分"零帧送达的歧义请求"与"显式空 body"、处理投递超时，
+ * 以及无 body 请求（GET / 旧客户端）的立即放行。
+ */
 import { describe, test, expect } from 'bun:test';
 import http from 'node:http';
 
 import { createTunnelHost } from './tunnel-host.js';
 import { decodeTunnelFrame, encodeTunnelFrame, encodeJsonPayload, TunnelFrameType } from './tunnel-codec.js';
 
+/** 在 127.0.0.1 随机端口启动一个回环 HTTP 服务器，记录收到的请求供断言使用，resolve 出 server 与 requests。 */
 const startLoopback = () =>
   new Promise((resolve) => {
     const requests = [];
@@ -28,6 +34,7 @@ const startLoopback = () =>
     }));
   });
 
+/** 组装被测 harness：启动回环服务器 + 创建 tunnel host（注入收集下行帧的假 transport），返回 { host, loopback, sentFrames }。 */
 const createHarness = async (hostOverrides = {}) => {
   const loopback = await startLoopback();
   const sentFrames = [];
@@ -43,6 +50,7 @@ const createHarness = async (hostOverrides = {}) => {
   return { host, loopback, sentFrames };
 };
 
+/** 构造一个 HttpRequest 头帧（帧序号固定为 1），默认 POST /api/submit + JSON content-type，可用 overrides 覆盖 method/path/headers 等。 */
 const httpHead = (overrides = {}) => encodeTunnelFrame(TunnelFrameType.HttpRequest, 1, encodeJsonPayload({
   method: 'POST',
   path: '/api/submit',
@@ -51,6 +59,7 @@ const httpHead = (overrides = {}) => encodeTunnelFrame(TunnelFrameType.HttpReque
   ...overrides,
 }));
 
+/** 轮询等待 predicate 为真（默认 2000ms 截止），超时后返回最后一次 predicate 结果以便断言给出明确失败。 */
 const waitFor = async (predicate, timeoutMs = 2000) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -60,6 +69,7 @@ const waitFor = async (predicate, timeoutMs = 2000) => {
   return predicate();
 };
 
+// 主 describe：隧道化 HTTP 请求体的缓冲、转发与中止语义。
 describe('tunnel-host HTTP body forwarding', () => {
   test('buffers tunneled body frames and forwards the complete body', async () => {
     const { host, loopback, sentFrames } = await createHarness();

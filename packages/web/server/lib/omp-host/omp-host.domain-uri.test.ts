@@ -3,6 +3,13 @@
 // (containment, session pinning, traversal rejection are the SDK's own —
 // we only pin options per request), so the isolation guarantees here are
 // end-to-end, not mocks of them.
+/**
+ * domain-uri 域的测试套件（spec 04）：覆盖 URI 能力矩阵、local:// 解析与
+ * resource token、会话树/条目树投影、navigate/label 契约、agent-runs 聚合
+ * 与动作、jobs 端点、artifacts 浏览以及二进制预览。local:// 相关用例直接
+ * 驱动真实 SDK 的 router + handler（本套件只按请求钉扎 options），因此目录
+ * 遏制、会话钉扎、穿越拒绝等隔离保证是端到端验证的，而非 mock。
+ */
 
 import { describe, test, expect, afterAll } from 'bun:test';
 import fs from 'node:fs';
@@ -35,10 +42,12 @@ import { ompFeatures } from './omp-parity.ts';
 import { normalizeDirectoryKey } from './registry.ts';
 import type { UriRequestBody, UriResolveBody } from './domain-uri.ts';
 
+/** 测试统一使用的项目目录常量：作为 registry 键与会话钉扎参数，无需真实存在。 */
 const DIRECTORY = 'C:/proj/alpha';
 
 /** Row keys are composite directory\0session::agent (plan §3.1) — opaque to
  *  consumers; tests reconstruct them to pin the format. */
+/** 按 plan §3.1 的行键格式拼接 directory\0session::agent，供断言时与被测代码对键。 */
 const runKey = (directory: string, sessionID: string, agentId: string) =>
   `${normalizeDirectoryKey(directory)}\u0000${sessionID}::${agentId}`;
 
@@ -46,43 +55,64 @@ const runKey = (directory: string, sessionID: string, agentId: string) =>
 // shared fixtures
 // ---------------------------------------------------------------------------
 
+/** 全套件共享的临时根目录（mkdtemp 生成），afterAll 统一递归清理。 */
 const base = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-domain-uri-'));
+/** 返回会话在临时根下的 artifacts 目录路径，即该会话 local:// 协议的根。 */
 const artifactsOf = (sessionId: string) => path.join(base, sessionId);
+/** 在指定会话的 local:// 根下写入相对路径文件（自动创建父目录），返回绝对路径。 */
 const writeLocal = (sessionId: string, file: string, content: string) => {
   const target = path.join(artifactsOf(sessionId), 'local', file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content);
   return target;
 };
+// 预置 ses_A / ses_B 两个会话的 local:// 夹具；notes/deep.md 仅存在于 ses_A，用于验证跨会话隔离。
 writeLocal('ses_A', 'scratch.md', 'alpha session secret');
 writeLocal('ses_A', 'notes/deep.md', 'nested note');
 writeLocal('ses_B', 'scratch.md', 'beta session secret');
 
+/** 会话目录存在则为其创建 local:// 协议 options（真实 SDK handler 据此钉扎会话与根目录），否则返回 null。 */
 const localOptionsFor = (sessionID: string, directory: string) => {
   if (!fs.existsSync(artifactsOf(sessionID))) return null;
   return createLocalProtocolOptions(sessionID, directory, artifactsOf(sessionID));
 };
 /** Asserted fields of the JSON bodies the resolve/open/info endpoints return
  * (superset per response; unasserted fields stay untyped). */
+/** resolve/open/info 端点 JSON 响应中被断言的字段集合；各响应只取其子集，未断言字段不作类型约束。 */
 interface ResolveResponseBody {
+  /** 文件文本内容（binary 响应不携带）。 */
   content?: string;
+  /** 规范化后的资源 URI（如 local://scratch.md）。 */
   url?: string;
+  /** MIME 类型；文本为 text/markdown，二进制按扩展名推断。 */
   contentType?: string;
+  /** open 响应返回的文件名（仅 basename，不含路径）。 */
   filename?: string;
+  /** 该资源是否可编辑。 */
   editable?: boolean;
+  /** 未知/未启用 scheme 错误响应里回显的 scheme 名。 */
   scheme?: string;
+  /** 机器可读错误码（resolve-failed、scheme-not-enabled 等）。 */
   error?: string;
+  /** 人类可读的错误说明。 */
   message?: string;
   /** Binary descriptor arm (previewable images): bytes stream via the token
    * content endpoint instead of an inline body. */
+  /** 二进制描述分支（可预览图片）：内容改经 token 的 content 端点按字节流返回。 */
   binary?: boolean;
+  /** 资源内容是否不可变（二进制资源为 true）。 */
   immutable?: boolean;
+  /** 二进制资源的字节大小。 */
   size?: number;
+  /** 动作错误响应附带：该行是否可 revive。 */
   revivable?: boolean;
+  /** resolve 铸出的不透明 resource token（id + 过期时间）。 */
   token?: { id: string; expiresAt: number };
 }
 
+/** 跨用例共享的 UriTokenService 实例（默认 TTL 与读取上限），模拟进程内 token 服务。 */
 const tokens = new UriTokenService();
+/** 直调 handleUriResolve 并把 Response 解析为 { status, body } 的通用封装。 */
 const resolveBody = (body: UriResolveBody): Promise<{ status: number; body: ResolveResponseBody }> =>
   handleUriResolve({ body, localOptionsFor, tokens }).then((r) =>
     // SAFETY: the resolve/open endpoints answer the ResolveResponseBody wire
@@ -90,6 +120,7 @@ const resolveBody = (body: UriResolveBody): Promise<{ status: number; body: Reso
     r.json().then((data) => ({ status: r.status, body: data as ResolveResponseBody })),
   );
 
+// 递归清理临时根目录（重试 5 次以容忍文件系统句柄延迟释放）。
 afterAll(() => {
   fs.rmSync(base, { recursive: true, force: true, maxRetries: 5 });
 });
@@ -98,6 +129,7 @@ afterAll(() => {
 // §5.2 capability matrix + options factory
 // ---------------------------------------------------------------------------
 
+/** §5.2 能力矩阵与 local:// options 工厂：local 只读、无 router 写入、会话/artifacts 目录钉扎与 sessionId 必填校验。 */
 describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', () => {
   test('P1 matrix is local:// read only, no router-mediated writes', () => {
     expect(uriCapabilities()).toEqual({ read: ['local'], write: [] });
@@ -157,6 +189,7 @@ describe('uriCapabilities + createLocalProtocolOptions (spec 04 §5.2, R7/R8)', 
 // §5.2.1 resolve endpoint
 // ---------------------------------------------------------------------------
 
+/** §5.2.1 resolve 端点：自有文件解析与 token 铸造、同目录跨会话隔离、穿越拒绝、scheme 错误分级与参数钉扎。 */
 describe('local:// resolve (spec 04 §5.2.1, R2-H2/R7)', () => {
   test('resolves own file, strips sourcePath, mints opaque token', async () => {
     const { status, body } = await resolveBody({
@@ -247,6 +280,7 @@ describe('local:// resolve (spec 04 §5.2.1, R2-H2/R7)', () => {
 // §5.2.4 tokens
 // ---------------------------------------------------------------------------
 
+/** §5.2.4 resource token：open 只回内容与文件名、info 不消耗读取次数、目录 scope 校验与伪造/过期/耗尽 token 的 404。 */
 describe('resource tokens (spec 04 §5.2.4, R7)', () => {
   test('redeem returns content + basename only; no path in any response', async () => {
     const domain = createUriDomain({
@@ -325,6 +359,7 @@ describe('resource tokens (spec 04 §5.2.4, R7)', () => {
 // §5.4 session tree
 // ---------------------------------------------------------------------------
 
+/** 会话树投影输入的 wire 形态 fixture：fork 链、孤儿 fork、subagent 父子关系（非 fork 血缘）。 */
 const wireSessions = [
   { id: 'ses_1', title: 'root work', time: { created: 100, updated: 500 } },
   { id: 'ses_2', forkParentID: 'ses_1', title: 'fork of root', time: { created: 200, updated: 900 } },
@@ -335,6 +370,7 @@ const wireSessions = [
   { id: 'ses_sub', parentID: 'ses_1', title: 'subagent child', time: { created: 350, updated: 350 } },
 ];
 
+/** §5.4 会话树：fork 血缘投影为扁平 {leafId, nodes}、血缘环被切断、subtree 只截取单个会话的血缘与后代。 */
 describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
   test('projects registry fork metadata into the flat {leafId, nodes} shape', () => {
     const tree = buildSessionTree(wireSessions);
@@ -384,7 +420,9 @@ describe('buildSessionTree / buildSessionSubtree (spec 04 §5.4)', () => {
   });
 });
 
+/** §5.4.1 条目树快照：拍平 entries、跳过 label 节点、折叠 resolved label 与 gist 摘要。 */
 describe('buildEntryTreeSnapshot (spec 04 §5.4.1)', () => {
+  // 最小 SessionManager 替身：一棵含 label/branch_summary 的消息树，加平铺 entries 与 leafId。
   const manager = {
     getTree: (): FixtureTreeNode[] => [
       {
@@ -429,6 +467,7 @@ describe('buildEntryTreeSnapshot (spec 04 §5.4.1)', () => {
   });
 });
 
+/** navigate/label 契约：请求规范化默认值与 400 校验、tree 更新负载只允许 navigate|label|summary、流式期 409 busy 守卫。 */
 describe('navigate/label contracts (spec 04 §5.4.2/§5.4.3, engine hooks)', () => {
   test('navigate request defaults and validation', () => {
     const ok = normalizeNavigateRequest({ targetId: 'e_9' });
@@ -477,6 +516,7 @@ describe('navigate/label contracts (spec 04 §5.4.2/§5.4.3, engine hooks)', () 
 // §5.5 agent runs aggregation + parked/historical split
 // ---------------------------------------------------------------------------
 
+/** 构造 AgentRefLike fixture：默认是 running 的子代理引用，overrides 原样覆盖（含 history 等敏感字段）。 */
 const ref = (overrides: Partial<import('./domain-uri.ts').AgentRefLike> = {}) => ({
   id: 'Anna',
   displayName: 'Anna',
@@ -492,8 +532,10 @@ const ref = (overrides: Partial<import('./domain-uri.ts').AgentRefLike> = {}) =>
   ...overrides,
 });
 
+/** 用给定 refs 构造最小 registry 替身（只实现 list()）。 */
 const makeRegistry = (...refs: import('./domain-uri.ts').AgentRefLike[]) => ({ list: () => refs });
 
+/** §5.5.1 projectAgentRun 行投影：双段行键、剔除一切绝对路径、live 指标取自会话统计且非有限值时降级为无。 */
 describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
   test('row carries the two-part key and NO absolute paths', () => {
     const row = projectAgentRun({ sessionID: 'ses_1', directory: DIRECTORY, ref: ref() });
@@ -543,11 +585,13 @@ describe('projectAgentRun (spec 04 §5.5.1, R7)', () => {
 
 });
 
+/** §5.5.1 AgentRunsAggregator：目录+会话+agent 的行键隔离、合并窗口发布、盘扫历史行合并、状态排序与 ensureDirectory 预热。 */
 describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
   /** Manual timer capture: coalescing is asserted deterministically, never
    * via wall-clock sleeps (the real timer path is exercised by the domain
    * integration test). */
   type ManualTimerState = { fn: (() => void) | null; ms: number | null; cleared: number };
+  // 手动定时器替身：捕获合并窗口的 setTimeout 回调，fire() 主动触发到期，cleared 计数用于断言 dispose 清理。
   const manualTimers = () => {
     const state: ManualTimerState = { fn: null, ms: null, cleared: 0 };
     return {
@@ -745,15 +789,22 @@ describe('AgentRunsAggregator (spec 04 §5.5.1)', () => {
 
 
 /** Asserted fields of agent-run action JSON responses. */
+/** agent-run 动作端点 JSON 响应中被断言的字段。 */
 interface ActionResponseBody {
+  /** 动作是否成功受理。 */
   ok?: boolean;
+  /** 动作后的行状态（running/aborted 等）。 */
   status?: string;
+  /** 机器可读错误码（historical、not-parked 等）。 */
   error?: string;
+  /** 错误响应附带：该行是否可 revive。 */
   revivable?: boolean;
 }
 
 
+/** §5.5.2 agent-run 动作：historical 行一律 409 拒绝、parked 凭 descriptor 单次认领 revive、kill/chat 语义与入参校验。 */
 describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () => {
+  // 组装测试上下文：按 rows 建 aggregator，外加 ParkedAgentDescriptors 与 revive/kill/chat 计数桩。
   const setup = (rows: Array<Partial<import('./domain-uri.ts').AgentRefLike>>) => {
     const aggregator = new AgentRunsAggregator({
       snapshot: () => [
@@ -776,6 +827,7 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
     };
     return { aggregator, descriptors, actions, calls };
   };
+  // 以固定 sessionID/directory 调 handleAgentRunAction，并把 Response 解析成 { status, body }。
   const act = (ctx: { aggregator: import('./domain-uri.ts').AgentRunsAggregator; descriptors: import('./domain-uri.ts').ParkedAgentDescriptors; actions: { revive: () => Promise<void>; kill: () => Promise<void>; chat: () => Promise<void> } }, agentId: string, body: { kind: string; text?: string; messageId?: string; mode?: string }) =>
     handleAgentRunAction({
       aggregator: ctx.aggregator,
@@ -895,12 +947,17 @@ describe('agent-run actions: parked vs historical (spec 04 §5.5.2, R2-M5)', () 
 // ---------------------------------------------------------------------------
 
 /** Asserted fields of jobs endpoint JSON responses. */
+/** jobs 端点 JSON 响应中被断言的字段。 */
 interface JobsResponseBody {
+  /** 501/200 响应回显的 owner 会话（无活跃会话时为 null）。 */
   ownerSessionID?: string | null;
+  /** snapshot 钩子返回的投递状态，原样透传。 */
   delivery?: unknown;
+  /** 机器可读错误码（jobs-unavailable）。 */
   error?: string;
 }
 
+/** §5.6 jobs 端点：能力关闭时返回结构化 501 并携带 ownerSessionID（绝不 404），开启时委托 snapshot 钩子并回显 owner。 */
 describe('jobs endpoint (spec 04 §5.6, R12)', () => {
   test('capability off → structured 501 with ownerSessionID, never 404', async () => {
     const response = await handleJobsRequest({ liveSessionIds: ['ses_first', 'ses_second'] });
@@ -940,23 +997,31 @@ describe('jobs endpoint (spec 04 §5.6, R12)', () => {
 // ---------------------------------------------------------------------------
 
 /** Partial route ctx the direct handler invocations below pass. */
+/** 直调 handler 时传入的部分路由 ctx（params/url/headers 皆可选）。 */
 type UriCtxLite = { params?: Record<string, string>; url?: URL; headers?: Headers };
 
 /** Minimal Request stand-in the uri handlers read (url + json body). */
+/** uri handler 只读取的最小 Request 替身（url + json() body）。 */
 type FakeUriRequest = { url: string; json: () => Promise<UriRequestBody | undefined> };
 
+/** 按固定 url 与可选 body 构造 FakeUriRequest。 */
 const fakeUriRequest = (url: string, body?: UriRequestBody): FakeUriRequest => ({ url, json: async () => body });
 
 /** Session-tree fixture row (entry + label + children), matching buildSessionTree input. */
+/** 会话树 fixture 节点（entry + label + children），对应 buildSessionTree 的输入形态。 */
 type FixtureTreeNode = { entry: { type: string; id: string; parentId: string | null; timestamp: string; message?: { role?: unknown; content?: unknown }; summary?: string; targetId?: string; label?: string }; label?: string; children: FixtureTreeNode[] };
 
+/** createUriDomain 组装与路由挂载的集成面：特性关闭时的逐端点 501 门禁，以及特性开启后走真实 SDK 数据的完整路由流。 */
 describe('createUriDomain + mount (integration surface)', () => {
+  // 把 domain.mount 注册的 (method, pattern, handler) 收进 Map，键为 "METHOD pattern"，供逐路由直调。
   const registerRoutes = (domain: { mount: (route: (m: string, p: string, h: import('./domain-uri.ts').UriRouteHandler) => void) => void }) => {
     const routes = new Map<string, import('./domain-uri.ts').UriRouteHandler>();
     domain.mount((method: string, pattern: string, handler: import('./domain-uri.ts').UriRouteHandler) => routes.set(`${method} ${pattern}`, handler));
     return routes;
   };
+  // 复用 fakeUriRequest 构造请求（本块内的简短别名）。
   const fakeRequest = fakeUriRequest;
+  // 按 url 与路径参数构造最小路由 ctx。
   const ctxFor = (url: string, params: Record<string, string> = {}) => ({ params, url: new URL(url), headers: new Headers() });
 
   test('features off → explicit 501s per key (fail loudly, R2)', async () => {
@@ -1063,15 +1128,20 @@ describe('createUriDomain + mount (integration surface)', () => {
 });
 
 
+/** host 层只读 artifacts 浏览：仅按会话列出 local:// 文件，mtime 倒序、truncated 透传、畸形行丢弃，含能力门禁与钩子缺失错误。 */
 describe('artifacts browse (spec 04 — host-level read-only local:// listing)', () => {
+  // 同上：把挂载的路由收进 Map，键为 "METHOD pattern"。
   const registerRoutes = (domain: { mount: (route: (m: string, p: string, h: import('./domain-uri.ts').UriRouteHandler) => void) => void }) => {
     const routes = new Map<string, import('./domain-uri.ts').UriRouteHandler>();
     domain.mount((method: string, pattern: string, handler: import('./domain-uri.ts').UriRouteHandler) => routes.set(`${method} ${pattern}`, handler));
     return routes;
   };
+  // 按 url 与路径参数构造最小路由 ctx。
   const ctxFor = (url: string, params: Record<string, string> = {}) => ({ params, url: new URL(url), headers: new Headers() });
 
+  // localFiles 钩子返回的文件列表形态（相对 ref + 大小 + 修改时间，附 truncated 标志）。
   type LocalFilesListing = { files: Array<{ ref: string; size: number; modifiedAt: number }>; truncated: boolean };
+  // 两个会话的固定列表数据：ses_A 两个文件，ses_B 为权威空列表（无 local:// 根但仍可索引）。
   const localFilesOf = {
     ses_A: {
       files: [
@@ -1087,6 +1157,7 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
   // SAFETY: the fixture declares exactly two session rows; unknown ids read null.
   const localFiles = async (sessionID: string): Promise<LocalFilesListing | null> =>
     sessionID === 'ses_A' ? localFilesOf.ses_A : sessionID === 'ses_B' ? localFilesOf.ses_B : null;
+  // 会话元数据 fixture，供 session-not-found 与标题兜底断言。
   const sessionTreeData = async () => [
     { id: 'ses_A', title: 'Alpha', time: { created: 1, updated: 10 } },
     { id: 'ses_B', title: '', time: { created: 2, updated: 20 } },
@@ -1199,7 +1270,9 @@ describe('artifacts browse (spec 04 — host-level read-only local:// listing)',
   });
 });
 
+/** §5.2.4 二进制预览：图片 resolve 返回 mime + token 的 binary 描述符（无占位内容），uri.content 按 token scope 流式返回原始字节。 */
 describe('local:// binary preview (spec 04 §5.2.4 — token byte stream)', () => {
+  // 10 字节 PNG fixture：8 字节魔数加两个载荷字节，用于字节流断言。
   const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
   fs.writeFileSync(path.join(artifactsOf('ses_A'), 'local', 'shot.png'), PNG_BYTES);
 

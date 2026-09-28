@@ -1,3 +1,10 @@
+/**
+ * 小模型调度（call.js）测试套件。覆盖：自定义 OpenAI 兼容 provider 的凭证
+ * 与端点解析（config apiKey、{file:}/{env:} 变量、自定义 header、auth.json
+ * 优先级、密钥不泄漏）、openai/anthropic 的 baseURL 覆盖、catalog 与运行时
+ * provider 的兜底、Google thinking 配置、GitHub Copilot 端点路由，以及各
+ * provider 家族的结构化输出（structured output）线格式。
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -15,13 +22,18 @@ vi.mock('../opencode/shared.js', () => ({
   isPlainObject: (value) => value instanceof Object && !Array.isArray(value),
 }));
 
+// 运行时 provider 查询同样 mock 掉，默认返回 null —— 即 OpenCode 进程内不认识该 provider。
 vi.mock('./runtime-providers.js', () => ({ getRuntimeProvider: vi.fn(async () => null) }));
 
+/** 被测入口：小模型调用。 */
 const { callSmallModel } = await import('./call.js');
+/** shared.js 中被 mock 的 config 读取器，供各用例编排返回值。 */
 const { readConfig, readConfigLayers } = await import('../opencode/shared.js');
+/** 被 mock 的运行时 provider 查询，供插件 provider 用例编排返回值。 */
 const { getRuntimeProvider } = await import('./runtime-providers.js');
 
 // Minimal catalog fragment used by the catalog-based base URL resolution case.
+/** 最小 catalog 片段（Mistral），用于「按 catalog 解析 baseURL」的用例。 */
 const CATALOG = {
   mistral: {
     id: 'mistral',
@@ -33,6 +45,7 @@ const CATALOG = {
   },
 };
 
+/** 构造 OpenAI chat/completions 风格的成功响应对象。 */
 const ok = (content) => ({
   ok: true,
   status: 200,
@@ -44,6 +57,7 @@ const ok = (content) => ({
   }),
 });
 
+/** 取 fetch mock 最后一次调用的 { url, init }，用于断言请求形态。 */
 const lastCall = (mock) => {
   const [url, init] = mock.mock.calls.at(-1);
   return { url: String(url), init };
@@ -51,7 +65,9 @@ const lastCall = (mock) => {
 
 // Regression coverage for the small-model dispatch to custom OpenAI-compatible
 // providers — credential and endpoint resolution, precedence, and non-leakage.
+/** 自定义 OpenAI 兼容 provider：凭证与端点解析、优先级与不泄漏（回归覆盖，英文说明见上）。 */
 describe('callSmallModel — custom provider config', () => {
+  // 本组共享的 fetch mock 与原始 fetch 备份。
   let fetchMock;
   let originalFetch;
 
@@ -73,6 +89,7 @@ describe('callSmallModel — custom provider config', () => {
     delete process.env.OMPCHAMBER_TEST_GATEWAY_KEY;
   });
 
+  // 无 auth.json 条目时，config 提供的凭证（apiKey、{file:}/{env:} 变量、自定义 header）如何生效。
   describe('config-supplied credentials (no auth.json entry)', () => {
     it('resolves an OpenCode file variable before sending the API key', async () => {
       const secretPath = path.join(os.homedir(), '.secret');
@@ -321,6 +338,7 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // auth.json 与 config 凭证同时存在时的优先级。
   describe('resolution order when auth.json is also present', () => {
     it('uses the auth.json credential with the config baseURL', async () => {
       readConfig.mockReturnValue({
@@ -368,6 +386,7 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // openai provider 的自定义 baseURL 覆盖与缺省回退。
   describe('openai provider custom baseURL override', () => {
     it('respects provider.openai.options.baseURL over the hardcoded OpenAI endpoint', async () => {
       readConfig.mockReturnValue({
@@ -422,7 +441,9 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // anthropic provider 的自定义 baseURL 覆盖与缺省回退。
   describe('anthropic provider custom baseURL override', () => {
+    // 构造 Anthropic messages 风格的成功响应。
     const anthropicOk = (text) => ({
       ok: true,
       status: 200,
@@ -485,6 +506,7 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // 无 config 覆盖时，按 catalog 与运行时 provider 解析端点的兜底路径。
   describe('catalog-based base URL (no config override)', () => {
     it('uses the catalog api field when no config baseURL is set', async () => {
       readConfig.mockReturnValue({});
@@ -591,6 +613,7 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // config 提供的密钥必须留在内存：不得写入 catalog、响应或请求体。
   describe('config-supplied key does not leak', () => {
     // The config-supplied key must stay in-memory: never copied into catalog
     // metadata, the response, or the request body.
@@ -626,6 +649,7 @@ describe('callSmallModel — custom provider config', () => {
     });
   });
 
+  // 合并后的 config 层读取。
   describe('merged config layers', () => {
     it('reads the provider config for the supplied working directory', async () => {
       readConfig.mockReturnValue({
@@ -651,7 +675,9 @@ describe('callSmallModel — custom provider config', () => {
   });
 });
 
+/** Google/Gemini 各代模型的 thinking 配置差异。 */
 describe('callSmallModel — Google thinking configuration', () => {
+  // 本组共享的 fetch mock 与原始 fetch 备份。
   let fetchMock;
   let originalFetch;
 
@@ -667,6 +693,7 @@ describe('callSmallModel — Google thinking configuration', () => {
     globalThis.fetch = originalFetch;
   });
 
+  // 构造 Google Gemini 风格的成功响应。
   const googleResponse = (text) => ({
     ok: true,
     status: 200,
@@ -723,10 +750,13 @@ describe('callSmallModel — Google thinking configuration', () => {
   });
 });
 
+/** GitHub Copilot：按 /models 元数据把请求路由到 /responses、/v1/messages 或 /chat/completions。 */
 describe('callSmallModel — GitHub Copilot endpoint routing', () => {
+  // 本组共享的 fetch mock 与原始 fetch 备份。
   let fetchMock;
   let originalFetch;
 
+  // 构造 github-copilot 的 OAuth 凭证对象。
   const copilotAuth = (overrides = {}) => ({
     'github-copilot': {
       type: 'oauth',
@@ -737,6 +767,7 @@ describe('callSmallModel — GitHub Copilot endpoint routing', () => {
     },
   });
 
+  // 构造指定状态码的 JSON Response。
   const jsonResponse = (payload, status = 200) => new Response(
     JSON.stringify(payload),
     {
@@ -745,6 +776,7 @@ describe('callSmallModel — GitHub Copilot endpoint routing', () => {
     },
   );
 
+  // 以固定 prompt/system 调用 Copilot 小模型的便捷封装。
   const callCopilot = (modelID, options = {}) => callSmallModel({
     auth: copilotAuth(options.auth),
     catalog: {},
@@ -911,10 +943,13 @@ describe('callSmallModel — GitHub Copilot endpoint routing', () => {
 // own request shape and its own extraction, and one family cannot do it at all.
 // These lock the per-format translation so a provider is never silently sent a
 // schema it will ignore.
+/** 结构化输出：各 provider 家族的请求形状与结果提取（英文说明见上）。 */
 describe('callSmallModel — structured output', () => {
+  // 本组共享的 fetch mock 与原始 fetch 备份。
   let fetchMock;
   let originalFetch;
 
+  // 结构化输出用例共享的最小 JSON Schema。
   const SCHEMA = {
     type: 'object',
     properties: { title: { type: 'string' } },
