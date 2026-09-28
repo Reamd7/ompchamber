@@ -134,7 +134,7 @@ pub fn validate_directory_path(candidate: &str) -> Result<ValidatedDirectory, St
     }
     match std::fs::canonicalize(&resolved) {
         Ok(directory) => Ok(ValidatedDirectory {
-            directory,
+            directory: crate::settings::normalization::strip_verbatim_prefix(directory),
             requested_directory: resolved,
         }),
         Err(_) => Err("Failed to validate directory".to_string()),
@@ -149,7 +149,9 @@ fn normalize_path_for_persistence(raw: &str) -> String {
         return String::new();
     }
     let resolved = lexical_resolve(&normalized);
-    let canonical = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&resolved).unwrap_or(resolved),
+    );
     let text = canonical.to_string_lossy().into_owned();
     if cfg!(windows) {
         uppercase_drive_letter(&text.replace('/', "\\"))
@@ -603,7 +605,11 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         let validated = validate_directory_path(dir.to_str().unwrap()).expect("valid dir");
         // macOS temp dirs live behind a /private symlink — validate resolves it.
-        let canonical = std::fs::canonicalize(&dir).unwrap();
+        // Windows: canonicalize yields a `\\?\` verbatim prefix; validate strips
+        // it (Node realpathSync form), so compare against the stripped form.
+        let canonical = crate::settings::normalization::strip_verbatim_prefix(
+            std::fs::canonicalize(&dir).unwrap(),
+        );
         assert_eq!(validated.directory, canonical);
         assert_eq!(validated.requested_directory, dir);
     }
@@ -683,7 +689,9 @@ mod tests {
             EngineState::external("http://127.0.0.1:1".into(), None),
         );
 
-        let canonical = std::fs::canonicalize(&project).unwrap();
+        let canonical = crate::settings::normalization::strip_verbatim_prefix(
+            std::fs::canonicalize(&project).unwrap(),
+        );
         let (status, body) = post_directory(
             ctx,
             &serde_json::json!({ "path": project.to_string_lossy() }).to_string(),
@@ -756,10 +764,11 @@ mod tests {
         );
         assert_eq!(
             body["path"],
-            std::fs::canonicalize(&target)
-                .unwrap()
-                .to_string_lossy()
-                .as_ref()
+            crate::settings::normalization::strip_verbatim_prefix(
+                std::fs::canonicalize(&target).unwrap()
+            )
+            .to_string_lossy()
+            .as_ref()
         );
     }
 

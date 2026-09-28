@@ -120,9 +120,12 @@ pub fn user_config_root() -> PathBuf {
 }
 
 /// Node `fsPromises.realpath` (canonicalize). macOS note: `/tmp` resolves to
-/// `/private/tmp`, same as Node.
+/// `/private/tmp`, same as Node. Windows note: Rust canonicalize yields
+/// `\\?\`-prefixed verbatim paths; Node's realpath does not — strip them so
+/// every consumer (wire responses, containment checks, grants) sees the same
+/// form Node produced.
 pub fn realpath(path: &Path) -> std::io::Result<PathBuf> {
-    std::fs::canonicalize(path)
+    std::fs::canonicalize(path).map(crate::settings::normalization::strip_verbatim_prefix)
 }
 
 /// Node `path.extname(p).toLowerCase()` ("" when there is no extension).

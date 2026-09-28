@@ -71,7 +71,10 @@ pub(crate) async fn validate_directory_path(candidate: &str) -> Result<(PathBuf,
         return Err("Specified path is not a directory".to_string());
     }
     match tokio::fs::canonicalize(&resolved).await {
-        Ok(canonical) => Ok((canonical, resolved)),
+        Ok(canonical) => Ok((
+            crate::settings::normalization::strip_verbatim_prefix(canonical),
+            resolved,
+        )),
         Err(_) => Err("Failed to validate directory".to_string()),
     }
 }

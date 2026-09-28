@@ -1537,8 +1537,10 @@ async fn put_provider_validates_and_persists() {
     let (env, root) = temp_env("provroute");
     let project_dir = root.join("project");
     std::fs::create_dir_all(&project_dir).unwrap();
-    // The route resolves the directory through realpath (canonicalize).
-    let project_dir = project_dir.canonicalize().unwrap();
+    // The route resolves the directory through realpath (canonicalize) and
+    // strips the Windows verbatim prefix, so compare in the stripped form.
+    let project_dir =
+        crate::settings::normalization::strip_verbatim_prefix(project_dir.canonicalize().unwrap());
     let app = test_app(env, test_context(&root));
 
     // Missing id.

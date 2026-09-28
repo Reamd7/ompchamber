@@ -98,7 +98,11 @@ async fn validate_directory_path(candidate: &str) -> Result<String, String> {
         return Err("Specified path is not a directory".to_string());
     }
     match std::fs::canonicalize(&resolved) {
-        Ok(canonical) => Ok(canonical.to_string_lossy().into_owned()),
+        Ok(canonical) => Ok(
+            crate::settings::normalization::strip_verbatim_prefix(canonical)
+                .to_string_lossy()
+                .into_owned(),
+        ),
         Err(_) => Err("Failed to validate directory".to_string()),
     }
 }

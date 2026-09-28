@@ -373,7 +373,7 @@ pub fn safe_realpath(value: &str) -> String {
 /// Rust `fs::canonicalize` returns `\\?\`-prefixed verbatim paths on Windows;
 /// Node's `fs.realpathSync` (which this mirrors) does not. Strip the prefix
 /// so persisted paths stay comparable with every other path string.
-fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     let text = path.as_os_str().to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{rest}"))

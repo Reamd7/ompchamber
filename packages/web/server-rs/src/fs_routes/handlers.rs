@@ -601,11 +601,16 @@ pub async fn write(
 
     let write_path = match realpath(&resolved.resolved) {
         Ok(canonical) => canonical,
-        Err(error) if is_not_found(&error) => resolved.resolved.clone(),
+        Err(error) if is_not_found(&error) => {
+            crate::settings::normalization::strip_verbatim_prefix(resolved.resolved.clone())
+        }
         Err(error) => return write_io_error(&error),
     };
-    let canonical_base =
-        realpath(&resolved.base).unwrap_or_else(|_| resolve_path(&path_string(&resolved.base)));
+    let canonical_base = realpath(&resolved.base).unwrap_or_else(|_| {
+        crate::settings::normalization::strip_verbatim_prefix(resolve_path(&path_string(
+            &resolved.base,
+        )))
+    });
     if !is_path_within_root(&write_path, &canonical_base) {
         return error_response(StatusCode::FORBIDDEN, "Access denied");
     }
@@ -763,8 +768,11 @@ pub async fn upload(
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
 
-    let canonical_base =
-        realpath(&resolved.base).unwrap_or_else(|_| resolve_path(&path_string(&resolved.base)));
+    let canonical_base = realpath(&resolved.base).unwrap_or_else(|_| {
+        crate::settings::normalization::strip_verbatim_prefix(resolve_path(&path_string(
+            &resolved.base,
+        )))
+    });
     let requested_parent = dirname(&resolved.resolved);
     let canonical_parent = match realpath(&requested_parent) {
         Ok(parent) => parent,
