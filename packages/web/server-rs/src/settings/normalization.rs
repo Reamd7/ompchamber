@@ -136,10 +136,15 @@ pub(crate) fn unique_strings(values: impl IntoIterator<Item = Value>) -> Vec<Str
 // ---------------------------------------------------------------------------
 
 pub(crate) fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
-        .map(PathBuf::from)
+    // Mirror Node's os.homedir(): USERPROFILE wins on Windows, HOME elsewhere.
+    if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+    } else {
+        std::env::var_os("HOME").filter(|v| !v.is_empty())
+    }
+    .map(PathBuf::from)
 }
 
 pub(crate) fn current_dir() -> PathBuf {
@@ -204,19 +209,6 @@ pub fn path_resolve(value: &str) -> PathBuf {
         let (cwd_abs, cwd_parts) = split_path(&current_dir().to_string_lossy());
         absolute = cwd_abs;
         stack.extend(cwd_parts);
-        if win
-            && let Some(first) = stack.first_mut()
-            && first.len() == 2
-            && first.as_bytes()[1] == b':'
-        {
-            *first = first.to_uppercase();
-        }
-    } else if win
-        && let Some(first) = parts.first()
-        && first.len() == 2
-        && first.as_bytes()[1] == b':'
-    {
-        stack.push(first.to_uppercase());
     }
     for part in parts {
         match part.as_str() {
@@ -233,6 +225,18 @@ pub fn path_resolve(value: &str) -> PathBuf {
             }
             other => stack.push(other.to_string()),
         }
+    }
+    // Windows drive letters normalize to uppercase (Node:
+    // path.resolve("c:\\x") === "C:\\x"). Uppercase the leading drive in
+    // place — pushing it separately before the part loop (as an earlier
+    // revision did) duplicated the drive on every resolve, compounding a
+    // "C:\\C:\\…" prefix into persisted paths once per settings save.
+    if win
+        && let Some(first) = stack.first_mut()
+        && first.len() == 2
+        && first.as_bytes()[1] == b':'
+    {
+        *first = first.to_uppercase();
     }
     let resolved = join_parts(absolute, &stack);
     if resolved.as_os_str().is_empty() {
@@ -307,7 +311,7 @@ pub fn path_relative(from: &str, to: &str) -> String {
 /// `normalizeDirectoryPath`: trims, strips matching surrounding quotes,
 /// expands `~` / `~/` against the home directory.
 pub fn normalize_directory_path(value: &str) -> String {
-    let mut trimmed = value.trim().to_string();
+    let mut trimmed = collapse_repeated_drive_prefixes(value.trim());
     let b = trimmed.as_bytes();
     if b.len() >= 2
         && ((b[0] == b'"' && b[b.len() - 1] == b'"') || (b[0] == b'\'' && b[b.len() - 1] == b'\''))
@@ -330,11 +334,53 @@ pub fn normalize_directory_path(value: &str) -> String {
     trimmed
 }
 
+/// Repair the persisted `C:\C:\…\C:\Users\…` corruption: a drive prefix can
+/// appear exactly once at the start of a Windows path, so any repetition is
+/// damage (settings written by builds whose path resolve duplicated the
+/// drive). Collapse the repeats to one; no-op on other platforms and shapes.
+fn collapse_repeated_drive_prefixes(value: &str) -> String {
+    if !cfg!(windows) {
+        return value.to_string();
+    }
+    let is_drive_sep = |s: &str| -> bool {
+        let b = s.as_bytes();
+        b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+    };
+    let mut out = value.to_string();
+    while is_drive_sep(&out) {
+        let rest = out[3..].to_string();
+        if !is_drive_sep(&rest) {
+            break;
+        }
+        out = rest;
+    }
+    out
+}
+
 /// `safeRealpathSync`: resolve symlinks, falling back to the original value.
 pub fn safe_realpath(value: &str) -> String {
     match std::fs::canonicalize(value) {
-        Ok(resolved) => resolved.to_string_lossy().into_owned(),
+        Ok(resolved) => strip_verbatim_prefix(resolved)
+            .to_string_lossy()
+            .into_owned(),
         Err(_) => value.to_string(),
+    }
+}
+
+/// Rust `fs::canonicalize` returns `\\?\`-prefixed verbatim paths on Windows;
+/// Node's `fs.realpathSync` (which this mirrors) does not. Strip the prefix
+/// so persisted paths stay comparable with every other path string.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let text = path.as_os_str().to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest.to_string())
+    } else {
+        path
     }
 }
 

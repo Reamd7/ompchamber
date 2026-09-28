@@ -76,15 +76,17 @@ fn normalize_path_for_persistence_resolves_symlinks() {
     let real = dir.join("real");
     std::fs::create_dir_all(&real).unwrap();
     let link = dir.join("link");
-    std::os::unix::fs::symlink(&real, &link).unwrap();
+    crate::os_compat::symlink(&real, &link).unwrap();
 
     let normalized = norm::normalize_path_for_persistence(
         &Value::from(link.to_string_lossy().into_owned()),
         true,
     );
+    // safe_realpath strips the Windows verbatim prefix, so compare against
+    // the same resolution the production path produces.
     assert_eq!(
         normalized.as_str().unwrap(),
-        std::fs::canonicalize(&real).unwrap().to_string_lossy()
+        norm::safe_realpath(&real.to_string_lossy())
     );
 }
 
@@ -353,9 +355,149 @@ fn path_resolve_lexically_normalizes() {
     assert_eq!(norm::path_resolve("x/y"), cwd.join("x/y"));
     assert_eq!(norm::path_resolve("/a/b/../c"), PathBuf::from("/a/c"));
     assert_eq!(norm::path_resolve("/a/./b"), PathBuf::from("/a/b"));
-    assert_eq!(norm::path_relative("/a/b", "/a/b/c/d"), "c/d");
-    assert_eq!(norm::path_relative("/a/b/c", "/a/x"), "../../x");
+    let sep = if cfg!(windows) { "\\" } else { "/" };
+    assert_eq!(norm::path_relative("/a/b", "/a/b/c/d"), format!("c{sep}d"));
+    assert_eq!(
+        norm::path_relative("/a/b/c", "/a/x"),
+        format!("..{sep}..{sep}x")
+    );
     assert_eq!(norm::path_relative("/a/b", "/a/b"), "");
+}
+
+#[test]
+fn path_resolve_is_idempotent() {
+    let once = norm::path_resolve("a/b/../c");
+    let twice = norm::path_resolve(&once.to_string_lossy());
+    assert_eq!(once, twice);
+}
+
+#[cfg(windows)]
+#[test]
+fn path_resolve_does_not_duplicate_windows_drive() {
+    // Regression: an absolute drive path gained one extra "C:\" per resolve,
+    // so every settings save compounded the prefix ("C:\C:\…\Users\…") and
+    // the base64 project ids grew past MAX_PATH until the write 500'd.
+    assert_eq!(
+        norm::path_resolve(r"C:\Users\reamd\Documents"),
+        PathBuf::from(r"C:\Users\reamd\Documents")
+    );
+    // Only the drive letter uppercases (path.resolve("c:\\x") === "C:\\x");
+    // later components keep their case, as in Node.
+    assert_eq!(
+        norm::path_resolve(r"c:\users\reamd"),
+        PathBuf::from(r"C:\users\reamd")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn normalize_directory_path_collapses_repeated_drive_prefixes() {
+    // Self-heal for settings persisted by the drive-duplication bug.
+    assert_eq!(
+        norm::normalize_directory_path(r"C:\C:\C:\Users\reamd"),
+        r"C:\Users\reamd"
+    );
+    // Mixed separators and single prefixes are untouched.
+    assert_eq!(
+        norm::normalize_directory_path(r"C:/C:\Users\reamd"),
+        r"C:\Users\reamd"
+    );
+    assert_eq!(
+        norm::normalize_directory_path(r"C:\Users\reamd"),
+        r"C:\Users\reamd"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn safe_realpath_strips_verbatim_prefix() {
+    // Node's realpathSync has no "\\?\" prefix; Rust's canonicalize does.
+    let dir = temp_dir_unique("verbatim");
+    std::fs::create_dir_all(&dir).unwrap();
+    let resolved = norm::safe_realpath(dir.to_string_lossy().as_ref());
+    assert!(!resolved.starts_with(r"\\?\"), "{resolved}");
+}
+
+#[cfg(windows)]
+#[test]
+fn sanitize_projects_heals_corrupted_drive_prefix() {
+    // End to end: a project entry persisted with the compounded prefix
+    // resolves back to the real directory and its id is recomputed.
+    let dir = temp_dir_unique("heal-project");
+    std::fs::create_dir_all(&dir).unwrap();
+    let real = dir.to_string_lossy().into_owned();
+    let corrupted = format!(r"C:\C:\C:\{real}");
+    let input = json!([{
+        "id": norm::create_project_id_from_path(&corrupted),
+        "path": corrupted,
+    }]);
+    let healed = norm::sanitize_projects(Some(&input)).unwrap();
+    // sanitize heals the path but keeps the stored id; the id remap to the
+    // canonical form happens in migrate_settings_to_deterministic_project_ids
+    // (covered end to end below).
+    assert_eq!(
+        healed[0]["path"].as_str().unwrap(),
+        norm::safe_realpath(&real)
+    );
+    assert_eq!(
+        healed[0]["id"].as_str().unwrap(),
+        input[0]["id"].as_str().unwrap()
+    );
+}
+
+/// End-to-end heal: settings persisted by the drive-duplication bug (and the
+/// registry files keyed by the corrupted base64 ids) must self-heal on the
+/// next read_migrated — collapsed paths, canonical ids, migrated storage.
+#[cfg(windows)]
+#[tokio::test]
+async fn read_migrated_heals_corrupted_drive_prefixes_end_to_end() {
+    let root = temp_dir_unique("heal-e2e");
+    std::fs::create_dir_all(root.join("projects")).unwrap();
+    let real = root.join("repo");
+    std::fs::create_dir_all(&real).unwrap();
+    let real_str = real.to_string_lossy().into_owned();
+    let corrupted_path = format!(r"C:\C:\C:\{real_str}");
+    let corrupted_id = norm::create_project_id_from_path(&corrupted_path);
+    let clean_id = norm::create_project_id_from_path(&real_str);
+
+    let settings = json!({
+        "lastDirectory": corrupted_path,
+        "activeProjectId": corrupted_id,
+        "projects": [{ "id": corrupted_id, "path": corrupted_path, "label": "heal" }],
+    });
+    std::fs::write(
+        root.join("settings.json"),
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    // Registry file under the corrupted id — must migrate to the clean id.
+    std::fs::write(
+        root.join("projects").join(format!("{corrupted_id}.json")),
+        r#"{"projectPath":"stale"}"#,
+    )
+    .unwrap();
+
+    let store = SettingsStore::new(root.join("settings.json"));
+    let healed = store.read_migrated().await.unwrap();
+
+    let expected_real = norm::safe_realpath(&real_str);
+    assert_eq!(healed["lastDirectory"].as_str().unwrap(), expected_real);
+    let projects = healed["projects"].as_array().unwrap();
+    assert_eq!(projects[0]["path"].as_str().unwrap(), expected_real);
+    assert_eq!(projects[0]["id"].as_str().unwrap(), clean_id);
+    assert_eq!(healed["activeProjectId"].as_str().unwrap(), clean_id);
+
+    let migrated = root.join("projects").join(format!("{clean_id}.json"));
+    let stale = root.join("projects").join(format!("{corrupted_id}.json"));
+    assert!(migrated.exists(), "registry not migrated to clean id");
+    assert!(!stale.exists(), "corrupted registry file not removed");
+    let body: Value = serde_json::from_str(&std::fs::read_to_string(&migrated).unwrap()).unwrap();
+    assert_eq!(body["projectPath"].as_str().unwrap(), expected_real);
+
+    // Idempotent: a second pass changes nothing.
+    let again = store.read_migrated().await.unwrap();
+    assert_eq!(again, healed);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 // ---------------------------------------------------------------------------

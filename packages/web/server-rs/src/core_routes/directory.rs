@@ -529,12 +529,11 @@ mod tests {
         assert_eq!(normalize_directory_path("  '/tmp/x' "), "/tmp/x");
         assert_eq!(
             normalize_directory_path("\"~/proj\""),
-            format!(
-                "{}/proj",
-                crate::config::home_dir()
-                    .map(|home| home.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            )
+            crate::config::home_dir()
+                .unwrap_or_default()
+                .join("proj")
+                .to_string_lossy()
+                .into_owned()
         );
         assert_eq!(normalize_directory_path("   "), "");
         assert_eq!(normalize_directory_path("/plain/path"), "/plain/path");
