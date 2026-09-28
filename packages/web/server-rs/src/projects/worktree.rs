@@ -16,27 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::config::home_dir;
-
-/// `normalizeDirectoryPath`: trim, expand a leading `~` to the home directory.
-fn normalize_directory_path(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    if trimmed == "~" {
-        return home_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("~/")
-        .or_else(|| trimmed.strip_prefix("~\\"))
-        && let Some(home) = home_dir()
-    {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    trimmed.to_string()
-}
+use crate::settings::normalization::normalize_directory_path;
 
 /// `normalizePath`: directory normalization + backslashes to forward slashes.
 fn normalize_path(value: &str) -> String {

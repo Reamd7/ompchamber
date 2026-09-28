@@ -311,7 +311,9 @@ async fn list_file_target_is_rejected_as_not_directory() {
 
 #[tokio::test]
 async fn write_read_stat_roundtrip() {
-    let fixture = std::fs::canonicalize(unique_temp_dir("roundtrip")).unwrap();
+    let fixture = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(unique_temp_dir("roundtrip")).unwrap(),
+    );
     let target = fixture.join("hello.txt");
 
     let uri = format!("/api/fs/write");

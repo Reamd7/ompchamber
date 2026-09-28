@@ -19,32 +19,7 @@ use serde_json::{Map, Value};
 // ---------------------------------------------------------------------------
 
 /// settings-normalization-runtime.js `normalizeDirectoryPath`.
-pub(crate) fn normalize_directory_path(value: &str) -> String {
-    let mut trimmed = value.trim();
-    if trimmed.chars().count() >= 2 {
-        let first = trimmed.chars().next().unwrap_or_default();
-        let last = trimmed.chars().last().unwrap_or_default();
-        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-            trimmed = trimmed[1..trimmed.len() - 1].trim();
-        }
-    }
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    let Some(home) = crate::config::home_dir() else {
-        return trimmed.to_string();
-    };
-    if trimmed == "~" {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("~/")
-        .or_else(|| trimmed.strip_prefix("~\\"))
-    {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    trimmed.to_string()
-}
+pub(crate) use crate::settings::normalization::normalize_directory_path;
 
 /// Node `path.resolve(input)` — lexical, no symlink following.
 pub(crate) fn resolve_path(input: &str) -> PathBuf {
@@ -217,7 +192,9 @@ pub(crate) fn validate_directory_path(candidate: &str) -> Result<ValidatedDirect
     if !metadata.is_dir() {
         return Err("Specified path is not a directory".to_string());
     }
-    let directory = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+    let directory = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(&resolved).unwrap_or(resolved),
+    );
     Ok(ValidatedDirectory { directory })
 }
 
@@ -437,6 +414,25 @@ mod tests {
         assert_eq!(values.joined("specs").as_deref(), Some("a,b"));
         assert_eq!(values.first("refresh"), Some("true"));
         assert_eq!(values.first("missing"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_directory_heals_corrupted_drive_prefixes() {
+        // A stale UI mirror can still send the `C:\C:\...` prefixes older
+        // builds persisted; validation must collapse them instead of 400ing
+        // the skills/plugin routes that share this resolver.
+        let dir = std::env::temp_dir().join("http-util-heal-validate");
+        std::fs::create_dir_all(&dir).unwrap();
+        let candidate = format!("{}{}", "C:\\".repeat(40), dir.to_string_lossy());
+        let validated = validate_directory_path(&candidate)
+            .unwrap_or_else(|error| panic!("validation must heal: {error}"));
+        assert_eq!(
+            validated.directory,
+            crate::settings::normalization::strip_verbatim_prefix(
+                std::fs::canonicalize(&dir).unwrap()
+            )
+        );
     }
 
     #[test]

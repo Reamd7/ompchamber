@@ -8,35 +8,11 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::config::home_dir;
 
-/// settings-normalization-runtime.js `normalizeDirectoryPath`: trims, strips
-/// wrapping quotes (Windows "copy as path" / quoted shell snippets), and
-/// expands `~` / `~/...` against the home directory.
-pub fn normalize_directory_path(value: &str) -> String {
-    let mut trimmed = value.trim();
-    if trimmed.chars().count() >= 2 {
-        let first = trimmed.chars().next().unwrap_or_default();
-        let last = trimmed.chars().last().unwrap_or_default();
-        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-            trimmed = trimmed[1..trimmed.len() - 1].trim();
-        }
-    }
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    let Some(home) = home_dir() else {
-        return trimmed.to_string();
-    };
-    if trimmed == "~" {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("~/")
-        .or_else(|| trimmed.strip_prefix("~\\"))
-    {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    trimmed.to_string()
-}
+/// settings-normalization-runtime.js `normalizeDirectoryPath` — owned by the
+/// settings pipeline (verbatim-prefix strip + repeated-drive collapse + `~`
+/// expansion), re-exported so every fs route heals its inputs the same way
+/// settings.json heals on read.
+pub use crate::settings::normalization::normalize_directory_path;
 
 /// Node `path.resolve(input)`: make absolute against the cwd and lexically
 /// collapse `.` / `..` segments. Symlinks are NOT resolved here — routes that

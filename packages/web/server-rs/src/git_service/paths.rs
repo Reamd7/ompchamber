@@ -7,33 +7,11 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
-/// JS `normalizeDirectoryPath`: trim, `~` expansion. Non-string input in JS
-/// passes through unchanged (then fails `.trim()` checks); here `None` in,
-/// `None` out.
+/// JS `normalizeDirectoryPath`: the settings pipeline (trim, `~` expansion,
+/// Windows verbatim/repeated-drive heal). Non-string input in JS passes
+/// through unchanged; here `None` in, `None` out.
 pub fn normalize_directory_path(value: Option<&str>) -> Option<String> {
-    let value = value?;
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Some(String::new());
-    }
-    if trimmed == "~" {
-        return home_dir_str();
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("~/")
-        .or_else(|| trimmed.strip_prefix("~\\"))
-    {
-        return home_dir_str().map(|home| join_str(&home, rest));
-    }
-    Some(trimmed.to_string())
-}
-
-fn home_dir_str() -> Option<String> {
-    crate::config::home_dir().and_then(|p| p.to_str().map(str::to_string))
-}
-
-fn join_str(base: &str, rest: &str) -> String {
-    Path::new(base).join(rest).to_string_lossy().to_string()
+    value.map(crate::settings::normalization::normalize_directory_path)
 }
 
 pub fn require_directory(value: Option<&str>) -> Result<String, String> {
@@ -485,7 +463,12 @@ mod tests {
         );
         assert_eq!(
             normalize_directory_path(Some("~/repo")),
-            Some(join_str(&home, "repo"))
+            Some(
+                std::path::Path::new(&home)
+                    .join("repo")
+                    .to_string_lossy()
+                    .into_owned()
+            )
         );
         assert_eq!(normalize_directory_path(Some("  ")), Some(String::new()));
         assert_eq!(
