@@ -1219,7 +1219,7 @@ fn migrate_settings_remove_opencode_update_state(settings: &Map<String, Value>) 
 
 /// `validateProjectEntries`: drop projects whose path is missing or no longer
 /// a directory (keep them on transient/permission errors).
-async fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
+pub(crate) async fn validate_project_entries(projects: &[Value]) -> Vec<Value> {
     let mut validated = Vec::new();
     for project in projects {
         let Some(path) = project
@@ -1375,7 +1375,7 @@ impl SettingsStore {
         tokio::fs::create_dir_all(&settings_directory).await?;
         #[cfg(unix)]
         {
-use crate::os_compat::PermissionsExt;
+            use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(
                 &settings_directory,
                 std::fs::Permissions::from_mode(0o700),
@@ -1406,7 +1406,7 @@ use crate::os_compat::PermissionsExt;
         }
         #[cfg(unix)]
         {
-use crate::os_compat::PermissionsExt;
+            use crate::os_compat::PermissionsExt;
             let _ = std::fs::set_permissions(
                 &self.settings_path,
                 std::fs::Permissions::from_mode(0o600),
@@ -1553,7 +1553,7 @@ use crate::os_compat::PermissionsExt;
 async fn write_file_private(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     #[cfg(unix)]
     {
-use crate::os_compat::PermissionsExt;
+        use crate::os_compat::PermissionsExt;
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)

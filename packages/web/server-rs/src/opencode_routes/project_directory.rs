@@ -10,6 +10,7 @@ use axum::http::HeaderMap;
 
 use crate::context::RouterContext;
 use crate::settings;
+use crate::settings::normalization::normalize_directory_path;
 
 use super::webutil::{first_query_value, header_value, resolve_path};
 
@@ -18,36 +19,6 @@ pub(crate) struct ProjectDirectory {
     pub directory: Option<PathBuf>,
     pub requested_directory: Option<PathBuf>,
     pub error: Option<String>,
-}
-
-/// `settings-normalization-runtime.js` `normalizeDirectoryPath`.
-fn normalize_directory_path(value: &str) -> String {
-    let mut trimmed = value.trim().to_string();
-    if trimmed.len() >= 2 {
-        let quoted = (trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\''));
-        if quoted {
-            trimmed = trimmed[1..trimmed.len() - 1].trim().to_string();
-        }
-    }
-    if trimmed.is_empty() {
-        return trimmed;
-    }
-    let home = crate::config::home_dir();
-    if trimmed == "~" {
-        if let Some(home) = home {
-            return home.to_string_lossy().into_owned();
-        }
-        return trimmed;
-    }
-    for prefix in ["~/", "~\\"] {
-        if let Some(rest) = trimmed.strip_prefix(prefix)
-            && let Some(home) = home
-        {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
-    }
-    trimmed
 }
 
 /// `validateDirectoryPath` — returns (canonical, lexical requested).
