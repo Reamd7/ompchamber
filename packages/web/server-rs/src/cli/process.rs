@@ -67,7 +67,12 @@ pub fn remove_instance_file(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// Liveness only — "is *some* process alive with this PID".
+/// Liveness only — "is *some* process alive with this PID". Use this when the
+/// PID is known to be ours (a child we just spawned, or a process we are
+/// stopping). Do NOT use it to validate a PID read from a pid file: after an
+/// ungraceful shutdown the pid file is stale and the kernel may have recycled
+/// that PID to an unrelated process — see `is_ompchamber_cmdline`.
+#[cfg(unix)]
 pub fn is_process_running(pid: u32) -> bool {
     std::process::Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])
@@ -76,6 +81,28 @@ pub fn is_process_running(pid: u32) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+/// Windows has no /bin/kill; probe liveness with `tasklist /FI "PID eq n"`.
+/// Same probe engine.rs uses for its async exit watcher (`signal_process`
+/// with signal "0"), kept in sync deliberately.
+#[cfg(windows)]
+pub fn is_process_running(pid: u32) -> bool {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            // A match lists one process row containing the bare pid; the
+            // no-match case prints an "INFO: No tasks" header instead.
+            text.split_whitespace()
+                .any(|token| token == pid.to_string())
+        }
+        _ => false,
+    }
 }
 
 /// Best-effort command line for identity verification (`ps` on macOS,
@@ -112,7 +139,9 @@ pub fn is_ompchamber_cmdline(cmdline: &str) -> bool {
             || lower.contains("serve"))
 }
 
-/// `terminateProcessTree`: TERM to the group, bounded wait, then KILL.
+/// `terminateProcessTree` unix: TERM to the group then the pid, bounded wait,
+/// then KILL.
+#[cfg(unix)]
 pub fn terminate_process_tree(pid: u32, graceful_timeout_ms: u64, force_timeout_ms: u64) {
     let send = |signal: &str| {
         let _ = std::process::Command::new("/bin/kill")
@@ -140,6 +169,40 @@ pub fn terminate_process_tree(pid: u32, graceful_timeout_ms: u64, force_timeout_
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
+}
+
+/// `terminateProcessTree` win32 branch: terminate the single pid first
+/// (the JS `process.kill(pid)` TerminateProcess), then `taskkill /T` (tree),
+/// then `taskkill /T /F` — each followed by a bounded liveness wait.
+#[cfg(windows)]
+pub fn terminate_process_tree(pid: u32, graceful_timeout_ms: u64, force_timeout_ms: u64) {
+    fn taskkill(pid: u32, extra: &[&str]) {
+        let _ = std::process::Command::new("taskkill")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .args(extra)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    fn wait_gone(pid: u32, timeout_ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while is_process_running(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        !is_process_running(pid)
+    }
+
+    taskkill(pid, &["/F"]);
+    if wait_gone(pid, 800) {
+        return;
+    }
+    taskkill(pid, &["/T"]);
+    if wait_gone(pid, graceful_timeout_ms) {
+        return;
+    }
+    taskkill(pid, &["/T", "/F"]);
+    wait_gone(pid, force_timeout_ms);
 }
 
 /// Enumerate instance files in the run dir with live pids.
@@ -171,4 +234,46 @@ pub fn discover_instances() -> Vec<(u16, InstanceOptions, u32)> {
     }
     found.sort_by_key(|(port, _, _)| *port);
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    fn spawn_sleeper() -> std::process::Child {
+        std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    fn spawn_sleeper() -> std::process::Child {
+        // `ping -n` is the reliable Windows sleeper: `timeout` needs an
+        // interactive console and stalls under redirected test output.
+        std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    fn liveness_detects_self_and_missing_pid() {
+        assert!(is_process_running(std::process::id()));
+        // u32::MAX sits outside every supported pid space, so the probe
+        // must answer "no such process".
+        assert!(!is_process_running(u32::MAX));
+    }
+
+    #[test]
+    fn terminate_process_tree_stops_a_live_child() {
+        let mut child = spawn_sleeper();
+        let pid = child.id();
+        assert!(is_process_running(pid));
+        terminate_process_tree(pid, 2500, 3000);
+        assert!(!is_process_running(pid));
+        let _ = child.wait();
+    }
 }

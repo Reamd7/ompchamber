@@ -26,6 +26,7 @@ mod windows_shims {
     pub trait PermissionsExt {
         fn from_mode(_mode: u32) -> Permissions;
         fn mode(&self) -> u32;
+        fn set_mode(&mut self, _mode: u32);
     }
 
     impl PermissionsExt for Permissions {
@@ -41,6 +42,7 @@ mod windows_shims {
             // Present owner-writable so existing checks keep passing.
             0o600
         }
+        fn set_mode(&mut self, _mode: u32) {}
     }
 
     pub trait OpenOptionsExt {

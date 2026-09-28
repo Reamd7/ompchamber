@@ -772,7 +772,7 @@ fn mapping_missing_file_roundtrip_and_permissions() {
     );
     assert_eq!(state.read_stored_mapping().unwrap(), written);
 
-    use std::os::unix::fs::PermissionsExt;
+    use crate::os_compat::PermissionsExt;
     let mode = std::fs::metadata(dir.join("linear-mapping.json"))
         .unwrap()
         .permissions()

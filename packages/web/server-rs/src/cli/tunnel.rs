@@ -1239,6 +1239,7 @@ struct RunningInstance {
 enum ProcessState {
     Matched,
     Mismatched,
+    Unknown,
     Dead,
 }
 
@@ -1249,7 +1250,7 @@ fn get_ompchamber_process_state(pid: u32) -> ProcessState {
     match process::read_process_cmdline(pid) {
         Some(cmdline) if process::is_ompchamber_cmdline(&cmdline) => ProcessState::Matched,
         Some(_) => ProcessState::Mismatched,
-        None => ProcessState::Mismatched,
+        None => ProcessState::Unknown,
     }
 }
 

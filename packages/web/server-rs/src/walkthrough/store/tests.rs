@@ -494,7 +494,7 @@ async fn keeps_a_pointer_whose_repository_is_merely_unreachable() {
         },
     );
 
-    use std::os::unix::fs::PermissionsExt;
+    use crate::os_compat::PermissionsExt;
     let mut permissions = std::fs::metadata(&inner).unwrap().permissions();
     permissions.set_mode(0o000);
     let restricted = std::fs::set_permissions(&inner, permissions).is_ok();
