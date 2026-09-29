@@ -2,14 +2,14 @@
 
 > 数据:`git log main..openchamber/main`(fork main = 138685d7d);分析基座:merge-openchamber 分支 `925482ac6`。
 > 判定:diff 引入 `@opencode/client|schema` = **v2 SDK 依赖**;subject/diff 含 OC2 语义 = **引擎耦合**;触碰 packages/web|sdk = **需 server-rs 移植**;其余 = **自身能力**。
-> **用法**:勾选 `- [x]` 表示该功能线/提交已吸收进本分支;状态列可补注(SKIP/PARTIAL/PORTED)。
+> **用法**:行勾选 `- [x]` = 已吸收;未勾但状态列有 SKIP/PARTIAL = 终态跳过/部分吸收。线标题勾选 = 该线全部行已有终态。进度列格式 `X/N(吸A/跳B/半C)`,X=已有终态行数。
 > 图例:🟢 高价值 🟡 中价值 🔴 大工程 ⚫ 不可用
 
 | 功能线 | 提交数 | v2 | 引擎 | 服务端 | 价值 | 进度 |
 |---|---|---|---|---|---|---|
 | Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 0/9 |
 | 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 0/5 |
-| 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 0/5 |
+| 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 1/5 (0吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 0/1 |
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/7 |
@@ -18,17 +18,17 @@
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 0/4 |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
-| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 0/7 |
+| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 1/7 (0吸/1跳) |
 | Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 0/5 |
-| 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 0/2 |
-| MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 0/3 |
-| 权限/安全 | 1 | 1 | 0 | 1 | 🟡 中价值 / 引擎+服务端 | 0/1 |
-| Websearch | 1 | 1 | 0 | 1 | 🟡 中价值 / v2 SDK | 0/1 |
+| 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
+| MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
+| 权限/安全 | 1 | 1 | 0 | 1 | 🟡 中价值 / 引擎+服务端 | 1/1 (0吸/1跳) |
+| Websearch | 1 | 1 | 0 | 1 | 🟡 中价值 / v2 SDK | 1/1 (0吸/1跳) |
 | 通知/浏览器 | 2 | 0 | 1 | 2 | 🟡 中价值 / 依赖扩展平台 | 0/2 |
-| Spaces 隔离空间 | 12 | 0 | 2 | 12 | 🔴 大工程 / OC2 时代设计 | 0/12 |
-| Extensions/SDK 平台 | 12 | 2 | 0 | 12 | 🔴 大工程 / 平台级 | 0/12 |
-| OpenCode 2 迁移 | 2 | 2 | 0 | 2 | ⚫ OC2 依赖(不可用) | 0/2 |
-| 其他 | 27 | 4 | 5 | 7 | 🟡 杂项 / 逐条判定 | 0/27 |
+| Spaces 隔离空间 | 12 | 0 | 2 | 12 | 🔴 大工程 / OC2 时代设计 | 12/12 (0吸/12跳) |
+| Extensions/SDK 平台 | 12 | 2 | 0 | 12 | 🔴 大工程 / 平台级 | 12/12 (0吸/12跳) |
+| OpenCode 2 迁移 | 2 | 2 | 0 | 2 | ⚫ OC2 依赖(不可用) | 2/2 (0吸/2跳) |
+| 其他 | 27 | 4 | 5 | 7 | 🟡 杂项 / 逐条判定 | 4/27 (0吸/4跳) |
 
 ## - [ ] Git/Diff 增强 — 🟢 高价值 / 自身能力
 
@@ -64,7 +64,7 @@ work-until-done(v2 SDK 标记)、归档清理、精确搜索、AI 重命名、�
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `ea15762ee` | feat(sessions): keep sessions in work until the user marks them done | `v2 SDK` `服务端` |  |
+| - [ ] | `ea15762ee` | feat(sessions): keep sessions in work until the user marks them done | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 | - [ ] | `9dfdacf91` | feat(settings): add session warming toggle to Sessions settings | `服务端` |  |
 | - [ ] | `0e9e93dc7` | feat(sessions): add archived-only retention cleanup | `服务端` |  |
 | - [ ] | `0c7653c4c` | feat: rename sessions with AI using recent conversation turns | `自身` |  |
@@ -183,7 +183,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `4e3b82c82` | feat(stats): add a usage stats page from OpenCode's session stats | `v2 SDK` |  |
+| - [ ] | `4e3b82c82` | feat(stats): add a usage stats page from OpenCode's session stats | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `d716d7861` | feat(usage): integrate ClinePass quota provider (#3431) | `服务端` |  |
 | - [ ] | `f70f18150` | feat(usage): add ClinePass quota provider | `服务端` |  |
 | - [ ] | `2dfd1190e` | feat(work-status): add opt-in turn statistics (#3177) | `引擎耦合?` `服务端` |  |
@@ -210,7 +210,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
 | - [ ] | `fae74f78d` | feat(goal): check goal progress with Jev, the small model as fallback | `服务端` |  |
-| - [ ] | `ca8ae6972` | feat(small-model): allow Claude Code and retry while plugins load | `v2 SDK` `服务端` |  |
+| - [ ] | `ca8ae6972` | feat(small-model): allow Claude Code and retry while plugins load | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 
 ## - [ ] MCP/Plugins — 🟡 中价值 / 部分引擎依赖
 
@@ -219,24 +219,24 @@ MCP 重连为受管 OC 能力;插件加载状态展示 1 提交 v2 SDK。
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
 | - [ ] | `c841fe2ad` | feat(mcp): let OpenCode decide Code Mode by default | `自身` |  |
-| - [ ] | `0a6198389` | feat(plugins): show OpenCode load status and update unpinned plugins | `v2 SDK` |  |
+| - [ ] | `0a6198389` | feat(plugins): show OpenCode load status and update unpinned plugins | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `aa13c9811` | feat(mcp): reconnect failed MCP servers in managed OpenCode | `服务端` |  |
 
-## - [ ] 权限/安全 — 🟡 中价值 / 引擎+服务端
+## - [x] 权限/安全 — 🟡 中价值 / 引擎+服务端
 
 ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需对齐 fork 的 permission_auto_accept。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `1bc709ed0` | feat(permissions): ask / safety net / accept-all modes and classification providers | `v2 SDK` `服务端` |  |
+| - [ ] | `1bc709ed0` | feat(permissions): ask / safety net / accept-all modes and classification providers | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 
-## - [ ] Websearch — 🟡 中价值 / v2 SDK
+## - [x] Websearch — 🟡 中价值 / v2 SDK
 
 结果卡片与设置——1 提交 v2 import,需换绑 v1 wire。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `69f2a3252` | feat(websearch): show results as cards and add web search settings | `v2 SDK` `服务端` |  |
+| - [ ] | `69f2a3252` | feat(websearch): show results as cards and add web search settings | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 
 ## - [ ] 通知/浏览器 — 🟡 中价值 / 依赖扩展平台
 
@@ -247,52 +247,52 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `c0fb97ac1` | feat(notifications): let plugins and agents notify the user | `引擎耦合?` `服务端` |  |
 | - [ ] | `1edf908ce` | feat(browser): let agents address browser tabs by id | `服务端` |  |
 
-## - [ ] Spaces 隔离空间 — 🔴 大工程 / OC2 时代设计
+## - [x] Spaces 隔离空间 — 🔴 大工程 / OC2 时代设计
 
 整套 Docker 隔离工作区子系统(stage 3a→5d),服务端 socket 转发/gatekeeper 全新架构;上游为 OC2 会话模型设计,fork 需整体重新评估。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `117e45456` | feat(spaces): access to a space, with its blocked attempts (stage 5d-1) (#4076) | `服务端` |  |
-| - [ ] | `211a5e713` | feat(spaces): the create flow, with the live switch in Settings (stage 5c) (#4069) | `服务端` |  |
-| - [ ] | `102bff7e9` | feat(spaces): grants on the server, with the window bound to the inner network (stage 5b) (#4011) | `服务端` |  |
-| - [ ] | `e0ee886e8` | feat(spaces): the journey's server routes and the live switch (stage 5a) (#4007) | `服务端` |  |
-| - [ ] | `1290fd121` | feat(spaces): the space in the sidebar, chat through the prefix, the settings switch (stage 4c) (#4005) | `服务端` |  |
-| - [ ] | `d67dcca2d` | feat(spaces): the merged session list, space events and socket forwarding (stage 4b) (#3999) | `引擎耦合?` `服务端` |  |
-| - [ ] | `f9d212f38` | feat(spaces): the feature switch and the dispatcher (stage 4a) (#3995) | `引擎耦合?` `服务端` |  |
-| - [ ] | `ccad7ec55` | feat(spaces): bring a space's work out and apply it (stage 3b) (#3991) | `服务端` |  |
-| - [ ] | `f25d6f503` | feat(spaces): bring a project's code into a space (stage 3a) (#3833) | `服务端` |  |
-| - [ ] | `45ff8c648` | feat(spaces): a gatekeeper as a space's only way out (#3790) | `服务端` |  |
-| - [ ] | `918eb9300` | feat(spaces): tools volume and the server inside a space (#3771) | `服务端` |  |
-| - [ ] | `66b42b32c` | feat(spaces): unwired Docker place and space manager, with the isolated spaces design (#3749) | `服务端` |  |
+| - [ ] | `117e45456` | feat(spaces): access to a space, with its blocked attempts (stage 5d-1) (#4076) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `211a5e713` | feat(spaces): the create flow, with the live switch in Settings (stage 5c) (#4069) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `102bff7e9` | feat(spaces): grants on the server, with the window bound to the inner network (stage 5b) (#4011) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `e0ee886e8` | feat(spaces): the journey's server routes and the live switch (stage 5a) (#4007) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `1290fd121` | feat(spaces): the space in the sidebar, chat through the prefix, the settings switch (stage 4c) (#4005) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `d67dcca2d` | feat(spaces): the merged session list, space events and socket forwarding (stage 4b) (#3999) | `引擎耦合?` `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `f9d212f38` | feat(spaces): the feature switch and the dispatcher (stage 4a) (#3995) | `引擎耦合?` `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `ccad7ec55` | feat(spaces): bring a space's work out and apply it (stage 3b) (#3991) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `f25d6f503` | feat(spaces): bring a project's code into a space (stage 3a) (#3833) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `45ff8c648` | feat(spaces): a gatekeeper as a space's only way out (#3790) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `918eb9300` | feat(spaces): tools volume and the server inside a space (#3771) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `66b42b32c` | feat(spaces): unwired Docker place and space manager, with the isolated spaces design (#3749) | `服务端` | SKIP(平台级,另立项) |
 
-## - [ ] Extensions/SDK 平台 — 🔴 大工程 / 平台级
+## - [x] Extensions/SDK 平台 — 🔴 大工程 / 平台级
 
 第三方扩展平台 + @openchamber/sdk + 页面/存储/后台动作;2 提交直接用 v2 SDK,且与 fork 的 rsbuild/server-rs 均需适配。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `c8ce4565b` | feat(extensions): file editors in the SDK, Excalidraw moves to an extension | `v2 SDK` `服务端` |  |
-| - [ ] | `e348013ca` | feat(sdk): identify surface viewers to services and let docked pages resize | `服务端` |  |
-| - [ ] | `6c5a1ff1b` | feat(sdk): let extensions add a section to the Work Status panel | `v2 SDK` `服务端` |  |
-| - [ ] | `959d179c6` | feat(sdk): scope browser provider calls and dock a page beside a shared surface | `服务端` |  |
-| - [ ] | `5883d28af` | feat(sdk): browser provider role and shared surface for extension services (#3734) | `服务端` |  |
-| - [ ] | `4adb70398` | feat(sdk): separate background entry from visible panels | `服务端` |  |
-| - [ ] | `ecad0a2db` | feat(sdk): support background actions and interactive toasts | `服务端` |  |
-| - [ ] | `9df61f0f3` | feat(sdk): turn examples into an interactive extension gallery | `服务端` |  |
-| - [ ] | `b59ab5671` | feat(extensions): add built-in infrastructure and refresh SDK examples | `服务端` |  |
-| - [ ] | `201a5c83a` | feat(extensions): support SSH identities and relay asset loading | `服务端` |  |
-| - [ ] | `e0cb68fc6` | feat(extensions): add pages, storage, and workspace session access | `服务端` |  |
-| - [ ] | `5181bcd33` | feat(extensions): add third-party extensions and @openchamber/sdk (#3460) | `服务端` |  |
+| - [ ] | `c8ce4565b` | feat(extensions): file editors in the SDK, Excalidraw moves to an extension | `v2 SDK` `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `e348013ca` | feat(sdk): identify surface viewers to services and let docked pages resize | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `6c5a1ff1b` | feat(sdk): let extensions add a section to the Work Status panel | `v2 SDK` `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `959d179c6` | feat(sdk): scope browser provider calls and dock a page beside a shared surface | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `5883d28af` | feat(sdk): browser provider role and shared surface for extension services (#3734) | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `4adb70398` | feat(sdk): separate background entry from visible panels | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `ecad0a2db` | feat(sdk): support background actions and interactive toasts | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `9df61f0f3` | feat(sdk): turn examples into an interactive extension gallery | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `b59ab5671` | feat(extensions): add built-in infrastructure and refresh SDK examples | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `201a5c83a` | feat(extensions): support SSH identities and relay asset loading | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `e0cb68fc6` | feat(extensions): add pages, storage, and workspace session access | `服务端` | SKIP(平台级,另立项) |
+| - [ ] | `5181bcd33` | feat(extensions): add third-party extensions and @openchamber/sdk (#3460) | `服务端` | SKIP(平台级,另立项) |
 
-## - [ ] OpenCode 2 迁移 — ⚫ OC2 依赖(不可用)
+## - [x] OpenCode 2 迁移 — ⚫ OC2 依赖(不可用)
 
 引擎层迁移与会话元数据迁移,pi 引擎无对应概念。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `461f91452` | feat(opencode): move session metadata onto OpenCode 2.0.15 | `v2 SDK` `服务端` |  |
-| - [ ] | `654705f7d` | feat: move OpenChamber to OpenCode 2.x (#3837) | `v2 SDK` `服务端` |  |
+| - [ ] | `461f91452` | feat(opencode): move session metadata onto OpenCode 2.0.15 | `v2 SDK` `服务端` | SKIP(OC2 引擎,pi 引擎无对应) |
+| - [ ] | `654705f7d` | feat: move OpenChamber to OpenCode 2.x (#3837) | `v2 SDK` `服务端` | SKIP(OC2 引擎,pi 引擎无对应) |
 
 ## - [ ] 其他 — 🟡 杂项 / 逐条判定
 
@@ -300,12 +300,12 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `18ca96969` | feat(ui): expand stats with token composition, efficiency and tool calls (#4026) | `v2 SDK` |  |
-| - [ ] | `a30029f90` | feat: add Excalidraw editor support and file integration (#4064) | `v2 SDK` |  |
+| - [ ] | `18ca96969` | feat(ui): expand stats with token composition, efficiency and tool calls (#4026) | `v2 SDK` | SKIP(v2 SDK) |
+| - [ ] | `a30029f90` | feat: add Excalidraw editor support and file integration (#4064) | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `220d7e0ae` | feat(settings): bring back the Claude Code integration card | `自身` |  |
 | - [ ] | `f42715c25` | feat(ui): lay out the keyboard shortcuts dialog in two columns | `自身` |  |
-| - [ ] | `4e5f26d07` | feat(settings): card grids for MCP and plugins, list search, compact model rows on mobile | `v2 SDK` |  |
-| - [ ] | `60d836c48` | feat(settings): redesign providers as a card grid with account switching | `v2 SDK` |  |
+| - [ ] | `4e5f26d07` | feat(settings): card grids for MCP and plugins, list search, compact model rows on mobile | `v2 SDK` | SKIP(v2 SDK) |
+| - [ ] | `60d836c48` | feat(settings): redesign providers as a card grid with account switching | `v2 SDK` | SKIP(v2 SDK) |
 | - [ ] | `15e51be9e` | feat(settings): add a manual Restart OpenCode action | `自身` |  |
 | - [ ] | `fe2ec474f` | feat(about): separate OpenChamber and OpenCode updates on About | `服务端` |  |
 | - [ ] | `8dcc61279` | feat(ui): add /fork, runtime hints for plugin agents, and About in the mobile app | `自身` |  |
