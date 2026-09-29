@@ -18,7 +18,7 @@
 | VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 4/4 (3吸/1跳) |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
-| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 6/7 (1吸/1跳/4半) |
+| Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 7/7 (1吸/2跳/4半) |
 | Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 0/5 |
 | 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
 | MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
@@ -177,7 +177,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | - [ ] | `499700ab1` | feat(chat): merge mobile comment composer (#3733) | `自身` |  |
 | - [ ] | `dca0239a3` | feat(ui): replace mobile comment overlay with composer comment mode | `自身` |  |
 
-## - [ ] Stats/Usage/Quota — 🟡 中价值 / 部分引擎依赖
+## - [x] Stats/Usage/Quota — 🟡 中价值 / 部分引擎依赖
 
 用量统计页直接读 OC2 会话统计(v2 SDK);quota providers 是自身能力(server-rs 移植)。
 
@@ -320,7 +320,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `819b2b218` | feat(relay): report app metadata on connections | `服务端` |  |
 | - [ ] | `b65bed1f0` | feat: preserve scroll and cursor positions across file preview views | `自身` |  |
 | - [x] | `26b54dbe3` | feat(ui): unify change comparisons and compact message actions | `服务端` | PORTED(服务端移植 server-rs:commit-diff/commit-files/工作区区间对比) |
-| - [ ] | `8dce7ae6b` | feat: enable turn stats by default and prepare release notes | `引擎耦合?` |  |
+| - [x] | `8dce7ae6b` | feat: enable turn stats by default and prepare release notes | `引擎耦合?` | SKIP(依赖 2dfd1190e turn statistics,已跳过) |
 | - [ ] | `73040d71e` | feat: add search to the new session project picker (#3408) | `自身` |  |
 | - [ ] | `1b1421a59` | feat(chats): relocate managed chat worktrees via OPENCHAMBER_CHATS_DIR (#3135) | `服务端` |  |
 | - [ ] | `d8060b9d2` | feat(changelog): one source file per release, generated outputs | `引擎耦合?` |  |
