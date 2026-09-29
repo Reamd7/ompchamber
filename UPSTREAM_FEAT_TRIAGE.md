@@ -310,7 +310,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `fe2ec474f` | feat(about): separate OpenChamber and OpenCode updates on About | `服务端` |  |
 | - [ ] | `8dcc61279` | feat(ui): add /fork, runtime hints for plugin agents, and About in the mobile app | `自身` |  |
 | - [ ] | `f99fe1fd6` | feat(memory): tell every session when to save and deliver it everywhere | `引擎耦合?` `服务端` |  |
-| - [ ] | `0c4fbe362` | feat: add start session action to empty sidebar groups | `自身` |  |
+| - [ ] | `0c4fbe362` | feat: add start session action to empty sidebar groups | `自身` | SKIP(互锁:依赖 7ad4 Timeline/rowModel 架构,已跳过) |
 | - [ ] | `fafbd50bc` | feat(settings): searchable theme picker, tighter dropdowns, stable scroll gutter | `自身` |  |
 | - [ ] | `83ec4fbde` | feat(ui): add opt-in session activity spinners (#3459) | `引擎耦合?` |  |
 | - [ ] | `449d9b42a` | feat(sync): evict idle session histories whole instead of trimming turns | `自身` |  |
