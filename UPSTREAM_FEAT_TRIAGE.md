@@ -313,7 +313,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `0c4fbe362` | feat: add start session action to empty sidebar groups | `自身` | SKIP(互锁:依赖 7ad4 Timeline/rowModel 架构,已跳过) |
 | - [ ] | `fafbd50bc` | feat(settings): searchable theme picker, tighter dropdowns, stable scroll gutter | `自身` |  |
 | - [ ] | `83ec4fbde` | feat(ui): add opt-in session activity spinners (#3459) | `引擎耦合?` |  |
-| - [ ] | `449d9b42a` | feat(sync): evict idle session histories whole instead of trimming turns | `自身` |  |
+| - [x] | `449d9b42a` | feat(sync): evict idle session histories whole instead of trimming turns | `自身` | SKIP(互锁:依赖上游 loader 重写(游标冷展开/retention 管线),fork loader 架构分叉) |
 | - [ ] | `921f764c8` | feat(changelog): add SDK group for extension author notes | `服务端` |  |
 | - [ ] | `85b20dbf0` | feat(issues): gate intake and triage decisions (#3588) | `引擎耦合?` |  |
 | - [x] | `8ee477207` | feat: swap sidebar activity header when sticky | `自身` | SKIP(被 0d59 crossfade 统一取代,fork 已含等价实现) |
