@@ -314,8 +314,8 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `fafbd50bc` | feat(settings): searchable theme picker, tighter dropdowns, stable scroll gutter | `自身` |  |
 | - [ ] | `83ec4fbde` | feat(ui): add opt-in session activity spinners (#3459) | `引擎耦合?` |  |
 | - [x] | `449d9b42a` | feat(sync): evict idle session histories whole instead of trimming turns | `自身` | SKIP(互锁:依赖上游 loader 重写(游标冷展开/retention 管线),fork loader 架构分叉) |
-| - [ ] | `921f764c8` | feat(changelog): add SDK group for extension author notes | `服务端` |  |
-| - [ ] | `85b20dbf0` | feat(issues): gate intake and triage decisions (#3588) | `引擎耦合?` |  |
+| - [x] | `921f764c8` | feat(changelog): add SDK group for extension author notes | `服务端` | PORTED(干净落地;JS changelog 模块仅脚本侧,server 侧删除) |
+| - [x] | `85b20dbf0` | feat(issues): gate intake and triage decisions (#3588) | `引擎耦合?` | PORTED(干净落地;JS changelog 模块仅脚本侧,server 侧删除) |
 | - [x] | `8ee477207` | feat: swap sidebar activity header when sticky | `自身` | SKIP(被 0d59 crossfade 统一取代,fork 已含等价实现) |
 | - [x] | `819b2b218` | feat(relay): report app metadata on connections | `服务端` | PORTED(服务端移植 server-rs relay host_client.rs;appId=ompchamber,env 前缀 OMPCHAMBER_) |
 | - [ ] | `b65bed1f0` | feat: preserve scroll and cursor positions across file preview views | `自身` |  |
