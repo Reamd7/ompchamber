@@ -20,11 +20,11 @@
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
 | Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 7/7 (1吸/2跳/4半) |
 | Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 5/5 (2吸/3跳) |
-| 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
-| MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
+| 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 2/2 (0吸/2跳) |
+| MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 3/3 (0吸/3跳) |
 | 权限/安全 | 1 | 1 | 0 | 1 | 🟡 中价值 / 引擎+服务端 | 1/1 (0吸/1跳) |
 | Websearch | 1 | 1 | 0 | 1 | 🟡 中价值 / v2 SDK | 1/1 (0吸/1跳) |
-| 通知/浏览器 | 2 | 0 | 1 | 2 | 🟡 中价值 / 依赖扩展平台 | 0/2 |
+| 通知/浏览器 | 2 | 0 | 1 | 2 | 🟡 中价值 / 依赖扩展平台 | 2/2 (0吸/2跳) |
 | Spaces 隔离空间 | 12 | 0 | 2 | 12 | 🔴 大工程 / OC2 时代设计 | 12/12 (0吸/12跳) |
 | Extensions/SDK 平台 | 12 | 2 | 0 | 12 | 🔴 大工程 / 平台级 | 12/12 (0吸/12跳) |
 | OpenCode 2 迁移 | 2 | 2 | 0 | 2 | ⚫ OC2 依赖(不可用) | 2/2 (0吸/2跳) |
@@ -203,24 +203,24 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | - [x] | `48ce6028d` | feat(routing): keep Auto across restarts and offer it as the session default | `引擎耦合?` `服务端` | SKIP(依赖 ec95fe2e0 routing 子系统) |
 | - [x] | `ec95fe2e0` | feat(routing): route prompts to a model per task and hold risky auto-accepted actions | `引擎耦合?` `服务端` | SKIP(平台级:routing 子系统为全新服务端栈(store/defaults/路由重写/Jev 网关),server-rs 无对应,另立项) |
 
-## - [ ] 小模型 Jev — 🟡 中价值 / 需对齐
+## - [x] 小模型 Jev — 🟡 中价值 / 需对齐
 
 上游小模型基建;fork 已有 small_model 模块,Jev/OpenRouter 网关思路可借鉴,1 提交 v2 SDK。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `fae74f78d` | feat(goal): check goal progress with Jev, the small model as fallback | `服务端` |  |
+| - [x] | `fae74f78d` | feat(goal): check goal progress with Jev, the small model as fallback | `服务端` | SKIP(依赖 ec95fe2e0 routing/Jev 网关子系统,已跳过) |
 | - [ ] | `ca8ae6972` | feat(small-model): allow Claude Code and retry while plugins load | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 
-## - [ ] MCP/Plugins — 🟡 中价值 / 部分引擎依赖
+## - [x] MCP/Plugins — 🟡 中价值 / 部分引擎依赖
 
 MCP 重连为受管 OC 能力;插件加载状态展示 1 提交 v2 SDK。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `c841fe2ad` | feat(mcp): let OpenCode decide Code Mode by default | `自身` |  |
+| - [x] | `c841fe2ad` | feat(mcp): let OpenCode decide Code Mode by default | `自身` | SKIP(OC2 引擎:Code Mode 由 OpenCode 引擎决定,pi 引擎无对应) |
 | - [ ] | `0a6198389` | feat(plugins): show OpenCode load status and update unpinned plugins | `v2 SDK` | SKIP(v2 SDK) |
-| - [ ] | `aa13c9811` | feat(mcp): reconnect failed MCP servers in managed OpenCode | `服务端` |  |
+| - [x] | `aa13c9811` | feat(mcp): reconnect failed MCP servers in managed OpenCode | `服务端` | SKIP(互锁:managed OpenCode 重连机制,fork 为 omp-host 内嵌引擎,无 managed OC 进程管理) |
 
 ## - [x] 权限/安全 — 🟡 中价值 / 引擎+服务端
 
@@ -238,14 +238,14 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 |---|---|---|---|---|
 | - [ ] | `69f2a3252` | feat(websearch): show results as cards and add web search settings | `v2 SDK` `服务端` | SKIP(v2 SDK) |
 
-## - [ ] 通知/浏览器 — 🟡 中价值 / 依赖扩展平台
+## - [x] 通知/浏览器 — 🟡 中价值 / 依赖扩展平台
 
 插件/代理通知与按 id 寻址浏览器——无扩展平台则为空转。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `c0fb97ac1` | feat(notifications): let plugins and agents notify the user | `引擎耦合?` `服务端` |  |
-| - [ ] | `1edf908ce` | feat(browser): let agents address browser tabs by id | `服务端` |  |
+| - [x] | `c0fb97ac1` | feat(notifications): let plugins and agents notify the user | `引擎耦合?` `服务端` | SKIP(依赖 Extensions 平台(插件/代理通知),平台级已跳过) |
+| - [x] | `1edf908ce` | feat(browser): let agents address browser tabs by id | `服务端` | SKIP(依赖 Extensions 平台 browser provider,平台级已跳过) |
 
 ## - [x] Spaces 隔离空间 — 🔴 大工程 / OC2 时代设计
 
