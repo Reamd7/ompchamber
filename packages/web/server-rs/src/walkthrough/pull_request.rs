@@ -97,6 +97,8 @@ impl PullRequestDiffer {
         &self,
         directory: &str,
         number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        allow_empty: bool,
     ) -> Result<(String, Value), WalkthroughError> {
         let Some(token) = self.stored_token() else {
             return Err(WalkthroughError::with_code(
@@ -109,13 +111,22 @@ impl PullRequestDiffer {
         // The resolver returns `{ repo, remoteUrl }`, not the repo itself.
         // Reading `.owner` off the wrapper made this check fail for every
         // repository in the JS — the check stays on the repo itself.
-        let remote_url = (self.remote_url)(directory.to_string()).await;
-        let Some(repo) = remote_url.as_deref().and_then(parse_github_remote_url) else {
-            return Err(WalkthroughError::with_code(
-                "This directory has no GitHub remote",
-                400,
-                "no-github-remote",
-            ));
+        let repo = match source_repo {
+            Some(explicit) => RepoRef {
+                owner: explicit.owner,
+                repo: explicit.repo,
+            },
+            None => {
+                let remote_url = (self.remote_url)(directory.to_string()).await;
+                let Some(repo) = remote_url.as_deref().and_then(parse_github_remote_url) else {
+                    return Err(WalkthroughError::with_code(
+                        "This directory has no GitHub remote",
+                        400,
+                        "no-github-remote",
+                    ));
+                };
+                repo
+            }
         };
 
         let (status, body) = (self.http)(PrDiffHttpRequest {
@@ -134,7 +145,15 @@ impl PullRequestDiffer {
         }
 
         let patch = body;
-        if patch.trim().is_empty() {
+        // JS: assert.match(body, /^(?:diff --git |\s*$)/) — the body must
+        // START with a diff header, or be blank/whitespace-only.
+        let patch_valid = patch.starts_with("diff --git ") || patch.trim().is_empty();
+        if !patch_valid {
+            return Err(WalkthroughError::internal(
+                "GitHub returned an invalid pull request diff",
+            ));
+        }
+        if !allow_empty && patch.trim().is_empty() {
             return Err(WalkthroughError::with_code(
                 format!("Pull request #{number} has no diff"),
                 404,
@@ -151,10 +170,15 @@ impl PullRequestDiffer {
 /// 包装成 sources seam 需要的 PrDiffFn 形状。
     /// Adapt into the sources seam shape.
     pub fn into_pr_diff_fn(self: Arc<Self>) -> PrDiffFn {
-        Arc::new(move |directory: String, number: i64| {
-            let differ = Arc::clone(&self);
-            Box::pin(async move { differ.diff(&directory, number).await })
-        })
+        Arc::new(
+            move |directory: String,
+                  number: i64,
+                  source_repo: Option<super::sources::SourceRepo>,
+                  _allow_empty: bool| {
+                let differ = Arc::clone(&self);
+                Box::pin(async move { differ.diff(&directory, number, source_repo, false).await })
+            },
+        )
     }
 }
 
@@ -316,7 +340,7 @@ mod tests {
             Some("git@github.com:openchamber/openchamber.git"),
             (200, PATCH),
         );
-        let result = differ.diff("/repo", 2122).await.unwrap();
+        let result = differ.diff("/repo", 2122, None, false).await.unwrap();
 
         assert_eq!(result.0, PATCH);
         assert_eq!(
@@ -349,7 +373,7 @@ mod tests {
         .unwrap();
 
         let (differ, seen) = differ(&data_dir, None, (200, PATCH));
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 400);
         assert_eq!(error.code.as_deref(), Some("no-github-remote"));
@@ -367,7 +391,7 @@ mod tests {
             (200, PATCH),
         );
         // No github-auth.json: no stored token.
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 401);
         assert_eq!(error.code.as_deref(), Some("github-not-connected"));
@@ -389,7 +413,7 @@ mod tests {
             Some("https://github.com/ompchamber/ompchamber"),
             (200, "   "),
         );
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 404);
         assert_eq!(error.code.as_deref(), Some("empty-diff"));
@@ -411,7 +435,7 @@ mod tests {
             Some("git@github.com:openchamber/openchamber.git"),
             (401, "Bad credentials"),
         );
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
         assert_eq!(error.status, 500);
         assert_eq!(error.message, "GitHub request failed with 401");
         let _ = std::fs::remove_dir_all(&data_dir);

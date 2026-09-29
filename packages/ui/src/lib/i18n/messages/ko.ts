@@ -5,6 +5,7 @@ import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
   'commitComparison.mode': '커밋',
+  'pullRequestComparison.select': '풀 리퀘스트 선택',
   'commitComparison.select': '커밋 선택',
   'commitComparison.search': '커밋 검색...',
   'commitComparison.loadError': '커밋을 불러오지 못했습니다',

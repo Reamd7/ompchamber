@@ -35,8 +35,18 @@ pub enum Source {
     WorkingTree { scope: String },
 /// 分支对比 source；`base_ref`/`head_ref` 均已 trim 且必填。
     Branch { base_ref: String, head_ref: String },
-/// pull request source；`number` 为正整数 PR 编号。
-    Pr { number: i64 },
+/// pull request source；`number` 为正整数 PR 编号，`source_repo` 为跨仓
+/// PR 的显式 owner/repo（本地 remote 之外的仓库）。
+    Pr { number: i64, source_repo: Option<SourceRepo> },
+}
+
+/// 跨仓 PR source 的显式仓库（`sourceRepo`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRepo {
+    /// 仓库所有者（GitHub owner）。
+    pub owner: String,
+    /// 仓库名。
+    pub repo: String,
 }
 
 /// source 的序列化辅助。
@@ -51,7 +61,10 @@ impl Source {
                 "baseRef": base_ref,
                 "headRef": head_ref,
             }),
-            Source::Pr { number } => json!({ "kind": "pr", "number": number }),
+            Source::Pr { number, source_repo } => match source_repo {
+                Some(repo) => json!({ "kind": "pr", "number": number, "sourceRepo": { "owner": repo.owner, "repo": repo.repo } }),
+                None => json!({ "kind": "pr", "number": number }),
+            },
         }
     }
 }
@@ -131,8 +144,36 @@ pub fn parse_source(raw: Option<&Value>) -> Result<Source, WalkthroughError> {
                     "pr sources require a positive number".to_string(),
                 ));
             }
+            let source_repo = match object.get("sourceRepo") {
+                Some(Value::Null) | None => None,
+                Some(value) if value.is_object() => {
+                    let owner = value.get("owner").and_then(Value::as_str).unwrap_or("");
+                    let repo = value.get("repo").and_then(Value::as_str).unwrap_or("");
+                    let owner_ok = !owner.is_empty()
+                        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                    let repo_ok = !repo.is_empty()
+                        && repo
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
+                    if !(owner_ok && repo_ok) {
+                        return Err(source_error(
+                            "pr sources require a valid repository".to_string(),
+                        ));
+                    }
+                    Some(SourceRepo {
+                        owner: owner.to_string(),
+                        repo: repo.to_string(),
+                    })
+                }
+                Some(_) => {
+                    return Err(source_error(
+                        "pr sources require a valid repository".to_string(),
+                    ));
+                }
+            };
             Ok(Source::Pr {
                 number: number as i64,
+                source_repo,
             })
         }
         other => {
@@ -152,7 +193,10 @@ pub fn source_key(source: &Source) -> String {
     match source {
         Source::WorkingTree { scope } => format!("working-tree:{scope}"),
         Source::Branch { base_ref, head_ref } => format!("branch:{base_ref}...{head_ref}"),
-        Source::Pr { number } => format!("pr:{number}"),
+        Source::Pr { number, source_repo } => match source_repo {
+            Some(repo) => format!("pr:{}/{}:{number}", repo.owner, repo.repo),
+            None => format!("pr:{number}"),
+        },
     }
 }
 
@@ -222,8 +266,11 @@ impl GitDeps {
 /// [`super::pull_request::pull_request_differ`]; `None` answers the JS
 /// "Pull request diffs are unavailable" 500.
 /// 中文补充：签名为 (目录, PR 编号) → (patch, 元数据)。
-pub type PrDiffFn =
-    Arc<dyn Fn(String, i64) -> BoxFuture<Result<(String, Value), WalkthroughError>> + Send + Sync>;
+pub type PrDiffFn = Arc<
+    dyn Fn(String, i64, Option<SourceRepo>, bool) -> BoxFuture<Result<(String, Value), WalkthroughError>>
+        + Send
+        + Sync,
+>;
 
 /// `loadSourceSections`: resolve a source into diff sections plus the source's
 /// pass-through metadata.
@@ -304,7 +351,7 @@ pub async fn load_source_sections(
                 json!({ "baseRef": base_ref, "headRef": head_ref }),
             ))
         }
-        Source::Pr { number } => {
+        Source::Pr { number, source_repo } => {
             let Some(pr_diff) = pr_diff else {
                 return Err(WalkthroughError::with_code(
                     "Pull request diffs are unavailable",
@@ -312,12 +359,13 @@ pub async fn load_source_sections(
                     "pr-diffs-unavailable",
                 ));
             };
-            let (patch, meta) = (pr_diff)(directory.to_string(), *number).await?;
+            let (patch, meta) =
+                (pr_diff)(directory.to_string(), *number, source_repo.clone(), false).await?;
             let sections = if patch.trim().is_empty() {
                 Vec::new()
             } else {
                 vec![super::digest::Section {
-                    scope: format!("pr:{number}"),
+                    scope: source_key(source),
                     patch,
                 }]
             };
@@ -402,10 +450,10 @@ mod tests {
     #[test]
     fn parse_source_validates_pr_numbers() {
         let source = parse_source(Some(&json!({ "kind": "pr", "number": 2122 }))).unwrap();
-        assert_eq!(source, Source::Pr { number: 2122 });
+        assert_eq!(source, Source::Pr { number: 2122, source_repo: None });
         // JS `Number("2122")` coerces.
         let source = parse_source(Some(&json!({ "kind": "pr", "number": "2122" }))).unwrap();
-        assert_eq!(source, Source::Pr { number: 2122 });
+        assert_eq!(source, Source::Pr { number: 2122, source_repo: None });
         for bad in [json!(0), json!(-1), json!(2.5), json!("x"), json!(null)] {
             let error = parse_source(Some(&json!({ "kind": "pr", "number": bad }))).unwrap_err();
             assert_eq!(error.message, "pr sources require a positive number");
@@ -437,7 +485,7 @@ mod tests {
             }),
             "branch:main...feature"
         );
-        assert_eq!(source_key(&Source::Pr { number: 2122 }), "pr:2122");
+        assert_eq!(source_key(&Source::Pr { number: 2122, source_repo: None }), "pr:2122");
     }
 
     /// scope=all 时 staged 与 working（含 untracked 文件）分为两个 section。
@@ -584,7 +632,7 @@ mod tests {
     #[tokio::test]
     async fn pr_sources_answer_500_without_a_differ() {
         let deps = deps_returning("");
-        let error = load_source_sections("/repo", &Source::Pr { number: 7 }, &deps, None)
+        let error = load_source_sections("/repo", &Source::Pr { number: 7, source_repo: None }, &deps, None)
             .await
             .unwrap_err();
         assert_eq!(error.status, 500);
@@ -595,7 +643,7 @@ mod tests {
     #[tokio::test]
     async fn pr_sources_use_the_differ_and_scope_by_number() {
         let deps = deps_returning("");
-        let differ: PrDiffFn = Arc::new(|directory, number| {
+        let differ: PrDiffFn = Arc::new(|directory, number, _source_repo, _allow_empty| {
             Box::pin(async move {
                 assert_eq!(directory, "/repo");
                 assert_eq!(number, 2122);
@@ -606,7 +654,7 @@ mod tests {
             })
         });
         let (sections, meta) =
-            load_source_sections("/repo", &Source::Pr { number: 2122 }, &deps, Some(&differ))
+            load_source_sections("/repo", &Source::Pr { number: 2122, source_repo: None }, &deps, Some(&differ))
                 .await
                 .unwrap();
         assert_eq!(sections.len(), 1);

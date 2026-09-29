@@ -5,6 +5,7 @@ import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
   'commitComparison.mode': 'コミット',
+  'pullRequestComparison.select': 'プルリクエストを選択',
   'commitComparison.select': 'コミットを選択',
   'commitComparison.search': 'コミットを検索...',
   'commitComparison.loadError': 'コミットを読み込めませんでした',

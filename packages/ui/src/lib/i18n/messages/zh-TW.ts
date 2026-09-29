@@ -5,6 +5,7 @@ import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
   'commitComparison.mode': '提交',
+  'pullRequestComparison.select': '選擇拉取請求',
   'commitComparison.select': '選擇提交',
   'commitComparison.search': '搜尋提交...',
   'commitComparison.loadError': '無法載入提交',

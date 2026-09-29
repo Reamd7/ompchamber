@@ -4,6 +4,7 @@ import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict = {
   'commitComparison.mode': 'Commit',
+  'pullRequestComparison.select': 'Pull Request auswählen',
   'commitComparison.select': 'Commit auswählen',
   'commitComparison.search': 'Commits suchen...',
   'commitComparison.loadError': 'Commits konnten nicht geladen werden',

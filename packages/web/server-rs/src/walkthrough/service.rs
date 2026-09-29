@@ -302,6 +302,25 @@ impl WalkthroughService {
         (self.small_model.describe)(request).await
     }
 
+    /// `getPullRequestDiff` 直通：供 `/api/walkthrough/pr-diff` 路由取
+    /// 完整已发布补丁（不做模型就绪检查、生成文件过滤或本地工作区读取）。
+    pub async fn get_pull_request_diff(
+        &self,
+        directory: &str,
+        number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        allow_empty: bool,
+    ) -> Result<(String, Value), WalkthroughError> {
+        let Some(pr_diff) = self.pr_diff.as_ref() else {
+            return Err(WalkthroughError::with_code(
+                "Pull request diffs are unavailable",
+                500,
+                "pr-diffs-unavailable",
+            ));
+        };
+        (pr_diff)(directory.to_string(), number, source_repo, allow_empty).await
+    }
+
     /// `loadCurrentDiff`: current diff for a source, parsed into files and
     /// hunks.
     /// 中文补充：section 组装与 digest 构建遵循 sources/digest 模块规则。

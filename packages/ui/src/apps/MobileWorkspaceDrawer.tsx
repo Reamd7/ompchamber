@@ -224,14 +224,14 @@ export const MobileWorkspaceDrawer: React.FC<{
         {visitedTabs.has('changes') ? (
           <div
             // A newly requested per-file diff remounts the pane so
-            // initialDiffPath applies; plain reopens keep the state.
+            // initialDiff applies; plain reopens keep the state.
             key={pendingChangesDiff ? `changes:${pendingChangesDiff.path}:${pendingChangesDiff.staged}` : 'changes'}
             className={cn('h-full', tab !== 'changes' && 'hidden')}
           >
             <ErrorBoundary>
               <MobileChangesSurface
-                initialDiffPath={pendingChangesDiff?.path ?? null}
-                initialDiffStaged={pendingChangesDiff?.staged === true}
+                visible={open && tab === 'changes'}
+                initialDiff={pendingChangesDiff}
               />
             </ErrorBoundary>
           </div>

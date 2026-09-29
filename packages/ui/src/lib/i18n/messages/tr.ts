@@ -1,4 +1,5 @@
 export const dict = {
+  'pullRequestComparison.select': 'Çekme isteği seçin',
   'chat.liveActivity.title': 'Etkinlik',
   'chat.liveActivity.changedFile': '{count} dosya değiştirildi',
   'chat.liveActivity.changedFiles': '{count} dosya değiştirildi',

@@ -20,6 +20,7 @@ import {
   getGitLog,
   getGitStatus,
   gitFetch,
+  gitPush,
   merge,
   popGitStash,
   rebase,
@@ -34,7 +35,9 @@ import {
   unstageGitFiles,
 } from './gitApiHttp';
 import type { GitStatus } from './api/types';
-
+import { sessionEvents } from './sessionEvents';
+import { gitPushScopeKey, subscribeGitPush } from './gitPushEvents';
+import { getRuntimeKey } from './runtime-switch';
 type FetchCall = {
   input: RequestInfo | URL;
   init?: RequestInit;
@@ -42,6 +45,28 @@ type FetchCall = {
 
 const previousFetch = globalThis.fetch;
 const previousWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+
+test('only a confirmed successful push invalidates published PR snapshots', async () => {
+  const events: string[] = [];
+  const unsubscribe = subscribeGitPush((scope) => { events.push(scope); });
+  installWindowMock();
+  try {
+    globalThis.fetch = Object.assign(async () => Response.json({ error: 'Rejected' }, { status: 500 }), previousFetch);
+    await expect(gitPush('/repo')).rejects.toThrow('Rejected');
+    expect(events).toEqual([]);
+    globalThis.fetch = Object.assign(async () => Response.json({ success: false }), previousFetch);
+    await gitPush('/repo');
+    expect(events).toEqual([]);
+    globalThis.fetch = Object.assign(async () => Response.json({ success: true }), previousFetch);
+    await gitPush('/repo');
+    expect(events).toEqual([gitPushScopeKey('/repo', getRuntimeKey())]);
+    await gitFetch('/repo');
+    expect(events).toHaveLength(1);
+  } finally {
+    unsubscribe();
+    restoreMocks();
+  }
+});
 
 const installFetchMock = () => {
   const calls: FetchCall[] = [];

@@ -28,6 +28,7 @@ pub fn routes(service: Arc<WalkthroughService>) -> Router {
         .route("/api/walkthrough/generate", post(generate))
         .route("/api/walkthrough/progress", get(progress))
         .route("/api/walkthrough/cancel", post(cancel))
+        .route("/api/walkthrough/pr-diff", get(pr_diff))
         .with_state(service)
 }
 
@@ -96,6 +97,45 @@ async fn get_walkthrough(
 /// string (and falls back inside resolution).
 fn field_str_in(query: &HashMap<String, String>, key: &str) -> Option<String> {
     query.get(key).cloned()
+}
+
+/// GET /api/walkthrough/pr-diff：某 PR 来源的完整已发布补丁（纯文本）。
+/// directory 缺失或 source 不是 pr kind 均 400；`allowEmpty` 语义在
+/// `get_pull_request_diff` 内部（空补丁不报 404）。
+async fn pr_diff(
+    State(service): State<Arc<WalkthroughService>>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let directory = query.get("directory").map(|v| v.trim().to_string()).unwrap_or_default();
+    if directory.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "directory parameter is required" })),
+        )
+            .into_response();
+    }
+    let source = match super::sources::parse_source(read_source(query.get("source")).as_ref()) {
+        Ok(source) => source,
+        Err(error) => return error.into_response(),
+    };
+    let super::sources::Source::Pr { number, source_repo } = source else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "A pull request source is required" })),
+        )
+            .into_response();
+    };
+    match service
+        .get_pull_request_diff(&directory, number, source_repo, true)
+        .await
+    {
+        Ok((patch, _meta)) => (
+            [(axum::http::header::CONTENT_TYPE, "text/plain")],
+            patch,
+        )
+            .into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// POST /api/walkthrough/generate：发起生成；`force` 为 true 时忽略缓存
