@@ -316,7 +316,7 @@ ask/safety-net/accept-all 三态与分类 provider——v2 SDK + 服务端,需�
 | - [ ] | `449d9b42a` | feat(sync): evict idle session histories whole instead of trimming turns | `自身` |  |
 | - [ ] | `921f764c8` | feat(changelog): add SDK group for extension author notes | `服务端` |  |
 | - [ ] | `85b20dbf0` | feat(issues): gate intake and triage decisions (#3588) | `引擎耦合?` |  |
-| - [ ] | `8ee477207` | feat: swap sidebar activity header when sticky | `自身` |  |
+| - [x] | `8ee477207` | feat: swap sidebar activity header when sticky | `自身` | SKIP(被 0d59 crossfade 统一取代,fork 已含等价实现) |
 | - [ ] | `819b2b218` | feat(relay): report app metadata on connections | `服务端` |  |
 | - [ ] | `b65bed1f0` | feat: preserve scroll and cursor positions across file preview views | `自身` |  |
 | - [x] | `26b54dbe3` | feat(ui): unify change comparisons and compact message actions | `服务端` | PORTED(服务端移植 server-rs:commit-diff/commit-files/工作区区间对比) |
