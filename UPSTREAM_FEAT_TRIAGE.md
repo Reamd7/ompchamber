@@ -186,7 +186,7 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | - [ ] | `4e3b82c82` | feat(stats): add a usage stats page from OpenCode's session stats | `v2 SDK` | SKIP(v2 SDK) |
 | - [x] | `d716d7861` | feat(usage): integrate ClinePass quota provider (#3431) | `服务端` | PARTIAL(vscode/UI 侧落地;server-rs 无 quota 子系统) |
 | - [x] | `f70f18150` | feat(usage): add ClinePass quota provider | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota provider 子系统,JS 参考保留) |
-| - [ ] | `2dfd1190e` | feat(work-status): add opt-in turn statistics (#3177) | `引擎耦合?` `服务端` |  |
+| - [ ] | `2dfd1190e` | feat(work-status): add opt-in turn statistics (#3177) | `引擎耦合?` `服务端` | SKIP(v2 SDK:telemetry.ts 直接 import @opencode-ai/sdk/v2 类型) |
 | - [x] | `fbdd80fa2` | feat: add Charm Hyper quota provider (#3368) | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota provider 子系统) |
 | - [x] | `a189fb43f` | feat: add exe.dev usage tracking | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota 子系统) |
 | - [x] | `7f3b94652` | feat: add exe.dev provider logo | `自身` | PORTED(干净落地) |
