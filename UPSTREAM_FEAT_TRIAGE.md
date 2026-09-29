@@ -8,7 +8,7 @@
 | 功能线 | 提交数 | v2 | 引擎 | 服务端 | 价值 | 进度 |
 |---|---|---|---|---|---|---|
 | Git/Diff 增强 | 9 | 0 | 0 | 5 | 🟢 高价值 / 自身能力 | 9/9 (9吸) |
-| 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 4/5 (2吸/2跳) |
+| 主题/外观 | 5 | 0 | 1 | 2 | 🟢 高价值 / 自身能力 | 5/5 (2吸/3跳) |
 | 会话管理 | 5 | 1 | 0 | 3 | 🟢 高价值 / 基本自身 | 1/5 (0吸/1跳) |
 | Worktree/项目 | 3 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 0/3 |
 | 终端 | 1 | 0 | 0 | 1 | 🟢 高价值 / 自身能力 | 0/1 |
@@ -46,7 +46,7 @@
 | - [x] | `138f9ba02` | feat(git): safely apply individual diff hunks (#3443) | `服务端` | PORTED(服务端移植 server-rs) |
 | - [x] | `ebe5f93fb` | feat(git): per-hunk stage, unstage, and discard actions in Changes view | `自身` | PORTED(干净落地) |
 
-## - [ ] 主题/外观 — 🟢 高价值 / 自身能力
+## - [x] 主题/外观 — 🟢 高价值 / 自身能力
 
 内置配色、VS Code 主题导入、字体——零依赖,拿来即用。
 
@@ -54,7 +54,7 @@
 |---|---|---|---|---|
 | - [ ] | `431972e0f` | feat(theme): add built-in Cursor palettes | `自身` | SKIP(互锁:新调色板缺 fork Theme 必填键,依赖上游 definition.ts zod 默认值,fork 无该模块) |
 | - [ ] | `39a4940db` | feat(theme): add Osaka Jade Refined built-in palettes | `自身` | SKIP(互锁:新调色板缺 fork Theme 必填键,依赖上游 definition.ts zod 默认值,fork 无该模块) |
-| - [ ] | `6a20db4d0` | feat(theme): import VS Code palettes from Open VSX and local files | `服务端` |  |
+| - [ ] | `6a20db4d0` | feat(theme): import VS Code palettes from Open VSX and local files | `服务端` | SKIP(互锁:VSIX 解包需新增 zip 依赖且 Open VSX 目录为全新服务端子系统,另立项) |
 | - [x] | `beb8e79ea` | feat: add an always-show scrollbars preference | `引擎耦合?` `服务端` | PORTED(设置走 fork 本地 persist,registry 文件不引入) |
 | - [x] | `bf9d3d04f` | feat: add Fixel font support | `自身` | PORTED(干净落地) |
 
