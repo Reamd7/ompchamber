@@ -19,7 +19,7 @@
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
 | Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 7/7 (1吸/2跳/4半) |
-| Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 1/5 (1吸) |
+| Routing/模型选择 | 5 | 0 | 2 | 4 | 🟡 中价值 / 部分引擎依赖 | 5/5 (2吸/3跳) |
 | 小模型 Jev | 2 | 1 | 0 | 2 | 🟡 中价值 / 需对齐 | 1/2 (0吸/1跳) |
 | MCP/Plugins | 3 | 1 | 0 | 1 | 🟡 中价值 / 部分引擎依赖 | 1/3 (0吸/1跳) |
 | 权限/安全 | 1 | 1 | 0 | 1 | 🟡 中价值 / 引擎+服务端 | 1/1 (0吸/1跳) |
@@ -191,17 +191,17 @@ prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地�
 | - [x] | `a189fb43f` | feat: add exe.dev usage tracking | `服务端` | PARTIAL(UI/vscode 侧落地;server-rs 无 quota 子系统) |
 | - [x] | `7f3b94652` | feat: add exe.dev provider logo | `自身` | PORTED(干净落地) |
 
-## - [ ] Routing/模型选择 — 🟡 中价值 / 部分引擎依赖
+## - [x] Routing/模型选择 — 🟡 中价值 / 部分引擎依赖
 
 按任务路由与 Auto 依赖 OC2 模型元数据的部分需甄别;纯 UI 选择器部分自身。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `0b936476e` | feat(routing): answer Jev through OpenRouter and Vercel AI Gateway | `服务端` |  |
+| - [x] | `0b936476e` | feat(routing): answer Jev through OpenRouter and Vercel AI Gateway | `服务端` | SKIP(依赖 ec95fe2e0 routing 子系统的 Jev 网关) |
 | - [x] | `9aeb6fe93` | feat(providers): configure reasoning levels for custom provider models | `服务端` | PORTED(v2 provider 读取织入 fork 配置形状 npm/options;i18n 全 locale 补齐) |
 | - [x] | `800b2aee9` | feat(providers): sign in to OpenCode Go through the Console | `自身` | PORTED(wire 类型换绑 v1;Console sign-in 映射织入 fork providerAuth/ProvidersPage) |
-| - [ ] | `48ce6028d` | feat(routing): keep Auto across restarts and offer it as the session default | `引擎耦合?` `服务端` |  |
-| - [ ] | `ec95fe2e0` | feat(routing): route prompts to a model per task and hold risky auto-accepted actions | `引擎耦合?` `服务端` |  |
+| - [x] | `48ce6028d` | feat(routing): keep Auto across restarts and offer it as the session default | `引擎耦合?` `服务端` | SKIP(依赖 ec95fe2e0 routing 子系统) |
+| - [x] | `ec95fe2e0` | feat(routing): route prompts to a model per task and hold risky auto-accepted actions | `引擎耦合?` `服务端` | SKIP(平台级:routing 子系统为全新服务端栈(store/defaults/路由重写/Jev 网关),server-rs 无对应,另立项) |
 
 ## - [ ] 小模型 Jev — 🟡 中价值 / 需对齐
 
