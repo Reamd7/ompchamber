@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- **Desktop: the app's backend is now a Rust server.** The desktop app spawns a compiled Rust server instead of running the JavaScript server in-process; downloads come as a default Rust build plus a legacy JavaScript variant. The package also stops carrying the workspace web bundle and a duplicated copy of the native modules, which makes the install roughly a gigabyte smaller.
+- **Windows: the desktop app and the server now run on Windows.** The Rust server builds natively for Windows, and the release pipeline produces Windows desktop packages.
+- **Releases now publish a standalone server binary.** A statically linked Linux build ships with every release alongside checksums, so self-hosting no longer requires Node.js.
+- Chat: with model roles on, the model chip no longer ping-pongs between the locally persisted pick and the session's server-owned model until React gives up. The persisted agent is still restored; the model converges from the server.
+- Chat: jumping a long way through a long transcript no longer leaves the message column blank. Once scrolling settles with nothing rendered, the list re-fills its range at the offset you're already at, and a transcript whose assistant replies all lost their anchoring message now renders ungrouped instead of showing nothing.
+- Files: URLs such as `https://...` pasted in chat no longer get treated as file paths and fill the file tree with tabs, selections, and expansions pointing at paths that never exist. Windows drive roots like `C:` still count as paths.
+
 ## [1.34.4] - 2026-09-21
 
 - Dev: the published CLI now pins the embedded engine (`@oh-my-pi/pi-coding-agent`) to an exact version. The previous range resolved to a newer upstream release that had removed an export the engine host imports, so the engine never booted on a fresh CLI install and the v1.34.3 release shipped without CLI tarballs; desktop builds install from the lockfile and were unaffected.

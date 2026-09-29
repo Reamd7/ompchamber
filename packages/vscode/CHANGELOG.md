@@ -1,3 +1,8 @@
+## [Unreleased]
+
+- Chat: with model roles on, the model chip no longer ping-pongs between the locally persisted pick and the session's server-owned model until React gives up. The persisted agent is still restored; the model converges from the server.
+- Chat: jumping a long way through a long transcript no longer leaves the message column blank; once scrolling settles with nothing rendered, the list re-fills its range, and replies that lost their anchoring message render ungrouped instead of disappearing.
+
 ## [1.34.3] - 2026-09-21
 
 - **Chat: the panel no longer fails to open with React's "Maximum update depth exceeded".** A v1.34.2 regression made the file-cache owner setup re-trigger itself on every mount until React gave up; it now re-runs only when the underlying files API actually changes, and directory bootstrap no longer publishes updates during render.
