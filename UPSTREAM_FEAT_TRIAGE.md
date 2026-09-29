@@ -100,7 +100,7 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 | - [ ] | `65b3a5135` | feat(sidebar): mark sessions where the agent left a next step open | `服务端` |  |
 | - [ ] | `7ad4b2897` | feat(sidebar): add the Timeline view and a Grouped/Timeline switch | `服务端` |  |
 | - [ ] | `0d59ddf3c` | feat(sidebar): unify sticky headers with crossfade transitions | `自身` |  |
-| - [ ] | `79a7da01c` | feat(sidebar): show running project actions by directory | `自身` |  |
+| - [ ] | `79a7da01c` | feat(sidebar): show running project actions by directory | `自身` | SKIP(互锁:依赖上游 terminal store 演进(execution 分配/reconcile),fork 终端栈重写) |
 
 ## - [ ] 文件/Context Panel — 🟢 高价值 / 自身能力
 
