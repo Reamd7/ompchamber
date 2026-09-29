@@ -44,6 +44,22 @@ export class SessionEditorPanelProvider {
   private _cachedError?: string;
   private _sseCounter = 0;
   private _panels = new Map<string, SessionPanelState>();
+
+/** Tells each panel's webview whether the user can see it: VS Code focused and the panel shown. */
+  public notifyViewerStateChanged(): void {
+    for (const entry of this._panels.values()) {
+      this._postViewerState(entry);
+    }
+  }
+
+  private _postViewerState(entry: SessionPanelState): void {
+    entry.panel.webview.postMessage({
+      type: 'command',
+      command: 'viewerStateChanged',
+      payload: { windowFocused: vscode.window.state.focused, surfaceVisible: entry.panel.visible },
+    });
+  }
+
   private _lastActivePanelId: string | null = null;
   private _broadcastSelectionDebounce: ReturnType<typeof setTimeout> | undefined;
   private _clearActiveEditorFileTimer: ReturnType<typeof setTimeout> | undefined;

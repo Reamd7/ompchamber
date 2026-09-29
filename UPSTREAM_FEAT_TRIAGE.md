@@ -15,7 +15,7 @@
 | Sidebar/Timeline | 7 | 0 | 0 | 3 | 🟢 高价值 / 自身能力 | 7/7 (3吸/4跳) |
 | 文件/Context Panel | 4 | 0 | 1 | 1 | 🟢 高价值 / 自身能力 | 4/4 (3吸/1半) |
 | Mobile | 7 | 0 | 0 | 2 | 🟢 中高价值 / 自身能力 | 0/7 |
-| VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 2/4 (2吸) |
+| VS Code | 4 | 0 | 1 | 0 | 🟢 中价值 / 自身能力 | 4/4 (3吸/1跳) |
 | Composer/Chat 交互改版 | 22 | 0 | 4 | 7 | 🟡 中价值 / 高互锁 | 0/22 |
 | Comments 评论 | 3 | 0 | 0 | 0 | 🟡 中价值 / 半独立 | 0/3 |
 | Stats/Usage/Quota | 7 | 1 | 1 | 5 | 🟡 中价值 / 部分引擎依赖 | 1/7 (0吸/1跳) |
@@ -127,13 +127,13 @@ Timeline 视图、排序设置、provider logo、活动 spinner——纯 UI,fork
 | - [ ] | `baba83c4d` | feat(mobile): start a session in a project from the sessions drawer | `自身` |  |
 | - [ ] | `ff8edd6d4` | feat(mobile): close the drawers with the reverse edge swipe | `自身` |  |
 
-## - [ ] VS Code — 🟢 中价值 / 自身能力
+## - [x] VS Code — 🟢 中价值 / 自身能力
 
 prompt navigator 进扩展、多运行替换 Agent Manager、土耳其语本地化。
 
 | 吸收 | hash | 提交 | 依赖 | 状态 |
 |---|---|---|---|---|
-| - [ ] | `9f8af62d4` | feat(vscode): replace the Agent Manager with shared multi-run | `自身` |  |
+| - [x] | `9f8af62d4` | feat(vscode): replace the Agent Manager with shared multi-run | `自身` | SKIP(互锁:删除 Agent Manager 依赖共享 multi-run store,fork 无对应实现,保留 agent-manager 并补齐 i18n) |
 | - [ ] | `0d358adea` | feat(vscode): enable the prompt navigator in the extension | `引擎耦合?` |  |
 | - [x] | `fa482bcf2` | feat(vscode): localize loading splash and dev-server status for Turkish (#3303) | `自身` | PORTED(干净落地) |
 | - [x] | `7c38f8aed` | feat(vscode): add Turkish localization for extension strings (#3300) | `自身` | PORTED(干净落地) |
