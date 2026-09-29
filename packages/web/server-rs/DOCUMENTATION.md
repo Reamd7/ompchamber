@@ -529,5 +529,5 @@ POST   /api/walkthrough/generate                          `generate`
 
 ## 8. 测试与平台
 
-- 库内单测 + 路由级集成测试;Windows 上 settings/fs/sessions/engine_env 等路径相关套件全绿(含自愈回归)。
-- 已知缺口(非路径域、预存量):cli 生命周期、git watcher、proxy、opencode_meta、package_manager、skills_catalog 等套件的 posix fixture 未平台化(约 49 个),提交历史有归档。
+- 库内单测 + 路由级集成测试;**Windows 全量 lib 套件 2372/2372 通过**(2026-09 清零了最后 49 个 posix fixture 缺口,过程中挖出并修复 7 个真实 Windows 生产 bug:favicon 匹配、git 盘符剥离、仓库包含校验大小写、插件路径解析丢盘符、relay pid 探测、project 计划迁移 basename、projects 死 pid 锁恢复)。
+- 环境敏感测试的纪律:改写 HOME/USERPROFILE/OMPCHAMBER_* 的测试必须持 `TEST_ENV_MUTEX` 并在 Drop 恢复;读默认 host 的测试同样持锁,防止并发污染。

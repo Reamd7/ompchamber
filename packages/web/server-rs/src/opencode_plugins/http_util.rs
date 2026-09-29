@@ -42,7 +42,14 @@ pub(crate) fn resolve_path(input: &str) -> PathBuf {
     for component in path.components() {
         match component {
             Component::RootDir => {
-                out = PathBuf::from("/");
+                let rendered = out.to_string_lossy().into_owned();
+                if !rendered.is_empty() && rendered.ends_with(':') {
+                    // Windows drive prefix (`C:`) followed by its root —
+                    // keep the drive, add the platform separator.
+                    out.push(if cfg!(windows) { "\\" } else { "/" });
+                } else {
+                    out = PathBuf::from("/");
+                }
             }
             Component::Prefix(prefix) => {
                 out = PathBuf::from(prefix.as_os_str());

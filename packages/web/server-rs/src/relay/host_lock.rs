@@ -43,6 +43,20 @@ pub fn kill_zero_probe(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
+    if cfg!(windows) {
+        // `/bin/kill` does not exist on Windows — every probe would read as
+        // dead (the eabfaed6 engine-liveness bug class). `tasklist /FI`
+        // answers liveness without side effects.
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output();
+        return match output {
+            Ok(output) if output.status.success() => {
+                String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+            }
+            _ => false,
+        };
+    }
     let output = std::process::Command::new("/bin/kill")
         .arg("-0")
         .arg(pid.to_string())

@@ -284,7 +284,7 @@ fn walk_copy(current_src: &Path, current_dst: &Path, src_real: &str) -> Result<(
             std::fs::copy(&next_src, &next_dst).map_err(|error| error.to_string())?;
             #[cfg(unix)]
             {
-use crate::os_compat::PermissionsExt;
+                use crate::os_compat::PermissionsExt;
                 let mode = stat.permissions().mode() & 0o777;
                 let _ = std::fs::set_permissions(&next_dst, std::fs::Permissions::from_mode(mode));
             }
@@ -961,9 +961,11 @@ mod tests {
     #[tokio::test]
     async fn symlinks_in_skill_sources_are_rejected() {
         let fixture = Fixture::new("install-symlink");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("reference.md", fixture.repo.join("skills/alpha/link.md"))
-            .expect("symlink");
+        crate::os_compat::symlink(
+            std::path::Path::new("reference.md"),
+            &fixture.repo.join("skills/alpha/link.md"),
+        )
+        .expect("symlink");
 
         let result = install(fixture.params(&["skills/alpha"])).await;
 
@@ -1160,9 +1162,12 @@ mod tests {
     async fn legacy_user_skill_dir_migrates_to_plural() {
         let _guard = TEST_LOCK.lock().await;
         let home = unique_temp_dir("install-home");
-        let legacy = home.join(".config/opencode/skill");
-        let plural = home.join(".config/opencode/skills");
+        let legacy = home.join(".config").join("opencode").join("skill");
+        let plural = home.join(".config").join("opencode").join("skills");
+        // Windows resolves home through USERPROFILE first (os.homedir parity) —
+        // isolate both so the fixture home wins.
         let _env = EnvGuard::set("HOME", home.to_str().expect("utf8"));
+        let _env_profile = EnvGuard::set("USERPROFILE", home.to_str().expect("utf8"));
 
         // Neither exists → plural.
         let fixture = Fixture::new("install-legacy-none");
@@ -1180,8 +1185,11 @@ mod tests {
         // not exist for this branch).
         {
             let home = unique_temp_dir("install-home-kept");
-            let legacy = home.join(".config/opencode/skill");
+            let legacy = home.join(".config").join("opencode").join("skill");
+            // Windows resolves home through USERPROFILE first (os.homedir parity) —
+            // isolate both so the fixture home wins.
             let _env = EnvGuard::set("HOME", home.to_str().expect("utf8"));
+            let _env_profile = EnvGuard::set("USERPROFILE", home.to_str().expect("utf8"));
             std::fs::create_dir_all(&legacy).expect("mkdir");
 
             let fixture = Fixture::new("install-legacy-kept");

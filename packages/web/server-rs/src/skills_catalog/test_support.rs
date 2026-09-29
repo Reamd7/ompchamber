@@ -170,9 +170,8 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) {
         if file_type.is_dir() {
             copy_dir_recursive(&entry.path(), &target);
         } else if file_type.is_symlink() {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(
-                std::fs::read_link(entry.path()).expect("link target"),
+            crate::os_compat::symlink(
+                &std::fs::read_link(entry.path()).expect("link target"),
                 &target,
             )
             .expect("symlink");

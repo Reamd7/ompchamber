@@ -519,8 +519,9 @@ async fn session_list_sanitizes_payloads_and_canonicalizes_directory_query() {
 
     // The upstream saw the canonicalized directory + engine auth.
     let (head, _) = captured_request(&captured);
-    let expected_directory =
-        crate::proxy::headers::percent_encode_form(&canonical.to_string_lossy());
+    let expected_directory = crate::proxy::headers::percent_encode_form(
+        &crate::settings::normalization::strip_verbatim_prefix(canonical).to_string_lossy(),
+    );
     assert!(
         head.starts_with(&format!(
             "GET /session?directory={expected_directory}&limit=500 HTTP/1.1"
@@ -546,9 +547,15 @@ async fn session_list_passes_non_array_json_and_errors_through_verbatim() {
         test_settings(),
     );
 
+    // A directory query pins the forward path on Windows too (bare GETs
+    // intentionally take the Windows session-merge branch there).
+    let passthrough_dir = std::env::temp_dir().join("ompchamber-proxy-passthrough");
+    std::fs::create_dir_all(&passthrough_dir).expect("dir");
+    let passthrough_query =
+        crate::proxy::headers::percent_encode_form(&passthrough_dir.to_string_lossy());
     let response = router
         .oneshot(
-            HttpRequest::get("/api/session")
+            HttpRequest::get(format!("/api/session?directory={passthrough_query}"))
                 .body(Body::empty())
                 .unwrap(),
         )

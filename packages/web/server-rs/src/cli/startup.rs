@@ -187,7 +187,7 @@ pub(crate) struct StartupEnvOptions<'a> {
     /// --api-only 旗标。
     pub api_only: bool,
     /// JS `options.envSnapshot !== false`.
-/// 环境快照开关（--no-env-snapshot 置 false）。
+    /// 环境快照开关（--no-env-snapshot 置 false）。
     pub env_snapshot: bool,
 }
 
@@ -357,14 +357,14 @@ fn write_file_mode(
 /// Unix：设置目录权限位，失败忽略。
 #[cfg(unix)]
 fn set_dir_mode(path: &Path, mode: u32) {
-use crate::os_compat::PermissionsExt;
+    use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
 /// Unix：设置文件权限位，失败忽略。
 #[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) {
-use crate::os_compat::PermissionsExt;
+    use crate::os_compat::PermissionsExt;
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
 }
 
@@ -1227,7 +1227,7 @@ fn is_executable(path: &Path) -> bool {
     }
     #[cfg(unix)]
     {
-use crate::os_compat::PermissionsExt;
+        use crate::os_compat::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
@@ -1389,10 +1389,14 @@ mod tests {
             .get("OMPCHAMBER_DATA_DIR")
             .expect("data dir snapshot");
         assert!(
-            data_dir.starts_with('/'),
+            std::path::Path::new(data_dir).is_absolute(),
             "path.resolve makes it absolute: {data_dir}"
         );
-        assert!(data_dir.ends_with("relative/dir"));
+        assert!(data_dir.ends_with(if cfg!(windows) {
+            "relative\\dir"
+        } else {
+            "relative/dir"
+        }));
     }
 
     /// 验证关闭快照后环境变量全不写入，但密码/api-only 等旗标仍生效。
@@ -1472,9 +1476,15 @@ mod tests {
         let args = build_startup_args(4321, None, false);
         let unit = build_systemd_user_service(&exe, &args, &env_file, &home);
         assert!(unit.contains("Description=OMPChamber web server\n"));
-        assert!(unit.contains(&format!("EnvironmentFile=-{}", env_file.display())));
+        assert!(unit.contains(&format!(
+            "EnvironmentFile=-{}",
+            systemd_escape_arg(&env_file.display().to_string())
+        )));
         assert!(unit.contains("ExecStart=\"/opt/ompchamber/bin/ompchamber\" \"serve\" \"--foreground\" \"--port\" \"4321\"\n"));
-        assert!(unit.contains(&format!("WorkingDirectory={}\n", home.display())));
+        assert!(unit.contains(&format!(
+            "WorkingDirectory={}\n",
+            systemd_unit_path(&home.display().to_string())
+        )));
         assert!(unit.contains("Restart=always\nRestartSec=5\n"));
         assert!(unit.contains("WantedBy=default.target\n"));
     }
@@ -1530,7 +1540,10 @@ mod tests {
         assert_eq!(
             status.service_path.as_deref(),
             Some(
-                home.join(".config/systemd/user/ompchamber.service")
+                home.join(".config")
+                    .join("systemd")
+                    .join("user")
+                    .join("ompchamber.service")
                     .display()
                     .to_string()
                     .as_str()
@@ -1814,7 +1827,14 @@ mod tests {
         result.enabled = true;
         assert_eq!(
             startup_quiet_line(&result),
-            "startup enabled platform:macos supported:yes path:/tmp/x/Library/LaunchAgents/dev.ompchamber.web.plist"
+            format!(
+                "startup enabled platform:macos supported:yes path:{}",
+                Path::new("/tmp/x")
+                    .join("Library")
+                    .join("LaunchAgents")
+                    .join("dev.ompchamber.web.plist")
+                    .display()
+            )
         );
         let json = startup_result_json(&result);
         assert_eq!(json["action"], "enable");
@@ -1823,7 +1843,12 @@ mod tests {
         assert!(json["active"].is_null());
         assert_eq!(
             json["servicePath"],
-            "/tmp/x/Library/LaunchAgents/dev.ompchamber.web.plist"
+            Path::new("/tmp/x")
+                .join("Library")
+                .join("LaunchAgents")
+                .join("dev.ompchamber.web.plist")
+                .display()
+                .to_string()
         );
 
         // Quiet omits the path segment when servicePath is null.
@@ -1863,7 +1888,14 @@ mod tests {
         assert_eq!(lines[0], "\u{250C}  OMPChamber Startup");
         assert!(lines[1].starts_with("\u{2502}\n\u{25CF}  startup enabled"));
         assert!(
-            lines[1].contains("\u{2502}  /tmp/x/Library/LaunchAgents/dev.ompchamber.web.plist"),
+            lines[1].contains(
+                &Path::new("/tmp/x")
+                    .join("Library")
+                    .join("LaunchAgents")
+                    .join("dev.ompchamber.web.plist")
+                    .display()
+                    .to_string()
+            ),
             "detail bar line: {}",
             lines[1]
         );
@@ -1885,7 +1917,15 @@ mod tests {
         let lines = startup_human_lines(&linux);
         assert!(lines[1].contains("startup enabled")); // FakeRunner answers is-enabled with success
         assert!(
-            lines[1].contains("\u{2502}  /tmp/x/.config/systemd/user/ompchamber.service"),
+            lines[1].contains(
+                &Path::new("/tmp/x")
+                    .join(".config")
+                    .join("systemd")
+                    .join("user")
+                    .join("ompchamber.service")
+                    .display()
+                    .to_string()
+            ),
             "detail bar line: {}",
             lines[1]
         );

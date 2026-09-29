@@ -1701,20 +1701,35 @@ mod tests {
         }
     }
 
-    /// Spawn `/bin/sleep` and reap it on a side thread so liveness checks
-    /// (`kill -0`) see its real exit instead of a zombie.
+    /// Spawn a long sleeper and reap it on a side thread so liveness checks
+    /// see its real exit instead of a zombie: `/bin/sleep` on POSIX,
+    /// `ping -n N+1` on Windows (ping waits N seconds).
     /// 中文说明：返回 (pid, reap 线程句柄)；测试结束 join 句柄以等待
     /// 真实退出并回收线程。
     fn spawn_reaped_sleep(
         seconds: u64,
     ) -> (u32, std::thread::JoinHandle<std::process::ExitStatus>) {
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg(seconds.to_string())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_sleep_command(seconds).unwrap();
         let pid = child.id();
         let handle = std::thread::spawn(move || child.wait().unwrap());
         (pid, handle)
+    }
+
+    /// Cross-platform sleeper child, owned by the caller (dead-pid fixtures
+    /// kill and reap it themselves).
+    fn spawn_sleep_command(seconds: u64) -> std::io::Result<std::process::Child> {
+        if cfg!(windows) {
+            std::process::Command::new("ping")
+                .arg("-n")
+                .arg(seconds.saturating_add(1).to_string())
+                .arg("127.0.0.1")
+                .stdout(std::process::Stdio::null())
+                .spawn()
+        } else {
+            std::process::Command::new("/bin/sleep")
+                .arg(seconds.to_string())
+                .spawn()
+        }
     }
 
     /// Spawn a process whose `ps` command line looks like an ompchamber server
@@ -1996,10 +2011,7 @@ mod tests {
         let _env = EnvGuard::data_dir(&dir);
 
         // A pid file whose process is gone (spawned + reaped) must be pruned.
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = spawn_sleep_command(30).unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
         let pid = child.id();
@@ -2045,6 +2057,9 @@ mod tests {
 
     /// 验证 pid 复用防护：注册 pid 存活但 cmdline 不匹配 OMPChamber
     /// 且端口无 HTTP 确认时，注册文件被移除、实例不计入结果。
+    /// Windows 上 `read_process_cmdline` 恒为 None（与 JS 参照一致），
+    /// Mismatched 判定不可达——见下方 Windows 对应测试。
+    #[cfg(unix)]
     #[tokio::test]
     async fn stop_prunes_mismatched_pid_registry_entries() {
         let dir = temp_data_dir("mismatched-pid");
@@ -2071,6 +2086,38 @@ mod tests {
         );
         assert!(!paths::pid_file_path(port).exists());
         assert!(!paths::instance_file_path(port).exists());
+    }
+
+    /// Windows 对应行为：无法读取 cmdline 的存活 pid 是 Unknown——
+    /// 不做"不匹配即清理"的激进删除，注册表保留（保护真实实例，
+    /// 与 cli/tunnel.rs 的 Unknown 语义一致）。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_keeps_unverifiable_pid_registry_entries() {
+        let dir = temp_data_dir("unverifiable-pid");
+        let _env = EnvGuard::data_dir(&dir);
+
+        let (pid, handle) = spawn_reaped_sleep(30);
+        let port = grab_free_port();
+        process::write_pid_file(&paths::pid_file_path(port), pid);
+        process::write_instance_options(
+            &paths::instance_file_path(port),
+            &test_instance_options(port, "daemon"),
+        );
+
+        let mut sink = CaptureSink::default();
+        stop_command_with_sink(&json_opts(), &mut sink)
+            .await
+            .unwrap();
+        // Not our confirmed instance: nothing is stopped …
+        assert_eq!(
+            sink.json,
+            vec![serde_json::json!({ "stoppedCount": 0, "results": [] })]
+        );
+        // … and the unverifiable live pid's registry files are kept.
+        assert!(paths::pid_file_path(port).exists());
+        assert!(paths::instance_file_path(port).exists());
+        let _ = handle.join();
     }
 
     /// 验证注册表确认实例的停机契约：shutdown 被拒（500）后立即按
@@ -2533,10 +2580,7 @@ mod tests {
 
         // A dead registry pid on an occupied port: unconfirmed discovery prunes
         // the files and returns none → not-found.
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = spawn_sleep_command(30).unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -2788,13 +2832,11 @@ mod tests {
     /// 经 exec 存续，graceful 超时后 force（KILL）兜底生效。
     #[tokio::test]
     async fn stop_instance_process_force_kills_term_ignoring_process() {
-        // `trap '' TERM` + exec: the ignored disposition survives exec, so only
-        // the KILL escalation reaps it.
-        let mut child = std::process::Command::new("/bin/sh")
-            .arg("-c")
-            .arg("trap '' TERM; exec /bin/sleep 30")
-            .spawn()
-            .unwrap();
+        // POSIX: `trap '' TERM` + exec — the ignored disposition survives
+        // exec, so only the KILL escalation reaps it. Windows has no TERM;
+        // `ping` ignores taskkill's graceful pass the same way, so only the
+        // /F escalation reaps it.
+        let mut child = spawn_sleep_command(30).unwrap();
         let pid = child.id();
         let handle = std::thread::spawn(move || child.wait().unwrap());
         assert!(stop_instance_process(pid, 40, 120, 400).await);

@@ -496,9 +496,14 @@ async fn default_fallback_is_npm_when_nothing_matches() {
     assert!(details.package_path.is_some());
     assert_eq!(details.package_manager_command.as_deref(), Some("npm"));
     // `/usr/local/bin` from the stubbed `pnpm root -g`.
+    // The stubbed `pnpm root -g` output resolves through path.resolve —
+    // on Windows a root-relative posix path gains the current drive.
+    let expected_root = super::paths::resolve_lexically(std::path::Path::new("/usr/local/bin"))
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         details.global_node_modules_root.as_deref(),
-        Some("/usr/local/bin")
+        Some(expected_root.as_str())
     );
 }
 
@@ -767,10 +772,17 @@ async fn update_command_quotes_paths_with_spaces() {
     );
 
     let command = runtime.get_update_command(Some("bun"), None).await;
-    assert!(
-        command.starts_with('\'') && command.contains("' add -g "),
-        "space-containing bun path must be single-quoted: {command}"
-    );
+    if cfg!(windows) {
+        assert!(
+            command.starts_with('"') && command.contains("\" add -g "),
+            "space-containing bun path must be double-quoted on Windows: {command}"
+        );
+    } else {
+        assert!(
+            command.starts_with('\'') && command.contains("' add -g "),
+            "space-containing bun path must be single-quoted: {command}"
+        );
+    }
 }
 
 /// 验证：quoteCommand 的透传与引号转义规则
@@ -779,11 +791,21 @@ async fn update_command_quotes_paths_with_spaces() {
 fn quote_command_passthrough_and_quoting() {
     assert_eq!(quote_command("npm"), "npm");
     assert_eq!(quote_command(""), "");
-    assert_eq!(quote_command("/opt/my tools/npm"), "'/opt/my tools/npm'");
-    assert_eq!(
-        quote_command("/opt/my tool's/npm"),
-        "'/opt/my tool'\\''s/npm'"
-    );
+    // Quoting style is platform-correct: single quotes on POSIX, double
+    // quotes on Windows (the JS win32 branch).
+    if cfg!(windows) {
+        assert_eq!(quote_command("/opt/my tools/npm"), "\"/opt/my tools/npm\"");
+        assert_eq!(
+            quote_command("/opt/my tool's/npm"),
+            "\"/opt/my tool's/npm\""
+        );
+    } else {
+        assert_eq!(quote_command("/opt/my tools/npm"), "'/opt/my tools/npm'");
+        assert_eq!(
+            quote_command("/opt/my tool's/npm"),
+            "'/opt/my tool'\\''s/npm'"
+        );
+    }
     // No whitespace → passthrough even with embedded quotes (JS /\\s/ test).
     assert_eq!(quote_command("/opt/it's/npm"), "/opt/it's/npm");
 }

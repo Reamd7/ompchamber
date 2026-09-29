@@ -191,23 +191,23 @@ fn get_project_agents_skill_path(working_directory: &Path, skill_name: &str) -> 
 /// A discovered skill row (the JSON wire shape of the list/get routes).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DiscoveredSkill {
-/// skill 名（frontmatter `name` 去除首尾空白后非空）。
+    /// skill 名（frontmatter `name` 去除首尾空白后非空）。
     pub name: String,
-/// SKILL.md 绝对路径；内置 skill 使用 `<built-in>` 占位符。
+    /// SKILL.md 绝对路径；内置 skill 使用 `<built-in>` 占位符。
     pub path: Option<String>,
-/// 归属 scope："user" 或 "project"。
+    /// 归属 scope："user" 或 "project"。
     pub scope: Option<String>,
-/// 来源标签："opencode" / "claude" / "agents"。
+    /// 来源标签："opencode" / "claude" / "agents"。
     pub source: Option<String>,
-/// frontmatter `description`（缺省为空串）。
+    /// frontmatter `description`（缺省为空串）。
     pub description: Option<String>,
-/// 内置 skill 的正文；磁盘发现的 skill 不填充此字段。
+    /// 内置 skill 的正文；磁盘发现的 skill 不填充此字段。
     pub content: Option<String>,
 }
 
 /// `DiscoveredSkill` 的 wire 序列化（list/get 路由的 JSON 形状）。
 impl DiscoveredSkill {
-/// 转成路由 JSON：`content` 仅在存在时输出，其余缺失字段输出 null。
+    /// 转成路由 JSON：`content` 仅在存在时输出，其余缺失字段输出 null。
     pub(crate) fn to_value(&self) -> Value {
         let mut map = Map::new();
         map.insert("name".into(), Value::from(self.name.clone()));
@@ -240,11 +240,11 @@ impl DiscoveredSkill {
 /// getSkillScope 的判定结果：命中的 scope / 路径 / 来源，全空表示未找到。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SkillScope {
-/// 命中的 scope（"user"/"project"），未命中为 None。
+    /// 命中的 scope（"user"/"project"），未命中为 None。
     pub scope: Option<String>,
-/// 命中的 SKILL.md 路径，未命中为 None。
+    /// 命中的 SKILL.md 路径，未命中为 None。
     pub path: Option<String>,
-/// 命中的来源标签（"opencode"/"claude"/"agents"）。
+    /// 命中的来源标签（"opencode"/"claude"/"agents"）。
     pub source: Option<String>,
 }
 
@@ -1475,7 +1475,7 @@ pub(crate) fn rename_skill(
 mod tests {
     use super::*;
 
-/// 创建以 tag + pid + 计数器命名的临时根目录，充当测试的假 home。
+    /// 创建以 tag + pid + 计数器命名的临时根目录，充当测试的假 home。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-skills-{tag}-{}-{}",
@@ -1486,15 +1486,15 @@ mod tests {
         dir
     }
 
-/// 单调递增计数器，保证并行测试的临时目录互不冲突。
+    /// 单调递增计数器，保证并行测试的临时目录互不冲突。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
-// 进程内单调递增计数器。
+        // 进程内单调递增计数器。
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
-/// 写一个带 name/description frontmatter 与正文的 SKILL.md 测试夹具。
+    /// 写一个带 name/description frontmatter 与正文的 SKILL.md 测试夹具。
     fn write_skill_md(dir: &Path, name: &str, description: &str, body: &str) -> PathBuf {
         std::fs::create_dir_all(dir).expect("skill dir");
         let path = dir.join("SKILL.md");
@@ -1506,8 +1506,8 @@ mod tests {
         path
     }
 
-/// 验证技能名规则：1-64 位小写字母数字加连字符、首尾不得为连字符，
-/// 非法名称返回固定文案错误。
+    /// 验证技能名规则：1-64 位小写字母数字加连字符、首尾不得为连字符，
+    /// 非法名称返回固定文案错误。
     #[test]
     fn skill_name_validation() {
         assert!(is_valid_skill_name("a"));
@@ -1522,8 +1522,8 @@ mod tests {
         assert!(error.contains("Invalid skill name"));
     }
 
-/// 验证项目内 `.agents/skills` 下的 skill 被 discovery 识别为 project 作用域、
-/// agents 来源，并带全路径与描述。
+    /// 验证项目内 `.agents/skills` 下的 skill 被 discovery 识别为 project 作用域、
+    /// agents 来源，并带全路径与描述。
     #[test]
     fn discovers_repository_local_agents_skills() {
         let root = temp_root("discover");
@@ -1558,7 +1558,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 mergeDiscoveredSkills 以 primary 列表优先，按去除空白后的名字去重。
+    /// 验证 mergeDiscoveredSkills 以 primary 列表优先，按去除空白后的名字去重。
     #[test]
     fn merge_dedupes_primary_first() {
         let skill = |name: &str| DiscoveredSkill {
@@ -1584,8 +1584,8 @@ mod tests {
         );
     }
 
-/// 验证内置 skill（`<built-in>` 占位路径）不读盘：md 元数据直接来自
-/// discovered 的 description/instructions，fields 固定为两者。
+    /// 验证内置 skill（`<built-in>` 占位路径）不读盘：md 元数据直接来自
+    /// discovered 的 description/instructions，fields 固定为两者。
     #[test]
     fn built_in_sources_without_file_metadata() {
         let root = temp_root("builtin");
@@ -1621,8 +1621,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 discovered 路径不可读时元数据被清空（exists=false、path/scope 为
-/// null），description 仍保留兜底值。
+    /// 验证 discovered 路径不可读时元数据被清空（exists=false、path/scope 为
+    /// null），description 仍保留兜底值。
     #[test]
     fn unreadable_discovered_path_clears_metadata() {
         let root = temp_root("unreadable");
@@ -1651,8 +1651,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证真实磁盘上的 SKILL.md 会以文件内容覆盖 discovered 的兜底元数据
-/// （description、instructions、fields 均取自实际文件）。
+    /// 验证真实磁盘上的 SKILL.md 会以文件内容覆盖 discovered 的兜底元数据
+    /// （description、instructions、fields 均取自实际文件）。
     #[test]
     fn enriches_real_markdown_locations() {
         let root = temp_root("enrich");
@@ -1692,8 +1692,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 create/update/delete 全链路：按 scope/source 落盘、重名与缺
-/// description 报错、更新写回 frontmatter 与正文、删除后再删报 not found。
+    /// 验证 create/update/delete 全链路：按 scope/source 落盘、重名与缺
+    /// description 报错、更新写回 frontmatter 与正文、删除后再删报 not found。
     #[test]
     fn creates_updates_deletes_skills() {
         let root = temp_root("crud");
@@ -1779,7 +1779,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证支撑文件写/读/列举/删除往返、`..` 越界访问被拒、删除后清理空目录。
+    /// 验证支撑文件写/读/列举/删除往返、`..` 越界访问被拒、删除后清理空目录。
     #[test]
     fn supporting_files_round_trip_and_containment() {
         let root = temp_root("support");
@@ -1804,8 +1804,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 rename 做目录整体迁移：frontmatter（除 name）、正文与支撑文件
-/// 原样保留，且 getSkillSources 能读回新位置。
+    /// 验证 rename 做目录整体迁移：frontmatter（除 name）、正文与支撑文件
+    /// 原样保留，且 getSkillSources 能读回新位置。
     #[test]
     fn renames_skill_directory_preserving_body_and_support() {
         let root = temp_root("rename");
@@ -1863,8 +1863,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 rename 的全部拒绝分支：非法新名、源不存在、目标冲突、frontmatter
-/// 名与目录不匹配、非受管理路径，且失败后磁盘无残留。
+    /// 验证 rename 的全部拒绝分支：非法新名、源不存在、目标冲突、frontmatter
+    /// 名与目录不匹配、非受管理路径，且失败后磁盘无残留。
     #[test]
     fn rename_rejections() {
         let root = temp_root("rename-reject");
@@ -1924,8 +1924,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证 isManagedSkillPath 的命中/排除边界（含内置占位符）与
-/// isPathInside 的相等、父子、前缀碰撞语义。
+    /// 验证 isManagedSkillPath 的命中/排除边界（含内置占位符）与
+    /// isPathInside 的相等、父子、前缀碰撞语义。
     #[test]
     fn managed_path_and_inside_helpers() {
         let root = temp_root("managed");
@@ -1959,8 +1959,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证缓存根（`~/.cache/opencode/skills`）下的 skill 可被 discovery 发现，
-/// 但不属于受管理路径（不可 rename）。
+    /// 验证缓存根（`~/.cache/opencode/skills`）下的 skill 可被 discovery 发现，
+    /// 但不属于受管理路径（不可 rename）。
     #[test]
     fn cache_root_skills_discover_and_are_not_managed() {
         let root = temp_root("cache");

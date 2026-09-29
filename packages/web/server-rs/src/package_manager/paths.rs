@@ -119,7 +119,7 @@ pub fn normalize_platform(value: Option<&str>) -> &'static str {
 /// （先经 `map_arch` 归并）。
 pub fn normalize_arch(value: Option<&str>) -> &'static str {
     match value {
-        Some("arm64") => "arm64",
+        Some("aarch64" | "arm64") => "arm64",
         Some("x64") => "x64",
         Some("unknown") => "unknown",
         _ => map_arch(process_arch()),
@@ -268,7 +268,7 @@ pub fn get_or_create_install_id(config_dir: &Path, scope: &str) -> std::io::Resu
     std::fs::write(&id_path, format!("{install_id}\n"))?;
     #[cfg(unix)]
     {
-use crate::os_compat::PermissionsExt;
+        use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(&id_path, std::fs::Permissions::from_mode(0o600));
     }
     Ok(install_id)

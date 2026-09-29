@@ -84,11 +84,11 @@ fn secret_from_hex(hex: &str) -> SecretKey {
 /// 最小化的「客户端发起方」测试替身（对应 e2ee.test.js 中的同名
 /// helper），让 host 侧握手可以脱离浏览器 TS 模块独立完成端到端演练。
 struct TestClient {
-/// 握手 hello 明文帧（JSON 文本），交给 host 侧 HostHandshake 消费。
+    /// 握手 hello 明文帧（JSON 文本），交给 host 侧 HostHandshake 消费。
     hello_text: String,
-/// 客户端→主机方向的 AES-GCM 帧加密器（带固定 IV 前缀）。
+    /// 客户端→主机方向的 AES-GCM 帧加密器（带固定 IV 前缀）。
     encryptor: FrameEncryptor,
-/// 主机→客户端方向的帧解密器。
+    /// 主机→客户端方向的帧解密器。
     decryptor: FrameDecryptor,
 }
 
@@ -135,32 +135,32 @@ mod byte_compat {
     // implementation (packages/web/server/lib/relay) with fixed inputs:
     // host d=0x07, client d=0x0b, nonce=a0..af, HKDF info
     // 'ompchamber-relay-v1', IV prefix deadbeef, counters 1 and 2.
-/// 客户端固定私钥标量 0x0b（pinned）。
+    /// 客户端固定私钥标量 0x0b（pinned）。
     const CLIENT_D_HEX: &str = "000000000000000000000000000000000000000000000000000000000000000b";
-/// 固定握手 nonce（pinned）。
+    /// 固定握手 nonce（pinned）。
     const NONCE_HEX: &str = "a0a1a2a3a4a5a6a7a8a9aaabacadaeaf";
-/// HKDF 展开后的 64 字节密钥材料（pinned）。
+    /// HKDF 展开后的 64 字节密钥材料（pinned）。
     const KEY_MATERIAL_HEX: &str = "a2d4f1579ba6b05c042fea0a88ef1868c7861c58a0d9ba3e51102a2f9b55069b62ef62194c98530832e8852cf42b79b1748410e51eef49404d8afe1e034ec628";
-/// host→client 方向计数器 1 的加密帧（base64url，pinned）。
+    /// host→client 方向计数器 1 的加密帧（base64url，pinned）。
     const H2C_FRAME_1: &str = "Ad6tvu8AAAAAAAAAAf1uzWRoW21eufLDYvoAkFZllKU3fcLNR1s2kTwO-izI58EVjwQ";
-/// host→client 方向计数器 2 的加密帧（base64url，pinned）。
+    /// host→client 方向计数器 2 的加密帧（base64url，pinned）。
     const H2C_FRAME_2: &str =
         "Ad6tvu8AAAAAAAAAAs-Khi5J-MIuvPFuMS3xIFjNzf1kXZ2sf58Bet9HXQr_Oy6ugcn5iDriNjg";
-/// client→host 方向计数器 1 的加密帧（IV 前缀 01020304，pinned）。
+    /// client→host 方向计数器 1 的加密帧（IV 前缀 01020304，pinned）。
     const C2H_FRAME_1: &str = "AQECAwQAAAAAAAAAAalYBLtgAyGAPxHDPNiJLptNCnJ1b7HXHJeVKI5KA__qiykaHyQ";
-/// 固定客户端 hello 明文（内含 d=0x0b 的公钥 JWK，pinned）。
+    /// 固定客户端 hello 明文（内含 d=0x0b 的公钥 JWK，pinned）。
     const HELLO_TEXT: &str = "{\"t\":\"hello\",\"v\":1,\"clientPubJwk\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"PtETt4g7TFkGODedsMIc2hZ0LtAlUEi_QzOR03S8IdE\",\"y\":\"kJkgmszEyKIkyEOvpPTGigkNBNpemIna4vju_OgqN0A\"},\"nonce\":\"oKGio6SlpqeoqaqrrK2urw\"}";
-/// 带 batch:true 协商位的 hello 明文（pinned）。
+    /// 带 batch:true 协商位的 hello 明文（pinned）。
     const HELLO_WITH_BATCH: &str = "{\"t\":\"hello\",\"v\":1,\"clientPubJwk\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"PtETt4g7TFkGODedsMIc2hZ0LtAlUEi_QzOR03S8IdE\",\"y\":\"kJkgmszEyKIkyEOvpPTGigkNBNpemIna4vju_OgqN0A\"},\"nonce\":\"oKGio6SlpqeoqaqrrK2urw\",\"batch\":true}";
-/// 协商成功后 host 回复的 ready 文本（batch 模式，pinned）。
+    /// 协商成功后 host 回复的 ready 文本（batch 模式，pinned）。
     const READY_BATCH: &str = "{\"t\":\"ready\",\"v\":1,\"batch\":true}";
-/// 旧版 hello（无 batch 位）对应的 ready 文本（pinned）。
+    /// 旧版 hello（无 batch 位）对应的 ready 文本（pinned）。
     const READY_NO_BATCH: &str = "{\"t\":\"ready\",\"v\":1}";
-/// 公钥 JWK 指纹：JSON.stringify 语义的规范串（pinned）。
+    /// 公钥 JWK 指纹：JSON.stringify 语义的规范串（pinned）。
     const FINGERPRINT: &str = "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"PtETt4g7TFkGODedsMIc2hZ0LtAlUEi_QzOR03S8IdE\",\"y\":\"kJkgmszEyKIkyEOvpPTGigkNBNpemIna4vju_OgqN0A\"}";
 
-/// 由固定标量 0x0b 重建客户端公钥并导出 JWK；其坐标已被上方 hello
-/// 文本 pin 死，二者必须一致。
+    /// 由固定标量 0x0b 重建客户端公钥并导出 JWK；其坐标已被上方 hello
+    /// 文本 pin 死，二者必须一致。
     fn fixed_client_public_jwk() -> Value {
         // Public point of d=0x0b — pinned by the hello text above.
         let secret = secret_from_hex(CLIENT_D_HEX);
@@ -168,16 +168,16 @@ mod byte_compat {
         export_public_key_jwk(&public)
     }
 
-/// 用固定 host 私钥 + 固定客户端公钥 + 固定 nonce 派生会话密钥对，
-/// 输入与 JS 生成器完全相同。
+    /// 用固定 host 私钥 + 固定客户端公钥 + 固定 nonce 派生会话密钥对，
+    /// 输入与 JS 生成器完全相同。
     fn fixed_keys() -> e2ee::SessionKeys {
         let host = fixed_host_key();
         let client_public = import_ecdh_public_key(&fixed_client_public_jwk()).expect("client pub");
         derive_session_keys(&host, &client_public, &hex_to_bytes(NONCE_HEX)).expect("keys")
     }
 
-/// 验证 ECDH+HKDF 派生与 AES-GCM 加密全链路与 JS 逐字节一致：重派生
-/// 密钥后按两个方向加密已知明文，比对 pinned 帧。
+    /// 验证 ECDH+HKDF 派生与 AES-GCM 加密全链路与 JS 逐字节一致：重派生
+    /// 密钥后按两个方向加密已知明文，比对 pinned 帧。
     #[test]
     fn hkdf_key_material_matches_the_js_implementation() {
         // Proves ECDH (x-coordinate) + HKDF-SHA256 (salt=nonce,
@@ -206,8 +206,8 @@ mod byte_compat {
         assert_eq!(bytes_to_base64_url(&c2h), C2H_FRAME_1);
     }
 
-/// 直接比对 HKDF 原始输出：ECDH 共享秘密 + HKDF-SHA256(salt=nonce,
-/// info='ompchamber-relay-v1') 必须等于 pinned 的 64 字节。
+    /// 直接比对 HKDF 原始输出：ECDH 共享秘密 + HKDF-SHA256(salt=nonce,
+    /// info='ompchamber-relay-v1') 必须等于 pinned 的 64 字节。
     #[test]
     fn raw_key_material_matches_the_pinned_hkdf_output() {
         // ECDH shared secret + HKDF-SHA256(salt=nonce, info) — the exact 64
@@ -226,8 +226,8 @@ mod byte_compat {
         assert_eq!(hex_to_bytes(KEY_MATERIAL_HEX), material.to_vec());
     }
 
-/// 反向验证：JS 产出的 pinned 加密帧能被 Rust FrameDecryptor 按序
-/// 解密回原文。
+    /// 反向验证：JS 产出的 pinned 加密帧能被 Rust FrameDecryptor 按序
+    /// 解密回原文。
     #[test]
     fn pinned_frames_decrypt_through_the_real_decryptor() {
         let keys = fixed_keys();
@@ -244,8 +244,8 @@ mod byte_compat {
         );
     }
 
-/// 验证握手报文与 JS 逐字一致：batch 协商、重复 hello 重发同一 ready、
-/// 旧版 hello 不带 batch 位、换密钥重握手以 1008 "rekey mismatch" 失败。
+    /// 验证握手报文与 JS 逐字一致：batch 协商、重复 hello 重发同一 ready、
+    /// 旧版 hello 不带 batch 位、换密钥重握手以 1008 "rekey mismatch" 失败。
     #[test]
     fn handshake_transcript_matches_the_js_implementation() {
         let host = fixed_host_key();
@@ -291,8 +291,8 @@ mod byte_compat {
         }
     }
 
-/// 验证公钥 JWK 指纹遵循 JSON.stringify 语义：按键插入序序列化，
-/// 缺失字段像 undefined 一样被整体省略。
+    /// 验证公钥 JWK 指纹遵循 JSON.stringify 语义：按键插入序序列化，
+    /// 缺失字段像 undefined 一样被整体省略。
     #[test]
     fn fingerprint_matches_json_stringify_semantics() {
         let jwk = fixed_client_public_jwk();
@@ -832,24 +832,24 @@ mod signing {
     use super::*;
 
     // Fixed d=0x0d signing key — pinned vectors from the JS implementation.
-/// 固定签名私钥标量 0x0d（pinned）。
+    /// 固定签名私钥标量 0x0d（pinned）。
     const SIGN_D_HEX: &str = "000000000000000000000000000000000000000000000000000000000000000d";
-/// 公钥 JWK 的规范 JSON 串（pinned）。
+    /// 公钥 JWK 的规范 JSON 串（pinned）。
     const CANONICAL: &str = "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"F3yDeuCsSVphgF3y2F7i_HkuKEtl6tWKmOFdnUYHLAE\",\"y\":\"Y7tYzU6-pViiQJGttA9OcibuFMOh-03znEO74u_Hv9g\"}";
-/// 由公钥派生的 serverId（pinned）。
+    /// 由公钥派生的 serverId（pinned）。
     const SERVER_ID: &str = "pFrfxQv4Bd1EA4dJL1hqFfHsAwGWd5UiLRm51YkiBis";
-/// 规范 JWK 串的 base64url，即 relay 认证里的 pk 字段（pinned）。
+    /// 规范 JWK 串的 base64url，即 relay 认证里的 pk 字段（pinned）。
     const PK: &str = "eyJjcnYiOiJQLTI1NiIsImt0eSI6IkVDIiwieCI6IkYzeURldUNzU1ZwaGdGM3kyRjdpX0hrdUtFdGw2dFdLbU9GZG5VWUhMQUUiLCJ5IjoiWTd0WXpVNi1wVmlpUUpHdHRBOU9jaWJ1Rk1PaC0wM3puRU83NHVfSHY5ZyJ9";
-/// 待签名的认证消息样例（timestamp.serverId.role.connectionId 格式）。
+    /// 待签名的认证消息样例（timestamp.serverId.role.connectionId 格式）。
     const SIG_MESSAGE: &str =
         "1700000000000.pFrfxQv4Bd1EA4dJL1hqFfHsAwGWd5UiLRm51YkiBis.host-data.conn-abc";
     // ECDSA-SHA256 P1363 signature produced by Node's crypto.sign over the
     // fixed message with the fixed key — verified below with the Rust key.
-/// Node crypto.sign（OpenSSL）产出的 P1363 签名（pinned），用于跨运行时验证。
+    /// Node crypto.sign（OpenSSL）产出的 P1363 签名（pinned），用于跨运行时验证。
     const NODE_SIG: &str =
         "BIADzWjYqzi61z89WVgPHmSkchODjBvAGZIl0K8e7ptjMwvrYg5u9QRIeFZtxHcuwhKXar-XMv1-ZxUagnZa0Q";
 
-/// 由固定标量 0x0d 推导签名公钥并导出为 JWK，作为下方断言的输入。
+    /// 由固定标量 0x0d 推导签名公钥并导出为 JWK，作为下方断言的输入。
     fn fixed_signing_jwk() -> Value {
         let verifying = p256::ecdsa::VerifyingKey::from(
             &p256::ecdsa::SigningKey::from_slice(&hex_to_bytes(SIGN_D_HEX)).expect("sign key"),
@@ -863,8 +863,8 @@ mod signing {
         })
     }
 
-/// 验证规范 JWK 串、serverId（规范串 SHA-256 的 base64url）与 pk 的
-/// 推导和 JS 完全一致。
+    /// 验证规范 JWK 串、serverId（规范串 SHA-256 的 base64url）与 pk 的
+    /// 推导和 JS 完全一致。
     #[test]
     fn canonical_string_and_server_id_match_the_js_derivation() {
         let jwk = fixed_signing_jwk();
@@ -873,8 +873,8 @@ mod signing {
         assert_eq!(bytes_to_base64_url(CANONICAL.as_bytes()), PK);
     }
 
-/// 验证 Rust（RFC 6979 确定性 ECDSA）与 Node（OpenSSL）产出的 P1363
-/// 签名都能通过同一验签函数，且换一条消息后验签失败。
+    /// 验证 Rust（RFC 6979 确定性 ECDSA）与 Node（OpenSSL）产出的 P1363
+    /// 签名都能通过同一验签函数，且换一条消息后验签失败。
     #[test]
     fn rust_signature_and_the_pinned_node_signature_verify() {
         let signing_key =
@@ -1050,8 +1050,8 @@ mod host_lock {
     use super::*;
     use std::collections::HashSet;
 
-/// 构造 RelayHostLock 测试实例：锁文件位于给定目录，进程存活探测由
-/// alive 集合判定（命中即视为存活）。
+    /// 构造 RelayHostLock 测试实例：锁文件位于给定目录，进程存活探测由
+    /// alive 集合判定（命中即视为存活）。
     fn make_lock(dir: &std::path::Path, pid: u32, alive: HashSet<u32>) -> RelayHostLock {
         RelayHostLock::new(
             dir.join("relay-host.lock"),
@@ -1060,7 +1060,7 @@ mod host_lock {
         )
     }
 
-/// 验证无人持锁时 try_claim 成功、holds_claim 为真，锁文件内容为 {"pid":…}。
+    /// 验证无人持锁时 try_claim 成功、holds_claim 为真，锁文件内容为 {"pid":…}。
     #[test]
     fn claims_a_free_lock_and_reports_holding_it() {
         let dir = temp_dir("lock-free");
@@ -1073,8 +1073,8 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证另一存活进程持锁时 try_claim 失败、不认为自己持锁，且能查出
-/// 持有者 pid。
+    /// 验证另一存活进程持锁时 try_claim 失败、不认为自己持锁，且能查出
+    /// 持有者 pid。
     #[test]
     fn refuses_to_claim_while_another_live_process_holds_it() {
         let dir = temp_dir("lock-live");
@@ -1087,7 +1087,7 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证锁文件记录的持有者进程已死时视为空闲，可直接抢占接管。
+    /// 验证锁文件记录的持有者进程已死时视为空闲，可直接抢占接管。
     #[test]
     fn treats_a_dead_claimant_as_free() {
         let dir = temp_dir("lock-stale");
@@ -1103,8 +1103,8 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证 force_claim 无视存活持有者强行接管；原持有者立即感知失锁，
-/// 并能读到新持有者 pid。
+    /// 验证 force_claim 无视存活持有者强行接管；原持有者立即感知失锁，
+    /// 并能读到新持有者 pid。
     #[test]
     fn force_claim_overrides_a_live_holder_and_the_loser_sees_it() {
         let dir = temp_dir("lock-force");
@@ -1118,8 +1118,8 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证 release 只在自己是持有者时删除锁文件；非持有者调用是
-/// 无害 no-op。
+    /// 验证 release 只在自己是持有者时删除锁文件；非持有者调用是
+    /// 无害 no-op。
     #[test]
     fn release_removes_only_its_own_claim() {
         let dir = temp_dir("lock-release");
@@ -1134,7 +1134,7 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证锁文件内容损坏（非 JSON）时按空闲处理，可直接抢占。
+    /// 验证锁文件内容损坏（非 JSON）时按空闲处理，可直接抢占。
     #[test]
     fn treats_an_unparsable_claim_file_as_free() {
         let dir = temp_dir("lock-garbage");
@@ -1145,8 +1145,8 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证 kill 探测收到 EPERM（无权限发信号，但进程存在）时按「存活」
-/// 处理：持有者不可被抢占。
+    /// 验证 kill 探测收到 EPERM（无权限发信号，但进程存在）时按「存活」
+    /// 处理：持有者不可被抢占。
     #[test]
     fn an_eperm_kill_probe_still_counts_as_a_live_holder() {
         let dir = temp_dir("lock-eperm");
@@ -1165,13 +1165,14 @@ mod host_lock {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证真实 kill(pid,0) 探测：pid 1（root 所有，退出码 0 或 EPERM）
-/// 算存活；回收/非法 pid（999999、0）算已死。
+    /// 验证真实 kill(pid,0) 探测：pid 1（root 所有，退出码 0 或 EPERM）
+    /// 算存活；回收/非法 pid（999999、0）算已死。
     #[test]
     fn real_probe_distinguishes_live_and_dead_pids() {
-        // pid 1 is owned by root: the probe answer is exit-0 (root) or EPERM —
-        // both count as alive. A recycled/impossible pid is dead.
-        assert!(kill_zero_probe(1));
+        // POSIX: pid 1 is owned by root — exit-0 (root) or EPERM both count
+        // as alive. Windows has no pid 1; this very test process is alive.
+        let live_pid = if cfg!(windows) { std::process::id() } else { 1 };
+        assert!(kill_zero_probe(live_pid));
         assert!(!kill_zero_probe(999_999));
         assert!(!kill_zero_probe(0));
     }
@@ -1194,17 +1195,17 @@ mod tunnel_host_tests {
     use futures::{SinkExt, StreamExt};
     use std::sync::Mutex;
 
-/// loopback origin 句柄：端口与已捕获请求的记录。
+    /// loopback origin 句柄：端口与已捕获请求的记录。
     #[derive(Clone)]
     struct Loopback {
-/// loopback 服务器监听端口（127.0.0.1 随机分配）。
+        /// loopback 服务器监听端口（127.0.0.1 随机分配）。
         port: u16,
-/// 捕获的 (method, url, body, origin/relay 头) 列表，供断言转发内容。
+        /// 捕获的 (method, url, body, origin/relay 头) 列表，供断言转发内容。
         requests: Arc<Mutex<Vec<(String, String, String, Option<String>)>>>, // method, url, body, origin
     }
 
-/// 启动 loopback origin：/api/submit 捕获任意 HTTP 请求并回 {"ok":true}，
-/// /api/event/ws 做文本/二进制回显 WebSocket；绑定随机端口后返回句柄。
+    /// 启动 loopback origin：/api/submit 捕获任意 HTTP 请求并回 {"ok":true}，
+    /// /api/event/ws 做文本/二进制回显 WebSocket；绑定随机端口后返回句柄。
     async fn start_loopback() -> Loopback {
         let requests: Arc<Mutex<Vec<(String, String, String, Option<String>)>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -1275,19 +1276,19 @@ mod tunnel_host_tests {
         Loopback { port, requests }
     }
 
-/// 单个测试的组装结果：被测 TunnelHost + loopback 句柄 + 回发帧记录。
+    /// 单个测试的组装结果：被测 TunnelHost + loopback 句柄 + 回发帧记录。
     struct Harness {
-/// 被测 TunnelHost 实例（依赖全部指向测试桩）。
+        /// 被测 TunnelHost 实例（依赖全部指向测试桩）。
         host: Arc<TunnelHost>,
-/// 背后的真实 loopback origin。
+        /// 背后的真实 loopback origin。
         loopback: Loopback,
-/// 经 send_frame 桩解码后记录的回发帧（host→client 方向）。
+        /// 经 send_frame 桩解码后记录的回发帧（host→client 方向）。
         sent: Arc<Mutex<Vec<super::super::tunnel_codec::DecodedTunnelFrame>>>,
     }
 
-/// 组装测试环境：启动 loopback，把 TunnelHostDeps 的 get_local_port 指向
-/// loopback 端口、send_frame 解码后落入共享记录、缓冲量恒为 0；
-/// body_delivery_timeout 由参数给定以便测试超时路径。
+    /// 组装测试环境：启动 loopback，把 TunnelHostDeps 的 get_local_port 指向
+    /// loopback 端口、send_frame 解码后落入共享记录、缓冲量恒为 0；
+    /// body_delivery_timeout 由参数给定以便测试超时路径。
     async fn harness(body_delivery_timeout: Duration) -> Harness {
         let loopback = start_loopback().await;
         let sent: Arc<Mutex<Vec<super::super::tunnel_codec::DecodedTunnelFrame>>> =
@@ -1315,8 +1316,8 @@ mod tunnel_host_tests {
         }
     }
 
-/// 构造 stream 1 的 HttpRequest 首帧：默认 POST /api/submit，
-/// overrides 中的键值覆盖默认负载字段（如 hasBody）。
+    /// 构造 stream 1 的 HttpRequest 首帧：默认 POST /api/submit，
+    /// overrides 中的键值覆盖默认负载字段（如 hasBody）。
     fn http_head(overrides: Value) -> Vec<u8> {
         let payload = json!({
             "method": "POST",
@@ -1339,8 +1340,8 @@ mod tunnel_host_tests {
         .expect("encode")
     }
 
-/// 轮询断言辅助：以 10ms 间隔在 timeout_ms 内反复求值 predicate，
-/// 任一次为真即返回 true；超时返回最后一次求值结果。
+    /// 轮询断言辅助：以 10ms 间隔在 timeout_ms 内反复求值 predicate，
+    /// 任一次为真即返回 true；超时返回最后一次求值结果。
     async fn wait_for(predicate: impl Fn() -> bool, timeout_ms: u64) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
@@ -1352,8 +1353,8 @@ mod tunnel_host_tests {
         predicate()
     }
 
-/// 验证带 body 的请求：host 缓冲多个 HttpBody 帧直到 StreamEnd 才
-/// 转发拼接后的完整 body，并回发 200 响应与 STREAM_END。
+    /// 验证带 body 的请求：host 缓冲多个 HttpBody 帧直到 StreamEnd 才
+    /// 转发拼接后的完整 body，并回发 200 响应与 STREAM_END。
     #[tokio::test]
     async fn buffers_tunneled_body_frames_and_forwards_the_complete_body() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1428,8 +1429,8 @@ mod tunnel_host_tests {
         assert_eq!(payload.get("status"), Some(&json!(200)));
     }
 
-/// 验证声明 hasBody 却一帧 body 都没到就 StreamEnd 的歧义请求被中止：
-/// 回 STREAM_ABORT，且 loopback 永远收不到该请求。
+    /// 验证声明 hasBody 却一帧 body 都没到就 StreamEnd 的歧义请求被中止：
+    /// 回 STREAM_ABORT，且 loopback 永远收不到该请求。
     #[tokio::test]
     async fn body_expected_request_with_zero_delivered_frames_is_aborted_as_ambiguous() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1468,7 +1469,7 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证未声明 hasBody 的请求在 StreamEnd 后照常转发，body 为空字符串。
+    /// 验证未声明 hasBody 的请求在 StreamEnd 后照常转发，body 为空字符串。
     #[tokio::test]
     async fn bodyless_request_still_forwards_empty() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1507,8 +1508,8 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证 body 交付超时：到期的半截 body 被中止且不转发；迟到的
-/// StreamEnd 不会触发第二次 abort 或转发陈旧 body。
+    /// 验证 body 交付超时：到期的半截 body 被中止且不转发；迟到的
+    /// StreamEnd 不会触发第二次 abort 或转发陈旧 body。
     #[tokio::test]
     async fn aborts_a_buffered_body_that_never_completes_within_the_delivery_deadline() {
         let harness = harness(Duration::from_millis(50)).await;
@@ -1572,8 +1573,8 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证客户端显式发送过空 body 帧（区别于零帧歧义）时请求正常转发，
-/// body 为空。
+    /// 验证客户端显式发送过空 body 帧（区别于零帧歧义）时请求正常转发，
+    /// body 为空。
     #[tokio::test]
     async fn forwards_an_empty_body_when_the_client_delivered_an_explicit_empty_frame() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1618,7 +1619,7 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证 GET 请求无需等 StreamEnd 即刻转发，query 被拼接到目标 URL。
+    /// 验证 GET 请求无需等 StreamEnd 即刻转发，query 被拼接到目标 URL。
     #[tokio::test]
     async fn get_forwards_immediately_with_no_body_wait() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1664,8 +1665,8 @@ mod tunnel_host_tests {
         assert_eq!(requests[0].1, "/api/submit?a=1");
     }
 
-/// 验证路径白名单拒绝：/etc/passwd 得到合成 403 响应
-/// （source=relay-tunnel-host），loopback 全程未被触碰。
+    /// 验证路径白名单拒绝：/etc/passwd 得到合成 403 响应
+    /// （source=relay-tunnel-host），loopback 全程未被触碰。
     #[tokio::test]
     async fn disallowed_path_gets_a_synthetic_403() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1728,7 +1729,7 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证 stream_id 复用时新请求顶掉旧流：旧流收到 STREAM_ABORT。
+    /// 验证 stream_id 复用时新请求顶掉旧流：旧流收到 STREAM_ABORT。
     #[tokio::test]
     async fn duplicate_stream_id_aborts_the_first_stream() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1755,8 +1756,8 @@ mod tunnel_host_tests {
         assert!(aborted);
     }
 
-/// 验证客户端主动 abort：host 直接丢弃未完成的流，不回发 abort 帧，
-/// 流计数归零。
+    /// 验证客户端主动 abort：host 直接丢弃未完成的流，不回发 abort 帧，
+    /// 流计数归零。
     #[tokio::test]
     async fn client_abort_tears_down_the_stream_without_an_abort_frame() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1784,8 +1785,8 @@ mod tunnel_host_tests {
         assert_eq!(harness.host.stream_count(), 0);
     }
 
-/// 验证 WebSocket 三段式：WS_OPEN 成功回 WS_OPENED，文本帧经 loopback
-/// 回显，WS_CLOSE 闭环透传。
+    /// 验证 WebSocket 三段式：WS_OPEN 成功回 WS_OPENED，文本帧经 loopback
+    /// 回显，WS_CLOSE 闭环透传。
     #[tokio::test]
     async fn ws_streams_open_echo_and_close_through_the_loopback() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1858,7 +1859,7 @@ mod tunnel_host_tests {
         assert!(closed, "ws close frame relayed");
     }
 
-/// 验证白名单外的 WS 路径直接 STREAM_ABORT，reason 与 HTTP 路径拒绝一致。
+    /// 验证白名单外的 WS 路径直接 STREAM_ABORT，reason 与 HTTP 路径拒绝一致。
     #[tokio::test]
     async fn disallowed_ws_path_is_aborted() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1895,7 +1896,7 @@ mod tunnel_host_tests {
         );
     }
 
-/// 验证 PING 帧在同 stream 上原样回 PONG，且不产生其它帧。
+    /// 验证 PING 帧在同 stream 上原样回 PONG，且不产生其它帧。
     #[tokio::test]
     async fn ping_frames_answer_with_a_pong_on_the_same_stream() {
         let harness = harness(Duration::from_millis(15_000)).await;
@@ -1932,40 +1933,40 @@ mod host_client_tests {
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
-/// fake relay 内部传递的 WebSocket 消息形态。
+    /// fake relay 内部传递的 WebSocket 消息形态。
     #[derive(Clone)]
     enum RelayMsg {
-/// 文本帧（明文握手 hello/ready 等）。
+        /// 文本帧（明文握手 hello/ready 等）。
         Text(String),
-/// 二进制帧（加密后的隧道帧）。
+        /// 二进制帧（加密后的隧道帧）。
         Binary(Vec<u8>),
     }
 
-/// fake relay 的全局连接表与转发记录（单个 Mutex 保护）。
+    /// fake relay 的全局连接表与转发记录（单个 Mutex 保护）。
     struct FakeRelayState {
-/// host 控制面连接的发送端（最多一个）。
+        /// host 控制面连接的发送端（最多一个）。
         control: Option<mpsc::UnboundedSender<RelayMsg>>,
-/// connectionId → 客户端连接发送端。
+        /// connectionId → 客户端连接发送端。
         clients: HashMap<String, mpsc::UnboundedSender<RelayMsg>>,
-/// connectionId → host 数据面连接发送端。
+        /// connectionId → host 数据面连接发送端。
         host_data: HashMap<String, mpsc::UnboundedSender<RelayMsg>>,
-/// host 数据面未上线时暂存的客户端帧，待其连上后补投。
+        /// host 数据面未上线时暂存的客户端帧，待其连上后补投。
         buffered: HashMap<String, Vec<RelayMsg>>,
         /// (from_host, is_binary) per forwarded frame.
-/// 每条转发帧记录 (是否来自 host, 是否二进制)，用于断言握手后纯二进制。
+        /// 每条转发帧记录 (是否来自 host, 是否二进制)，用于断言握手后纯二进制。
         relay_frames: Vec<(bool, bool)>,
     }
 
-/// fake relay 句柄：WebSocket 基址与共享状态。
+    /// fake relay 句柄：WebSocket 基址与共享状态。
     struct FakeRelay {
-/// ws://127.0.0.1:port 基址，客户端/host 据此拼连接 URL。
+        /// ws://127.0.0.1:port 基址，客户端/host 据此拼连接 URL。
         ws_base: String,
-/// 共享连接表与转发记录。
+        /// 共享连接表与转发记录。
         state: Arc<std::sync::Mutex<FakeRelayState>>,
     }
 
-/// 启动 fake relay：单一路由按 query 中的 role/connectionId 分流到
-/// run_relay_connection，绑定随机端口后返回句柄。
+    /// 启动 fake relay：单一路由按 query 中的 role/connectionId 分流到
+    /// run_relay_connection，绑定随机端口后返回句柄。
     async fn start_fake_relay() -> FakeRelay {
         let state = Arc::new(std::sync::Mutex::new(FakeRelayState {
             control: None,
@@ -2006,10 +2007,10 @@ mod host_client_tests {
         }
     }
 
-/// 单条 fake relay 连接的会话逻辑：host-control/host-data/client 三种
-/// 角色各自登记发送端；host 数据面未上线时客户端帧先入 buffered 暂存；
-/// host 控制面上线后回放 sync/connected 名单；数据帧按 connectionId
-/// 在 host 与 client 间双向搬运，并记录 (from_host, is_binary)。
+    /// 单条 fake relay 连接的会话逻辑：host-control/host-data/client 三种
+    /// 角色各自登记发送端；host 数据面未上线时客户端帧先入 buffered 暂存；
+    /// host 控制面上线后回放 sync/connected 名单；数据帧按 connectionId
+    /// 在 host 与 client 间双向搬运，并记录 (from_host, is_binary)。
     async fn run_relay_connection(
         shared: Arc<std::sync::Mutex<FakeRelayState>>,
         socket: axum::extract::ws::WebSocket,
@@ -2150,8 +2151,8 @@ mod host_client_tests {
         }
     }
 
-/// 构造不落盘的测试身份：随机 ECDH 加密密钥对 + 循环重试直到取得合法
-/// ECDSA 签名私钥；sign_relay_auth 闭包按生产消息格式即时签名。
+    /// 构造不落盘的测试身份：随机 ECDH 加密密钥对 + 循环重试直到取得合法
+    /// ECDSA 签名私钥；sign_relay_auth 闭包按生产消息格式即时签名。
     fn build_test_identity() -> Arc<RelayIdentity> {
         let (enc_secret, enc_public) = generate_ecdh_key_pair().expect("enc keypair");
         let mut signing_bytes = [0u8; 32];
@@ -2197,14 +2198,14 @@ mod host_client_tests {
         }
     }
 
-/// loopback origin 句柄（仅端口）。
+    /// loopback origin 句柄（仅端口）。
     struct LoopbackOrigin {
-/// origin 监听端口。
+        /// origin 监听端口。
         port: u16,
     }
 
-/// 启动校验 origin 的 /health 端点：Origin 头必须等于 Host 头拼出的
-/// http://host，否则 403——用于验证 host 转发时对 origin 的改写。
+    /// 启动校验 origin 的 /health 端点：Origin 头必须等于 Host 头拼出的
+    /// http://host，否则 403——用于验证 host 转发时对 origin 的改写。
     async fn start_loopback_origin() -> LoopbackOrigin {
         let app = Router::new().route(
             "/health",
@@ -2248,17 +2249,17 @@ mod host_client_tests {
         LoopbackOrigin { port }
     }
 
-/// 脚本化客户端从隧道取回的响应摘要。
+    /// 脚本化客户端从隧道取回的响应摘要。
     struct TunneledResponse {
-/// HTTP 状态码（由响应帧解析而来）。
+        /// HTTP 状态码（由响应帧解析而来）。
         status: Option<u16>,
-/// 全部 body 帧拼接后解析出的 JSON。
+        /// 全部 body 帧拼接后解析出的 JSON。
         body: serde_json::Value,
     }
 
-/// 扮演浏览器客户端：连上 fake relay，发送明文 hello，收到 ready 后用
-/// 会话密钥发送加密的 GET /health 与 StreamEnd，循环收帧直到 StreamEnd，
-/// 拼接 body 后直接断开（不等关闭握手）并返回响应摘要。
+    /// 扮演浏览器客户端：连上 fake relay，发送明文 hello，收到 ready 后用
+    /// 会话密钥发送加密的 GET /health 与 StreamEnd，循环收帧直到 StreamEnd，
+    /// 拼接 body 后直接断开（不等关闭握手）并返回响应摘要。
     async fn run_scripted_client(
         relay: &FakeRelay,
         server_id: &str,
@@ -2369,11 +2370,11 @@ mod host_client_tests {
         }
     }
 
-/// 端到端链路验证：客户端经 fake relay → RelayHostClient → loopback
-/// origin 完成 E2E 握手并 GET /health 成功（200，relayConn/origin 正确），
-/// 且握手两帧（hello/ready）之外的全部转发帧均为二进制。已 #[ignore]：
-/// E2E 桩在响应完成后的关闭阶段会挂起；其覆盖的生产链路在
-/// tunnel_host_tests 与 e2ee pinned 向量中均有绿色验证。
+    /// 端到端链路验证：客户端经 fake relay → RelayHostClient → loopback
+    /// origin 完成 E2E 握手并 GET /health 成功（200，relayConn/origin 正确），
+    /// 且握手两帧（hello/ready）之外的全部转发帧均为二进制。已 #[ignore]：
+    /// E2E 桩在响应完成后的关闭阶段会挂起；其覆盖的生产链路在
+    /// tunnel_host_tests 与 e2ee pinned 向量中均有绿色验证。
     #[tokio::test]
     #[ignore = "E2E harness hangs in the close phase after the response completes; every production leg it covers is green in tunnel_host_tests + the e2ee byte-compat vectors"]
     async fn tunnels_an_http_get_health_with_only_binary_frames_post_handshake() {
@@ -2455,11 +2456,11 @@ mod service_tests {
 
     /// A relay URL that refuses connections instantly so route tests never
     /// touch real infrastructure.
-/// 立刻拒绝连接的 relay URL，保证路由测试绝不触碰真实基础设施。
+    /// 立刻拒绝连接的 relay URL，保证路由测试绝不触碰真实基础设施。
     const DEAD_RELAY_URL: &str = "ws://127.0.0.1:1/relay";
 
-/// 构造 RelayService：settings 落在给定目录、本地端口桩恒返回 1、
-/// 可选注入 host lock，allow_passive 控制被动托管开关。
+    /// 构造 RelayService：settings 落在给定目录、本地端口桩恒返回 1、
+    /// 可选注入 host lock，allow_passive 控制被动托管开关。
     fn make_service(
         dir: &std::path::Path,
         allow_passive: bool,
@@ -2477,7 +2478,7 @@ mod service_tests {
         )
     }
 
-/// 构造以给定 pid 身份操作的 RelayHostLock，存活探测由 alive 列表判定。
+    /// 构造以给定 pid 身份操作的 RelayHostLock，存活探测由 alive 列表判定。
     fn lock_with(dir: &std::path::Path, pid: u32, alive: Vec<u32>) -> Arc<RelayHostLock> {
         Arc::new(RelayHostLock::new(
             dir.join("relay-host.lock"),
@@ -2486,8 +2487,8 @@ mod service_tests {
         ))
     }
 
-/// 预写 settings：privateRelay.enabled=true 且 relayUrl 指向给定值；
-/// 返回该 store 供后续读写断言。
+    /// 预写 settings：privateRelay.enabled=true 且 relayUrl 指向给定值；
+    /// 返回该 store 供后续读写断言。
     async fn seed_enabled(
         dir: &std::path::Path,
         relay_url: &str,
@@ -2504,9 +2505,9 @@ mod service_tests {
         store
     }
 
-/// 验证禁用被动托管时 start_if_enabled/reconcile 既不抢锁也不起 host：
-/// 停在 standby，lastError 含 "passive relay hosting is disabled"，
-/// 且不产生锁文件。
+    /// 验证禁用被动托管时 start_if_enabled/reconcile 既不抢锁也不起 host：
+    /// 停在 standby，lastError 含 "passive relay hosting is disabled"，
+    /// 且不产生锁文件。
     #[tokio::test]
     async fn never_claims_or_starts_the_host_passively_when_passive_hosting_is_disabled() {
         let dir = temp_dir("svc-passive-off");
@@ -2549,8 +2550,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证显式配对请求（ensure_enabled_for_pairing）无视被动托管开关强制
-/// force_claim：返回 relay 候选（priority 30）且锁文件已创建。
+    /// 验证显式配对请求（ensure_enabled_for_pairing）无视被动托管开关强制
+    /// force_claim：返回 relay 候选（priority 30）且锁文件已创建。
     #[tokio::test]
     async fn force_claims_for_an_explicit_pairing_even_when_passive_hosting_is_disabled() {
         let dir = temp_dir("svc-force-pairing");
@@ -2571,8 +2572,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证其它存活进程持锁时进入 standby：lastError 含持有者 pid（100），
-/// 不尝试接管。
+    /// 验证其它存活进程持锁时进入 standby：lastError 含持有者 pid（100），
+    /// 不尝试接管。
     #[tokio::test]
     async fn stands_by_when_another_live_process_holds_the_claim() {
         let dir = temp_dir("svc-standby");
@@ -2598,8 +2599,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证按需 reconcile：把某已配对设备的 lastTransport 改为 relay 即产生
-/// 需求（自动启用并进入 connecting）；吊销该设备后需求消失、自动停用。
+    /// 验证按需 reconcile：把某已配对设备的 lastTransport 改为 relay 即产生
+    /// 需求（自动启用并进入 connecting）；吊销该设备后需求消失、自动停用。
     #[tokio::test]
     async fn reconcile_starts_on_relay_demand_and_stops_when_it_disappears() {
         let dir = temp_dir("svc-demand");
@@ -2643,8 +2644,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证配对候选：禁用时为 null；enable 后返回含 hostEncPubJwk 的 relay
-/// 候选，且 enabled 持久化落盘。
+    /// 验证配对候选：禁用时为 null；enable 后返回含 hostEncPubJwk 的 relay
+    /// 候选，且 enabled 持久化落盘。
     #[tokio::test]
     async fn pairing_candidate_is_null_while_disabled_and_advertises_when_enabled() {
         let dir = temp_dir("svc-candidate");
@@ -2684,8 +2685,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 路由测试辅助：对 app 发起一次请求，返回 (状态码, 解析后的 JSON
-/// body；非 JSON 时为 Null)。
+    /// 路由测试辅助：对 app 发起一次请求，返回 (状态码, 解析后的 JSON
+    /// body；非 JSON 时为 Null)。
     async fn oneshot(
         app: axum::Router,
         request: axum::http::Request<axum::body::Body>,
@@ -2698,8 +2699,8 @@ mod service_tests {
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
 
-/// 验证管理路由三段：/status 报告完整状态形状；/enable 持久化并启动；
-/// /disable 切断可达性并清除 enabled 标志。
+    /// 验证管理路由三段：/status 报告完整状态形状；/enable 持久化并启动；
+    /// /disable 切断可达性并清除 enabled 标志。
     #[tokio::test]
     async fn relay_management_routes_report_status_enable_and_disable() {
         let dir = temp_dir("svc-routes");
@@ -2773,8 +2774,8 @@ mod service_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-/// 验证 relay URL 规范化与 JS 一致：合法 ws/wss 原样保留（仅去空白），
-/// http/空/缺省统一回落到默认 wss 地址。
+    /// 验证 relay URL 规范化与 JS 一致：合法 ws/wss 原样保留（仅去空白），
+    /// http/空/缺省统一回落到默认 wss 地址。
     #[test]
     fn relay_url_normalization_matches_js() {
         assert_eq!(

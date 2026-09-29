@@ -58,8 +58,11 @@ pub fn normalize_path_components(path: &Path) -> PathBuf {
         match component {
             Component::Prefix(prefix) => prefix_root = Some(prefix.as_os_str().to_os_string()),
             Component::RootDir => {
+                // Keep the captured drive prefix (Windows `C:\`): resetting
+                // it would strip the drive from every absolute path, leaving
+                // a drive-less root that only resolves while the current
+                // drive happens to match.
                 result = PathBuf::from("/");
-                prefix_root = None;
             }
             Component::CurDir => {}
             Component::ParentDir => {
@@ -72,7 +75,10 @@ pub fn normalize_path_components(path: &Path) -> PathBuf {
     }
     if let Some(prefix) = prefix_root {
         let mut prefixed = PathBuf::from(prefix);
-        prefixed.push(result.strip_prefix("/").unwrap_or(Path::new("")));
+        // `result` starts with the root separator; pushing a rooted path onto
+        // a drive prefix yields `C:` + `/…` (pushing the stripped "Users"
+        // would instead produce the drive-RELATIVE "C:Users").
+        prefixed.push(&result);
         return prefixed;
     }
     result
@@ -89,11 +95,23 @@ pub fn validate_repository_file_paths(
 ) -> Result<(), String> {
     let repo_root = absolutize(root.as_ref());
     let root_text = repo_root.to_string_lossy().to_string();
+    // git_service compares paths through `canonical_path`, which lowercases
+    // on Windows; compare containment in the same case-folding so a root
+    // from one source never mismatches a file from the other.
+    let fold = |value: &str| -> String {
+        if cfg!(windows) {
+            value.to_lowercase().replace('/', "\\")
+        } else {
+            value.to_string()
+        }
+    };
+    let root_folded = fold(&root_text);
     for file_path in file_paths {
         let absolute = absolutize(&repo_root.join(file_path));
         let text = absolute.to_string_lossy().to_string();
-        if text != root_text
-            && !text.starts_with(&format!("{}{}", root_text, std::path::MAIN_SEPARATOR))
+        let folded = fold(&text);
+        if folded != root_folded
+            && !folded.starts_with(&format!("{}{}", root_folded, std::path::MAIN_SEPARATOR))
         {
             return Err(format!("Path is outside repository: {}", file_path));
         }

@@ -470,7 +470,7 @@ fn sanitize_profiles(data: &serde_json::Value) -> Vec<TunnelProfile> {
 fn warn_if_unsafe_file_permissions(file_path: &Path) {
     #[cfg(unix)]
     {
-use crate::os_compat::PermissionsExt;
+        use crate::os_compat::PermissionsExt;
         if let Ok(metadata) = std::fs::metadata(file_path) {
             let perms = metadata.permissions().mode() & 0o777;
             if perms & 0o077 != 0 {
@@ -518,7 +518,7 @@ fn write_json_private(path: &Path, value: &serde_json::Value) {
     }
     #[cfg(unix)]
     {
-use crate::os_compat::PermissionsExt;
+        use crate::os_compat::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 }
@@ -5174,6 +5174,12 @@ mod tests {
     /// 回环地址、IPv6 加方括号。
     #[test]
     fn url_building_matches_cli_network() {
+        // Reads the default host from the process env — serialize against
+        // EnvGuard tests that rewrite OMPCHAMBER_HOST mid-run.
+        let _env = crate::cli::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe { std::env::remove_var("OMPCHAMBER_HOST") };
         assert_eq!(
             build_local_url(3000, "/health", None),
             "http://127.0.0.1:3000/health"

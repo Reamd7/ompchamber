@@ -51,7 +51,7 @@ pub(crate) type NpmLookup =
 /// 使 registry 端点可在测试中脱离真实 registry 运行。
 #[derive(Clone)]
 pub(crate) struct PluginRouteState {
-/// 注入的 getNpmInfo 实现（生产环境为共享 client 的真实查询）。
+    /// 注入的 getNpmInfo 实现（生产环境为共享 client 的真实查询）。
     npm: NpmLookup,
 }
 
@@ -696,12 +696,12 @@ pub(crate) mod testing {
     use super::*;
 
     /// Test app with an injectable npm lookup (the JS DI seam).
-/// （中文）以注入的 npm 查询函数构建插件路由（不触碰真实网络）。
+    /// （中文）以注入的 npm 查询函数构建插件路由（不触碰真实网络）。
     pub(crate) fn routes_with_npm(npm: NpmLookup) -> Router {
         router_with_state(PluginRouteState { npm })
     }
 
-/// 构造恒成功返回指定 latest 与 versions 的 mock npm 查询函数。
+    /// 构造恒成功返回指定 latest 与 versions 的 mock npm 查询函数。
     pub(crate) fn ok_npm(latest: &str, versions: &[&str]) -> NpmLookup {
         let latest = latest.to_string();
         let versions: Vec<String> = versions.iter().map(|v| v.to_string()).collect();
@@ -728,27 +728,30 @@ mod tests {
     use axum::body::Body;
     use tower::ServiceExt;
 
-/// 测试环境守护：持有全局互斥锁并记录 HOME / OPENCODE_CONFIG 原值，
-/// Drop 时恢复。
+    /// 测试环境守护：持有全局互斥锁并记录 HOME / OPENCODE_CONFIG 原值，
+    /// Drop 时恢复。
     struct EnvGuard {
-/// 全局测试环境互斥锁守卫，串行化并发测试的环境变量修改。
+        /// 全局测试环境互斥锁守卫，串行化并发测试的环境变量修改。
         _guard: std::sync::MutexGuard<'static, ()>,
-/// 测试前 HOME 的原值；None 表示原本未设置。
+        /// 测试前 HOME 的原值；None 表示原本未设置。
         previous_home: Option<String>,
-/// 测试前 OPENCODE_CONFIG 的原值；None 表示原本未设置。
+        /// Windows home 解析优先 USERPROFILE（os.homedir 对齐），一并隔离。
+        previous_userprofile: Option<String>,
+        /// 测试前 OPENCODE_CONFIG 的原值；None 表示原本未设置。
         previous_config: Option<String>,
     }
 
-/// Drop 实现：恢复被测试改写的环境变量。
+    /// Drop 实现：恢复被测试改写的环境变量。
     impl Drop for EnvGuard {
-/// 逐个恢复 HOME 与 OPENCODE_CONFIG 到测试前的取值。
+        /// 逐个恢复 HOME 与 OPENCODE_CONFIG 到测试前的取值。
         fn drop(&mut self) {
             restore("HOME", &self.previous_home);
+            restore("USERPROFILE", &self.previous_userprofile);
             restore("OPENCODE_CONFIG", &self.previous_config);
         }
     }
 
-/// 恢复单个环境变量：有记录值则设置回去，无记录则移除。
+    /// 恢复单个环境变量：有记录值则设置回去，无记录则移除。
     fn restore(key: &str, value: &Option<String>) {
         match value {
             Some(value) => unsafe {
@@ -760,15 +763,18 @@ mod tests {
         }
     }
 
-/// EnvGuard 的加锁与环境切换构造。
+    /// EnvGuard 的加锁与环境切换构造。
     impl EnvGuard {
-/// 加全局锁并按 custom 切换环境：Some(path) 时 HOME 取其父目录、
-/// OPENCODE_CONFIG 指向该文件；None 时两者清空。
+        /// 加全局锁并按 custom 切换环境：Some(path) 时 HOME 取其父目录、
+        /// OPENCODE_CONFIG 指向该文件；None 时两者清空。
         fn lock(custom: Option<PathBuf>) -> Self {
             let guard = super::super::http_util::TEST_ENV_MUTEX
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous_home = std::env::var("HOME").ok();
+            // Windows resolves home through USERPROFILE first (os.homedir
+            // parity, fed62e53) — isolate both so the fixture home wins.
+            let previous_userprofile = std::env::var("USERPROFILE").ok();
             let previous_config = std::env::var("OPENCODE_CONFIG").ok();
             match custom {
                 Some(path) => {
@@ -778,23 +784,26 @@ mod tests {
                         .unwrap_or_default();
                     unsafe {
                         std::env::set_var("HOME", home.to_string_lossy().as_ref());
+                        std::env::set_var("USERPROFILE", home.to_string_lossy().as_ref());
                         std::env::set_var("OPENCODE_CONFIG", path.to_string_lossy().as_ref());
                     }
                 }
                 None => unsafe {
                     std::env::remove_var("HOME");
+                    std::env::remove_var("USERPROFILE");
                     std::env::remove_var("OPENCODE_CONFIG");
                 },
             }
             Self {
                 _guard: guard,
                 previous_home,
+                previous_userprofile,
                 previous_config,
             }
         }
     }
 
-/// 创建带 pid 与计数后缀的唯一临时目录。
+    /// 创建带 pid 与计数后缀的唯一临时目录。
     fn unique_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-plugin-routes-{tag}-{}-{}",
@@ -805,7 +814,7 @@ mod tests {
         dir
     }
 
-/// 进程内原子递增计数，为临时目录生成唯一后缀。
+    /// 进程内原子递增计数，为临时目录生成唯一后缀。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         // 进程内原子计数器：并行测试也能拿到不同目录名。
@@ -813,7 +822,7 @@ mod tests {
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
-/// 读出响应 body 并解析为 JSON；失败即 panic（仅测试断言使用）。
+    /// 读出响应 body 并解析为 JSON；失败即 panic（仅测试断言使用）。
     async fn json_body(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -821,14 +830,14 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json")
     }
 
-/// 便捷请求封装：oneshot 执行请求并返回 (状态码, JSON body)。
+    /// 便捷请求封装：oneshot 执行请求并返回 (状态码, JSON body)。
     async fn send(app: &Router, request: axum::http::Request<Body>) -> (StatusCode, Value) {
         let response = app.clone().oneshot(request).await.expect("response");
         let status = response.status();
         (status, json_body(response).await)
     }
 
-/// 构造带 JSON body 与 content-type: application/json 的请求。
+    /// 构造带 JSON body 与 content-type: application/json 的请求。
     fn json_request(method: &str, uri: &str, body: Value) -> axum::http::Request<Body> {
         axum::http::Request::builder()
             .method(method)
@@ -838,23 +847,23 @@ mod tests {
             .expect("request")
     }
 
-/// 测试夹具：临时根目录与 user 级配置文件路径，Drop 时清理目录。
+    /// 测试夹具：临时根目录与 user 级配置文件路径，Drop 时清理目录。
     struct Fixture {
-/// 测试临时根目录（内含 project 子目录）。
+        /// 测试临时根目录（内含 project 子目录）。
         root: PathBuf,
-/// user 级 opencode 配置文件路径（HOME 指向 root 时生效）。
+        /// user 级 opencode 配置文件路径（HOME 指向 root 时生效）。
         user_config: PathBuf,
     }
 
-/// Drop 实现：删除夹具的整个临时目录。
+    /// Drop 实现：删除夹具的整个临时目录。
     impl Drop for Fixture {
-/// 清理临时根目录（忽略错误）。
+        /// 清理临时根目录（忽略错误）。
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.root).ok();
         }
     }
 
-/// 创建夹具：临时根目录、user 配置文件路径，并建立 project 子目录。
+    /// 创建夹具：临时根目录、user 配置文件路径，并建立 project 子目录。
     async fn fixture(tag: &str) -> Fixture {
         let root = unique_dir(tag);
         let user_config = root.join("user-opencode.json");
@@ -866,7 +875,7 @@ mod tests {
         }
     }
 
-/// 验证：无任何插件时 GET /api/config/plugins 返回空 entries/files。
+    /// 验证：无任何插件时 GET /api/config/plugins 返回空 entries/files。
     #[tokio::test]
     async fn get_plugins_empty_returns_entries_and_files() {
         let fixture = fixture("empty").await;
@@ -884,8 +893,8 @@ mod tests {
         assert_eq!(body, json!({ "entries": [], "files": [] }));
     }
 
-/// 验证：spec 锁定旧版本而 registry 存在更新版本时，
-/// 返回 npm-ok 且 hasUpdate=true 并携带 latest/versions。
+    /// 验证：spec 锁定旧版本而 registry 存在更新版本时，
+    /// 返回 npm-ok 且 hasUpdate=true 并携带 latest/versions。
     #[tokio::test]
     async fn registry_reports_update_behind_latest() {
         let fixture = fixture("npm-update").await;
@@ -914,8 +923,8 @@ mod tests {
         );
     }
 
-/// 验证：registry 对 npm-missing-version、npm-missing-package、
-/// npm-network、npm-malformed 的分类输出，以及重复 spec 去重。
+    /// 验证：registry 对 npm-missing-version、npm-missing-package、
+    /// npm-network、npm-malformed 的分类输出，以及重复 spec 去重。
     #[tokio::test]
     async fn registry_covers_missing_version_package_network_and_malformed() {
         let fixture = fixture("npm-kinds").await;
@@ -1004,8 +1013,8 @@ mod tests {
         assert_eq!(body["results"][0]["hasUpdate"], json!(false));
     }
 
-/// 验证：本地路径 spec 分别报告 path-ok（存在且可读）
-/// 与 path-missing（不存在）。
+    /// 验证：本地路径 spec 分别报告 path-ok（存在且可读）
+    /// 与 path-missing（不存在）。
     #[tokio::test]
     async fn registry_reports_path_status() {
         let fixture = fixture("paths").await;
@@ -1049,10 +1058,19 @@ mod tests {
         )
         .await;
         assert_eq!(body["results"][0]["kind"], json!("path-missing"));
-        assert_eq!(body["results"][0]["absolutePath"], json!(missing));
+        assert_eq!(
+            body["results"][0]["absolutePath"],
+            json!(
+                std::path::Path::new("/nonexistent")
+                    .join("__path")
+                    .join("xyz.js")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
     }
 
-/// 验证：去重后超过 100 个 spec 时返回 400 "too many specs"。
+    /// 验证：去重后超过 100 个 spec 时返回 400 "too many specs"。
     #[tokio::test]
     async fn registry_rejects_more_than_100_unique_specs() {
         let fixture = fixture("limit").await;
@@ -1072,8 +1090,8 @@ mod tests {
         assert_eq!(body, json!({ "error": "too many specs" }));
     }
 
-/// 验证：插件条目创建/更新/删除的完整往返、重复创建 409、成功响应的
-/// 延迟重启形状与磁盘配置最终为空。
+    /// 验证：插件条目创建/更新/删除的完整往返、重复创建 409、成功响应的
+    /// 延迟重启形状与磁盘配置最终为空。
     #[tokio::test]
     async fn entry_crud_round_trip_shapes() {
         let fixture = fixture("entry-crud").await;
@@ -1188,7 +1206,7 @@ mod tests {
         assert_eq!(listed["entries"], json!([]));
     }
 
-/// 验证：PATCH 不存在的条目 id 返回 404。
+    /// 验证：PATCH 不存在的条目 id 返回 404。
     #[tokio::test]
     async fn patch_unknown_entry_returns_404() {
         let fixture = fixture("patch-404").await;
@@ -1212,8 +1230,8 @@ mod tests {
         assert!(body["error"].as_str().expect("error").contains("not found"));
     }
 
-/// 验证：插件文件创建/更新/读取/删除的往返形状、重复创建 409
-/// 与磁盘内容随之变化。
+    /// 验证：插件文件创建/更新/读取/删除的往返形状、重复创建 409
+    /// 与磁盘内容随之变化。
     #[tokio::test]
     async fn file_crud_round_trip_shapes() {
         let fixture = fixture("file-crud").await;
@@ -1320,7 +1338,7 @@ mod tests {
         assert!(!fixture.root.join("plugins").join("test.js").exists());
     }
 
-/// 验证：fileName 含路径穿越（../）时创建插件文件返回 400。
+    /// 验证：fileName 含路径穿越（../）时创建插件文件返回 400。
     #[tokio::test]
     async fn post_file_with_invalid_name_returns_400() {
         let fixture = fixture("file-400").await;

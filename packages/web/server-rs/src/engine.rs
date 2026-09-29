@@ -840,7 +840,8 @@ async fn signal_process(pid: u32, signal: &str) -> bool {
                 let text = String::from_utf8_lossy(&output.stdout);
                 // A match lists one process row containing the bare pid;
                 // the no-match case prints an "INFO: No tasks" header.
-                text.split_whitespace().any(|token| token == pid.to_string())
+                text.split_whitespace()
+                    .any(|token| token == pid.to_string())
             }
             _ => false,
         };
@@ -985,7 +986,8 @@ mod tests {
         assert!(out.starts_with("/usr/bin"));
         assert!(out.contains("/x/bin"));
         assert!(out.contains("/usr/local/bin"));
-        let count = out.split(':').filter(|p| *p == "/usr/local/bin").count();
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let count = out.split(sep).filter(|p| *p == "/usr/local/bin").count();
         assert_eq!(count, 1);
     }
 

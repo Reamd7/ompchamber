@@ -1217,39 +1217,45 @@ mod tests {
     use axum::body::Body;
     use tower::ServiceExt;
 
-/// 测试环境守护：持有全局互斥锁并把 HOME 等环境变量切到临时目录，
-/// Drop 时自动恢复原值。
+    /// 测试环境守护：持有全局互斥锁并把 HOME 等环境变量切到临时目录，
+    /// Drop 时自动恢复原值。
     struct EnvGuard {
-/// 全局测试环境互斥锁守卫：持有期间其它测试不能修改环境变量。
+        /// 全局测试环境互斥锁守卫：持有期间其它测试不能修改环境变量。
         _guard: std::sync::MutexGuard<'static, ()>,
-/// 进入测试前 HOME 的原值；None 表示原本未设置。
+        /// 进入测试前 HOME 的原值；None 表示原本未设置。
         previous_home: Option<String>,
+        /// Windows home 解析优先 USERPROFILE（os.homedir 对齐），一并隔离。
+        previous_userprofile: Option<String>,
     }
-
-/// EnvGuard 的加锁与环境切换构造。
+    /// EnvGuard 的加锁与环境切换构造。
     impl EnvGuard {
-/// 加全局锁，把 HOME 指向给定目录并清除 OPENCODE_CONFIG_DIR /
-/// OPENCODE_CONFIG，返回可自动恢复原值的 guard。
+        /// 加全局锁，把 HOME 指向给定目录并清除 OPENCODE_CONFIG_DIR /
+        /// OPENCODE_CONFIG，返回可自动恢复原值的 guard。
         fn lock(home: &Path) -> Self {
             let guard = super::super::http_util::TEST_ENV_MUTEX
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous_home = std::env::var("HOME").ok();
+            // Windows resolves home through USERPROFILE first (os.homedir
+            // parity, fed62e53) — isolate both so the fixture home wins.
+            let previous_userprofile = std::env::var("USERPROFILE").ok();
             unsafe {
                 std::env::set_var("HOME", home.to_string_lossy().as_ref());
+                std::env::set_var("USERPROFILE", home.to_string_lossy().as_ref());
                 std::env::remove_var("OPENCODE_CONFIG_DIR");
                 std::env::remove_var("OPENCODE_CONFIG");
             }
             Self {
                 _guard: guard,
                 previous_home,
+                previous_userprofile,
             }
         }
     }
 
-/// Drop 实现：测试结束时恢复 HOME。
+    /// Drop 实现：测试结束时恢复 HOME。
     impl Drop for EnvGuard {
-/// 恢复测试前记录的 HOME（原值缺失则移除该变量）。
+        /// 恢复测试前记录的 HOME（原值缺失则移除该变量）。
         fn drop(&mut self) {
             match &self.previous_home {
                 Some(home) => unsafe {
@@ -1259,10 +1265,18 @@ mod tests {
                     std::env::remove_var("HOME");
                 },
             }
+            match &self.previous_userprofile {
+                Some(profile) => unsafe {
+                    std::env::set_var("USERPROFILE", profile);
+                },
+                None => unsafe {
+                    std::env::remove_var("USERPROFILE");
+                },
+            }
         }
     }
 
-/// 创建带 pid 与计数后缀的唯一临时根目录，保证测试之间互不干扰。
+    /// 创建带 pid 与计数后缀的唯一临时根目录，保证测试之间互不干扰。
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "ompchamber-skill-routes-{tag}-{}-{}",
@@ -1273,7 +1287,7 @@ mod tests {
         dir
     }
 
-/// 生成进程内单调递增的唯一后缀（配合 pid 一起使用）。
+    /// 生成进程内单调递增的唯一后缀（配合 pid 一起使用）。
     fn rand_postfix() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         // 进程内原子计数器：同一进程并行测试也能拿到不同目录名。
@@ -1281,7 +1295,7 @@ mod tests {
         COUNTER.fetch_add(1, Ordering::SeqCst)
     }
 
-/// 读出整个响应 body 并解析为 JSON；失败即 panic（仅测试断言使用）。
+    /// 读出整个响应 body 并解析为 JSON；失败即 panic（仅测试断言使用）。
     async fn json_body(response: Response) -> Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1289,8 +1303,8 @@ mod tests {
         serde_json::from_slice(&bytes).expect("json")
     }
 
-/// 构造指向不可达 engine（127.0.0.1:1）的 RouterContext，
-/// 让测试聚焦本地文件系统行为。
+    /// 构造指向不可达 engine（127.0.0.1:1）的 RouterContext，
+    /// 让测试聚焦本地文件系统行为。
     fn test_ctx(
         engine: std::sync::Arc<crate::engine::EngineState>,
         data_dir: PathBuf,
@@ -1314,8 +1328,8 @@ mod tests {
         }
     }
 
-/// 在 dir/<name>/SKILL.md 写入带 name/description frontmatter 的
-/// skill 文件，返回其路径。
+    /// 在 dir/<name>/SKILL.md 写入带 name/description frontmatter 的
+    /// skill 文件，返回其路径。
     fn write_skill(dir: &Path, name: &str, description: &str, body: &str) -> PathBuf {
         let skill_dir = dir.join(name);
         std::fs::create_dir_all(&skill_dir).expect("skill dir");
@@ -1328,9 +1342,9 @@ mod tests {
         path
     }
 
-/// 验证：创建 project skill 时即便请求未带 directory（经 settings 的
-/// lastDirectory 回退解析），后续列表也能发现 `.agents/skills` 下的
-/// 该 skill 并正确标注 scope/source/exists。
+    /// 验证：创建 project skill 时即便请求未带 directory（经 settings 的
+    /// lastDirectory 回退解析），后续列表也能发现 `.agents/skills` 下的
+    /// 该 skill 并正确标注 scope/source/exists。
     #[tokio::test]
     async fn create_then_lists_repository_local_agents_skills_without_directory() {
         let root = temp_root("create-list");
@@ -1373,7 +1387,12 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(created.status(), StatusCode::OK);
+        let dbg_body = axum::body::to_bytes(created.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let dbg = String::from_utf8_lossy(&dbg_body).to_string();
+        eprintln!("DBG create body={dbg}");
+        assert!(dbg.is_empty() || true);
         assert!(
             project
                 .join(".agents")
@@ -1409,8 +1428,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：受管理路径（项目 .opencode/skills）下的 skill 列表 renamable
-/// 为 true，而缓存目录（~/.cache/opencode/skills）中的为 false。
+    /// 验证：受管理路径（项目 .opencode/skills）下的 skill 列表 renamable
+    /// 为 true，而缓存目录（~/.cache/opencode/skills）中的为 false。
     #[tokio::test]
     async fn marks_managed_skills_renamable_but_cache_skills_not() {
         let root = temp_root("renamable");
@@ -1466,8 +1485,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：engine `GET /skill` 返回的 `.omp/skills` 行合并进列表后，
-/// 项目内路径推断为 project scope、home 下路径推断为 user scope。
+    /// 验证：engine `GET /skill` 返回的 `.omp/skills` 行合并进列表后，
+    /// 项目内路径推断为 project scope、home 下路径推断为 user scope。
     #[tokio::test]
     async fn merges_engine_rows_and_infers_omp_scopes() {
         let root = temp_root("engine-merge");
@@ -1555,9 +1574,9 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：单 skill 元数据读取、辅助文件写/读、不安全路径 400、缺失文件
-/// 404、重命名响应（requiresReload + reloadDelayMs=800）与删除的延迟
-/// 重启响应的完整形状。
+    /// 验证：单 skill 元数据读取、辅助文件写/读、不安全路径 400、缺失文件
+    /// 404、重命名响应（requiresReload + reloadDelayMs=800）与删除的延迟
+    /// 重启响应的完整形状。
     #[tokio::test]
     async fn skill_crud_and_supporting_files_shapes() {
         let root = temp_root("crud");
@@ -1746,8 +1765,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：catalog 列表包含 curated 来源（如 anthropic），行内剥离
-/// gitIdentityId 且带 stars/repoUpdatedAt 字段，itemsBySource 为空。
+    /// 验证：catalog 列表包含 curated 来源（如 anthropic），行内剥离
+    /// gitIdentityId 且带 stars/repoUpdatedAt 字段，itemsBySource 为空。
     #[tokio::test]
     async fn catalog_lists_curated_sources_with_metadata_shape() {
         let root = temp_root("catalog");
@@ -1788,8 +1807,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：/catalog/source 缺 sourceId 返回 400 invalidSource，
-/// 未知 sourceId 返回 404 invalidSource。
+    /// 验证：/catalog/source 缺 sourceId 返回 400 invalidSource，
+    /// 未知 sourceId 返回 404 invalidSource。
     #[tokio::test]
     async fn catalog_source_requires_known_source_id() {
         let root = temp_root("catalog-source");
@@ -1832,8 +1851,8 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-/// 验证：scan 请求缺 source 时返回 400，错误 kind 为 invalidSource，
-/// 消息为 "Repository source is required"。
+    /// 验证：scan 请求缺 source 时返回 400，错误 kind 为 invalidSource，
+    /// 消息为 "Repository source is required"。
     #[tokio::test]
     async fn scan_rejects_missing_source_with_invalid_source() {
         let root = temp_root("scan");

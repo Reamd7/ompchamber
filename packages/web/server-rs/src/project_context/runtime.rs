@@ -721,8 +721,12 @@ fn empty_context() -> ProjectContext {
 
 /// 取路径最后一段（忽略尾部 `/`），把记录的绝对路径还原为文件名。
 fn path_basename(value: &str) -> String {
-    let trimmed = value.trim_end_matches('/');
-    trimmed.rsplit('/').next().unwrap_or_default().to_string()
+    let trimmed = value.trim_end_matches(['/', '\\']);
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// 校验 projectId：trim 后必须非空，且仅允许 ASCII 字母数字与 `. _ : -`，

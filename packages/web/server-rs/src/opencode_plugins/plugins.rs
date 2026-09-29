@@ -731,6 +731,8 @@ mod tests {
         _guard: std::sync::MutexGuard<'static, ()>,
         /// 进入测试前的 HOME 原值。
         previous_home: Option<String>,
+        /// Windows home 解析优先 USERPROFILE（os.homedir 对齐），一并隔离。
+        previous_userprofile: Option<String>,
         /// 进入测试前的 OPENCODE_CONFIG 原值。
         previous_config: Option<String>,
     }
@@ -740,6 +742,7 @@ mod tests {
         /// 依次恢复 HOME 与 OPENCODE_CONFIG。
         fn drop(&mut self) {
             restore("HOME", &self.previous_home);
+            restore("USERPROFILE", &self.previous_userprofile);
             restore("OPENCODE_CONFIG", &self.previous_config);
         }
     }
@@ -764,6 +767,9 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous_home = std::env::var("HOME").ok();
+            // Windows resolves home through USERPROFILE first (os.homedir
+            // parity, fed62e53) — isolate both so the fixture home wins.
+            let previous_userprofile = std::env::var("USERPROFILE").ok();
             let previous_config = std::env::var("OPENCODE_CONFIG").ok();
             if let Some(path) = custom {
                 let home = path
@@ -772,17 +778,20 @@ mod tests {
                     .unwrap_or_else(|| PathBuf::from("/"));
                 unsafe {
                     std::env::set_var("HOME", home.to_string_lossy().as_ref());
+                    std::env::set_var("USERPROFILE", home.to_string_lossy().as_ref());
                     std::env::set_var("OPENCODE_CONFIG", path.to_string_lossy().as_ref());
                 }
             } else {
                 unsafe {
                     std::env::remove_var("HOME");
+                    std::env::remove_var("USERPROFILE");
                     std::env::remove_var("OPENCODE_CONFIG");
                 }
             }
             Self {
                 _guard: guard,
                 previous_home,
+                previous_userprofile,
                 previous_config,
             }
         }

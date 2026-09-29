@@ -195,8 +195,28 @@ fn is_process_alive(pid: i32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(EPERM)
 }
 
-/// 非 Unix 平台无法探测进程存活：恒返回 true，锁失效只能依赖年龄阈值恢复。
-#[cfg(not(unix))]
+/// Windows `isProcessAlive`: `tasklist /FI "PID eq n"` probe — same liveness
+/// semantics as `cli::process` and the relay host lock. The previous
+/// always-true shim meant a lock held by a dead pid could only be recovered
+/// by the age threshold.
+#[cfg(windows)]
+fn is_process_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    match std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+        }
+        _ => true,
+    }
+}
+
+/// 其余非 Unix 平台无法探测进程存活：恒返回 true，锁失效只能依赖年龄阈值恢复。
+#[cfg(not(any(unix, windows)))]
 fn is_process_alive(_pid: i32) -> bool {
     // Liveness cannot be probed; rely on age-based staleness instead.
     true

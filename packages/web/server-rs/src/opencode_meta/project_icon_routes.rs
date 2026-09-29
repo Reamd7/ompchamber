@@ -340,7 +340,7 @@ fn lowercase_extension(path: &str) -> String {
 fn is_favicon_path(path: &str) -> bool {
     // favicon 允许的扩展名集合（含 jpeg：能被匹配到，但无 MIME 映射 → 415）。
     const EXTENSIONS: [&str; 6] = ["ico", "png", "svg", "jpg", "jpeg", "webp"];
-    let file_name = path.rsplit('/').next().unwrap_or(path);
+    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let Some((stem, extension)) = file_name.split_once('.') else {
         return false;
     };

@@ -1021,14 +1021,14 @@ fn sha1_hex(value: &str) -> String {
 /// （path_<base64url(规范化路径)>）并把项目写进 settings.json，返回 id。
 fn seed_project(data_dir: &Path, project_path: &Path, icon_image: Value) -> String {
     std::fs::create_dir_all(project_path).unwrap();
-    let canonical = std::fs::canonicalize(project_path).unwrap();
-    // Deterministic ids (`path_<base64url(canonical)>`) survive the settings
-    // migrations untouched, like the JS's post-migration state.
-    let id = format!("path_{}", {
-        use base64::Engine as _;
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(canonical.to_string_lossy().as_bytes())
-    });
+    let canonical = crate::settings::normalization::strip_verbatim_prefix(
+        std::fs::canonicalize(project_path).unwrap(),
+    );
+    // Deterministic ids survive the settings migrations untouched, like the
+    // JS's post-migration state — derive them through the canonical id fn so
+    // Windows backslash paths fold to `/` exactly like the pipeline does.
+    let id =
+        crate::settings::normalization::create_project_id_from_path(&canonical.to_string_lossy());
     std::fs::write(
         data_dir.join("settings.json"),
         serde_json::to_string(&json!({
@@ -1423,7 +1423,10 @@ async fn discover_icon_skips_custom_icons_without_force() {
         json!({
             "project": {
                 "id": id,
-                "path": std::fs::canonicalize(&project_dir).unwrap().to_string_lossy(),
+                "path": crate::settings::normalization::strip_verbatim_prefix(
+                    std::fs::canonicalize(&project_dir).unwrap(),
+                )
+                .to_string_lossy(),
                 "iconImage": { "mime": "image/png", "updatedAt": 1, "source": "custom" },
             },
             "skipped": true,

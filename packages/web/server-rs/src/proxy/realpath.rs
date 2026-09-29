@@ -221,10 +221,9 @@ mod tests {
         let dir = temp_dir("rewrite");
         let real = dir.join("real");
         std::fs::create_dir_all(&real).expect("create real");
-        #[cfg(unix)]
         {
             let _ = std::fs::remove_file(dir.join("link"));
-            std::os::unix::fs::symlink(&real, dir.join("link")).expect("symlink");
+            crate::os_compat::symlink(&real, &dir.join("link")).expect("symlink");
         }
         let cache = RealpathCache::new();
 
@@ -274,10 +273,9 @@ mod tests {
         let dir = temp_dir("dup");
         let real = dir.join("real");
         std::fs::create_dir_all(&real).expect("create real");
-        #[cfg(unix)]
         {
             let _ = std::fs::remove_file(dir.join("link2"));
-            std::os::unix::fs::symlink(&real, dir.join("link2")).expect("symlink");
+            crate::os_compat::symlink(&real, &dir.join("link2")).expect("symlink");
         }
         let cache = RealpathCache::new();
 

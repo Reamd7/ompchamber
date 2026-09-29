@@ -1571,6 +1571,12 @@ mod tests {
     /// 验证 server URL 解析优先级：显式主机、完整 URL 直用、通配+LAN、通配回退、存储主机兜底、env 覆盖存储、IPv6 加括号。
     #[test]
     fn resolve_server_url_core_sources() {
+        // Host resolution reads the process env — serialize against EnvGuard
+        // tests that rewrite OMPCHAMBER_HOST mid-run.
+        let _env = crate::cli::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe { std::env::remove_var("OMPCHAMBER_HOST") };
         // Explicit non-wildcard host → direct local URL.
         let (url, source) = resolve_server_url_core(3000, Some("192.168.1.9"), None, None, None);
         assert_eq!(url, "http://192.168.1.9:3000");
@@ -1620,6 +1626,12 @@ mod tests {
     /// 验证探测主机列表按归一化键去重，且仅在存在具体权威主机时补入需 PID 匹配的兜底项。
     #[test]
     fn probe_hosts_dedupe_and_pid_matching() {
+        // Host resolution reads the process env — serialize against EnvGuard
+        // tests that rewrite OMPCHAMBER_HOST mid-run.
+        let _env = crate::cli::TEST_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        unsafe { std::env::remove_var("OMPCHAMBER_HOST") };
         let hosts = get_system_info_probe_hosts(&[Some("0.0.0.0".to_string())]);
         // 0.0.0.0 maps onto the same probe key as the default/loopback
         // fallback hosts, so everything dedupes into a single entry.
