@@ -95,7 +95,7 @@
     },
     "packages/electron": {
       "name": "@ompchamber/electron",
-      "version": "1.35.0-alpha.14",
+      "version": "1.35.0-alpha.15",
       "dependencies": {
         "electron-context-menu": "^4.1.2",
         "electron-log": "^5.4.3",
@@ -272,7 +272,7 @@
     },
     "packages/web": {
       "name": "@ompchamber/web",
-      "version": "1.35.0-alpha.14",
+      "version": "1.35.0-alpha.15",
       "bin": {
         "ompchamber": "./bin/cli.js",
       },
