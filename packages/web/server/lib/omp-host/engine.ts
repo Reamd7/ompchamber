@@ -85,6 +85,12 @@ import type { AgentSession, AgentSessionEvent, AuthStorage, CreateAgentSessionRe
 import type { BashExecutionMessage, CustomMessage, HookMessage } from '@oh-my-pi/pi-coding-agent';
 import { isPersistentShellCdCommand } from '@oh-my-pi/pi-coding-agent/exec/bash-executor';
 import type { BashResult } from '@oh-my-pi/pi-coding-agent/exec/bash-executor';
+import {
+  cfgTaskAgentAdvisor,
+  cfgTaskAgentModelOverrides,
+  cfgTaskAgentPrewalk,
+  cfgTaskDisabledAgents,
+} from '@oh-my-pi/pi-coding-agent/task/settings';
 import type { SettingsStore, RegistryModel } from './domain-models.ts';
 import type { DialogsDomain } from './domain-dialogs.ts';
 import type { ModesDomain } from './domain-modes.ts';
@@ -638,10 +644,10 @@ export class OmpHostEngine {
         try {
           const settings = await store.settingsFor(directoryKey ?? undefined);
           return {
-            disabledAgents: settings.get('task.disabledAgents'),
-            modelOverrides: settings.get('task.agentModelOverrides'),
-            prewalk: settings.get('task.agentPrewalk'),
-            advisor: settings.get('task.agentAdvisor')
+            disabledAgents: cfgTaskDisabledAgents.get(settings),
+            modelOverrides: cfgTaskAgentModelOverrides.get(settings),
+            prewalk: cfgTaskAgentPrewalk.get(settings),
+            advisor: cfgTaskAgentAdvisor.get(settings)
           };
         } catch {
           return null;
@@ -1900,7 +1906,7 @@ export class OmpHostEngine {
    * post-dispose `session.updated` flips client rows to cold.
    */
   /** 手动释放空闲常驻会话——内存监视器的 release 动作。无可常驻返回 'cold'（幂等 no-op）；仍有工作或 UI 租约返回 'active'（调用方作为冲突呈现）；逐出交接被接受返回 'released'（dispose 后的 session.updated 把客户端行翻为冷）。 */
-  async releaseSession({ sessionID, directory }: { sessionID: string; directory?: string }) {
+  async releaseSession({ sessionID, directory }: { sessionID: string; directory?: string }): Promise<'cold' | 'active' | 'released'> {
     await this.#boot();
     const directoryKey = normalizeDirectoryKey(directory);
     const anywhere = this.#liveHostAnywhere(directoryKey, sessionID);
@@ -2990,6 +2996,23 @@ export class OmpHostEngine {
       case 'turn_end':
         // Intentional ignore: same reasoning as turn_start.
         return;
+      case 'cache_warming_start':
+      case 'cache_warming_end':
+        // Intentional ignore (18.11.x): provider cache prewarm progress/outcome
+        // is a TUI-only surface; no web consumer yet.
+        return;
+      case 'config_warnings_changed':
+        // Intentional ignore (18.11.x): settings-registry validation warnings
+        // surface on the TUI status line; no web consumer yet.
+        return;
+      case 'advisor_cost_changed':
+        // Intentional ignore (18.11.x): advisor cost tally feeds the TUI
+        // status line; no web consumer yet.
+        return;
+      case 'advisor_yielded':
+        // Intentional ignore (18.11.x): message/turn events already settle the
+        // surface when the advisor yields control.
+        return;
       case 'agent_start': {
         hostSession.turnToolResults = new Map();
         hostSession.awaitingAsyncSince = null;
@@ -3567,16 +3590,11 @@ export class OmpHostEngine {
           timeCreated: wire.info.time.created
         });
       }
-      // Title generation mirrors the TUI: attempted at submission time on every
-      // user message, while the turn runs. pi skips internally once the session
-      // is named and retries later messages when an attempt failed or the input
-      // was too low-signal to title. Slash commands never title in the TUI
-      // (commands are host-level there); guard them here too — an unguarded
-      // "/compact" once titled the session with the entire compaction summary.
-      if (!text.trimStart().startsWith('/')) {
-        session.maybeStartTitleGeneration(text);
-      }
-
+      // Title generation is SDK-internal since 18.11.x: the session titles
+      // itself when the reply's first non-thinking block starts (agent-session
+      // `#maybeStartTitle` on `message_update`), so the host no longer pokes a
+      // submit-time entry point — and the TUI's slash-command exclusion is the
+      // SDK's own concern now.
       const textOnly = content.length === 1 && content[0].type === 'text' ? (content[0].text ?? '') : (text ?? '');
       // SAFETY: filtered blocks are image parts; base64+mime is the wire form.
       const imageContents = content.filter((block) => block.type === 'image') as Array<{ type: 'image'; data: string; mimeType: string }>;
@@ -3847,7 +3865,7 @@ export class OmpHostEngine {
     if (!parsed) return false;
     const skill = (session.skills ?? []).find((candidate) => candidate?.name === parsed.name);
     if (!skill) return false;
-    const built = await buildSkillPromptMessage(skill, parsed.args, 'user');
+    const built = await buildSkillPromptMessage(skill, { args: parsed.args, prompt: parsed.prompt }, 'user');
     await session.promptCustomMessage(
       {
         customType: SKILL_PROMPT_MESSAGE_TYPE,

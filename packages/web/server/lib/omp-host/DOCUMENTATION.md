@@ -20,7 +20,8 @@ sync engine, and web server call; everything else answers 404.
   entrypoint BEFORE serving. The embedded SDK relaunches its own executable
   (`process.execPath` = omp-host itself in packaged builds) into worker modes
   (daemon broker, LSP mux, blob broker, ONNX inference workers, the JS-eval
-  kernel). Without this dispatch every such spawn booted a second full HTTP
+  kernel, IDA host, mnemopi embed server, text-predict daemon, stats
+  activity worker). Without this dispatch every such spawn booted a second full HTTP
   host on a random port that nothing tore down — the "hundreds of
   omp-host.exe processes" leak (~1 zombie per failed 10s daemon-broker
   connect while the browser tool retried). Known selectors map to the SDK's
@@ -29,7 +30,9 @@ sync engine, and web server call; everything else answers 404.
   worker, and `browser-relay` are explicit no-serve exits (exit 1), so an
   unrecognized self-spawn can never become a zombie host. The table must be
   re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
-  `worker-dispatch.test.js` pins the full selector list.
+  `worker-dispatch.test.ts` pins the full selector list. 18.11.x renamed the
+  tiny worker to a self-wired env starter (`startTinyWorkerFromEnvironment`),
+  which is why self-runner starters are awaited.
 - `engine.ts` — `OmpHostEngine`: model/auth boot, session materialization
   through `LiveSessionRegistry` (directory-keyed records, per-key gates,
   eviction state machine, quarantine tombstones — docs/plan.md §3.2-3.4),
@@ -120,7 +123,14 @@ sync engine, and web server call; everything else answers 404.
   global layer — only already-live sessions keep their pre-write instance),
   `/omp/models` role payload, `/omp/settings` proxy with credential
   sanitization (R9) and modelRoles-only project writes (R6), legacy
-  defaultModel detect/import.
+  defaultModel detect/import. Since SDK 18.11.x the settings surface is
+  registry-driven: the payload walks `orderedSettings()` (every registered
+  handle, including settings without UI metadata — `createSettingsHost()`
+  rows alone would drop them), reads layered values/isConfigured per
+  directory instance, and writes go through handle `set`/`unset`. Tab/group
+  structure mirrors pi-tui's `SETTING_TABS`/`TAB_METADATA`/`TAB_GROUPS` in a
+  local table (pi-tui is not a direct dependency) with a bump-guard test
+  forcing an explicit decision when the SDK adds or renames tabs/groups.
 - `domain-providers.ts` — OpenChamber-owned GUI CRUD over the engine's
   custom provider file (`~/.omp/agent/models.yml`; capability `providers.v1`).
   `GET /omp/providers` tags each engine provider `file` (models.yml-defined,

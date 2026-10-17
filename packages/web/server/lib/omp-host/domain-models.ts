@@ -14,7 +14,7 @@
  * - GET/PUT /omp/settings（06 §5.2/§5.3）：schema 驱动的 settings 代理。
  *   GET 返回目录级生效配置，所有凭据键（isCredential，含 ui.secret）
  *   只回显 `{ configured }`，值与默认值一律不回显（R9）；PUT 依据
- *   SETTINGS_SCHEMA 校验，全局写入路由到 boot 实例，project 写入仅限
+ *   注册表句柄校验，全局写入路由到 boot 实例，project 写入仅限
  *   modelRoles 子树并路由到目录键控实例（R6），随后 flush、递增
  *   revision 并广播 omp.settings.updated 事件。
  * - defaultModel 遗留迁移（01 §5.8，R12）：只读探测 OMPChamber 的
@@ -39,7 +39,7 @@
 //   GET returns directory-scoped effective settings with every credential
 //   key (isCredential, incl. ui.secret — schema:5628-5631) reduced to
 //   `{ configured }`; values AND defaults never echo (R9). PUT validates
-//   against SETTINGS_SCHEMA, routes global writes to the boot instance and
+//   against the settings registry, routes global writes to the boot instance and
 //   project writes ONLY within the modelRoles subtree to the directory's
 //   keyed instance (R6), flushes, bumps revision, and broadcasts
 //   `omp.settings.updated` (registered in omp-event-registry.json; the
@@ -65,33 +65,157 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Settings, VERSION } from '@oh-my-pi/pi-coding-agent';
-import {
-  SETTINGS_SCHEMA,
-  SETTING_TABS,
-  TAB_METADATA,
-  TAB_GROUPS,
-  getDefault,
-  getEnumValues,
-  getType,
-  getUi,
-  isCredential,
-} from '@oh-my-pi/pi-coding-agent/config/settings';
+import { createSettingsHost } from '@oh-my-pi/pi-coding-agent/config/settings-ui';
+import { lookup, type AnySetting } from '@oh-my-pi/pi-coding-agent/config/registry';
+import { orderedSettings } from '@oh-my-pi/pi-coding-agent/config/all-settings';
+import { cfgCycleOrder, cfgEnabledModels, cfgModelRoleStorage } from '@oh-my-pi/pi-coding-agent/config/model-settings';
+import { cfgDefaultThinkingLevel, cfgRetryUsageAwareFallback } from '@oh-my-pi/pi-coding-agent/session/settings';
+import { cfgAdvisorEnabled } from '@oh-my-pi/pi-coding-agent/advisor/settings';
+import { cfgMemoryBackend } from '@oh-my-pi/pi-coding-agent/memory-backend/settings';
+import { cfgAutolearnEnabled } from '@oh-my-pi/pi-coding-agent/autolearn/settings';
+import { cfgPlanEnabled } from '@oh-my-pi/pi-coding-agent/plan-mode/settings';
 import { getKnownRoleIds, getRoleInfo } from '@oh-my-pi/pi-coding-agent/config/model-roles';
-import { parseModelString } from '@oh-my-pi/pi-coding-agent/config/model-resolver';
 import { getRetryFallbackChains } from '@oh-my-pi/pi-coding-agent/session/retry-fallback-chains';
 import { normalizeDirectoryKey } from './registry.ts';
-import type {
-  AnyUiMetadata,
-  SettingsOptions,
-  SettingPath,
-  SettingTab,
-  SettingValue,
-  SubmenuOption,
-} from '@oh-my-pi/pi-coding-agent/config/settings';
-import type { ModelRoleInfo } from '@oh-my-pi/pi-coding-agent/config/model-roles';
+import type { SettingsOptions } from '@oh-my-pi/pi-coding-agent/config/settings';
 import type { RetryFallbackChains } from '@oh-my-pi/pi-coding-agent/session/retry-fallback-chains';
-// 透传 SDK 的 SettingValue 类型，供路由/载荷消费方不必直接依赖 SDK 路径。
-export type { SettingValue } from '@oh-my-pi/pi-coding-agent/config/settings';
+
+// SDK 18.11.x 把设置元数据改成注册表模型（config/registry + pi-tui
+// overlays/settings-defs），而 pi-tui 不是我们的直接依赖。下面的命名接口
+// 镜像那份展示契约；settingsDisplayEntries 的返回类型在赋值处做值级
+// 结构校验。SDK bump 时 tab/分组表与条目形状的漂移由 domain-models.test
+// 的 bump-guard 用例强制显式决策。
+// SDK 18.11.x moved settings metadata to a registry model (config/registry +
+// pi-tui overlays/settings-defs), and pi-tui is not a direct dependency. The
+// named interfaces below mirror that display contract; settingsDisplayEntries
+// type-checks the mirror at its assignment seam. On SDK bumps, domain-models
+// tests' bump-guard forces an explicit decision over the tab/group table.
+
+/** SDK 设置 tab id（镜像 pi-tui SettingTab）。 */
+/** SDK settings tab id (mirrors pi-tui SettingTab). */
+export type SettingTab =
+  | 'appearance'
+  | 'model'
+  | 'interaction'
+  | 'context'
+  | 'memory'
+  | 'files'
+  | 'shell'
+  | 'tools'
+  | 'tasks'
+  | 'providers';
+
+/** SDK 子菜单选项（镜像 pi-tui SubmenuOption）。 */
+/** SDK submenu option (mirrors pi-tui SubmenuOption). */
+export interface SubmenuOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+/** SDK 设置 UI 元数据（镜像 pi-tui AnyUiMetadata：宽形状，供泛型遍历）。 */
+/** SDK settings UI metadata (mirrors pi-tui AnyUiMetadata: wide shape for generic walks). */
+export interface AnyUiMetadata {
+  tab: SettingTab;
+  /** tab 内小节；未分组设置渲染在节标题之前。 */
+  /** Section within the tab; ungrouped settings render before any heading. */
+  group?: string;
+  label: string;
+  description: string;
+  /** 风险提示：可导致限流/封号等的设置行标警告。 */
+  /** Risk note: settings that can get the user rate-limited, flagged, or banned. */
+  warning?: string;
+  /** 显隐条件名：仅当对应条件为真时展示。 */
+  /** Condition name: shown only while the named condition holds. */
+  condition?: string;
+  options?: ReadonlyArray<SubmenuOption> | 'runtime';
+  secret?: boolean;
+  ordered?: boolean;
+  editor?: 'json';
+}
+
+/** 从注册表句柄读取的设置值类型（泛型工具：T 为 cfg* 句柄类型）。 */
+/** Value type read through a registry handle (generic utility over a cfg* handle). */
+export type SettingValue<TSetting extends { get(scope: never): JsonValue }> = TSetting extends {
+  get(scope: never): infer Value;
+}
+  ? Value
+  : never;
+
+/** 设置页 tab 结构（镜像 pi-tui SETTING_TABS/TAB_METADATA/TAB_GROUPS；
+ * 本地表 + 测试 bump-guard，SDK 新增 tab/分组时强制显式决策）。 */
+/** Settings-page tab structure (mirrors pi-tui SETTING_TABS/TAB_METADATA/
+ * TAB_GROUPS; local table + test bump-guard so SDK additions force a decision). */
+export const SETTING_TABS: ReadonlyArray<{ id: SettingTab; label: string; groups: readonly string[] }> = [
+  { id: 'appearance', label: 'Appearance', groups: ['Theme', 'Composer', 'Status Line', 'Display', 'Images'] },
+  {
+    id: 'model',
+    label: 'Model',
+    groups: ['Thinking', 'Sampling', 'Prompt', 'Retry & Fallback', 'Advisor', 'Prewalk', 'Vision'],
+  },
+  {
+    id: 'interaction',
+    label: 'Interaction',
+    groups: [
+      'Input',
+      'Approvals',
+      'Notifications',
+      'Speech',
+      'Collab',
+      'Stream',
+      'Magic Keywords',
+      'Startup & Updates',
+      'Power',
+      'Agent',
+      'Git',
+      'Skills',
+    ],
+  },
+  { id: 'context', label: 'Context', groups: ['General', 'Compaction', 'Rules (TTSR)', 'Experimental'] },
+  { id: 'memory', label: 'Memory', groups: ['General', 'Auto-Learn', 'Mnemopi', 'Hindsight', 'Sharpshooter'] },
+  { id: 'files', label: 'Files', groups: ['Editing', 'Reading', 'Read Summaries', 'LSP'] },
+  { id: 'shell', label: 'Shell', groups: ['Bash', 'Eval & Runtimes'] },
+  {
+    id: 'tools',
+    label: 'Tools',
+    groups: [
+      'Available Tools',
+      'Todos',
+      'Grep & Browser',
+      'Computer',
+      'IDA Pro',
+      'GitHub',
+      'Output Limits',
+      'Execution',
+      'Discovery & MCP',
+      'Extensions',
+      'Developer',
+    ],
+  },
+  { id: 'tasks', label: 'Tasks', groups: ['Modes', 'Subagents', 'Isolation', 'Commands & Skills'] },
+  { id: 'providers', label: 'Providers', groups: ['Services', 'Fireworks', 'Tiny Model', 'Protocol', 'Timeouts', 'Privacy'] },
+];
+
+// 载荷遍历用 orderedSettings()（全量注册表，含无 UI 元数据的设置，如
+// cycleOrder），不用 createSettingsHost().entries——后者只收带 ui.tab 的
+// 展示行，会把无 UI 设置整个丢掉（回归：keys 过滤请求返回空）。
+// The payload walk uses orderedSettings() (the full registry, including
+// settings without UI metadata such as cycleOrder), NOT
+// createSettingsHost().entries — the host table only carries rows with
+// ui.tab and would drop every unadorned setting (regression: a keys-filtered
+// request came back empty).
+export const settingsDisplayEntries = (): readonly AnySetting[] => orderedSettings();
+
+/** role 展示元数据投影：SDK getRoleInfo 的 UI 子集（section/accepts 是 TUI
+ * 模型浏览器内部字段，不进 wire）。 */
+/** Role display metadata projection: the UI subset of SDK getRoleInfo
+ * (section/accepts are TUI model-browser internals, not wire fields). */
+export interface ModelRoleMeta {
+  tag?: string;
+  name: string;
+  color?: string;
+  hidden?: boolean;
+}
 
 /**
  * 本模块对外暴露的 omp-parity capability key：协调者在 omp-parity.js 的
@@ -333,12 +457,33 @@ export const createSettingsStore = async (
  * 多模型 role 值（SDK loader 逗号拼接）只报告首个主选择器；空串或
  * 不可解析时返回 null。
  */
+// 18.11.x 把旧 parseModelString 挪进了 pi-tui（model-selector），不是我们的
+// 直接依赖，按原语义本地移植：首个 '/' 前是 provider；尾部 ":level" 视为
+// thinking 档位（含 max 别名；无字面量模型查表，我们的调用方从未传过）。
+// 18.11.x moved the old parseModelString into pi-tui (model-selector), not a
+// direct dependency — ported verbatim: provider before the first '/', a
+// trailing ":level" counts as a thinking level (incl. the max alias; no
+// literal-model lookup, which our callers never passed).
+const parseModelSelector = (
+  selector: string,
+): { provider: string; id: string; thinkingLevel?: string } | undefined => {
+  const slashIdx = selector.indexOf('/');
+  if (slashIdx <= 0) return undefined;
+  const id = selector.slice(slashIdx + 1);
+  const provider = selector.slice(0, slashIdx);
+  const colonIdx = id.lastIndexOf(':');
+  if (colonIdx > 0 && colonIdx < id.length - 1) {
+    return { provider, id: id.slice(0, colonIdx), thinkingLevel: id.slice(colonIdx + 1) };
+  }
+  return { provider, id };
+};
+
 const parseRoleModelValue = (value: string) => {
   if (value === '') return null;
   // Multi-model role values (comma-joined by the SDK's loader) report the
   // primary selector; the full configured string is echoed as `configured`.
   const primary = value.split(',')[0];
-  const parsed = parseModelString(primary);
+  const parsed = parseModelSelector(primary);
   if (!parsed) return null;
   return parsed;
 };
@@ -429,17 +574,17 @@ export interface ModelsPayload {
   /** 每个 role 的条目；未配置的 role 映射为 null。 */
   roles: Record<string, ModelRoleEntry | null>;
   /** role 展示元数据（名称/标签/颜色/hidden）。 */
-  roleMeta: Record<string, ModelRoleInfo>;
+  roleMeta: Record<string, ModelRoleMeta>;
   /** cycleOrder 设置值（角色循环顺序）。 */
-  cycleOrder: SettingValue<'cycleOrder'>;
+  cycleOrder: SettingValue<typeof cfgCycleOrder>;
   /** enabledModels 设置值（启用模型列表）。 */
-  enabledModels: SettingValue<'enabledModels'>;
+  enabledModels: SettingValue<typeof cfgEnabledModels>;
   /** 重试回退链（getRetryFallbackChains 的解析结果）。 */
   fallbackChains: RetryFallbackChains;
   /** modelRoleStorage 设置值：role 写入 project 层还是 global 层。 */
-  modelRoleStorage: SettingValue<'modelRoleStorage'>;
+  modelRoleStorage: SettingValue<typeof cfgModelRoleStorage>;
   /** 默认 thinking 档位设置值。 */
-  defaultThinkingLevel: SettingValue<'defaultThinkingLevel'>;
+  defaultThinkingLevel: SettingValue<typeof cfgDefaultThinkingLevel>;
   /** OMPChamber 遗留 defaultModel 探测结果；无则为 null。 */
   legacyDefaults: LegacyDefaultModel | null;
 }
@@ -491,7 +636,7 @@ export const buildModelsPayload = (
   { legacyDefaults = null, models = null }: BuildModelsOptions = {},
 ): ModelsPayload => {
   const roles: Record<string, ModelRoleEntry | null> = {};
-  const roleMeta: Record<string, ModelRoleInfo> = {};
+  const roleMeta: Record<string, ModelRoleMeta> = {};
   for (const role of getKnownRoleIds(settings)) {
     const configured = settings.getModelRole(role) ?? null;
     const parsed = configured ? parseRoleModelValue(configured) : null;
@@ -518,11 +663,11 @@ export const buildModelsPayload = (
     ...(models ? { models: models.map(projectModelThinking) } : {}),
     roles,
     roleMeta,
-    cycleOrder: settings.get('cycleOrder'),
-    enabledModels: settings.get('enabledModels'),
+    cycleOrder: cfgCycleOrder.get(settings),
+    enabledModels: cfgEnabledModels.get(settings),
     fallbackChains: getRetryFallbackChains(settings),
-    modelRoleStorage: settings.get('modelRoleStorage'),
-    defaultThinkingLevel: settings.get('defaultThinkingLevel'),
+    modelRoleStorage: cfgModelRoleStorage.get(settings),
+    defaultThinkingLevel: cfgDefaultThinkingLevel.get(settings),
     legacyDefaults,
   };
 };
@@ -616,7 +761,7 @@ export const importLegacyDefaultModel = async (settings: Settings, selector: str
   if (!parsed || !parsed.provider || !parsed.id) {
     return { imported: false, reason: 'invalid-selector' };
   }
-  const scope = settings.get('modelRoleStorage') === 'project' ? 'project' : 'global';
+  const scope = cfgModelRoleStorage.get(settings) === 'project' ? 'project' : 'global';
   if (scope === 'project') {
     settings.setProjectModelRole('default', selector);
   } else {
@@ -668,13 +813,13 @@ interface ConditionEvaluatorTable {
  */
 const CONDITION_EVALUATORS: ConditionEvaluatorTable = {
   hasImageProtocol: () => false,
-  advisorEnabled: (s) => s.get('advisor.enabled') === true,
-  hindsightActive: (s) => s.get('memory.backend') === 'hindsight',
-  mnemopiActive: (s) => s.get('memory.backend') === 'mnemopi',
-  autolearnActive: (s) => s.get('autolearn.enabled') === true,
-  autoThinkingActive: (s) => s.get('defaultThinkingLevel') === 'auto',
-  usageAwareFallbackEnabled: (s) => s.get('retry.usageAwareFallback') === true,
-  planModeEnabled: (s) => Boolean(s.get('plan.enabled')),
+  advisorEnabled: (s) => cfgAdvisorEnabled.get(s) === true,
+  hindsightActive: (s) => cfgMemoryBackend.get(s) === 'hindsight',
+  mnemopiActive: (s) => cfgMemoryBackend.get(s) === 'mnemopi',
+  autolearnActive: (s) => cfgAutolearnEnabled.get(s) === true,
+  autoThinkingActive: (s) => cfgDefaultThinkingLevel.get(s) === 'auto',
+  usageAwareFallbackEnabled: (s) => cfgRetryUsageAwareFallback.get(s) === true,
+  planModeEnabled: (s) => Boolean(cfgPlanEnabled.get(s)),
 };
 
 /**
@@ -705,8 +850,8 @@ const uiProjection = (ui: AnyUiMetadata | undefined): UiProjection | undefined =
  * 'terminal-capability'；排除 tab 或命中排除前缀（豁免名单除外）→
  * 'terminal-only'；其余返回 null（Web 可编辑）。
  */
-const exclusionFor = (keyPath: SettingPath): 'terminal-only' | 'terminal-capability' | null => {
-  const ui = getUi(keyPath);
+const exclusionFor = (keyPath: string): 'terminal-only' | 'terminal-capability' | null => {
+  const ui = lookup(keyPath)?.ui;
   // Most specific marker first: the hasImageProtocol condition is a terminal
   // capability the web never has (06 §5.2 → excluded:"terminal-capability").
   if (ui?.condition === 'hasImageProtocol') return 'terminal-capability';
@@ -720,7 +865,18 @@ const exclusionFor = (keyPath: SettingPath): 'terminal-only' | 'terminal-capabil
 /** 把 schema 设置值渲染到 JSON 线上：JSON 没有 undefined，缺失一律变 null，其余原样通过。 */
 /** Render a schema setting value onto the JSON wire: JSON has no undefined,
  * so absent becomes null and everything else passes through unchanged. */
-const jsonValue = (value: SettingValue<SettingPath>): JsonValue => (value === undefined ? null : value);
+// 18.11.x 注册表值的类型面是 unknown；但设置值的定义域是
+// boolean/string/number/enum/array/record（DefinitionValue），YAML 层加载
+// 出来的也全是 JSON 值——本边界声明该契约。
+// 18.11.x registry values are typed unknown; the setting definition domain is
+// boolean/string/number/enum/array/record (DefinitionValue) and YAML-loaded
+// layers are JSON values — this boundary states that contract.
+const jsonValue = <Value,>(value: Value): JsonValue => {
+  if (value === undefined) return null;
+  // SAFETY: registry-typed setting values are JSON-shaped by construction
+  // (definitions only allow JSON-valued types; layers load from YAML).
+  return value as JsonValue;
+};
 
 /** 设置载荷条目携带的 UI 元数据投影（06 §5.2）。 */
 /** UI metadata projection carried on settings payload entries (06 §5.2). */
@@ -832,32 +988,43 @@ export const buildSettingsPayload = (
 ): SettingsPayload => {
   const wanted = keys && keys.length > 0 ? new Set(keys) : null;
   const entries: Record<string, SettingsPayloadEntry> = {};
-  // SAFETY: Object.keys returns SETTINGS_SCHEMA's own enumerable keys,
-  // which are exactly its declared SettingPath entries.
-  for (const keyPath of Object.keys(SETTINGS_SCHEMA) as SettingPath[]) {
+  // 18.11.x：条目来自 settings-host 的注册表展示表；每条 path 都是已注册
+  // 设置，layered/isConfigured 按句柄在该目录实例上求值。
+  // 18.11.x: entries come from the settings-host registry display table; every
+  // path is a registered setting, and layered/isConfigured evaluate by handle
+  // on this directory's instance.
+  for (const setting of settingsDisplayEntries()) {
+    const keyPath = setting.id;
     if (wanted && !wanted.has(keyPath)) continue;
     if (keyPath === 'modelRoles') continue; // special record view below
-    const credential = isCredential(keyPath);
+    const credential = setting.isCredential;
     const excluded = exclusionFor(keyPath);
-    const ui = getUi(keyPath);
+    const ui = setting.ui;
     let hidden = false;
     if (ui?.condition && !excluded) {
       const evaluate = CONDITION_EVALUATORS[ui.condition];
       hidden = evaluate ? !evaluate(settings) : false;
     }
-    entries[keyPath] = {
-      type: getType(keyPath),
-      ...(() => { const values = getEnumValues(keyPath); return values ? { values: [...values] } : {}; })(),
-      default: credential ? null : jsonValue(getDefault(keyPath)),
-      value: credential ? null : jsonValue(settings.get(keyPath)),
-      configured: settings.isConfigured(keyPath),
+    // SAFETY: registry definition types map one-to-one onto the wire's type
+    // tag union (boolean/string/number/enum/array/record).
+    const row: SettingsPayloadEntry = {
+      type: setting.type as SettingsPayloadEntry['type'],
+      default: credential ? null : jsonValue(setting.default),
+      value: credential ? null : jsonValue(setting.layered(settings)),
+      configured: settings.isConfigured(setting),
       scope: 'global',
       editable: !excluded && !hidden,
-      ...(credential ? { credential: true, writeOnly: true } : {}),
-      ...(uiProjection(ui) ? { ui: uiProjection(ui) } : {}),
-      ...(excluded ? { excluded } : {}),
-      ...(hidden ? { hidden: true } : {}),
     };
+    if (setting.enumValues) row.values = [...setting.enumValues];
+    if (credential) {
+      row.credential = true;
+      row.writeOnly = true;
+    }
+    const projectedUi = uiProjection(ui);
+    if (projectedUi) row.ui = projectedUi;
+    if (excluded) row.excluded = excluded;
+    if (hidden) row.hidden = true;
+    entries[keyPath] = row;
   }
   if (!wanted || wanted.has('modelRoles')) {
     const roles: Record<string, ModelRoleValueView> = {};
@@ -872,7 +1039,7 @@ export const buildSettingsPayload = (
       type: 'record',
       value: { ...settings.getModelRoles() },
       roles,
-      modelRoleStorage: settings.get('modelRoleStorage'),
+      modelRoleStorage: cfgModelRoleStorage.get(settings),
       scope: 'global+project',
     };
   }
@@ -883,10 +1050,10 @@ export const buildSettingsPayload = (
     globalConfigPath: path.join(settings.getAgentDir(), 'config.yml'),
     projectConfigPath: path.join(settings.getCwd(), '.omp', 'config.yml'),
     revision,
-    tabs: SETTING_TABS.map((id) => ({
+    tabs: SETTING_TABS.map(({ id, label, groups }) => ({
       id,
-      label: TAB_METADATA[id].label,
-      groups: [...TAB_GROUPS[id]],
+      label,
+      groups: [...groups],
     })),
     keys: entries,
   };
@@ -907,19 +1074,19 @@ const isModelRoleKey = (key: string): boolean =>
 const validModelRoleName = (role: string): boolean => role.length > 0 && !role.includes('.');
 
 /**
- * 按 SETTINGS_SCHEMA 校验单个提交值：null 恒合法（表示清除）；
+ * 按注册表句柄校验单个提交值：null 恒合法（表示清除）；
  * 凭据键只收字符串；其余按 schema 类型（enum/boolean/number/string/
  * array/record）核对形状。返回拒绝原因字符串，通过时返回 null。
  */
-const validateSettingValue = (keyPath: SettingPath, value: JsonValue): string | null => {
+const validateSettingValue = (setting: AnySetting, value: JsonValue): string | null => {
   if (value === null) return null; // null always means "clear"
-  if (isCredential(keyPath)) {
+  if (setting.isCredential) {
     return typeof value === 'string' ? null : 'invalid-type';
   }
-  const type = getType(keyPath);
+  const type = setting.type;
   switch (type) {
     case 'enum': {
-      const values = getEnumValues(keyPath);
+      const values = setting.enumValues;
       return values && !values.some((entryValue) => entryValue === value) ? 'invalid-value' : null;
     }
     case 'boolean':
@@ -1003,7 +1170,7 @@ type SettingsPlanItem =
   // role 写入：value 为新选择器字符串，null 表示清除该 role。
   | { kind: 'role'; key: string; role: string; value: string | null }
   // 普通设置写入：clearing 标记空串（仅凭据键）与 null 的清除语义。
-  | { kind: 'setting'; key: SettingPath; value: JsonValue | undefined; clearing: boolean };
+  | { kind: 'setting'; key: string; setting: AnySetting; value: JsonValue | undefined; clearing: boolean };
 
 
 /**
@@ -1017,7 +1184,7 @@ type SettingsPlanItem =
 /**
  * Apply a PUT /omp/settings request.
  *
- * Validation (rule 1): every key must exist in SETTINGS_SCHEMA (special
+ * Validation (rule 1): every key must be a registered setting (special
  * `modelRoles.<role>` syntax for per-role writes; the bare `modelRoles`
  * record is rejected — the SDK merges roles per-key, whole-record writes
  * would clobber sibling roles). Rejected entries carry key + reason only,
@@ -1078,14 +1245,12 @@ export const applySettingsChanges = async (
       }
       continue;
     }
-    if (!(key in SETTINGS_SCHEMA)) {
+    const setting = lookup(key);
+    if (!setting) {
       rejected.push({ key, reason: 'unknown' });
       continue;
     }
-    // SAFETY: the `in` guard above proved `key` is one of SETTINGS_SCHEMA's
-    // declared keys — this single bridge covers every SettingPath use below.
-    const settingKey = key as SettingPath;
-    if (exclusionFor(settingKey)) {
+    if (exclusionFor(key)) {
       rejected.push({ key, reason: 'not-editable' });
       continue;
     }
@@ -1093,15 +1258,15 @@ export const applySettingsChanges = async (
       rejected.push({ key, reason: 'project-scope-model-roles-only' });
       continue;
     }
-    const reason = validateSettingValue(settingKey, value);
+    const reason = validateSettingValue(setting, value);
     if (reason) {
       rejected.push({ key, reason });
       continue;
     }
     // TUI text-editor convention (settings-selector): an empty string on a
     // credential key clears it; null clears any key.
-    const clearing = value === null || (value === '' && isCredential(settingKey));
-    plan.push({ kind: 'setting', key: settingKey, value: clearing ? undefined : value, clearing });
+    const clearing = value === null || (value === '' && setting.isCredential);
+    plan.push({ kind: 'setting', key, setting, value: clearing ? undefined : value, clearing });
   }
   if (rejected.length > 0) {
     return { status: 400, body: { error: 'validation', rejected } };
@@ -1139,12 +1304,12 @@ export const applySettingsChanges = async (
         } else {
           // SAFETY: validateSettingValue cleared this key's value shape
           // before it entered the plan, so the wire value already satisfies
-          // the schema type Settings.set demands for this path.
-          target.set(item.key, item.value as SettingValue<SettingPath>);
-          if (isCredential(item.key)) {
-            appliedNow[item.key] = { configured: target.isConfigured(item.key) };
+          // what the registry handle's set demands for this path.
+          item.setting.set(target, item.value);
+          if (item.setting.isCredential) {
+            appliedNow[item.key] = { configured: target.isConfigured(item.setting) };
           } else {
-            appliedNow[item.key] = jsonValue(target.get(item.key));
+            appliedNow[item.key] = jsonValue(item.setting.layered(target));
           }
         }
       }

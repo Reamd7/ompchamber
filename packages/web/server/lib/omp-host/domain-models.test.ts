@@ -17,9 +17,18 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Settings, VERSION } from '@oh-my-pi/pi-coding-agent';
+import { SETTING_TABS, settingsDisplayEntries } from './domain-models.ts';
 import {
-  SETTING_TABS,
-} from '@oh-my-pi/pi-coding-agent/config/settings';
+  cfgCycleOrder,
+  cfgEnabledModels,
+  cfgModelRoleStorage,
+  cfgModelTags,
+} from '@oh-my-pi/pi-coding-agent/config/model-settings';
+import { cfgDefaultThinkingLevel } from '@oh-my-pi/pi-coding-agent/session/settings';
+import {
+  cfgAutoResume,
+} from '@oh-my-pi/pi-coding-agent/modes/settings';
+import { cfgRetryFallbackChains } from '@oh-my-pi/pi-coding-agent/session/settings';
 import {
   createSettingsStore,
   buildModelsPayload,
@@ -165,10 +174,10 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
     try {
       boot.setModelRole('default', 'prov/m1:high');
       boot.setModelRole('smol', 'prov/small');
-      boot.set('cycleOrder', ['smol', 'default', 'slow', 'custom1']);
-      boot.set('enabledModels', ['prov/m1']);
-      boot.set('retry.fallbackChains', { default: ['prov/f1'] });
-      boot.set('modelTags', { custom1: { name: 'Custom One' } });
+      cfgCycleOrder.set(boot, ['smol', 'default', 'slow', 'custom1']);
+      cfgEnabledModels.set(boot, ['prov/m1']);
+      cfgRetryFallbackChains.set(boot, { default: ['prov/f1'] });
+      cfgModelTags.set(boot, { custom1: { name: 'Custom One' } });
       await boot.flush();
 
       const legacy = { defaultModel: 'oc/legacy', defaultProvider: 'oc' };
@@ -202,7 +211,9 @@ describe('buildModelsPayload (01 §5.3(1))', () => {
       expect(payload.modelRoleStorage).toBe('global');
       // SAFETY: Effort is a const enum — its string literal is not directly
       // assignable to the nominal enum type, but the wire value IS the literal.
-      expect(payload.defaultThinkingLevel).toBe('high' as SettingValue<'defaultThinkingLevel'>);
+      // SAFETY: Effort is a const enum — its string literal is not directly
+      // assignable to the nominal enum type, but the wire value IS the literal.
+      expect(payload.defaultThinkingLevel).toBe('high' as SettingValue<typeof cfgDefaultThinkingLevel>);
       expect(payload.legacyDefaults).toBe(legacy);
     } finally {
       await disarm(env);
@@ -387,22 +398,22 @@ describe('PUT /omp/settings write routing (06 §5.3, R6)', () => {
         changes: { autoResume: true },
       });
       expect(result.status).toBe(200);
-      expect(boot.get('autoResume')).toBe(true);
-      expect(boot.isConfigured('autoResume')).toBe(true);
+      expect(cfgAutoResume.get(boot)).toBe(true);
+      expect(boot.isConfigured(cfgAutoResume)).toBe(true);
       // Persisted in the boot/global config, not the project file.
       expect(readGlobalConfig(agentDir)).toContain('autoResume: true');
       expect(readProjectConfig(dirB)).toBeNull();
 
       // Registered caveat (06 §5.1.7b): a live holder keeps the pre-write
       // snapshot (its instance object is not mutated by the global write)…
-      expect(before.get('autoResume')).toBe(false);
+      expect(cfgAutoResume.get(before)).toBe(false);
       // …but the store's cached clone was invalidated, so the directory's
       // NEXT derivation (the roles editor's read-after-write, a new
       // session's injected settings) observes the write without any
       // explicit disposeAll.
       const after = await store.settingsFor(dirB);
       expect(after).not.toBe(before);
-      expect(after.get('autoResume')).toBe(true);
+      expect(cfgAutoResume.get(after)).toBe(true);
     } finally {
       await disarm(env);
     }
@@ -567,7 +578,7 @@ describe('legacy defaultModel migration (01 §5.8, R12)', () => {
     const { store, dirB, boot } = env;
     try {
       const keyed = await store.settingsFor(dirB);
-      keyed.override('modelRoleStorage', 'project');
+      cfgModelRoleStorage.override(keyed, 'project');
       const imported = await importLegacyDefaultModel(keyed, 'prov/project-legacy');
       expect(imported.imported).toBe(true);
       expect(imported.scope).toBe('project');
@@ -787,6 +798,47 @@ describe('route mounting', () => {
       expect(published.at(-1)?.type).toBe('omp.settings.updated');
     } finally {
       await disarm(env);
+    }
+  });
+});
+
+describe('settings tab mirror (bump-guard)', () => {
+  // SETTING_TABS 是 pi-tui SETTING_TABS/TAB_METADATA/TAB_GROUPS 的本地镜像
+  // （pi-tui 不是直接依赖）。SDK bump 后新增/改名 tab 或分组时，这里第一个
+  // 失败，强制维护者更新镜像表（与 worker-dispatch 的 selector pin 同一哲学）。
+  test('every registry ui tab/group is covered by the SETTING_TABS mirror', () => {
+    const tabs = new Map(SETTING_TABS.map((tab) => [tab.id, tab]));
+    const tabById: Record<string, { id: string; label: string; groups: readonly string[] }> = Object.fromEntries(
+      SETTING_TABS.map((tab) => [tab.id, tab]),
+    );
+    expect(SETTING_TABS.length).toBeGreaterThan(0);
+    let withUi = 0;
+    for (const setting of settingsDisplayEntries()) {
+      const ui = setting.ui;
+      if (!ui) continue;
+      withUi += 1;
+      const tab = tabById[ui.tab];
+      // Unknown tab id: the SDK added/renamed a tab — extend SETTING_TABS.
+      expect(tab).toBeDefined();
+      if (!tab) continue;
+      // Ungrouped settings render before any heading, so only declared
+      // groups must be listed; an unlisted group breaks the settings page's
+      // section rendering.
+      if (ui.group !== undefined) {
+        expect(tab.groups).toContain(ui.group);
+      }
+    }
+    // Sanity: the registry must actually carry UI metadata for this guard
+    // to mean anything (createSettingsHost-style rows exist).
+    expect(withUi).toBeGreaterThan(0);
+    // Every mirrored tab should still exist in the registry (a stale mirror
+    // entry renders an empty settings tab).
+    const seen = new Set<string>();
+    for (const setting of settingsDisplayEntries()) {
+      if (setting.ui) seen.add(setting.ui.tab);
+    }
+    for (const tab of SETTING_TABS) {
+      expect(seen.has(tab.id)).toBe(true);
     }
   });
 });

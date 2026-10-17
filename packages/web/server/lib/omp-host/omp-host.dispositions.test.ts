@@ -5,7 +5,7 @@
  * SDK 经 mock.module 替换为最小假件，引擎本身走真实代码路径。
  */
 import { describe, test, expect, mock, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { AgentSession } from '@oh-my-pi/pi-coding-agent';
@@ -22,6 +22,17 @@ type SdkMessage = AgentSession['messages'][number];
 
 /** 一次性 agent 根目录（afterAll 删除）。 */
 const agentDir = mkdtempSync(path.join(tmpdir(), 'omp-dispositions-'));
+
+// 18.11.x 的 buildSkillPromptMessage 会读取 skill.filePath 的真实文件；
+// 假会话的技能列表指向一次性目录里的一份真 SKILL.md。
+// 18.11.x buildSkillPromptMessage reads the skill's filePath from disk; the
+// fake session's skill list points at a real SKILL.md in a throwaway dir.
+const skillDir = path.join(agentDir, 'skills', 'find-skills');
+mkdirSync(skillDir, { recursive: true });
+writeFileSync(
+  path.join(skillDir, 'SKILL.md'),
+  '---\nname: find-skills\ndescription: Find matching skills\n---\nSearch the skill library.\n',
+);
 /** 假会话 jsonl 文件所在的 sessions 目录。 */
 const sessionDir = path.join(agentDir, 'sessions');
 
@@ -58,7 +69,7 @@ const makeFakeSession = (id: string) => {
       return true;
     },
     skillsSettings: { enableSkillCommands: true },
-    skills: [{ name: 'find-skills', filePath: 'C:/Users/reamd/.agents/skills/find-skills/SKILL.md', baseDir: 'C:/Users/reamd/.agents/skills/find-skills' }],
+    skills: [{ name: 'find-skills', filePath: path.join(skillDir, 'SKILL.md'), baseDir: skillDir }],
     promptCustomMessage: async () => true,
   };
   return session;

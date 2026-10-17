@@ -174,8 +174,22 @@ const WORKER_DISPATCH = {
     kind: 'env-server', module: `${SDK}/blob-broker/server`, starter: 'startBlobBrokerFromEnvironment',
     load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/blob-broker/server')),
   },
+  '__omp_worker_ida_host': {
+    kind: 'env-server', module: `${SDK}/ida/host`, starter: 'startIdaHostFromEnvironment',
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/ida/host')),
+  },
+  '__omp_worker_mnemopi_embed_server': {
+    kind: 'env-server', module: `${SDK}/mnemopi/embed-server`, starter: 'startMnemopiEmbedServerFromEnvironment',
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/mnemopi/embed-server')),
+  },
+  '__omp_worker_text_predict': {
+    kind: 'env-server', module: `${SDK}/predict/daemon`, starter: 'startTextPredictDaemonFromEnvironment',
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/predict/daemon')),
+  },
   '__omp_worker_tiny_inference': {
-    kind: 'ipc-worker', module: `${SDK}/tiny/worker`, starter: 'startTinyTitleWorker',
+    // 18.11.x: the tiny worker wires itself from OMP_* env (own server loop),
+    // no longer a transport-handed IPC worker.
+    kind: 'self-runner', module: `${SDK}/tiny/worker`, starter: 'startTinyWorkerFromEnvironment',
     load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/tiny/worker')),
   },
   '__omp_worker_stt': {
@@ -189,6 +203,10 @@ const WORKER_DISPATCH = {
   '__omp_worker_mnemopi_embed': {
     kind: 'ipc-worker', module: `${SDK}/mnemopi/embed-worker`, starter: 'startMnemopiEmbedWorker',
     load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/mnemopi/embed-worker')),
+  },
+  '__omp_worker_stats_activity': {
+    kind: 'ipc-worker', module: `${SDK}/stats/activity-worker`, starter: 'startStatsActivityWorker',
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/stats/activity-worker')),
   },
   '__omp_worker_js_eval_process': {
     kind: 'ipc-worker', module: `${SDK}/eval/js/process-entry`, starter: 'startJsEvalProcess',
@@ -214,6 +232,10 @@ const WORKER_DISPATCH = {
   '__omp_worker_terminal_output': {
     kind: 'unsupported',
     reason: 'terminal output worker is a worker_threads entry and cannot run as a subprocess',
+  },
+  '__omp_worker_parent_watchdog': {
+    kind: 'unsupported',
+    reason: 'parent watchdog is a worker_threads entry and cannot run as a subprocess',
   },
   'browser-relay': {
     kind: 'unsupported',
@@ -408,7 +430,9 @@ export const runWorkerDispatch = async (arg: string, deps: WorkerDispatchDeps = 
     return true;
   }
   if (entry.kind === 'self-runner') {
-    starter();
+    // Await: 18.11.x self-runners (tiny worker) are async and own the process
+    // lifetime; a floating rejection must surface here, not in the void.
+    await starter();
     return true;
   }
   await ipcWorker(

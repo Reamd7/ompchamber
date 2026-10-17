@@ -520,7 +520,7 @@ describe('coverage CI guard (scripts/check-event-coverage.mjs)', () => {
 
   test('passes on the current tree', () => {
     const stdout = execFileSync('node', [guard, '--skip-name-scan'], { encoding: 'utf8' });
-    expect(stdout).toMatch(/OK — 24 SDK members covered/);
+    expect(stdout).toMatch(/OK — 29 SDK members covered/);
   });
 
   test('fails when the SDK union grows an unregistered member', () => {

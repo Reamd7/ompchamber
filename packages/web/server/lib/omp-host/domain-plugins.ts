@@ -41,6 +41,7 @@ import {
 } from '@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace';
 import { errorText, errorCode, featureUnavailable, ompFeatures } from './omp-parity.ts';
 import type { InstalledPlugin, PluginFeature, PluginManifest, PluginSettingType, ProjectPluginOverrides, ScopedInstalledPlugin } from '@oh-my-pi/pi-coding-agent/extensibility/plugins';
+import { cfgDisabledExtensions, cfgExtensions } from '@oh-my-pi/pi-coding-agent/extensibility/settings';
 
 /** 插件来源类别：npm 包安装或 marketplace 引用安装。 */
 type PluginKind = 'npm' | 'marketplace';
@@ -635,8 +636,8 @@ const settingsExtensionPaths = async (directory: string): Promise<{ configured: 
   try {
     const settings = await Settings.loadReadOnly({ cwd: directory, agentDir: getAgentDir() });
     return {
-      configured: settings.get('extensions') ?? [],
-      disabled: settings.get('disabledExtensions') ?? [],
+      configured: cfgExtensions.get(settings) ?? [],
+      disabled: cfgDisabledExtensions.get(settings) ?? [],
     };
   } catch {
     return { configured: [], disabled: [] };

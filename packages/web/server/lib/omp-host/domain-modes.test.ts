@@ -465,7 +465,9 @@ describe('agent-definitions CRUD (spec 02 §5.2 — discovery chain + .md storag
       systemPrompt: 'Be thorough.',
       model: ['@smol'],
       thinkingLevel: 'medium',
-      tools: ['read', 'yield'],
+      // 18.11.x: parseAgentFields no longer auto-injects the `yield` tool
+      // (it is now gated by the agent `structured` frontmatter flag).
+      tools: ['read'],
       spawns: '*',
       prewalk: true,
       advisor: '@slow:high',

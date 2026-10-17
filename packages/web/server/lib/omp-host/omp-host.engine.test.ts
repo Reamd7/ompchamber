@@ -191,6 +191,20 @@ mock.module('@oh-my-pi/pi-coding-agent', () => ({
       this.#emit({ type: 'registered', ref });
       return ref;
     }
+    // 18.11.x CAS 语义：id 空闲（expected=null）才登记；或精确复用被授权
+    // 复活的 parked 无会话 ref（真实 agent-registry.registerIfAvailable 的
+    // mock 镜像——延迟复活者不得认领已被替换/终结的 id）。
+    // 18.11.x CAS semantics (mock mirror of agent-registry.registerIfAvailable):
+    // register only when the id is absent (expected=null), or revive the exact
+    // detached parked ref a revival was authorized for.
+    registerIfAvailable(
+      input: Omit<MockRegistryRef, 'status' | 'session'> & Partial<Pick<MockRegistryRef, 'status' | 'session'>>,
+      expected: MockRegistryRef | null,
+    ) {
+      const current = this.#refs.get(input.id);
+      if (expected === null) return current ? undefined : this.register(input);
+      return current === expected && current.status === 'parked' && !current.session ? current : undefined;
+    }
     // 合并写入 history；expectedSessionFile 不匹配时拒绝（返回 false）。
     setHistory(id: string, history: MockRegistryHistory, expectedSessionFile?: string) {
       const ref = this.#refs.get(id);

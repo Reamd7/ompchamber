@@ -140,5 +140,25 @@
     "ompEvents": [
       "omp.goal.updated"
     ]
+  },
+  "cache_warming_start": {
+    "track": "ignore",
+    "note": "provider cache prewarm progress (18.11.x); TUI-only surface, no web consumer yet"
+  },
+  "cache_warming_end": {
+    "track": "ignore",
+    "note": "provider cache prewarm outcome (18.11.x); same reasoning as cache_warming_start"
+  },
+  "config_warnings_changed": {
+    "track": "ignore",
+    "note": "settings-registry validation warnings snapshot (18.11.x); surfaced by the TUI status line, no web consumer yet"
+  },
+  "advisor_cost_changed": {
+    "track": "ignore",
+    "note": "advisor usage cost tally (18.11.x); TUI status line only, no web consumer yet"
+  },
+  "advisor_yielded": {
+    "track": "ignore",
+    "note": "advisor handed control back (18.11.x); turn/message events already settle the surface"
   }
 }

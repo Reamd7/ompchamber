@@ -19,9 +19,10 @@ import type { RejectionInterceptor } from '@oh-my-pi/pi-coding-agent/eval/js/wor
  */
 
 // Every selector the SDK CLI dispatches (pi-coding-agent src/cli.ts
-// runWorkerEntrypoint + the protocol constants: launch/protocol.ts,
-// lsp/mux/protocol.ts, blob-broker/protocol.ts, tools/computer/protocol.ts,
-// launch/terminal-output-worker-protocol.ts). A selector missing from our
+// runWorkerEntrypoint + src/cli/worker-selectors.ts bootstrap constants:
+// launch/protocol.ts, lsp/mux/protocol.ts, blob-broker/protocol.ts,
+// tools/computer/protocol.ts, ida/protocol.ts, predict/protocol.ts,
+// stats/activity-protocol.ts, subprocess/parent-watchdog.ts). A selector missing from our
 // table regresses to the zombie-host leak this module exists to prevent, so
 // the full list is asserted here to force a deliberate decision on bumps.
 /** SDK CLI 会派发的全部 worker 选择器清单（升级时强制显式决策）。 */
@@ -39,6 +40,11 @@ const SDK_SELECTORS = [
   '__omp_worker_blob_broker',
   '__omp_worker_computer',
   '__omp_worker_terminal_output',
+  '__omp_worker_parent_watchdog',
+  '__omp_worker_mnemopi_embed_server',
+  '__omp_worker_stats_activity',
+  '__omp_worker_ida_host',
+  '__omp_worker_text_predict',
 ];
 
 /** 选择器识别契约：保留前缀、browser-relay、全量显式处置与未知拒绝。 */
@@ -137,6 +143,17 @@ describe('worker-dispatch execution', () => {
     expect(dispatched).toBe(true);
     expect(starter).toHaveBeenCalledTimes(1);
     expect(starter.mock.calls[0]).toHaveLength(0);
+  });
+
+  test('async self-runners are awaited (tiny worker owns the process lifetime)', async () => {
+    let started: boolean | undefined;
+    const starter = mock(async () => {
+      started = true;
+    });
+    const loadModule = mock(async () => ({ startTinyWorkerFromEnvironment: starter }));
+    const dispatched = await runWorkerDispatch('__omp_worker_tiny_inference', { loadModule });
+    expect(dispatched).toBe(true);
+    expect(started).toBe(true);
   });
 
   test('unsupported selectors refuse to run instead of serving', async () => {
