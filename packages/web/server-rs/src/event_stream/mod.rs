@@ -2,12 +2,13 @@
 //! reader, bridges) plus `server/lib/opencode/watcher.js` and
 //! `session-runtime.js`.
 //!
-//! Browser contract note: the JS module exposes the message streams over
-//! WebSocket (`/api/global/event/ws`, `/api/event/ws`). axum's `ws` feature
-//! is not enabled in this crate, so the same paths and frame protocol are
-//! served over SSE — each WS frame (`{ type: 'event' | 'ready' | 'resync' |
-//! 'error', … }`) becomes one SSE `data:` line, with the SSE `id:` field set
-//! whenever the frame carries an `eventId`.
+//! Browser contract note: the message streams serve both transports on the
+//! same paths — a browser requesting a WebSocket upgrade on
+//! `/api/global/event/ws` / `/api/event/ws` gets a real socket (one text
+//! message per frame, plus heartbeat frames), and plain GETs receive the
+//! same frame protocol over SSE — each frame (`{ type: 'event' | 'ready' |
+//! 'resync' | 'error', … }`) becomes one SSE `data:` line, with the SSE
+//! `id:` field set whenever the frame carries an `eventId`.
 //!
 //! Fan-out contract (shared with the proxy module): raw engine events stay
 //! on the [`GlobalHub`] internal channels; the server-wide [`EventHub`]

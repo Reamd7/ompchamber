@@ -57,6 +57,7 @@ pub struct RouterContext {
 - **路径归一/自愈**:`settings::normalization` 是唯一 owner —— `normalize_directory_path`(verbatim 剥离 + 重复盘符折叠 + `~`)、`path_resolve`、`safe_realpath`、`strip_verbatim_prefix`、`create_project_id_from_path`。各模块(fs_routes、git_service、opencode_plugins、projects 等)以再导出/委托复用;不得再建副本。
 - **Windows 真路径形态**:所有 canonicalize 出口都过 `strip_verbatim_prefix`(对齐 Node `realpathSync`);请求参数与持久化两侧走同一条自愈管线。
 - **进程管理**:unix 用信号;Windows 用 tasklist/taskkill(`cli/process.rs` 与 engine.rs 注释互引)。
+- **控制流事件送达**:`/api/ompchamber/events`(scheduled_tasks 拥有 SSE 客户端表)承载五类 UI 控制帧——`ompchamber:scheduled-task-ran` 由 `SseClients::publish_task_run_event` 直写;`ompchamber:worktrees-changed` / `ompchamber:session-created` / `ompchamber:agent-memory-changed` 由各模块发布到共享 `EventHub`,组合根(server_main.rs)经 `scheduled_tasks::routes::spawn_control_stream_bridge` 白名单转发进同一客户端表(对齐 JS index.js 直写 `uiOMPChamberEventClients` 的行为;`ompchamber:browser-control-request` 仍为 browser_control 模块记录的组合接缝)。高频 hub 帧(session-status、notification、opencode-event)不属于控制流,只走 message streams / 通知流各自的通道。
 
 ## 6. 完整端点清单(自动提取自 `.route()` 注册)
 

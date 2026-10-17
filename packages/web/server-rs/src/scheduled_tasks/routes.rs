@@ -13,7 +13,9 @@
 //! 中文说明：scheduled-tasks 的 axum 路由与 `/api/ompchamber/events`
 //! SSE 流。处理器只做参数校验与 JSON 形状组装，业务语义全部在
 //! `ScheduledTaskService`；SSE 客户端表由路由与运行时共享，任务运行
-//! 事件经 `SseClients::publish_task_run_event` 广播给所有连接。
+//! 事件经 `SseClients::publish_task_run_event` 广播给所有连接；领域帧
+//! （worktrees/session/agent-memory）由组合根经
+//! [`spawn_control_stream_bridge`] 从共享 EventHub 转入同一客户端表。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -119,6 +121,69 @@ impl SseClients {
     pub(crate) fn client_count(&self) -> usize {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
+}
+
+/// Event names the composition root forwards from the shared
+/// [`crate::hub::EventHub`] to the `/api/ompchamber/events` clients. These are
+/// the frames the JS server wrote directly to `uiOMPChamberEventClients`
+/// (index.js `emitSessionCreatedEvent` / `emitWorktreesChangedEvent` /
+/// `emitAgentMemoryChangedEvent`); the Rust modules publish them on the hub
+/// instead, so the bridge restores delivery.
+/// `ompchamber:scheduled-task-ran` already arrives through
+/// [`SseClients::publish_task_run_event`], and `ompchamber:browser-control-request`
+/// has no hub publisher yet (the seam recorded in the browser_control module).
+/// 中文说明：组合根从共享 EventHub 转发到 `/api/ompchamber/events` 客户端
+/// 的事件名集合——即 JS 端直接写给 `uiOMPChamberEventClients` 的领域帧；
+/// Rust 侧各模块发布到 hub，由本桥恢复送达。`ompchamber:scheduled-task-ran`
+/// 已有直写路径；`ompchamber:browser-control-request` 尚无 hub 发布方
+/// （browser_control 模块记录的接缝）。
+const CONTROL_STREAM_EVENT_NAMES: &[&str] = &[
+    "ompchamber:worktrees-changed",
+    "ompchamber:session-created",
+    "ompchamber:agent-memory-changed",
+];
+
+/// Subscribe the shared hub and forward the control-stream domain frames to
+/// every `/api/ompchamber/events` client. The receiver is created before the
+/// task spawns so no frame published after wiring is missed. Control frames
+/// are invalidation signals, not replayable state: a lagged bridge only logs —
+/// affected clients re-pull on their next trigger, exactly like a missed
+/// fs.watch event in the JS watcher.
+/// 中文说明：订阅共享 EventHub，把控制流领域帧转发给全部
+/// `/api/ompchamber/events` 客户端。接收端在任务 spawn 前创建，接线之后
+/// 发布的帧不会丢失。控制帧只是失效信号、不可重放：桥落后时仅告警，
+/// 受影响客户端按既有节奏重新拉取，与 JS 监听器漏掉一次 fs.watch 等价。
+pub fn spawn_control_stream_bridge(
+    hub: Arc<crate::hub::EventHub>,
+    clients: Arc<SseClients>,
+) -> tokio::task::JoinHandle<()> {
+    let mut receiver = hub.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match receiver.recv().await {
+                Ok(frame) => {
+                    if !CONTROL_STREAM_EVENT_NAMES.contains(&frame.event.as_str()) {
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(&frame.data) {
+                        Ok(payload) => clients.write_event(&payload),
+                        Err(error) => tracing::warn!(
+                            event = %frame.event,
+                            %error,
+                            "control-stream frame was not valid JSON; dropped"
+                        ),
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                    tracing::warn!(
+                        dropped,
+                        "ompchamber control-stream bridge lagged; clients re-pull on their next trigger"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 /// 各处理器共享的状态：任务服务与 SSE 客户端表。
@@ -657,5 +722,76 @@ mod tests {
         drop(rx2);
         clients.write_event(&json!({"type": "x"}));
         assert_eq!(clients.client_count(), 0);
+    }
+
+    /// 验证：组合根桥把 worktrees/session/agent-memory 领域帧转发给
+    /// `/api/ompchamber/events` 客户端，其它 hub 帧（如 session-status）
+    /// 被过滤在控制流之外。
+    #[tokio::test]
+    async fn control_stream_bridge_forwards_domain_frames_and_filters_others() {
+        let hub = crate::hub::EventHub::new();
+        let clients = SseClients::new();
+        let (_id, mut rx) = clients.register();
+        let bridge = super::spawn_control_stream_bridge(hub.clone(), clients.clone());
+
+        // High-frequency synthetic hub frame — must NOT reach the control stream.
+        hub.publish_json(
+            "ompchamber:session-status",
+            &json!({"type": "ompchamber:session-status", "properties": {}}),
+        );
+        hub.publish_json(
+            "ompchamber:worktrees-changed",
+            &json!({
+                "type": "ompchamber:worktrees-changed",
+                "properties": {"directories": ["C:\\repo\\main"]},
+            }),
+        );
+
+        let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("forwarded within 2s")
+            .expect("client channel open");
+        assert!(
+            frame.starts_with("data: {\"type\":\"ompchamber:worktrees-changed\""),
+            "{frame}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .is_err(),
+            "session-status must be filtered; no further frame expected"
+        );
+        bridge.abort();
+    }
+
+    /// 验证：桥对非 JSON 载荷只告警不转发、不中断——后续合法帧仍可送达。
+    #[tokio::test]
+    async fn control_stream_bridge_skips_malformed_payloads() {
+        let hub = crate::hub::EventHub::new();
+        let clients = SseClients::new();
+        let (_id, mut rx) = clients.register();
+        let bridge = super::spawn_control_stream_bridge(hub.clone(), clients.clone());
+
+        hub.publish("ompchamber:session-created", "not-json");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx.recv())
+                .await
+                .is_err(),
+            "malformed frame must not be forwarded"
+        );
+
+        hub.publish_json(
+            "ompchamber:session-created",
+            &json!({
+                "type": "ompchamber:session-created",
+                "properties": {"sessionId": "s1", "directory": "C:/repo"},
+            }),
+        );
+        let frame = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("frame after malformed one")
+            .expect("client channel open");
+        assert!(frame.contains("ompchamber:session-created"), "{frame}");
+        bridge.abort();
     }
 }

@@ -113,6 +113,14 @@ pub async fn run_server(options: RunServerOptions) -> anyhow::Result<()> {
     let sse_clients = scheduled_tasks::routes::SseClients::new();
     let (scheduler_runtime, scheduler_service) =
         scheduled_tasks::build_runtime(&ctx, Arc::clone(&sse_clients));
+    // Control-stream bridge (JS index.js wrote these domain frames directly to
+    // the /api/ompchamber/events clients; the Rust modules publish them on the
+    // shared EventHub): worktrees-changed / session-created / agent-memory-
+    // changed must reach the UI control stream, not only the message streams.
+    let _control_stream_bridge = scheduled_tasks::routes::spawn_control_stream_bridge(
+        Arc::clone(&hub),
+        Arc::clone(&sse_clients),
+    );
     if let Err(error) = scheduler_runtime.start().await {
         tracing::warn!("scheduled-task scheduler failed to start: {error}");
     }
