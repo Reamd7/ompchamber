@@ -1,0 +1,13 @@
+[tools]
+node = "22"       # engines.node >=22, .nvmrc lts/*
+bun = "1.3.14"    # packageManager pin in package.json
+zig = "0.15.2"    # ghostty-web submodule wasm build (CI pin, script requires >=0.15.2)
+rust = "stable"   # packages/web/server-rs, edition 2024 (needs >=1.85)
+
+# pnpm 不进 mise:仅 terminal-app 用(lockfileVersion 9.0 → pnpm@9),
+# 走 node 全局安装(npmmirror):mise exec node -- npm i -g pnpm@9
+
+[env]
+# rustup 走清华镜像(mise rust 后端 = rustup)
+RUSTUP_DIST_SERVER = "https://mirrors.tuna.tsinghua.edu.cn/rustup"
+RUSTUP_UPDATE_ROOT = "https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
