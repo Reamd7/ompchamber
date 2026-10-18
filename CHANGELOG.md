@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Chat: plan mode works now.** Switching to Plan previously only changed the composer badge — the model kept its full toolset, wrote files directly, and the plan-review dialog never appeared. Entering Plan now switches the engine into planning with read-only tools, shows the review dialog when the plan is ready, and approving it restores the tools and carries out the plan; a plan left pending across a restart can still be reviewed.
+- Chat: slash commands now send their arguments. Picking a custom command from the autocomplete sent only the bare command name, so the model received the command without its arguments and answered around them; commands are now rebuilt with their arguments before reaching the engine, skill shortcuts run as skills instead of being pasted as plain text, and the autocomplete no longer lists built-in engine commands the app cannot run.
+- Chat: the model can ask questions again. Sessions were created without the engine's ask tool, so a model trying to ask something reported it had no way to ask and carried on without you; every session now includes the tool and the question appears as a dialog whenever a window that can answer is there.
+
 - **Desktop: the app's backend is now a Rust server.** The desktop app spawns a compiled Rust server instead of running the JavaScript server in-process; downloads come as a default Rust build plus a legacy JavaScript variant. The package also stops carrying the workspace web bundle and a duplicated copy of the native modules, which makes the install roughly a gigabyte smaller.
 - **Windows: the desktop app and the server now run on Windows.** The Rust server builds natively for Windows, and the release pipeline produces Windows desktop packages.
 - **Releases now publish a standalone server binary.** A statically linked Linux build ships with every release alongside checksums, so self-hosting no longer requires Node.js.

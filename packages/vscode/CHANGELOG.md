@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- **Chat: plan mode works now.** Switching to Plan previously only changed the composer badge — the model kept its full toolset and wrote files directly, and the plan-review dialog never appeared. Entering Plan now switches the engine into planning with read-only tools, and approving the review dialog carries out the plan.
+- Chat: slash commands now send their arguments. Picking a custom command from the autocomplete sent only the bare command name, so the model received the command without its arguments and answered around them; commands are rebuilt with their arguments before reaching the engine, and the autocomplete no longer lists built-in engine commands the extension cannot run.
+- Chat: the model can ask questions again. Every session now includes the engine's ask tool, so a question the model wants to ask appears as a dialog in the chat panel instead of the model reporting it has no way to ask.
+
 - Chat: with model roles on, the model chip no longer ping-pongs between the locally persisted pick and the session's server-owned model until React gives up. The persisted agent is still restored; the model converges from the server.
 - Chat: jumping a long way through a long transcript no longer leaves the message column blank; once scrolling settles with nothing rendered, the list re-fills its range, and replies that lost their anchoring message render ungrouped instead of disappearing.
 
