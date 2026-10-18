@@ -27,6 +27,25 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 
+
+/**
+ * Download fetch implementation: under Electron prefer net.fetch — Node's
+ * undici fetch ignores http_proxy/HTTPS_PROXY env (mirror of the helper in
+ * bun-runtime.mjs, kept local because this module must stay standalone).
+ */
+const resolveDownloadFetch = async () => {
+  try {
+    const electron = await import('electron');
+    const netFetch = electron?.net?.fetch;
+    if (netFetch) {
+      return netFetch.bind(electron.net);
+    }
+  } catch {
+    // Not under Electron (tests): global fetch.
+  }
+  return fetch;
+};
+
 const brotliDecompressAsync = promisify(brotliDecompress);
 
 /** Flat `key: value` YAML subset parser (what stage-ompchamber-asar emits). */
@@ -84,7 +103,8 @@ export const checkAsarLayerUpdate = async ({ entryVersion, layerVersion, feedBas
   if (!layerVersion) return { channel: 'disabled' };
   let response;
   try {
-    response = await fetchImpl(`${feedBaseUrl}/asar.yml`, {
+    const doFetch = fetchImpl ?? (await resolveDownloadFetch());
+    response = await doFetch(`${feedBaseUrl}/asar.yml`, {
       redirect: 'follow',
       signal: AbortSignal.timeout(15_000),
     });
@@ -121,7 +141,7 @@ export const downloadAsarLayerUpdate = async ({
   publicKey,
   allowUnsigned = false,
   onProgress,
-  fetchImpl = fetch,
+  fetchImpl,
 }) => {
   fs.mkdirSync(updatesDir, { recursive: true });
   const tmpPath = path.join(updatesDir, 'ompchamber.asar.tmp');
@@ -132,7 +152,8 @@ export const downloadAsarLayerUpdate = async ({
     throw new Error('Update artifact is unsigned and unsigned updates are not allowed');
   }
 
-  const response = await fetchImpl(`${feedBaseUrl}/${manifest.file}`, { redirect: 'follow' });
+  const doFetch = fetchImpl ?? (await resolveDownloadFetch());
+  const response = await doFetch(`${feedBaseUrl}/${manifest.file}`, { redirect: 'follow' });
   if (!response.ok) throw new Error(`Layer download failed (HTTP ${response.status})`);
   const total = Number(response.headers.get('content-length') || 0);
   const hash = createHash('sha512');
