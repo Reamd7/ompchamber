@@ -453,13 +453,6 @@ jobs:
             bun run prepare:omp-host
             bun run verify:omp-host
           fi
-          # See the linux job: every rust build stages the baseline layer for
-          # its extraResources; the linux job owns the signed update artifact.
-          if [ "${{ matrix.backend }}" = "rust" ]; then
-            OMPCHAMBER_UPDATE_PUBLIC_KEY="${{ secrets.OMPCHAMBER_UPDATE_PUBLIC_KEY }}" \
-              OMPCHAMBER_BROTLI_QUALITY=4 \
-              bun run stage:ompchamber-asar
-          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -485,6 +478,15 @@ jobs:
       - name: Bundle main process
         working-directory: packages/electron
         run: bun run bundle:main
+
+      - name: Stage replaceable layer (rust)
+        if: ${{ matrix.backend == 'rust' }}
+        working-directory: packages/electron
+        shell: bash
+        env:
+          OMPCHAMBER_UPDATE_PUBLIC_KEY: ${{ secrets.OMPCHAMBER_UPDATE_PUBLIC_KEY }}
+          OMPCHAMBER_BROTLI_QUALITY: '4'
+        run: bun run stage:ompchamber-asar
 
       - name: Rebuild native modules
         working-directory: packages/electron
