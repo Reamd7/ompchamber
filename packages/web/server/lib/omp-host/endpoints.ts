@@ -667,6 +667,8 @@ export interface SessionPromptBody extends WirePromptBody {
   delivery?: string;
   /** command 路由的斜杠命令文本。 */
   command?: string;
+  /** command 路由的斜杠命令参数（OpenCode wire：名字不带斜杠，参数为独立字符串）。 */
+  arguments?: string;
 }
 
 /** JSON body of POST /session/{sessionID}/revert. */
@@ -976,18 +978,34 @@ export const registerEndpoints = (route: RouteMount, engine: OmpHostEngine, { ve
   route('POST', '/session/{sessionID}/command', async (request, ctx) => {
     const body = await readJsonBody<SessionPromptBody>(request);
     const directory = body.directory ?? projectDirectory(ctx);
-    // Slash-command execution: forward the command text as a prompt; omp
-    // expands its own slash commands when the session is materialized.
+    // Slash-command execution: rebuild the canonical invocation text
+    // "/<command> <arguments>" before dispatch. The wire contract (SessionCommandData)
+    // carries the name WITHOUT the leading slash and the arguments as a
+    // separate string, while every downstream consumer — the engine's skill
+    // path (#tryRunSkillCommand → parseSkillInvocation) and the SDK's
+    // extension/custom/file-command expansion — matches on the leading '/'.
+    // The skill: name form is preserved verbatim so skill invocations hit the
+    // skill-prompt card path.
+    const commandName = (body.command ?? '').trim();
+    if (!commandName) return badRequest('command is required');
+    const commandArgs = (body.arguments ?? '').trim();
+    const text = `/${commandName}${commandArgs ? ` ${commandArgs}` : ''}`;
     const wire = await domainErrorsToResponse(() => engine.prompt({
       sessionID: ctx.params.sessionID,
       directory,
-      text: body.command ?? '',
+      text,
       model: body.model,
       agent: body.agent,
       images: undefined,
       delivery: undefined,
-      messageID: undefined,
+      // Echo the client's message id so the optimistic message reconciles in
+      // place during the live turn (same contract as prompt_async).
+      messageID: typeof body.messageID === 'string' ? body.messageID : undefined,
     }));
+    if (!wire) return notFound('session not found');
+    // Domain-error answers arrive as the Response itself; `info` narrows to
+    // the payload branch (same shape contract as prompt_async).
+    return json('info' in wire ? wire.info : undefined);
   });
   route('POST', '/session/{sessionID}/abort', async (request, ctx) => {
     // Wire stop control (UI abortCurrentOperation, Esc shortcut, mobile

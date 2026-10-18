@@ -2180,6 +2180,9 @@ export interface PlanReviewDecisionResult {
   decision: PlanReviewDecisionInput | null;
   /** 未放行原因（如 no-pending-proposal）。 */
   reason?: string;
+  /** 批准路径携带的计划载荷（正文 + 详情），交引擎派发执行链。 */
+  /** Plan payload (body + details) carried on approve, for the engine's execution dispatch. */
+  plan?: { content: string | null; details: PlanReviewDetails | null };
 }
 
 /** xd://propose 钩子返回的工具结果（content 原样透传）。 */
@@ -2216,6 +2219,9 @@ interface PlanReviewPending {
 interface PlanReviewBridgeState {
   /** preparePlanForReview 绑定（hookFor 注入）。 */
   prepareRef: ((title: string) => Promise<PreparePlanReviewResult>) | null;
+  /** 最近一次提案的计划正文（文本块拼接）；批准后合成执行 prompt 用。 */
+  /** Plan body (joined text blocks) of the latest propose; feeds the post-approval synthetic prompt. */
+  reviewContent: string | null;
   /** 最近一次评审指向的计划文件路径。 */
   planFilePath: string | null;
   /** 最近一次评审详情。 */
@@ -2264,6 +2270,20 @@ const SUPERSEDED_RESULT: PlanReviewToolResult = {
   content: [{ type: 'text', text: 'Plan review superseded by a newer proposal.' }],
 };
 
+/** 计划正文提取：拼接 AgentToolResult content 的 text 块（非文本块丢弃）。 */
+/** Plan body extraction: joins the AgentToolResult content's text blocks. */
+const planReviewContentText = (content: unknown): string | null => {
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (Boolean(block) && typeof block === 'object' && 'type' in block && 'text' in block
+      && block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text);
+    }
+  }
+  return parts.length ? parts.join('\n') : null;
+};
+
 /**
  * xd://propose 工具钩子桥（规范 02 §5.5 步骤 3）。
  *
@@ -2296,6 +2316,7 @@ export function planReviewBridge({ publish, prepare, onReview, now = Date.now }:
   // 桥内部状态（见 PlanReviewBridgeState）。
   const state: PlanReviewBridgeState = {
     prepareRef: prepare ?? null,
+    reviewContent: null,
     planFilePath: null,
     review: null,   // PlanApprovalDetails of the latest propose
     pending: null,  // { resolve, details, requestedAt }
@@ -2333,6 +2354,8 @@ export function planReviewBridge({ publish, prepare, onReview, now = Date.now }:
       const details = result?.details ?? null;
       settle(SUPERSEDED_RESULT);
       state.review = details;
+      // Plan body for the post-approval synthetic prompt (approve → execute).
+      state.reviewContent = planReviewContentText(result?.content);
       if (details?.planFilePath) state.planFilePath = details.planFilePath;
       onReview?.(details);
       publish?.('omp.plan.review_requested', { details }, { durable: true });
@@ -2387,7 +2410,7 @@ export function planReviewBridge({ publish, prepare, onReview, now = Date.now }:
           ...(input?.editedContent !== undefined ? { editedContent: input.editedContent } : {}),
         },
       });
-      return { dispatched: true, decision: state.decision };
+      return { dispatched: true, decision: state.decision, plan: { content: state.reviewContent, details } };
     },
 
     // GET /omp/sessions/{id}/plan 载荷片段（02 §5.5 步骤 7）。
@@ -2481,6 +2504,17 @@ export interface ModesDomainDeps {
   settingsProjectScopes?: boolean;
   /** 按目录读取生效 task.* 覆盖值的函数（engine 注入）。 */
   overridesFor?: OverridesFor;
+  /** 引擎侧 SDK 模式应用钩子（engine 注入）：tracker 变迁后由路由 await，
+  * 把 SDK 会话真正切进/切出 plan 态（官方 #enterPlanMode/#tearDownPlanMode
+  * 五件套的宿主移植：setPlanModeState/setActiveToolsByName/评审 handler/
+  * 流中 sendPlanModeContext/plan role 模型）。抛错时由路由回滚 tracker。 */
+  applySdkModeFor?: (sessionId: string, directory: string, mode: string, data: ModeEnterData) => Promise<void>;
+  /** 批准后的执行链钩子（engine 注入）：tracker/SDK plan 态拆除、执行工具集
+  * 恢复、plan 引用、合成执行 prompt 派发。抛错由路由转为 500。 */
+  /** Post-approval execution-chain hook (engine-injected): tracker/SDK plan
+  * teardown, execution toolset restore, plan reference, and the synthetic
+  * execution prompt. A throw becomes a 500 in the route. */
+  onPlanDecidedFor?: (sessionId: string, directory: string, decision: PlanReviewDecisionInput, plan: { content: string | null; details: PlanReviewDetails | null }) => Promise<void>;
 }
 
 /**
@@ -2496,6 +2530,12 @@ export interface ModesDomain {
   bridgeFor: (sessionId: string, directory: string | null) => PlanReviewBridge;
   /** 会话释放：dispose bridge 并移除两处缓存。 */
   release: (sessionId: string, directory: string | null) => void;
+  /** SDK 模式应用（engine 钩子的透传暴露；未注入时为 undefined）。 */
+  /** SDK mode application (pass-through of the engine hook; undefined when not injected). */
+  applySdkMode?: (sessionId: string, directory: string, mode: string, data: ModeEnterData) => Promise<void>;
+  /** 批准后的执行链钩子（engine 注入；未注入时为 undefined）。 */
+  /** Post-approval execution-chain hook (engine-injected; undefined when not injected). */
+  onPlanDecided?: (sessionId: string, directory: string, decision: PlanReviewDecisionInput, plan: { content: string | null; details: PlanReviewDetails | null }) => Promise<void>;
   /** agent 定义 CRUD handlers；未注入适配器时为 null。 */
   agentDefinitions: AgentDefinitionHandlers | null;
   /** personas CRUD handlers；未注入 store 时为 null。 */
@@ -2531,6 +2571,8 @@ export function createModesDomain({
   publishFor,
   appendFor,
   sessionContextFor,
+  applySdkModeFor,
+  onPlanDecidedFor,
   agentDefinitions: agentDefinitionsOptions,
   personasStore,
   allowedTools,
@@ -2609,6 +2651,8 @@ export function createModesDomain({
     trackerFor,
     bridgeFor,
     release,
+    ...(applySdkModeFor ? { applySdkMode: applySdkModeFor } : {}),
+    ...(onPlanDecidedFor ? { onPlanDecided: onPlanDecidedFor } : {}),
     agentDefinitions,
     personas,
     // 路由注册代理，转发给 registerModesDomainRoutes。
@@ -2666,6 +2710,19 @@ export function registerModesDomainRoutes(
       else if (action === 'pause') tracker.pauseMode(body?.mode);
       else if (action === 'resume') tracker.resumeMode(body?.mode);
       else return badRequest(`invalid action "${action}"`);
+      // SDK 激活是模式变迁的一部分：应答前 await，调用方观察到的即已切换。
+      // 应用失败时回滚 tracker（官方在 SDK 侧回滚后抛错，这里回滚到 none）。
+      // SDK activation is part of the mode transition: await it before
+      // answering so the observed session really switched. A failure rolls
+      // the tracker back (the official host rolls SDK state back and throws).
+      if (domain.applySdkMode) {
+        try {
+          await domain.applySdkMode(ctx?.params?.id ?? '', directory, tracker.snapshot().mode, body ?? {});
+        } catch (error) {
+          tracker.exitMode();
+          throw error;
+        }
+      }
     } catch (error) {
       return toResponse(error);
     }
@@ -2701,6 +2758,25 @@ export function registerModesDomainRoutes(
     const bridge = domain.bridgeFor(ctx?.params?.id ?? '', directory);
     try {
       const result = bridge.decide(body ?? {});
+      // 批准后的执行链（官方 #approvePlan 的宿主移植）由引擎钩子完成：
+      // 退出 tracker/SDK plan 态、恢复执行工具集、设 plan 引用、派发合成
+      // 执行 prompt。路由 await 它，应答即代表执行轮已排队。
+      // The post-approval execution chain (host port of #approvePlan) runs in
+      // the engine hook: tracker/SDK plan teardown, execution toolset
+      // restore, plan reference, and the synthetic execution prompt. The
+      // route awaits it, so the answer implies the execution turn is queued.
+      if (result.dispatched && domain.onPlanDecided) {
+        try {
+          await domain.onPlanDecided(ctx?.params?.id ?? '', directory, body ?? {}, {
+            content: result.plan?.content ?? null,
+            details: result.plan?.details ?? null,
+          });
+        } catch (error) {
+          // The propose already settled as approved; surface the dispatch
+          // failure instead of pretending the execution was queued.
+          return json({ dispatched: false, mode: tracker.snapshot().mode, error: 'execution-dispatch-failed', detail: String(error) }, { status: 500 });
+        }
+      }
       return json({ dispatched: result.dispatched, mode: tracker.snapshot().mode });
     } catch (error) {
       return toResponse(error);

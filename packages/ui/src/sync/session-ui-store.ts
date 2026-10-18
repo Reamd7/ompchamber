@@ -191,12 +191,25 @@ export function routeMessage(params: {
     // Three-layer pipeline (08 §5.4): engine-tier omp commands (file/custom/
     // skill rows from GET /api/omp/commands) also route through the command
     // channel — the engine expands them when the session materializes.
+    // Skill matching also matches engine-tier "skill:<name>" rows: the omp
+    // engine's skill invocation form is "/skill:<name>" (parseSkillInvocation
+    // only accepts that prefix), so a bare-name skill is sent as the skill:
+    // command — the server rebuilds "/skill:<name> <args>" from it.
+    const bareSkillMatch = useSkillsStore.getState().skills.some((s) => s.name === cmdName)
+    const ompCommandsState = useOmpCommandsStore.getState()
     const isCommand = syncCommands.find((c) => c.name === cmdName)
       || storeCommands.find((c) => c.name === cmdName)
-      || useSkillsStore.getState().skills.some((s) => s.name === cmdName)
+      || bareSkillMatch
       || useOmpCommandsStore.getState().isEngineCommand(cmdName, requestDirectory ?? null)
 
     if (isCommand) {
+      // Bare-name skill under the omp runtime: send the skill: form so the
+      // engine's skill-prompt card path hits. The OpenCode runtime registers
+      // skills as bare command names, so the prefix applies only when the omp
+      // engine tier actually carries the "skill:<name>" row.
+      const commandName = bareSkillMatch && ompCommandsState.isEngineCommand(`skill:${cmdName}`, requestDirectory ?? null)
+        ? `skill:${cmdName}`
+        : cmdName
       return optimisticSend({
         runtimeKey: params.runtimeKey,
         sessionId: params.sessionId,
@@ -211,7 +224,7 @@ export function routeMessage(params: {
           id: params.sessionId,
           providerID: params.providerID,
           modelID: params.modelID,
-          command: cmdName,
+          command: commandName,
           arguments: tail.join(" "),
           agent: params.agent,
           variant: params.variant,

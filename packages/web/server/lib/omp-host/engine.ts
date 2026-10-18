@@ -20,10 +20,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { AgentRegistry, ModelRegistry, SessionManager, BUILTIN_TOOLS, createAgentSession, discoverAuthStorage } from '@oh-my-pi/pi-coding-agent';
+import { AgentRegistry, ModelRegistry, SessionManager, BUILTIN_TOOLS, createAgentSession, discoverAuthStorage, initThemeSync } from '@oh-my-pi/pi-coding-agent';
 import { discoverAgents, refreshAgentDiscovery } from '@oh-my-pi/pi-coding-agent/task';
 import { getConfigDirs } from '@oh-my-pi/pi-coding-agent/config';
 import { initializeExtensions } from '@oh-my-pi/pi-coding-agent/modes/runtime-init';
+import { isMCPToolName } from '@oh-my-pi/pi-coding-agent/tools/builtin-names';
 import { isTodoPhase } from '@oh-my-pi/pi-coding-agent/tools/todo';
 import { registerPersistedSubagents } from '@oh-my-pi/pi-coding-agent/registry/persisted-agents';
 import { buildSkillPromptMessage, parseSkillInvocation } from '@oh-my-pi/pi-coding-agent/extensibility/skills';
@@ -59,7 +60,11 @@ import type { UsageInput, ProjectedContentInput, ProjectedMessage, AssistantMess
 import { createSettingsStore } from './domain-models.ts';
 import { createDomainDialogs } from './domain-dialogs.ts';
 import {
+  DEFAULT_PLAN_FILE_PATH,
   ModeDomainError,
+  type ModeEnterData,
+  type PlanReviewDecisionInput,
+  type PlanReviewDetails,
   createModesDomain,
   mapBackedStore,
   migrateSidecarAgents,
@@ -244,6 +249,15 @@ interface HostSession {
   extensionUiPromise: Promise<unknown> | null;
   /** plan 模式的 proposal handler 是否已挂到 SDK 会话。 */
   planHandlerAttached: boolean;
+  /** SDK 侧 plan 模式状态（官方 #enterPlanMode/#tearDownPlanMode 的宿主移植）：
+  * active 表示 SDK 会话当前处于 plan 态；enteredOnce 镜像官方 reentry；
+  * previousPresentation/previousModel 是退出时恢复用的快照。 */
+  planSdk: {
+    active: boolean;
+    enteredOnce: boolean;
+    previousPresentation: { enabled: string[]; mounted: string[] } | null;
+    previousModel: { model: AgentSession['model']; thinkingLevel: ReturnType<AgentSession['configuredThinkingLevel']> } | null;
+  };
   /** 物化时冻结的插件应用快照；null 表示快照未生成或失败。 */
   appliedPlugins: AppliedPluginsSnapshot | null;
   /** Per-turn tool-result pairing map (tool_execution_end → message_end settle). */
@@ -576,6 +590,11 @@ export class OmpHostEngine {
     });
     // Modes/plan/goal/personas/agent-definitions domain (spec 02).
     this.modesDomain = createModesDomain({
+      // SDK mode transitions (plan activation/teardown) are engine-owned:
+      // the routes await this hook after every tracker mutation.
+      applySdkModeFor: (sessionId, directoryKey, mode, data) => this.#applySdkMode(sessionId, directoryKey, mode, data),
+      // Post-approval plan execution chain (see #onPlanApproved).
+      onPlanDecidedFor: (sessionId, directoryKey, decision, plan) => this.#onPlanApproved(sessionId, directoryKey, decision, plan),
       publishFor:
         (sessionId, directoryKey) =>
         (type, payload, options = {}) =>
@@ -784,6 +803,14 @@ export class OmpHostEngine {
   async #boot() {
     if (this.bootPromise) return this.bootPromise;
     this.bootPromise = (async () => {
+      // pi-tui's theme singleton is module state the TUI initializes at
+      // startup; headless hosts must do the same or SDK code paths that read
+      // it crash — the ask tool's "Done selecting" label evaluates
+      // `theme.status.success` (ask.ts getDoneOptionLabel) and failed with
+      // "undefined is not an object (evaluating 'theme.status')" before this.
+      // The SDK re-exports initThemeSync from pi-tui/theme; a sync dark-theme
+      // default is enough because the web bridge renders its own styling.
+      initThemeSync();
       this.authStorage = await discoverAuthStorage(this.registry.agentDir);
       this.modelRegistry = new ModelRegistry(this.authStorage);
       await this.modelRegistry.refresh();
@@ -925,7 +952,199 @@ export class OmpHostEngine {
     }
   }
 
-  /** personas 持久化 JSON 的路径（注册表根目录下的 ompchamber-personas.json）。 */
+  /**
+  * SDK plan-mode application — host port of the official TUI's
+  * #enterPlanMode/#tearDownPlanMode (interactive-mode.ts:5024/5169). Before
+  * this, entering plan only wrote a mode_change entry and attached the review
+  * hook: the SDK session itself never entered plan state, so the model kept
+  * the full toolset, the plan-mode system prompt was never injected
+  * (#buildPlanModeMessage gates on state.enabled), and preparePlanForReview
+  * threw "Plan mode is not active.".
+  *
+  * Entering: plan state lands BEFORE the tool partition (it keeps `write`
+  * active as the xd://propose staging transport); the toolset drops a
+  * shadowing extension `write` and re-activates the built-in one (issues
+  * #3165/#14030 — an extension write has no xd:// transport and would loop
+  * propose writes forever); the review-proposal handler attaches; a
+  * streaming turn gets the plan context steered in; the plan-role model is
+  * applied when idle. Leaving (exit/pause/other mode): the captured
+  * non-MCP presentation and the pre-plan model are restored. Cold recovery
+  * ({cold:true}, #materialize on a transcript persisted in plan mode)
+  * re-attaches state without re-appending mode_change or replacing the
+  * journaled model (official preserveRestoredModel). Divergences from the
+  * official host: streaming model switches are skipped instead of queued
+  * (the pending-switch queue is TUI machinery); a paused plan keeps the
+  * tracker state but fully tears SDK state down, like the official pause.
+  */
+  /** SDK plan 模式应用——官方 TUI #enterPlanMode/#tearDownPlanMode 的宿主移植：
+  * 进入时 plan 态先于工具分区落位（内建 write 作为 xd://propose 暂存通道保留），
+  * 遮蔽的扩展 write 被换回内建版本；流中补发 plan 上下文；空闲时切 plan role
+  * 模型。退出/pause 恢复捕获的非 MCP 工具呈现与前置模型；冷恢复不重写
+  * mode_change、不覆盖日志模型。流中模型切换不排队（官方 pending 队列为 TUI
+  * 机制），为有意差异。 */
+  async #applySdkMode(sessionId: string, directoryKey: string, mode: string, data: ModeEnterData, options: { cold?: boolean } = {}): Promise<void> {
+    const hostSession = this.#liveHostAnywhere(directoryKey, sessionId);
+    // Cold or not-yet-materialized session: nothing to switch — #materialize
+    // re-applies from the tracker snapshot when the session comes alive.
+    if (!hostSession?.agentSession) return;
+    const session = hostSession.agentSession;
+    if (mode === 'plan') {
+      if (hostSession.planSdk.active) return;
+      const planFilePath = data?.planFilePath ?? DEFAULT_PLAN_FILE_PATH;
+      const previousTools = session.getEnabledToolNames();
+      const previousMounted = session.getMountedXdevToolNames();
+      const presentation = {
+        enabled: previousTools.filter((name) => !isMCPToolName(name)),
+        mounted: previousMounted.filter((name) => !isMCPToolName(name)),
+      };
+      const planTools = [...new Set([
+        ...previousTools.filter((name) => name !== 'write'),
+        ...(session.hasBuiltInTool('write') ? ['write'] : []),
+      ])];
+      const previousPlanState = session.getPlanModeState();
+      session.setPlanModeState({
+        enabled: true,
+        planFilePath,
+        workflow: 'parallel',
+        reentry: hostSession.planSdk.enteredOnce,
+      });
+      try {
+        await session.setActiveToolsByName(planTools);
+      } catch (error) {
+        session.setPlanModeState(previousPlanState);
+        throw error;
+      }
+      this.#syncPlanProposalHandler(hostSession, 'plan');
+      if (session.isStreaming) {
+        await session.sendPlanModeContext({ deliverAs: 'steer' });
+      }
+      hostSession.planSdk = {
+        active: true,
+        enteredOnce: true,
+        previousPresentation: presentation,
+        previousModel: null,
+      };
+      // Plan-role model: applied when idle; a streaming entry keeps the
+      // current model (official queues a deferred switch we do not port).
+      if (!options.cold && !session.isStreaming) {
+        const resolved = session.resolveRoleModelWithThinking('plan');
+        const current = session.model;
+        if (resolved?.model && current && (resolved.model.provider !== current.provider || resolved.model.id !== current.id)) {
+          hostSession.planSdk.previousModel = { model: current, thinkingLevel: session.configuredThinkingLevel() };
+          await session.setModelTemporary(resolved.model, resolved.thinkingLevel);
+        }
+      }
+      return;
+    }
+    // Leaving plan (exit/pause/transition into any other mode): full SDK
+    // teardown — the official pause also restores tools/model and clears the
+    // xd://propose handler.
+    if (!hostSession.planSdk.active) return;
+    const planState = session.getPlanModeState();
+    session.setPlanModeState(undefined);
+    try {
+      const presentation = hostSession.planSdk.previousPresentation;
+      if (presentation) {
+        await session.restoreNonMCPToolPresentation(presentation.enabled, presentation.mounted);
+      }
+      const previousModel = hostSession.planSdk.previousModel;
+      if (previousModel?.model) {
+        const current = session.model;
+        const sameModel = current
+          && current.provider === previousModel.model.provider
+          && current.id === previousModel.model.id;
+        if (sameModel) {
+          session.setThinkingLevel(previousModel.thinkingLevel);
+        } else if (!session.isStreaming) {
+          await session.setModelTemporary(previousModel.model, previousModel.thinkingLevel);
+        }
+      }
+    } catch (error) {
+      // Best-effort rollback, mirroring the official teardown's failure path.
+      session.setPlanModeState(planState);
+      throw error;
+    }
+    this.#syncPlanProposalHandler(hostSession, mode);
+    hostSession.planSdk = {
+      ...hostSession.planSdk,
+      active: false,
+      previousPresentation: null,
+      previousModel: null,
+    };
+  }
+
+  /**
+  * Post-approval plan execution chain — host port of the official TUI's
+  * #approvePlan (interactive-mode.ts:5762). The propose tool result settles
+  * as "Plan approved" and the model continues the turn, but execution needs
+  * host machinery: leave plan mode (tracker + SDK state), restore the
+  * execution toolset with `read` force-enabled, pin the plan reference, and
+  * queue the synthetic plan-approved prompt (official template
+  * prompts/system/plan-mode-approved.md, inlined here — pi-tui/prompt
+  * templates are not importable from the host) that drives step-by-step
+  * execution. Divergences: approve-compact skips the pre-execution
+  * compaction (TUI orchestration) and executes with preserved context;
+  * approve-keep keeps history (preserveContext) exactly like the official
+  * choice.
+  */
+  /** 批准后的计划执行链——官方 #approvePlan 的宿主移植：退出 tracker/SDK plan 态、
+  * 恢复执行工具集（强制含 read）、钉 plan 引用、排队合成执行 prompt（官方模板内联）。
+  * 差异：approve-compact 不做执行前压缩，按保留上下文执行。 */
+  async #onPlanApproved(sessionId: string, directoryKey: string, decision: PlanReviewDecisionInput, plan: { content: string | null; details: PlanReviewDetails | null }): Promise<void> {
+    const hostSession = this.#liveHostAnywhere(directoryKey, sessionId);
+    const session = hostSession?.agentSession;
+    if (!session) return;
+    const planFilePath = plan.details?.planFilePath ?? DEFAULT_PLAN_FILE_PATH;
+    // 1) Leave plan mode in the tracker (mode_change 'none' + omp.mode.changed).
+    this.modesDomain?.trackerFor(sessionId, directoryKey).exitMode();
+    // 2) SDK teardown: plan state, review handler, toolset/model restore.
+    await this.#applySdkMode(sessionId, directoryKey, 'none', {});
+    // 3) Execution toolset with `read` force-enabled — the durable local://
+    // plan must stay reachable if the inline copy becomes unrecoverable.
+    if (!session.getEnabledToolNames().includes('read')) {
+      await session.setActiveToolsByName([...session.getEnabledToolNames(), 'read']);
+    }
+    // 4) Plan reference: the synthetic prompt below is the injection source.
+    session.setPlanReferencePath(planFilePath);
+    session.markPlanReferenceSent();
+    // 5) Synthetic execution prompt (official plan-mode-approved.md shape).
+    const planContent = plan.content ?? '(plan body unavailable — read the plan file)';
+    const keepContext = decision.choice === 'approve-keep' || decision.choice === 'approve-compact';
+    const todoAvailable = session.getEnabledToolNames().includes('todo');
+    const planPrompt = [
+      'Plan approved.',
+      ...(keepContext ? ['- History usable; the plan below authoritative if it conflicts with earlier exploration.'] : []),
+      '',
+      '<instruction>',
+      `Full plan inlined below; durable copy at \`${planFilePath}\` (identical content).`,
+      'Execute plan step-by-step with full tool access; MUST verify each step before next.',
+      `NEVER re-read \`${planFilePath}\` while the inline plan is intact; the path is for subagent handoff and recovery only.`,
+      ...(todoAvailable ? [
+        'Before execution: initialize todo tracking with `todo`.',
+        'After each completed step: immediately update `todo`.',
+        'If `todo` fails: fix payload; retry before continuing.',
+      ] : []),
+      '</instruction>',
+      '',
+      `<plan path="${planFilePath}">`,
+      planContent,
+      '</plan>',
+      '',
+      '<critical>',
+      `Inline plan compressed, expired, or unrecoverable: NEVER stop; read \`${planFilePath}\`.`,
+      'Read failure: report exact path and error; NEVER guess.',
+      'MUST continue until complete.',
+      '</critical>',
+    ].join('\n');
+    if (session.isStreaming) {
+      await session.followUp(planPrompt, undefined, { synthetic: true });
+    } else {
+      await session.prompt(planPrompt, { synthetic: true });
+    }
+  }
+
+  /**
+  * personas 持久化 JSON 的路径（注册表根目录下的 ompchamber-personas.json）。 */
   #personasConfigPath() {
     return path.join(this.registry.registryRoot, 'ompchamber-personas.json');
   }
@@ -2407,6 +2626,15 @@ export class OmpHostEngine {
         // R13: hasUI authority is the per-session UI lease, never the
         // capability. No lease at creation → fail-closed for approval tools.
         hasUI: this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI,
+        // Ask-roster admission (SDK sdk.ts: canPromptUser = interactivePrompts
+        // ?? hasUI): the SDK freezes the tool roster at session creation, so a
+        // session materialized without a UI lease would otherwise NEVER offer
+        // the ask tool — even after a lease attaches (E2E-observed: models
+        // enumerate toolsets without ask in both lease-held and headless
+        // sessions). interactivePrompts:true keeps ask in every roster;
+        // EXECUTION stays lease-gated and fail-closed through the tool UI
+        // context (ask.ts requires context.hasUI && context.ui at call time).
+        interactivePrompts: true,
         // R7/R8: local:// resolution stays session-pinned to THIS session's
         // artifacts dir (TUI parity, spec 04 §5.2.3); zero global mutation.
         localProtocolOptions: createLocalProtocolOptions(sessionId, directoryKey, () =>
@@ -2444,6 +2672,7 @@ export class OmpHostEngine {
         extensionUiInitialized: false,
         extensionUiPromise: null,
         planHandlerAttached: false,
+        planSdk: { active: false, enteredOnce: false, previousPresentation: null, previousModel: null },
         // Plugin application snapshot (plugins.v1): the discovery set this
         // session bound at materialization — feeds the Settings → Plugins
         // "applied in sessions" projection and stays frozen for the session's
@@ -2479,6 +2708,18 @@ export class OmpHostEngine {
       this.uriDomain?.aggregator.refresh();
       // Modes tracker for this session (cold-recovery + mode_change appends).
       this.modesDomain?.trackerFor(sessionId, directoryKey);
+      // Cold plan recovery: a transcript persisted in plan mode re-applies the
+      // SDK plan state (state/toolset/handler) without re-appending
+      // mode_change or replacing the journaled model (official
+      // preserveRestoredModel). plan_paused needs nothing — the official
+      // pause already tore SDK state down.
+      if (this.modesDomain?.trackerFor(sessionId, directoryKey).snapshot().mode === 'plan') {
+        await this.#applySdkMode(sessionId, directoryKey, 'plan', {}, { cold: true }).catch((error) => {
+          // Honest degradation: the tracker still reports plan, but the SDK
+          // session could not re-enter it; the next mode toggle re-applies.
+          console.warn('[omp-host] cold plan-mode re-apply failed:', errorText(error));
+        });
+      }
       // Apply and await the lease context before publishing the record so a
       // lease that raced materialization still gets its extension UI.
       if (this.dialogs.hasUISnapshotFor(directoryKey, sessionId).hasUI) {

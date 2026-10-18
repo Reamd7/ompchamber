@@ -220,16 +220,25 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   ], [canStartSessionCommand, canUseReviewHandoffFlow, hasSession, ompOwnsDebug, ompTreeEnabled, t]);
 
   const ompCommands = React.useMemo(
-    (): CommandInfo[] => (ompRecords ?? []).map((record: OmpCommandRecord) => ({
-      id: `omp:${record.source}:${record.name}`,
-      name: record.name,
-      source: 'omp',
-      description: record.description,
-      isOmp: true,
-      ...(record.argumentHint
-        ? { description: record.description ? `${record.description} (${record.argumentHint})` : record.argumentHint }
-        : {}),
-    })),
+    (): CommandInfo[] => (ompRecords ?? [])
+      // Only engine-tier rows are executable here: they reach the SDK's
+      // prompt-time expansion (file/custom/extension commands) through the
+      // command channel. Tier A client-builtin rows are name reservations
+      // for collision adjudication — the web has no host-side builtin
+      // dispatcher, so offering them produced dead entries whose selection
+      // sent literal text to the model. The store keeps every tier for
+      // collision/rename checks; only the offered list filters.
+      .filter((record: OmpCommandRecord) => record.tier === 'engine')
+      .map((record: OmpCommandRecord) => ({
+        id: `omp:${record.source}:${record.name}`,
+        name: record.name,
+        source: 'omp' as const,
+        description: record.description,
+        isOmp: true,
+        ...(record.argumentHint
+          ? { description: record.description ? `${record.description} (${record.argumentHint})` : record.argumentHint }
+          : {}),
+      })),
     [ompRecords],
   );
 

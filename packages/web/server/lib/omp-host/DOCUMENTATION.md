@@ -36,6 +36,12 @@ sync engine, and web server call; everything else answers 404.
 - `engine.ts` — `OmpHostEngine`: model/auth boot, session materialization
   through `LiveSessionRegistry` (directory-keyed records, per-key gates,
   eviction state machine, quarantine tombstones — docs/plan.md §3.2-3.4),
+  sessions are created with `interactivePrompts: true` (the SDK freezes the
+  tool roster at creation; without it the ask tool never enters the roster,
+  even for lease-held UI sessions — execution stays lease-gated and
+  fail-closed through the tool UI context), boot runs `initThemeSync()`
+  (pi-tui's theme singleton is module state the TUI initializes at startup;
+  headless hosts must too — the ask tool reads `theme.status` directly),
   idle-TTL sweeper with the full SDK activity-guard set and no live-count
   gate (§4), and event projection. `sessions` map is gone: lookups are
   directory-keyed (`#liveHost`/`#liveHostAnywhere`); test access goes
@@ -90,7 +96,13 @@ sync engine, and web server call; everything else answers 404.
   conservative external-change classification (append vs dirty); the engine
   rebuilds a live writer from disk on dirty + inactive, inside the key's
   gate (docs/plan.md §8).
-- `endpoints.ts` — wire route handlers + the `/omp/*` parity group:
+- `endpoints.ts` — wire route handlers + the `/omp/*` parity group.
+  `POST /session/{id}/command` rebuilds the canonical `"/<command>
+  <arguments>"` invocation: OpenCode's wire contract carries the name without
+  the slash and arguments separately, while every downstream expander (the
+  engine skill path and the SDK's file/custom-command expansion) matches on
+  the leading '/'; the `skill:<name>` form is preserved so skill invocations
+  hit, and the client `messageID` is echoed like `prompt_async`:
   capabilities, the omp SSE channel, transcript structured reads
   (custom-messages/telemetry/entries), `GET /agent-dir` (the Node web server
   cannot import this SDK — it resolves the profile-scoped omp agent dir
@@ -159,6 +171,18 @@ sync engine, and web server call; everything else answers 404.
   (SDK frontmatter contract round-trip), `migrateSidecarAgents` (one-time
   `openchamber-agents.json` → `.md` + persona mirror, §6.2), and personas
   CRUD over the personas sidecar.
+  Engine-owned SDK activation lives here as injected hooks the routes await:
+  `applySdkModeFor` (entering/leaving plan switches the SDK session itself —
+  host port of the official `#enterPlanMode`/`#tearDownPlanMode`:
+  `setPlanModeState` before the tool partition, the read-only plan toolset
+  with the built-in `write` kept as the `xd://propose` staging transport,
+  the review handler, an in-flight `sendPlanModeContext` steer, and the
+  plan-role model; leaving restores the captured presentation/model;
+  `#materialize` re-applies cold from the tracker without re-appending
+  mode_change or clobbering the journaled model) and `onPlanDecidedFor`
+  (approve dispatches the `#approvePlan` port: tracker/SDK teardown,
+  read-forced execution toolset, plan reference, and the synthetic
+  plan-approved prompt; approve-compact skips pre-execution compaction).
 - `domain-uri.ts` (spec 04) — local:// bridge (session-pinned to each
   session's own artifacts dir — TUI parity, spec 04 §5.2.3: transcript
   sibling dir, never the project-level session dir; zero global
