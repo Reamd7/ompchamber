@@ -57,13 +57,19 @@ if (!nativesPresent && !nativesIntentionallyAbsent) {
   process.exit(1);
 }
 if (!nativesPresent && nativesIntentionallyAbsent) {
-  const manifestPath = path.join(path.dirname(path.dirname(hostJs)), 'bun-runtime.json');
+  const manifestPath = path.join(path.dirname(path.dirname(path.dirname(hostJs))), 'bun-runtime.json');
   const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : null;
   if (!manifest?.nativesVersion) {
     console.error(`[electron] packaged build ships no pi_natives and bun-runtime.json pins no nativesVersion: ${manifestPath}`);
     process.exit(1);
   }
   console.log(`[electron] packaged build expects first-boot pi_natives ${manifest.nativesVersion} (managed runtime)`);
+  // Without the addon the engine cannot boot here by design (it arrives via
+  // the managed runtime at first app launch): bundle + manifest pin verified;
+  // live boot stays covered by first-boot flows and the asar-update e2e
+  // harness. Dev layouts and js-variant builds keep the live boot below.
+  console.log('[electron] skipping live boot (natives-free layout)');
+  process.exit(0);
 }
 
 // Boot the host on a loopback port, poll /global/health until it reports
