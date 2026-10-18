@@ -106,6 +106,8 @@ process violation.
 | User-facing or accessible UI text, labels, aria, toasts, dialogs, or navigation copy | `locale-ui-patterns` |
 | Settings UI, settings dialogs, configuration surfaces, or settings search | `settings-ui-patterns` |
 | Sortable or drag-to-reorder behavior, especially `@dnd-kit` and touch/wrapping layouts | `drag-to-reorder` |
+| UI bug fixes that need Playwright screenshot/video Red-Green repro and delivery | `e2e-redgreen-playwright` |
+| Reproducing or verifying OpenChamber web UI behavior end-to-end with Playwright (engine choice, bootstrap pitfalls, verdict baselines) | `ompchamber-web-e2e-playwright` |
 | iOS Simulator build, launch, preview, gestures, or `serve-sim` control | `serve-sim` |
 | The maintainer explicitly asks to update the changelog (main app or VS Code extension) — the only time either CHANGELOG is edited | `changelog-authoring` |
 | Creating or editing skills, `AGENTS.md`, or docs reached through agent instructions/context pointers | `writing-for-agents` |
