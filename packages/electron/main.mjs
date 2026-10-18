@@ -1566,6 +1566,10 @@ const spawnLocalServer = async () => {
   // The Rust sidecar child inherits this env (DIST_DIR/RUNTIME/
   // DESktop_NOTIFY/UI_PASSWORD/LAN_ACCESS all follow the server-rs env
   // contract), so everything must be set before the spawn below.
+  // The rust server cannot read the app version from the build-machine path
+  // it was compiled with; hand it over explicitly (packaged /health and
+  // /api/system/info otherwise report "unknown").
+  process.env.OMPCHAMBER_VERSION = APP_VERSION;
   process.env.OMPCHAMBER_HOST = bindHost;
   process.env.OMPCHAMBER_DESKTOP_LAN_ACCESS_ACTIVE = effectiveLanAccessEnabled ? 'true' : 'false';
   if (lanAccessBlockedByMissingPassword) {

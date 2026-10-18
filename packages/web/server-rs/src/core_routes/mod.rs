@@ -111,6 +111,15 @@ fn started_at_iso() -> String {
 /// 读取失败或为空时为 'unknown'；结果进程内缓存。
 pub(crate) fn ompchamber_version() -> String {
     static VERSION: LazyLock<String> = LazyLock::new(|| {
+        // Desktop main injects the real app version (the compile-time source
+        // path below only exists on the build machine; packaged binaries
+        // would otherwise always report "unknown").
+        if let Ok(from_env) = std::env::var("OMPCHAMBER_VERSION") {
+            let trimmed = from_env.trim().to_string();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
         let package_json = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("package.json");
