@@ -146,3 +146,8 @@ mod windows_shims {
 /// 使调用方的 `use crate::os_compat::...` 在两个平台都能解析。
 #[cfg(windows)]
 pub use windows_shims::{ExitStatusExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
+
+/// Unix：垫片模块的 `symlink` unix 分支就是 `std::os::unix::fs::symlink`，
+/// 直接再导出使两平台的调用方与测试都能解析同一路径。
+#[cfg(unix)]
+pub use std::os::unix::fs::symlink;

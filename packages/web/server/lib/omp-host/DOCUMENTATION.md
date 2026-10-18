@@ -18,7 +18,7 @@ sync engine, and web server call; everything else answers 404.
 
 - `worker-dispatch.ts` — `__omp_worker_*` selector dispatch, run by the
   entrypoint BEFORE serving. The embedded SDK relaunches its own executable
-  (`process.execPath` = omp-host itself in packaged builds) into worker modes
+  into worker modes
   (daemon broker, LSP mux, blob broker, ONNX inference workers, the JS-eval
   kernel, IDA host, mnemopi embed server, text-predict daemon, stats
   activity worker). Without this dispatch every such spawn booted a second full HTTP
@@ -26,13 +26,30 @@ sync engine, and web server call; everything else answers 404.
   omp-host.exe processes" leak (~1 zombie per failed 10s daemon-broker
   connect while the browser tool retried). Known selectors map to the SDK's
   worker entries via literal `import()` thunks (required for
-  `bun build --compile` to embed them); thread-only selectors, the omp stats
-  worker, and `browser-relay` are explicit no-serve exits (exit 1), so an
+  worker entries via literal `import()` thunks (required for the bundler to
+  embed them); the omp stats worker and `browser-relay` are explicit no-serve
+  exits (exit 1), so an
   unrecognized self-spawn can never become a zombie host. The table must be
   re-checked against the SDK CLI's `runWorkerEntrypoint` on every SDK bump;
   `worker-dispatch.test.ts` pins the full selector list. 18.11.x renamed the
   tiny worker to a self-wired env starter (`startTinyWorkerFromEnvironment`),
   which is why self-runner starters are awaited.
+- `host.ts` declares itself the SDK worker-host entry at process start
+  (`declareWorkerHostEntry()`, pi-utils): subprocess workers respawn as
+  `[bun, <this entry>, __omp_worker_*]` instead of the SDK's
+  `[bun, src/cli.ts]` fallback (which only exists in a source checkout).
+  Selector dispatch is admitted on both process entry AND worker-thread
+  re-entry (`!Bun.isMainThread`, mirroring SDK cli.ts): once declared, the
+  SDK spawns thread workers as `new Worker(<this entry>, { argv })`, and
+  those re-enter this module with `import.meta.main === false`. Thread-kind
+  selectors (tab/js_eval/terminal_output/parent_watchdog/computer) install
+  the buffering worker inbox on `parentPort` before loading the worker module
+  (the parent posts init frames right after spawn); import-only entries
+  self-start at module top level, `computer` also calls its starter. A
+  thread-only selector arriving as a process invocation refuses (exit 1).
+  pi_natives note: the packaged layout is `dist/host.js` + `native/` sibling
+  because the bundled loader resolves its addon as `<host.js dir>/../native`
+  (the `~/.omp/natives/<ver>` cache is only read for compiled binaries).
 - `engine.ts` — `OmpHostEngine`: model/auth boot, session materialization
   through `LiveSessionRegistry` (directory-keyed records, per-key gates,
   eviction state machine, quarantine tombstones — docs/plan.md §3.2-3.4),
@@ -371,11 +388,14 @@ sync engine, and web server call; everything else answers 404.
 
 ## Launch resolution (see `../opencode/omp-host-launch.js`)
 
-1. `OMPCHAMBER_OMP_HOST_BINARY` — a compiled self-contained host
-   (`bun build --compile`, staged by the desktop packaging).
-2. Bundled `resources/omp-host/omp-host(.exe)`.
+1. `OMPCHAMBER_OMP_HOST_BINARY` — an explicit self-contained executable.
+2. Bundled `resources/omp-host/dist/host.js` (JS bundle + sidecar assets,
+   `native/` sibling with the pi_natives addon), launched by a Bun runtime.
 3. Bun runtime (`OMPCHAMBER_OMP_HOST_RUNTIME` → current process → PATH)
    launching `host.ts` from source — the development path.
+   Runtime resolution order: explicit env → managed runtime
+   (`OMPCHAMBER_MANAGED_BUN_DIR` → `~/.ompchamber/runtimes`, installed by the
+   desktop app) → current process under Bun → `bun` on PATH.
 
 ## Known engine gaps (explicit, not silent)
 

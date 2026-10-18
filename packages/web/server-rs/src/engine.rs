@@ -82,18 +82,15 @@ pub fn omp_host_entry() -> PathBuf {
 }
 
 /// 平台相关的 host 二进制文件名（Windows 带 .exe 后缀）。
-fn host_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "omp-host.exe"
-    } else {
-        "omp-host"
-    }
-}
+/// 捆绑 omp host 资源包内的 bundle 入口相对路径（dist/host.js；JS bundle
+/// 由 Bun 运行时执行，同目录旁路资产与 sibling native/ 由 loader 自解析）。
+const HOST_BUNDLE_ENTRY: &str = "dist/host.js";
 
-/// Mirror of `resolveOmpHostLaunchSpec`: explicit host binary env → bundled
-/// binary dir → source entry under a Bun runtime.
-/// 中文说明：优先级为 OMPCHAMBER_OMP_HOST_BINARY 显式路径 →
-/// OMPCHAMBER_BUNDLED_OMP_HOST_DIR 内置二进制 → Bun 运行时跑源码入口。
+/// Mirror of `resolveOmpHostLaunchSpec`: explicit executable env → bundled
+/// host.js under a Bun runtime → source entry under a Bun runtime.
+/// 中文说明：优先级为 OMPCHAMBER_OMP_HOST_BINARY 显式可执行文件 →
+/// OMPCHAMBER_BUNDLED_OMP_HOST_DIR 内 dist/host.js（Bun 运行时执行）→
+/// Bun 运行时跑源码入口。
 pub fn resolve_launch_spec(hostname: &str, port: u16) -> anyhow::Result<LaunchSpec> {
     // 所有启动形态共用的 serve 子命令参数。
     let serve_args = vec![
@@ -125,11 +122,16 @@ pub fn resolve_launch_spec(hostname: &str, port: u16) -> anyhow::Result<LaunchSp
         .map(PathBuf::from)
         .collect();
     for dir in bundled_dirs {
-        let candidate = dir.join(host_binary_name());
+        let candidate = dir.join(HOST_BUNDLE_ENTRY);
         if candidate.exists() {
+            // JS bundle：始终需要 Bun 运行时（显式 env → PATH）。
+            let (runtime, _source) = resolve_runtime_binary()?;
             return Ok(LaunchSpec {
-                binary: candidate,
-                args: serve_args,
+                binary: runtime,
+                args: [candidate.to_string_lossy().to_string()]
+                    .into_iter()
+                    .chain(serve_args)
+                    .collect(),
                 source: "bundled",
             });
         }
@@ -151,7 +153,9 @@ pub fn resolve_launch_spec(hostname: &str, port: u16) -> anyhow::Result<LaunchSp
 }
 
 /// 解析运行时二进制：OMPCHAMBER_OMP_HOST_RUNTIME 显式指定优先，
-/// 否则在 PATH 上找 bun；找不到即报错（从源码拉起必须要有 Bun）。
+/// 解析运行时二进制：OMPCHAMBER_OMP_HOST_RUNTIME 显式指定 → 托管运行时
+///（OMPCHAMBER_MANAGED_BUN_DIR → ~/.ompchamber/runtimes 下的 bun-<ver>/）→
+/// PATH 上的 bun；都找不到即报错（拉起 host 必须要有 Bun）。
 fn resolve_runtime_binary() -> anyhow::Result<(PathBuf, &'static str)> {
     if let Ok(explicit) = std::env::var("OMPCHAMBER_OMP_HOST_RUNTIME") {
         let explicit = explicit.trim();
@@ -163,6 +167,9 @@ fn resolve_runtime_binary() -> anyhow::Result<(PathBuf, &'static str)> {
             return Ok((path, "env"));
         }
     }
+    if let Some(managed) = resolve_managed_bun_runtime() {
+        return Ok((managed, "managed"));
+    }
     if search_path_for("bun").is_some() {
         Ok((PathBuf::from("bun"), "path"))
     } else {
@@ -172,6 +179,49 @@ fn resolve_runtime_binary() -> anyhow::Result<(PathBuf, &'static str)> {
     }
 }
 
+/// 托管 Bun 运行时发现：桌面应用把官方 bun 装在 <userData>/runtimes/
+/// bun-<ver>/ 并以 OMPCHAMBER_MANAGED_BUN_DIR 导出；无桌面外壳时手动安装
+/// 位为 ~/.ompchamber/runtimes。取版本号新的可执行文件；版本校验在安装
+/// 时已完成（Electron 下载器验过 --version），这里只做存在性探测。
+pub(crate) fn resolve_managed_bun_runtime() -> Option<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::var("OMPCHAMBER_MANAGED_BUN_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    if let Some(home) = crate::config::home_dir() {
+        roots.push(home.join(".ompchamber").join("runtimes"));
+    }
+    resolve_managed_bun_runtime_in_roots(&roots)
+}
+
+/// roots 参数化变体（测试用，不触碰进程环境）。
+pub(crate) fn resolve_managed_bun_runtime_in_roots(roots: &[PathBuf]) -> Option<PathBuf> {
+    let bun_name = if cfg!(windows) { "bun.exe" } else { "bun" };
+    let mut newest: Option<(Vec<u64>, PathBuf)> = None;
+    for root in roots {
+        let entries = std::fs::read_dir(&root).ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(version) = name.strip_prefix("bun-") else { continue };
+            let parts: Option<Vec<u64>> = version
+                .split('.')
+                .map(|part| part.parse::<u64>().ok())
+                .collect();
+            let Some(parts) = parts else { continue };
+            let binary = entry.path().join(bun_name);
+            if !binary.is_file() {
+                continue;
+            }
+            if newest.as_ref().is_none_or(|(best, _)| parts > *best) {
+                newest = Some((parts, binary));
+            }
+        }
+    }
+    newest.map(|(_, binary)| binary)
+}
+
+/// 在 PATH 环境变量中查找可执行文件（按平台分隔符切分），返回第一个命中。
 /// 在 PATH 环境变量中查找可执行文件（按平台分隔符切分），返回第一个命中。
 fn search_path_for(binary: &str) -> Option<PathBuf> {
     let path = std::env::var("PATH").ok()?;
@@ -967,6 +1017,25 @@ fn default_http_client() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 验证：托管运行时发现按 roots 扫描 bun-<ver>/，取版本最新者；
+    /// 非 semver 目录与缺二进制的目录被忽略。
+    #[test]
+    fn resolves_newest_managed_bun() {
+        let dir = std::env::temp_dir().join(format!("ompchamber-managed-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bun-1.3.14")).expect("mkdir 1.3.14");
+        std::fs::create_dir_all(dir.join("bun-1.2.3")).expect("mkdir 1.2.3");
+        std::fs::write(dir.join("bun-1.3.14").join("bun"), "x").expect("write bun");
+        std::fs::write(dir.join("bun-1.2.3").join("bun"), "x").expect("write bun old");
+        std::fs::create_dir_all(dir.join("bun-9.9")).expect("mkdir no-binary");
+        std::fs::create_dir_all(dir.join("bun-not-a-version")).expect("mkdir junk");
+
+        let resolved = resolve_managed_bun_runtime_in_roots(&[dir.clone()]);
+        let expected = dir.join("bun-1.3.14").join("bun");
+        assert_eq!(resolved.as_deref(), Some(expected.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// 验证：就绪行中的监听 URL 能被正确提取，噪声/缺失 URL 返回 None。
     #[test]

@@ -20,7 +20,11 @@ const createPayload = () => {
     '[Desktop Entry]', 'Name=OMPChamber', 'Exec=AppRun --no-sandbox %U', 'Icon=ompchamber', 'StartupWMClass=ompchamber', '',
   ].join('\n'));
   writeElf(path.join(root, 'ompchamber'), 'x64');
-  writeElf(path.join(root, 'resources/omp-host/omp-host'), 'x64');
+  fs.mkdirSync(path.join(root, 'resources/omp-host/dist'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'resources/omp-host/dist/host.js'), '// host bundle');
+  for (const name of ['pi_natives.linux-x64-baseline.node', 'pi_natives.linux-x64-modern.node']) {
+    writeElf(path.join(root, 'resources/omp-host/native', name), 'x64');
+  }
   for (const name of ['pty.node', 'sherpa-onnx.node']) {
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules', name), 'x64');
   }
@@ -79,12 +83,12 @@ test('fails on a missing native module', () => {
 test('fails on wrong host or native architecture', () => {
   const root = createPayload();
   try {
-    writeElf(path.join(root, 'resources/omp-host/omp-host'), 'arm64');
+    writeElf(path.join(root, 'resources/omp-host/native/pi_natives.linux-x64-modern.node'), 'arm64');
     assert.throws(() => verifyExtractedPayload({
       root,
       targetArchitecture: 'x64',
     }), /omp host/);
-    writeElf(path.join(root, 'resources/omp-host/omp-host'), 'x64');
+    writeElf(path.join(root, 'resources/omp-host/native/pi_natives.linux-x64-modern.node'), 'x64');
     writeElf(path.join(root, 'resources/app.asar.unpacked/node_modules/pty.node'), 'arm64');
     assert.throws(() => verifyExtractedPayload({
       root,

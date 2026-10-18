@@ -1,7 +1,7 @@
-// Verify the staged/packaged omp host binary for desktop builds.
+// Verify the staged/packaged omp host bundle for desktop builds.
 //
-// --staged   check resources/omp-host in the workspace (post prepare)
-// --packaged check the binary inside a packaged app directory
+// --staged   check resources/omp-host/dist in the workspace (post prepare)
+// --packaged check the bundle inside a packaged app directory
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -13,41 +13,71 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const electronRoot = path.resolve(__dirname, '..');
 const mode = process.argv.includes('--packaged') ? 'packaged' : 'staged';
 
-const binaryName = process.platform === 'win32' ? 'omp-host.exe' : 'omp-host';
+const hostBundleEntry = path.join('dist', 'host.js');
 const appBundleName = 'OMPChamber.app';
 const candidates =
   mode === 'staged'
-    ? [path.join(electronRoot, 'resources', 'omp-host', binaryName)]
+    ? [path.join(electronRoot, 'resources', 'omp-host', hostBundleEntry)]
     : [
         // In-app invocation (Electron sets process.resourcesPath).
-        path.join(process.resourcesPath ?? '', 'omp-host', binaryName),
+        path.join(process.resourcesPath ?? '', 'omp-host', hostBundleEntry),
         // electron-builder unpacked outputs for each desktop platform.
-        path.join(electronRoot, 'dist', 'win-unpacked', 'resources', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', 'win-arm64-unpacked', 'resources', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', 'linux-unpacked', 'resources', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', 'linux-arm64-unpacked', 'resources', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', 'mac', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
-        path.join(electronRoot, 'dist', 'mac-arm64', appBundleName, 'Contents', 'Resources', 'omp-host', binaryName),
-      ];
+        path.join(electronRoot, 'dist', 'win-unpacked', 'resources', 'omp-host', hostBundleEntry),
+        path.join(electronRoot, 'dist', 'win-arm64-unpacked', 'resources', 'omp-host', hostBundleEntry),
+        path.join(electronRoot, 'dist', 'linux-unpacked', 'resources', 'omp-host', hostBundleEntry),
+        path.join(electronRoot, 'dist', 'linux-arm64-unpacked', 'resources', 'omp-host', hostBundleEntry),
+        path.join(electronRoot, 'dist', 'mac', appBundleName, 'Contents', 'Resources', 'omp-host', hostBundleEntry),
+        path.join(electronRoot, 'dist', 'mac-arm64', appBundleName, 'Contents', 'Resources', 'omp-host', hostBundleEntry),
+        // The replaceable layer materializes omp-host next to web-dist; a
+        // packaged app that already booted once serves it from there.
+        process.env.OMPCHAMBER_LAYER_DIR ? path.join(process.env.OMPCHAMBER_LAYER_DIR, 'omp-host', hostBundleEntry) : null,
+      ].filter(Boolean);
 
-const binary = candidates.find((candidate) => fs.existsSync(candidate));
-if (!binary) {
-  console.error(`[electron] omp host binary not found (${mode}): ${candidates.join(', ')}`);
+const hostJs = candidates.find((candidate) => fs.existsSync(candidate));
+if (!hostJs) {
+  console.error(`[electron] omp host bundle not found (${mode}): ${candidates.join(', ')}`);
   process.exit(1);
 }
 
+// The bundle is plain JS and always boots under a Bun runtime (explicit env
+// → current process under Bun → PATH), mirroring resolveOmpHostRuntimeBinary.
+const runtimeBinary = process.env.OMPCHAMBER_OMP_HOST_RUNTIME?.trim()
+  || (process.versions?.bun ? process.execPath : 'bun');
+
+// pi_natives policy: staged dev layouts must carry the addon in the native/
+// sibling of dist/ (the bundled loader resolves <dist>/../native). Packaged
+// S3.5 builds ship no addon — it downloads next to the managed bun at first
+// boot — so they only require the manifest to pin a nativesVersion.
+const nativesDir = path.join(path.dirname(path.dirname(hostJs)), 'native');
+const nativesPresent = fs.existsSync(nativesDir)
+  && fs.readdirSync(nativesDir).some((entry) => /^pi_natives\..+\.node$/.test(entry));
+const nativesIntentionallyAbsent = mode === 'packaged' || process.env.OMPCHAMBER_STAGE_NATIVES === '0';
+if (!nativesPresent && !nativesIntentionallyAbsent) {
+  console.error(`[electron] omp host natives missing next to the staged bundle: ${nativesDir}`);
+  process.exit(1);
+}
+if (!nativesPresent && nativesIntentionallyAbsent) {
+  const manifestPath = path.join(path.dirname(path.dirname(hostJs)), 'bun-runtime.json');
+  const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : null;
+  if (!manifest?.nativesVersion) {
+    console.error(`[electron] packaged build ships no pi_natives and bun-runtime.json pins no nativesVersion: ${manifestPath}`);
+    process.exit(1);
+  }
+  console.log(`[electron] packaged build expects first-boot pi_natives ${manifest.nativesVersion} (managed runtime)`);
+}
+
 // Boot the host on a loopback port, poll /global/health until it reports
-// healthy, then stop it. This proves the compiled engine actually serves.
+// healthy, then stop it. This proves the bundled engine actually serves.
 const port = 3997;
 const healthCheckTimeoutMs = 30_000;
 
-const child = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
+const child = spawn(runtimeBinary, [hostJs, 'serve', '--hostname', '127.0.0.1', '--port', String(port)], {
   stdio: ['ignore', 'ignore', 'pipe'],
   windowsHide: true,
   // The desktop app launches the host with cwd at the user's home, far from
   // any node_modules. Booting from the workspace instead let Bun's resolver
   // find packages through cwd and hid a compiled-only startup hang (the
-  // 1.32.0 processes.v1 regression) behind a green verification.
+  //1.32.0 processes.v1 regression) behind a green verification.
   cwd: os.tmpdir(),
   // The verification protocol below polls without credentials; an ambient
   // OPENCODE_SERVER_PASSWORD (e.g. packaging run inside the desktop app)
@@ -105,17 +135,21 @@ const waitForHealthy = async () => {
         }
         console.log(`[electron] omp host capabilities: ${Object.keys(caps.features).length} features`);
         // processes.v1 mounts only when the engine found the pi-natives addon
-        // resident in the compiled process; a 501 here means the packaged
+        // resident in the host process; a 501 here means the packaged
         // host lost the session process monitor even though it serves.
-        const processes = await fetch(`http://127.0.0.1:${port}/omp/processes?directory=${encodeURIComponent(os.tmpdir())}`, {
-          signal: AbortSignal.timeout(5000),
-        }).catch(() => null);
-        if (!processes?.ok) {
-          console.error(`[electron] omp host processes.v1 check failed: HTTP ${processes?.status ?? 'unreachable'}`);
-          finish(1);
-          return;
+        // Natives-free packaged layouts exercise the addon after the
+        // first-boot managed-runtime download, not here.
+        if (nativesPresent) {
+          const processes = await fetch(`http://127.0.0.1:${port}/omp/processes?directory=${encodeURIComponent(os.tmpdir())}`, {
+            signal: AbortSignal.timeout(5000),
+          }).catch(() => null);
+          if (!processes?.ok) {
+            console.error(`[electron] omp host processes.v1 check failed: HTTP ${processes?.status ?? 'unreachable'}`);
+            finish(1);
+            return;
+          }
         }
-        console.log(`[electron] verified omp host ${mode}: ${binary}`);
+        console.log(`[electron] verified omp host ${mode}: ${hostJs}`);
         finish(0);
         return;
       }

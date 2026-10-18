@@ -21,6 +21,7 @@
 import path from 'node:path';
 import { errorText } from './omp-parity.ts';
 import { fileURLToPath } from 'node:url';
+import { declareWorkerHostEntry } from '@oh-my-pi/pi-utils/worker-host';
 import { isDispatchableInvocation, runWorkerDispatch } from './worker-dispatch.ts';
 import { OmpHostEngine } from './engine.ts';
 import { SessionBusyError } from './live-registry.ts';
@@ -164,7 +165,20 @@ export const startOmpHost = async ({ hostname = '127.0.0.1', port = 0, engine }:
 
 /** 是否作为脚本直接执行（Bun 的 import.meta.main；CJS 兼容回退 false）。 */
 const isMain = import.meta.main ?? false;
-if (isMain) {
+// Thread re-entry: once the host entry is declared, SDK thread workers spawn
+// `new Worker(<this module>, { argv: [__omp_worker_*] })`, re-entering here
+// with `import.meta.main === false`. Mirror SDK cli.ts's admission
+// (`isProcessEntry || !Bun.isMainThread`) so selectors dispatch on thread
+// re-entry; serving stays main-process-only.
+const isProcessEntry = isMain || (typeof Bun !== 'undefined' && !Bun.isMainThread);
+
+// Declare before anything can spawn workers: the embedded SDK resolves worker
+// respawn commands through the declared entry (pi-utils worker-host). Without
+// it subprocess workers fall back to `[bun, src/cli.ts]` at the package root,
+// which only exists in a source checkout — a bundle would 404.
+if (isMain) declareWorkerHostEntry();
+
+if (isProcessEntry) {
   const argv = process.argv.slice(2);
 
   // Self-relaunch guard: the embedded SDK spawns this same binary with
@@ -174,7 +188,7 @@ if (isMain) {
   if (isDispatchableInvocation(argv[0])) {
     const dispatched = await runWorkerDispatch(argv[0]);
     if (!dispatched) process.exitCode = 1;
-  } else {
+  } else if (isMain) {
     const args = parseArgs(argv);
     const host = await startOmpHost(args);
     console.log(`opencode server listening on ${host.baseUrl}`);
@@ -186,4 +200,7 @@ if (isMain) {
     process.on('SIGTERM', () => void shutdown('SIGTERM'));
     process.on('SIGINT', () => void shutdown('SIGINT'));
   }
+  // A worker thread re-entering without a dispatchable selector is a broken
+  // spawn: exit non-zero instead of idling inside the parent's process.
+  else process.exitCode = 1;
 }

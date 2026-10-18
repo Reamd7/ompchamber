@@ -213,37 +213,6 @@ describe('OpenCode env runtime', () => {
     expect(state.resolvedOpencodeBinarySource).toBe('path');
   });
 
-  it('recognizes the bundled CLI by canonical path', () => {
-    const bundledDir = createTempDir('ompchamber-bundled-opencode-');
-    const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
-    fs.writeFileSync(bundledBinary, '#!/bin/sh\nexit 0\n');
-    if (process.platform !== 'win32') fs.chmodSync(bundledBinary, 0o755);
-    process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
-    const { runtime } = createRuntime({});
-
-    expect(runtime.isBundledOpenCodeCliPath(bundledBinary)).toBe(true);
-    expect(runtime.isBundledOpenCodeCliPath(path.join(bundledDir, 'other'))).toBe(false);
-  });
-
-  it('keeps explicit OpenCode binary ahead of bundled CLI', () => {
-    const bundledDir = createTempDir('ompchamber-bundled-opencode-');
-    const bundledBinary = path.join(bundledDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
-    const explicitDir = createTempDir('ompchamber-explicit-opencode-');
-    const explicitBinary = path.join(explicitDir, process.platform === 'win32' ? 'opencode.exe' : 'opencode');
-    fs.writeFileSync(bundledBinary, '#!/bin/sh\nexit 0\n');
-    fs.writeFileSync(explicitBinary, '#!/bin/sh\nexit 0\n');
-    if (process.platform !== 'win32') {
-      fs.chmodSync(bundledBinary, 0o755);
-      fs.chmodSync(explicitBinary, 0o755);
-    }
-    process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR = bundledDir;
-    process.env.OPENCODE_BINARY = explicitBinary;
-    const { runtime, state } = createRuntime({});
-
-    expect(runtime.resolveOpencodeCliPath()).toBe(explicitBinary);
-    expect(state.resolvedOpencodeBinarySource).toBe('env');
-  });
-
   it('returns null when no omp host runtime resolves', () => {
     process.env.PATH = createTempDir('ompchamber-empty-path-');
     delete process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR;

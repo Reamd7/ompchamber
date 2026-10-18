@@ -1,5 +1,6 @@
 import React from 'react';
 import { OpenChamberVisualSettings } from './OpenChamberVisualSettings';
+import { RuntimeInfoSettings } from './RuntimeInfoSettings';
 import { AboutSettings } from './AboutSettings';
 import { SessionRetentionSettings } from './SessionRetentionSettings';
 import { PasskeySettings } from './PasskeySettings';
@@ -56,6 +57,7 @@ export const OMPChamberPage: React.FC<OMPChamberPageProps> = ({ section }) => {
                 <AppLinkSecuritySettings />
                 {isWebRuntime() && !isDesktopShell() && !isVSCode && !isCapacitorApp() && <PasskeySettings />}
                 {showAbout && <AboutSettings />}
+                {showAbout && <RuntimeInfoSettings />}
             </SettingsPageLayout>
         );
     }
@@ -142,6 +144,9 @@ const GeneralSectionContent: React.FC = () => {
         <>
             {showDesktopNetworkSettings && <DesktopNetworkSettings />}
             {showPasskeySettings && <PasskeySettings />}
+            {/* Desktop settings live in the General section; the mobile
+                web surface keeps the About page list mount below. */}
+            <RuntimeInfoSettings />
             <AppLinkSecuritySettings />
             {!isVSCode && <OMPChamberToolsSettings />}
             <OpenChamberVisualSettings visibleSettings={[

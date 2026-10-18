@@ -14,8 +14,20 @@ Same-origin session-chat iframes complete an authenticated parent-frame handshak
 
 The preload bridge exposes desktop-only APIs to the web UI through `window.__OMPCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI.
 
-## Main Files
+## Managed Bun Runtime
 
+The engine (omp host) always runs under Bun. Before the server child spawns,
+`prepareManagedBunRuntime()` guarantees one exists: a verified managed runtime
+under `<userData>/runtimes/bun-<version>/` (preferred, exported to children as
+`OMPCHAMBER_MANAGED_BUN_DIR`), then a PATH bun satisfying the pinned minimum,
+and only then a pinned download from `resources/bun-runtime.json` (sha256
+verified, extracted with the bundled `adm-zip` — never the system `unzip`,
+installed atomically via staging + rename, progress emitted as
+`ompchamber:bun-runtime-progress` IPC events). Server-side resolution mirrors
+the same order (`omp-host-launch.js` / server-rs `engine.rs`), so the web/CLI
+flows also pick up a managed runtime or fall back to PATH.
+
+## Main Files
 | File | Purpose |
 |------|---------|
 | `main.mjs` | Electron main process, app lifecycle, windows, menus, deep links, native IPC handlers, updates, local server startup |
@@ -24,8 +36,11 @@ The preload bridge exposes desktop-only APIs to the web UI through `window.__OMP
 | `ssh-manager.mjs` | SSH host import, connection lifecycle, tunnel/port forwarding helpers |
 | `scripts/electron-dev.mjs` | Desktop dev launcher with Rsbuild HMR support |
 | `scripts/ensure-electron.mjs` | Verifies the installed Electron binary is complete and repairs it via the postinstall under Bun |
+| `bun-runtime.mjs` | Managed Bun runtime: pinned download, sha256 verify, atomic install under `<userData>/runtimes`, progress events |
+| `scripts/prepare-bun-runtime-manifest.mjs` | Bakes `resources/bun-runtime.json` (pinned Bun version + per-platform zip sha256s from SHASUMS256.txt) |
+| `scripts/prepare-omp-host.mjs` | Bundles the omp host engine into `resources/omp-host/dist/host.js` (+ sidecar assets, `native/` pi_natives sibling) |
+| `scripts/verify-omp-host.mjs` | Boots the staged/packaged host bundle under a Bun runtime and probes `/global/health` + capabilities |
 | `scripts/build-web-assets.mjs` | Builds `packages/web` and stages UI assets into `resources/web-dist` |
-| `scripts/prepare-opencode-cli.mjs` | Downloads and stages the pinned OpenCode CLI into `resources/opencode-cli` |
 | `scripts/bundle-main.mjs` | Bundles Electron main code into `dist-bundle/main.mjs` for packaging |
 | `scripts/rebuild-native.mjs` | Rebuilds native modules against the Electron runtime |
 | `scripts/package.mjs` | Runs `electron-builder`, with unsigned Windows builds when signing env is missing |
@@ -73,10 +88,12 @@ bun run electron:build
 That runs, in order:
 
 1. `build:web-assets` to build the web UI and copy it into `packages/electron/resources/web-dist`.
-2. `prepare:opencode-cli` to download/cache the pinned OpenCode CLI and copy it into `packages/electron/resources/opencode-cli`.
-3. `bundle:main` to create `packages/electron/dist-bundle/main.mjs`.
-4. `rebuild:native` to rebuild native modules for Electron.
-5. `package.mjs` to run `electron-builder`; its `afterPack` hook stages the compiled macOS icon asset catalog.
+2. `prepare:bun-runtime` to bake the pinned managed-Bun manifest (`resources/bun-runtime.json`).
+3. `prepare:omp-host` to bundle the omp host engine into `resources/omp-host/dist` (+ pi_natives staging in dev).
+4. `bundle:main` to create `packages/electron/dist-bundle/main.mjs`.
+5. `rebuild:native` to rebuild native modules for Electron.
+6. `stage:ompchamber-asar` to pack the replaceable layer (`resources/ompchamber.asar` + `dist/ompchamber-<ver>.asar.br` + `dist/asar.yml`).
+7. `package.mjs` to run `electron-builder`; its `afterPack` hook stages the compiled macOS icon asset catalog.
 
 Build output goes to `packages/electron/dist`.
 

@@ -13,11 +13,20 @@ import { promisify } from 'node:util';
 import updaterPkg from 'electron-updater';
 import { ElectronSshManager } from './ssh-manager.mjs';
 import { replaceFileWithRetry } from './windows-file-replace.mjs';
+import {
+  ensureManagedBunRuntime,
+  ensureManagedBunNatives,
+  findValidManagedBun,
+  listManagedBuns,
+  readBunRuntimeManifest,
+  verifyBunBinary,
+} from './bun-runtime.mjs';
 import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { resolveStartupUrlProbePlan, shouldIgnoreLoopbackConnectionLimit } from './startup-url-selection.mjs';
 import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
+import { checkAsarLayerUpdate, downloadAsarLayerUpdate, resolveAsarUpdateFeed } from './layer-updater.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterChannel } from './updater-channel.mjs';
 import { resolveUpdaterFeed } from './updater-feed.mjs';
@@ -283,6 +292,8 @@ const state = {
   trayFocusListener: null,
   lastFocusedWindowId: null,
   keepAwakeBlockerId: null,
+  // Runtime resolution snapshot for the settings page (prepareManagedBunRuntime).
+  bunRuntime: null,
 };
 
 const setDesktopKeepAwakeActive = (enabled) => {
@@ -1598,6 +1609,10 @@ const spawnLocalServer = async () => {
   if (serverBackend !== 'js' && serverBackend !== 'rust') serverBackend = 'rust';
 
   state.desktopUiPassword = desktopUiPassword;
+  // The engine (omp host bundle) needs a Bun runtime; make sure a usable one
+  // exists (managed install with UI progress when the machine has none)
+  // before any server child spawns and inherits this env.
+  await prepareManagedBunRuntime();
   const handle = serverBackend === 'js'
     ? await startJsUiServer({ port: chosenPort, host: bindHost, uiPassword: desktopUiPassword || null })
     : await startRustUiServer({ port: chosenPort, host: bindHost });
@@ -1610,6 +1625,14 @@ const spawnLocalServer = async () => {
   recordElectronStartupPerformance('electron.server.ready', {
     durationMs: performance.now() - serverStartedAt,
   });
+
+  // E2E-only asar-update driver (scripts/asar-update-e2e.mjs): check →
+  // download → relaunch, leaving marker files the harness asserts. Double
+  // gated (OMPCHAMBER_E2E + OMPCHAMBER_ASAR_E2E_AUTO); production builds
+  // never take this path.
+  if (process.env.OMPCHAMBER_E2E === '1' && process.env.OMPCHAMBER_ASAR_E2E_AUTO === '1') {
+    void runAsarE2eAutoUpdate();
+  }
 
   await mutateSettingsRoot((root) => {
     root.desktopLocalPort = port;
@@ -1912,6 +1935,90 @@ const hardenDesktopPath = (currentPath) => {
   return [...additions, currentPath || ''].filter(Boolean).join(path.delimiter);
 };
 
+/**
+ * Ensure a usable Bun runtime exists for the engine (omp host bundle) before
+ * the server child spawns. Order: valid managed runtime (exported via
+ * OMPCHAMBER_MANAGED_BUN_DIR for every child) → valid `bun` on PATH → pinned
+ * download from resources/bun-runtime.json with UI progress events. Never
+ * blocks on dev machines without a manifest (they already run bun).
+ */
+const prepareManagedBunRuntime = async () => {
+  const manifest = readBunRuntimeManifest();
+  const userDataDir = app.getPath('userData');
+  const runtimesRoot = path.join(userDataDir, 'runtimes');
+  // Children (web/rust server → engine) resolve the managed dir themselves.
+  process.env.OMPCHAMBER_MANAGED_BUN_DIR = runtimesRoot;
+  if (!manifest) return;
+
+  const managed = findValidManagedBun(userDataDir, manifest);
+  if (managed) {
+    // Deterministic launch: a verified managed runtime wins over whatever
+    // bun happens to be on PATH today.
+    process.env.OMPCHAMBER_OMP_HOST_RUNTIME = managed.binary;
+    log.info(`[electron] using managed bun ${managed.verifiedVersion}: ${managed.binary}`);
+    state.bunRuntime = {
+      version: managed.verifiedVersion,
+      source: 'managed',
+      binary: managed.binary,
+    };
+    await ensureNativesNextTo(managed.binary, manifest);
+    return;
+  }
+
+  // Packaged builds always own their runtime: the installer ships no
+  // pi_natives addon, and the loader only reads natives from the bun
+  // executable's directory (S3.5) — a PATH bun cannot host them. Dev keeps
+  // the fast PATH shortcut.
+  if (!app.isPackaged) {
+    const pathBun = verifyBunBinary('bun', manifest.minimumVersion);
+    if (pathBun) {
+      log.info(`[electron] using PATH bun ${pathBun} (dev; no managed runtime installed)`);
+      state.bunRuntime = { version: pathBun, source: 'path', binary: 'bun' };
+      return;
+    }
+  }
+
+  log.info(`[electron] no usable bun found; downloading managed runtime ${manifest.version}`);
+  const installed = await ensureManagedBunRuntime({
+    userDataDir,
+    manifest,
+    onProgress: (event) => {
+      if (event.phase === 'download' && event.total > 0) {
+        setTaskbarProgress(Math.max(0.01, Math.min(1, event.received / event.total)));
+      }
+      emitToAllWindows('ompchamber:bun-runtime-progress', event);
+    },
+  });
+  setTaskbarProgress(-1);
+  if (installed) {
+    process.env.OMPCHAMBER_OMP_HOST_RUNTIME = installed.binary;
+    state.bunRuntime = {
+      version: installed.version,
+      source: 'managed',
+      binary: installed.binary,
+    };
+    await ensureNativesNextTo(installed.binary, manifest);
+    log.info(`[electron] installed managed bun ${installed.version}: ${installed.binary}`);
+  } else {
+    // Keep going: the engine spawn will surface an actionable error; the UI
+    // (settings page) offers retry and offline guidance.
+    log.error('[electron] managed bun download failed; engine launch will fail until bun is available');
+  }
+};
+
+/** First-boot pi_natives download into the managed bun directory (S3.5). */
+const ensureNativesNextTo = async (bunBinary, manifest) => {
+  if (!manifest?.nativesVersion) return;
+  const present = await ensureManagedBunNatives({
+    bunDir: path.dirname(bunBinary),
+    nativesVersion: manifest.nativesVersion,
+    onProgress: (event) => emitToAllWindows('ompchamber:bun-runtime-progress', event),
+  });
+  if (!present) {
+    log.error('[electron] pi_natives download failed; the engine will report missing-addon guidance');
+  }
+};
+
 const startRustUiServer = async ({ port, host }) => {
   const binary = resolveRustServerBinary();
   const childEnv = {
@@ -1923,7 +2030,14 @@ const startRustUiServer = async ({ port, host }) => {
     // (verified against the released dmg; with the env the bundled engine
     // resolves and is ready in ~4s).
     ...(!isDev && process.resourcesPath
-      ? { OMPCHAMBER_BUNDLED_OMP_HOST_DIR: path.join(process.resourcesPath, 'omp-host') }
+      ? {
+        // Layer-aware: the omp-host bundle rides inside the replaceable
+        // ompchamber.asar and is materialized next to web-dist; resources/
+        // keeps only the legacy single-asar fallback.
+        OMPCHAMBER_BUNDLED_OMP_HOST_DIR: process.env.OMPCHAMBER_LAYER_DIR
+          ? path.join(process.env.OMPCHAMBER_LAYER_DIR, 'omp-host')
+          : path.join(process.resourcesPath, 'omp-host'),
+      }
       : {}),
     // GUI cold starts of the engine can exceed the server's 30s default;
     // killing it mid-boot strands the engine (single-instance lock).
@@ -2797,7 +2911,11 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
         `--ompchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
         `--ompchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
       ],
-      preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
+      preload: isDev
+        ? path.join(__dirname, 'preload.mjs')
+        : (process.env.OMPCHAMBER_LAYER_DIR
+            ? path.join(process.env.OMPCHAMBER_LAYER_DIR, 'preload.mjs')
+            : path.join(app.getAppPath(), 'preload.mjs')),
       backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -3199,7 +3317,11 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
         `--ompchamber-macos-major=${desktopMacosMajor}`,
         `--ompchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
       ],
-      preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
+      preload: isDev
+        ? path.join(__dirname, 'preload.mjs')
+        : (process.env.OMPCHAMBER_LAYER_DIR
+            ? path.join(process.env.OMPCHAMBER_LAYER_DIR, 'preload.mjs')
+            : path.join(app.getAppPath(), 'preload.mjs')),
       backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -3412,6 +3534,66 @@ const compareSemver = (left, right) => {
     if (diff !== 0) return diff;
   }
   return 0;
+};
+
+/**
+ * E2E-only asar-layer auto-update driver. Mirrors the IPC path's dual-channel
+ * decision + light-channel download, writes marker files for the harness,
+ * and relaunches when an update staged successfully. Never throws: failures
+ * land in the `error` marker and the app keeps running for the harness.
+ */
+const runAsarE2eAutoUpdate = async () => {
+  const markerDir = process.env.OMPCHAMBER_ASAR_E2E_MARKER_DIR;
+  const mark = (name, value) => {
+    if (markerDir) fs.writeFileSync(path.join(markerDir, name), `${value}\n`);
+  };
+  mark('boot', `${APP_VERSION} layer=${process.env.OMPCHAMBER_LAYER_VERSION || 'none'}`);
+  try {
+    const layerCheck = await checkAsarLayerUpdate({
+      entryVersion: APP_VERSION,
+      layerVersion: process.env.OMPCHAMBER_LAYER_VERSION || '',
+      feedBaseUrl: resolveAsarUpdateFeed(),
+    });
+    mark('check', `${layerCheck.channel}:${layerCheck.manifest?.version || layerCheck.reason || ''}`);
+    if (layerCheck.channel !== 'asar') return;
+    await downloadAsarLayerUpdate({
+      manifest: layerCheck.manifest,
+      feedBaseUrl: resolveAsarUpdateFeed(),
+      updatesDir: path.join(app.getPath('userData'), 'updates'),
+      publicKey: process.env.OMPCHAMBER_UPDATE_PUBLIC_KEY || '',
+      allowUnsigned: process.env.OMPCHAMBER_UPDATES_ALLOW_UNSIGNED === '1',
+    });
+    mark('downloaded', layerCheck.manifest.version);
+    log.info(`[electron] asar e2e: staged ${layerCheck.manifest.version}; relaunching`);
+    // Same quit shape as desktop_restart: defer so pending IPC/boot work
+    // flushes, then relaunch + exit — an inline exit during boot can lose
+    // the relaunch registration entirely.
+    setImmediate(() => {
+      try {
+        prepareForQuit();
+        if (process.env.OMPCHAMBER_ASAR_E2E_NO_RELAUNCH === '1') {
+          app.exit(0);
+          return;
+        }
+        // app.relaunch is unreliable in some headless/Wayland sessions
+        // (verified: a minimal probe never re-executes); spawn the same
+        // binary + argv detached instead. Production restart paths keep the
+        // standard app.relaunch API.
+        const { spawn: spawnProcess } = require('node:child_process');
+        spawnProcess(process.execPath, process.argv.slice(1).filter((arg) => arg !== '--inspect'), {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env,
+        }).unref();
+        app.exit(0);
+      } catch (error) {
+        mark('error', `relaunch failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  } catch (error) {
+    mark('error', error instanceof Error ? error.message : String(error));
+    log.error('[electron] asar e2e driver failed', error);
+  }
 };
 
 const setupAutoUpdater = () => {
@@ -4802,9 +4984,88 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
     }
 
+    case 'desktop_runtime_info': {
+      // Settings page snapshot: app / replaceable-layer / engine-bundle /
+      // managed-bun versions and where each came from.
+      const layerDir = process.env.OMPCHAMBER_LAYER_DIR || null;
+      const hostBundleDir = layerDir
+        ? path.join(layerDir, 'omp-host')
+        : (!isDev && process.resourcesPath ? path.join(process.resourcesPath, 'omp-host') : null);
+      return {
+        appVersion: APP_VERSION,
+        layer: {
+          version: process.env.OMPCHAMBER_LAYER_VERSION || null,
+          asar: process.env.OMPCHAMBER_LAYER_ASAR || null,
+          dir: layerDir,
+        },
+        bun: state.bunRuntime,
+        hostBundleDir,
+        updateChannel: layerDir ? 'asar' : 'full',
+      };
+    }
+
+    case 'desktop_bun_runtime_manage': {
+      // Settings actions on the managed runtime: verify re-runs the --version
+      // + natives presence probes; redownload wipes the managed copy and
+      // reinstalls from the pinned manifest (progress via the usual
+      // ompchamber:bun-runtime-progress events).
+      const action = args?.action;
+      const userDataDir = app.getPath('userData');
+      const manifest = readBunRuntimeManifest();
+      if (!manifest) throw new Error('No bun runtime manifest available');
+      if (action === 'verify') {
+        const managed = findValidManagedBun(userDataDir, manifest);
+        return {
+          ok: Boolean(managed),
+          version: managed?.verifiedVersion ?? null,
+          binary: managed?.binary ?? null,
+        };
+      }
+      if (action === 'redownload') {
+        const root = path.join(userDataDir, 'runtimes');
+        for (const entry of listManagedBuns(userDataDir)) {
+          fs.rmSync(entry.dir, { recursive: true, force: true });
+        }
+        const installed = await ensureManagedBunRuntime({
+          userDataDir,
+          manifest,
+          onProgress: (event) => emitToAllWindows('ompchamber:bun-runtime-progress', event),
+        });
+        if (installed) {
+          state.bunRuntime = { version: installed.version, source: 'managed', binary: installed.binary };
+          process.env.OMPCHAMBER_OMP_HOST_RUNTIME = installed.binary;
+          await ensureNativesNextTo(installed.binary, manifest);
+        }
+        return { ok: Boolean(installed), version: installed?.version ?? null, binary: installed?.binary ?? null };
+      }
+      throw new Error(`Unknown bun runtime action: ${String(action)}`);
+    }
+
     case 'desktop_check_for_updates': {
       assertUpdaterCapability({ packaged: app.isPackaged });
       const currentVersion = APP_VERSION;
+      // Dual-channel decision (S3.4): the replaceable-layer feed wins when a
+      // newer asar exists AND the installed entry satisfies its minimum
+      // version; an exceeded minimumVersion forces the electron-updater full
+      // channel; 404/unreachable/disabled fall through to the full check.
+      const layerFeed = resolveAsarUpdateFeed();
+      const layerCheck = await checkAsarLayerUpdate({
+        entryVersion: currentVersion,
+        layerVersion: process.env.OMPCHAMBER_LAYER_VERSION || '',
+        feedBaseUrl: layerFeed,
+      });
+      if (layerCheck.channel === 'asar') {
+        log.info(`[electron] asar layer update available: ${layerCheck.manifest.version}`);
+        state.pendingUpdate = { version: layerCheck.manifest.version, asarUpdate: layerCheck.manifest, channel: 'asar' };
+        return {
+          available: true,
+          currentVersion,
+          version: layerCheck.manifest.version,
+          body: null,
+          date: null,
+          channel: 'asar',
+        };
+      }
       const { available, updateInfo, updateResult, nextVersion, pendingUpdate } = await checkForDesktopUpdate({
         autoUpdater,
         currentVersion,
@@ -4823,6 +5084,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         date:
           (typeof updateInfo?.releaseDate === 'string' && updateInfo.releaseDate) ||
           null,
+        channel: 'full',
       };
     }
 
@@ -4839,6 +5101,35 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         },
       }));
       try {
+        if (state.pendingUpdate.asarUpdate) {
+          // Light channel: stream the .asar.br, verify sha512 + signature,
+          // stage it as ompchamber.asar.tmp; the relaunch installs it.
+          log.info(`[electron] downloading asar layer update ${state.pendingUpdate.version}`);
+          await downloadAsarLayerUpdate({
+            manifest: state.pendingUpdate.asarUpdate,
+            feedBaseUrl: resolveAsarUpdateFeed(),
+            updatesDir: path.join(app.getPath('userData'), 'updates'),
+            publicKey: process.env.OMPCHAMBER_UPDATE_PUBLIC_KEY || '',
+            allowUnsigned: process.env.OMPCHAMBER_UPDATES_ALLOW_UNSIGNED === '1',
+            onProgress: ({ received: downloaded, total: contentLength }) => {
+              emitToAllWindows('ompchamber:update-progress', mapUpdaterProgressEvent({
+                event: 'Progress',
+                data: {
+                  chunkLength: 0,
+                  downloaded: Math.round(downloaded || 0),
+                  total: Math.round(contentLength || 0),
+                },
+              }));
+              if (contentLength > 0) setTaskbarProgress(Math.min(1, downloaded / contentLength));
+            },
+          });
+          state.pendingUpdate.downloaded = true;
+          emitToAllWindows('ompchamber:update-progress', mapUpdaterProgressEvent({
+            event: 'Finished',
+            data: {},
+          }));
+          return null;
+        }
         if (!state.pendingUpdate.electronUpdate) {
           throw new Error('Electron updater metadata is not available for this build');
         }

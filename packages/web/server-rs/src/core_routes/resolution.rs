@@ -190,6 +190,16 @@ pub(crate) fn resolve_omp_host_runtime(
         }
     }
 
+    // Managed runtime layer (mirror of omp-host-launch.js): a bun the
+    // desktop app installed under <userData>/runtimes (exported via
+    // OMPCHAMBER_MANAGED_BUN_DIR) or a manual ~/.ompchamber/runtimes install
+    // wins over PATH. Presence-only — install-time verification owns versions.
+    if let Some(managed) = crate::engine::resolve_managed_bun_runtime() {
+        if is_executable(&managed) {
+            return (Some(managed), Some("managed"));
+        }
+    }
+
     if let Some(found) = search_path_for("bun") {
         return (Some(found), Some("path"));
     }

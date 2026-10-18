@@ -333,82 +333,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
   };
 
 
-  /**
-   * 判断候选路径是否为 Windows 版 OpenCode 桌面应用自带的 opencode.exe
-   * （LOCALAPPDATA 下的 Programs\opencode\opencode.exe）。该副本与托管
-   * omp host 不兼容，解析 bundled CLI 时需要排除。
-   */
-  const isWindowsOpenCodeDesktopAppPath = (candidate) => {
-    if (process.platform !== 'win32' || typeof candidate !== 'string') {
-      return false;
-    }
-    const normalized = path.resolve(candidate).toLowerCase();
-    const localAppData = typeof process.env.LOCALAPPDATA === 'string' && process.env.LOCALAPPDATA.trim()
-      ? path.resolve(process.env.LOCALAPPDATA).toLowerCase()
-      : '';
-    if (!localAppData || !normalized.startsWith(`${localAppData}${path.sep}`)) {
-      return false;
-    }
-    return normalized.endsWith(`${path.sep}programs${path.sep}opencode${path.sep}opencode.exe`);
-  };
-
-  /** 枚举随应用分发的 opencode CLI 候选路径：OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR 与 Electron resources 目录下的 opencode-cli，按平台拼文件名。 */
-  const bundledOpenCodeCliCandidates = () => {
-    const names = process.platform === 'win32' ? ['opencode.exe'] : ['opencode'];
-    const roots = [
-      process.env.OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR,
-      typeof process.resourcesPath === 'string' ? path.join(process.resourcesPath, 'opencode-cli') : null,
-    ]
-      .map((value) => (typeof value === 'string' ? value.trim() : ''))
-      .filter(Boolean);
-
-    const candidates = [];
-    for (const root of roots) {
-      for (const name of names) {
-        candidates.push(path.join(root, name));
-      }
-    }
-    return candidates;
-  };
-
-  /** 返回首个存在且可执行、且不是 Windows 桌面应用自带副本的 bundled CLI 路径；无则 null。 */
-  const resolveBundledOpenCodeCliPath = () => {
-    for (const candidate of bundledOpenCodeCliCandidates()) {
-      if (isExecutable(candidate) && !isWindowsOpenCodeDesktopAppPath(candidate)) {
-        return candidate;
-      }
-    }
-    return null;
-  };
-
-  /** 求候选路径的规范形态：realpath.native 成功即用真实路径，失败退回 resolve 结果；空串返回 null。 */
-  const canonicalExecutablePath = (candidate) => {
-    if (typeof candidate !== 'string' || !candidate.trim()) return null;
-    try {
-      return fs.realpathSync.native(candidate.trim());
-    } catch {
-      return path.resolve(candidate.trim());
-    }
-  };
-
-  /** 判断候选路径（按规范形态比较，穿过 symlink）是否就是随应用分发的 opencode CLI。 */
-  const isBundledOpenCodeCliPath = (candidate) => {
-    const canonicalCandidate = canonicalExecutablePath(candidate);
-    if (!canonicalCandidate) return false;
-    return bundledOpenCodeCliCandidates().some((bundledCandidate) => (
-      canonicalExecutablePath(bundledCandidate) === canonicalCandidate
-    ));
-  };
-
-  /** bundled CLI 兜底：命中时把来源标记为 'bundled' 并返回路径，否则返回 null。 */
-  const bundledOpenCodeCliFallback = () => {
-    const bundled = resolveBundledOpenCodeCliPath();
-    if (!bundled) return null;
-    state.resolvedOpencodeBinarySource = 'bundled';
-    return bundled;
-  };
-
-
   /** 剥掉一整层包裹引号（Windows"复制文件地址"与带引号的 shell 片段）：字面引号不是真实路径的一部分，保留会让一切可执行性检查失效。 */
   // Strip a single wrapping quote pair (Windows "Copy as path" and quoted
   // shell snippets) — literal quotes are never part of a real path and break
@@ -1110,7 +1034,6 @@ export const createOpenCodeEnvRuntime = (deps) => {
     ensureOpencodeCliEnv,
     getLoginShellEnvSnapshot,
     resolveOpencodeCliPath,
-    isBundledOpenCodeCliPath,
     resolveManagedOpenCodeLaunchSpec,
     isExecutable,
     searchPathFor,

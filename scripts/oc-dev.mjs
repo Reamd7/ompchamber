@@ -53,7 +53,6 @@ Actions:
   start-mobile-dev                 Start mobile app with dev server live reload
   mobile-tools                     Mobile build/sync/deploy helper menu
   start-electron-app               Start Electron app in dev mode
-  prepare-opencode-cli             Download/cache bundled OpenCode CLI for Electron
   build-electron-app               Build Electron app artifacts
   start-vscode-extension           Build + launch VS Code extension host
   install-vscode-extension-local   Build, package, and install local VSIX
@@ -197,8 +196,6 @@ function normalizeAction(action = '') {
     'mobile-menu': 'mobile-tools',
     'remote-deploy-web': 'remote-deploy-web',
     'electron-dev': 'start-electron-app',
-    'opencode-cli': 'prepare-opencode-cli',
-    'electron-opencode-cli': 'prepare-opencode-cli',
     'electron-build': 'build-electron-app',
     'vscode-dev': 'start-vscode-extension',
     'vscode-install-local': 'install-vscode-extension-local',
@@ -538,7 +535,6 @@ function startElectronApp() {
 }
 
 function prepareOpenCodeCli() {
-  step('Preparing bundled OpenCode CLI', () => run('bun', ['--filter', '@ompchamber/electron', 'prepare:opencode-cli']));
 }
 
 function buildElectronApp() {
@@ -608,7 +604,6 @@ async function chooseAction(config) {
     { value: 'start-mobile-dev', label: 'Start mobile dev' },
     { value: 'mobile-tools', label: 'Mobile tools' },
     { value: 'start-electron-app', label: 'Start Electron app' },
-    { value: 'prepare-opencode-cli', label: 'Prepare bundled OpenCode CLI' },
     { value: 'build-electron-app', label: 'Build Electron app' },
     { value: 'start-vscode-extension', label: 'Start VS Code extension' },
     { value: 'install-vscode-extension-local', label: 'Install VS Code extension locally' },
@@ -654,9 +649,6 @@ async function main() {
       break;
     case 'start-electron-app':
       startElectronApp();
-      break;
-    case 'prepare-opencode-cli':
-      prepareOpenCodeCli();
       break;
     case 'build-electron-app':
       buildElectronApp();

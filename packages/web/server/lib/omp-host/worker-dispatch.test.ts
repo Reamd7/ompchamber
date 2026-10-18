@@ -11,6 +11,7 @@ import type {
   IpcWorkerTransport,
   LoadableWorkerDispatch,
 } from './worker-dispatch.ts';
+import type { WorkerInboxPort } from './worker-dispatch.ts';
 import type { RejectionInterceptor } from '@oh-my-pi/pi-coding-agent/eval/js/worker-core';
 /**
  * worker-dispatch 模块测试：`__omp_worker_*` 选择器的识别、分发与拒绝。
@@ -67,7 +68,7 @@ describe('worker-dispatch selector recognition', () => {
     for (const selector of SDK_SELECTORS) {
       const entry = resolveWorkerDispatch(selector);
       expect(entry).not.toBeNull();
-      expect(['env-server', 'ipc-worker', 'self-runner', 'unsupported']).toContain(entry?.kind ?? 'missing');
+      expect(['env-server', 'ipc-worker', 'self-runner', 'worker-thread', 'unsupported']).toContain(entry?.kind ?? 'missing');
     }
   });
 
@@ -138,11 +139,61 @@ describe('worker-dispatch execution', () => {
 
   test('self-runner selectors call the starter directly', async () => {
     const starter = mock(() => {});
-    const loadModule = mock(async () => ({ startComputerWorker: starter }));
-    const dispatched = await runWorkerDispatch('__omp_worker_computer', { loadModule });
+    const loadModule = mock(async () => ({ startTinyWorkerFromEnvironment: starter }));
+    const dispatched = await runWorkerDispatch('__omp_worker_tiny_inference', { loadModule });
     expect(dispatched).toBe(true);
     expect(starter).toHaveBeenCalledTimes(1);
     expect(starter.mock.calls[0]).toHaveLength(0);
+  });
+
+  test('computer worker runs its starter on a subprocess invocation (no inbox)', async () => {
+    const starter = mock(() => {});
+    const loadModule = mock(async () => ({ startComputerWorker: starter }));
+    const installInbox = mock((_port: WorkerInboxPort) => {});
+    const dispatched = await runWorkerDispatch('__omp_worker_computer', { loadModule, installInbox });
+    expect(dispatched).toBe(true);
+    expect(starter).toHaveBeenCalledTimes(1);
+    expect(installInbox).not.toHaveBeenCalled();
+  });
+
+  test('worker-thread selectors install the inbox before loading on thread re-entry', async () => {
+    const order: string[] = [];
+    const port: WorkerInboxPort = { on: () => order.push('inbox-attach') };
+    const loadModule = mock(async () => { order.push('module-load'); return {}; });
+    const dispatched = await runWorkerDispatch('__omp_worker_js_eval', {
+      inWorkerThread: true,
+      parentPort: port,
+      installInbox: (p) => { expect(p).toBe(port); order.push('inbox-attach'); },
+      loadModule,
+    });
+    expect(dispatched).toBe(true);
+    expect(order).toEqual(['inbox-attach', 'module-load']);
+  });
+
+  test('computer worker installs the inbox and calls its starter in a thread', async () => {
+    const starter = mock(() => {});
+    const port: WorkerInboxPort = { on: () => {} };
+    const installInbox = mock((_port: WorkerInboxPort) => {});
+    const loadModule = mock(async () => ({ startComputerWorker: starter }));
+    const dispatched = await runWorkerDispatch('__omp_worker_computer', {
+      inWorkerThread: true,
+      parentPort: port,
+      installInbox,
+      loadModule,
+    });
+    expect(dispatched).toBe(true);
+    expect(installInbox).toHaveBeenCalledWith(port);
+    expect(starter).toHaveBeenCalledTimes(1);
+  });
+
+  test('subprocess-only selectors refuse thread re-entry', async () => {
+    const restore = captureStderr();
+    const loadModule = mock(async () => ({ startDaemonBrokerFromEnvironment: () => {} }));
+    const dispatched = await runWorkerDispatch('__omp_worker_daemon_broker', { inWorkerThread: true, loadModule });
+    const output = restore();
+    expect(dispatched).toBe(false);
+    expect(loadModule).not.toHaveBeenCalled();
+    expect(output).toContain('subprocess invocation');
   });
 
   test('async self-runners are awaited (tiny worker owns the process lifetime)', async () => {

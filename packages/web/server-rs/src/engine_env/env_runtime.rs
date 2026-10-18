@@ -21,9 +21,6 @@
 //!   the JS tests ran under.
 //!
 //! Known gaps (see PORT-MANIFEST.md):
-//! - `process.resourcesPath` (Electron-only) does not exist for the bundled
-//!   CLI candidate list; only `OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR` is read.
-//! - JS `bundledOpenCodeCliFallback` (and the `resolveBundledOpenCodeCliPath`
 //!   / `isWindowsOpenCodeDesktopAppPath` helpers only it called) is dead code
 //!   in the JS module — defined, never called — and is intentionally not
 //!   ported.
@@ -306,21 +303,16 @@ pub enum BinarySource {
     Path,
     /// 来自固定 fallback 路径（如 ~/.bun/bin、/opt/homebrew/bin）。
     Fallback,
-    /// 来自内置 CLI 目录。
-    Bundled,
-    /// 已解析但来源未细分（ensure 流程的默认补记）。
     Unknown,
 }
 
 /// BinarySource 与 JS 字符串表示的互转。
 impl BinarySource {
-    /// 返回 JS 使用的来源字符串（"env"/"path"/"fallback"/"bundled"/"unknown"）。
     pub fn as_str(self) -> &'static str {
         match self {
             BinarySource::Env => "env",
             BinarySource::Path => "path",
             BinarySource::Fallback => "fallback",
-            BinarySource::Bundled => "bundled",
             BinarySource::Unknown => "unknown",
         }
     }
@@ -893,61 +885,6 @@ impl EnvRuntime {
             "PATH",
             Some(merge_path_values(&shell_path, &current_path, path_delim())),
         );
-    }
-
-    // -- Bundled CLI ----------------------------------------------------------
-
-    /// 构造内置 opencode CLI 候选路径列表：仅读取
-    /// OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR 目录下的 opencode（Windows 为
-    /// opencode.exe）；Electron 的 process.resourcesPath 在独立 server 不存在。
-    fn bundled_open_code_cli_candidates(&self) -> Vec<String> {
-        let names: [&str; 1] = if self.platform() == Platform::Windows {
-            ["opencode.exe"]
-        } else {
-            ["opencode"]
-        };
-        // JS also considers `process.resourcesPath/opencode-cli`; that is an
-        // Electron-only global the standalone server never has.
-        let mut roots: Vec<String> = Vec::new();
-        if let Some(dir) = self.env_get("OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR") {
-            let trimmed = dir.trim();
-            if !trimmed.is_empty() {
-                roots.push(trimmed.to_string());
-            }
-        }
-        let mut candidates = Vec::new();
-        for root in &roots {
-            for name in names {
-                candidates.push(join(&[root, name]));
-            }
-        }
-        candidates
-    }
-
-    /// 返回候选的规范化路径：优先 std::fs::canonicalize（解析符号链接），
-    /// 失败时退回词法 resolve；空候选返回 None。
-    fn canonical_executable_path(&self, candidate: &str) -> Option<String> {
-        let trimmed = candidate.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        match std::fs::canonicalize(trimmed) {
-            Ok(real) => Some(real.to_string_lossy().to_string()),
-            Err(_) => Some(lexical_resolve(trimmed)),
-        }
-    }
-
-    /// 判断候选是否为内置 CLI：其规范化路径与任一内置候选的规范化路径完全一致。
-    pub fn is_bundled_open_code_cli_path(&self, candidate: &str) -> bool {
-        let Some(canonical_candidate) = self.canonical_executable_path(candidate) else {
-            return false;
-        };
-        self.bundled_open_code_cli_candidates()
-            .iter()
-            .any(|bundled| {
-                self.canonical_executable_path(bundled)
-                    .is_some_and(|canonical| canonical == canonical_candidate)
-            })
     }
 
     // -- Binary resolution ----------------------------------------------------
@@ -2328,60 +2265,7 @@ mod tests {
         );
     }
 
-    /// 验证 is_bundled_open_code_cli_path 经 canonical 路径比对识别内置 CLI 目录下的
-    /// opencode；同目录下的其它路径不匹配。
-    #[test]
-    fn recognizes_bundled_cli_by_canonical_path() {
-        let bundled_dir = temp_dir("bundled-opencode");
-        let bundled_binary = write_executable(&bundled_dir.join("opencode"), "#!/bin/sh\nexit 0\n");
-        let runtime = EnvRuntime::with_seams(
-            env_of(&[(
-                "OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR",
-                bundled_dir.to_str().unwrap(),
-            )]),
-            noop_spawn(),
-            home_of(temp_dir("home")),
-            Platform::Unix,
-        );
 
-        assert!(runtime.is_bundled_open_code_cli_path(&bundled_binary));
-        assert!(
-            !runtime.is_bundled_open_code_cli_path(bundled_dir.join("other").to_str().unwrap())
-        );
-    }
-
-    /// 验证 OPENCODE_BINARY 显式指定的可执行文件优先于内置 CLI 候选，
-    /// 来源标记为 BinarySource::Env。
-    #[test]
-    fn explicit_binary_beats_bundled_cli() {
-        let bundled_dir = temp_dir("bundled-opencode");
-        let explicit_dir = temp_dir("explicit-opencode");
-        let bundled_binary = write_executable(&bundled_dir.join("opencode"), "#!/bin/sh\nexit 0\n");
-        let explicit_binary =
-            write_executable(&explicit_dir.join("opencode"), "#!/bin/sh\nexit 0\n");
-        let runtime = EnvRuntime::with_seams(
-            env_of(&[
-                (
-                    "OMPCHAMBER_BUNDLED_OPENCODE_CLI_DIR",
-                    bundled_dir.to_str().unwrap(),
-                ),
-                ("OPENCODE_BINARY", &explicit_binary),
-            ]),
-            noop_spawn(),
-            home_of(temp_dir("home")),
-            Platform::Unix,
-        );
-
-        assert_eq!(runtime.resolve_opencode_cli_path(), Some(explicit_binary));
-        assert_eq!(
-            runtime.resolved_opencode_binary_source(),
-            Some(BinarySource::Env)
-        );
-        assert_ne!(
-            runtime.resolve_opencode_cli_path(),
-            Some(bundled_binary.clone())
-        );
-    }
 
     /// 验证 PATH 与 home 目录都找不到 bun 时落到绝对路径 fallback
     /// （/opt/homebrew/bin、/usr/local/bin）；宿主机不存在则返回 None。

@@ -1,12 +1,12 @@
 // Stage the OMPChamber omp host as a self-contained binary for packaged
+// Stage the OMPChamber omp host as a self-contained JS bundle for packaged
 // desktop builds.
-//
 // The host (packages/web/server/lib/omp-host) embeds @oh-my-pi/
-// pi-coding-agent and serves the OpenCode-compatible wire surface. We compile
-// it with `bun build --compile` so the packaged app needs no separate Bun
-// runtime. Output: resources/omp-host/omp-host(.exe), verified by running
-// `--version`-style readiness (the host serves /global/health, so verification
-// is done by verify-omp-host.mjs at packaging time).
+// pi-coding-agent and serves the OpenCode-compatible wire surface. We bundle
+// it with `bun build --target=bun --format=esm` so the packaged app ships one
+// host.js plus emitted sidecar assets, executed by a Bun runtime resolved at
+// launch (managed runtime or PATH — see omp-host-launch.js). Verified by
+// probing /global/health (verify-omp-host.mjs at packaging time).
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -136,61 +136,74 @@ const main = async () => {
   }
   const targetArchitecture = resolveTargetArchitecture();
   const target = process.env.OMPCHAMBER_OMP_HOST_COMPILE_TARGET || targetForPlatform(process.platform, targetArchitecture);
-  const binaryName = process.platform === 'win32' ? 'omp-host.exe' : 'omp-host';
-  const outputBinary = path.join(outputDir, binaryName);
+  // Layout: resources/omp-host/dist/ holds the bundle (host.js + emitted
+  // assets) and resources/omp-host/native/ the pi_natives addon. The split is
+  // load-bearing: the bundled loader resolves its nativeDir as
+  // `<host.js dir>/../native`, so the addon must sit in a `native/` sibling of
+  // the bundle directory (a flat layout would put the addon on a path the
+  // loader never reads — the per-user ~/.omp/natives cache is only consulted
+  // for compiled binaries).
+  const bundleDir = path.join(outputDir, 'dist');
+  const nativesDir = path.join(outputDir, 'native');
+  const hostBundle = path.join(bundleDir, 'host.js');
 
   const expectedDescriptor = `${target}`;
-  const descriptorPath = path.join(outputDir, '.build-target');
-  const alreadyCompiled = fs.existsSync(outputBinary)
+  const descriptorPath = path.join(bundleDir, '.build-target');
+  const alreadyBuilt = fs.existsSync(hostBundle)
     && fs.existsSync(descriptorPath)
     && fs.readFileSync(descriptorPath, 'utf8').trim() === expectedDescriptor;
-  if (alreadyCompiled) {
-    console.log(`[electron] bundled omp host already prepared: ${outputBinary} (${expectedDescriptor})`);
+  if (alreadyBuilt) {
+    console.log(`[electron] bundled omp host already prepared: ${hostBundle} (${expectedDescriptor})`);
   } else {
     fs.mkdirSync(outputDir, { recursive: true });
-    for (const entry of fs.readdirSync(outputDir)) {
-      if (entry === '.gitkeep') continue;
-      fs.rmSync(path.join(outputDir, entry), { recursive: true, force: true });
-    }
+    fs.rmSync(bundleDir, { recursive: true, force: true });
+    fs.rmSync(nativesDir, { recursive: true, force: true });
+    fs.mkdirSync(bundleDir, { recursive: true });
 
-    // Cross-compiling for a foreign platform needs the matching bun build
-    // target; same-platform builds use the local bun directly.
-    const compileArgs = [
+    // The bundle itself is platform-neutral JS plus emitted assets, so the
+    // runtime target is always `bun` (full triples are only valid for
+    // `--compile`). The resolved target triple still drives pi_natives
+    // variant selection below and the rebuild descriptor.
+    const buildArgs = [
       'build',
-      '--compile',
-      ...(target ? ['--target', target] : []),
+      '--target', 'bun',
+      '--format', 'esm',
       // Optional omp extension surface that only exists inside the omp repo.
       '--external',
       'omp-legacy-pi-modules',
       hostEntry,
-      '--outfile',
-      outputBinary,
+      '--outdir',
+      bundleDir,
     ];
-    console.log(`[electron] compiling omp host (${target || 'local'})`);
-    const result = spawnSync('bun', compileArgs, {
+    console.log(`[electron] bundling omp host (${target})`);
+    const result = spawnSync('bun', buildArgs, {
       cwd: path.join(workspaceRoot, 'packages', 'web'),
       stdio: 'inherit',
       windowsHide: true,
     });
     if (result.status !== 0) {
-      throw new Error(`bun build --compile failed with status ${result.status}`);
+      throw new Error(`bun build failed with status ${result.status}`);
     }
-    if (!fs.existsSync(outputBinary)) {
-      throw new Error(`compile produced no binary at ${outputBinary}`);
-    }
-    if (process.platform !== 'win32') {
-      fs.chmodSync(outputBinary, 0o755);
+    if (!fs.existsSync(hostBundle)) {
+      throw new Error(`bundle produced no host.js at ${hostBundle}`);
     }
     fs.writeFileSync(descriptorPath, expectedDescriptor);
-    console.log(`[electron] prepared omp host: ${outputBinary} (${expectedDescriptor})`);
+    console.log(`[electron] prepared omp host: ${hostBundle} (${expectedDescriptor})`);
   }
 
   const nativesTarget = parseCompileTarget(target)
     ?? { platform: process.platform, arch: targetArchitecture.opencode };
+  if (process.env.OMPCHAMBER_STAGE_NATIVES === '0') {
+    // S3.5 packaging: the installer ships no addon; first boot downloads it
+    // next to the managed bun runtime (main.mjs ensureNativesNextTo).
+    console.log('[electron] skipping omp natives staging (OMPCHAMBER_STAGE_NATIVES=0)');
+    return;
+  }
+  fs.mkdirSync(nativesDir, { recursive: true });
   await stageNatives({
     platform: nativesTarget.platform,
     arch: nativesTarget.arch,
-    outputDir,
+    outputDir: nativesDir,
     workspaceRoot,
   });
 };

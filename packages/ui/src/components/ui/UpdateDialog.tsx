@@ -333,6 +333,11 @@ export const UpdateDialog: React.FC<UpdateDialogProps> = ({
               {info?.version && (
                 <span className="text-[var(--primary-base)] font-medium">{info.version}</span>
               )}
+              {info?.channel === 'asar' && (
+                <span className="ml-1 rounded px-1.5 py-0.5 typography-meta text-muted-foreground bg-[var(--surface-subtle)]">
+                  {t('settings.ompchamber.runtime.channel.light')}
+                </span>
+              )}
             </div>
           )}
         </div>

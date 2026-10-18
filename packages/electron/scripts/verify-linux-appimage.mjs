@@ -88,8 +88,28 @@ export const verifyExtractedPayload = ({
   if (!/^Exec=AppRun(?:\s|$)/m.test(desktop)) throw new Error('Desktop identity mismatch: expected AppImage AppRun entrypoint');
 
   assertElfArchitecture(path.join(root, 'ompchamber'), target.node, 'Electron executable');
-  const hostPath = path.join(root, 'resources', 'omp-host', 'omp-host');
-  assertElfArchitecture(hostPath, target.node, 'omp host');
+  // The omp host ships as a JS bundle (dist/host.js) executed by a Bun
+  // runtime; the ELF-arch fixtures of the payload are its pi_natives addons,
+  // which the bundled loader resolves from the native/ sibling of dist/.
+  const hostBundle = path.join(root, 'resources', 'omp-host', 'dist', 'host.js');
+  if (!fs.existsSync(hostBundle)) throw new Error(`Missing omp host bundle: ${hostBundle}`);
+  const hostNativesDir = path.join(root, 'resources', 'omp-host', 'native');
+  const hostNatives = fs.existsSync(hostNativesDir)
+    ? fs.readdirSync(hostNativesDir).filter((name) => /^pi_natives\..+\.node$/.test(name))
+    : [];
+  if (hostNatives.length > 0) {
+    for (const name of hostNatives) {
+      assertElfArchitecture(path.join(hostNativesDir, name), target.node, `omp host native ${name}`);
+    }
+  } else {
+    // S3.5 slim installers ship no addon; first boot downloads it next to
+    // the managed bun runtime, pinned by bun-runtime.json.nativesVersion.
+    const manifestPath = path.join(root, 'resources', 'bun-runtime.json');
+    const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : null;
+    if (!manifest?.nativesVersion) {
+      throw new Error(`Missing omp host natives (${hostNativesDir}) and no bun-runtime.json nativesVersion pin`);
+    }
+  }
 
   const unpackedModules = path.join(root, 'resources', 'app.asar.unpacked', 'node_modules');
   if (!fs.existsSync(unpackedModules)) throw new Error(`Missing unpacked native modules: ${unpackedModules}`);

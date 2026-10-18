@@ -1,0 +1,42 @@
+{
+  "version": "1.3.14",
+  "minimumVersion": ">=1.3.14",
+  "nativesVersion": "18.11.3",
+  "assets": {
+    "linux-x64": {
+      "file": "bun-linux-x64.zip",
+      "sha256": "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip"
+    },
+    "linux-x64-musl": {
+      "file": "bun-linux-x64-musl.zip",
+      "sha256": "14bd9aedeebf1dba67e8def9531c89bc989ecfdf1de42e5bfcaf1b8cd9294719",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64-musl.zip"
+    },
+    "linux-arm64": {
+      "file": "bun-linux-aarch64.zip",
+      "sha256": "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-aarch64.zip"
+    },
+    "linux-arm64-musl": {
+      "file": "bun-linux-aarch64-musl.zip",
+      "sha256": "b98e0ad3625c5c00d1d5b5ff55605c7adddbfae151861e68ade57b2d3b8703bb",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-aarch64-musl.zip"
+    },
+    "darwin-x64": {
+      "file": "bun-darwin-x64.zip",
+      "sha256": "4183df3374623e5bab315c547cfa0974533cd457d86b73b639f7a87974cd6633",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-x64.zip"
+    },
+    "darwin-arm64": {
+      "file": "bun-darwin-aarch64.zip",
+      "sha256": "d8b96221828ad6f97ac7ac0ab7e95872341af763001e8803e8267652c2652620",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-darwin-aarch64.zip"
+    },
+    "win32-x64": {
+      "file": "bun-windows-x64.zip",
+      "sha256": "0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922",
+      "url": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64.zip"
+    }
+  }
+}

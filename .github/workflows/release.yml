@@ -15,6 +15,11 @@ on:
         required: false
         default: false
         type: boolean
+      asar_minimum_version:
+        description: 'Minimum installer (entry) version for the light asar channel — set to the release version ONLY when the stable layer changed (entry.mjs / Electron / app.asar natives); older installs are then pushed to the full-installer channel'
+        required: false
+        default: '0.0.1'
+        type: string
 
 permissions:
   contents: write
@@ -121,7 +126,7 @@ jobs:
           rm -rf "$HOME/.omp/natives"
           node -e "import('$PREFIX/lib/node_modules/@ompchamber/web/server/lib/opencode/omp-host-natives.js').then((m) => m.ensureOmpHostNatives())"
           ls "$HOME"/.omp/natives/*/pi_natives.linux-x64-*.node
-          (bun "$PREFIX/lib/node_modules/@ompchamber/web/server/lib/omp-host/host.js" serve --hostname 127.0.0.1 --port 3941 > "$RUNNER_TEMP/host.log" 2>&1 &)
+          (bun "$PREFIX/lib/node_modules/@ompchamber/web/server/lib/omp-host/host.ts" serve --hostname 127.0.0.1 --port 3941 > "$RUNNER_TEMP/host.log" 2>&1 &)
           for i in $(seq 1 20); do
             if curl -sf --max-time 2 http://127.0.0.1:3941/global/health > /dev/null; then break; fi
             sleep 2
@@ -136,7 +141,7 @@ jobs:
             ls -la "$HOME"/.omp/natives/*/ 2>/dev/null || echo "(no natives staged)"
             exit 1
           fi
-          pkill -f 'omp-host/host.js serve' || true
+          pkill -f 'omp-host/host.ts serve' || true
           echo "--- serve.log ---"; head -20 "$RUNNER_TEMP/serve.log"
 
       - name: Stage latest alias
@@ -201,21 +206,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Get bundled omp host version
-        id: opencode_cli_version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').dependencies['@oh-my-pi/pi-coding-agent']")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Cache bundled omp host artifact
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: packages/electron/.cache/omp-host
-          key: omp-host-${{ runner.os }}-${{ matrix.arch }}-${{ steps.opencode_cli_version.outputs.version }}
-          restore-keys: |
-            omp-host-${{ runner.os }}-${{ matrix.arch }}-
-
       - name: Setup Rust
         if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
@@ -269,9 +259,24 @@ jobs:
           if [ "${{ matrix.backend }}" = "rust" ]; then
             bun run prepare:rust-server
           fi
-          bun run prepare:omp-host
-          bun run verify:omp-host
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            # S3.5: rust installers ship no pi_natives (first-boot managed
+            # download); the js parity build still bundles them.
+            OMPCHAMBER_STAGE_NATIVES=0 bun run prepare:omp-host
+            OMPCHAMBER_STAGE_NATIVES=0 bun run verify:omp-host
+          else
+            bun run prepare:omp-host
+            bun run verify:omp-host
+          fi
           bun run bundle:main
+          # Platform-neutral replaceable layer: baseline asar + pubkey ship in
+          # extraResources on every platform; the signed .br/asar.yml update
+          # artifact is staged once by the linux job (single download source).
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            OMPCHAMBER_UPDATE_PUBLIC_KEY="${{ secrets.OMPCHAMBER_UPDATE_PUBLIC_KEY }}" \
+              OMPCHAMBER_BROTLI_QUALITY=4 \
+              bun run stage:ompchamber-asar
+          fi
           # npmRebuild=false in package.json, so electron-builder won't
           # recompile native deps on its own — we must rebuild against the
           # target Electron ABI before packaging, otherwise node-pty/bun-pty
@@ -412,21 +417,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Get bundled omp host version
-        id: opencode_cli_version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').dependencies['@oh-my-pi/pi-coding-agent']")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Cache bundled omp host artifact
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: packages/electron/.cache/omp-host
-          key: omp-host-${{ runner.os }}-${{ matrix.arch }}-${{ steps.opencode_cli_version.outputs.version }}
-          restore-keys: |
-            omp-host-${{ runner.os }}-${{ matrix.arch }}-
-
       - name: Switch server backend variant
         working-directory: packages/electron
         shell: bash
@@ -442,8 +432,22 @@ jobs:
         working-directory: packages/electron
         shell: bash
         run: |
-          bun run prepare:omp-host
-          bun run verify:omp-host
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            # S3.5: rust installers ship no pi_natives (first-boot managed
+            # download); the js parity build still bundles them.
+            OMPCHAMBER_STAGE_NATIVES=0 bun run prepare:omp-host
+            OMPCHAMBER_STAGE_NATIVES=0 bun run verify:omp-host
+          else
+            bun run prepare:omp-host
+            bun run verify:omp-host
+          fi
+          # See the linux job: every rust build stages the baseline layer for
+          # its extraResources; the linux job owns the signed update artifact.
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            OMPCHAMBER_UPDATE_PUBLIC_KEY="${{ secrets.OMPCHAMBER_UPDATE_PUBLIC_KEY }}" \
+              OMPCHAMBER_BROTLI_QUALITY=4 \
+              bun run stage:ompchamber-asar
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -582,21 +586,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Get bundled omp host version
-        id: opencode_cli_version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').dependencies['@oh-my-pi/pi-coding-agent']")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Cache bundled omp host artifact
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: packages/electron/.cache/omp-host
-          key: omp-host-${{ runner.os }}-${{ matrix.arch }}-${{ steps.opencode_cli_version.outputs.version }}
-          restore-keys: |
-            omp-host-${{ runner.os }}-${{ matrix.arch }}-
-
       - name: Setup Rust
         if: ${{ matrix.backend == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
@@ -628,10 +617,26 @@ jobs:
           if [ "${{ matrix.backend }}" = "rust" ]; then
             bun run prepare:rust-server
           fi
-          bun run prepare:omp-host
-          bun run verify:omp-host
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            # S3.5: rust installers ship no pi_natives (first-boot managed
+            # download); the js parity build still bundles them.
+            OMPCHAMBER_STAGE_NATIVES=0 bun run prepare:omp-host
+            OMPCHAMBER_STAGE_NATIVES=0 bun run verify:omp-host
+          else
+            bun run prepare:omp-host
+            bun run verify:omp-host
+          fi
           bun run bundle:main
           bun run rebuild:native
+          # Platform-neutral replaceable-layer artifact (natives excluded —
+          # they arrive via the managed runtime): one .br + asar.yml serves
+          # every desktop platform from releases/latest/download.
+          if [ "${{ matrix.backend }}" = "rust" ]; then
+            OMPCHAMBER_UPDATE_PUBLIC_KEY="${{ secrets.OMPCHAMBER_UPDATE_PUBLIC_KEY }}" \
+              OMPCHAMBER_UPDATE_PRIVATE_KEY="${{ secrets.OMPCHAMBER_UPDATE_PRIVATE_KEY }}" \
+              OMPCHAMBER_ASAR_MINIMUM_VERSION="${{ github.event.inputs.asar_minimum_version || '0.0.1' }}" \
+              bun run stage:ompchamber-asar
+          fi
           JS_NAME_ARG=""
           if [ "${{ matrix.backend }}" = "js" ]; then
             JS_NAME_ARG="-c.linux.artifactName=\${productName}-\${version}-linux-\${arch}-js.\${ext}"
@@ -663,6 +668,8 @@ jobs:
           path: |
             packages/electron/dist/OMPChamber-${{ needs.create-release.outputs.version }}-linux-${{ matrix.artifact_arch }}.AppImage
             packages/electron/dist/${{ matrix.manifest }}
+            packages/electron/dist/ompchamber-${{ needs.create-release.outputs.version }}.asar.br
+            packages/electron/dist/asar.yml
           if-no-files-found: error
           retention-days: 1
 
@@ -732,6 +739,8 @@ jobs:
             artifacts/x64/latest-linux.yml
             artifacts/arm64/OMPChamber-${{ needs.create-release.outputs.version }}-linux-arm64.AppImage
             artifacts/arm64/latest-linux-arm64.yml
+            artifacts/x64/ompchamber-${{ needs.create-release.outputs.version }}.asar.br
+            artifacts/x64/asar.yml
             artifacts/x64-js/*-js.AppImage
             artifacts/arm64-js/*-js.AppImage
         env:

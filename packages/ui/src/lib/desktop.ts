@@ -17,6 +17,8 @@ export type UpdateInfo = {
   available: boolean;
   version?: string;
   currentVersion: string;
+  /** Which channel answered: 'asar' (light replaceable-layer) or 'full'. */
+  channel?: 'asar' | 'full';
   body?: string;
   date?: string;
   releaseUrl?: string;
@@ -743,6 +745,57 @@ export const checkForDesktopUpdates = async (): Promise<UpdateInfo | null> => {
   // latest-linux*.yml is already normalized to available:false in main.
   const info = await invokeDesktop<UpdateInfo>('desktop_check_for_updates');
   return info as UpdateInfo;
+};
+
+/** Runtime versions/sources snapshot from the desktop main process. */
+export type DesktopRuntimeInfo = {
+  appVersion: string;
+  layer: { version: string | null; asar: string | null; dir: string | null };
+  bun: { version: string; source: string; binary: string } | null;
+  hostBundleDir: string | null;
+  updateChannel: 'asar' | 'full';
+};
+
+export const getDesktopRuntimeInfo = async (): Promise<DesktopRuntimeInfo | null> => {
+  if (!hasDesktopInvoke()) return null;
+  return await invokeDesktop<DesktopRuntimeInfo>('desktop_runtime_info');
+};
+
+/** Managed bun runtime progress phases from the main process. */
+export type BunRuntimeProgress = {
+  phase: 'download' | 'verify' | 'install' | 'natives-download' | 'natives-done' | 'done' | 'error';
+  version?: string;
+  received?: number;
+  total?: number;
+  message?: string;
+};
+
+export const listenBunRuntimeProgress = async (
+  onProgress: (progress: BunRuntimeProgress) => void,
+): Promise<(() => void) | null> => {
+  const bridge = getDesktopBridge();
+  if (!bridge?.listen) return null;
+  const unlisten = await bridge.listen('ompchamber:bun-runtime-progress', (evt) => {
+    const payload = evt?.payload;
+    // SAFETY: the main process emits bunRuntimeProgress(...) objects on this
+    // channel only; parse the domain field at this I/O boundary and drop
+    // malformed/disconnect events without inventing a second wire format.
+    const progress = payload as BunRuntimeProgress | null | undefined;
+    if (progress && progress.phase) {
+      onProgress(progress);
+    }
+  });
+  return unlisten ?? null;
+};
+
+export const manageDesktopBunRuntime = async (
+  action: 'verify' | 'redownload',
+): Promise<{ ok: boolean; version: string | null; binary: string | null } | null> => {
+  if (!hasDesktopInvoke()) return null;
+  return await invokeDesktop<{ ok: boolean; version: string | null; binary: string | null }>(
+    'desktop_bun_runtime_manage',
+    { action },
+  );
 };
 
 export const downloadDesktopUpdate = async (

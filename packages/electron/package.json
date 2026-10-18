@@ -5,8 +5,10 @@
   "description": "Electron desktop runtime for OMPChamber",
   "author": "OMPChamber",
   "type": "module",
-  "main": "./dist-bundle/main.mjs",
+  "main": "./entry.mjs",
   "dependencies": {
+    "adm-zip": "^0.6.0",
+    "@electron/asar": "^4.0.0",
     "electron-context-menu": "^4.1.2",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3"
@@ -32,6 +34,9 @@
     "build:web-assets": "node ./scripts/build-web-assets.mjs",
     "build": "bun -e \"process.exit(0)\"",
     "ensure:electron": "node ./scripts/ensure-electron.mjs",
+    "asar:e2e": "node ./scripts/asar-update-e2e.mjs",
+    "stage:ompchamber-asar": "node ./scripts/stage-ompchamber-asar.mjs",
+    "prepare:bun-runtime": "node ./scripts/prepare-bun-runtime-manifest.mjs",
     "prepare:omp-host": "node ./scripts/prepare-omp-host.mjs",
     "verify:omp-host": "node ./scripts/verify-omp-host.mjs --staged",
     "verify:omp-host:packaged": "node ./scripts/verify-omp-host.mjs --packaged",
@@ -50,13 +55,14 @@
     "type-check": "node --check ./main.mjs && node --check ./preload.mjs",
     "lint": "node -e \"process.exit(0)\"",
     "prepare:rust-server": "node ./scripts/prepare-rust-server.mjs",
-    "package:rust": "node ./scripts/set-server-backend.mjs rust && bun install && bun run build:web-assets && bun run prepare:rust-server && bun run prepare:omp-host && bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
-    "package:js": "node ./scripts/set-server-backend.mjs js && bun install && bun run build:web-assets && bun run prepare:omp-host && bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs"
+    "package:rust": "node ./scripts/set-server-backend.mjs rust && bun install && bun run build:web-assets && bun run prepare:rust-server && bun run prepare:bun-runtime && OMPCHAMBER_STAGE_NATIVES=0 bun run prepare:omp-host && OMPCHAMBER_STAGE_NATIVES=0 bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && bun run stage:ompchamber-asar && node ./scripts/package.mjs",
+    "package:js": "node ./scripts/set-server-backend.mjs js && bun install && bun run build:web-assets && bun run prepare:bun-runtime && bun run prepare:omp-host && bun run verify:omp-host && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs"
   },
   "build": {
     "appId": "dev.ompchamber.desktop",
     "productName": "OMPChamber",
     "files": [
+      "entry.mjs",
       "dist-bundle/main.mjs",
       "preload.mjs",
       "server-backend"
@@ -89,6 +95,18 @@
       {
         "from": "resources/omp-host",
         "to": "omp-host"
+      },
+      {
+        "from": "resources/bun-runtime.json",
+        "to": "bun-runtime.json"
+      },
+      {
+        "from": "resources/ompchamber.asar",
+        "to": "ompchamber.asar"
+      },
+      {
+        "from": "resources/update-pubkey.json",
+        "to": "update-pubkey.json"
       }
     ],
     "afterPack": "scripts/after-pack.cjs",

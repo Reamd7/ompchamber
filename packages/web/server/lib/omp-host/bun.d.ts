@@ -9,7 +9,10 @@
  */
 
 /** Bun 全局对象（本文件只声明 serve 一项）。 */
+/** Bun 全局对象（本文件只声明 omp 宿主触碰的 serve 与 isMainThread）。 */
 declare const Bun: {
+  /** 当前代码是否运行在主线程（worker_threads 重入时为 false）。 */
+  readonly isMainThread: boolean;
   serve(options: {
     /** 监听主机名（支持 IPv6 字面量）。 */
     hostname?: string;

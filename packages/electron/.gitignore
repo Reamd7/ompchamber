@@ -8,13 +8,13 @@ dist-bundle/
 # Generated packaging resources
 resources/web-dist/
 resources/sidecar/
-resources/opencode-cli/*
-!resources/opencode-cli/.gitkeep
 .cache/
 
 # OS-specific
 .DS_Store
 resources/omp-host/*
 !resources/omp-host/.gitkeep
+resources/ompchamber.asar
+resources/update-pubkey.json
 resources/ompchamber-server
 resources/ompchamber-server.exe

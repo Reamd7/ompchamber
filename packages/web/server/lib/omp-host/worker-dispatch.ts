@@ -38,6 +38,8 @@
 // no-serve exits: an invocation we cannot honor must fail fast, never become
 // a zombie host. Keep this table in sync when bumping the SDK version.
 
+import { installWorkerInbox } from '@oh-my-pi/pi-utils/worker-host';
+
 import type { RejectionInterceptor } from '@oh-my-pi/pi-coding-agent/eval/js/worker-core';
 
 /** 内嵌 SDK 的包说明符前缀（拼接各条目的 module 路径用）。 */
@@ -140,12 +142,41 @@ export interface UnsupportedDispatch {
   reason: string;
 }
 
+/** inbox 安装所需的最小 parentPort 面（结构化子集；测试可注入假端口）。 */
+/** Minimal `parentPort` surface the inbox install needs (structural subset). */
+export interface WorkerInboxPort {
+  on(event: 'message', listener: (value: unknown) => void): unknown;
+}
+
+/** worker-thread 类选择器：SDK 以 worker_threads 重入宿主入口时在线程内分发。
+ *  声明宿主入口后，SDK 的线程型 worker 以
+ *  `new Worker(<host entry>, { argv: [__omp_worker_*] })` 重入本模块，分发表
+ *  在线程内接管：先同步安装 inbox（父进程在 spawn 后立刻发的帧不能丢），
+ *  再加载模块——顶层自启型（tab/js_eval/terminal_output/parent_watchdog）
+ *  只需导入，模块求值即启动；computer 额外调用导出的 starter。 */
+/** worker-thread selector: dispatched in-thread when SDK thread workers
+ *  re-enter the host entry. The inbox is installed synchronously before the
+ *  module loads (the parent posts frames right after spawn), then the module
+ *  is imported — import-only entries self-start at top level; `computer` also
+ *  calls its exported starter (mirrors SDK cli.ts runWorkerEntrypoint). */
+export interface WorkerThreadDispatch {
+  // 判别值：worker-thread。
+  kind: 'worker-thread';
+  // SDK 模块说明符（错误信息与诊断用）。
+  module: string;
+  // 可选 starter 导出名；缺省为导入即启动的顶层自启型入口。
+  starter?: string;
+  // 模块加载 thunk。
+  load: WorkerLoadThunk;
+}
+
 /** 单个 argv 选择器的描述符（WORKER_DISPATCH 的值类型，按 kind 判别）。 */
 /** Descriptor for one argv selector (WORKER_DISPATCH's value shape). */
 export type WorkerDispatchEntry =
   | EnvServerDispatch
   | IpcWorkerDispatch
   | SelfRunnerDispatch
+  | WorkerThreadDispatch
   | UnsupportedDispatch;
 
 /** 模块可实际加载并启动的分发条目（从联合中排除 UnsupportedDispatch）。 */
@@ -214,28 +245,36 @@ const WORKER_DISPATCH = {
     interceptorArg: true, rethrowConnectedSendErrors: true,
   },
   '__omp_worker_computer': {
-    kind: 'self-runner', module: `${SDK}/tools/computer/worker-entry`, starter: 'startComputerWorker',
+    // Thread re-entry is the live spawn path (SDK supervisor spawns it as a
+    // Worker when a host entry is declared); a subprocess arrival stays valid
+    // and calls the starter directly, like SDK cli.ts's computer branch.
+    kind: 'worker-thread', module: `${SDK}/tools/computer/worker-entry`, starter: 'startComputerWorker',
     load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/tools/computer/worker-entry')),
   },
   '__omp_worker_stats_sync': {
     kind: 'unsupported',
-    reason: 'stats sync worker belongs to the omp TUI stats package, not the embedded host',
+    reason: 'stats sync worker is spawned only by the standalone omp TUI (@oh-my-pi/omp-stats); the embedded host never launches it',
   },
+  // The four entries below are worker_threads re-entries of the host entry
+  // (spawn sites: tools/browser/tab-supervisor.ts, eval/js/context-manager.ts,
+  // launch/terminal-output-worker-client.ts, subprocess/parent-watchdog.ts).
+  // They are dispatched in-thread only; a process invocation cannot honor
+  // them (no parentPort) and refuses instead of serving.
   '__omp_worker_tab': {
-    kind: 'unsupported',
-    reason: 'tab worker is a worker_threads entry and cannot run as a subprocess',
+    kind: 'worker-thread', module: `${SDK}/tools/browser/tab-worker-entry`,
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/tools/browser/tab-worker-entry')),
   },
   '__omp_worker_js_eval': {
-    kind: 'unsupported',
-    reason: 'js eval worker is a worker_threads entry and cannot run as a subprocess',
+    kind: 'worker-thread', module: `${SDK}/eval/js/worker-entry`,
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/eval/js/worker-entry')),
   },
   '__omp_worker_terminal_output': {
-    kind: 'unsupported',
-    reason: 'terminal output worker is a worker_threads entry and cannot run as a subprocess',
+    kind: 'worker-thread', module: `${SDK}/launch/terminal-output-worker`,
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/launch/terminal-output-worker')),
   },
   '__omp_worker_parent_watchdog': {
-    kind: 'unsupported',
-    reason: 'parent watchdog is a worker_threads entry and cannot run as a subprocess',
+    kind: 'worker-thread', module: `${SDK}/subprocess/parent-watchdog-worker`,
+    load: starterLoad(() => import('@oh-my-pi/pi-coding-agent/subprocess/parent-watchdog-worker')),
   },
   'browser-relay': {
     kind: 'unsupported',
@@ -402,7 +441,24 @@ export interface WorkerDispatchDeps {
   loadModule?: (entry: LoadableWorkerDispatch) => Promise<WorkerModule>;
   // IPC worker 运行器接缝（生产使用 runIpcSubprocessWorker）。
   ipcWorker?: (start: (transport: IpcWorkerTransport) => void, options?: IpcWorkerRunOptions) => Promise<void>;
+  // 线程重入判定接缝（生产读取 Bun.isMainThread；false=worker_threads 重入）。
+  inWorkerThread?: boolean;
+  // 线程 parentPort 接缝（生产从 node:worker_threads 惰性读取）。
+  parentPort?: WorkerInboxPort | null;
+  // inbox 安装接缝（生产使用 pi-utils installWorkerInbox）。
+  installInbox?: (port: WorkerInboxPort) => unknown;
 }
+
+/** 与 SDK cli.ts getWorkerParentPort 同形的同步 CJS 桥：普通（非线程）分发
+ *  绝不求值 node:worker_threads。 */
+/** Synchronous CJS bridge mirroring SDK cli.ts getWorkerParentPort: ordinary
+ *  (non-thread) dispatch never evaluates node:worker_threads. */
+const getThreadParentPort = (): WorkerInboxPort | null => {
+  // SAFETY: require returns the node:worker_threads module namespace; only
+  // parentPort is read, matching the SDK's own bridge.
+  const workerThreads = require('node:worker_threads') as { parentPort: WorkerInboxPort | null };
+  return workerThreads.parentPort;
+};
 
 /** 运行 arg 选中的 worker（本函数才是上面那段「Run the worker」文档所述
  * 行为的落地处）：分发成功返回 true（worker 接管进程，调用方不得再
@@ -412,10 +468,42 @@ export interface WorkerDispatchDeps {
 export const runWorkerDispatch = async (arg: string, deps: WorkerDispatchDeps = {}): Promise<boolean> => {
   const loadModule = deps.loadModule ?? ((entry: LoadableWorkerDispatch) => entry.load());
   const ipcWorker = deps.ipcWorker ?? runIpcSubprocessWorker;
+  const inWorkerThread = deps.inWorkerThread ?? (typeof Bun !== 'undefined' && !Bun.isMainThread);
+  const parentPort = deps.parentPort !== undefined ? deps.parentPort : (inWorkerThread ? getThreadParentPort() : null);
+  const installInbox = deps.installInbox ?? installWorkerInbox;
   const entry = resolveWorkerDispatch(arg);
   if (!entry) return false;
   if (entry.kind === 'unsupported') {
     process.stderr.write(`[omp-host] refusing selector ${arg}: ${entry.reason}\n`);
+    return false;
+  }
+
+  if (entry.kind === 'worker-thread') {
+    // Thread re-entry is the only live spawn shape for import-only entries;
+    // a process invocation has no parentPort, so refuse instead of serving.
+    // Entries with a starter (computer) also honor subprocess arrival, like
+    // SDK cli.ts's computer branch (getWorkerParentPort() is null there).
+    if (!inWorkerThread && !entry.starter) {
+      process.stderr.write(`[omp-host] refusing selector ${arg}: worker_threads entry, dispatched only on thread re-entry of the host\n`);
+      return false;
+    }
+    // The inbox must attach before the worker module's top-level evaluation
+    // starts: the parent posts its init frames right after spawn, and Bun
+    // flushes them once the entry module finishes evaluating (SDK cli.ts
+    // installs it in the synchronous prefix of dispatch for this reason).
+    if (parentPort) installInbox(parentPort);
+    const module = await loadModule(entry);
+    if (!entry.starter) return true;
+    const threadStarter = module?.[entry.starter];
+    if (typeof threadStarter !== 'function') {
+      throw new Error(`worker entry ${entry.module} does not export ${entry.starter}`);
+    }
+    await threadStarter();
+    return true;
+  }
+
+  if (inWorkerThread) {
+    process.stderr.write(`[omp-host] refusing selector ${arg}: ${entry.kind} contract needs a subprocess invocation, not a worker thread\n`);
     return false;
   }
 
