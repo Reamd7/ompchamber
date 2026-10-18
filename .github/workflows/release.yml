@@ -62,6 +62,18 @@ jobs:
             fi
           done
 
+      - name: Guard lockfile against mirror URLs
+        run: |
+          # bun.lock must resolve against the official registry: developer
+          # machines with mirror configs rewrite resolved URLs, and CI
+          # builds then fail when the mirror throttles GitHub runner IPs
+          # (observed 2026-10-18: mirrors.tencent.com outage broke every
+          # platform job at Install dependencies).
+          if grep -qE 'mirrors\.tencent\.com|registry\.npmmirror\.com|rsproxy\.cn' bun.lock; then
+            echo "::error::bun.lock contains mirror-registry URLs; regenerate it against https://registry.npmjs.org before releasing."
+            exit 1
+          fi
+
       - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
