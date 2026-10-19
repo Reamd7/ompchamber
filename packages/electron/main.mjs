@@ -5192,6 +5192,23 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         }
       }
       if (applyUpdate) {
+        if (state.pendingUpdate?.asarUpdate) {
+          // Light channel: the .tmp is already staged and verified; a plain
+          // relaunch lets entry.mjs swap the layer atomically on next boot.
+          // quitAndInstall() is the FULL-channel path and would fail here —
+          // it expects a downloaded installer file, not a staged asar.
+          log.info('[electron] desktop_restart: light channel relaunch (entry swaps .tmp on boot)');
+          setImmediate(() => {
+            try {
+              prepareForQuit();
+              app.relaunch();
+              app.exit(0);
+            } catch (err) {
+              log.error('[electron] desktop_restart (asar) failed', err);
+            }
+          });
+          return null;
+        }
         // Match the working updater pattern closely: only bypass the macOS
         // hide-on-close / quit-confirmation guards, leave the rest of the
         // updater-driven quit/install sequence alone.
