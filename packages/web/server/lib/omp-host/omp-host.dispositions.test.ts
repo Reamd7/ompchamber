@@ -724,6 +724,7 @@ describe('SDK event dispositions (spec 05 §5.1, master D6-R6)', () => {
     // fake reads only the customType/details fields.
     live.agentSession.promptCustomMessage = (async (message: { customType?: string; details?: { name?: string; path?: string } }) => {
       calls.push({ kind: 'custom', customType: message.customType, details: message.details });
+      return true;
     }) as NonNullable<AgentSession['promptCustomMessage']>;
     await h.engine.prompt({ sessionID: 's1', directory: '/repo', text: '/skill:find-skills node test runner' });
     expect(calls).toHaveLength(1);

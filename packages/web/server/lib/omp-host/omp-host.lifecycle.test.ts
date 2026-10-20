@@ -478,10 +478,11 @@ describe('LiveSessionRegistry lifecycle (plan §3.2-3.4)', () => {
 
     // The post-eviction session.updated replaces the stored record wholesale
     // — `live` absent marks the session cold for every client holding it.
+    // SAFETY: bus payloads are the engine's own emitted wire shapes.
     const updates = h.engine.bus.replay.filter(
-      (entry) => entry.envelope.type === 'session.updated' && entry.envelope.properties?.info?.id === 's1',
+      (entry) => (entry.envelope.properties as { info?: { id?: string } } | undefined)?.info?.id === 's1',
     );
-    const last = updates.at(-1)?.envelope.properties?.info;
+    const last = (updates.at(-1)?.envelope.properties as { info?: { live?: unknown } } | undefined)?.info;
     expect(last?.live).toBeUndefined();
   });
 

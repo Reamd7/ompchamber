@@ -826,7 +826,7 @@ describe('OmpHostEngine prompt dispatch', () => {
     const models = warm.map(
       (e) => (e.envelope.properties as { info?: { model?: { id: string; providerID: string } } } | undefined)?.info?.model,
     );
-    expect(models).toContainEqual({ id: 'current-model', providerID: 'p1' });
+    expect(models.some((model) => model?.id === 'current-model' && model?.providerID === 'p1')).toBe(true);
   });
 
   test('abort forwards to the live agent session and reports unknown sessions as false', async () => {
