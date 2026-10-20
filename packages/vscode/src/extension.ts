@@ -6,17 +6,7 @@ import { startGlobalEventWatcher, stopGlobalEventWatcher, setChatViewProvider } 
 import { resolveWorkspaceFolders } from './workspaceResolver';
 
 let chatViewProvider: ChatViewProvider | undefined;
-/** The webview's `{ drafts: [{ id, text }] }` snapshot, or null when it is not one. */
-function readDraftSnapshot(snapshot: unknown): Array<{ id: string; text: string }> | null {
-  if (typeof snapshot !== 'object' || snapshot === null || !('drafts' in snapshot) || !Array.isArray(snapshot.drafts)) return null;
-  const drafts: Array<{ id: string; text: string }> = [];
-  for (const entry of snapshot.drafts) {
-    if (typeof entry !== 'object' || entry === null || !('id' in entry) || typeof entry.id !== 'string') continue;
-    const text = 'text' in entry && typeof entry.text === 'string' ? entry.text : '';
-    drafts.push({ id: entry.id, text });
-  }
-  return drafts;
-}let sessionEditorProvider: SessionEditorPanelProvider | undefined;
+let sessionEditorProvider: SessionEditorPanelProvider | undefined;
 let openCodeManager: OpenCodeManager | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 

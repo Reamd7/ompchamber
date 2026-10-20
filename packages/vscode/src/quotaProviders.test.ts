@@ -27,8 +27,7 @@ const AUTH = JSON.stringify({
 ((fs as unknown) as { existsSync: () => boolean }).existsSync = () => true;
 ((fs as unknown) as { readFileSync: () => string }).readFileSync = () => AUTH;
 
-import { fetchClinePassQuota, fetchHyperQuota, fetchOllamaCloudQuota, fetchQuotaForProvider } from './quotaProviders';
-import { validateCredential } from './quotaCredentials';
+import { fetchClinePassQuota, fetchQuotaForProvider } from './quotaProviders';
 type MockResponseInit = { ok?: boolean; status?: number };
 
 after(() => {
