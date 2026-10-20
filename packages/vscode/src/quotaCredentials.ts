@@ -6,8 +6,9 @@ import { fetchExeDevUsage } from './exeDevQuota';
 
 export type ManagedProvider = 'exe-dev' | 'ollama-cloud' | 'cursor';
 export type ManagedCredential = Record<string, string>;
-onst providers = new Set<ManagedProvider>(['exe-dev', 'ollama-cloud', 'cursor']);
-const directory = () => path.join(process.env.OPENCHAMBER_DATA_DIR ? path.resolve(process.env.OPENCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'openchamber'), 'quota');const target = (provider: ManagedProvider) => {
+const providers = new Set<ManagedProvider>(['exe-dev', 'ollama-cloud', 'cursor']);
+const directory = () => path.join(process.env.OPENCHAMBER_DATA_DIR ? path.resolve(process.env.OPENCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'openchamber'), 'quota');
+const target = (provider: ManagedProvider) => {
   if (!providers.has(provider)) throw new Error('Unsupported credential provider');
   return path.join(directory(), `${provider}.json`);
 };
