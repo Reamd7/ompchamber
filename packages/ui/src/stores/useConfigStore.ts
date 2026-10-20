@@ -82,7 +82,7 @@ interface OMPChamberDefaults {
 // a same-key reload after a store reset) cannot publish into the new state.
 type ConfigRuntimeContext = { runtimeKey: string; generation: number };
 
-let configRuntimeGeneration = 0;
+const configRuntimeGeneration = 0;
 
 const captureConfigRuntimeContext = (): ConfigRuntimeContext => ({
     runtimeKey: getRuntimeKey(),
@@ -93,13 +93,8 @@ const isConfigRuntimeContextCurrent = (context: ConfigRuntimeContext): boolean =
     context.generation === configRuntimeGeneration && context.runtimeKey === getRuntimeKey()
 );
 
-let ompChamberDefaultsUserRevision = 0;
+const ompChamberDefaultsUserRevision = 0;
 
-const recordOMPChamberDefaultsChange = (): void => {
-    configRuntimeGeneration += 1;
-    ompChamberDefaultsUserRevision += 1;
-    ompChamberDefaultsCache = null;
-};
 
 // window, and concurrent activations share the in-flight one.
 const OMPCHAMBER_DEFAULTS_FRESH_MS = 15_000;

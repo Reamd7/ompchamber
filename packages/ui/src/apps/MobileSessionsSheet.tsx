@@ -1,9 +1,8 @@
 import React from 'react';
-import { MobileSessionRowActions, MobileSwipeActionsRow, ROW_ACTIONS_WIDTH, ROW_ACTION_SLOT_WIDTH, ROW_SWIPE_SNAP_MS, type MobileSessionWorkAction, type MobileSessionPinAction } from './MobileSessionSwipe';
+import { MobileSessionRowActions, MobileSwipeActionsRow, ROW_ACTIONS_WIDTH, ROW_ACTION_SLOT_WIDTH, type MobileSessionWorkAction, type MobileSessionPinAction } from './MobileSessionSwipe';
 import { createPortal } from 'react-dom';
 import {
   RiAddLine,
-  RiArchiveLine,
   RiArrowDownSLine,
   RiArrowUpSLine,
   RiCheckLine,
@@ -69,11 +68,7 @@ import {
   useSessionOrderingStore,
 } from '@/sync/session-ordering';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
-import { useSessionUnseenCount } from '@/sync/notification-store';
-import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
-import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
-import { useSessionAiRenameAction } from '@/components/session/useSessionAiRenameAction';
+import { useAllLiveSessions } from '@/sync/sync-context';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 import { MobileDeleteWorktreeDialog } from './MobileDeleteWorktreeDialog';
@@ -167,24 +162,6 @@ const getSessionDirectory = (session: Session): string => {
   return normalizePath(sessionWithDirectory.directory ?? sessionWithDirectory.project?.worktree ?? null);
 };
 
-const getSessionTimestamp = (session: Session): number => {
-  const raw = session.time?.updated ?? session.time?.created;
-  const value = typeof raw === 'number' ? raw : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : 0;
-};
-
-const formatRelativeShort = (timestamp: number): string => {
-  if (timestamp <= 0) return '';
-  const diffMs = Date.now() - timestamp;
-  if (diffMs < 60_000) return 'now';
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(timestamp));
-};
 
 const pathBelongsToRoot = (path: string, root: string): boolean => {
   const normalizedPath = normalizePath(path);
@@ -313,94 +290,6 @@ const NewSessionIconButton: React.FC<{
 );
 
 
-
-/** Inline title editor shown in place of the row content while renaming.
-    Mirrors the desktop sidebar rename: a bare transparent input at the row's
-    own typography (no bordered field — the row keeps its exact height) with
-    explicit save/cancel icon buttons. */
-const SessionRenameForm: React.FC<{
-  initialTitle: string;
-  indent: number;
-  onSubmit: (title: string) => void;
-  onCancel: () => void;
-}> = ({ initialTitle, indent, onSubmit, onCancel }) => {
-  const { t } = useI18n();
-  const [value, setValue] = React.useState(initialTitle);
-
-  // Opens with the whole title selected, so the first keystroke replaces it.
-  // Stable ref callback: an inline one would re-run on every render and
-  // re-select the text mid-edit.
-  const focusRenameInput = React.useCallback((node: HTMLInputElement | null) => {
-    if (!node) return;
-    node.focus();
-    node.select();
-  }, []);
-
-  const commit = () => {
-    const next = value.trim();
-    if (!next || next === initialTitle.trim()) {
-      onCancel();
-      return;
-    }
-    onSubmit(next);
-  };
-
-  return (
-    <form
-      // Fixed 36px: the session row's real height is NOT Tailwind's min-h-10 —
-      // mobile.css's global button touch-target rule (min-height: 36px) wins
-      // that specificity fight, so single-line rows resolve to 36px. Pin the
-      // rename state to the same 36px.
-      className="flex h-9 min-w-0 flex-1 items-center gap-2 pr-2"
-      style={{ paddingLeft: indent }}
-      onSubmit={(event) => {
-        event.preventDefault();
-        commit();
-      }}
-    >
-      <input
-        ref={focusRenameInput}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          event.stopPropagation();
-          if (event.key === 'Escape') onCancel();
-        }}
-        aria-label={t('sessions.sidebar.session.rename.save')}
-        placeholder={t('sessions.sidebar.session.menu.rename')}
-        // 16px prevents the iOS focus zoom; the bare input keeps the row height.
-        // The inline min-height overrides mobile.css's global 36px input
-        // floor, which otherwise makes the rename row taller than the 40px
-        // session row.
-        className="min-w-0 flex-1 bg-transparent text-[16px] typography-ui-label text-foreground outline-none placeholder:text-muted-foreground"
-        style={{ minHeight: 0 }}
-        enterKeyHint="done"
-      />
-      <button
-        type="submit"
-        aria-label={t('sessions.sidebar.session.rename.save')}
-        className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        // Inline mins beat mobile.css's global 36px button touch-target floor
-        // so the controls fit the 40px row.
-        style={{ touchAction: 'manipulation', minHeight: 0, minWidth: 0 }}
-      >
-        <Icon name="check" className="size-4" />
-      </button>
-      <button
-        type="button"
-        onClick={onCancel}
-        aria-label={t('sessions.sidebar.session.rename.cancel')}
-        className="flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        style={{ touchAction: 'manipulation', minHeight: 0, minWidth: 0 }}
-      >
-        <Icon name="close" className="size-4" />
-      </button>
-    </form>
-  );
-};
-
-
-
 const SessionRow: React.FC<{
   session: Session;
   active: boolean;
@@ -428,11 +317,7 @@ const SessionRow: React.FC<{
 }> = ({
   session,
   active,
-  indent,
   contextLabel,
-  hasChildren = false,
-  expanded = false,
-  onToggleChildren,
   onSelect,
   revealed = false,
   onRevealedChange,
@@ -440,43 +325,16 @@ const SessionRow: React.FC<{
   onArchive,
   onRequestDelete,
   onConfirmDelete,
-  renaming = false,
   onRequestRename,
-  onSubmitRename,
-  onCancelRename,
   work,
   pin,
 }) => {
   const { t } = useI18n();
-  const time = formatRelativeShort(getSessionTimestamp(session));
   const title = session.title?.trim() || t('mobile.sessions.untitled');
-  const swipeEnabled = Boolean(onRevealedChange && onArchive);
-  const aiRename = useSessionAiRenameAction(session.id, session.directory, swipeEnabled && revealed);
-  // Live indicators, same conventions as the desktop sidebar: busy/retry →
-  // spinner; unseen activity on a non-active row → attention dot.
-  const liveStatus = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
-  const statusType = liveStatus?.type ?? 'idle';
-  const isStreaming = statusType === 'busy' || statusType === 'retry';
-  const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
-  const hasActivityDuration = useHasSessionActivityDuration(session.id, isStreaming);
-  const showActivityDuration = (isStreaming || showUnreadDot) && hasActivityDuration;
-
-  const contentRef = React.useRef<HTMLDivElement>(null);
-  const startRef = React.useRef<{ x: number; y: number } | null>(null);
-  const draggingRef = React.useRef(false);
-  const offsetRef = React.useRef(0);
   const revealedRef = React.useRef(revealed);
 
   // Imperative transform during the drag (no per-frame re-render); React state
   // only flips at the snap points via onRevealedChange.
-  const applyOffset = React.useCallback((px: number, animate: boolean) => {
-    const el = contentRef.current;
-    if (!el) return;
-    el.style.transition = animate ? `transform ${ROW_SWIPE_SNAP_MS}ms ease-out` : 'none';
-    el.style.transform = px === 0 ? 'none' : `translateX(${px}px)`;
-    offsetRef.current = px;
-  }, []);
 
   const rowContent = (
     <button

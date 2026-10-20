@@ -23,7 +23,6 @@ import { noteDeferredRestartFromPayload } from '@/lib/opencode/deferredRestart';
 import { resolveInitialPrompt } from '@/lib/behaviorPrompt';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
-import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
 import {
   SettingsSection,
   SettingsCheckboxRow,
@@ -138,7 +137,6 @@ const saveBehaviorSetting = async (settings: Partial<DesktopSettings>, fallbackE
 
 export const BehaviorPage: React.FC = () => {
   const { t } = useI18n();
-  const isVSCode = useIsVSCodeRuntime();
   const setSettingsWorktreeFetchSource = useConfigStore((state) => state.setSettingsWorktreeFetchSource);
   const [prompt, setPrompt] = React.useState('');
   const [worktreeFetchSource, setWorktreeFetchSource] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.worktreeFetchSource);  const [responseStyleEnabled, setResponseStyleEnabled] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleEnabled);

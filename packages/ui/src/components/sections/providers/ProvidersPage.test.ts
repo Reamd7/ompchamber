@@ -15,9 +15,6 @@ const credential: ConnectionInfo = { type: 'credential', id: 'cred_1', label: 'A
 const envConnection: ConnectionInfo = { type: 'env', name: 'ANTHROPIC_API_KEY' };
 
 import {
-  findIntegrationForProvider,
-  getKeyMethod,
-  getOAuthMethods,
   getProviderConnections,
   getSignInIntegrationId,
   providerHasCredentials,

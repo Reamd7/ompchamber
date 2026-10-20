@@ -142,14 +142,6 @@ export type LocalSlashCommandPlan = {
     attachedContext: 'none' | 'retain' | 'send';
 };
 
-const LOCAL_ACTION_COMMANDS = new Set([
-    'undo',
-    'redo',
-    'timeline',
-    'handoff-review',
-    'compact',
-    'fork',
-]);
 /**
  * Read the leading slash command out of a message, if there is one. Only the
  * first word counts as the command; the rest is its argument.

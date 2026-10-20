@@ -17,7 +17,6 @@ import { useMcpStore } from '@/stores/useMcpStore';
 
 import { MobileChangesSurface } from './MobileChangesSurface';
 import { MobileFilesSurfaceRouter } from './MobileFilesSurfaceRouter';
-import { MobileFilesSurface } from './MobileFilesSurface';
 import { useEdgeSwipe } from './useEdgeSwipe';
 const DRAWER_ROOT_ID = 'mobile-surface-root';
 const ENTER_DELAY_MS = 16;

@@ -13,7 +13,6 @@ import { Icon } from '@/components/icon/Icon';
 import { cn } from '@/lib/utils';
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
-import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { useI18n } from '@/lib/i18n';
 import { CrossfadeZoneHeader } from './CrossfadeZoneHeaders';
 import { useProjectFolderMissing } from './useProjectFolderMissing';

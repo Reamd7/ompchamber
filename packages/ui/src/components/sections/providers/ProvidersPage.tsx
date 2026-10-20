@@ -5,9 +5,9 @@ import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLay
 import { SettingsSection, SETTINGS_CUSTOM_TRIGGER_CLASS } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
-import { type AuthMethod, type OAuthAuthMethodEntry } from './providerAuth';
 import { selectProvidersForDirectory, useConfigStore } from '@/stores/useConfigStore';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
+import type { IntegrationInfo } from '@/lib/opencode/wire';
 import { useUIStore } from '@/stores/useUIStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,15 +42,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  getOAuthAuthMethods,
-  parseAuthPayload,
   providerHasCredentials,
   requiresOpenCodeRestartAfterOAuth,
   shouldAutoOpenAuthPanel,
   shouldShowApiKeyAuth,
   shouldShowModelsSection,
  findIntegrationForProvider,
-  getCredentialConnections,
   getOAuthMethods,
   getProviderConnections,
   getSignInIntegrationId,} from './providerAuth';
@@ -68,13 +65,6 @@ import {
   type ProviderConfigScope,
 } from './custom-provider-form';
 
-/**
- * Providers whose credentials come from several env vars (Bedrock, Azure,
- * Vertex) never get a single resolved `Provider.key` from OpenCode, so the
- * declared env list is the only signal that they are configured at all.
- */
-const providerDeclaresEnv = (provider: { env?: string[] } | undefined): boolean =>
-  Array.isArray(provider?.env) && provider.env.some((name) => name.trim().length > 0);
 
 const formatCompactNumber = (value: number) => new Intl.NumberFormat(getCurrentIntlLocale(), {
   notation: 'compact',
@@ -205,8 +195,7 @@ export const ProvidersPage: React.FC = () => {
   const [ompDeleteTarget, setOmpDeleteTarget] = React.useState<OmpFileProvider | null>(null);
   const [ompBusy, setOmpBusy] = React.useState(false);
 
-  const [authMethodsByProvider, setAuthMethodsByProvider] = React.useState<Record<string, AuthMethod[]>>({});
-  const [integrations, setIntegrations] = React.useState<import('@/lib/opencode/wire').IntegrationInfo[] | null>(null);
+  const [integrations] = React.useState<IntegrationInfo[] | null>(null);
   const [authLoading, setAuthLoading] = React.useState(false);
   const [apiKeyInputs, setApiKeyInputs] = React.useState<Record<string, string>>({});
   const [authBusyKey, setAuthBusyKey] = React.useState<string | null>(null);
@@ -270,7 +259,6 @@ export const ProvidersPage: React.FC = () => {
           throw new Error(`provider.auth failed: ${String(result.error)}`);
         }
         if (!isMounted) return;
-        setAuthMethodsByProvider(parseAuthPayload(result.data));
       } catch (error) {
         if (!isMounted) return;
         console.error('Failed to load provider auth methods:', error);
@@ -664,8 +652,6 @@ export const ProvidersPage: React.FC = () => {
     }
   };
 
-  const oauthMethodFallbackLabel = (index: number) =>
-    t('settings.providers.page.auth.oauthMethodFallback', { index: String(index + 1) });
 
   const handleOAuthConnected = (providerId: string) => {
     setShowAuthPanel(false);
@@ -1033,7 +1019,7 @@ export const ProvidersPage: React.FC = () => {
     findIntegrationForProvider(integrations ?? [], getSignInIntegrationId(selectedProvider.id)),
   );
   const showApiKeyAuth = shouldShowApiKeyAuth(getOAuthMethods(selectedIntegration));
-  const integrationsLoaded = integrations !== null;  const sourcesLoaded = Boolean(selectedSources);
+  const sourcesLoaded = Boolean(selectedSources);
   const isEditableCustomProvider = sourcesLoaded
     && isConfigDefinedCustomProvider(selectedProvider, selectedSources);
   const hasCredentials = providerHasCredentials({

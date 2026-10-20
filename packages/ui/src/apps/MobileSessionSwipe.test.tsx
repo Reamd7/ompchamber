@@ -1,5 +1,5 @@
 import React, { act } from 'react';
-import { expect, mock, test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { createRoot } from 'react-dom/client';
 import { Window } from 'happy-dom';
 import { toast } from 'sonner';

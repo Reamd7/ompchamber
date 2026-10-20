@@ -58,7 +58,7 @@ import { useWalkthroughStore } from '@/stores/useWalkthroughStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionMessages } from '@/sync/sync-context';
 import { getFirstChangedModifiedLineFromPatch } from './diffPatchUtils';
-import { parseDiffFromFile, type FileDiffMetadata } from '@pierre/diffs';
+import { type FileDiffMetadata } from '@pierre/diffs';
 
 // Minimum width for side-by-side diff view (px)
 const SIDE_BY_SIDE_MIN_WIDTH = 1100;
@@ -790,7 +790,6 @@ export const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     readOnlyActions = false,
     hunkActionsEnabled = false,
     loadFullComparisonDiff,
-    visible = true,
     contentRevision = 0,
 }) => {
     const { t } = useI18n();
@@ -1312,7 +1311,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
     // A tool completion says "something in this directory changed" without
     // naming paths; every live diff on screen may be stale even when the
     // status row it hangs off did not move.
-    const [workingTreeRevision, setWorkingTreeRevision] = React.useState(0);
+    const [workingTreeRevision] = React.useState(0);
     const [reviewDialogOpen, setReviewDialogOpen] = React.useState(false);
     const [reviewFlowSubmitting, setReviewFlowSubmitting] = React.useState(false);
     const [activeDiffScope, setActiveDiffScope] = React.useState(diffScope);

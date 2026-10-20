@@ -1,5 +1,3 @@
-import type { Model } from '@/lib/opencode/wire';
-
 /**
  * Custom provider form helpers.
  * Mirrors OpenCode web UI validation and request construction so a provider
@@ -141,22 +139,6 @@ export type ProviderLikeForCustomForm = {
     }>
     | Record<string, unknown>;
 };
-
-/** The SDK package of a provider or of one of its models, either spelling. */
-const readPackage = (
-  source: { package?: string; api?: { npm?: string } } | null | undefined,
-): string | undefined => {
-  if (!source) return undefined;
-  if (typeof source.package === 'string' && source.package) return source.package;
-  const npm = source.api?.npm;
-  return typeof npm === 'string' && npm ? `aisdk:${npm}` : undefined;
-};
-
-/** The provider's request settings, v2 `settings` first, v1 `options` after. */
-const readSettings = (provider: ProviderLikeForCustomForm): Record<string, unknown> => {
-  if (provider.settings && typeof provider.settings === 'object') return provider.settings;
-  if (provider.options && typeof provider.options === 'object') return provider.options;
-  return {};};
 
 let rowCounter = 0;
 
@@ -523,24 +505,6 @@ export function validateCustomProvider(input: ValidateCustomProviderInput): Vali
   };
 }
 
-function buildCustomProviderConfig(input: {
-  protocol: CustomProviderProtocol;
-  name: string;
-  env?: string;
-  baseURL: string;
-  headers: Record<string, string>;
-  models: Record<string, CustomProviderModelConfig>;
-}): CustomProviderConfig {
-  const config: CustomProviderConfig = {
-    npm: CUSTOM_PROVIDER_PROTOCOLS[input.protocol],
-    name: input.name,
-    options: { baseURL: input.baseURL },
-    models: input.models,
-  };
-  if (input.env) config.env = [input.env];
-  if (Object.keys(input.headers).length > 0) config.headers = input.headers;
-  return config;
-}
 /**
  * Builds the OpenCode auth.set request body when a literal API key is present.
  */

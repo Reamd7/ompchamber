@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { CONTEXT_SURFACES, sortContextSurfaces } from '../lib/surfaces/registry';
-import { useTerminalStore } from './useTerminalStore';
 import { getContextPanelWidthKey, useUIStore } from './useUIStore';
 const getContextPanelTabs = (directory: string) => useUIStore.getState().contextPanelByDirectory[directory]?.tabs ?? [];
 

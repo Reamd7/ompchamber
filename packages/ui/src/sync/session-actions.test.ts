@@ -32,11 +32,8 @@ let beforeSessionDeleteResolve: ((sessionId: string) => void) | null = null
 const globalUpsertedSessions: unknown[] = []
 const globalRemovedSessionIds: string[] = []
 const deletedCleanupIdentities: Array<{ runtimeKey: string; directory: string; sessionId: string }> = []
-let runtimeKey = "default-runtime"
 const selectedSessions: Array<{ sessionId: string | null; directoryHint?: string | null }> = []
 let sessionForkResult: Session | null = null
-let sessionForkError: Error | null = null
-let beforeSessionForkResolve: (() => void) | null = null
 const movedSessionDirectories: Array<{ sessionID: string; directory: string }> = []
 
 const mockScopedClient = {
@@ -1486,10 +1483,7 @@ describe("forkAfterMessage", () => {
   beforeEach(() => {
     replyCalls.length = 0
     selectedSessions.length = 0
-    runtimeKey = "fork-runtime"
     sessionForkResult = forkedSession
-    sessionForkError = null
-    beforeSessionForkResolve = null
     inputState.pendingComposerRestore = null
   })
 
@@ -1552,10 +1546,7 @@ describe("forkFromLastCompletedTurn", () => {
   beforeEach(() => {
     replyCalls.length = 0
     selectedSessions.length = 0
-    runtimeKey = "fork-runtime"
     sessionForkResult = { ...sourceSession, id: "session-fork" }
-    sessionForkError = null
-    beforeSessionForkResolve = null
   })
 
   test("skips a running turn, including its already completed steps", async () => {

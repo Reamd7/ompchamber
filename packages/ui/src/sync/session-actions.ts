@@ -42,7 +42,6 @@ import { normalizePath } from "@/lib/pathNormalization"
 import { mergeMessages } from "./optimistic"
 import { messagesBefore, messagesFrom } from "./message-ordering"
 import { deleteChatDirectory } from "@/lib/chatDirectories"
-import { createChatDraftIdentity } from "@/lib/chatDraftPersistence"
 import { cancelSessionTitleGeneration } from "./session-title-generation"
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -61,8 +60,6 @@ const SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS = 250
 const SEND_CONFIRMATION_RECONNECT_TIMEOUT_MS = 3000
 const SEND_CONFIRMATION_RECONNECT_POLL_MS = 100
 const MESSAGE_REFETCH_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
-const UNREVERT_REFETCH_ATTEMPTS = 3
-const UNREVERT_REFETCH_RETRY_MS = 150
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
@@ -2204,7 +2201,6 @@ export async function refetchSessionMessages(sessionId: string): Promise<void> {
 export async function unrevertSession(sessionId: string): Promise<void> {
   const { store, directory } = dirStoreForSession(sessionId)
   const state = store.getState()
-  const previousMessageCount = state.message[sessionId]?.length ?? 0
 
   // Abort if busy
   const status = state.session_status[sessionId]

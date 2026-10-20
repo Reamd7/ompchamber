@@ -1206,18 +1206,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             && getModelVariantOptions(latestLoadedUserChoice.providerID, latestLoadedUserChoice.modelID).includes(latestLoadedUserChoice.variant)
             ? latestLoadedUserChoice.variant
             : undefined;
-       const restoreAgentName = latestLoadedUserChoice.agent || currentAgentName || undefined;
         // A saved choice may be newer than the last sent message, including an
         // explicit Default. Reloading history must not replace that choice.
-        const savedVariant = currentSessionId && restoreAgentName
-            ? getAgentModelVariantForSession(
-                currentSessionId,
-                restoreAgentName,
-                latestLoadedUserChoice.providerID,
-                latestLoadedUserChoice.modelID,
-            )
-            : undefined;
-        const restoredVariant = savedVariant !== undefined ? savedVariant : historicalVariant;        const applyResult = applyModelSelectionWithVariant(
+        const applyResult = applyModelSelectionWithVariant(
             latestLoadedUserChoice.providerID,
             latestLoadedUserChoice.modelID,
             historicalVariant,

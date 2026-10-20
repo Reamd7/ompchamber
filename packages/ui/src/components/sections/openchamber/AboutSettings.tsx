@@ -9,7 +9,6 @@ import { Icon } from "@/components/icon/Icon";
 import { OMPChamberLogo } from '@/components/ui/OpenChamberLogo';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { RuntimeInfoSettings } from './RuntimeInfoSettings';
 import { InstanceServiceUrls } from './InstanceServiceUrls';
 import {
   SettingsSection,

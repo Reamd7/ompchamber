@@ -33,7 +33,6 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useWalkthroughStore } from '@/stores/useWalkthroughStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import {
-  getFreshestPrStatusForBranch,
   getGitHubPrStatusKey,
   useGitHubPrStatusStore,
 } from '@/stores/useGitHubPrStatusStore';
@@ -247,11 +246,7 @@ export const WalkthroughView = ({ directory: rootDirectory, visible = true }: Wa
 
   // Selecting the number rather than the entry map: a primitive keeps this
   // panel out of every unrelated PR status update.
-  const branchPrNumber = useGitHubPrStatusStore((state) => (
-    directory && currentBranch
-      ? getFreshestPrStatusForBranch(state.entries, directory, currentBranch)?.pr?.number ?? null
-      : null
-  ));  const choosingPr = pendingSourceSelection?.directory === directory && pendingSourceSelection.kind === 'pr' && !requestedSource;
+  const choosingPr = pendingSourceSelection?.directory === directory && pendingSourceSelection.kind === 'pr' && !requestedSource;
   const isPrScope = choosingPr || requestedSource?.kind === 'pr';
   const prComparison = usePullRequestComparison(directory || null, currentBranch, visible && isPrScope,
     requestedSource?.kind === 'pr' ? requestedSource : undefined);

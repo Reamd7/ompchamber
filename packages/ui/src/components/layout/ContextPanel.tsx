@@ -25,7 +25,6 @@ import { ProjectContextPanel } from './RightSidebarTabs';
 import { SidebarFilesTree } from './SidebarFilesTree';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { SessionFilesTree } from './SessionFilesTree';
-import { LocalFilePreview } from './LocalFilePreview';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
@@ -287,7 +286,7 @@ const EDITOR_TREE_MAX_WIDTH = 480;
 // The editor surface's file-tree column: docked on the right, resizable from
 // its left edge, and animated open/closed like the app sidebars. With `fill`
 // (no file open yet) it is the surface's whole content instead of a side column.
-const EditorTreeColumn: React.FC<{ visible: boolean; active: boolean; fill?: boolean }> = ({ visible, active, fill = false }) => {
+const EditorTreeColumn: React.FC<{ visible: boolean; active: boolean; fill?: boolean }> = ({ visible, fill = false }) => {
   const { t } = useI18n();
   const width = useUIStore((state) => state.contextEditorTreeWidth);
   const setWidth = useUIStore((state) => state.setContextEditorTreeWidth);
@@ -450,19 +449,6 @@ const getSessionIDFromDedupeKey = (dedupeKey: string | undefined): string | null
   return sessionID || null;
 };
 
-/** Parse `localFile:<sessionID>:<ref>` — the sessionID is everything between
- *  the prefix and the LAST colon-separated ref segment (refs contain slashes,
- *  not colons, so splitting on the first colon after the prefix is safe). */
-const getSessionIDFromLocalFileDedupeKey = (dedupeKey: string | undefined): string | null => {
-  if (!dedupeKey || !dedupeKey.startsWith('localFile:')) {
-    return null;
-  }
-  const rest = dedupeKey.slice('localFile:'.length);
-  const colonIndex = rest.indexOf(':');
-  if (colonIndex === -1) return null;
-  const sessionID = rest.slice(0, colonIndex).trim();
-  return sessionID || null;
-};
 
 const areTitleMapsEqual = (a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean => {
   if (a.size !== b.size) return false;

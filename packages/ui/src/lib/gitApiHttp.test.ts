@@ -35,7 +35,6 @@ import {
   unstageGitFiles,
 } from './gitApiHttp';
 import type { GitStatus } from './api/types';
-import { sessionEvents } from './sessionEvents';
 import { gitPushScopeKey, subscribeGitPush } from './gitPushEvents';
 import { getRuntimeKey } from './runtime-switch';
 type FetchCall = {

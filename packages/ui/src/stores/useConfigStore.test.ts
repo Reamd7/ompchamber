@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
-import type { DesktopSettings } from '@/lib/desktop';
 import type { Agent } from '@/lib/opencode/wire'
 
 const DIRECTORY = '/workspace/project';
@@ -19,10 +18,6 @@ let listAgentsImpl: ((directory?: string | null) => Promise<TestAgent[]>) | null
 let withDirectoryCalls: Array<string | null> = [];
 let currentFetchDirectory: string | null = DIRECTORY;
 let configListener: ((event: { scopes: string[]; source?: string; timestamp: number }) => void | Promise<void>) | null = null;
-let persistedOpenChamberSettings: DesktopSettings | null = {};
-let settingsLoadCalls = 0;
-let checkHealthImpl = async () => true;
-let loadSettingsImpl: (() => Promise<DesktopSettings | null>) | null = null;
 let projectsState: {
   activeProjectId: string | null;
   projects: Array<{ id: string; path: string; label: string; defaultAgent?: string }>;

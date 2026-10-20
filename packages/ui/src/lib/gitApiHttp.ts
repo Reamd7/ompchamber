@@ -42,7 +42,7 @@ import { normalizePath } from './pathNormalization';
 import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { getRuntimeKey } from './runtime-switch';
-import { notifyGitStatusInvalidated, subscribeGitStatusInvalidations } from './gitStatusInvalidation';
+import { notifyGitStatusInvalidated } from './gitStatusInvalidation';
 import { notifyGitPush } from './gitPushEvents';
 const API_BASE = '/api/git';
 const gitRangeDiffSchema = z.object({ diff: z.string() });
