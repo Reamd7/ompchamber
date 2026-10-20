@@ -612,6 +612,7 @@ async fn range_diff(State(state): State<GitState>, req: Request) -> Response {
     let context_lines = query_first(query, "context")
         .and_then(|value| value.trim().parse::<i64>().ok())
         .unwrap_or(3);
+    let include_working_tree = query_first(query, "includeWorkingTree").map(|v| v == "true").unwrap_or(false);
 
     match state
         .service
@@ -621,6 +622,7 @@ async fn range_diff(State(state): State<GitState>, req: Request) -> Response {
             head.as_deref().unwrap(),
             path.as_deref(),
             context_lines,
+            include_working_tree,
         )
         .await
     {
@@ -667,17 +669,51 @@ async fn range_files(State(state): State<GitState>, req: Request) -> Response {
             "base and head parameters are required",
         );
     }
+    let include_working_tree = query_first(query, "includeWorkingTree").map(|v| v == "true").unwrap_or(false);
     match state
         .service
         .get_range_files(
             &directory,
             base.as_deref().unwrap(),
             head.as_deref().unwrap(),
+            include_working_tree,
         )
         .await
     {
         Ok(files) => ok_json(json!({ "files": files })),
         Err(message) => internal_error(&message, "Failed to get git range files"),
+    }
+}
+
+/// GET /api/git/commit-diff:单个 commit 的 diff 文本 {"diff"};
+/// directory/hash 缺失 400,path/previousPath 保留原始空白(不 trim),
+/// context 缺省 3;失败 500。
+async fn commit_diff(State(state): State<GitState>, req: Request) -> Response {
+    let query = req.uri().query();
+    let Ok(directory) = require_directory(query) else {
+        return error_response(StatusCode::BAD_REQUEST, "directory parameter is required");
+    };
+    let Some(hash) = resolve_directory_query_named(query, "hash") else {
+        return error_response(StatusCode::BAD_REQUEST, "directory and hash are required");
+    };
+    let path = query_first(query, "path").filter(|p| !p.is_empty());
+    let previous_path = query_first(query, "previousPath").filter(|p| !p.is_empty());
+    let context_lines = query_first(query, "context")
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(3);
+    match state
+        .service
+        .get_commit_diff(
+            &directory,
+            &hash,
+            path.as_deref(),
+            previous_path.as_deref(),
+            context_lines,
+        )
+        .await
+    {
+        Ok(diff) => ok_json(json!({ "diff": diff })),
+        Err(message) => internal_error(&message, "Failed to get commit diff"),
     }
 }
 
@@ -1629,6 +1665,7 @@ pub fn routes() -> Router<GitState> {
         .route("/api/git/range-diff", get(range_diff))
         .route("/api/git/branch-base", get(branch_base))
         .route("/api/git/range-files", get(range_files))
+        .route("/api/git/commit-diff", get(commit_diff))
         .route("/api/git/revert", post(revert))
         .route("/api/git/stage", post(stage))
         .route("/api/git/unstage", post(unstage))

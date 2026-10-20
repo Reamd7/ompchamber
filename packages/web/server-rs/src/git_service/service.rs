@@ -1060,7 +1060,8 @@ impl GitService {
         context_lines: Option<i64>,
     ) -> ServiceResult<String> {
         let context = self.repository_context(directory).await?;
-        let mut args: Vec<String> = vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+        let mut args: Vec<String> =
+            vec!["diff".into(), "--no-color".into(), "--full-index".into(), NO_EXT_DIFF.into()];
         let file_context = match file_path {
             Some(path) if !path.is_empty() => Some(
                 self.resolve_git_file_context(&context.directory_path, &context.repo_root, path)
@@ -1127,8 +1128,12 @@ impl GitService {
             .join("\n"));
         }
 
-        let mut no_index_args: Vec<String> =
-            vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+        let mut no_index_args: Vec<String> = vec![
+            "diff".into(),
+            "--no-color".into(),
+            "--full-index".into(),
+            NO_EXT_DIFF.into(),
+        ];
         if let Some(lines) = context_lines {
             no_index_args.push(format!("-U{}", lines.max(0)));
         }
@@ -1187,8 +1192,12 @@ impl GitService {
                 let fc = self
                     .resolve_git_file_context(&context.directory_path, &context.repo_root, path)
                     .await?;
-                let mut args: Vec<String> =
-                    vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+                let mut args: Vec<String> = vec![
+                    "diff".into(),
+                    "--no-color".into(),
+                    "--full-index".into(),
+                    NO_EXT_DIFF.into(),
+                ];
                 args.push(format!("-U{}", context_lines.max(0)));
                 args.extend([
                     "--no-index".into(),
@@ -1214,6 +1223,9 @@ impl GitService {
     /// refs/remotes/origin/<base> 可用则改写为 origin/<base>；否则（base
     /// 不含通配/范围字符时）用 for-each-ref 在 refs/remotes/*/ 下模糊匹配；
     /// 随后校验两端引用本地可解析，再执行 `diff -U<n> base...head [-- path]`。
+    /// `include_working_tree` 为真时改为工作区对比：要求 head 是当前检出的
+    /// 分支，diff 基于 merge-base 对工作区（未跟踪文件经临时 index 的
+    /// intent-to-add 纳入），对比期间分支变动即报错。
     pub async fn get_range_diff(
         &self,
         directory: &str,
@@ -1221,6 +1233,7 @@ impl GitService {
         head: &str,
         file_path: Option<&str>,
         context_lines: i64,
+        include_working_tree: bool,
     ) -> ServiceResult<String> {
         let context = self.repository_context(directory).await?;
         let base_ref = base.trim().to_string();
@@ -1280,6 +1293,22 @@ impl GitService {
         self.assert_range_refs_resolve(&context.repo_root, &[&resolved_base, &head_ref])
             .await?;
 
+        if include_working_tree {
+            let mut wt_args: Vec<String> =
+                vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
+            wt_args.push(format!("-U{}", context_lines.max(0)));
+            let mut paths = Vec::new();
+            if let Some(file_path) = file_path.filter(|p| !p.is_empty()) {
+                let fc = self
+                    .resolve_git_file_context(&context.directory_path, &context.repo_root, file_path)
+                    .await?;
+                paths.push(fc.repo_path);
+            }
+            return self
+                .run_working_tree_range_diff(&context.repo_root, &resolved_base, &head_ref, &wt_args, &paths)
+                .await;
+        }
+
         let mut args: Vec<String> = vec!["diff".into(), "--no-color".into(), NO_EXT_DIFF.into()];
         args.push(format!("-U{}", context_lines.max(0)));
         args.push(format!("{}...{}", resolved_base, head_ref));
@@ -1289,6 +1318,231 @@ impl GitService {
                 .await?;
             args.push("--".into());
             args.push(fc.repo_path);
+        }
+        self.raw(&context.repo_root, &args)
+            .await
+            .map_err(|f| f.message.trim().to_string())
+    }
+
+    /// `runWorkingTreeRangeDiff` — 工作区版区间对比：head 必须是当前检出的
+    /// 分支（symbolic-ref 比对），diff 以 merge-base 为基对工作区执行；
+    /// 有未跟踪文件时复制 index 到临时目录，用 `add --intent-to-add`
+    /// （pathspec-from-file, NUL 分隔）把它们纳入对比；diff 前后各读一次
+    /// HEAD，分支在对比期间变动即报错；最后清理临时目录。
+    async fn run_working_tree_range_diff(
+        &self,
+        repo_root: &Path,
+        base_ref: &str,
+        head_ref: &str,
+        args: &[String],
+        paths: &[String],
+    ) -> ServiceResult<String> {
+        let read_head = || async {
+            let commit = self
+                .raw(repo_root, &["rev-parse".into(), "--verify".into(), "HEAD".into()])
+                .await
+                .map_err(|f| f.message.trim().to_string())?
+                .trim()
+                .to_string();
+            let reference = self
+                .raw(repo_root, &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()])
+                .await
+                .map_err(|f| f.message.trim().to_string())?
+                .trim()
+                .to_string();
+            Ok::<_, String>(format!("{}\n{}", commit, reference))
+        };
+        let starting_head = read_head().await?;
+        let (head_commit, current_ref) = starting_head
+            .split_once('\n')
+            .map(|(c, r)| (c.to_string(), r.to_string()))
+            .unwrap_or((starting_head.clone(), String::new()));
+        let requested_ref = self
+            .raw(
+                repo_root,
+                &[
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "--symbolic-full-name".into(),
+                    "--end-of-options".into(),
+                    head_ref.to_string(),
+                ],
+            )
+            .await
+                .map_err(|f| f.message.trim().to_string())?
+            .trim()
+            .to_string();
+        if requested_ref != current_ref {
+            return Err(
+                "Working-tree comparisons require the checked-out branch. Refresh and try again."
+                    .to_string(),
+            );
+        }
+        let merge_base = self
+            .raw(
+                repo_root,
+                &["merge-base".into(), base_ref.to_string(), head_commit],
+            )
+            .await
+                .map_err(|f| f.message.trim().to_string())?
+            .trim()
+            .to_string();
+
+        let untracked = self
+            .raw(
+                repo_root,
+                &[
+                    "ls-files".into(),
+                    "--others".into(),
+                    "--exclude-standard".into(),
+                    "-z".into(),
+                    "--".into(),
+                ]
+                .iter()
+                .chain(paths.iter())
+                .cloned()
+                .collect::<Vec<String>>(),
+            )
+            .await
+                .map_err(|f| f.message.trim().to_string())?;
+
+        if untracked.split('\0').all(|token| token.is_empty()) {
+            let mut diff_args = args.to_vec();
+            diff_args.push(merge_base.clone());
+            diff_args.push("--".into());
+            diff_args.extend(paths.iter().cloned());
+            let diff = self
+                .raw(repo_root, &diff_args)
+                .await
+                .map_err(|f| f.message.trim().to_string())?;
+            if read_head().await? != starting_head {
+                return Err("The checked-out branch changed during comparison. Refresh and try again.".to_string());
+            }
+            return Ok(diff);
+        }
+
+        let temporary_directory = std::env::temp_dir().join(format!(
+            "ompchamber-branch-diff-{}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+            super::service_ops::hex_random_suffix(),
+        ));
+        tokio::fs::create_dir_all(&temporary_directory)
+            .await
+            .map_err(|e| e.to_string())?;
+        let result: ServiceResult<String> = async {
+            let index_path = self
+                .raw(repo_root, &["rev-parse".into(), "--git-path".into(), "index".into()])
+                .await
+                .map_err(|f| f.message.trim().to_string())?
+                .trim()
+                .to_string();
+            let temporary_index = temporary_directory.join("index");
+            tokio::fs::copy(repo_root.join(&index_path), &temporary_index)
+                .await
+                .map_err(|e| e.to_string())?;
+            let pathspec_file = temporary_directory.join("paths");
+            tokio::fs::write(&pathspec_file, &untracked)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut env: HashMap<String, String> = HashMap::new();
+            env.insert("GIT_INDEX_FILE".into(), temporary_index.to_string_lossy().to_string());
+            env.insert("GIT_LITERAL_PATHSPECS".into(), "1".into());
+            self.raw_env(
+                repo_root,
+                &[
+                    "add".into(),
+                    "--intent-to-add".into(),
+                    format!("--pathspec-from-file={}", pathspec_file.to_string_lossy()),
+                    "--pathspec-file-nul".into(),
+                ],
+                env.clone(),
+            )
+            .await
+            .map_err(|f| f.message.trim().to_string())?;
+
+            let mut diff_args = args.to_vec();
+            diff_args.push(merge_base.clone());
+            diff_args.push("--".into());
+            diff_args.extend(paths.iter().cloned());
+            let diff = self
+                .raw_env(repo_root, &diff_args, env)
+                .await
+                .map_err(|f| f.message.trim().to_string())?;
+            if read_head().await? != starting_head {
+                return Err("The checked-out branch changed during comparison. Refresh and try again.".to_string());
+            }
+            Ok(diff)
+        }
+        .await;
+        let _ = tokio::fs::remove_dir_all(&temporary_directory).await;
+        result
+    }
+
+    /// `resolveCommitHash` — 校验 7-64 位十六进制后 `rev-parse --verify
+    /// --end-of-options <hash>^{commit}` 解析到完整 commit；格式非法报
+    /// "A commit hash is required"，无法解析时透传 git 错误文本。
+    pub(crate) async fn resolve_commit_hash(&self, repo_root: &Path, hash: &str) -> ServiceResult<String> {
+        let trimmed = hash.trim();
+        let valid = (7..=64).contains(&trimmed.len())
+            && trimmed.chars().all(|c| c.is_ascii_hexdigit());
+        if !valid {
+            return Err("A commit hash is required".to_string());
+        }
+        let full = self
+            .raw(
+                repo_root,
+                &[
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "--end-of-options".into(),
+                    format!("{}^{{commit}}", trimmed),
+                ],
+            )
+            .await
+            .map_err(|f| f.message.trim().to_string())?;
+        let full = full.trim().to_string();
+        if full.is_empty() {
+            return Err("A commit hash is required".to_string());
+        }
+        Ok(full)
+    }
+
+    /// `getCommitDiff` — 单个 commit 的 diff：`show --format= --root
+    /// --diff-merges=first-parent --find-renames <hash> --no-color
+    /// --no-ext-diff -U<n> -- [:(literal)path ...]`（previousPath 也作为
+    /// literal pathspec 传入，用于重命名旧路径）。
+    pub async fn get_commit_diff(
+        &self,
+        directory: &str,
+        hash: &str,
+        file_path: Option<&str>,
+        previous_path: Option<&str>,
+        context_lines: i64,
+    ) -> ServiceResult<String> {
+        let context = self.repository_context(directory).await?;
+        let commit = self.resolve_commit_hash(&context.repo_root, hash).await?;
+        let mut args = vec![
+            "show".to_string(),
+            "--format=".to_string(),
+            "--root".to_string(),
+            "--diff-merges=first-parent".to_string(),
+            "--find-renames".to_string(),
+            commit,
+        ];
+        args.extend([
+            "--no-color".to_string(),
+            NO_EXT_DIFF.to_string(),
+            format!("-U{}", context_lines.max(0)),
+            "--".to_string(),
+        ]);
+        for path in [file_path, previous_path].into_iter().flatten() {
+            if !path.is_empty() {
+                args.push(format!(":(literal){}", path));
+            }
         }
         self.raw(&context.repo_root, &args)
             .await
@@ -1384,6 +1638,7 @@ impl GitService {
         directory: &str,
         base: &str,
         head: &str,
+        include_working_tree: bool,
     ) -> ServiceResult<Vec<Value>> {
         let context = self.repository_context(directory).await?;
         let base_ref = base.trim().to_string();
@@ -1409,19 +1664,22 @@ impl GitService {
         self.assert_range_refs_resolve(&context.repo_root, &[&resolved_base, &head_ref])
             .await?;
 
-        let raw = self
-            .raw(
-                &context.repo_root,
-                &[
-                    "diff".into(),
-                    "--name-status".into(),
-                    "-z".into(),
-                    "-C".into(),
-                    format!("{}...{}", resolved_base, head_ref),
-                ],
-            )
-            .await
-            .map_err(|f| f.message.trim().to_string())?;
+        let range_args: Vec<String> = vec![
+            "diff".into(),
+            "--name-status".into(),
+            "-z".into(),
+            "-C".into(),
+        ];
+        let raw = if include_working_tree {
+            self.run_working_tree_range_diff(&context.repo_root, &resolved_base, &head_ref, &range_args, &[])
+                .await?
+        } else {
+            let mut args = range_args;
+            args.push(format!("{}...{}", resolved_base, head_ref));
+            self.raw(&context.repo_root, &args)
+                .await
+                .map_err(|f| f.message.trim().to_string())?
+        };
         let tokens: Vec<&str> = raw.split('\0').collect();
         let mut files = Vec::new();
         let mut index = 0;

@@ -154,7 +154,6 @@ export const useKeyboardShortcuts = () => {
       if (
         !state.promptNavigatorEnabled
         || state.isMobile
-        || isVSCodeRuntime()
         || hasOverlay
       ) {
         return false;

@@ -670,4 +670,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       devServerUrl: this._webviewDevServerUrl,
     });
   }
+  /** Tells the webview whether the user can see it: VS Code focused and the view shown. */
+  public notifyViewerStateChanged(): void {
+    if (!this._view) {
+      return;
+    }
+
+    this._view.webview.postMessage({
+      type: 'command',
+      command: 'viewerStateChanged',
+      payload: { windowFocused: vscode.window.state.focused, surfaceVisible: this._view.visible },
+    });
+  }
+
 }

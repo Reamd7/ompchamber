@@ -908,11 +908,76 @@ html:not(.dark) .chat-scroll {
   }
 }
 
-/* Assistant message footer: collapse text labels only on very narrow layouts. */
-@container message-footer (max-width: 16rem) {
-  .message-footer__label {
-    display: none;
-  }
+/* Assistant message footer: the run's facts collapse by priority instead of
+   wrapping. The model and the duration always stay — the model truncates only
+   once even those two stop fitting — while the thinking effort, the agent and
+   the timestamp drop out in that order as the row narrows. The optional group
+   wraps its overflow onto a second line that its single-line height clips
+   away, so a row that exists once per message costs no measurement. */
+.message-footer__facts {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.message-footer__facts-core {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.message-footer__facts-optional {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: center;
+  min-width: 0;
+  /* Takes only the width of its facts (no grow — growing would push the
+     duration to the far edge and leave a hole after the agent) and gives that
+     width up long before the model starts truncating. */
+  flex: 0 9999 auto;
+  max-height: 1.25rem;
+  overflow: hidden;
+}
+
+/* A hairline item holds the start of the first line so that EVERY fact can
+   wrap off it. Without something already on the line, the browser keeps the
+   first fact there and the clip slices it in half instead of dropping it. */
+.message-footer__facts-optional::before {
+  content: '';
+  flex: 0 0 1px;
+  /* Full line height: it has to define the first line, or the facts that wrap
+     past it land a pixel below and slip under the clip. */
+  height: 1.25rem;
+}
+
+/* The timestamp gives up its room before the agent and the effort do — it is
+   the first fact the row can afford to lose (on touch it is not here at all:
+   it lives in the actions sheet, where it can never be lost). */
+.message-footer__facts-optional--drops-first {
+  flex: 0 99999 auto;
+}
+
+/* The duration sits after the facts that can disappear and never shrinks. */
+.message-footer__facts-duration {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Each fact carries its own leading separator and spacing, so the group needs
+   no gap that would offset the zero-width holder. */
+.message-footer__fact {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding-inline-start: 0.375rem;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 /* Animated tabs: collapse labels based on local container width. */

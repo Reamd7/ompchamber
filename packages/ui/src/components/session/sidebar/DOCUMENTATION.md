@@ -49,10 +49,41 @@ project tree, with no Recent projection. VS Code excludes worktrees and managed
 Chats, while retaining its workspace-scoped grouped list and inline archived
 buckets.
 
+Both project display modes use `projects/CrossfadeZoneHeaders.tsx` for sticky
+zone headers. The live header keeps one portal host as it moves between its
+section placeholder and a stationary layer inside the native scroller,
+preserving its controls and menu state. Section and header resizing refresh
+cached boundaries; scrolling only compares those offsets
+and changes the DOM at a zone handoff. An inert, accessibility-hidden snapshot of
+the outgoing header fades over the incoming header for 150 ms. Reduced motion
+skips the fade. Project dragging temporarily returns headers to their sections
+without remounting controls. Reordering refreshes boundaries using layout offsets
+that exclude sortable transforms, so settling animations cannot leave stale
+header positions. The sidebar has no separate desktop-only top gradient or
+identity overlay.
+
 Directory demand always includes known project roots and worktrees. Visibility
 only changes priority. Row mounts must not start bootstrap work. Selection and
 activity subscriptions stay session-scoped so a structural list update does not
 make every row observe unrelated streaming updates.
+
+Session menus share `SessionAiRenameMenuItem` with header tabs and the
+single-session header. AI renaming uses the same leading spinner as a worktree
+move; the pending operation survives closing the menu or selecting another
+session. Eligibility loads only while a menu is open. See the AI session titles
+section in `sync/DOCUMENTATION.md` for context selection and mutation guards.
+
+## Search
+
+Sidebar and Recent queries beginning with `ses_` match only the full session ID,
+case-insensitively and ignoring surrounding whitespace. Partial IDs and typos
+return no matches, without falling back to titles, directories, group labels,
+or folder names. Ancestors remain as tree context for a matching child. A matched
+node keeps its subtree for rendering and subtree actions. Only exact ID matches
+count toward the result total.
+ID search does not include archived sessions. `ArchiveView` applies the same
+exact-ID rule to its own archived list. Other queries keep each view's existing
+matching and ordering. Search does not fetch sessions or broaden list membership.
 
 ## Loading rules
 

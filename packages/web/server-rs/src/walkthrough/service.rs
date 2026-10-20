@@ -174,6 +174,8 @@ pub struct WalkthroughService {
     small_model: SmallModelSeam,
     /// PR diff 接缝；`None` 表示当前环境不支持 PR diff。
     pr_diff: Option<PrDiffFn>,
+    /// PR 单文件内容接缝；`None` 表示当前环境不支持。
+    pr_file_contents: Option<super::sources::PrFileContentsFn>,
     /// JS module-level `jobs` map. Keyed by `repoRoot\0sourceKey`.
     /// 中文补充：任务结束即从表中移除，重连客户端据此判断是否还有进度可显示。
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -193,6 +195,7 @@ impl WalkthroughService {
         git: GitDeps,
         small_model: SmallModelSeam,
         pr_diff: Option<PrDiffFn>,
+        pr_file_contents: Option<super::sources::PrFileContentsFn>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: Store::new(&data_dir),
@@ -200,6 +203,7 @@ impl WalkthroughService {
             git,
             small_model,
             pr_diff,
+            pr_file_contents,
             jobs: Mutex::new(HashMap::new()),
             schema_refused_by: Mutex::new(HashSet::new()),
         })
@@ -300,6 +304,54 @@ impl WalkthroughService {
             output_reserve_tokens: output_reserve_rule(),
         };
         (self.small_model.describe)(request).await
+    }
+
+    /// `getPullRequestDiff` 直通：供 `/api/walkthrough/pr-diff` 路由取
+    /// 完整已发布补丁（不做模型就绪检查、生成文件过滤或本地工作区读取）。
+    pub async fn get_pull_request_diff(
+        &self,
+        directory: &str,
+        number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        allow_empty: bool,
+    ) -> Result<(String, Value), WalkthroughError> {
+        let Some(pr_diff) = self.pr_diff.as_ref() else {
+            return Err(WalkthroughError::with_code(
+                "Pull request diffs are unavailable",
+                500,
+                "pr-diffs-unavailable",
+            ));
+        };
+        (pr_diff)(directory.to_string(), number, source_repo, allow_empty).await
+    }
+
+    /// `getPullRequestFileContents` 直通：供 `/api/walkthrough/pr-file`
+    /// 路由取 PR 单文件两侧内容。
+    pub async fn get_pull_request_file_contents(
+        &self,
+        directory: &str,
+        number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        path: &str,
+        previous_path: Option<&str>,
+        status: &str,
+    ) -> Result<Value, WalkthroughError> {
+        let Some(read_file) = self.pr_file_contents.as_ref() else {
+            return Err(WalkthroughError::with_code(
+                "Pull request file contents are unavailable",
+                500,
+                "pr-file-unavailable",
+            ));
+        };
+        (read_file)(
+            directory.to_string(),
+            number,
+            source_repo,
+            path.to_string(),
+            previous_path.map(str::to_string),
+            status.to_string(),
+        )
+        .await
     }
 
     /// `loadCurrentDiff`: current diff for a source, parsed into files and

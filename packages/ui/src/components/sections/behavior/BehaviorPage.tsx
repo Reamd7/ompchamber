@@ -21,7 +21,9 @@ import type { DesktopSettings } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { noteDeferredRestartFromPayload } from '@/lib/opencode/deferredRestart';
 import { resolveInitialPrompt } from '@/lib/behaviorPrompt';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
+import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
 import {
   SettingsSection,
   SettingsCheckboxRow,
@@ -81,14 +83,14 @@ type ResponseStyleValue = ResponseStylePreset | 'custom';
 
 type BehaviorSettingsState = {
   prompt: string;
-  responseStyleEnabled: boolean;
+  worktreeFetchSource: boolean;  responseStyleEnabled: boolean;
   responseStylePreset: ResponseStyleValue;
   responseStyleCustomInstructions: string;
 };
 
 const DEFAULT_BEHAVIOR_SETTINGS: BehaviorSettingsState = {
   prompt: '',
-  responseStyleEnabled: false,
+  worktreeFetchSource: true,  responseStyleEnabled: false,
   responseStylePreset: 'concise',
   responseStyleCustomInstructions: '',
 };
@@ -136,8 +138,10 @@ const saveBehaviorSetting = async (settings: Partial<DesktopSettings>, fallbackE
 
 export const BehaviorPage: React.FC = () => {
   const { t } = useI18n();
+  const isVSCode = useIsVSCodeRuntime();
+  const setSettingsWorktreeFetchSource = useConfigStore((state) => state.setSettingsWorktreeFetchSource);
   const [prompt, setPrompt] = React.useState('');
-  const [responseStyleEnabled, setResponseStyleEnabled] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleEnabled);
+  const [worktreeFetchSource, setWorktreeFetchSource] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.worktreeFetchSource);  const [responseStyleEnabled, setResponseStyleEnabled] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleEnabled);
   const [responseStylePreset, setResponseStylePreset] = React.useState<ResponseStyleValue>(DEFAULT_BEHAVIOR_SETTINGS.responseStylePreset);
   const [responseStyleCustomInstructions, setResponseStyleCustomInstructions] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleCustomInstructions);
   const [isLoading, setIsLoading] = React.useState(true);
@@ -173,12 +177,15 @@ export const BehaviorPage: React.FC = () => {
           const data = await settingsRes.json();
           nextSettings = {
             ...nextSettings,
-            responseStyleEnabled: data.responseStyleEnabled === true,
+            worktreeFetchSource: data.worktreeFetchSource !== false,            responseStyleEnabled: data.responseStyleEnabled === true,
             responseStylePreset: sanitizeResponseStylePreset(data.responseStylePreset),
             responseStyleCustomInstructions: typeof data.responseStyleCustomInstructions === 'string'
               ? data.responseStyleCustomInstructions
               : '',
           };
+          if (typeof data.worktreeFetchSource === 'boolean') {
+            setSettingsWorktreeFetchSource(data.worktreeFetchSource);
+          }
           if (typeof data.globalBehaviorPrompt === 'string') {
             nextSettings = { ...nextSettings, prompt: data.globalBehaviorPrompt };
           }
@@ -197,7 +204,7 @@ export const BehaviorPage: React.FC = () => {
         }
 
         setPrompt(nextSettings.prompt);
-        setResponseStyleEnabled(nextSettings.responseStyleEnabled);
+        setWorktreeFetchSource(nextSettings.worktreeFetchSource);        setResponseStyleEnabled(nextSettings.responseStyleEnabled);
         setResponseStylePreset(nextSettings.responseStylePreset);
         setResponseStyleCustomInstructions(nextSettings.responseStyleCustomInstructions);
         setInitialPrompt(nextSettings.prompt);
@@ -217,7 +224,7 @@ export const BehaviorPage: React.FC = () => {
 
     void load();
     return () => abort.abort();
-  }, []);
+  }, [setSettingsWorktreeFetchSource]);
 
   React.useEffect(() => {
     if (isLoading) return;
@@ -297,6 +304,21 @@ export const BehaviorPage: React.FC = () => {
     }
   };
 
+  const handleWorktreeFetchSourceChange = (enabled: boolean) => {
+    const previous = worktreeFetchSource;
+    setWorktreeFetchSource(enabled);
+    setSettingsWorktreeFetchSource(enabled);
+    void saveBehaviorSetting(
+      { worktreeFetchSource: enabled },
+      t('settings.behavior.page.toast.saveFailed'),
+    ).catch((error) => {
+      setWorktreeFetchSource(previous);
+      setSettingsWorktreeFetchSource(previous);
+      const message = error instanceof Error ? error.message : t('settings.behavior.page.toast.saveFailed');
+      toast.error(message);
+    });
+  };
+
   return (
     <SettingsPageLayout
       title={t('settings.behavior.page.title')}
@@ -305,7 +327,21 @@ export const BehaviorPage: React.FC = () => {
     >
       <SettingsSection
         divider={false}
-        title={t('settings.behavior.page.section.systemPrompt')}
+        title={t('settings.behavior.page.section.worktrees')}
+        settingsItem="behavior.worktree-fetch-source"
+        contentClassName="space-y-3"
+      >
+        <SettingsCheckboxRow
+          checked={worktreeFetchSource}
+          onChange={handleWorktreeFetchSourceChange}
+          disabled={isLoading}
+          label={t('settings.behavior.page.worktreeFetchSource.enable')}
+          ariaLabel={t('settings.behavior.page.worktreeFetchSource.enableAria')}
+          info={t('settings.behavior.page.worktreeFetchSource.info')}
+        />
+      </SettingsSection>
+
+      <SettingsSection        title={t('settings.behavior.page.section.systemPrompt')}
         info={(
           <div className="space-y-1">
             <p className="font-medium text-foreground">

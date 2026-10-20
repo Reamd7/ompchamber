@@ -74,12 +74,18 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
   const autoDeleteEnabled = useUIStore((state) => state.autoDeleteEnabled);
   const autoDeleteAfterDays = useUIStore((state) => state.autoDeleteAfterDays);
   const sessionRetentionAction = useUIStore((state) => state.sessionRetentionAction);
+  const onlyArchived = useUIStore((state) => state.sessionRetentionOnlyArchived);
+  const action = onlyArchived ? 'delete' : sessionRetentionAction;
   const autoDeleteLastRunAt = useUIStore((state) => state.autoDeleteLastRunAt);
   const setAutoDeleteLastRunAt = useUIStore((state) => state.setAutoDeleteLastRunAt);
   const needsGlobalSessions = enabled && (!autoRun || autoDeleteEnabled);
   const globalSessions = useGlobalSessionsStore(React.useCallback(
     (state) => needsGlobalSessions ? state.activeSessions : EMPTY_SESSIONS,
     [needsGlobalSessions],
+  ));
+  const archivedSessions = useGlobalSessionsStore(React.useCallback(
+    (state) => needsGlobalSessions && onlyArchived ? state.archivedSessions : EMPTY_SESSIONS,
+    [needsGlobalSessions, onlyArchived],
   ));
   const hasLoadedGlobalSessions = useGlobalSessionsStore((state) => state.hasLoaded);
 
@@ -90,42 +96,44 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
     void ensureGlobalSessionsLoaded(getAllSyncSessions());
   }, []);
 
+  // onlyArchived mode: candidates come from ARCHIVED sessions only — active
+  // sessions are never touched; the action is forced to delete.
   const candidates = React.useMemo(() => {
     if (autoDeleteAfterDays <= 0) {
       return [];
     }
     return buildAutoDeleteCandidates({
-      sessions: globalSessions,
+      sessions: onlyArchived ? archivedSessions : globalSessions,
       currentSessionId,
       cutoffDays: autoDeleteAfterDays,
     });
-  }, [autoDeleteAfterDays, currentSessionId, globalSessions]);
+  }, [autoDeleteAfterDays, archivedSessions, currentSessionId, globalSessions, onlyArchived]);
 
   const runCleanup = React.useCallback(
       async ({ force = false }: { force?: boolean } = {}): Promise<CleanupResult> => {
       if (runningRef.current) {
-        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'running' };
+        return { completedIds: [], failedIds: [], action, skippedReason: 'running' };
       }
 
       if (!autoDeleteEnabled || autoDeleteAfterDays <= 0) {
         if (!force) {
-          return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'disabled' };
+          return { completedIds: [], failedIds: [], action, skippedReason: 'disabled' };
         }
       }
 
       if (isLoading) {
-        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'loading' };
+        return { completedIds: [], failedIds: [], action, skippedReason: 'loading' };
       }
 
       const now = Date.now();
       if (!force && autoDeleteLastRunAt && now - autoDeleteLastRunAt < AUTO_DELETE_INTERVAL_MS) {
-        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'cooldown' };
+        return { completedIds: [], failedIds: [], action, skippedReason: 'cooldown' };
       }
 
       const { activeSessions: sessions } = await ensureGlobalSessionsLoaded(getAllSyncSessions());
 
       if (sessions.length === 0) {
-        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'no-candidates' };
+        return { completedIds: [], failedIds: [], action, skippedReason: 'no-candidates' };
       }
 
       const candidateIds = buildAutoDeleteCandidates({
@@ -137,7 +145,7 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
 
       if (candidateIds.length === 0) {
         setAutoDeleteLastRunAt(now);
-        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'no-candidates' };
+        return { completedIds: [], failedIds: [], action, skippedReason: 'no-candidates' };
       }
 
       runningRef.current = true;
@@ -156,7 +164,7 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
           }
 
           try {
-            if (sessionRetentionAction === 'archive') {
+            if (action === 'archive') {
               await opencodeClient.updateSession(id, { time: { archived: Date.now() } }, directory);
             } else {
               await opencodeClient.deleteSession(id, directory);
@@ -167,12 +175,12 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
           }
         }
 
-        if (sessionRetentionAction === 'archive') {
+        if (action === 'archive') {
           useGlobalSessionsStore.getState().archiveSessions(completedIds);
         } else {
           useGlobalSessionsStore.getState().removeSessions(completedIds);
         }
-        return { completedIds, failedIds, action: sessionRetentionAction };
+        return { completedIds, failedIds, action };
       } finally {
         runningRef.current = false;
         setIsRunning(false);
@@ -185,7 +193,9 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
       autoDeleteLastRunAt,
       currentSessionId,
       isLoading,
-      sessionRetentionAction,
+      action,
+      onlyArchived,
+      archivedSessions,
       setAutoDeleteLastRunAt,
     ]
   );
@@ -226,6 +236,6 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
     isRunning,
     runCleanup,
     keepRecentCount: AUTO_DELETE_KEEP_RECENT,
-    action: sessionRetentionAction,
+    action,
   };
 };

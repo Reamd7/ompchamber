@@ -29,6 +29,8 @@ use super::sources::PrDiffFn;
 
 /// GitHub REST API 根地址。
 const GITHUB_API_BASE: &str = "https://api.github.com";
+/// 单文件全量内容的上限（JS `MAX_FULL_FILE_BYTES`）。
+const MAX_FULL_FILE_BYTES: usize = 5 * 1024 * 1024;
 
 /// 一次发出的 HTTP 请求描述（测试用来观察 seam 收到的请求）。
 /// One issued request, for seam-observing tests.
@@ -97,6 +99,8 @@ impl PullRequestDiffer {
         &self,
         directory: &str,
         number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        allow_empty: bool,
     ) -> Result<(String, Value), WalkthroughError> {
         let Some(token) = self.stored_token() else {
             return Err(WalkthroughError::with_code(
@@ -109,13 +113,22 @@ impl PullRequestDiffer {
         // The resolver returns `{ repo, remoteUrl }`, not the repo itself.
         // Reading `.owner` off the wrapper made this check fail for every
         // repository in the JS — the check stays on the repo itself.
-        let remote_url = (self.remote_url)(directory.to_string()).await;
-        let Some(repo) = remote_url.as_deref().and_then(parse_github_remote_url) else {
-            return Err(WalkthroughError::with_code(
-                "This directory has no GitHub remote",
-                400,
-                "no-github-remote",
-            ));
+        let repo = match source_repo {
+            Some(explicit) => RepoRef {
+                owner: explicit.owner,
+                repo: explicit.repo,
+            },
+            None => {
+                let remote_url = (self.remote_url)(directory.to_string()).await;
+                let Some(repo) = remote_url.as_deref().and_then(parse_github_remote_url) else {
+                    return Err(WalkthroughError::with_code(
+                        "This directory has no GitHub remote",
+                        400,
+                        "no-github-remote",
+                    ));
+                };
+                repo
+            }
         };
 
         let (status, body) = (self.http)(PrDiffHttpRequest {
@@ -134,7 +147,15 @@ impl PullRequestDiffer {
         }
 
         let patch = body;
-        if patch.trim().is_empty() {
+        // JS: assert.match(body, /^(?:diff --git |\s*$)/) — the body must
+        // START with a diff header, or be blank/whitespace-only.
+        let patch_valid = patch.starts_with("diff --git ") || patch.trim().is_empty();
+        if !patch_valid {
+            return Err(WalkthroughError::internal(
+                "GitHub returned an invalid pull request diff",
+            ));
+        }
+        if !allow_empty && patch.trim().is_empty() {
             return Err(WalkthroughError::with_code(
                 format!("Pull request #{number} has no diff"),
                 404,
@@ -148,14 +169,205 @@ impl PullRequestDiffer {
         ))
     }
 
+/// `getPullRequestFileContents`：取 PR 中单个文件的两侧内容（用于按需
+    /// 展开 PR 折叠上下文）。流程：PR 元数据取 head/base sha → compare 取
+    /// merge-base → contents API 按引用读原始内容（raw accept）；added 文件
+    /// original 为空、deleted 文件 modified 为空；超过 5MB 报 413
+    /// file-too-large。
+    pub async fn file_contents(
+        &self,
+        directory: &str,
+        number: i64,
+        source_repo: Option<super::sources::SourceRepo>,
+        path: &str,
+        previous_path: Option<&str>,
+        status: &str,
+    ) -> Result<Value, WalkthroughError> {
+        let Some(token) = self.stored_token() else {
+            return Err(WalkthroughError::with_code(
+                "Connect a GitHub account to review pull requests",
+                401,
+                "github-not-connected",
+            ));
+        };
+        let repo = match source_repo {
+            Some(explicit) => RepoRef {
+                owner: explicit.owner,
+                repo: explicit.repo,
+            },
+            None => {
+                let remote_url = (self.remote_url)(directory.to_string()).await;
+                let Some(repo) = remote_url.as_deref().and_then(parse_github_remote_url) else {
+                    return Err(WalkthroughError::with_code(
+                        "This directory has no GitHub remote",
+                        400,
+                        "no-github-remote",
+                    ));
+                };
+                repo
+            }
+        };
+
+        let (code, body) = github_get(
+            self,
+            format!("{GITHUB_API_BASE}/repos/{repo}/pulls/{number}"),
+            "application/vnd.github+json",
+            &token,
+        )
+        .await?;
+        if !(200..300).contains(&code) {
+            return Err(WalkthroughError::internal(format!(
+                "GitHub request failed with {code}"
+            )));
+        }
+        let pull: Value = serde_json::from_str(&body)
+            .map_err(|_| WalkthroughError::internal("GitHub returned an invalid pull request"))?;
+        let sha_of = |key: &str| -> Option<String> {
+            pull.get(key)
+                .and_then(|value| value.get("sha"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let valid_sha = |value: &str| value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit());
+        let head_sha = sha_of("head").unwrap_or_default();
+        if !valid_sha(&head_sha) {
+            return Err(WalkthroughError::internal(
+                "GitHub returned an invalid pull request head",
+            ));
+        }
+        let base_sha = sha_of("base").unwrap_or_default();
+        if !valid_sha(&base_sha) {
+            return Err(WalkthroughError::internal(
+                "GitHub returned an invalid pull request base",
+            ));
+        }
+
+        let (code, body) = github_get(
+            self,
+            format!("{GITHUB_API_BASE}/repos/{repo}/compare/{base_sha}...{head_sha}"),
+            "application/vnd.github+json",
+            &token,
+        )
+        .await?;
+        if !(200..300).contains(&code) {
+            return Err(WalkthroughError::internal(format!(
+                "GitHub request failed with {code}"
+            )));
+        }
+        let compare: Value = serde_json::from_str(&body)
+            .map_err(|_| WalkthroughError::internal("GitHub returned an invalid comparison"))?;
+        let merge_base_sha = compare
+            .get("merge_base_commit")
+            .and_then(|value| value.get("sha"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if !valid_sha(&merge_base_sha) {
+            return Err(WalkthroughError::internal(
+                "GitHub returned an invalid merge base",
+            ));
+        }
+
+        let original = if status == "A" {
+            String::new()
+        } else {
+            read_github_file(
+                self,
+                &repo,
+                previous_path.filter(|p| !p.is_empty()).unwrap_or(path),
+                &merge_base_sha,
+                &token,
+            )
+            .await?
+        };
+        let modified = if status == "D" {
+            String::new()
+        } else {
+            read_github_file(self, &repo, path, &head_sha, &token).await?
+        };
+        Ok(json!({ "original": original, "modified": modified }))
+    }
+
+/// 包装成 PR 单文件内容接缝（`PrFileContentsFn`）。
+    pub fn into_pr_file_contents_fn(self: Arc<Self>) -> super::sources::PrFileContentsFn {
+        Arc::new(
+            move |directory: String,
+                  number: i64,
+                  source_repo: Option<super::sources::SourceRepo>,
+                  path: String,
+                  previous_path: Option<String>,
+                  status: String| {
+                let differ = Arc::clone(&self);
+                Box::pin(async move {
+                    differ
+                        .file_contents(
+                            &directory,
+                            number,
+                            source_repo,
+                            &path,
+                            previous_path.as_deref(),
+                            &status,
+                        )
+                        .await
+                })
+            },
+        )
+    }
+
 /// 包装成 sources seam 需要的 PrDiffFn 形状。
     /// Adapt into the sources seam shape.
     pub fn into_pr_diff_fn(self: Arc<Self>) -> PrDiffFn {
-        Arc::new(move |directory: String, number: i64| {
-            let differ = Arc::clone(&self);
-            Box::pin(async move { differ.diff(&directory, number).await })
-        })
+        Arc::new(
+            move |directory: String,
+                  number: i64,
+                  source_repo: Option<super::sources::SourceRepo>,
+                  _allow_empty: bool| {
+                let differ = Arc::clone(&self);
+                Box::pin(async move { differ.diff(&directory, number, source_repo, false).await })
+            },
+        )
     }
+}
+
+/// 单次带 token 的 GitHub GET。2xx 与否由调用方判断。
+async fn github_get(
+    differ: &PullRequestDiffer,
+    url: String,
+    accept: &str,
+    token: &str,
+) -> Result<(u16, String), WalkthroughError> {
+    (differ.http)(PrDiffHttpRequest {
+        url,
+        accept: accept.to_string(),
+        authorization: Some(format!("Bearer {token}")),
+    })
+    .await
+}
+
+/// 读取 PR 中某文件在某引用下的原始内容（contents API + raw accept），
+/// 超 5MB 报 413 file-too-large。
+async fn read_github_file(
+    differ: &PullRequestDiffer,
+    repo: &RepoRef,
+    file_path: &str,
+    git_ref: &str,
+    token: &str,
+) -> Result<String, WalkthroughError> {
+    let url = format!("{GITHUB_API_BASE}/repos/{repo}/contents/{file_path}?ref={git_ref}");
+    let (code, content) = github_get(differ, url, "application/vnd.github.raw+json", token).await?;
+    if !(200..300).contains(&code) {
+        return Err(WalkthroughError::internal(format!(
+            "GitHub request failed with {code}"
+        )));
+    }
+    if content.len() > MAX_FULL_FILE_BYTES {
+        return Err(WalkthroughError::with_code(
+            "This file is too large to show in full",
+            413,
+            "file-too-large",
+        ));
+    }
+    Ok(content)
 }
 
 /// 解析出的 owner/repo 对。
@@ -316,7 +528,7 @@ mod tests {
             Some("git@github.com:openchamber/openchamber.git"),
             (200, PATCH),
         );
-        let result = differ.diff("/repo", 2122).await.unwrap();
+        let result = differ.diff("/repo", 2122, None, false).await.unwrap();
 
         assert_eq!(result.0, PATCH);
         assert_eq!(
@@ -349,7 +561,7 @@ mod tests {
         .unwrap();
 
         let (differ, seen) = differ(&data_dir, None, (200, PATCH));
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 400);
         assert_eq!(error.code.as_deref(), Some("no-github-remote"));
@@ -367,7 +579,7 @@ mod tests {
             (200, PATCH),
         );
         // No github-auth.json: no stored token.
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 401);
         assert_eq!(error.code.as_deref(), Some("github-not-connected"));
@@ -389,11 +601,58 @@ mod tests {
             Some("https://github.com/ompchamber/ompchamber"),
             (200, "   "),
         );
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
 
         assert_eq!(error.status, 404);
         assert_eq!(error.code.as_deref(), Some("empty-diff"));
         assert_eq!(error.message, "Pull request #2122 has no diff");
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+/// `getPullRequestFileContents`：按 URL 匹配的假 HTTP 依次给出 PR 元数据、
+/// compare、两侧文件内容；验证 added/deleted 语义与 raw accept 头。
+    #[tokio::test]
+    async fn file_contents_reads_both_sides_with_rename_and_status_semantics() {
+        let data_dir = temp_data_dir();
+        std::fs::write(
+            data_dir.join("github-auth.json"),
+            json!({ "accessToken": "gho_test" }).to_string(),
+        )
+        .unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<PrDiffHttpRequest>::new()));
+        let seen_for_http = Arc::clone(&seen);
+        let differ = PullRequestDiffer::new(
+            data_dir.clone(),
+            Arc::new(move |_directory| {
+                Box::pin(async { Some("git@github.com:o/r.git".to_string()) })
+            }),
+            Arc::new(move |request: PrDiffHttpRequest| {
+                let seen = Arc::clone(&seen_for_http);
+                Box::pin(async move {
+                    seen.lock().unwrap().push(request.clone());
+                    let body = if request.url.contains("/pulls/7") {
+                        json!({ "head": { "sha": "a".repeat(40) }, "base": { "sha": "b".repeat(40) } }).to_string()
+                    } else if request.url.contains("/compare/") {
+                        json!({ "merge_base_commit": { "sha": "c".repeat(40) } }).to_string()
+                    } else if request.url.contains("contents/old.txt") {
+                        "base side".to_string()
+                    } else {
+                        "head side".to_string()
+                    };
+                    Ok((200u16, body))
+                })
+            }),
+        );
+        let value = differ
+            .file_contents("/repo", 7, None, "new.txt", Some("old.txt"), "M")
+            .await
+            .unwrap();
+        assert_eq!(value["original"], "base side");
+        assert_eq!(value["modified"], "head side");
+        let requests = seen.lock().unwrap();
+        assert!(requests
+            .iter()
+            .any(|r| r.url.contains("contents/old.txt?ref=") && &r.accept == "application/vnd.github.raw+json"));
         let _ = std::fs::remove_dir_all(&data_dir);
     }
 
@@ -411,7 +670,7 @@ mod tests {
             Some("git@github.com:openchamber/openchamber.git"),
             (401, "Bad credentials"),
         );
-        let error = differ.diff("/repo", 2122).await.unwrap_err();
+        let error = differ.diff("/repo", 2122, None, false).await.unwrap_err();
         assert_eq!(error.status, 500);
         assert_eq!(error.message, "GitHub request failed with 401");
         let _ = std::fs::remove_dir_all(&data_dir);

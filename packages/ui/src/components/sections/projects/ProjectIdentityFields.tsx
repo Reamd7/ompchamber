@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/icon/Icon';
 import { ModelSelector } from '@/components/sections/agents/ModelSelector';
+import { AgentSelector } from '@/components/sections/commands/AgentSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import {
   SettingsFieldRow,
@@ -10,12 +11,13 @@ import {
   SETTINGS_SELECT_ROW_TRIGGER_CLASS,
   SETTINGS_SELECT_SIZE,
 } from '@/components/sections/shared/SettingsSection';
-import { useConfigStore } from '@/stores/useConfigStore';
+import { selectProvidersForDirectory, useConfigStore } from '@/stores/useConfigStore';
 import { modelVariantNames } from '@/lib/modelVariants';
 import { PROJECT_COLORS, PROJECT_ICONS, PROJECT_COLOR_MAP as COLOR_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { isPrimaryMode } from '@/components/chat/mobileControlsUtils';
 import {
   PROJECT_SETTINGS_CONTROL_WIDTH,
   ProjectSettingsSubsection,
@@ -35,7 +37,7 @@ const formatVariantLabel = (variant: string): string => variant.charAt(0).toUppe
 export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ form }) => {
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
-  const providers = useConfigStore((state) => state.providers);
+   const providers = useConfigStore((state) => selectProvidersForDirectory(state, form.project?.path));
   const {
     name,
     setName,
@@ -45,6 +47,8 @@ export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ fo
     setColor,
     iconBackground,
     setIconBackground,
+    defaultAgent,
+    setDefaultAgent,
     parsedDefaultModel,
     defaultVariant,
     handleDefaultModelChange,
@@ -105,10 +109,23 @@ export const ProjectIdentityFields: React.FC<ProjectIdentityFieldsProps> = ({ fo
         contentClassName="space-y-0"
       >
         <SettingsFieldRow
+          settingsItem="projects.default-agent"
+          label={t('settings.projects.page.field.projectAgent')}
+        >
+          <AgentSelector
+           directory={project.path}            agentName={defaultAgent || ''}
+            onChange={(agentName) => setDefaultAgent(agentName || undefined)}
+            filter={(agent) => isPrimaryMode(agent.mode)}
+            className={SETTINGS_CUSTOM_TRIGGER_CLASS}
+          />
+        </SettingsFieldRow>
+
+        <SettingsFieldRow
           settingsItem="projects.default-model"
           label={t('settings.projects.page.field.projectModel')}
         >
           <ModelSelector
+            directory={project.path}
             providerId={parsedDefaultModel.providerId}
             modelId={parsedDefaultModel.modelId}
             onChange={handleDefaultModelChange}

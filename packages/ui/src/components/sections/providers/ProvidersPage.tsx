@@ -5,6 +5,7 @@ import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLay
 import { SettingsSection, SETTINGS_CUSTOM_TRIGGER_CLASS } from '@/components/sections/shared/SettingsSection';
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
+import { type AuthMethod, type OAuthAuthMethodEntry } from './providerAuth';
 import { selectProvidersForDirectory, useConfigStore } from '@/stores/useConfigStore';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
 import { useUIStore } from '@/stores/useUIStore';
@@ -48,9 +49,11 @@ import {
   shouldAutoOpenAuthPanel,
   shouldShowApiKeyAuth,
   shouldShowModelsSection,
-  type AuthMethod,
-  type OAuthAuthMethodEntry,
-} from './providerAuth';
+ findIntegrationForProvider,
+  getCredentialConnections,
+  getOAuthMethods,
+  getProviderConnections,
+  getSignInIntegrationId,} from './providerAuth';
 import { CustomProviderForm } from './CustomProviderForm';
 import { ProviderOAuthMethods, type ProviderOAuthMethod } from './ProviderOAuthMethods';
 import {
@@ -112,14 +115,19 @@ interface ProviderSources {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
+const readProviderApiKeySetting = (provider: { options?: { apiKey?: unknown } } | undefined): string | null => {
+  const value = provider?.options?.apiKey;
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+};
+
 
 const toOAuthMethods = (
-  entries: OAuthAuthMethodEntry[],
+  entries: Array<{ label?: string; name?: string; prompts?: unknown } & Record<string, unknown>>,
   fallbackLabel: (index: number) => string,
 ): ProviderOAuthMethod[] =>
-  entries.map(({ method, methodIndex }) => ({
-    index: methodIndex,
-    label: method.label || method.name || fallbackLabel(methodIndex),
+  entries.map((method, index) => ({
+    index,
+    label: (method.label as string) || (method.name as string) || fallbackLabel(index),
     prompts: method.prompts,
   }));
 
@@ -198,6 +206,7 @@ export const ProvidersPage: React.FC = () => {
   const [ompBusy, setOmpBusy] = React.useState(false);
 
   const [authMethodsByProvider, setAuthMethodsByProvider] = React.useState<Record<string, AuthMethod[]>>({});
+  const [integrations, setIntegrations] = React.useState<import('@/lib/opencode/wire').IntegrationInfo[] | null>(null);
   const [authLoading, setAuthLoading] = React.useState(false);
   const [apiKeyInputs, setApiKeyInputs] = React.useState<Record<string, string>>({});
   const [authBusyKey, setAuthBusyKey] = React.useState<string | null>(null);
@@ -312,6 +321,8 @@ export const ProvidersPage: React.FC = () => {
     }
     return map;
   }, [ompProviderRows]);
+  const selectedOmpProvider = ompEngineProviders ? (ompFileProviderById.get(selectedProviderId) ?? null) : null;
+
 
   const ompKnownProviderIds = React.useMemo(() => {
     const ids = new Set(providers.map((provider) => provider.id));
@@ -438,11 +449,8 @@ export const ProvidersPage: React.FC = () => {
     }
     const provider = providers.find((entry) => entry.id === selectedProviderId);
     const hasCreds = providerHasCredentials({
-      key: provider?.key,
-      authSourceExists: sources.auth.exists,
-      optionsApiKey: (provider as { options?: { apiKey?: string | null } } | undefined)?.options?.apiKey ?? null,
-      envDeclared: providerDeclaresEnv(provider),
-    });
+     connections: getProviderConnections(integrations ?? [], selectedProviderId),
+      optionsApiKey: readProviderApiKeySetting(provider),    });
     const isEditableCustomProvider = Boolean(
       provider && isConfigDefinedCustomProvider(provider, sources)
     );
@@ -949,13 +957,11 @@ export const ProvidersPage: React.FC = () => {
               ) : (
                 <>
                   {(() => {
-                    const candidateAuthMethods = authMethodsByProvider[candidateProviderId] ?? [];
-                    const candidateOAuthMethods = toOAuthMethods(
-                      getOAuthAuthMethods(candidateAuthMethods),
-                      oauthMethodFallbackLabel,
+                   const candidateIntegration = findIntegrationForProvider(integrations ?? [], candidateProviderId);
+                    const candidateOAuthMethods = getOAuthMethods(
+                      findIntegrationForProvider(integrations ?? [], getSignInIntegrationId(candidateProviderId)),
                     );
-                    const showApiKey = shouldShowApiKeyAuth(candidateAuthMethods);
-
+                    const showApiKey = shouldShowApiKeyAuth(getOAuthMethods(candidateIntegration));
                     return (
                       <>
                         {showApiKey ? (
@@ -992,8 +998,8 @@ export const ProvidersPage: React.FC = () => {
                         {candidateOAuthMethods.length > 0 ? (
                           <ProviderOAuthMethods
                             key={candidateProviderId}
-                            providerId={candidateProviderId}
-                            methods={candidateOAuthMethods}
+                           providerId={getSignInIntegrationId(candidateProviderId)}
+                            methods={toOAuthMethods(candidateOAuthMethods, (index) => `OAuth ${index + 1}`)}
                             onConnected={() => handleOAuthConnected(candidateProviderId)}
                             className={cn(showApiKey && 'border-t border-[var(--surface-subtle)] pt-2')}
                           />
@@ -1022,21 +1028,17 @@ export const ProvidersPage: React.FC = () => {
   }
 
   const providerModels = Array.isArray(selectedProvider.models) ? selectedProvider.models : [];
-  const providerAuthMethods = authMethodsByProvider[selectedProvider.id] ?? [];
-  const oauthAuthMethods = toOAuthMethods(
-    getOAuthAuthMethods(providerAuthMethods),
-    oauthMethodFallbackLabel,
+ const selectedIntegration = findIntegrationForProvider(integrations ?? [], selectedProvider.id);
+  const oauthAuthMethods = getOAuthMethods(
+    findIntegrationForProvider(integrations ?? [], getSignInIntegrationId(selectedProvider.id)),
   );
-  const selectedOmpProvider = ompEngineProviders ? (ompFileProviderById.get(selectedProviderId) ?? null) : null;
-  const showApiKeyAuth = shouldShowApiKeyAuth(providerAuthMethods);
-  const sourcesLoaded = Boolean(selectedSources);
+  const showApiKeyAuth = shouldShowApiKeyAuth(getOAuthMethods(selectedIntegration));
+  const integrationsLoaded = integrations !== null;  const sourcesLoaded = Boolean(selectedSources);
   const isEditableCustomProvider = sourcesLoaded
     && isConfigDefinedCustomProvider(selectedProvider, selectedSources);
   const hasCredentials = providerHasCredentials({
-    key: selectedProvider.key,
-    authSourceExists: selectedSources?.auth.exists,
-    optionsApiKey: (selectedProvider as { options?: { apiKey?: string | null } }).options?.apiKey ?? null,
-    envDeclared: providerDeclaresEnv(selectedProvider),
+   connections: getProviderConnections(integrations ?? [], selectedProvider.id),
+    optionsApiKey: readProviderApiKeySetting(selectedProvider),
   });
   // Engine-managed providers are listed by construction from the engine's
   // available models — the engine is the credential authority, so the panel
@@ -1096,7 +1098,7 @@ export const ProvidersPage: React.FC = () => {
       title={selectedProvider.name || selectedProvider.id}
       titleLeading={<ProviderLogo providerId={selectedProvider.id} className="h-5 w-5 shrink-0" />}
       description={<span className="font-mono typography-settings-description text-muted-foreground">{selectedProvider.id}</span>}
-      headerEnd={ompEngineProviders && selectedOmpProvider ? (
+      headerEnd={ompEngineProviders && selectedProvider ? (
         <div className="flex items-center gap-1">
           <Button
             variant="outline"
@@ -1212,8 +1214,8 @@ export const ProvidersPage: React.FC = () => {
                 {oauthAuthMethods.length > 0 && (
                   <ProviderOAuthMethods
                     key={selectedProvider.id}
-                    providerId={selectedProvider.id}
-                    methods={oauthAuthMethods}
+                   providerId={getSignInIntegrationId(selectedProvider.id)}
+                    methods={toOAuthMethods(oauthAuthMethods, (index) => `OAuth ${index + 1}`)}
                     onConnected={() => handleOAuthConnected(selectedProvider.id)}
                     className={cn(showApiKeyAuth && 'border-t border-[var(--surface-subtle)] pt-2')}
                   />

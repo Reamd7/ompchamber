@@ -76,6 +76,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => ctx.isMac,
   },
   {
+    id: 'appearance.scrollbars',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.alwaysShowScrollbars',
+    descriptionKey: 'settings.openchamber.visual.field.alwaysShowScrollbarsHint',
+    keywords: ['scrollbar', 'scrollbars', 'scroll', 'mouse', 'wheel', 'accessibility', 'always visible'],
+  },
+  {
     id: 'appearance.pwa-install-name',
     page: 'appearance',
     titleKey: 'settings.ompchamber.visual.field.installAppName',
@@ -265,7 +272,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'chat',
     titleKey: 'settings.ompchamber.visual.field.promptNavigatorEnabled',
     keywords: ['prompt', 'navigator', 'navigation', 'timeline', 'scroll'],
-    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     id: 'chat.collapsible-user-messages',
@@ -414,6 +420,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['retention', 'archive', 'delete'],
   },
   {
+    id: 'sessions.retention-only-archived',
+    page: 'sessions',
+    titleKey: 'settings.ompchamber.sessionRetention.field.onlyArchived',
+    descriptionKey: 'settings.ompchamber.sessionRetention.field.onlyArchivedDescription',
+    keywords: ['archive', 'archived', 'only', 'delete', 'cleanup', 'retention'],
+  },
+  {
     id: 'sessions.retention-period',
     page: 'sessions',
     titleKey: 'settings.ompchamber.sessionRetention.field.retentionPeriod',
@@ -559,6 +572,12 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['label', 'display name', 'project metadata'],
   },
   {
+    id: 'projects.default-agent',
+    page: 'projects',
+    titleKey: 'settings.projects.page.field.projectAgent',
+    keywords: ['agent', 'default', 'new chat', 'project metadata'],
+  },
+  {
     id: 'projects.default-model',
     page: 'projects',
     titleKey: 'settings.projects.page.field.projectModel',
@@ -593,6 +612,12 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'projects',
     titleKey: 'settings.ompchamber.worktrees.setup.waitForCommands',
     keywords: ['worktree', 'setup commands', 'bootstrap', 'wait'],
+  },
+  {
+    id: 'behavior.worktree-fetch-source',
+    page: 'behavior',
+    titleKey: 'settings.behavior.page.section.worktrees',
+    keywords: ['worktree', 'fetch', 'remote', 'source branch', 'stale'],
   },
   {
     id: 'remote-instances.client-auth',
@@ -1029,8 +1054,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.integrations.thirdParty.opencodeCursorOauth.name',
     descriptionKey: 'settings.integrations.thirdParty.opencodeCursorOauth.description',
     keywords: ['cursor', 'oauth', 'subscription', 'openai compatible', '@ompchamber/opencode-cursor'],
-  },
-] as const;
+  },] as const;
 
 interface BuildSettingsSearchResultsOptions {
   query: string;

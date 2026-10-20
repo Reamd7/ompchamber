@@ -1,10 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import { requiresProviderAuth, shouldLoadAvailableProviders } from './providerAvailability';
+import { getOAuthAuthMethods, normalizeAuthType, parseAuthPayload, requiresOpenCodeRestartAfterOAuth } from './providerAuth';
+import type { ConnectionInfo, IntegrationInfo } from '@/lib/opencode/wire';
+
+const integration = (overrides: Partial<IntegrationInfo> = {}): IntegrationInfo => ({
+  id: 'anthropic',
+  name: 'Anthropic',
+  methods: [],
+  connections: [],
+  ...overrides,
+});
+
+const credential: ConnectionInfo = { type: 'credential', id: 'cred_1', label: 'API key' };
+const envConnection: ConnectionInfo = { type: 'env', name: 'ANTHROPIC_API_KEY' };
+
 import {
-  getOAuthAuthMethods,
-  normalizeAuthType,
-  parseAuthPayload,
-requiresOpenCodeRestartAfterOAuth,
+  findIntegrationForProvider,
+  getKeyMethod,
+  getOAuthMethods,
+  getProviderConnections,
+  getSignInIntegrationId,
   providerHasCredentials,
   shouldAutoOpenAuthPanel,
   shouldShowApiKeyAuth,
@@ -73,6 +88,23 @@ describe('provider auth method helpers', () => {
   test('Claude CLI OAuth does not require an OpenCode restart', () => {
     expect(requiresOpenCodeRestartAfterOAuth('claude-code')).toBe(false);
     expect(requiresOpenCodeRestartAfterOAuth('github-copilot')).toBe(true);
+  });
+});
+
+describe('Console sign-in for OpenCode Go', () => {
+  test('OpenCode Go signs in through the Console integration; others use their own', () => {
+    expect(getSignInIntegrationId('opencode-go')).toBe('opencode');
+    expect(getSignInIntegrationId('anthropic')).toBe('anthropic');
+  });
+
+  test('a Console sign-in counts as OpenCode Go credentials', () => {
+    const list = [
+      integration({ id: 'opencode-go', name: 'OpenCode Go' }),
+      integration({ id: 'opencode', name: 'OpenCode Console', connections: [credential] }),
+    ];
+    expect(getProviderConnections(list, 'opencode-go')).toEqual([credential]);
+    expect(getProviderConnections(list, 'anthropic')).toBe(undefined);
+    expect(getProviderConnections([integration({ connections: [envConnection] })], 'anthropic')).toEqual([envConnection]);
   });
 });
 

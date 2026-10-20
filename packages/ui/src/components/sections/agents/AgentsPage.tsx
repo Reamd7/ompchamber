@@ -333,6 +333,8 @@ export const AgentsPage: React.FC = () => {
   const agents = useAgentsStore((state) => selectAgentsForDirectory(state, settingsDirectory));
   const selectedAgent = selectedAgentName ? getAgentByName(selectedAgentName, settingsDirectory) : null;
   const isNewAgent = Boolean(agentDraft && agentDraft.name === selectedAgentName && !selectedAgent);
+  const runtimeDescription = isNewAgent ? '' : selectedAgent?.description?.trim() ?? '';
+  const runtimeSystem = isNewAgent ? '' : (selectedAgent as { system?: string } | undefined)?.system?.trim() ?? '';
 
   // omp mode: the agent row carries the discovery contract (02 §5.2/§5.3);
   // bundled definitions are read-only, overridable by a same-name copy.
@@ -731,7 +733,7 @@ export const AgentsPage: React.FC = () => {
             <Textarea
               value={ompForm.description}
               onChange={(e) => patchOmpForm({ description: e.target.value })}
-              placeholder={t('settings.agents.page.field.descriptionPlaceholder')}
+              placeholder={runtimeDescription || t('settings.agents.page.field.descriptionPlaceholder')}
               disabled={isReadOnly}
               rows={2}
               className="w-full resize-none min-h-[52px] bg-transparent"
@@ -746,7 +748,7 @@ export const AgentsPage: React.FC = () => {
             <Textarea
               value={ompForm.systemPrompt}
               onChange={(e) => patchOmpForm({ systemPrompt: e.target.value })}
-              placeholder={t('settings.agents.page.field.systemPromptPlaceholder')}
+              placeholder={runtimeSystem || t('settings.agents.page.field.systemPromptPlaceholder')}
               disabled={isReadOnly}
               rows={8}
               className="w-full font-mono typography-meta min-h-[120px] max-h-[60vh] bg-transparent resize-y"

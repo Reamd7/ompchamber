@@ -1,7 +1,20 @@
 import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
-
 export const settingsDict = {
+  'settings.agents.page.runtimeProvided.note': 'Надається OpenCode або плагіном і не має власного файлу конфігурації. Сірі підказки показують поточні значення; усе, що ви введете, збережеться як перевизначення.',
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Не вдалося перезапустити OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Перезапустити OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Цей OpenCode запущено поза OpenChamber. Перезапустіть його там, де запускали.',
+  'settings.providers.page.custom.models.variantsLabel': 'Рівні міркування',
+  'settings.providers.page.custom.models.variantsInfo': 'Необов’язково. Рівні зусилля через кому, які приймає endpoint, наприклад low, medium, high. Кожен стає варіантом, який можна вибрати в перемикачі моделей.',
+  'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
+  'settings.behavior.page.section.worktrees': 'Worktree',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Отримувати зміни з віддаленого перед створенням worktree',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Отримати зміни з віддаленого репозиторію перед створенням worktree',
+  'settings.behavior.page.worktreeFetchSource.info': 'Нові worktree створюються з отриманого віддаленого стану поточної гілки, а не з локального checkout, тому не є застарілими. Якщо віддалений репозиторій недоступний, використовується локальний стан.',
+  'settings.projects.page.field.projectAgent': 'Project Agent',
+  'settings.openchamber.visual.field.alwaysShowScrollbars': 'Завжди показувати смуги прокручування',
+  'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Залишати смуги прокручування видимими, щоб можна було перетягнути повзунок без попереднього прокручування. Лише на цьому пристрої.',
   'settings.providers.page.openCodeGo.title': 'Відстеження використання OpenCode Go',
   'settings.providers.page.openCodeGo.description': 'Підключіть панель OpenCode Go, щоб бачити ковзну, тижневу та місячну квоту.',
   'settings.providers.page.openCodeGo.workspaceId': 'ID робочого простору',
@@ -14,6 +27,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': 'Видалити',
   'settings.providers.page.quotaCredentials.saved': 'Облікові дані {provider} збережено.',
   'settings.providers.page.quotaCredentials.accessToken': 'Токен доступу',
+  'settings.providers.page.quotaCredentials.usageToken': 'Токен API використання',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Виконайте цю команду в терміналі, а потім вставте токен нижче. Він може лише читати використання LLM-кредитів і діє 30 днів.',
   'settings.providers.page.quotaCredentials.refreshToken': 'Токен оновлення',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'Вставте токен',
   'settings.providers.page.openCodeGo.saveFailed': 'Не вдалося перевірити дані OpenCode Go.',
@@ -78,8 +93,7 @@ export const settingsDict = {
   'settings.page.usage.title': 'Використання',
   'settings.page.agents.title': 'Агенти',
   'settings.page.commands.title': 'Команди',
-  'settings.page.mcp.title': 'MCP',
-  'settings.page.plugins.title': 'Plugins',
+  'settings.page.mcp.title': 'MCP',  'settings.page.plugins.title': 'Plugins',
   'settings.page.skills.title': 'Навички',
   'settings.page.skillsCatalog.title': 'Каталог навичок',
   'settings.page.git.title': 'Git',
@@ -944,9 +958,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Не вдалося встановити навички',
   'settings.skills.catalog.page.mode.manual': 'Вручну',
   'settings.skills.catalog.page.mode.external': 'зовнішній',
-  'settings.skills.catalog.page.title': 'Каталог навичок',
-  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',
-  'settings.skills.catalog.page.section.sources': 'Джерела',
+  'settings.skills.catalog.page.title': 'Каталог навичок',  'settings.skills.catalog.page.subtitle': 'Встановлюйте готові скіли з курованих репозиторіїв або додайте власне джерело.',  'settings.skills.catalog.page.section.sources': 'Джерела',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Пошук скілів у всіх джерелах…',
   'settings.skills.catalog.page.search.clear': 'Очистити пошук',
   'settings.skills.catalog.page.source.skillsCount': 'Скілів: {count}',
@@ -997,6 +1009,9 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'Не вдалося видалити ключ доступу.',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': 'Не вдалося очистити збережену автентифікацію.',
   'settings.ompchamber.sessionRetention.title': 'Зберігання сесій',
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Лише архівні сесії',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Використовує видалення та рахує період зберігання від архівації. Неархівовані сесії зберігаються.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Видаляє архівні сесії після завершення періоду зберігання. Зберігає 5 останніх архівованих сесій, відкриту сесію, сесії в роботі та сесії з публічним посиланням. Батьківська сесія залишається, якщо її видалення зачепить захищену дочірню.',
   'settings.ompchamber.sessionRetention.tooltip': 'Автоматично архівуйте або видаляйте неактивні сесії на основі останньої активності. Останні 5 сесій завжди зберігаються.',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': 'Увімкнути автоматичне очищення',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': 'Увімкнути автоматичне очищення',
@@ -1089,9 +1104,7 @@ export const settingsDict = {
   'settings.mcp.sidebar.deleteDialog.descriptionPrefix': 'Ви впевнені, що хочете видалити \\"{name}\\"? Це видалить його з',
   'settings.mcp.sidebar.toast.deleteFailed': 'Не вдалося видалити сервер MCP',
   'settings.mcp.sidebar.toast.serverDeleted': 'MCP сервер \\"{name}\\" видалено',
-  'settings.mcp.sidebar.toast.refreshListIfStale': 'Оновити список MCP, якщо інтерфейс користувача виглядає застарілим.',
-  'settings.plugins.sidebar.title': 'Плагіни',
-  'settings.plugins.sidebar.total': 'Усього: {count}',
+  'settings.mcp.sidebar.toast.refreshListIfStale': 'Оновити список MCP, якщо інтерфейс користувача виглядає застарілим.',  'settings.plugins.sidebar.title': 'Плагіни',  'settings.plugins.sidebar.total': 'Усього: {count}',
   'settings.plugins.sidebar.actions.addTitle': 'Додати плагін',
   'settings.plugins.sidebar.actions.deleting': 'Видалення…',
   'settings.plugins.sidebar.empty.title': 'Плагіни не налаштовано',
@@ -1536,7 +1549,6 @@ export const settingsDict = {
   'settings.providers.page.custom.optionLabel': 'Інший / Власний',
   'settings.providers.page.custom.title': 'Власний провайдер',
   'settings.providers.page.custom.editTitle': 'Редагувати власного провайдера',
-
   'settings.providers.page.custom.description': 'Додайте провайдера з базовою URL-адресою, обліковими даними, списком моделей і підтримуваним протоколом API. Зберігається в конфігурації OpenCode для використання в чаті.',
   'settings.providers.page.custom.field.providerID.label': 'ID провайдера',
   'settings.providers.page.custom.field.providerID.placeholder': 'mij-provider',
@@ -1557,7 +1569,6 @@ export const settingsDict = {
   'settings.providers.page.custom.field.apiKey.info': 'Зберігається в автентифікації OpenCode, не OMPChamber. Використовуйте {env:VAR_NAME}, щоб читати ключ зі змінної середовища.',
   'settings.providers.page.custom.field.apiKey.editInfo': 'Залиште порожнім, щоб зберегти наявні облікові дані, або введіть новий ключ / {env:VAR_NAME}.',
   'settings.providers.page.custom.field.apiKey.editPlaceholder': 'Залиште порожнім, щоб зберегти наявний ключ',
-
 
   'settings.providers.page.custom.models.title': 'Моделі',
   'settings.providers.page.custom.models.idLabel': 'ID моделі',
@@ -1611,7 +1622,6 @@ export const settingsDict = {
   'settings.providers.page.auth.connected': 'Підключено',
   'settings.providers.page.auth.incomplete': 'Облікові дані відсутні',
   'settings.providers.page.auth.incompleteHint': '· Додайте API-ключ або {env:VAR} перед використанням цього провайдера в чаті',
-
 
   'settings.providers.page.auth.useReconnectHint': '· Скористайтеся повторним підключенням, щоб оновити облікові дані',
   'settings.providers.page.connectionDetails.title': 'Деталі підключення',
@@ -2519,5 +2529,4 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.followUpBehavior.steer.label': 'Steer',
   'settings.ompchamber.visual.option.followUpBehavior.queue.label': 'Queue',
   ...thirdPartyIntegrationI18n.uk,
-  ...linearIntegrationI18n.uk,
-} as const;
+  ...linearIntegrationI18n.uk,} as const;

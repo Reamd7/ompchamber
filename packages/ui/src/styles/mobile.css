@@ -56,6 +56,12 @@
     min-width: 36px;
   }
 
+  /* The Changes section and source pickers take their height from dropdownTriggerVariants,
+     rather than the generic mobile button minimum. */
+  :root.mobile-pointer:not(.desktop-runtime) button[data-mobile-comparison-trigger] {
+    min-height: 0;
+  }
+
   /* Composer footer action buttons (sessions / attach / auto-accept): hug the
      icon so the group stays tight. The container only renders in the mobile
      JSX, so no pointer/runtime gating is needed; !important overrides both the

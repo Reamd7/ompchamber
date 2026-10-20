@@ -71,6 +71,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
   - Includes session activity snapshot bridge handler used by webview parity routes (`/api/session-activity`).
   - Includes Zen utility model parity handler used by shared notification settings (`/api/zen/models`).
   - Provider handlers cover source lookup, disconnect (`DELETE /api/provider/:id/auth`), and custom provider upsert (`PUT /api/provider`; create/update OpenAI-compatible config with explicit `scope` for user/project/custom layers; requires `env` or stored auth; secrets via OpenCode auth API).
+  - Quota handlers keep managed exe.dev, Ollama Cloud, and Cursor credentials in the extension data directory with the same private-file contract as the web runtime. exe.dev uses one command-scoped usage token for the aggregate billing shared by every `exe-*` model provider.
 
 - `bridge-permission-auto-accept-runtime.ts`
   - Owns the persisted VS Code permission auto-accept policy and its GET/PUT bridge contract.
@@ -78,6 +79,14 @@ The webview build emits each worker as one self-contained file. VS Code webviews
 
 ## Shared webview message ordering
 
+he bridge sends `webview:ready` once per document, before its first outbound
+message. Sidebar and session-editor hosts abort that panel's old
+SSE streams before accepting new requests and resend the current connection
+state. A VS Code webview reload or cross-window move replaces the document
+without disposing its panel; relying only on panel disposal leaked one upstream
+stream per reload, including its ongoing idle heartbeat traffic.
+
+Each host also sends `viewerStateChanged` with `{ windowFocused, surfaceVisible }`: on resolve and on `webview:ready`, when the VS Code window gains or loses focus, and when that view or panel is shown or hidden. The webview parses it at the bridge and hands it to `packages/ui/src/lib/surfaceAttention.ts`, which decides whether a finished turn in the selected session counts as seen. The webview document's own `hasFocus()` is not used for this, because focus in the code editor would otherwise mark a visible chat as unread.
 Message and part ordering is owned by [`packages/ui/src/sync/DOCUMENTATION.md`](../../ui/src/sync/DOCUMENTATION.md#session-message-loading). The VS Code webview consumes that shared sync implementation; bridge and proxy runtimes pass OpenCode records through without adding runtime-specific ordering.
 
 ## Extension guideline
@@ -92,12 +101,13 @@ When adding new bridge route families:
 
 Verified 2026-08-28 against `8f5eb231b`.
 
-Three webview hosts, all rendering `renderVSCodeApp` → `VSCodeApp`
+Two webview hosts, both rendering `renderVSCodeApp` → `VSCodeApp`
 (`packages/ui/src/apps/VSCodeApp.tsx`):
 
-- `ChatViewProvider.ts` — sidebar view, `panelType: 'chat'`, `viewMode: 'sidebar'`.
-- `SessionEditorPanelProvider.ts` — editor tab, `panelType: 'chat'`, `viewMode: 'editor'`.
-- `AgentManagerPanelProvider.ts` — editor tab, `panelType: 'agentManager'` → `AgentManagerView`, no `VSCodeLayout`.
+- `ChatViewProvider.ts` — sidebar view, `viewMode: 'sidebar'`.
+- `SessionEditorPanelProvider.ts` — editor tab, `viewMode: 'editor'`. A tab opened by `openchamber.openAgentManager` (titled "Run on Several Models"; the id predates multi-run and stays for existing keybindings) carries `initialComposer: 'parallel'`, so its new-session draft starts in parallel mode.
+
+The old Agent Manager panel (its own provider, `AgentManagerView` and group store) is gone. It listed worktree sessions it never bootstrapped into sync, so its chats missed live events; runs now use the shared sidebar rows, run overview and composer.
 
 `VSCodeLayout` has exactly three views: `sessions`, `chat`, `settings`
 (`packages/ui/src/components/layout/VSCodeLayout.tsx:76`). There is no
@@ -119,7 +129,7 @@ every surface reached only through those is unreachable.
 | Session switcher | MOUNTED | `VSCodeHeader` → `SessionSwitcherDropdown` |
 | MCP dropdown | MOUNTED | `VSCodeHeader` `showMcp` → `McpDropdown` |
 | Context usage / rate limits | MOUNTED | `VSCodeHeader` `showContextUsage` / `showRateLimits` → `ContextUsageDisplay`, `UsageProgressBar` |
-| Agent manager | MOUNTED | `VSCodeApp` `panelType === 'agentManager'` → `AgentManagerView` |
+| Multi-run | MOUNTED | `SessionSidebar` run rows; `RunOverview` over the chat in every layout (sidebar, expanded, editor tab); composer parallel mode from the model picker and the `openchamber.openAgentManager` tab |
 | Settings | PARTIAL | `VSCodeLayout` → lazy `SettingsView`. `metadata.ts` `isAvailable: (ctx) => !ctx.isVSCode` hides `remote-instances`, `git`, `shortcuts`, `magic-prompts`, `voice`, `tunnel`, `about` |
 | Usage / quota page | MOUNTED | `SettingsView` → `UsagePage` (slug `usage`, no VS Code gate) |
 | Notifications settings | MOUNTED | `SettingsView` → slug `notifications` (no VS Code gate) |

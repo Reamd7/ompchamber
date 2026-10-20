@@ -517,7 +517,7 @@ async fn range_diff_names_unfetched_ref_plainly() {
     let (service, _calls) = fake_runner(script);
 
     let error = service
-        .get_range_diff(&repo_text, "react", "next", None, 3)
+        .get_range_diff(&repo_text, "react", "next", None, 3, false)
         .await
         .unwrap_err();
     assert_eq!(
@@ -551,7 +551,7 @@ async fn range_files_parses_rename_destinations() {
     let (service, _calls) = fake_runner(script);
 
     let files = service
-        .get_range_files(&repo_text, "main", "feature")
+        .get_range_files(&repo_text, "main", "feature", false)
         .await
         .expect("range files");
     assert_eq!(
@@ -667,6 +667,169 @@ async fn populate_recovers_from_stale_unchanged_index_lock() {
 }
 
 // ---------------------------------------------------------------------------
+// Commit comparison (26b54dbe3 port)
+// ---------------------------------------------------------------------------
+
+/// 验证 getCommitDiff 的 argv：resolveCommitHash 校验并展开 hash 后，
+/// show 使用 --format= --root --diff-merges=first-parent --find-renames
+/// 与 literal pathspec（含 previousPath）。
+#[tokio::test]
+async fn get_commit_diff_builds_show_argv_with_literal_pathspecs() {
+    let repo = temp_dir("cdiff");
+    let repo_text = repo.to_string_lossy().to_string();
+    let script_repo = repo_text.clone();
+    let script: Script = Arc::new(move |args: &[String]| {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match argv.as_slice() {
+            ["rev-parse", "--show-toplevel"] => Some(ok(&script_repo)),
+            ["rev-parse", "--verify", "--end-of-options", hash] if hash.ends_with("^{commit}") => {
+                Some(ok("0123456789abcdef0123456789abcdef01234567"))
+            }
+            ["show", ..] => Some(ok("diff --git a/f.txt b/f.txt\n@@ -1 +1 @@\n-a\n+b\n")),
+            _ => None,
+        }
+    });
+    let (service, calls) = fake_runner(script);
+    let diff = service
+        
+        .get_commit_diff(&repo_text, "0123456", Some("f.txt"), Some("g.txt"), 5)
+        .await
+        .expect("commit diff");
+    assert!(diff.starts_with("diff --git"));
+    assert!(has_call(
+        &calls_snapshot(&calls),
+        &[
+            "show",
+            "--format=",
+            "--root",
+            "--diff-merges=first-parent",
+            "--find-renames",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--no-color",
+        ]
+    ));
+    let calls = calls_snapshot(&calls);
+    let show_call = calls
+        .iter()
+        .find(|call| call.first().map(String::as_str) == Some("show"))
+        .expect("show call");
+    assert!(show_call.contains(&":(literal)f.txt".to_string()));
+    assert!(show_call.contains(&":(literal)g.txt".to_string()));
+    assert!(show_call.contains(&"-U5".to_string()));
+}
+
+/// 验证 getCommitFiles 的新语义：-z numstat 与 name-status 对齐产出
+/// previousPath/changeType，统计缺失时报 "Incomplete commit file statistics"。
+#[tokio::test]
+async fn get_commit_files_parses_z_outputs_with_rename_paths() {
+    let repo = temp_dir("cfiles");
+    let repo_text = repo.to_string_lossy().to_string();
+    let script_repo = repo_text.clone();
+    let script: Script = Arc::new(move |args: &[String]| {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match argv.as_slice() {
+            ["rev-parse", "--show-toplevel"] => Some(ok(&script_repo)),
+            ["rev-parse", "--verify", "--end-of-options", ..] => {
+                Some(ok("0123456789abcdef0123456789abcdef01234567"))
+            }
+            ["show", .., "--numstat", "-z", "--"] => Some(ok(
+                "3\t1\ta.txt\0-\t-\tbin.png\0",
+            )),
+            ["show", .., "--name-status", "-z", "--"] => Some(ok("M\0a.txt\0A\0bin.png\0")),
+            _ => None,
+        }
+    });
+    let (service, _calls) = fake_runner(script);
+    let value = service.get_commit_files(&repo_text, "0123456").await.expect("files");
+    let files = value["files"].as_array().unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "a.txt");
+    assert_eq!(files[0]["insertions"], 3);
+    assert_eq!(files[0]["deletions"], 1);
+    assert_eq!(files[0]["changeType"], "M");
+    assert_eq!(files[1]["isBinary"], true);
+    assert_eq!(files[1]["changeType"], "A");
+}
+
+/// 验证工作区区间对比的分支守卫：head 不是当前检出分支时报错。
+#[tokio::test]
+async fn range_diff_working_tree_requires_checked_out_branch() {
+    let repo = temp_dir("wtguard");
+    let repo_text = repo.to_string_lossy().to_string();
+    let script_repo = repo_text.clone();
+    let script: Script = Arc::new(move |args: &[String]| {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match argv.as_slice() {
+            ["rev-parse", "--show-toplevel"] => Some(ok(&script_repo)),
+            ["rev-parse", "--verify", "refs/remotes/origin/feature"] => None,
+            ["rev-parse", "--verify", "refs/heads/feature"] => Some(ok("basesha")),
+            ["rev-parse", "--verify", "--quiet", ref_] if ref_.ends_with("^{commit}") => {
+                Some(ok("sha"))
+            }
+            ["rev-parse", "--verify", "HEAD"] => Some(ok("headcommit")),
+            ["symbolic-ref", "--quiet", "HEAD"] => Some(ok("refs/heads/main")),
+            ["rev-parse", "--verify", "--symbolic-full-name", "--end-of-options", "main"] => {
+                Some(ok("refs/heads/other"))
+            }
+            _ => None,
+        }
+    });
+    let (service, _calls) = fake_runner(script);
+    let err = service
+        .get_range_diff(&repo_text, "feature", "main", None, 3, true)
+        .await
+        .expect_err("must reject");
+    assert_eq!(
+        err,
+        "Working-tree comparisons require the checked-out branch. Refresh and try again."
+    );
+}
+
+/// 验证工作区区间文件清单：merge-base 为基、无未跟踪文件时直接 diff，
+/// 输出以 name-status -z 解析。
+#[tokio::test]
+async fn range_files_working_tree_diffs_against_merge_base() {
+    let repo = temp_dir("wtfiles");
+    let repo_text = repo.to_string_lossy().to_string();
+    let script_repo = repo_text.clone();
+    let script: Script = Arc::new(move |args: &[String]| {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match argv.as_slice() {
+            ["rev-parse", "--show-toplevel"] => Some(ok(&script_repo)),
+            ["rev-parse", "--verify", "refs/remotes/origin/main"] => None,
+            ["rev-parse", "--verify", "refs/heads/main"] => Some(ok("basesha")),
+            ["rev-parse", "--verify", "--quiet", ref_] if ref_.ends_with("^{commit}") => {
+                Some(ok("sha"))
+            }
+            ["rev-parse", "--verify", "HEAD"] => Some(ok("headcommit")),
+            ["symbolic-ref", "--quiet", "HEAD"] => Some(ok("refs/heads/main")),
+            ["rev-parse", "--verify", "--symbolic-full-name", "--end-of-options", "main"] => {
+                Some(ok("refs/heads/main"))
+            }
+            ["merge-base", "main", "headcommit"] => Some(ok("mb123")),
+            ["diff", "--name-status", "-z", "-C", "mb123", "--"] => {
+                Some(ok("M\0src/a.ts\0R100\0old.ts\0new.ts\0"))
+            }
+            _ => None,
+        }
+    });
+    let (service, calls) = fake_runner(script);
+    let files = service
+        .get_range_files(&repo_text, "main", "main", true)
+        .await
+        .expect("files");
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["path"], "src/a.ts");
+    assert_eq!(files[0]["status"], "M");
+    assert_eq!(files[1]["path"], "new.ts");
+    assert_eq!(files[1]["status"], "R");
+    assert!(has_call(
+        &calls_snapshot(&calls),
+        &["diff", "--name-status", "-z", "-C", "mb123", "--"]
+    ));
+}
+
+// ---------------------------------------------------------------------------
 // Pure parsers
 // ---------------------------------------------------------------------------
 
@@ -699,6 +862,67 @@ fn branch_creation_source_rules() {
         None
     );
     assert_eq!(parse_branch_creation_source(""), None);
+}
+
+/// 验证补丁目标路径解析：仅扫描首个 `@@ ` 之前的头部行，取最后一个有效
+/// 目标（b 侧）；hunk 正文里的 `---`/`+++` 行不再当作路径来源。
+#[test]
+fn patch_target_path_reads_header_and_takes_last_target() {
+    use super::service_ops::extract_patch_target_path;
+
+    let patch = "diff --git a/one.txt b/two.txt\n\
+                 index aaa..bbb 100644\n\
+                 --- a/one.txt\n\
+                 +++ b/two.txt\n\
+                 @@ -1,3 +1,3 @@\n\
+                 -old\n\
+                 --- deleted marker line inside hunk body\n\
+                 +new\n";
+    assert_eq!(extract_patch_target_path(patch), Some("two.txt".to_string()));
+
+    // Header-only scan: a `+++ b/other.txt` line after the first hunk is ignored.
+    let stale = "diff --git a/a.txt b/a.txt\n\
+                 --- a/a.txt\n\
+                 +++ b/a.txt\n\
+                 @@ -1 +1 @@\n\
+                 -x\n\
+                 +y\n\
+                 +++ b/decoy.txt\n";
+    assert_eq!(extract_patch_target_path(stale), Some("a.txt".to_string()));
+
+    assert_eq!(extract_patch_target_path("--- /dev/null\n+++ b/new.txt\n"), Some("new.txt".to_string()));
+    assert_eq!(extract_patch_target_path("@@ -1 +1 @@\n-x\n"), None);
+}
+
+/// 验证 canonical-hunk 校验：候选 = 文件头部 + 单个 hunk 切片，
+/// 与提交补丁逐字节一致才通过；无 hunk 头或不匹配均拒绝。
+#[test]
+fn patch_is_current_hunk_matches_only_whole_hunks() {
+    use super::service_ops::patch_is_current_hunk;
+
+    let current = "diff --git a/f.txt b/f.txt\n\
+                   index 111..222 100644\n\
+                   --- a/f.txt\n\
+                   +++ b/f.txt\n\
+                   @@ -1,3 +1,3 @@\n\
+                   context\n\
+                   -old\n\
+                   +new\n\
+                   @@ -10,2 +10,2 @@\n\
+                   -far old\n\
+                   +far new\n";
+    let header = "diff --git a/f.txt b/f.txt\nindex 111..222 100644\n--- a/f.txt\n+++ b/f.txt\n";
+    let second_hunk = "@@ -10,2 +10,2 @@\n-far old\n+far new\n";
+    assert!(patch_is_current_hunk(current, &format!("{}{}", header, second_hunk)));
+
+    // Header alone or a stale hunk from a different snapshot is rejected.
+    assert!(!patch_is_current_hunk(current, header));
+    assert!(!patch_is_current_hunk(
+        current,
+        &format!("{}@@ -99 +99 @@\n-nope\n", header)
+    ));
+    // No hunk headers in the current diff → nothing to match.
+    assert!(!patch_is_current_hunk("index 111..222\n", "@@ -1 +1 @@\n+x\n"));
 }
 
 /// 验证日志 base ref 的本地优先解析：本地分支存在则优先，其次

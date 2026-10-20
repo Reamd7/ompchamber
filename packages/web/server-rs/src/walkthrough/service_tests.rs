@@ -223,7 +223,7 @@ fn harness_with(label: &str, model: ModelDescription) -> Harness {
     };
 
     let data_dir = temp_data_dir(label);
-    let service = WalkthroughService::new(data_dir.clone(), git, seam, None);
+    let service = WalkthroughService::new(data_dir.clone(), git, seam, None, None);
     *state.service_slot.lock().unwrap() = Some(Arc::clone(&service));
 
     Harness {

@@ -79,7 +79,8 @@ pub fn router(ctx: RouterContext) -> axum::Router {
         ctx.config.data_dir.clone(),
         sources::GitDeps::real(git),
         small_model::unavailable_small_model(),
-        Some(pr_differ.into_pr_diff_fn()),
+        Some(Arc::clone(&pr_differ).into_pr_diff_fn()),
+        Some(pr_differ.into_pr_file_contents_fn()),
     );
 
     // JS deferred the pointer prune off the module's first import; the router

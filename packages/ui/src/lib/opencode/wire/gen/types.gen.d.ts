@@ -108,6 +108,7 @@ export type Session = {
     time: {
         created: number;
         updated: number;
+        idle?: number;
         compacting?: number;
         archived?: number;
     };

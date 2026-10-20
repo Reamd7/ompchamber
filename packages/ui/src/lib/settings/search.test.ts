@@ -38,9 +38,17 @@ describe('settings search', () => {
 
     expect(results.some((result) => result.id === 'integrations.third-party.opencode-cursor-oauth')).toBe(true);
   });
-
-  test('finds Linear connect on the integrations page', () => {
-    const results = buildSettingsSearchResults({
+  test('finds the scrollbar preference on every surface', () => {
+    for (const context of [runtimeCtx, { ...runtimeCtx, isDesktop: true }, { ...runtimeCtx, isVSCode: true }, { ...runtimeCtx, isMobile: true }]) {
+      const results = buildSettingsSearchResults({
+        query: 'scrollbar',
+        runtimeCtx: context,
+        t,
+        getPageTitle: (page) => page,
+      });
+      expect(results.find((result) => result.id === 'appearance.scrollbars')?.page).toBe('appearance');
+    }
+  });  test('finds Linear connect on the integrations page', () => {    const results = buildSettingsSearchResults({
       query: 'linear',
       runtimeCtx,
       t,

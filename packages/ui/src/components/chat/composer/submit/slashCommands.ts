@@ -9,7 +9,7 @@
  * commands are data.
  *
  * Commands that are not "send a prompt pair" (undo, redo, timeline, compact,
- * handoff-review) stay with the composer: they manipulate session state or
+ * handoff-review, fork) stay with the composer: they manipulate session state or
  * open UI rather than producing a message.
  */
 
@@ -136,6 +136,20 @@ export interface ParsedSlashCommand {
     argument: string;
 }
 
+export type LocalSlashCommandPlan = {
+    command: ParsedSlashCommand;
+    kind: 'action' | 'prompt';
+    attachedContext: 'none' | 'retain' | 'send';
+};
+
+const LOCAL_ACTION_COMMANDS = new Set([
+    'undo',
+    'redo',
+    'timeline',
+    'handoff-review',
+    'compact',
+    'fork',
+]);
 /**
  * Read the leading slash command out of a message, if there is one. Only the
  * first word counts as the command; the rest is its argument.

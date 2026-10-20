@@ -178,6 +178,7 @@ const VisualSectionContent: React.FC = () => {
         'terminalFontSize',
         'editorFontSize',
         'spacing',
+        'scrollbars',
         'inputBarOffset',
     ]} />;
 };
@@ -200,7 +201,7 @@ const ChatSectionContent: React.FC = () => {
                 'expandedTools',
                 'collapsibleUserMessages',
                 'stickyUserHeader',
-                ...(!isVSCode ? ['promptNavigatorEnabled' as const] : []),
+                'promptNavigatorEnabled',
                 'wideChatLayout',
                 'codeBlockLineWrap',
                 'splitAssistantMessageActions',

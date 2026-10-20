@@ -35,6 +35,7 @@ import { getResolvedShikiTheme } from '@/lib/shiki/appThemeRegistry';
 import { File as PierreFile, VirtualizerContext, WorkerPoolContext } from '@pierre/diffs/react';
 import { useWorkerPool } from '@/contexts/DiffWorkerProvider';
 import { useFileViewVirtualizer, type FileViewVirtualizer } from './useFileViewVirtualizer';
+import { useFilePreviewScrollPosition } from './useFilePreviewScrollPosition';
 import {
   Dialog,
   DialogContent,
@@ -62,6 +63,7 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useUIStore } from '@/stores/useUIStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useGitStatus } from '@/stores/useGitStore';
+import { useFileTreeUpload } from './files/useFileTreeUpload';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { buildCodeMirrorCommentWidgets, FilePreviewCommentMenu, normalizeLineRange, useInlineCommentController } from '@/components/comments';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -406,6 +408,8 @@ interface FileRowProps {
   onToggle: (path: string) => void;
   onRevealPath: (path: string) => void;
   onOpenDialog: (type: 'createFile' | 'createFolder' | 'rename' | 'delete', data: { path: string; name?: string; type?: 'file' | 'directory' }) => void;
+  canUpload: boolean;
+  onPickFiles: (directory: string) => void;
 }
 
 const FileRow: React.FC<FileRowProps> = ({
@@ -428,13 +432,16 @@ const FileRow: React.FC<FileRowProps> = ({
   onToggle,
   onRevealPath,
   onOpenDialog,
+  canUpload,
+  onPickFiles,
 }) => {
   const { t } = useI18n();
   const isDir = node.type === 'directory';
   const { canRename, canCreateFile, canCreateFolder, canDelete, canReveal } = permissions;
   const canDownload = !isDir && Boolean(downloadFile);
   const canRevealPath = canReveal && !isBrowserClient;
-  const hasMenuActions = canRename || canCreateFile || canCreateFolder || canDelete || canDownload || canRevealPath;
+  const canUploadHere = isDir && canUpload;
+  const hasMenuActions = canRename || canCreateFile || canCreateFolder || canUploadHere || canDelete || canDownload || canRevealPath;
 
   const handleContextMenu = React.useCallback((event?: React.MouseEvent) => {
     if (!hasMenuActions) {
@@ -512,7 +519,7 @@ const FileRow: React.FC<FileRowProps> = ({
           <Icon name="folder-received" className="mr-2 size-4" /> {t(getRevealLabelKey())}
         </Item>
       )}
-      {isDir && (canCreateFile || canCreateFolder) && (
+      {isDir && (canCreateFile || canCreateFolder || canUploadHere) && (
         <>
           <Separator />
           {canCreateFile && (
@@ -523,6 +530,11 @@ const FileRow: React.FC<FileRowProps> = ({
           {canCreateFolder && (
             <Item onClick={(e: React.MouseEvent) => { e.stopPropagation(); onOpenDialog('createFolder', node); }}>
               <Icon name="folder-add" className="mr-2 size-4" /> {t('sidebarFilesTree.menu.newFolder')}
+            </Item>
+          )}
+          {canUploadHere && (
+            <Item onClick={(e: React.MouseEvent) => { e.stopPropagation(); onPickFiles(node.path); }}>
+              <Icon name="upload-2" className="mr-2 size-4" /> {t('sidebarFilesTree.menu.uploadFiles')}
             </Item>
           )}
         </>
@@ -688,6 +700,59 @@ const Dialogs: React.FC<DialogsProps> = ({
 interface FilesViewProps {
   mode?: 'full' | 'editor-only';
 }
+
+type FileEditorPosition = {
+  scroll: ReturnType<EditorView['scrollSnapshot']>;
+  anchor: number;
+  head: number;
+};
+
+// Keep only position metadata, not editor instances or file contents. This
+// survives FilesView unmounts without retaining every file visited indefinitely.
+const fileEditorPositions = new Map<string, FileEditorPosition>();
+const MAX_FILE_EDITOR_POSITIONS = 100;
+
+const FilePositionEditor = ({
+  positionKey,
+  onViewReady,
+  ...props
+}: React.ComponentProps<typeof CodeMirrorEditor> & { positionKey: string }) => {
+  const viewRef = React.useRef<EditorView | null>(null);
+
+  React.useLayoutEffect(() => () => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    // Read before React removes the editor DOM and its scroll offsets collapse.
+    const { anchor, head } = view.state.selection.main;
+    fileEditorPositions.delete(positionKey);
+    fileEditorPositions.set(positionKey, { scroll: view.scrollSnapshot(), anchor, head });
+    if (fileEditorPositions.size > MAX_FILE_EDITOR_POSITIONS) {
+      const oldestKey = fileEditorPositions.keys().next().value;
+      if (oldestKey !== undefined) fileEditorPositions.delete(oldestKey);
+    }
+  }, [positionKey]);
+
+  return (
+    <CodeMirrorEditor
+      {...props}
+      onViewReady={(view) => {
+        viewRef.current = view;
+        const position = fileEditorPositions.get(positionKey);
+        if (position) {
+          view.dispatch({
+            selection: {
+              anchor: Math.min(position.anchor, view.state.doc.length),
+              head: Math.min(position.head, view.state.doc.length),
+            },
+            effects: position.scroll,
+          });
+        }
+        onViewReady?.(view);
+      }}
+    />
+  );
+};
 
 /**
  * Keeps a token-bearing asset preview (image/HTML/PDF) authenticated. While
@@ -919,6 +984,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const [desktopImageSrc, setDesktopImageSrc] = React.useState<string>('');
 
   const [loadedFilePath, setLoadedFilePath] = React.useState<string | null>(null);
+  const filePositionKey = JSON.stringify([getRuntimeKey(), root, loadedFilePath]);
 
   const [draftContent, setDraftContent] = React.useState('');
   const [isSaving, setIsSaving] = React.useState(false);
@@ -1298,6 +1364,13 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   }, [loadDirectory, refreshRoot]);
 
   const lastFilesViewDirRef = React.useRef<string>('');
+  const {
+    canUpload,
+    uploadingDirectory,
+    pickFiles,
+    uploadElements,
+  } = useFileTreeUpload({ root, refreshDirectory });
+  const isUploading = uploadingDirectory !== null;
   const lastFilesViewTreeKeyRef = React.useRef<string>('');
 
   React.useEffect(() => {
@@ -2350,6 +2423,8 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             onToggle={toggleDirectory}
             onRevealPath={handleRevealPath}
             onOpenDialog={handleOpenDialog}
+            canUpload={canUpload && !isUploading}
+            onPickFiles={pickFiles}
           />
           {isDir && isExpanded && (
             <ul className="flex flex-col gap-1 ml-3 pl-3 border-l border-border/40 relative">
@@ -3154,6 +3229,34 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
   const mainViewVirtualizer = useFileViewVirtualizer();
   const fullscreenViewVirtualizer = useFileViewVirtualizer();
+  const previewReady = !fileLoading && !fileError && loadedFilePath === selectedFilePath;
+  const codePreviewActive = previewReady && canUseShikiFileView && textViewMode === 'view'
+    && !(isJson && jsonViewMode === 'tree');
+  const markdownPreviewActive = previewReady && isMarkdown && getMdViewMode() === 'preview';
+  const { setScroller: setMainCodeScroller, restore: restoreMainCodeScroll } = useFilePreviewScrollPosition(codePreviewActive ? `${filePositionKey}:code` : null);
+  const { setScroller: setFullscreenCodeScroller, restore: restoreFullscreenCodeScroll } = useFilePreviewScrollPosition(codePreviewActive ? `${filePositionKey}:code:fullscreen` : null);
+  const { setScroller: setMainMarkdownScroll } = useFilePreviewScrollPosition(markdownPreviewActive ? `${filePositionKey}:markdown` : null);
+  const { setScroller: setFullscreenMarkdownScroll } = useFilePreviewScrollPosition(markdownPreviewActive ? `${filePositionKey}:markdown:fullscreen` : null);
+  const { setScroller: connectMainVirtualizer } = mainViewVirtualizer;
+  const { setScroller: connectFullscreenVirtualizer } = fullscreenViewVirtualizer;
+
+  const setMainPreviewScroller = React.useCallback((node: HTMLElement | null) => {
+    connectMainVirtualizer(node);
+    setMainCodeScroller(node);
+  }, [connectMainVirtualizer, setMainCodeScroller]);
+  const setFullscreenPreviewScroller = React.useCallback((node: HTMLElement | null) => {
+    connectFullscreenVirtualizer(node);
+    setFullscreenCodeScroller(node);
+  }, [connectFullscreenVirtualizer, setFullscreenCodeScroller]);
+  const setMainMarkdownScroller = React.useCallback((node: HTMLDivElement | null) => {
+    markdownPreviewRef.current = node;
+    mdPreviewContainerRef.current = node;
+    setMainMarkdownScroll(node);
+  }, [setMainMarkdownScroll]);
+  const setFullscreenMarkdownScroller = React.useCallback((node: HTMLDivElement | null) => {
+    mdFullscreenPreviewContainerRef.current = node;
+    setFullscreenMarkdownScroll(node);
+  }, [setFullscreenMarkdownScroll]);
   const shikiWorkerPool = useWorkerPool('unified');
   // Files above the editable size cap are rendered as a read-only preview; give
   // them the full file content plus pierre's viewport virtualization and the
@@ -3164,7 +3267,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     [fileContent, isLargeFile],
   );
 
-  const renderShikiFileView = React.useCallback((file: FileNode, content: string, virtualizer: FileViewVirtualizer) => {
+  const renderShikiFileView = React.useCallback((file: FileNode, content: string, virtualizer: FileViewVirtualizer, restoreScroll: ReturnType<typeof useFilePreviewScrollPosition>['restore']) => {
     const fileContents = {
       name: file.name,
       contents: content,
@@ -3179,6 +3282,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
           overflow: wrapLines ? 'wrap' : 'scroll',
           theme: pierreTheme,
           themeType: currentTheme.metadata.variant === 'dark' ? 'dark' : 'light',
+          onPostRender: restoreScroll,
         }}
         className={isLargeFile ? 'block w-full' : 'block h-full w-full'}
         style={isLargeFile ? undefined : { height: '100%' }}
@@ -3827,7 +3931,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       </div>
 
       <div className="flex-1 min-h-0 min-w-0 relative">
-        <ScrollableOverlay ref={mainViewVirtualizer.setScroller} outerClassName="h-full min-w-0" className={cn('h-full min-w-0', isLargeFile && '[overflow-anchor:none]')}>
+        <ScrollableOverlay ref={setMainPreviewScroller} outerClassName="h-full min-w-0" className={cn('h-full min-w-0', isLargeFile && '[overflow-anchor:none]')}>
           {!selectedFile ? (
             <div className="p-3 typography-ui text-muted-foreground">{t('filesView.editor.pickFileFromTree')}</div>
           ) : (fileLoading || isPdfAssetAuthLoading) ? (
@@ -3912,10 +4016,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
                 // plain div never holds focus. -1 keeps it out of the tab order.
                 tabIndex={-1}
                 onMouseDown={focusMdPreviewContainer}
-                ref={(node) => {
-                  markdownPreviewRef.current = node;
-                  mdPreviewContainerRef.current = node;
-                }}
+                ref={setMainMarkdownScroller}
               >
                 <FilePreviewCommentMenu
                   containerRef={markdownPreviewRef}
@@ -3979,14 +4080,16 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             </div>
             )
           ) : selectedFile && canUseShikiFileView && textViewMode === 'view' ? (
-            renderShikiFileView(selectedFile, isLargeFile ? fileContent : draftContent, mainViewVirtualizer)
+            renderShikiFileView(selectedFile, isLargeFile ? fileContent : draftContent, mainViewVirtualizer, restoreMainCodeScroll)
           ) : (
             <div
               className={cn('relative h-full', shouldMaskEditorForPendingNavigation && 'overflow-hidden')}
               ref={editorWrapperRef}
             >
               <div className={cn('h-full', shouldMaskEditorForPendingNavigation && 'invisible')}>
-                <CodeMirrorEditor
+                <FilePositionEditor
+                  key={filePositionKey}
+                  positionKey={filePositionKey}
                   value={draftContent}
                   onChange={setDraftContent}
                   readOnly={!canEdit}
@@ -4178,6 +4281,26 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6}>{t('filesView.tree.actions.newFolderTitle')}</TooltipContent>
           </Tooltip>
+          {canUpload && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex flex-shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => pickFiles(root)}
+                    disabled={!root || isUploading}
+                    className="size-8 p-0 flex-shrink-0"
+                    title={t('sidebarFilesTree.actions.uploadFilesTitle')}
+                    aria-label={t('sidebarFilesTree.actions.uploadFilesTitle')}
+                  >
+                    <Icon name={isUploading ? 'loader-4' : 'upload-2'} className={cn('size-4', isUploading && 'animate-spin')} />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>{t('sidebarFilesTree.actions.uploadFilesTitle')}</TooltipContent>
+            </Tooltip>
+          )}
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="inline-flex flex-shrink-0">
@@ -4249,7 +4372,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
         <div className="absolute right-4 top-4 z-30">
           {renderFloatingFileControls({ exitFullscreenOnly: true })}
         </div>
-        <ScrollableOverlay ref={fullscreenViewVirtualizer.setScroller} outerClassName="h-full min-w-0" className={cn('h-full min-w-0', isLargeFile && '[overflow-anchor:none]')}>
+        <ScrollableOverlay ref={setFullscreenPreviewScroller} outerClassName="h-full min-w-0" className={cn('h-full min-w-0', isLargeFile && '[overflow-anchor:none]')}>
           {(fileLoading || isPdfAssetAuthLoading) ? (
             suppressFileLoadingIndicator
               ? <div className="p-4" />
@@ -4304,14 +4427,11 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
               className="oc-file-preview h-full overflow-auto p-4 outline-none"
               tabIndex={-1}
               onMouseDown={focusMdPreviewContainer}
-              ref={(node) => {
-                markdownPreviewRef.current = node;
-                mdFullscreenPreviewContainerRef.current = node;
-              }}
+              ref={setFullscreenMarkdownScroller}
             >
               {selectedFile ? (
                 <FilePreviewCommentMenu
-                  containerRef={markdownPreviewRef}
+                  containerRef={mdFullscreenPreviewContainerRef}
                   filePath={selectedFile.path}
                   fileContent={fileContent}
                 />
@@ -4348,11 +4468,13 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
               />
             </div>
           ) : canUseShikiFileView && textViewMode === 'view' ? (
-            renderShikiFileView(selectedFile, isLargeFile ? fileContent : draftContent, fullscreenViewVirtualizer)
+            renderShikiFileView(selectedFile, isLargeFile ? fileContent : draftContent, fullscreenViewVirtualizer, restoreFullscreenCodeScroll)
           ) : (
             <div className={cn('relative h-full', shouldMaskEditorForPendingNavigation && 'overflow-hidden')}>
               <div className={cn('h-full', shouldMaskEditorForPendingNavigation && 'invisible')}>
-              <CodeMirrorEditor
+              <FilePositionEditor
+                key={`${filePositionKey}:fullscreen`}
+                positionKey={`${filePositionKey}:fullscreen`}
                 value={draftContent}
                 onChange={setDraftContent}
                 readOnly={!canEdit}
@@ -4399,6 +4521,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
         onClose={handleCloseDialog}
         inputRef={dialogInputRef}
       />
+      {uploadElements}
       {fullscreenViewer}
       {isMobile ? (
         showMobilePageContent ? (

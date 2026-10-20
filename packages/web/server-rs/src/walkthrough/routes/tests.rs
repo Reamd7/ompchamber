@@ -104,7 +104,7 @@ fn test_app(label: &str) -> (axum::Router, Arc<WalkthroughService>, std::path::P
         }),
     };
     let data_dir = temp_data_dir(label);
-    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None);
+    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None, None);
     (routes(Arc::clone(&service)), service, data_dir)
 }
 
@@ -428,7 +428,7 @@ async fn answers_generation_without_a_model_with_404_and_code() {
         }),
     };
     let data_dir = temp_data_dir("no-model");
-    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None);
+    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None, None);
     let router = routes(service);
 
     let (status, body) = send(
@@ -470,7 +470,7 @@ async fn answers_an_unauthenticated_provider_with_401_and_the_model() {
         }),
     };
     let data_dir = temp_data_dir("2607");
-    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None);
+    let service = WalkthroughService::new(data_dir.clone(), fake_git(), seam, None, None);
     let router = routes(service);
 
     let (status, body) = send(

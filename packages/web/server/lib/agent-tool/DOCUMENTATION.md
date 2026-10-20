@@ -6,8 +6,9 @@ This module exposes OpenChamber to agents as typed OpenCode custom tools. There
 are two, because controlling sessions and driving a page are separate intents
 the user can want independently:
 
-- `openchamber` — projects, sessions, worktrees, and scheduled tasks. Enabled
-  while the persisted `agentControlToolEnabled` setting is not `false`.
+- `openchamber` — projects, sessions, worktrees, scheduled tasks, and showing
+  a file to the user (`file.open`). Enabled while the persisted
+  `agentControlToolEnabled` setting is not `false`.
 - `openchamber_web` — looking at and interacting with the page in OpenChamber's
   browser panel. Enabled while `agentWebToolEnabled` is not `false`.
 

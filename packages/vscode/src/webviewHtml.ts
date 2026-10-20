@@ -4,8 +4,6 @@ import { getThemeKindName } from './theme';
 import type { ConnectionStatus } from './opencode';
 import type { WorkspaceFolderCandidate } from './workspaceResolver';
 
-type PanelType = 'chat' | 'agentManager';
-
 export interface WebviewHtmlOptions {
   webview: vscode.Webview;
   extensionUri: vscode.Uri;
@@ -13,8 +11,9 @@ export interface WebviewHtmlOptions {
   workspaceFolders?: WorkspaceFolderCandidate[];
   initialStatus: ConnectionStatus;
   cliAvailable: boolean;
-  panelType?: PanelType;
   initialSessionId?: string;
+  /** A new-session editor tab that opens its draft in "Run on several models" mode. */
+  initialComposer?: 'parallel';
   viewMode?: 'sidebar' | 'editor';
   devServerUrl?: string | null;
   extensionVersion?: string;
@@ -51,8 +50,8 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
     workspaceFolders = [],
     initialStatus,
     cliAvailable,
-    panelType = 'chat',
     initialSessionId,
+    initialComposer,
     viewMode = 'sidebar',
     devServerUrl,
     extensionVersion = '',
@@ -77,8 +76,11 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
   // Use VS Code CSS variables for proper theme integration
   // These variables are automatically provided by VS Code to webviews
   // 
-  // Logo mark matches OMPChamberLogo.tsx: the official Oh My Pi π with the orange
-  // plugin connector, centered in the 100×100 view box.
+  // Logo geometry matches OpenChamberLogo.tsx:
+  // edge=48, cos30=0.866, sin30=0.5, centerY=50
+  // top=(50, 2), left=(8.432, 26), right=(91.568, 26), center=(50, 50)
+  // bottomLeft=(8.432, 74), bottomRight=(91.568, 74), bottom=(50, 98)
+  // topFaceCenterY = (2 + 26 + 50 + 26) / 4 = 26
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -111,20 +113,31 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       opacity: 0;
       pointer-events: none;
     }
-    /* Glow pulse on the Oh My Pi mark — signals loading without text. */
+    /* Glow pulse on the OpenCode mark on the cube's top face — signals loading without text. */
     @keyframes oc-logo-glow {
       0%, 100% { filter: drop-shadow(0 0 0 transparent); }
       50% { filter: drop-shadow(0 0 4px var(--vscode-foreground)); }
     }
-    #initial-loading .logo {
+    #initial-loading .logo-inner {
       animation: oc-logo-glow 1.8s ease-in-out infinite;
     }
     @media (prefers-reduced-motion: reduce) {
-      #initial-loading .logo { animation: none; }
+      #initial-loading .logo-inner { animation: none; }
     }
     /* Logo colors use VS Code foreground color */
+    #initial-loading .logo-stroke {
+      stroke: var(--vscode-foreground);
+    }
+    #initial-loading .logo-fill {
+      fill: var(--vscode-foreground);
+      opacity: 0.15;
+    }
     #initial-loading .logo-fill-solid {
       fill: var(--vscode-foreground);
+    }
+    #initial-loading .logo-fill-dim {
+      fill: var(--vscode-foreground);
+      opacity: 0.4;
     }
     #initial-loading .status-text {
       font-size: 13px;
@@ -138,25 +151,28 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       max-width: 280px;
     }
   </style>
-  <title>OMPChamber</title>
+  <title>OpenChamber</title>
 </head>
 <body>
-  <!-- Initial loading screen with the official Oh My Pi mark -->
+  <!-- Initial loading screen with simplified OpenChamber logo -->
   <div id="initial-loading">
     <svg class="logo" width="70" height="70" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <!-- Official Oh My Pi mark: π bar + two legs + orange plugin connector -->
-      <g transform="translate(-2.8 10.4) scale(0.88)">
-        <rect class="logo-fill-solid" x="10" y="8" width="100" height="12" rx="2"/>
-        <rect class="logo-fill-solid" x="25" y="20" width="12" height="62" rx="2"/>
-        <rect class="logo-fill-solid" x="75" y="20" width="12" height="45" rx="2"/>
-        <path fill-rule="evenodd" clip-rule="evenodd" d="M74 55 H88 A3 3 0 0 1 91 58 V68 A3 3 0 0 1 88 71 H74 A3 3 0 0 1 71 68 V58 A3 3 0 0 1 74 55 Z M76 59 h3 v8 h-3 Z M82 59 h3 v8 h-3 Z" fill="#f97316"/>
-        <circle cx="18" cy="14" r="2" fill="#f97316" opacity="0.8"/>
-        <circle cx="102" cy="14" r="2" fill="#f97316" opacity="0.8"/>
+      <!-- Left face -->
+      <path class="logo-fill logo-stroke" d="M50 50 L8.432 26 L8.432 74 L50 98 Z" stroke-width="2" stroke-linejoin="round"/>
+      <!-- Right face -->
+      <path class="logo-fill logo-stroke" d="M50 50 L91.568 26 L91.568 74 L50 98 Z" stroke-width="2" stroke-linejoin="round"/>
+      <!-- Top face (no fill, stroke only) -->
+      <path class="logo-stroke" d="M50 2 L8.432 26 L50 50 L91.568 26 Z" fill="none" stroke-width="2" stroke-linejoin="round"/>
+      
+      <!-- OpenCode logo on top face -->
+      <g class="logo-inner" transform="matrix(0.866, 0.5, -0.866, 0.5, 50, 26) scale(0.75)">
+        <path class="logo-fill-solid" fill-rule="evenodd" clip-rule="evenodd" d="M-16 -20 L16 -20 L16 20 L-16 20 Z M-8 -12 L-8 12 L8 12 L8 -12 Z"/>
+        <path class="logo-fill-dim" d="M-8 -4 L8 -4 L8 12 L-8 12 Z"/>
       </g>
     </svg>
     <!-- Status text stays empty while things are fine; populated only on error. -->
     <div class="status-text" id="loading-status"></div>
-    ${!cliAvailable ? `<div class="error-text" id="cli-missing-text">The engine failed to start.</div>` : ''}
+    ${!cliAvailable ? `<div class="error-text" id="cli-missing-text">OpenCode CLI not found. Please install it first.</div>` : ''}
   </div>
   
   <div id="root"></div>
@@ -173,43 +189,60 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       extensionVersion: "${extensionVersion.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}",
       platform: "${os.platform()}",
       arch: "${os.arch()}",
-      panelType: "${panelType}",
       viewMode: "${viewMode}",
       initialSessionId: ${initialSessionId ? `"${initialSessionId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : 'null'},
+      initialComposer: ${initialComposer ? `"${initialComposer}"` : 'null'},
     };
-    window.__OMPCHAMBER_HOME__ = "${workspaceFolder.replace(/\\/g, '\\\\')}";
+    window.__OPENCHAMBER_HOME__ = "${workspaceFolder.replace(/\\/g, '\\\\')}";
     
     function getBootstrapMessages() {
       var locale = 'en';
       try {
-        var rawLocale = window.localStorage.getItem('ompchamber.i18n.v1');
+        var rawLocale = window.localStorage.getItem('openchamber.i18n.v1');
         if (rawLocale) {
           var parsedLocale = JSON.parse(rawLocale);
-          if (parsedLocale && typeof parsedLocale.locale === 'string' && parsedLocale.locale.toLowerCase().indexOf('fr') === 0) {
-            locale = 'fr';
+          if (parsedLocale && typeof parsedLocale.locale === 'string') {
+            var detected = parsedLocale.locale.toLowerCase();
+            if (detected.indexOf('fr') === 0) {
+              locale = 'fr';
+            } else if (detected.indexOf('tr') === 0) {
+              locale = 'tr';
+            }
           }
         }
       } catch {}
 
-      return locale === 'fr'
-        ? {
-            startingApi: 'Démarrage du moteur…',
-            initializing: 'Initialisation…',
-            connecting: 'Connexion…',
-            connected: 'Connecté !',
-            connectionError: 'Erreur de connexion',
-            reconnecting: 'Reconnexion…',
-            cliNotFound: 'Le démarrage du moteur a échoué.',
-          }
-        : {
-            startingApi: 'Starting the engine…',
-            initializing: 'Initializing…',
-            connecting: 'Connecting…',
-            connected: 'Connected!',
-            connectionError: 'Connection error',
-            reconnecting: 'Reconnecting…',
-            cliNotFound: 'The engine failed to start.',
-          };
+      if (locale === 'fr') {
+        return {
+          startingApi: 'Démarrage de l’API OpenCode…',
+          initializing: 'Initialisation…',
+          connecting: 'Connexion…',
+          connected: 'Connecté !',
+          connectionError: 'Erreur de connexion',
+          reconnecting: 'Reconnexion…',
+          cliNotFound: 'L’interface en ligne de commande OpenCode est introuvable. Veuillez l’installer d’abord.',
+        };
+      }
+      if (locale === 'tr') {
+        return {
+          startingApi: 'OpenCode API başlatılıyor…',
+          initializing: 'Başlatılıyor…',
+          connecting: 'Bağlanılıyor…',
+          connected: 'Bağlandı!',
+          connectionError: 'Bağlantı hatası',
+          reconnecting: 'Yeniden bağlanılıyor…',
+          cliNotFound: 'OpenCode CLI bulunamadı. Lütfen önce yükleyin.',
+        };
+      }
+      return {
+        startingApi: 'Starting OpenCode API…',
+        initializing: 'Initializing…',
+        connecting: 'Connecting…',
+        connected: 'Connected!',
+        connectionError: 'Connection error',
+        reconnecting: 'Reconnecting…',
+        cliNotFound: 'OpenCode CLI not found. Please install it first.',
+      };
     }
 
     (function applyBootstrapLocale() {
@@ -263,14 +296,23 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       const statusEl = document.getElementById('loading-status');
       const getDevMessages = () => {
         try {
-          const rawLocale = window.localStorage.getItem('ompchamber.i18n.v1');
+          const rawLocale = window.localStorage.getItem('openchamber.i18n.v1');
           if (rawLocale) {
             const parsedLocale = JSON.parse(rawLocale);
-            if (parsedLocale && typeof parsedLocale.locale === 'string' && parsedLocale.locale.toLowerCase().indexOf('fr') === 0) {
-              return {
-                startingDevServer: (host) => 'Démarrage du serveur de développement de la webview (' + host + ')...',
-                waitingDevServer: (host, attempt) => 'En attente du serveur de développement de la webview (' + host + ')... tentative ' + attempt,
-              };
+            if (parsedLocale && typeof parsedLocale.locale === 'string') {
+              const detected = parsedLocale.locale.toLowerCase();
+              if (detected.indexOf('fr') === 0) {
+                return {
+                  startingDevServer: (host) => 'Démarrage du serveur de développement de la webview (' + host + ')...',
+                  waitingDevServer: (host, attempt) => 'En attente du serveur de développement de la webview (' + host + ')... tentative ' + attempt,
+                };
+              }
+              if (detected.indexOf('tr') === 0) {
+                return {
+                  startingDevServer: (host) => 'Webview geliştirme sunucusu başlatılıyor (' + host + ')...',
+                  waitingDevServer: (host, attempt) => 'Webview geliştirme sunucusu bekleniyor (' + host + ')... deneme ' + attempt,
+                };
+              }
             }
           }
         } catch {}
@@ -316,10 +358,9 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       };
 
       const tryLoadDevBundle = () => {
-        // The rsbuild dev server serves the compiled webview entry at a
-        // stable unhashed path (rsbuild.config.ts pins output.filename to
-        // assets/[name].js), with the HMR client bundled into it.
-        const devEntryUrl = baseUrl + '/assets/index.js';
+        const viteClientUrl = baseUrl + '/@vite/client';
+        const reactRefreshUrl = baseUrl + '/@react-refresh';
+        const devEntryUrl = baseUrl + '/main.tsx';
         const hostLabel = (() => {
           try {
             return new URL(baseUrl).host;
@@ -332,6 +373,17 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
         setStatus(devMessages.startingDevServer(hostLabel));
 
         Promise.resolve()
+          .then(() => import(viteClientUrl))
+          .then(() => import(reactRefreshUrl))
+          .then((mod) => {
+            const runtime = mod && mod.default ? mod.default : null;
+            if (runtime && typeof runtime.injectIntoGlobalHook === 'function') {
+              runtime.injectIntoGlobalHook(window);
+              window.$RefreshReg$ = () => {};
+              window.$RefreshSig$ = () => (type) => type;
+              window.__vite_plugin_react_preamble_installed__ = true;
+            }
+          })
           .then(() => import(devEntryUrl))
           .then(() => waitForRootMount(4000))
           .then((mounted) => {
@@ -341,14 +393,13 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
           })
           .catch((error) => {
             attempt += 1;
-            console.warn('[OMPChamber] VS Code webview dev bundle unavailable, retrying...', error);
+            console.warn('[OpenChamber] VS Code webview dev bundle unavailable, retrying...', error);
             setStatus(devMessages.waitingDevServer(hostLabel, attempt));
             window.setTimeout(() => {
               tryLoadDevBundle();
             }, retryDelayMs);
           });
       };
-
 
       tryLoadDevBundle();
     }

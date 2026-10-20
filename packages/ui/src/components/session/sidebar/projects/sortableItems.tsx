@@ -15,6 +15,8 @@ import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/pro
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { useI18n } from '@/lib/i18n';
+import { CrossfadeZoneHeader } from './CrossfadeZoneHeaders';
+import { useProjectFolderMissing } from './useProjectFolderMissing';
 
 export type SortableDragHandleProps = {
   listeners: ReturnType<typeof useSortable>['listeners'];
@@ -24,6 +26,7 @@ export type SortableDragHandleProps = {
 type ProjectIdentityProps = {
   id: string;
   projectLabel: string;
+  projectDirectory?: string;
   projectIcon?: string;
   projectColor?: string;
   projectIconImage?: { mime: string; updatedAt: number; source: 'custom' | 'auto' };
@@ -37,7 +40,7 @@ type ProjectHeaderIdentityProps = ProjectIdentityProps & {
 
 type ProjectPickerOption = ProjectIdentityProps & { projectDescription: string };
 
-export const ProjectHeaderIdentity: React.FC<ProjectHeaderIdentityProps> = ({
+const ProjectHeaderIdentity: React.FC<ProjectHeaderIdentityProps> = ({
   id,
   projectLabel,
   projectIcon,
@@ -105,7 +108,6 @@ export interface SortableProjectItemProps extends ProjectIdentityProps {
   projectDescription: string;
   isCollapsed: boolean;
   isRepo: boolean;
-  isDesktopShell: boolean;
   hideDirectoryControls: boolean;
   mobileVariant: boolean;
   alwaysShowActions: boolean;
@@ -115,7 +117,6 @@ export interface SortableProjectItemProps extends ProjectIdentityProps {
   onManageWorktrees?: () => void;
   onRenameStart: () => void;
   onClose: () => void;
-  sentinelRef: (el: HTMLDivElement | null) => void;
   children?: React.ReactNode;
   showCreateButtons?: boolean;
   hideHeader?: boolean;
@@ -138,7 +139,6 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   projectIconBackground,
   isCollapsed,
   isRepo,
-  isDesktopShell,
   hideDirectoryControls,
   alwaysShowActions,
   onToggle,
@@ -147,7 +147,6 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   onManageWorktrees,
   onRenameStart,
   onClose,
-  sentinelRef,
   children,
   showCreateButtons = true,
   hideHeader = false,
@@ -156,9 +155,12 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
   setOpenSidebarMenuKey,
   projectPickerOptions,
   onProjectSelect,
+  projectDirectory,
 }) => {
   const { t } = useI18n();
-  const stickyZoneHeaders = useSessionDisplayStore((state) => state.stickyZoneHeaders);
+  const folderMissing = useProjectFolderMissing(projectDirectory);
+  // Project headers only exist in the projects view, which always pins them.
+  const stickyZoneHeaders = true;
   const {
     attributes,
     listeners,
@@ -243,25 +245,15 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
     >
       {!hideHeader ? (
         <>
-          {isDesktopShell && (
-            <div
-              ref={sentinelRef}
-              data-project-id={id}
-              className="absolute top-0 h-px w-full pointer-events-none"
-              aria-hidden="true"
-            />
-          )}
-
           <ContextMenu open={isContextMenuOpen} onOpenChange={setIsContextMenuOpen}>
             <ContextMenuTrigger
               render={
-                // Sticky zone header: this trigger div is a direct child of
-                // the project wrapper (which spans header + sessions), so it
-                // can stick for the whole zone.
+                // Keep the live context-menu trigger when the shared zone
+                // header moves between the section and the pinned layer.
                 // Full-bleed band: pull past the list container's padding so
                 // the section band spans the entire sidebar width (ref: edge-
                 // to-edge section headers, not rounded pills).
-                <div
+                <CrossfadeZoneHeader
                   className={cn(
                     '-ml-2.5 -mr-2 text-left group/project select-none',
                     stickyZoneHeaders && 'sticky top-0 z-20 bg-sidebar',
@@ -334,6 +326,15 @@ export const SortableProjectItem: React.FC<SortableProjectItemProps> = ({
                       isCollapsed={isCollapsed}
                       alwaysShowActions={alwaysShowActions}
                     />
+                    {folderMissing ? (
+                      <span
+                        className="inline-flex flex-shrink-0 items-center text-status-warning"
+                        title={t('sessions.sidebar.project.folderMissing')}
+                        aria-label={t('sessions.sidebar.project.folderMissing')}
+                      >
+                        <Icon name="alert" className="h-3 w-3" />
+                      </span>
+                    ) : null}
                     {statusIndicator ? (
                       <span className="ml-1 inline-flex flex-shrink-0 items-center">{statusIndicator}</span>
                     ) : null}

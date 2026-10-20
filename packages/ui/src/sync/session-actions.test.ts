@@ -32,6 +32,11 @@ let beforeSessionDeleteResolve: ((sessionId: string) => void) | null = null
 const globalUpsertedSessions: unknown[] = []
 const globalRemovedSessionIds: string[] = []
 const deletedCleanupIdentities: Array<{ runtimeKey: string; directory: string; sessionId: string }> = []
+let runtimeKey = "default-runtime"
+const selectedSessions: Array<{ sessionId: string | null; directoryHint?: string | null }> = []
+let sessionForkResult: Session | null = null
+let sessionForkError: Error | null = null
+let beforeSessionForkResolve: (() => void) | null = null
 const movedSessionDirectories: Array<{ sessionID: string; directory: string }> = []
 
 const mockScopedClient = {
@@ -158,7 +163,7 @@ mock.module("@/lib/opencode/client", () => ({
         method: "session.fork",
         params: { sessionID: sessionId, messageID: messageId, directory },
       })
-      return Promise.resolve(forkSessionResult)
+      return Promise.resolve(sessionForkResult ?? forkSessionResult)
     }),
     revertSession: mock((sessionId: string, messageId: string, partId?: string, directory?: string | null) => {
       replyCalls.push({
@@ -209,7 +214,9 @@ mock.module("./session-ui-store", () => ({
         return null
       },
       currentSessionId: null,
-      setCurrentSession: () => {},
+      setCurrentSession: (sessionId: string | null, directoryHint?: string | null) => {
+        if (sessionId) selectedSessions.push({ sessionId, directoryHint })
+      },
       setWorktreeMetadata: () => {},
       setSessionDirectory: (sessionID: string, directory: string) => {
         movedSessionDirectories.push({ sessionID, directory })
@@ -220,6 +227,7 @@ mock.module("./session-ui-store", () => ({
 
 // Mock useInputStore
 type MockInputState = {
+  pendingComposerRestore: { target: unknown; text: string; files: unknown[] } | null
   pendingInputText: string | null
   pendingInputMode: string
   pendingInputSessionId: string | null
@@ -232,6 +240,7 @@ type MockInputState = {
   addRestoredAttachment: (attachment: { url: string; mimeType: string; filename: string }) => void
 }
 const inputState: MockInputState = {
+  pendingComposerRestore: null,
   pendingInputText: "",
   pendingInputMode: "normal",
   pendingInputSessionId: null,
@@ -1452,6 +1461,147 @@ describe("respondToPermission passes directory", () => {
   })
 })
 
+describe("forkAfterMessage", () => {
+  const sourceSession: Session = {
+    id: "session-a",
+    slug: "s",
+    version: "1",
+    projectID: "project-a",
+    directory: "/test/project",
+    title: "Source session",
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated: 1 },
+  }
+  const forkedSession: Session = { ...sourceSession, id: "session-fork", title: "Forked session" }
+  // SAFETY: forkAfterMessage reads only id and role; the rest of the message shape is irrelevant here.
+  const message = (id: string, role: "user" | "assistant") => ({ id, role, sessionID: sourceSession.id, time: { created: 1 } }) as Message
+  const transcript = [
+    message("msg-user-1", "user"),
+    message("msg-answer-1", "assistant"),
+    message("msg-user-2", "user"),
+    message("msg-answer-2", "assistant"),
+  ]
+
+  beforeEach(() => {
+    replyCalls.length = 0
+    selectedSessions.length = 0
+    runtimeKey = "fork-runtime"
+    sessionForkResult = forkedSession
+    sessionForkError = null
+    beforeSessionForkResolve = null
+    inputState.pendingComposerRestore = null
+  })
+
+  test("cuts before the next user message so the fork keeps the answer", async () => {
+    const source = createStore({}, { session: [sourceSession], message: { [sourceSession.id]: transcript } })
+    const { forkAfterMessage, setActionRefs } = await import("./session-actions")
+    setActionRefs(undefined as never, createChildStores([[sourceSession.directory, source]]), () => sourceSession.directory)
+
+    await forkAfterMessage(sourceSession.id, "msg-answer-1")
+
+    expect(replyCalls).toEqual([{
+      method: "session.fork",
+      params: { sessionID: sourceSession.id, messageID: "msg-user-2", directory: sourceSession.directory },
+    }])
+    expect(selectedSessions).toEqual([{ sessionId: forkedSession.id, directoryHint: sourceSession.directory }])
+    expect(source.getState().session).toEqual([sourceSession, forkedSession])
+    expect(inputState.pendingComposerRestore).toBeNull()
+  })
+
+  test("copies the whole transcript when the answer is the last message", async () => {
+    const source = createStore({}, { session: [sourceSession], message: { [sourceSession.id]: transcript } })
+    const { forkAfterMessage, setActionRefs } = await import("./session-actions")
+    setActionRefs(undefined as never, createChildStores([[sourceSession.directory, source]]), () => sourceSession.directory)
+
+    await forkAfterMessage(sourceSession.id, "msg-answer-2")
+
+    expect(replyCalls).toEqual([{
+      method: "session.fork",
+      params: { sessionID: sourceSession.id, messageID: undefined, directory: sourceSession.directory },
+    }])
+  })
+
+  test("refuses to fork from a message that is not loaded", async () => {
+    const source = createStore({}, { session: [sourceSession], message: { [sourceSession.id]: transcript } })
+    const { forkAfterMessage, setActionRefs } = await import("./session-actions")
+    setActionRefs(undefined as never, createChildStores([[sourceSession.directory, source]]), () => sourceSession.directory)
+
+    await expect(forkAfterMessage(sourceSession.id, "msg-missing")).rejects.toThrow("Fork source message is not loaded")
+    expect(replyCalls).toEqual([])
+    expect(selectedSessions).toEqual([])
+  })
+})
+
+describe("forkFromLastCompletedTurn", () => {
+  const sourceSession: Session = {
+    id: "session-a",
+    slug: "s",
+    version: "1",
+    projectID: "project-a",
+    directory: "/test/project",
+    title: "Source session",
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: 1, updated: 1 },
+  }
+  // SAFETY: the turn lookup reads only id, role, and time.completed.
+  const message = (id: string, role: "user" | "assistant", completed?: number) =>
+    ({ id, role, sessionID: sourceSession.id, time: completed === undefined ? { created: 1 } : { created: 1, completed } }) as Message
+
+  beforeEach(() => {
+    replyCalls.length = 0
+    selectedSessions.length = 0
+    runtimeKey = "fork-runtime"
+    sessionForkResult = { ...sourceSession, id: "session-fork" }
+    sessionForkError = null
+    beforeSessionForkResolve = null
+  })
+
+  test("skips a running turn, including its already completed steps", async () => {
+    const transcript = [
+      message("u1", "user"),
+      message("a1", "assistant", 2),
+      message("u2", "user"),
+      message("a2-step", "assistant", 3),
+      message("a2-live", "assistant"),
+    ]
+    const source = createStore({}, {
+      session: [sourceSession],
+      message: { [sourceSession.id]: transcript },
+      session_status: { [sourceSession.id]: { type: "busy" } },
+    })
+    const { forkFromLastCompletedTurn, setActionRefs } = await import("./session-actions")
+    setActionRefs(undefined as never, createChildStores([[sourceSession.directory, source]]), () => sourceSession.directory)
+
+    await forkFromLastCompletedTurn(sourceSession.id)
+
+    expect(replyCalls).toEqual([{
+      method: "session.fork",
+      params: { sessionID: sourceSession.id, messageID: "u2", directory: sourceSession.directory },
+    }])
+  })
+
+  test("copies the whole transcript when the session is idle", async () => {
+    const { findLastCompletedTurnMessageId } = await import("./session-actions")
+    const transcript = [message("u1", "user"), message("a1", "assistant", 2)]
+    expect(findLastCompletedTurnMessageId(transcript, false)).toBe("a1")
+  })
+
+  test("refuses when no turn has finished", async () => {
+    const source = createStore({}, {
+      session: [sourceSession],
+      message: { [sourceSession.id]: [message("u1", "user"), message("a1", "assistant")] },
+      session_status: { [sourceSession.id]: { type: "busy" } },
+    })
+    const { forkFromLastCompletedTurn, NothingToForkError, setActionRefs } = await import("./session-actions")
+    setActionRefs(undefined as never, createChildStores([[sourceSession.directory, source]]), () => sourceSession.directory)
+
+    await expect(forkFromLastCompletedTurn(sourceSession.id)).rejects.toThrow(NothingToForkError)
+    expect(replyCalls).toEqual([])
+    expect(selectedSessions).toEqual([])
+  })
+})
 describe("revertToMessage passes session directory", () => {
   beforeEach(() => {
     replyCalls.length = 0
@@ -1641,6 +1791,7 @@ describe("revertToMessage passes session directory", () => {
 describe("forkFromMessage", () => {
   beforeEach(() => {
     replyCalls.length = 0
+    sessionForkResult = null
     forkSessionResult = { id: "fork-1", directory: "/test/project", time: { created: 3 } }
     Object.assign(inputState, {
       pendingInputText: null,

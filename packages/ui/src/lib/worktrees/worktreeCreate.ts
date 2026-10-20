@@ -1,7 +1,10 @@
-import { getGitBranches, getGitStatus } from '@/lib/gitApi';
+import { toast } from '@/components/ui';
+import { getGitBranches, getGitStatus, gitFetch } from '@/lib/gitApi';
+import { formatMessage, useI18nStore } from '@/lib/i18n';
 import type { CreateWorktreeArgs, ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { createWorktree } from '@/lib/worktrees/worktreeManager';
-import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
+import { getRootBranch, resolveProjectRoot } from '@/lib/worktrees/worktreeStatus';
+import { useConfigStore } from '@/stores/useConfigStore';
 
 const parseTrackingRef = (tracking: string | null | undefined): { remote: string; branch: string } | null => {
   const value = String(tracking || '').trim().replace(/^remotes\//, '');
@@ -82,7 +85,7 @@ const resolveWorktreeUpstreamDefaults = async (
   };
 };
 
-export const withWorktreeUpstreamDefaults = async (
+const withWorktreeUpstreamDefaults = async (
   projectDirectory: string,
   args: CreateWorktreeArgs,
   options?: { resolvedRootTrackingRemote?: string | null }
@@ -110,11 +113,79 @@ export const withWorktreeUpstreamDefaults = async (
   };
 };
 
+const REMOTE_START_REF_PATTERN = /^(remotes\/|refs\/remotes\/)/;
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
+
+const normalizeLocalBranchName = (value: string): string => {
+  return String(value || '')
+    .trim()
+    .replace(/^refs\/heads\//, '');
+};
+
+export const withWorktreeFetchedStartRef = async (
+  project: ProjectRef,
+  args: CreateWorktreeArgs
+): Promise<CreateWorktreeArgs> => {
+  if (args.mode === 'existing') {
+    return args;
+  }
+  if (useConfigStore.getState().settingsWorktreeFetchSource === false) {
+    return args;
+  }
+
+  const rawStartRef = String(args.startRef || '').trim();
+  if (rawStartRef && rawStartRef !== 'HEAD') {
+    if (REMOTE_START_REF_PATTERN.test(rawStartRef) || COMMIT_SHA_PATTERN.test(rawStartRef)) {
+      return args;
+    }
+  }
+
+  const projectDirectory = project.path;
+  const rootDirectory = await resolveProjectRoot(projectDirectory).catch(() => projectDirectory);
+  const status = await getGitStatus(rootDirectory).catch(() => null);
+  if (!status) {
+    return args;
+  }
+
+  const currentBranch = String(status.current || '').trim();
+  const tracking = parseTrackingRef(status.tracking);
+  if (!currentBranch || !tracking) {
+    return args;
+  }
+
+  const baseBranch = rawStartRef && rawStartRef !== 'HEAD' ? normalizeLocalBranchName(rawStartRef) : currentBranch;
+  if (baseBranch !== currentBranch) {
+    return args;
+  }
+  if (status.ahead > 0) {
+    return args;
+  }
+
+  const fallbackToLocalSource = () => {
+    toast.warning(
+      formatMessage(useI18nStore.getState().dictionary, 'session.newWorktree.toast.fetchSourceFailed'),
+    );
+    return args;
+  };
+
+  try {
+    const fetchResult = await gitFetch(projectDirectory, { remote: tracking.remote, branch: tracking.branch });
+    if (fetchResult.success !== true) {
+      return fallbackToLocalSource();
+    }
+  } catch {
+    return fallbackToLocalSource();
+  }
+
+  return { ...args, startRef: `remotes/${tracking.remote}/${tracking.branch}` };
+};
+
 export const createWorktreeWithDefaults = async (
   project: ProjectRef,
   args: CreateWorktreeArgs,
   options?: { resolvedRootTrackingRemote?: string | null }
 ) => {
-  const resolvedArgs = await withWorktreeUpstreamDefaults(project.path, args, options);
+  const fetchedArgs = await withWorktreeFetchedStartRef(project, args);
+  const resolvedArgs = await withWorktreeUpstreamDefaults(project.path, fetchedArgs, options);
   return createWorktree(project, resolvedArgs);
 };

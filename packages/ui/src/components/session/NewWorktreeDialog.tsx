@@ -34,8 +34,8 @@ import { useSelectionStore } from '@/sync/selection-store';
 import * as sessionActions from '@/sync/session-actions';
 import { buildLinkedIssue, buildLinkedLinearIssue } from '@/lib/linkedIssues';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { validateWorktreeCreate, createWorktree } from '@/lib/worktrees/worktreeManager';
-import { withWorktreeUpstreamDefaults } from '@/lib/worktrees/worktreeCreate';
+import { validateWorktreeCreate } from '@/lib/worktrees/worktreeManager';
+import { createWorktreeWithDefaults } from '@/lib/worktrees/worktreeCreate';
 import { waitForWorktreeBootstrap } from '@/lib/worktrees/worktreeBootstrap';
 import { getWorktreeSetupCommands, getWorktreeSetupWaitEnabled } from '@/lib/openchamberConfig';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
@@ -1008,9 +1008,7 @@ export function NewWorktreeDialog({
         };
       })();
 
-      const resolvedArgs = await withWorktreeUpstreamDefaults(projectDirectory, args);
-
-      const metadata = await createWorktree(projectRef, resolvedArgs);
+      const metadata = await createWorktreeWithDefaults(projectRef, args);
 
       let createdSessionId: string | null = null;
 

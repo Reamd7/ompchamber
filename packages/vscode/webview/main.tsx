@@ -19,13 +19,12 @@ import type { PermissionRequest } from '@ompchamber/ui/lib/opencode/wire';
 import { focusChatInput } from '@ompchamber/ui/components/chat/composer/editor/dom';
 
 type ConnectionStatus = 'connecting' | 'connected' | 'error' | 'disconnected';
-type PanelType = 'chat' | 'agentManager';
 
-declare const __OMPCHAMBER_WEBVIEW_BUILD_TIME__: string;
+declare const __OPENCHAMBER_WEBVIEW_BUILD_TIME__: string;
 
 declare global {
   interface Window {
-    __OMPCHAMBER_RUNTIME_APIS__?: RuntimeAPIs;
+    __OPENCHAMBER_RUNTIME_APIS__?: RuntimeAPIs;
     __VSCODE_CONFIG__?: {
       apiUrl?: string;
       workspaceFolder: string;
@@ -36,21 +35,19 @@ declare global {
       extensionVersion?: string;
       platform?: string;
       arch?: string;
-      panelType?: PanelType;
       viewMode?: 'sidebar' | 'editor';
       initialSessionId?: string | null;
+      initialComposer?: 'parallel' | null;
     };
-    __OMPCHAMBER_VSCODE_THEME__?: VSCodeThemePayload['theme'];
-    __OMPCHAMBER_VSCODE_SHIKI_THEMES__?: { light?: Record<string, unknown>; dark?: Record<string, unknown> } | null;
-    __OMPCHAMBER_CONNECTION__?: { status: ConnectionStatus; error?: string; cliAvailable?: boolean };
-    __OMPCHAMBER_HOME__?: string;
-    __OMPCHAMBER_PANEL_TYPE__?: PanelType;
-    __OMPCHAMBER_VSCODE_WINDOW_FOCUSED__?: boolean;
-  }
+   __OPENCHAMBER_VSCODE_THEME__?: VSCodeThemePayload['theme'];
+    __OPENCHAMBER_VSCODE_SHIKI_THEMES__?: { light?: Record<string, unknown>; dark?: Record<string, unknown> } | null;
+    __OPENCHAMBER_CONNECTION__?: { status: ConnectionStatus; error?: string; cliAvailable?: boolean };
+    __OPENCHAMBER_HOME__?: string;
+    __OPENCHAMBER_VSCODE_WINDOW_FOCUSED__?: boolean;  }
 }
 
 console.log('[OMPChamber] VS Code webview starting...');
-console.log('[OMPChamber] VS Code webview build:', __OMPCHAMBER_WEBVIEW_BUILD_TIME__);
+console.log('[OMPChamber] VS Code webview build:', __OPENCHAMBER_WEBVIEW_BUILD_TIME__);
 console.log('[OMPChamber] Config:', window.__VSCODE_CONFIG__);
 try {
   if (window.localStorage.getItem('ompchamber_stream_debug') === '1') {
@@ -60,7 +57,7 @@ try {
   // ignore
 }
 
-window.__OMPCHAMBER_RUNTIME_APIS__ = createVSCodeAPIs();
+window.__OPENCHAMBER_RUNTIME_APIS__ = createVSCodeAPIs();
 
 const bootstrapLocale = readStoredLocaleForBootstrap();
 const bootstrapMessages = getBootstrapMessages(bootstrapLocale);
@@ -68,21 +65,18 @@ const bootstrapMessages = getBootstrapMessages(bootstrapLocale);
 const bootstrapConnectionStatus = () => {
   const initialStatus = (window.__VSCODE_CONFIG__?.connectionStatus as ConnectionStatus | undefined) || 'connecting';
   const cliAvailable = window.__VSCODE_CONFIG__?.cliAvailable ?? true;
-  window.__OMPCHAMBER_CONNECTION__ = { status: initialStatus, cliAvailable };
+  window.__OPENCHAMBER_CONNECTION__ = { status: initialStatus, cliAvailable };
 };
 
 bootstrapConnectionStatus();
-
-// Expose panel type globally for the VS Code app root to conditionally render.
-window.__OMPCHAMBER_PANEL_TYPE__ = (window.__VSCODE_CONFIG__?.panelType as PanelType) || 'chat';
 
 const handleConnectionMessage = (event: MessageEvent) => {
   const msg = event.data;
   if (msg?.type === 'connectionStatus') {
     const payload: ConnectionStatus = msg.status;
     const error: string | undefined = msg.error;
-    const prevCliAvailable = window.__OMPCHAMBER_CONNECTION__?.cliAvailable ?? true;
-    window.__OMPCHAMBER_CONNECTION__ = { status: payload, error, cliAvailable: prevCliAvailable };
+    const prevCliAvailable = window.__OPENCHAMBER_CONNECTION__?.cliAvailable ?? true;
+    window.__OPENCHAMBER_CONNECTION__ = { status: payload, error, cliAvailable: prevCliAvailable };
     window.dispatchEvent(new CustomEvent('ompchamber:connection-status', { detail: { status: payload, error } }));
   }
 };
@@ -145,7 +139,7 @@ const waitForUiMount = (timeoutMs = 8000): Promise<boolean> => {
 let uiMounted = false;
 
 const maybeHideLoadingOverlay = () => {
-  const connectionStatus = window.__OMPCHAMBER_CONNECTION__?.status ?? 'connecting';
+  const connectionStatus = window.__OPENCHAMBER_CONNECTION__?.status ?? 'connecting';
 
   if (!uiMounted) {
     return;
@@ -164,7 +158,7 @@ const maybeHideLoadingOverlay = () => {
   }
 
   if (connectionStatus === 'error') {
-    const error = window.__OMPCHAMBER_CONNECTION__?.error;
+    const error = window.__OPENCHAMBER_CONNECTION__?.error;
     setLoadingStatusText(error || bootstrapMessages.connectionError, 'error');
     fadeOutLoadingScreen();
     return;
@@ -206,7 +200,7 @@ const emitVSCodeTheme = (preferredKind?: VSCodeThemeKind) => {
     return;
   }
   const theme = buildVSCodeThemeFromPalette(palette);
-  window.__OMPCHAMBER_VSCODE_THEME__ = theme;
+  window.__OPENCHAMBER_VSCODE_THEME__ = theme;
    applyInitialTheme(theme);
   window.dispatchEvent(new CustomEvent<VSCodeThemePayload>('ompchamber:vscode-theme', {
     detail: { theme, palette },
@@ -232,7 +226,7 @@ onThemeChange((payload) => {
       : undefined) as VSCodeThemeKind | undefined;
 
   if (typeof payload === 'object' && payload?.shikiThemes !== undefined) {
-    window.__OMPCHAMBER_VSCODE_SHIKI_THEMES__ = payload.shikiThemes;
+    window.__OPENCHAMBER_VSCODE_SHIKI_THEMES__ = payload.shikiThemes;
     window.dispatchEvent(
       new CustomEvent('ompchamber:vscode-shiki-themes', {
         detail: { shikiThemes: payload.shikiThemes },
@@ -257,7 +251,7 @@ if (workspaceFolder) {
   };
 
   const normalizedWorkspaceFolder = normalizeWorkspacePath(workspaceFolder);
-  window.__OMPCHAMBER_HOME__ = normalizedWorkspaceFolder;
+  window.__OPENCHAMBER_HOME__ = normalizedWorkspaceFolder;
   try {
     window.localStorage.setItem('lastDirectory', normalizedWorkspaceFolder);
     window.localStorage.setItem('homeDirectory', normalizedWorkspaceFolder);
@@ -556,9 +550,9 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
 
   // Health endpoints: reflect actual connection status
   if (pathname === '/health' || pathname === '/api/health') {
-    const connectionStatus = window.__OMPCHAMBER_CONNECTION__?.status;
+    const connectionStatus = window.__OPENCHAMBER_CONNECTION__?.status;
     const isReady = connectionStatus === 'connected';
-    const cliAvailable = window.__OMPCHAMBER_CONNECTION__?.cliAvailable ?? true;
+    const cliAvailable = window.__OPENCHAMBER_CONNECTION__?.cliAvailable ?? true;
     return new Response(JSON.stringify({ 
       status: isReady ? 'ok' : 'connecting', 
       isOpenCodeReady: isReady,
@@ -991,7 +985,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
   }
 
   if (pathname === '/api/opencode/health' && method === 'GET') {
-    const connectionStatus = window.__OMPCHAMBER_CONNECTION__?.status;
+    const connectionStatus = window.__OPENCHAMBER_CONNECTION__?.status;
     return new Response(JSON.stringify({ healthy: connectionStatus === 'connected' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -1149,9 +1143,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const pathname = targetUrl?.pathname || '';
   const normalizedPathname = pathname.replace(/\/{2,}/g, '/');
   if (targetUrl && normalizedPathname === '/health') {
-    const connectionStatus = window.__OMPCHAMBER_CONNECTION__?.status;
+    const connectionStatus = window.__OPENCHAMBER_CONNECTION__?.status;
     const isReady = connectionStatus === 'connected';
-    const cliAvailable = window.__OMPCHAMBER_CONNECTION__?.cliAvailable ?? true;
+    const cliAvailable = window.__OPENCHAMBER_CONNECTION__?.cliAvailable ?? true;
     return new Response(JSON.stringify({ 
       status: isReady ? 'ok' : 'connecting', 
       isOpenCodeReady: isReady,
@@ -1491,7 +1485,7 @@ const showOMPChamberNotification = (payload: { title?: unknown; body?: unknown; 
   }
 
   const show = async () => {
-    const isVSCodeWindowFocused = window.__OMPCHAMBER_VSCODE_WINDOW_FOCUSED__ ?? document.hasFocus();
+    const isVSCodeWindowFocused = window.__OPENCHAMBER_VSCODE_WINDOW_FOCUSED__ ?? document.hasFocus();
     if (payload?.requireHidden === true && isVSCodeWindowFocused) {
       return false;
     }
@@ -1541,7 +1535,7 @@ onCommand('showNotification', (payload) => {
 
 onCommand('windowFocusChanged', (payload) => {
   if (typeof payload === 'object' && payload && typeof (payload as { focused?: unknown }).focused === 'boolean') {
-    window.__OMPCHAMBER_VSCODE_WINDOW_FOCUSED__ = (payload as { focused: boolean }).focused;
+    window.__OPENCHAMBER_VSCODE_WINDOW_FOCUSED__ = (payload as { focused: boolean }).focused;
   }
 });
 
@@ -1873,7 +1867,7 @@ onCommand('activeEditorFile', (payload) => {
 
 import('@ompchamber/ui/apps/renderVSCodeApp')
   .then(async ({ renderVSCodeApp }) => {
-    renderVSCodeApp(window.__OMPCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs());
+    renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs());
     await waitForUiMount();
     uiMounted = true;
     maybeHideLoadingOverlay();

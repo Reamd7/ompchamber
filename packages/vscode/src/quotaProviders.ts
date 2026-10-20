@@ -4,6 +4,7 @@ import os from 'node:os';
 import { fetchOpenCodeGoUsage } from './opencodeGoQuota';
 import { deleteLegacyOpenCodeGoCredential, readCredential } from './quotaCredentials';
 import { getProviderAuth, updateProviderAuth } from './opencodeAuth';
+import { fetchExeDevUsage } from './exeDevQuota';
 
 type AuthEntry = Record<string, unknown> | string;
 type AuthFile = Record<string, AuthEntry>;
@@ -143,6 +144,11 @@ type CrofPayload = {
   credits?: number | string;
 };
 
+type ClineWindowKind = {
+  key: string;
+  windowSeconds: number | null;
+};
+
 type DeepseekPayload = {
   is_available?: boolean;
   balance_infos?: Array<{
@@ -151,6 +157,10 @@ type DeepseekPayload = {
     granted_balance?: number | string;
     topped_up_balance?: number | string;
   }>;
+};
+
+type HyperPayload = {
+  balance?: number | string;
 };
 
 type NeuralwattPayload = {
@@ -774,6 +784,7 @@ export const listConfiguredQuotaProviders = () => {
   if (openCodeGoAuth && (typeof openCodeGoAuth.key === 'string' || typeof openCodeGoAuth.token === 'string')) configured.add('opencode-go');
   if (readCredential('ollama-cloud')) configured.add('ollama-cloud');
   if (readCredential('cursor')) configured.add('cursor');
+  if (readCredential('exe-dev')) configured.add('exe-dev');
 
   const anthropicAuth = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude']));
   if (anthropicAuth && ((anthropicAuth as Record<string, unknown>).access || (anthropicAuth as Record<string, unknown>).token)) {
@@ -841,6 +852,11 @@ export const listConfiguredQuotaProviders = () => {
     configured.add('crof');
   }
 
+  const clineAuth = normalizeAuthEntry(getAuthEntry(auth, ['cline-pass']));
+  if (clineAuth && (asNonEmptyString(clineAuth.key) || asNonEmptyString(clineAuth.token))) {
+    configured.add('cline-pass');
+  }
+
   const neuralwattAuth = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt']));
   if (neuralwattAuth && ((neuralwattAuth as Record<string, unknown>).key || (neuralwattAuth as Record<string, unknown>).token)) {
     configured.add('neuralwatt');
@@ -849,6 +865,11 @@ export const listConfiguredQuotaProviders = () => {
   const deepseekAuth = normalizeAuthEntry(getAuthEntry(auth, ['deepseek']));
   if (deepseekAuth && ((deepseekAuth as Record<string, unknown>).key || (deepseekAuth as Record<string, unknown>).token)) {
     configured.add('deepseek');
+  }
+
+  const hyperAuth = normalizeAuthEntry(getAuthEntry(auth, ['hyper']));
+  if (hyperAuth && ((hyperAuth as Record<string, unknown>).key || (hyperAuth as Record<string, unknown>).token)) {
+    configured.add('hyper');
   }
 
   let xaiAuth: XaiAuthEntry | null = null;
@@ -1896,7 +1917,7 @@ const parseOllamaSettingsHtml = (html: string) => {
   return windows;
 };
 
-const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
+export const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
   const cookie = readCredential('ollama-cloud')?.cookie;
 
   if (!cookie) {
@@ -1943,6 +1964,16 @@ const fetchOllamaCloudQuota = async (): Promise<ProviderResult> => {
       configured: true,
       error: error instanceof Error ? error.message : 'Request failed',
     });
+  }
+};
+
+const fetchExeDevQuota = async (): Promise<ProviderResult> => {
+  const usageToken = readCredential('exe-dev')?.usageToken;
+  if (!usageToken) return buildResult({ providerId: 'exe-dev', providerName: 'exe.dev', ok: false, configured: false, error: 'Not configured' });
+  try {
+    return buildResult({ providerId: 'exe-dev', providerName: 'exe.dev', ok: true, configured: true, usage: { windows: await fetchExeDevUsage(usageToken) } });
+  } catch (error) {
+    return buildResult({ providerId: 'exe-dev', providerName: 'exe.dev', ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' });
   }
 };
 
@@ -2677,6 +2708,113 @@ const fetchCrofQuota = async (): Promise<ProviderResult> => {
   }
 };
 
+const CLINE_PASS_USAGE_URL = 'https://api.cline.bot/api/v1/users/me/plan/usage-limits';
+
+// Cline reports a rolling five-hour window, a rolling weekly window, and a
+// calendar-month limit. Each window carries its duration so consumers can rank
+// limits by how soon they run out; the calendar month has no fixed duration.
+const CLINE_WINDOW_KINDS = new Map<string, ClineWindowKind>([
+  ['five_hour', { key: '5h', windowSeconds: 5 * 60 * 60 }],
+  ['weekly', { key: 'weekly', windowSeconds: 7 * 24 * 60 * 60 }],
+  ['monthly', { key: 'monthly', windowSeconds: null }],
+]);
+
+type ClineQuotaDependencies = {
+  readAuth?: () => AuthFile;
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+export const fetchClinePassQuota = async ({ readAuth = readAuthFile, fetchImpl = fetch }: ClineQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = readAuth();  const entry = normalizeAuthEntry(getAuthEntry(auth, ['cline-pass']));
+  const apiKey = asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
+
+  if (!apiKey) {
+    return buildResult({
+      providerId: 'cline-pass',
+      providerName: 'ClinePass',
+      ok: false,
+      configured: false,
+      error: 'Not configured',
+    });
+  }
+
+  const timeoutSignal = AbortSignal.timeout(15_000);
+
+  try {
+   const response = await fetchImpl(CLINE_PASS_USAGE_URL, {      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Accept-Encoding': 'identity',
+      },
+      signal: timeoutSignal,
+    });
+
+    if (!response.ok) {
+      return buildResult({
+        providerId: 'cline-pass',
+        providerName: 'ClinePass',
+        ok: false,
+        configured: true,
+        error: response.status === 401
+          ? 'Session expired — please re-authenticate with ClinePass'
+          : `API error: ${response.status}`,
+      });
+    }
+
+   const payload = asObject(await response.json());
+    const data = asObject(payload?.data);
+    const limits = Array.isArray(data?.limits) ? data.limits : [];
+    const windows: Record<string, UsageWindow> = {};
+    for (const item of limits) {
+      const limit = asObject(item);
+      if (!limit) continue;
+      const limitType = asNonEmptyString(limit.type);
+      const kind = limitType === null ? undefined : CLINE_WINDOW_KINDS.get(limitType);
+      if (!kind) continue;
+     const usedPercent = toNumber(asNonEmptyString(limit.percentUsed)
+        ?? (Number.isFinite(limit.percentUsed) ? limit.percentUsed : null));      if (usedPercent === null) continue;
+      windows[kind.key] = toUsageWindow({
+        usedPercent,
+        windowSeconds: kind.windowSeconds,
+        resetAt: toTimestamp(limit.resetsAt),
+      });
+    }
+
+    if (Object.keys(windows).length === 0) {
+      return buildResult({
+        providerId: 'cline-pass',
+        providerName: 'ClinePass',
+        ok: false,
+        configured: true,
+        error: 'No quota data in response',
+      });
+    }
+
+    return buildResult({
+      providerId: 'cline-pass',
+      providerName: 'ClinePass',
+      ok: true,
+      configured: true,
+      usage: { windows },
+    });
+  } catch (error) {
+   const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );    const isParseError = error instanceof SyntaxError;
+    return buildResult({
+      providerId: 'cline-pass',
+      providerName: 'ClinePass',
+      ok: false,
+      configured: true,
+      error: isTimeout
+        ? 'Request timed out'
+        : isParseError
+          ? 'Invalid response from provider'
+          : (error instanceof Error ? error.message : 'Request failed'),
+    });
+  }
+};
+
 const DEEPSEEK_QUOTA_URL = 'https://api.deepseek.com/user/balance';
 
 const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
@@ -2763,6 +2901,106 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
     return buildResult({
       providerId: 'deepseek',
       providerName: 'DeepSeek',
+      ok: false,
+      configured: true,
+      error: isTimeout
+        ? 'Request timed out'
+        : isParseError
+          ? 'Invalid response from provider'
+          : (error instanceof Error ? error.message : 'Request failed'),
+    });
+  }
+};
+
+const HYPER_QUOTA_URL = 'https://hyper.charm.land/v1/credits';
+const HYPER_CREDIT_TO_USD = 0.05;
+
+export const fetchHyperQuota = async (): Promise<ProviderResult> => {
+  const auth = readAuthFile();
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['hyper'])) as Record<string, unknown> | null;
+  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+
+  if (!apiKey) {
+    return buildResult({
+      providerId: 'hyper',
+      providerName: 'Charm Hyper',
+      ok: false,
+      configured: false,
+      error: 'Not configured',
+    });
+  }
+
+  const timeoutSignal = AbortSignal.timeout(15_000);
+
+  try {
+    const response = await fetch(HYPER_QUOTA_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Accept-Encoding': 'identity',
+      },
+      signal: timeoutSignal,
+    });
+
+    if (!response.ok) {
+      return buildResult({
+        providerId: 'hyper',
+        providerName: 'Charm Hyper',
+        ok: false,
+        configured: true,
+        error: response.status === 401 || response.status === 403
+          ? 'Session expired — please re-authenticate with Charm Hyper'
+          : `API error: ${response.status}`,
+      });
+    }
+
+    const payload = await response.json() as HyperPayload;
+    const rawBalance = payload?.balance;
+    const balance = (typeof rawBalance === 'number' || (typeof rawBalance === 'string' && rawBalance.trim() !== ''))
+      ? toNumber(rawBalance)
+      : null;
+
+    if (balance === null) {
+      return buildResult({
+        providerId: 'hyper',
+        providerName: 'Charm Hyper',
+        ok: false,
+        configured: true,
+        error: 'No quota data in response',
+      });
+    }
+
+    const creditsLabel = Number.isInteger(balance) ? String(balance) : formatMoney(balance);
+    const windows: Record<string, UsageWindow> = {
+      credits_balance: toUsageWindow({
+        usedPercent: null,
+        windowSeconds: null,
+        resetAt: null,
+        valueLabel: `$${formatMoney(balance * HYPER_CREDIT_TO_USD)}`,
+      }),
+      credits: toUsageWindow({
+        usedPercent: null,
+        windowSeconds: null,
+        resetAt: null,
+        valueLabel: `${creditsLabel} credits`,
+      }),
+    };
+
+    return buildResult({
+      providerId: 'hyper',
+      providerName: 'Charm Hyper',
+      ok: true,
+      configured: true,
+      usage: { windows },
+    });
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );
+    const isParseError = error instanceof SyntaxError;
+    return buildResult({
+      providerId: 'hyper',
+      providerName: 'Charm Hyper',
       ok: false,
       configured: true,
       error: isTimeout
@@ -2868,6 +3106,8 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchMiniMaxCnCodingPlanQuota();
     case 'ollama-cloud':
       return fetchOllamaCloudQuota();
+    case 'exe-dev':
+      return fetchExeDevQuota();
     case 'openrouter':
       return fetchOpenRouterQuota();
     case 'zai-coding-plan':
@@ -2891,8 +3131,12 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchCursorQuota();
     case 'crof':
       return fetchCrofQuota();
+    case 'cline-pass':
+      return fetchClinePassQuota();
     case 'deepseek':
       return fetchDeepseekQuota();
+    case 'hyper':
+      return fetchHyperQuota();
     case 'neuralwatt':
       return fetchNeuralwattQuota();
     case 'xai':

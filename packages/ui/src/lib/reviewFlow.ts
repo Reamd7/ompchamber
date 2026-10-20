@@ -14,6 +14,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useAutoReviewStore, type AutoReviewRun } from '@/stores/useAutoReviewStore';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { usePermissionStore } from '@/stores/permissionStore';
 import { optimisticSend, patchSessionMetadata, waitForConnectionOrThrow } from '@/sync/session-actions';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -433,6 +434,19 @@ const getReviewSessionTitle = (original: Session): string => {
   return `Review: ${implementationTitle}`;
 };
 
+// A review session runs tools too (reads other directories, verifies with commands),
+// so a fresh one starts with the same auto-accept choice as the session it reviews.
+// Failure only leaves the reviewer prompting for permissions the way it did before.
+const inheritPermissionAutoAccept = async (originalSessionID: string, reviewSessionID: string): Promise<void> => {
+  const permissions = usePermissionStore.getState();
+  if (!permissions.isSessionAutoAccepting(originalSessionID)) return;
+  try {
+    await permissions.setSessionAutoAccept(reviewSessionID, true);
+  } catch (error) {
+    console.warn('[review-flow] failed to inherit permission auto-accept for review session', error);
+  }
+};
+
 const createOrReuseReviewSession = async (originalSessionID: string, directory: string, expectedRuntimeKey?: string): Promise<Session> => {
   assertAutoReviewRuntimeStillCurrent(expectedRuntimeKey);
   const original = await opencodeClient.getSession(originalSessionID, directory);
@@ -472,6 +486,7 @@ const createOrReuseReviewSession = async (originalSessionID: string, directory: 
     throw error;
   }
   useGlobalSessionsStore.getState().upsertSession(review);
+  await inheritPermissionAutoAccept(originalSessionID, review.id);
   return review;
 };
 

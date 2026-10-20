@@ -7,6 +7,7 @@ export interface QuotaProviderMeta {
 
 export const QUOTA_PROVIDERS: QuotaProviderMeta[] = [
   { id: 'claude', name: 'Claude' },
+  { id: 'cline-pass', name: 'ClinePass' },
   { id: 'codex', name: 'Codex' },
   { id: 'cursor', name: 'Cursor' },
   { id: 'github-copilot', name: 'GitHub Copilot' },
@@ -23,6 +24,6 @@ export const QUOTA_PROVIDERS: QuotaProviderMeta[] = [
   { id: 'opencode-go', name: 'OpenCode Go' },
   { id: 'crof', name: 'CrofAI' },
   { id: 'deepseek', name: 'DeepSeek' },
-  { id: 'neuralwatt', name: 'NeuralWatt' },
-  { id: 'xai', name: 'xAI' },
+ { id: 'exe-dev', name: 'exe.dev' },
+  { id: 'neuralwatt', name: 'NeuralWatt' },  { id: 'xai', name: 'xAI' },
 ];

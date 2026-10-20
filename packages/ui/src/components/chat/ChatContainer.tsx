@@ -1236,7 +1236,6 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     }, [navigation]);
     const canLoadEarlierPrompts = timelineController.historySignals.canLoadEarlier;
     const showPromptNavigator = !isMobile
-        && !isVSCode
         && !isDesktopExpandedInput
         && promptNavigatorEnabled
         && timelineController.turnIds.length >= 2;

@@ -47,7 +47,7 @@ export type DefaultAgentModelSelection = {
 // Shared default-selection cascade used both at startup (loadAgents) and when opening a
 // fresh draft (applyDefaultModelAgentSelection), so the two paths stay identical.
 //
-//   Agent: settings.defaultAgent → opencode default_agent → build → first primary → first
+//   Agent: project.defaultAgent → settings.defaultAgent → opencode default_agent → build → first primary → first
 //   Model: project.defaultModel → settings.defaultModel → resolved agent's pinned model+variant → opencode config.model
 //          → opencode/big-pickle → first
 //
@@ -59,6 +59,7 @@ export type DefaultAgentModelSelection = {
 export const resolveDefaultAgentModelSelection = ({
     agents,
     providers,
+    projectDefaultAgent,
     projectDefaultModel,
     projectDefaultVariant,
     settingsDefaultAgent,
@@ -70,6 +71,7 @@ export const resolveDefaultAgentModelSelection = ({
 }: {
     agents: Agent[];
     providers: ProviderWithModelList[];
+    projectDefaultAgent?: string;
     projectDefaultModel?: string;
     projectDefaultVariant?: string;
     settingsDefaultAgent?: string;
@@ -106,7 +108,10 @@ export const resolveDefaultAgentModelSelection = ({
     let resolvedAgent: Agent | undefined;
     if (!ompModelRoles) {
         const primaryAgents = agents.filter((agent) => isPrimaryMode(agent.mode));
-        if (settingsDefaultAgent) {
+        if (projectDefaultAgent) {
+            resolvedAgent = agents.find((agent) => agent.name === projectDefaultAgent);
+        }
+        if (!resolvedAgent && settingsDefaultAgent) {
             resolvedAgent = agents.find((agent) => agent.name === settingsDefaultAgent);
         }
         if (!resolvedAgent && opencodeDefaultAgent) {

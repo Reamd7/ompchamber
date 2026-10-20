@@ -31,6 +31,23 @@ These stores act like centralized keyed caches. UI should consume narrow slices 
 
 ### UI state stores
 
+`useCommitSelectionStore.ts` shares the selected commit between desktop/mobile
+Changes and walkthrough. Choices are session-only and keyed by runtime, directory, and
+checked-out branch, with at most 100 remembered choices. The picker history
+belongs to `useCommitComparison`, loads only while Commit mode is active, and
+is limited to the latest 50 commits. History failure stays distinct from an
+empty list; stale directory/runtime requests cannot replace current history or
+selection. A refreshed list preserves an explicit selection even when newer
+commits have pushed it beyond the latest 50.
+
+`hooks/useGitComparison.ts` owns the local file-list state used by desktop and
+mobile comparisons. Its key contains runtime, directory, and the complete
+ranch/commit source. A source change hides the old list immediately; failedreads remain errors, and manual retries cannot publish into a superseded scope.
+The hook also resolves per-file patch requests, including a commit rename's
+previous path. Views own their lazy patch caches through `useRangeKeyedCache`.
+Mobile requests only the active detail path and suspends reads while its
+keep-alive workspace pane is hidden.
+
 Examples:
 
 - `useUIStore.ts`
@@ -52,6 +69,14 @@ so a delayed or lost handshake cannot hide an already-materialized transcript
 
 ### Session / project coordination stores
 
+useMultiRunStore` creates ID-bound multi-run members. Runs are projected from
+the session lists (`lib/multirun/runs.ts`), not kept in a store of their own.
+Membership, fork handling, fusion and legacy compatibility are owned by
+`lib/multirun/DOCUMENTATION.md`.
+
+`useProjectsStore.hasServerSnapshot` distinguishes a server-confirmed project list from persisted startup hints; `serverSnapshotFailed` records a failed settings sync without clearing the last confirmed list. Successful settings adoption clears that failure even for an unchanged list. Runtime switching clears both flags. Extension project subscriptions consume these flags and project records without changing active selection.
+
+Project parsing, project selection, directory navigation, mobile session paths, and the SDK adapter share `lib/pathNormalization.ts` for request paths. Tilde expansion happens before normalization. Windows drive roots retain their slash, and parent navigation stops at drive and UNC share roots. Selecting a spelling variant of the current directory preserves history and its forward entries. Bare drive-relative paths such as `C:` stay distinct from `C:/`; normalization does not guess their filesystem target.
 Examples:
 
 - `useProjectsStore.ts`
@@ -84,8 +109,33 @@ Permission auto-accept policy is authoritative in the active Web server or VS Co
 
 Shared safe storage treats durable failures per key. A quota or access failure creates an ephemeral override or tombstone for that key without disabling reads and writes for unrelated keys; later writes retry the durable backend. Deferred adapters retain failed operations for a later flush, and malformed Zustand JSON is removed and treated as missing so hydration can recover.
 
-Project and UI settings use successful settings synchronization as authority. Omitted fields in a complete snapshot reset to canonical client defaults, including an omitted project list becoming empty; transport or settings-load failure dispatches no synchronization event and preserves current state. Settings save responses are partial patches and must not clear unrelated in-memory preferences or local mirrors. Debounced settings writes flush best-effort on page hide, document hidden, app freeze, and unload — canceling the pending timer so the write happens exactly once — because a write lost inside the debounce window lets the stale server snapshot override the change on next startup; a hard process kill can still lose the in-flight request. The unload flush uses `keepalive: true` on the HTTP write, because a plain fetch started from `pagehide`/`beforeunload` is cancelled with the document; `navigator.sendBeacon` is not used, as it cannot carry the runtime bearer header. On Capacitor neither `pagehide` nor `beforeunload` fires when the OS suspends the app, so the flush also runs on `App.appStateChange` going inactive.
+ject and UI settings use successful settings synchronization as authority. Omitted fields in a complete snapshot reset to canonical client defaults, including an omitted project list becoming empty; transport or settings-load failure dispatches no synchronization event and preserves current state. Settings save responses are partial patches and must not clear unrelated in-memory preferences or local mirrors. Debounced settings writes flush best-effort on page hide, document hidden, app freeze, and unload — canceling the pending timer so the write happens exactly once — because a write lost inside the debounce window lets the stale server snapshot override the change on next startup; a hard process kill can still lose the in-flight request. The unload flush uses `keepalive: true` on the HTTP write, because a plain fetch started from `pagehide`/`beforeunload` is cancelled with the document; `navigator.sendBeacon` is not used, as it cannot carry the runtime bearer header. On Capacitor neither `pagehide` nor `beforeunload` fires when the OS suspends the app, so the flush also runs on `App.appStateChange` going inactive.
+ettings fields are declared once in the settings registry (`packages/ui/src/lib/settings/DOCUMENTATION.md`); the sync described here iterates that registry rather than naming keys. Project and UI settings use successful settings synchronization as authority for the fields the snapshot supplies. A field the server omits is "unset", not "reset": the window keeps whatever value it already holds and nothing is written back — a bootstrap never seeds the server from local state. The one exception is the project list, whose omission still means an empty list (`useProjectsStore`). Theme fields follow the same keep-what-you-hold rule and additionally adopt only on bootstrap-grade syncs; settings save echoes never adopt a theme. A write reaches the server only because a person changed something in this window: the theme context writes only from its user-facing setters (never on mount or on adoption), and the store-subscribing auto-savers (`appearanceAutoSave`, `modelPrefsAutoSave`) treat changes made while `isApplyingServerSettings()` is true as a new baseline rather than a change to send. `updateDesktopSettings` additionally drops any key whose value equals the last value the server was seen holding for this runtime, so an echo or a toggle back to the server's value inside the debounce window produces no request. Device-scoped registry fields (window controls, mobile keyboard mode, input bar offset) never leave the install: they are dropped from writes, persisted only locally, and adopted from a pre-split server document once per runtime as a seed. Per-surface profile fields arrive already resolved for this client's surface kind (`lib/settings/surface.ts`); the stores never see another kind's value. VS Code settings broadcasts may still adopt shared workspace pointers without replacing each webview's editor-derived theme. Transport or settings-load failure dispatches no synchronization event and preserves current state. Settings save responses are partial patches and must not clear unrelated in-memory preferences or local mirrors. Debounced settings writes flush best-effort on page hide, document hidden, app freeze, and unload — canceling the pending timer so the write happens exactly once — because a write lost inside the debounce window lets the stale server snapshot override the change on next startup; a hard process kill can still lose the in-flight request. The unload flush uses `keepalive: true` on the HTTP write, because a plain fetch started from `pagehide`/`beforeunload` is cancelled with the document; `navigator.sendBeacon` is not used, as it cannot carry the runtime bearer header. On Capacitor neither `pagehide` nor `beforeunload` fires when the OS suspends the app, so the flush also runs on `App.appStateChange` going inactive.
 
+Session defaults belong to the active runtime. Switching instances clears the in-memory defaults and directory config snapshots; persisted config hydrates only when its recorded runtime matches. Legacy snapshots without an owner are refetched. Initialization, health checks, directory activation, and prewarming reject obsolete continuations, including A to B to A switches.
+
+Configured project and global model identifiers remain selected through provider discovery gaps. A draft can display its configured identifier before model metadata arrives. Catalog absence never selects Big Pickle in its place. An unknown settings document defers fallback selection; a successful document with no configured model permits the normal OpenCode fallback. Saved thinking preferences stay in settings, while a discovered model's supported variants determine the effective thinking level.
+
+Project defaults include `defaultAgent`, `defaultModel`, and `defaultVariant`.
+The project agent precedes the global agent, then OpenCode's default and the
+primary-agent fallback. Settings parsers retain all three fields on every read
+and save echo. The project editor loads agents, models, and effort options for
+the edited project without changing the active chat's configuration.
+Manual model and effort selections survive catalog gaps too. A missing catalog
+entry is not a request to replace a user's choice. Directory snapshots retain
+the effort override separately from its inherited value, including explicit
+`Default`. Fresh drafts inherit their project's effort before the global one.
+
+Project-default editing is available in desktop web and Electron. Hosted mobile
+and Capacitor consume those defaults through the shared composer but have no
+project-default editor. VS Code retains its workspace-project behavior and does
+not adopt or edit these project settings.
+
+`loadSessionDefaults` publishes preferences independently of OpenCode health and catalog requests. Cold directory activation starts providers and agents concurrently. Agent selection uses the latest committed preferences without waiting for providers or issuing a second settings read. Explicit preference edits update a draft immediately, and late settings responses preserve newer edits. Agent-pinned and OpenCode-config model identifiers can be selected before their catalog entries arrive.
+
+Provider and agent catalogs carry separate successful-load flags in directory snapshots, including successful empty responses. Pickers become interactive when their own catalog is available. A known selected identifier can be displayed earlier. The composer keeps a loading label until it knows the choice or has the inputs to establish an empty selection; providers arriving alone cannot reveal an empty agent picker.
+
+Settings reads retain overlapping local mutations until the read settles, including writes that finish before the older GET returns and toggles that cancel a pending write. Both the returned document and GET cache use that reconciled result. An older GET cannot replace newer server-value knowledge used to deduplicate writes.
 Project ordering defaults to manual. Session display persistence v3 migrates the previously shipped `recent` project order to `manual` while preserving every other explicit sort mode.
 
 Session display persistence keeps a hydrated local cache for the independent all-projects/single-project mode, session grouping, project sort, and Recent preference; successful server settings snapshots are authoritative and the UI seeds missing server fields once from that cache for upgrades. The last confirmed or manually selected project and sticky-header preference stay local to the device. Draft target changes do not write the picker selection; materialized session navigation updates it from the resolved project directory.

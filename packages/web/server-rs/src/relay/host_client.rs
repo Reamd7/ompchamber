@@ -234,6 +234,14 @@ fn build_socket_url(
     set_query_param(&mut url, "ts", &auth.ts.to_string());
     set_query_param(&mut url, "sig", &auth.sig);
     set_query_param(&mut url, "pk", &auth.pk);
+    // Self-reported diagnostics, not part of relay authentication.
+    set_query_param(&mut url, "appId", "ompchamber");
+    set_query_param(&mut url, "appVersion", env!("CARGO_PKG_VERSION"));
+    set_query_param(
+        &mut url,
+        "platform",
+        &std::env::var("OMPCHAMBER_RUNTIME").unwrap_or_else(|_| "web".to_string()),
+    );
     Ok(url.to_string())
 }
 

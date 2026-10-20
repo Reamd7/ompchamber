@@ -1,7 +1,20 @@
 import { thirdPartyIntegrationI18n } from './third-party-integrations.i18n';
 import { linearIntegrationI18n } from './linear-integration.i18n';
-
 export const settingsDict = {
+  'settings.agents.page.runtimeProvided.note': 'Fornecido pelo OpenCode ou por um plugin, sem arquivo de configuração próprio. As dicas em cinza mostram os valores atuais; o que você digitar é salvo como uma substituição.',
+  'settings.openchamber.opencodeCli.restart.restartFailed': 'Não foi possível reiniciar o OpenCode.',
+  'settings.openchamber.opencodeCli.actions.restart': 'Reiniciar OpenCode',
+  'settings.openchamber.opencodeCli.restart.external': 'Este OpenCode foi iniciado fora do OpenChamber. Reinicie-o onde você o iniciou.',
+  'settings.providers.page.custom.models.variantsLabel': 'Níveis de raciocínio',
+  'settings.providers.page.custom.models.variantsInfo': 'Opcional. Níveis de esforço aceitos pelo endpoint, separados por vírgula, por exemplo low, medium, high. Cada um vira uma variante que você pode escolher no seletor de modelo.',
+  'settings.providers.page.custom.models.variantsPlaceholder': 'low, medium, high',
+  'settings.behavior.page.section.worktrees': 'Worktrees',
+  'settings.behavior.page.worktreeFetchSource.enable': 'Buscar do remoto antes de criar worktrees',
+  'settings.behavior.page.worktreeFetchSource.enableAria': 'Buscar alterações do remoto antes de criar worktrees',
+  'settings.behavior.page.worktreeFetchSource.info': 'Novos worktrees são criados a partir do estado remoto buscado do branch atual, e não do checkout local, para que não fiquem desatualizados. A criação usa o estado local quando o remoto está inacessível.',
+  'settings.projects.page.field.projectAgent': 'Project Agent',
+  'settings.openchamber.visual.field.alwaysShowScrollbars': 'Sempre mostrar barras de rolagem',
+  'settings.openchamber.visual.field.alwaysShowScrollbarsHint': 'Mantenha as barras visíveis para poder arrastá-las sem precisar rolar primeiro. Aplica-se apenas a este dispositivo.',
   'settings.providers.page.openCodeGo.title': 'Monitoramento de uso do OpenCode Go',
   'settings.providers.page.openCodeGo.description': 'Conecte o painel do OpenCode Go para exibir as cotas móvel, semanal e mensal.',
   'settings.providers.page.openCodeGo.workspaceId': 'ID do workspace',
@@ -14,6 +27,8 @@ export const settingsDict = {
   'settings.providers.page.openCodeGo.delete': 'Excluir',
   'settings.providers.page.quotaCredentials.saved': 'Credenciais de {provider} salvas.',
   'settings.providers.page.quotaCredentials.accessToken': 'Token de acesso',
+  'settings.providers.page.quotaCredentials.usageToken': 'Token da API de uso',
+  'settings.providers.page.quotaCredentials.exeDevTokenInstructions': 'Execute este comando no terminal e cole o token abaixo. Ele só pode ler o uso de créditos de LLM e expira após 30 dias.',
   'settings.providers.page.quotaCredentials.refreshToken': 'Token de atualização',
   'settings.providers.page.quotaCredentials.tokenPlaceholder': 'Cole o token',
   'settings.providers.page.openCodeGo.saveFailed': 'Não foi possível validar as credenciais do OpenCode Go.',
@@ -78,8 +93,7 @@ export const settingsDict = {
   'settings.page.usage.title': 'Uso',
   'settings.page.agents.title': 'Agentes',
   'settings.page.commands.title': 'Comandos',
-  'settings.page.mcp.title': 'MCP',
-  'settings.page.plugins.title': 'Plugins',
+  'settings.page.mcp.title': 'MCP',  'settings.page.plugins.title': 'Plugins',
   'settings.page.skills.title': 'Habilidades',
   'settings.page.skillsCatalog.title': 'Catálogo de habilidades',
   'settings.page.git.title': 'Git',
@@ -944,9 +958,7 @@ export const settingsDict = {
   'settings.skills.catalog.installFromRepo.toast.installFailed': 'Não foi possível instalar as habilidades',
   'settings.skills.catalog.page.mode.manual': 'Manual',
   'settings.skills.catalog.page.mode.external': 'Externo',
-  'settings.skills.catalog.page.title': 'Catálogo de habilidades',
-  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',
-  'settings.skills.catalog.page.section.sources': 'Fontes',
+  'settings.skills.catalog.page.title': 'Catálogo de habilidades',  'settings.skills.catalog.page.subtitle': 'Instale skills prontas de repositórios curados ou adicione sua própria fonte.',  'settings.skills.catalog.page.section.sources': 'Fontes',
   'settings.skills.catalog.page.searchAllPlaceholder': 'Pesquisar skills em todas as fontes…',
   'settings.skills.catalog.page.search.clear': 'Limpar pesquisa',
   'settings.skills.catalog.page.source.skillsCount': 'Skills: {count}',
@@ -997,6 +1009,9 @@ export const settingsDict = {
   'settings.ompchamber.passkeys.toast.removeFailed': 'Não foi possível excluir a chave de acesso.',
   'settings.ompchamber.passkeys.toast.clearAuthFailed': 'Não foi possível limpar a autenticação salva.',
   'settings.ompchamber.sessionRetention.title': 'Retenção de sessões',
+  'settings.ompchamber.sessionRetention.field.onlyArchived': 'Somente sessões arquivadas',
+  'settings.ompchamber.sessionRetention.field.onlyArchivedDescription': 'Usa Excluir e conta o período de retenção a partir do arquivamento. As sessões não arquivadas são mantidas.',
+  'settings.ompchamber.sessionRetention.archivedTooltip': 'Exclui sessões arquivadas cujo período de retenção terminou. Mantém as 5 sessões arquivadas mais recentemente, a sessão aberta, as sessões em execução e as compartilhadas. Uma sessão principal é mantida se sua exclusão também excluir uma sessão filha protegida.',
   'settings.ompchamber.sessionRetention.tooltip': 'Arquivar ou excluir automaticamente sessões inativas conforme a última atividade. Mantém as 5 sessões mais recentes.',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanupAria': 'Ativar limpeza automática',
   'settings.ompchamber.sessionRetention.field.enableAutoCleanup': 'Ativar limpeza automática',
@@ -1089,9 +1104,7 @@ export const settingsDict = {
   'settings.mcp.sidebar.deleteDialog.descriptionPrefix': 'Tem certeza de que deseja excluir \\"{name}\\"? Isso o removerá de',
   'settings.mcp.sidebar.toast.deleteFailed': 'Não foi possível excluir o servidor MCP',
   'settings.mcp.sidebar.toast.serverDeleted': 'Servidor MCP \\"{name}\\" excluído',
-  'settings.mcp.sidebar.toast.refreshListIfStale': 'Atualize a lista de MCP se a interface parecer desatualizada.',
-  'settings.plugins.sidebar.title': 'Plugins',
-  'settings.plugins.sidebar.total': 'Total: {count}',
+  'settings.mcp.sidebar.toast.refreshListIfStale': 'Atualize a lista de MCP se a interface parecer desatualizada.',  'settings.plugins.sidebar.title': 'Plugins',  'settings.plugins.sidebar.total': 'Total: {count}',
   'settings.plugins.sidebar.actions.addTitle': 'Adicionar plugin',
   'settings.plugins.sidebar.actions.deleting': 'Excluindo…',
   'settings.plugins.sidebar.empty.title': 'Nenhum plugin configurado',
@@ -1536,7 +1549,6 @@ export const settingsDict = {
   'settings.providers.page.custom.optionLabel': 'Outro / Personalizado',
   'settings.providers.page.custom.title': 'Provedor personalizado',
   'settings.providers.page.custom.editTitle': 'Editar provedor personalizado',
-
   'settings.providers.page.custom.description': 'Adicione um provedor com URL base, credenciais, lista de modelos e protocolo de API compatível. Ele é salvo na configuração do OpenCode para uso no chat.',
   'settings.providers.page.custom.field.providerID.label': 'ID do provedor',
   'settings.providers.page.custom.field.providerID.placeholder': 'meu-provedor',
@@ -1557,7 +1569,6 @@ export const settingsDict = {
   'settings.providers.page.custom.field.apiKey.info': 'Armazenada na autenticação do OpenCode, não pelo OMPChamber. Use {env:VAR_NAME} para ler uma chave do ambiente.',
   'settings.providers.page.custom.field.apiKey.editInfo': 'Deixe em branco para manter a credencial existente, ou informe uma nova chave / {env:VAR_NAME}.',
   'settings.providers.page.custom.field.apiKey.editPlaceholder': 'Deixe em branco para manter a chave existente',
-
 
   'settings.providers.page.custom.models.title': 'Modelos',
   'settings.providers.page.custom.models.idLabel': 'ID do modelo',
@@ -1611,7 +1622,6 @@ export const settingsDict = {
   'settings.providers.page.auth.connected': 'Conectado',
   'settings.providers.page.auth.incomplete': 'Credenciais ausentes',
   'settings.providers.page.auth.incompleteHint': '· Adicione uma chave de API ou {env:VAR} antes de usar este provedor no chat',
-
 
   'settings.providers.page.auth.useReconnectHint': '· Usar Reconnect para atualizar credenciais',
   'settings.providers.page.connectionDetails.title': 'Detalhes de conexão',
@@ -2519,5 +2529,4 @@ export const settingsDict = {
   'settings.ompchamber.visual.option.followUpBehavior.steer.label': 'Steer',
   'settings.ompchamber.visual.option.followUpBehavior.queue.label': 'Queue',
   ...thirdPartyIntegrationI18n['pt-BR'],
-  ...linearIntegrationI18n['pt-BR'],
-} as const;
+  ...linearIntegrationI18n['pt-BR'],} as const;

@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fetchExeDevUsage } from './exeDevQuota';
 
-export type ManagedProvider = 'ollama-cloud' | 'cursor';
+export type ManagedProvider = 'exe-dev' | 'ollama-cloud' | 'cursor';
 export type ManagedCredential = Record<string, string>;
-const providers = new Set<ManagedProvider>(['ollama-cloud', 'cursor']);
-const directory = () => path.join(process.env.OMPCHAMBER_DATA_DIR ? path.resolve(process.env.OMPCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'ompchamber'), 'quota');
-const target = (provider: ManagedProvider) => {
+onst providers = new Set<ManagedProvider>(['exe-dev', 'ollama-cloud', 'cursor']);
+const directory = () => path.join(process.env.OPENCHAMBER_DATA_DIR ? path.resolve(process.env.OPENCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'openchamber'), 'quota');const target = (provider: ManagedProvider) => {
   if (!providers.has(provider)) throw new Error('Unsupported credential provider');
   return path.join(directory(), `${provider}.json`);
 };
@@ -15,6 +15,7 @@ const clean = (value: unknown) => typeof value === 'string' && !/[\r\n]/.test(va
 
 export const normalizeCredential = (provider: ManagedProvider, value: unknown): ManagedCredential | null => {
   const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  if (provider === 'exe-dev') return clean(data.usageToken) ? { usageToken: clean(data.usageToken) } : null;
   if (provider === 'ollama-cloud') return clean(data.cookie) ? { cookie: clean(data.cookie) } : null;
   const accessToken = clean(data.accessToken);
   const refreshToken = clean(data.refreshToken);
@@ -52,6 +53,7 @@ export const importCursorCredential = () => {
 };
 
 export const validateCredential = async (provider: ManagedProvider, credential: ManagedCredential) => {
+  if (provider === 'exe-dev') await fetchExeDevUsage(credential.usageToken);
   if (provider === 'ollama-cloud') {
     const response = await fetch('https://ollama.com/settings', { headers: { Cookie: credential.cookie }, redirect: 'manual', signal: AbortSignal.timeout(15_000) });
     if (!response.ok || (response.status >= 300 && response.status < 400)) throw new Error('Ollama Cloud authentication failed');
